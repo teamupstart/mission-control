@@ -474,3 +474,26 @@ test("a failed refresh keeps the findings on screen, says so, and recovers on th
   await expect(modal.getByText("BODY only in Mission Control.")).toBeVisible();
   await shoot(dashboard, "findings-modal-recovered", modal);
 });
+
+test("a findings read slower than the panel's poll still reaches the screen", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedLedger(daemon, [{ number: 609, posture: "live", findings: [SIX[0]!] }]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+  // Each read takes longer than two 4-second polls, so a poll must not discard the read in flight.
+  await dashboard.route("**/api/inspector/findings?*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 9_000));
+    await route.continue();
+  });
+  await findingsButton(dashboard, 609).click();
+  const modal = findingsDialog(dashboard, 609);
+  const rows = modal.locator("tr.wf-run-finding-row");
+  await expect(rows).toHaveCount(1, { timeout: 15_000 });
+  await expect(modal.getByText("Loading findings…")).toHaveCount(0);
+
+  withDaemonDb(daemon, (db) => {
+    insertFinding(db, "owner/repo#609", { ...SIX[2]!, id: "while-slow" }, Date.now());
+  });
+  await expect(rows).toHaveCount(2, { timeout: 25_000 });
+});

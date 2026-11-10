@@ -106,17 +106,29 @@ export function InspectorFindingsModal({
     };
   }, []);
 
+  const shownKey = useRef(prKey);
+  const inFlightKey = useRef<string | null>(null);
+  const mounted = useRef(true);
   useEffect(() => {
-    let alive = true;
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // A poll that lands while a read for this pull request is still out reuses that read rather
+  // than discarding it, so a read slower than the poll interval still reaches the screen.
+  useEffect(() => {
+    shownKey.current = prKey;
+    if (inFlightKey.current === prKey) return;
+    inFlightKey.current = prKey;
     void fetchInspectorFindings(prKey).then((response) => {
-      if (!alive) return;
+      if (inFlightKey.current === prKey) inFlightKey.current = null;
+      if (!mounted.current || shownKey.current !== prKey) return;
       // A failed read keeps the last answer on screen and says so, rather than blanking it.
       if (response) setData(response);
       setFailed(response === null);
     });
-    return () => {
-      alive = false;
-    };
   }, [prKey, refreshSignal]);
 
   const pr = data?.pr ?? null;

@@ -303,12 +303,16 @@ type RunDetail = {
   deliveries: Array<{ kind: string; payload: string }>;
 };
 
-/** Dispatch, publish Session -> Pull Request -> Wait for CI -> End, and run it to the wait. */
+/**
+ * Dispatch, publish Session -> Pull Request -> Wait for CI -> End, and run it to the wait. With
+ * `afterAction`, a session-turn action sits between Wait for CI's pass and End.
+ */
 async function runToCiWait(
   page: Page,
   daemon: DaemonHandle,
   name: string,
   settings: Record<string, unknown> = {},
+  { afterAction = false }: { afterAction?: boolean } = {},
 ): Promise<CiWait> {
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await page.goto(`${daemon.baseURL}/#/fleet`);
@@ -320,6 +324,15 @@ async function runToCiWait(
     requiredSkillId: null,
     completion: { kind: "pull_request" },
   });
+  const after = afterAction
+    ? await api<{ id: string }>(daemon, "/api/session-actions", {
+        name: `Tidy up after CI ${name}`,
+        description: "A turn after CI passed",
+        promptMarkdown: "# Tidy up\n\nFinish the turn.\n",
+        requiredSkillId: null,
+        completion: { kind: "session_turn" },
+      })
+    : null;
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: `E2E wait for CI ${name}`,
     resumptionPolicy: "manual",
@@ -328,12 +341,20 @@ async function runToCiWait(
         { id: "session-node", kind: "session", position: { x: 0, y: 0 } },
         { id: "action-node", kind: "session_action", sessionActionId: action.id, position: { x: 240, y: 0 } },
         { id: "ci-node", kind: "wait_for_ci", timeoutMinutes: 45, position: { x: 480, y: 0 }, ...settings },
+        ...(after
+          ? [{ id: "after-node", kind: "session_action", sessionActionId: after.id, position: { x: 600, y: 0 } }]
+          : []),
         { id: "end-node", kind: "end", outcome: "Approved", position: { x: 720, y: 0 } },
       ],
       edges: [
         { id: "e-submit", source: "session-node", sourcePort: "submitted", target: "action-node", targetPort: "activate" },
         { id: "e-complete", source: "action-node", sourcePort: "complete", target: "ci-node", targetPort: "activate" },
-        { id: "e-pass", source: "ci-node", sourcePort: "pass", target: "end-node", targetPort: "terminal" },
+        ...(after
+          ? [
+              { id: "e-pass", source: "ci-node", sourcePort: "pass", target: "after-node", targetPort: "activate" },
+              { id: "e-after", source: "after-node", sourcePort: "complete", target: "end-node", targetPort: "terminal" },
+            ]
+          : [{ id: "e-pass", source: "ci-node", sourcePort: "pass", target: "end-node", targetPort: "terminal" }]),
         { id: "e-fail", source: "ci-node", sourcePort: "fail", target: "session-node", targetPort: "return_for_changes" },
       ],
     },
@@ -513,6 +534,26 @@ test("a run waits out the quiet period on green CI, then passes it", async ({
   await expect(card).not.toContainText(/flaky/i);
   await shoot(dashboard, "04-run-ci-passed");
   if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}04-ci-passed-card.png` });
+  // The worklist rail names the verdict the way the card does, never "Missing persona".
+  const worklist = dashboard.getByRole("region", { name: "Review worklist" }).locator(".wf-run-worklist");
+  await expect(worklist.locator("button.wf-run-worklist-row", { hasText: "Wait for CI" })).toHaveCount(1);
+  await expect(worklist).not.toContainText("Missing persona");
+});
+
+test("an action after Wait for CI carries CI's pass into the segment it opens", async ({ dashboard, daemon }) => {
+  test.setTimeout(360_000);
+  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-then-action", { quietMinutes: 0 }, { afterAction: true });
+  seedCi(daemon, head, [check("unit (node 24)", "passing")]);
+  await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
+    message: "the action after Wait for CI did not finish the run",
+    timeout: 180_000,
+  }).toBe("completed");
+
+  // The run opens on the newest segment, which the action after CI opened and where CI never ran.
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const ciRow = dashboard.locator('[aria-label="Workflow run pipeline"]')
+    .locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
+  await expect(ciRow.locator(".wf-pipeline-status")).toHaveText("Not re-run");
 });
 
 /** Both widths, for `workflow-session-action-evidence.spec.ts`' reason. */

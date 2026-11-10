@@ -665,7 +665,7 @@ test("a stage says how much of its gate was real", () => {
 
 /** A published version holding just the node kinds `inheritedPasses` reads. */
 const version = (
-  nodes: Array<{ id: string; kind: "persona" | "check" | "session_action" | "all_pass" }>,
+  nodes: Array<{ id: string; kind: "persona" | "check" | "session_action" | "wait_for_ci" | "all_pass" }>,
 ): Partial<WorkflowRunDetail> => ({ version: { graph: { nodes } } } as never);
 
 const PIPELINE = version([
@@ -746,6 +746,29 @@ test("a continuation segment carries the parent's passes, by the recorded parent
   assert.equal(inherited.get("persona-node")!.roundLabel, "Round 1 · evidence 1");
   // A node that ran HERE keeps its own result, whatever an ancestor said.
   assert.equal(inherited.has("action-node"), false);
+});
+
+test("a segment after a later action carries Wait for CI's recorded pass", () => {
+  const graph = version([
+    { id: "ci-node", kind: "wait_for_ci" },
+    { id: "action-node", kind: "session_action" },
+  ]);
+  const parent = submission("seg-1", 1, { segment: 1 });
+  const child = submission("seg-2", 1, { segment: 2, parentSubmissionId: parent.id });
+  const run = detail(
+    [parent, child],
+    [passed("ci", parent.id, "ci-node"), passed("a", parent.id, "action-node")],
+    graph,
+  );
+  assert.equal(inheritedPasses(run, child).get("ci-node")?.submission.id, parent.id);
+  // A failed CI wait is the nearest outcome, so it is shown but never carried as a pass.
+  const failed = detail(
+    [parent, child],
+    [attempt("ci", parent.id, "ci-node", { verdict: { verdict: "fail" } as never })],
+    graph,
+  );
+  assert.equal(inheritedAttempts(failed, child).has("ci-node"), true);
+  assert.equal(inheritedPasses(failed, child).has("ci-node"), false);
 });
 
 test("a carried pass is the nearest recorded outcome, never an older one reaching past it", () => {

@@ -1019,7 +1019,7 @@ function WorklistRailRow({
             label: item.verdict.verdict === "pass" ? "Passed" : "Changes requested",
             tone: item.verdict.verdict === "pass" ? "passed" : "failed",
           },
-          title: item.attempt.persona?.name ?? "Missing persona",
+          title: item.attempt.persona?.name ?? (waitForCiStateOf(item.attempt) ? WAIT_FOR_CI_LABEL : "Missing persona"),
           hint: item.verdict.verdict === "pass"
             ? "Show this reviewer's approval rationale and the evidence behind it"
             : "Show this reviewer's whole verdict",

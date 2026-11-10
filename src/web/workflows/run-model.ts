@@ -291,7 +291,7 @@ export function stageElapsed(spans: ReadonlyArray<ElapsedSpan | null>): ElapsedS
 
 /** Whether a prior attempt is a pass this round is entitled to carry forward. */
 export function priorAttemptPassed(
-  kind: "persona" | "check" | "session_action",
+  kind: "persona" | "check" | "session_action" | "wait_for_ci",
   attempt: WorkflowNodeAttempt | undefined,
 ): boolean {
   if (!attempt) return false;
@@ -380,7 +380,8 @@ export function inheritedAttempts(
   if (sources.length === 0) return inherited;
   const current = latestAttemptsFor(detail, submission.id);
   for (const node of graph.nodes) {
-    if (node.kind !== "persona" && node.kind !== "check" && node.kind !== "session_action") {
+    if (node.kind !== "persona" && node.kind !== "check" && node.kind !== "session_action"
+      && node.kind !== "wait_for_ci") {
       continue;
     }
     if (current.has(node.id)) continue;
@@ -422,7 +423,7 @@ export function inheritedPasses(
   const kinds = new Map(graph.nodes.map((node) => [node.id, node.kind]));
   for (const [nodeId, inherited] of inheritedAttempts(detail, submission)) {
     const kind = kinds.get(nodeId);
-    if (kind !== "persona" && kind !== "check") continue;
+    if (kind !== "persona" && kind !== "check" && kind !== "wait_for_ci") continue;
     if (priorAttemptPassed(kind, inherited.attempt)) passes.set(nodeId, inherited);
   }
   // A repair round records its own receipt-bearing attempt while naming the earned pass.

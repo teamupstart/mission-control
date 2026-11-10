@@ -40,7 +40,9 @@ backup, retention, validation, failure-handling, and offline-restore procedure.
 
 Backup status appears in **Settings > Storage**: the interval and counts, Back up now, the last
 success and last failure of each kind, the kept copies with their total size, and a Problems list
-that names a failing capture until a capture succeeds.
+that names a failing capture until a capture of the same kind succeeds. A Back up now success also
+clears a scheduled failure; a scheduled success leaves a Back up now failure listed until the next
+Back up now succeeds.
 
 ## Recovering the product database
 

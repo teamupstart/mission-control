@@ -393,7 +393,6 @@ export class DatabaseBackupService {
     validateDatabaseBackupForRestore(capture.temporary);
     renameSync(capture.temporary, capture.path);
     syncFile(this.root);
-    this.pruneCopies();
     const { temporary: _temporary, ...record } = capture;
     return record;
   }
@@ -587,6 +586,12 @@ export class DatabaseBackupService {
       await this.onlineBackup(this.source, capture.temporary);
       const record = this.publish(capture);
       this.record(() => this.recordSuccess(kind, this.now().getTime()));
+      // The copy is published, so a prune failure only leaves an extra copy for the next prune.
+      try {
+        this.pruneCopies();
+      } catch (error) {
+        console.warn(`[mission-control] database backup prune failed after capture: ${errorMessage(error)}`);
+      }
       return record;
     } catch (error) {
       const label = kind === "manual" ? "Manual" : "Scheduled";
@@ -647,7 +652,9 @@ export class DatabaseBackupService {
     const capture = this.paths("preMigration");
     try {
       this.source.prepare("VACUUM INTO ?").run(capture.temporary);
-      return this.publish(capture);
+      const record = this.publish(capture);
+      this.pruneCopies();
+      return record;
     } catch (error) {
       safeUnlink(capture.temporary);
       throw new Error(`Pre-migration database backup failed: ${errorMessage(error)}`, {

@@ -368,7 +368,7 @@ export async function listProcessesSnapshot(
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,
-    overflowed: failed?.overflowed === true,
+    overflowed: a.overflowed || b.overflowed,
     cwdScopePids,
     completedCollectorPids: [a.childPid, b.childPid].filter(
       (pid): pid is number => Number.isInteger(pid) && (pid ?? 0) > 0,

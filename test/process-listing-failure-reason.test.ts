@@ -95,3 +95,13 @@ test("the snapshots mark an overflowed listing so a caller does not retry it", a
   assert.equal((await listProcessesSnapshot(runCommand)).overflowed, true);
   assert.equal((await readProcCwdsSnapshot([11], undefined, runCommand)).overflowed, true);
 });
+
+test("an overflowed command listing is marked even when the identity listing failed first", async () => {
+  const runCommand: typeof run = async (_bin, args) =>
+    args[0] === "-Ao"
+      ? { ...stubRun({ stdout: "", stderr: "", code: 1 }), outcomeUnknown: true, timedOut: true, signal: "SIGTERM", timeoutMs: 30_000 }
+      : { ...stubRun({ stdout: "", stderr: "stdout maxBuffer length exceeded", code: 1 }), overflowed: true };
+  const snapshot = await listProcessesSnapshot(runCommand);
+  assert.equal(snapshot.unknownReason, "process listing failed: the process listing timed out after 30 s");
+  assert.equal(snapshot.overflowed, true);
+});

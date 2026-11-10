@@ -948,6 +948,7 @@ async function shutdown(): Promise<void> {
   noteDaemonShuttingDown();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
+  await databaseBackups.stop();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();

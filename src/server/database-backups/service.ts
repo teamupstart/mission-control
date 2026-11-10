@@ -313,6 +313,7 @@ export class DatabaseBackupService {
   private readonly now: () => Date;
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
   private inFlight: InFlightCapture | null = null;
+  private stopping = false;
   private readonly changeListeners = new Set<() => void>();
 
   constructor(
@@ -610,6 +611,7 @@ export class DatabaseBackupService {
    */
   private captureSingleFlight(kind: RecordedDatabaseBackupKind): Promise<DatabaseBackupRecord> {
     if (this.inFlight?.kind === kind) return this.inFlight.capture;
+    if (this.stopping) return Promise.reject(new Error("Database backups are stopping"));
     const previous = this.inFlight?.capture.then(() => undefined, () => undefined);
     const capture = (async () => {
       await previous;
@@ -623,6 +625,16 @@ export class DatabaseBackupService {
 
   captureScheduled(): Promise<DatabaseBackupRecord> {
     return this.captureSingleFlight("scheduled");
+  }
+
+  /**
+   * Refuse new captures and wait for the one in flight and any queued behind it. A Back up now
+   * runs inside an HTTP request, which shutdown only bounds, so without this SQLite could close
+   * under a capture before it published or recorded its outcome.
+   */
+  async stop(): Promise<void> {
+    this.stopping = true;
+    while (this.inFlight) await this.inFlight.capture.then(() => undefined, () => undefined);
   }
 
   /**

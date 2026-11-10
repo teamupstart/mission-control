@@ -849,6 +849,48 @@ test("captures are single-flight: the same kind joins, the other kind waits its 
   assert.equal(overlapped, false);
 });
 
+test("stop waits for a Back up now and the capture queued behind it, then refuses new ones", async (t) => {
+  const root = fixture("mission-database-backup-stop-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  source.exec("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const releases: Array<() => void> = [];
+  const service = new DatabaseBackupService(source, {
+    root: join(root, "backups"),
+    onlineBackup: async (db, destination) => {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      await sqliteBackup(db, destination);
+    },
+  });
+
+  const manual = service.captureManual();
+  const scheduled = service.captureScheduled();
+  let stopped = false;
+  const stopping = service.stop().then(() => { stopped = true; });
+  await assert.rejects(service.captureManual(), /Database backups are stopping/);
+  assert.equal(service.captureScheduled(), scheduled, "a request for the kind in flight still joins it");
+
+  while (!releases[0]) await new Promise<void>((resolve) => setImmediate(resolve));
+  releases.shift()!();
+  assert.equal((await manual).kind, "manual");
+  assert.equal(stopped, false, "stop still waits for the scheduled capture queued behind it");
+  while (!releases[0]) await new Promise<void>((resolve) => setImmediate(resolve));
+  releases.shift()!();
+  assert.equal((await scheduled).kind, "scheduled");
+  await stopping;
+  await assert.rejects(service.captureManual(), /Database backups are stopping/);
+  await assert.rejects(service.captureScheduled(), /Database backups are stopping/);
+
+  const status = service.status();
+  assert.equal(status.manual.consecutiveFailures, 0, "a refused request is not a recorded failure");
+  assert.notEqual(status.manual.lastSuccessAt, null);
+  assert.notEqual(status.scheduled.lastSuccessAt, null);
+  assert.equal(kept(join(root, "backups"), "manual").length, 1);
+  assert.equal(kept(join(root, "backups"), "scheduled").length, 1);
+});
+
 test("a recurring loop contains a failed due check and keeps waking", async () => {
   const warnings: unknown[][] = [];
   const originalWarn = console.warn;

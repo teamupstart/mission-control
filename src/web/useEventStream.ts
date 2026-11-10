@@ -209,6 +209,8 @@ export interface MissionState {
   harnessesRevision: number;
   /** Content-free invalidation counter for the bounded Settings > Worktrees query. */
   worktreesRevision: number;
+  /** Content-free invalidation counter for the backup config Settings > Storage edits. */
+  storageConfigRevision: number;
   /**
    * Content-free invalidation counter for the attention-inbox dismissals
    * (`GET /api/attention/dismissals`). Bumped on every (re)connect as well as on
@@ -286,6 +288,7 @@ export function useEventStream(): MissionState {
   const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
+  const [storageConfigRevision, setStorageConfigRevision] = useState(0);
   const [attentionDismissalsRevision, setAttentionDismissalsRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
   const [settingsRestoreNotice, setSettingsRestoreNotice] = useState<SettingsRestoredEvent | null>(null);
@@ -307,6 +310,7 @@ export function useEventStream(): MissionState {
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
       setHarnessesRevision((n) => n + 1);
       setWorktreesRevision((n) => n + 1);
+      setStorageConfigRevision((n) => n + 1);
       setAttentionDismissalsRevision((n) => n + 1);
       // Same rule for the archive library, which rides no snapshot at all: bundles can be
       // reconciled, refused, or pruned while the channel is down, and a mounted Archives page
@@ -674,6 +678,9 @@ export function useEventStream(): MissionState {
         case "worktrees_changed":
           setWorktreesRevision((n) => n + 1);
           break;
+        case "storage_config_changed":
+          setStorageConfigRevision((n) => n + 1);
+          break;
         // Counted: the frame carries no rows, and the hook holding them re-reads the route.
         case "attention_dismissals_changed":
           setAttentionDismissalsRevision((n) => n + 1);
@@ -799,6 +806,7 @@ export function useEventStream(): MissionState {
     storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
     attentionDismissalsRevision,
     archivesRevision,
     settingsRestoreNotice,

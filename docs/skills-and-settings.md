@@ -295,7 +295,8 @@ window that submitted it. Every other open window keeps its unsaved drafts and o
 **Storage**, just above Restore, holds full-database backups: the interval and how many
 scheduled and pre-migration copies are kept, **Back up now**, the last success and failure of
 each kind, the kept copies and their total size, and a **Problems** list whose rows link to
-where each is fixed. It updates live from the `storage_health` event. See
+where each is fixed. It updates live from the `storage_health` event, and a config saved in
+another window reaches it through `storage_config_changed`. See
 [Backup and restore](sqlite-database.html#backup).
 
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its

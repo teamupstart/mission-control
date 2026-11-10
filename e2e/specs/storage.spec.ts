@@ -126,6 +126,32 @@ test("Save sends only the field edited here, so a setting another window saved i
   await expect(interval).toHaveValue("6");
 });
 
+test("a save from another window reaches this page, keeps an edit in progress, and can be set back", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  const interval = dashboard.getByLabel("Backup interval");
+  const scheduledCount = dashboard.getByLabel("Scheduled copies kept");
+  await expect(interval).toHaveValue("1");
+  await scheduledCount.fill("5");
+
+  const elsewhere = await dashboard.request.put(`${daemon.baseURL}/api/storage/backups/config`, {
+    data: { intervalHours: 6 },
+  });
+  expect(elsewhere.ok()).toBe(true);
+  await expect(interval).toHaveValue("6");
+  await expect(scheduledCount).toHaveValue("5");
+
+  await interval.selectOption("1");
+  await dashboard.getByRole("button", { name: "Save" }).click();
+  await expect(dashboard.getByText("Backup settings saved.", { exact: false })).toBeVisible();
+  const stored = await (await dashboard.request.get(`${daemon.baseURL}/api/storage`)).json() as {
+    config: { scheduledCount: number; preMigrationCount: number; intervalHours: number };
+  };
+  expect(stored.config).toEqual({ scheduledCount: 5, preMigrationCount: 2, intervalHours: 1 });
+});
+
 test("a failed Back up now appears in Problems and clears on the next success", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
   await expect(dashboard.getByText("No storage problems.")).toBeVisible();
@@ -251,5 +277,6 @@ test("a slow first read that lands after Back up now's re-read never replaces th
   await dashboard.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await expect(manualRows).toHaveCount(1);
   await expect(dashboard.getByText("No copies are kept yet.", { exact: false })).toHaveCount(0);
-  expect(reads).toBe(2);
+  // The mount read, the re-read when the stream opens (`storageConfigRevision`), and Back up now's.
+  expect(reads).toBe(3);
 });

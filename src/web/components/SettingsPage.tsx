@@ -208,6 +208,7 @@ export function SettingsPage({
   onLayoutChange,
   settingsStatus,
   storageHealth = null,
+  storageConfigRevision = 0,
   harnessesRevision = 0,
   worktreesRevision = 0,
   workflowSummaries = [],
@@ -274,6 +275,8 @@ export function SettingsPage({
   settingsStatus: SettingsStatus | null;
   /** `MissionState.storageHealth`, the live aggregate Settings > Storage draws. */
   storageHealth?: StorageHealth | null;
+  /** `MissionState.storageConfigRevision`: Settings > Storage re-reads its config when it moves. */
+  storageConfigRevision?: number;
   /**
    * `MissionState.harnessesRevision` - bumped whenever the daemon announces a change to the
    * per-harness dispatch defaults. Handed to `useHarnesses` so this page reflects an edit
@@ -658,7 +661,13 @@ export function SettingsPage({
       case "telemetry":
         return <TelemetrySettingsPanel state={telemetry} />;
       case "storage":
-        return <StorageSettingsPanel health={storageHealth} onNavigate={navigateWithAnchor} />;
+        return (
+          <StorageSettingsPanel
+            health={storageHealth}
+            configRevision={storageConfigRevision}
+            onNavigate={navigateWithAnchor}
+          />
+        );
       case "restore":
         return <RestoreSettingsPanel />;
       case "inspector":

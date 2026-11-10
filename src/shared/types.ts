@@ -3676,6 +3676,12 @@ export type ServerEvent =
    */
   | { type: "worktrees_changed" }
   /**
+   * The database backup config was saved. Content-free: `GET /api/storage` is the one reader
+   * of that config, and `storage_health` cannot stand in, because a save that prunes nothing
+   * leaves the aggregate unchanged and publishes no frame.
+   */
+  | { type: "storage_config_changed" }
+  /**
    * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
    * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the
    * inbox and the `to answer` count in every other.

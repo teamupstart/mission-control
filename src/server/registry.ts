@@ -616,6 +616,7 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "harnesses_config_changed",
   // Deliberately absent: worktree inventory and policy do not feed the Line's execution
   // fold. Its content-free event only tells an open Settings panel to re-observe.
+  // `storage_config_changed` is absent for the same reason: backup counts are no Line input.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -1380,6 +1381,11 @@ export class Registry extends EventEmitter {
   /** Announce that the bounded Worktrees route should be re-observed. */
   emitWorktreesChanged(): void {
     this.emitEvent({ type: "worktrees_changed" });
+  }
+
+  /** Announce a saved database backup config, so every open Storage panel re-reads it. */
+  emitStorageConfigChanged(): void {
+    this.emitEvent({ type: "storage_config_changed" });
   }
 
   /** Announce that the attention-inbox dismissals changed, so every dashboard re-reads them. */

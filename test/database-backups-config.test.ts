@@ -28,8 +28,9 @@ const { getDatabaseBackupsConfig, setDatabaseBackupsConfig } = await import(
 
 const backupRoot = join(stateHome, "backups", "database");
 const databaseBackups = new DatabaseBackupService(openDb(), { root: backupRoot });
+let configAnnouncements = 0;
 const app = buildApp({
-  registry: {} as Registry,
+  registry: { emitStorageConfigChanged: () => { configAnnouncements += 1; } } as unknown as Registry,
   reviews: {} as ReviewManager,
   tasks: {} as TaskManager,
   queues: {} as QueueManager,
@@ -93,8 +94,10 @@ test("the shared schema refuses out-of-range counts and intervals, and never acc
 
 test("saving lowered counts prunes at once, and a refused save changes nothing", async () => {
   seedScheduled(5);
+  const announcedBefore = configAnnouncements;
   const saved = await putConfig({ scheduledCount: 2 });
   assert.equal(saved.status, 200);
+  assert.equal(configAnnouncements, announcedBefore + 1, "a save tells every open window to re-read");
   assert.deepEqual(await saved.json(), {
     scheduledCount: 2,
     preMigrationCount: 2,
@@ -106,6 +109,7 @@ test("saving lowered counts prunes at once, and a refused save changes nothing",
     const refused = await putConfig(body);
     assert.equal(refused.status, 400, JSON.stringify(body));
   }
+  assert.equal(configAnnouncements, announcedBefore + 1, "a refused save announces nothing");
   assert.equal(getDatabaseBackupsConfig().scheduledCount, 2);
   assert.equal(scheduledCopies().length, 2);
 
@@ -139,6 +143,7 @@ test("a prune that throws after saving still reports the save, and only warns", 
 
 test("a save the database refuses answers 500 with its reason, and stores nothing", async () => {
   const before = getDatabaseBackupsConfig();
+  const announcedBefore = configAnnouncements;
   const db = openDb();
   db.exec(`CREATE TEMP TRIGGER refuse_backups_save BEFORE INSERT ON app_config
     WHEN NEW.key = 'backups' BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`);
@@ -150,6 +155,7 @@ test("a save the database refuses answers 500 with its reason, and stores nothin
     db.exec("DROP TRIGGER refuse_backups_save");
   }
   assert.deepEqual(getDatabaseBackupsConfig(), before);
+  assert.equal(configAnnouncements, announcedBefore, "a save SQLite refused announces nothing");
 });
 
 test("a settings snapshot taken before the database-backups domain still validates and restores", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   DATABASE_BACKUP_INTERVAL_HOURS,
   DatabaseBackupsConfigPatchSchema,
@@ -54,6 +54,9 @@ const COUNT_FIELDS = [
 ] as const;
 
 type Draft = Record<keyof DatabaseBackupsConfig, string>;
+
+const CONFIG_KEYS = ["scheduledCount", "preMigrationCount", "intervalHours"] as const satisfies
+  readonly (keyof DatabaseBackupsConfig)[];
 
 function draftOf(config: DatabaseBackupsConfig): Draft {
   return {
@@ -116,15 +119,28 @@ export function StorageSettingsPanelView({
 }): React.JSX.Element {
   const config = state.view?.config ?? null;
   const [draft, setDraft] = useState<Draft | null>(config ? draftOf(config) : null);
+  const adopted = useRef<DatabaseBackupsConfig | null>(config);
+  // A config saved elsewhere replaces only the fields not edited here, so an edit in progress
+  // survives another window's save.
   useEffect(() => {
-    if (config) setDraft(draftOf(config));
+    if (!config) return;
+    const previous = adopted.current;
+    adopted.current = config;
+    setDraft((current) => {
+      const next = draftOf(config);
+      if (!current || !previous) return next;
+      for (const key of CONFIG_KEYS) {
+        if (current[key] !== String(previous[key])) next[key] = current[key];
+      }
+      return next;
+    });
   }, [config?.scheduledCount, config?.preMigrationCount, config?.intervalHours]);
 
-  // Only the fields edited here: this page's config can be stale after another window saved,
-  // and sending an untouched field would put that window's value back.
+  // Only the fields edited here: until a re-read lands this page's config can be stale, and
+  // sending an untouched field would put another window's value back.
   const edited = draft && config
     ? Object.fromEntries(
-        (["scheduledCount", "preMigrationCount", "intervalHours"] as const)
+        CONFIG_KEYS
           .filter((key) => draft[key] !== String(config[key]))
           .map((key) => [key, Number(draft[key])]),
       )
@@ -272,12 +288,14 @@ export function StorageSettingsPanelView({
 
 export function StorageSettingsPanel({
   health,
+  configRevision = 0,
   onNavigate,
 }: {
   health: StorageHealth | null;
+  configRevision?: number;
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
-  const { save, backUpNow, ...state } = useStorage(health);
+  const { save, backUpNow, ...state } = useStorage(health, configRevision);
   return (
     <StorageSettingsPanelView
       state={state}

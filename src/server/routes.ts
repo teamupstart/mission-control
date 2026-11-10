@@ -8447,14 +8447,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    let saved;
     try {
-      return c.json(setDatabaseBackupsConfig(parsed.data, databaseBackups));
+      saved = setDatabaseBackupsConfig(parsed.data, databaseBackups);
     } catch (error) {
       return c.json({
         error: "save_failed" as const,
         message: error instanceof Error ? error.message : String(error),
       }, 500);
     }
+    // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
+    registry.emitStorageConfigChanged();
+    return c.json(saved);
   });
 
   // Back up now: a `manual` copy through the same single-flight capture as the hourly one.

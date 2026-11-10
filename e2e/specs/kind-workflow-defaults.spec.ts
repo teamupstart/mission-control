@@ -266,6 +266,23 @@ test("a task saved while the rows load is filed on the kind's real row, not the 
   await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
   const task = await addToBacklog(dashboard, dialog, release);
   expect(task.workflowId).toBe(null);
+  // The rows landing mid-save must not read as a newer edit that keeps the filed form open.
+  await expect(dialog).toBeHidden();
+});
+
+test("a guess left by a closed form is still corrected when it reopens", async ({ dashboard, daemon }) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const release = await holdConfigReads(dashboard);
+  const { dialog, kind, afterWork } = await openDispatch(dashboard, daemon.repo, "fix it later");
+  await kind.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  release();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog.getByPlaceholder("What should this agent do?")).toHaveValue("fix it later");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
 });
 
 test("an explicit None on a plan survives a switch to local storage under a None plan row", async ({

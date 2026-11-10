@@ -219,6 +219,9 @@ export function ScheduleEditor({
     useState<KindWorkflowDefaults | "unreadable" | null>(null);
   // A kind preset written before the rows were known, corrected when they land.
   const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string } | null>(null);
+  // Where the mission stood at a first switch made before the rows were known, so whether it
+  // sat on its kind's row can be asked again against the real rows.
+  const deferredOrigin = useRef<{ kind: TaskKind; workflowId: string } | null>(null);
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<ScheduleValidationField, string>>>(
@@ -260,18 +263,48 @@ export function ScheduleEditor({
   const rowsKnown = kindWorkflowDefaults !== null && kindWorkflowDefaults !== "unreadable";
   const rows: KindWorkflowDefaults = rowsKnown ? kindWorkflowDefaults : {};
 
-  // The rows landed after a kind switch guessed at them: replace the guess with the kind's
-  // real row, unless the operator has since chosen, or the kind has moved on.
-  useEffect(() => {
-    const guess = provisionalWorkflow.current;
-    if (!rowsKnown || !guess) return;
+  const pendingGuesses = () => ({ guess: provisionalWorkflow.current, origin: deferredOrigin.current });
+
+  /**
+   * Re-answer what kind switches decided before the rows were known: the kind's preset, and
+   * what a return to a preset-less kind restores. Returns the draft correction; a manual
+   * After work edit clears both guesses, so it is never undone. Safe to apply twice.
+   */
+  function settleGuesses(
+    { guess, origin }: ReturnType<typeof pendingGuesses>,
+    configured: KindWorkflowDefaults,
+  ): (prev: EditorDraft) => EditorDraft {
     provisionalWorkflow.current = null;
-    const resolved = missionPresetWorkflowId(guess.kind, rows);
-    if (resolved === undefined || resolved === guess.workflowId) return;
-    setDraft((prev) =>
-      prev.kind === guess.kind && prev.workflowId === guess.workflowId
-        ? { ...prev, workflowId: resolved }
-        : prev);
+    deferredOrigin.current = null;
+    const restoreFor = (of: KindWorkflowDefaults): string | null => {
+      if (!origin) return null;
+      const preset = missionPresetWorkflowId(origin.kind, of);
+      return preset !== undefined && origin.workflowId === preset ? "" : origin.workflowId;
+    };
+    const guessedRestore = restoreFor({});
+    const realRestore = restoreFor(configured);
+    if (guessedRestore !== null && workflowBeforeKindDefault.current === guessedRestore) {
+      workflowBeforeKindDefault.current = realRestore;
+    }
+    return (prev) => {
+      if (guess && prev.kind === guess.kind && prev.workflowId === guess.workflowId) {
+        const resolved = missionPresetWorkflowId(guess.kind, configured);
+        return resolved === undefined ? prev : { ...prev, workflowId: resolved };
+      }
+      if (
+        realRestore !== null
+        && missionPresetWorkflowId(prev.kind, configured) === undefined
+        && prev.workflowId === guessedRestore
+      ) {
+        return { ...prev, workflowId: realRestore };
+      }
+      return prev;
+    };
+  }
+
+  useEffect(() => {
+    if (!rowsKnown) return;
+    setDraft(settleGuesses(pendingGuesses(), rows));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
   }, [kindWorkflowDefaults]);
 
@@ -283,6 +316,7 @@ export function ScheduleEditor({
     if (workflowBeforeKindDefault.current === undefined) {
       workflowBeforeKindDefault.current =
         preset(draft.kind) !== undefined && draft.workflowId === preset(draft.kind) ? "" : null;
+      if (kindWorkflowDefaults === null) deferredOrigin.current = { kind: draft.kind, workflowId: draft.workflowId };
     }
     let workflowId = draft.workflowId;
     const kindPreset = preset(kind);
@@ -370,14 +404,15 @@ export function ScheduleEditor({
    * operator may have replaced. Rows that cannot be read keep the guess, as the hint says.
    */
   async function settledDefinition(): Promise<ScheduleDefinitionPayload> {
-    const guess = provisionalWorkflow.current;
-    if (kindWorkflowDefaults !== null || !guess || guess.kind !== draft.kind || guess.workflowId !== draft.workflowId) {
-      return definition;
-    }
+    const pending = pendingGuesses();
+    if (kindWorkflowDefaults !== null || (!pending.guess && !pending.origin)) return definition;
     const fetched = await fetchKindWorkflowDefaults();
     setKindWorkflowDefaults(fetched ?? "unreadable");
-    const resolved = fetched ? missionPresetWorkflowId(guess.kind, fetched) : undefined;
-    return resolved === undefined ? definition : draftToDefinition({ ...draft, workflowId: resolved });
+    if (!fetched) return definition;
+    const correct = settleGuesses(pending, fetched);
+    setDraft(correct);
+    const settled = correct(draft);
+    return settled === draft ? definition : draftToDefinition(settled);
   }
 
   async function save(enable: boolean): Promise<void> {
@@ -663,6 +698,7 @@ export function ScheduleEditor({
                 onChange={(event) => {
                   workflowBeforeKindDefault.current = null;
                   provisionalWorkflow.current = null;
+                  deferredOrigin.current = null;
                   update({ workflowId: event.target.value });
                 }}
               >

@@ -505,3 +505,33 @@ test("a mission saved while the Settings rows load stores the configured row, no
     return all.find((entry) => entry.name === "bugfix saved before the rows")?.template;
   }).toMatchObject({ kind: "bugfix", workflowId: GENERAL_REVIEW });
 });
+
+test("a saved mission switched to ship before the rows load still counts as on its kind's row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await configureRows(daemon);
+  const mission = await seedMission(daemon, "Early ship switch", "bugfix", GENERAL_REVIEW);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await dashboard.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() === "GET") await gate;
+    await route.continue();
+  });
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await dashboard.getByRole("button", { name: "Early ship switch", exact: false }).first().click();
+  await dashboard.getByRole("button", { name: "Edit" }).first().click();
+  const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+
+  // Against the built-ins General Review is not bugfix's default, so the switch keeps it...
+  await dashboard.getByRole("combobox", { name: "Task kind" }).selectOption("ship");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  // ...until the rows show it IS the bugfix row, and Ship returns to None.
+  release();
+  await expect(afterWork).toHaveValue("");
+  await dashboard.getByRole("button", { name: "Save paused" }).click();
+  await expect.poll(() => storedWorkflowId(daemon, mission.id)).toBe(null);
+});

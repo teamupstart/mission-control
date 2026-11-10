@@ -1,7 +1,7 @@
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   AGENT_TYPES,
   TASK_KINDS,
@@ -269,6 +269,7 @@ function repoCollision(d: DispatchDraft): string | null {
  */
 const NO_STASH = Symbol("no-stash");
 type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
+type ProvisionalWorkflow = { kind: TaskKind; workflowId: string | null };
 type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
@@ -624,6 +625,8 @@ export function DispatchLayer({
   const editTask = requested?.kind === "edit" ? requested.task : null;
   const tourDemo = requested?.kind === "tour" ? requested.demo : null;
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  // Lives with the draft, which outlives the modal: a guess left by a closed form is still a guess.
+  const draftProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   // The tour demonstrates the real form without borrowing or erasing the operator's draft.
   // This temporary slot lives beside the owner's existing new/edit slots and disappears when
   // a later tour id replaces it. It is not a second Dispatch owner or a persisted draft.
@@ -1067,6 +1070,7 @@ export function DispatchLayer({
       sessions={sessions}
       draft={draft}
       onDraftChange={setDraft}
+      provisionalWorkflowRef={draftProvisionalWorkflow}
       onAttachmentsChange={onAttachmentsChange}
       onRevert={onNewRevert}
       onClose={onClose}
@@ -1103,6 +1107,7 @@ function DispatchModal({
   sessions,
   draft,
   onDraftChange,
+  provisionalWorkflowRef,
   onAttachmentsChange,
   onRevert,
   onClose,
@@ -1130,6 +1135,7 @@ function DispatchModal({
   sessions: Session[];
   draft: DispatchDraft;
   onDraftChange: (draft: DispatchDraft) => void;
+  provisionalWorkflowRef?: MutableRefObject<ProvisionalWorkflow | null>;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   /** Discard the working copy - an empty form for a create, the live row for an edit. */
   onRevert: () => void;
@@ -1576,7 +1582,8 @@ function DispatchModal({
    * built-ins. Held so the rows can correct it when they land: the value is otherwise
    * indistinguishable from an operator's pick and would override their configured row.
    */
-  const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string | null } | null>(null);
+  const ownProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
+  const provisionalWorkflow = provisionalWorkflowRef ?? ownProvisionalWorkflow;
 
   /**
    * A kind switch arms that kind's row under Settings -> Tasks -> Dispatch defaults.
@@ -1621,10 +1628,11 @@ function DispatchModal({
   }
 
   // The rows landed after a kind switch guessed at them: replace the guess with the kind's
-  // real row, unless the operator has since chosen, or the kind has moved on.
+  // real row, unless the operator has since chosen, or the kind has moved on. Not while a
+  // save is out: it captured this draft, and a changed one stops it closing the form.
   useEffect(() => {
     const guess = provisionalWorkflow.current;
-    if (!workflowConfig || !guess) return;
+    if (!workflowConfig || !guess || busy) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
     const resolved = taskDefaultWorkflowId(
@@ -1633,8 +1641,8 @@ function DispatchModal({
       draft.planStorage ?? planStorage ?? "repository",
     );
     if (resolved !== guess.workflowId) update({ workflowId: resolved });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
-  }, [workflowConfig]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the rows arrive, or once a save settles
+  }, [workflowConfig, busy]);
 
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
   function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {

@@ -830,9 +830,7 @@ function BacklogCard({
   // An external item is resolved on the task that HOLDS the edge, which may be up the chain.
   async function removeDeadSource(blocker: DeadSourceBlocker): Promise<void> {
     setBusy(true);
-    const r = await api.updateTask(blocker.ownerTaskId, {
-      dependencies: blocker.remainingDependencies,
-    });
+    const r = await api.removeTaskDependency(blocker.ownerTaskId, blocker.dependency);
     if (!r.ok) onAssignError(r.error ?? "could not remove that dependency");
     setBusy(false);
   }

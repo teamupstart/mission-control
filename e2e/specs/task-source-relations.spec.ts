@@ -93,7 +93,14 @@ test("a swept issue arrives waiting on its blocker, and a not-planned blocker ca
   await evidence(dialog, "4-stopped-dependency-resolve-dialog");
   await evidence(page, "5-stopped-dependency-board");
 
+  // The click names only the edge it removes, so an edge another edit added after the card
+  // rendered is not erased by a list the card was drawn from.
+  const removal = page.waitForRequest((request) => request.url().endsWith("/api/tasks/bulk-update") && request.method() === "POST");
   await dialog.getByRole("button", { name: "Remove dependency" }).click();
+  expect((await removal).postDataJSON()).toEqual({
+    taskIds: [filed[0]!.id],
+    dependencies: { remove: [{ type: "source", sourceId: "s", externalId: "acme/infra#99", url: BLOCKER_URL, title: "Provision the queue" }] },
+  });
   await expect(warning).toHaveCount(0);
   await expect(card.getByText(/needs you|after Provision/)).toHaveCount(0);
   await evidence(card, "6-card-released-after-remove");

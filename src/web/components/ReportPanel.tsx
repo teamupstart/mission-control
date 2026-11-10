@@ -123,8 +123,7 @@ function BacklogReportRow({
             onOpenChange={setDeadBlockerOpen}
             onRemoveSource={(blocker) =>
               void resolveDead(
-                (ownerId) =>
-                  api.updateTask(ownerId, { dependencies: blocker.remainingDependencies }),
+                (ownerId) => api.removeTaskDependency(ownerId, blocker.dependency),
                 blocker.ownerTaskId,
               )
             }

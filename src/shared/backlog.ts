@@ -416,8 +416,11 @@ export interface DeadSourceBlocker {
   sourceId: string;
   externalId: string;
   url: string | null;
-  /** The owner's dependencies without this one: the update body that removes it. */
-  remainingDependencies: TaskDependencyInput[];
+  /**
+   * The edge to remove, and nothing else. A list of the owner's other edges, built when the
+   * card rendered, would erase any edge a sweep or another edit added before the click.
+   */
+  dependency: TaskDependencyInput;
 }
 
 /**
@@ -444,15 +447,14 @@ function walkDeadBlockers(
     visiting.add(current.id);
     for (const blocker of blockersIn(current, index)) {
       if (blocker.external) {
-        if (blocker.state === "stopped") {
+        const edge = current.dependencies.find((dependency) => dependencyKey(dependency) === blocker.taskId);
+        if (blocker.state === "stopped" && edge) {
           sources.set(`${current.id}\0${blocker.taskId}`, {
             ownerTaskId: current.id,
             key: blocker.taskId,
             title: blocker.title,
             ...blocker.external,
-            remainingDependencies: current.dependencies
-              .filter((dependency) => dependencyKey(dependency) !== blocker.taskId)
-              .map(dependencyInputOf),
+            dependency: dependencyInputOf(edge),
           });
         }
         continue;

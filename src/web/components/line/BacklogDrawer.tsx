@@ -481,7 +481,7 @@ export function BacklogDrawer({
       onRemoveSource: (blocker) =>
         void act(
           id,
-          () => api.updateTask(blocker.ownerTaskId, { dependencies: blocker.remainingDependencies }),
+          () => api.removeTaskDependency(blocker.ownerTaskId, blocker.dependency),
           "could not remove that dependency",
         ),
       notice: backlogTaskNotice(row.task, backlogTrust),

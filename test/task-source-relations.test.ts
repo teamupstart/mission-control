@@ -10,6 +10,7 @@ import type {
   TaskSourceInstance,
 } from "../src/shared/task-source.ts";
 import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO, TASK_SOURCE_KINDS } from "../src/shared/task-source.ts";
+import { BulkUpdateTasksSchema } from "../src/shared/protocol.ts";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
@@ -348,12 +349,16 @@ test("the sweep's re-check satisfies a completed item and marks a not-planned on
   const [dead] = deadSourceBlockersFor(stopped, backlogIndex(all, null));
   assert.equal(dead?.ownerTaskId, stopped.id);
   assert.equal(dead?.externalId, "acme/ext#51");
-  assert.deepEqual(dead?.remainingDependencies, []);
+  assert.deepEqual(dead?.dependency, { type: "source", sourceId: inst.id, externalId: "acme/ext#51", url: edge(stopped).url, title: "Upstream acme/ext#51" });
 
-  // Removing it (the Resolve action) keeps working through an ordinary update.
-  const removed = await tasks.update(stopped.id, { dependencies: dead!.remainingDependencies });
+  // An edge added after the card rendered survives the Resolve action, which names only the
+  // edge it removes rather than resending the list the card was drawn from.
+  const later = tasks.create({ repoRoot: "/repo", intent: "later", title: "later", kind: "ship", agent: "claude", backlog: true });
+  assert.ok((await tasks.update(stopped.id, { dependencies: [dead!.dependency, { type: "task", taskId: later.id }] })).ok);
+  const removed = await tasks.bulkUpdate(BulkUpdateTasksSchema.parse({ taskIds: [stopped.id], dependencies: { remove: [dead!.dependency] } }));
   assert.equal(removed.ok, true);
-  assert.deepEqual(readyBacklog(tasks.list(), null).map((t) => t.id).sort(), [released.id, stopped.id].sort());
+  assert.deepEqual(bySource(tasks, "acme/demo#50").dependencies.map((d) => d.type === "task" ? d.taskId : d.type), [later.id]);
+  assert.ok(readyBacklog(tasks.list(), null).some((t) => t.id === released.id));
   // Only the still-waiting edges are queued for the next re-check - none now.
   assert.deepEqual(sourceEdgesToRecheck(tasks.list(), inst.id), []);
 });

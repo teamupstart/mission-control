@@ -513,6 +513,41 @@ test("a drafts-only review refused with 422, three drafts: each is posted alone 
   assertRoundFinished(key);
 });
 
+test("a drafts-only review refused with a 422 that names no comment charges nothing", async () => {
+  const key = adopt(731);
+  seedDrafts(key, [{ title: "Draft behind a pending review" }]);
+  writeGithubState({ forcedStatuses: [422] });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  assert.equal(state.attempts.length, 1, "nothing to isolate: the refusal was about the review");
+  assert.equal(state.headReads, 0, "a 422 that names no comment costs no head read");
+  const draft = byTitle(key).get("Draft behind a pending review")!;
+  assert.equal(draft.status, "drafted");
+  assert.equal(draft.postRefusals, 0);
+  assert.equal(draft.lastPostError, null);
+  assertRoundFailed(key);
+});
+
+test("when every isolated post is refused, the refusal is the review's and no draft counts it", async () => {
+  const key = adopt(732);
+  const fps = seedDrafts(key, [{ title: "Draft one" }, { title: "Draft two" }, { title: "Draft three" }]);
+  writeGithubState({ rejectFingerprints: [...fps.values()] });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  assert.equal(state.attempts.length, 4, "the refused review, then one review per draft");
+  assert.equal(state.posts.length, 0);
+  for (const row of loadInspectorComments(key)) {
+    assert.equal(row.status, "drafted", `${row.title} is a draft again`);
+    assert.equal(row.postRefusals, 0, `${row.title} counts no refusal`);
+    assert.equal(row.lastPostError, null);
+  }
+  assertRoundFailed(key);
+});
+
 test("a whole-review refusal partway through isolation stops it, with nothing counted", async () => {
   const key = adopt(715);
   const fps = seedDrafts(key, [{ title: "First draft" }, { title: "Bad anchor draft" }, { title: "Third draft" }]);

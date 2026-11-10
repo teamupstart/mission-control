@@ -321,20 +321,23 @@ Drafts share the round's comment cap with new findings. At the same severity a n
 comes first.
 
 A refusal counts against a draft only when GitHub's answer is about that draft. Mission
-Control reads the HTTP status `gh` reports:
+Control reads the HTTP status `gh` reports and GitHub's message:
 
 | GitHub's answer | What happens |
 | --- | --- |
 | A rate limit (429, or a 403 secondary limit), an auth or SSO refusal, a server error, any other status that is not 422 | The round fails as any failed review does: the findings stay drafts, the head is reviewed again after backoff, and nothing is counted. |
-| A 422 on a head that moved during the review | The same, after one read of the pull request's head. |
-| A 422 on an unmoved head | A validation refusal, attributed below. |
+| A 422 whose message names no comment that could not be anchored, such as the limit of one pending review per pull request | The same. A refusal about the review as a whole says nothing about any draft. |
+| A 422 that says a line, path or position could not be resolved or is not in the diff, on a head that moved during the review | The same, after one read of the pull request's head. |
+| That 422 on an unmoved head | A validation refusal, attributed below. |
 
 For a validation refusal, a review that also carried new findings is sent again at once
 without the drafts. If GitHub refuses that one too, nothing is counted and the round fails as
 above. Then the drafts are attributed. A single draft records the refusal. Several drafts are
 each posted in a review of their own, so a valid draft is never charged for a bad sibling. Each
-of those reviews is its own notification on the pull request. A response that never arrived is
-not a refusal and is never counted.
+of those reviews is its own notification on the pull request. A draft refused alone is charged
+only when at least one of the others was accepted: when GitHub refuses every one, the refusal
+is about the review rather than any draft, so nothing is counted and the round fails as above.
+A response that never arrived is not a refusal and is never counted.
 
 Every retry reuses the round's review, so no second model run is made. Once the refusals are
 pinned, the round finishes and the head counts as reviewed live. A refused draft stays a draft,

@@ -55,8 +55,35 @@ for (const [name, stderr] of WHOLE_REVIEW) {
 
 test("a 422 on a head that moved is a whole-review refusal", async () => {
   const h = head(false);
-  assert.equal(await classifyReviewRefusal(refused("gh: Unprocessable Entity (HTTP 422)"), h.read), "whole-review");
+  const res = refused("gh: Unprocessable Entity: Line could not be resolved (HTTP 422)");
+  assert.equal(await classifyReviewRefusal(res, h.read), "whole-review");
   assert.equal(h.calls(), 1);
+});
+
+const REVIEW_LEVEL_422: [string, string][] = [
+  ["the one-pending-review limit", "gh: Unprocessable Entity: User can only have one pending review per pull request (HTTP 422)"],
+  ["a bare 422", "gh: Unprocessable Entity (HTTP 422)"],
+  ["a body validation failure", "gh: Validation Failed: body is too long (maximum is 65536 characters) (HTTP 422)"],
+];
+
+for (const [name, stderr] of REVIEW_LEVEL_422) {
+  test(`a 422 for ${name} names no comment, so it is a whole-review refusal without reading the head`, async () => {
+    const h = head(true);
+    assert.equal(await classifyReviewRefusal(refused(stderr), h.read), "whole-review");
+    assert.equal(h.calls(), 0);
+  });
+}
+
+test("each way GitHub says a comment could not be anchored is a validation refusal", async () => {
+  for (const message of [
+    "Unprocessable Entity: Line could not be resolved",
+    "Unprocessable Entity: Path could not be resolved",
+    "Validation Failed: pull_request_review_thread.line must be part of the diff",
+    "Validation Failed: pull_request_review_thread.start_line must be part of the diff",
+    "Validation Failed: Position is invalid",
+  ]) {
+    assert.equal(await classifyReviewRefusal(refused(`gh: ${message} (HTTP 422)`), head(true).read), "validation", message);
+  }
 });
 
 test("a result that is not a refusal is never a validation refusal", async () => {

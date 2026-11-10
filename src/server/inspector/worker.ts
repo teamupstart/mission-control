@@ -1361,15 +1361,18 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
 /**
  * Attribute a validation refusal to the exact draft that caused it.
  *
- * Exactly one carried draft: it is the cause, since the review without it was accepted or
- * did not exist, and it records one refusal with GitHub's reason.
+ * Exactly one carried draft: it is the cause, since the refusal named a comment that could
+ * not be anchored and it was the only comment the refused review carried with a location
+ * GitHub could not place. It records one refusal with GitHub's reason.
  *
  * Several: each is posted in its own review, so a valid draft never counts toward the cap
- * because of a bad sibling. Accepted, it is `open`. A validation refusal counts against that
- * draft alone. A whole-review refusal or a lost response stops isolation and fails the round
- * the usual way, with nothing counted for the drafts not yet tried. The cost is one review,
- * and so one notification, per carried draft, at most `maxCommentsPerRound`; it happens only
- * after a validation refusal, which a snapped line makes rare.
+ * because of a bad sibling. Accepted, it is `open`. A validation refusal is charged to that
+ * draft alone, but only once some isolated post was accepted: when every one is refused, the
+ * refusal is about the review rather than any draft, so it fails the round the usual way and
+ * nothing is counted. A whole-review refusal or a lost response stops isolation and fails the
+ * round the same way, with nothing counted for the drafts not yet tried. The cost is one
+ * review, and so one notification, per carried draft, at most `maxCommentsPerRound`; it
+ * happens only after a validation refusal, which a snapped line makes rare.
  */
 async function pinRefusal(
   p: RoundPublication,
@@ -1386,26 +1389,40 @@ async function pinRefusal(
     "",
     "GitHub refused this finding in a review with others, so it is posted on its own.",
   ].join("\n");
+  const charged: Array<[InspectorComment, GhResult<void>]> = [];
+  let accepted = 0;
+  const settleCharges = (): void => {
+    if (accepted > 0) {
+      for (const [row, res] of charged) recordRefusal(p, row, res);
+    } else {
+      writeRows(p, charged.map(([row]) => row), { status: "drafted" });
+    }
+  };
   for (const [i, row] of carried.entries()) {
     const comment = p.comments.get(row.fingerprint)!;
     const res = await postReview(dir, pr.owner, pr.repo, pr.number, body, [comment], headSha);
     if (res.ok) {
       writeRows(p, [row], confirmedPost(now));
+      accepted += 1;
       continue;
     }
     const untried = carried.slice(i + 1);
     if (!wasRefused(res)) {
+      settleCharges();
       // This draft may have landed and stays `posting`, for its thread to answer.
       writeRows(p, untried, { status: "drafted" });
       return noteFailure(pr, res.error ?? "could not post the review", now, tick);
     }
     if ((await classifyReviewRefusal(res, headUnmoved(p))) === "validation") {
-      recordRefusal(p, row, res);
+      charged.push([row, res]);
       continue;
     }
+    settleCharges();
     writeRows(p, [row, ...untried], { status: "drafted" });
     return noteFailure(pr, res.error ?? "could not post the review", now, tick);
   }
+  settleCharges();
+  if (accepted === 0) return noteFailure(pr, refused.error ?? "could not post the review", now, tick);
   return true;
 }
 

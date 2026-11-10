@@ -105,6 +105,14 @@ export type ReviewRefusalClass = "whole-review" | "validation";
 const SSO_REFUSAL_RE =
   /Resource protected by organization SAML enforcement|has enabled or enforced SAML SSO/i;
 
+/**
+ * GitHub's wording when one review comment cannot be anchored: its line, path or position
+ * could not be resolved, or is not in the diff. Other 422s, such as the one-pending-review
+ * limit, are about the review as a whole and say nothing about any draft.
+ */
+const ANCHOR_REFUSAL_RE =
+  /\b(?:line|path|position|start[ _]line)\b[^()\n]*?\b(?:could not be resolved|must be part of the diff|is not part of the diff|is outside the diff|is invalid)/i;
+
 /** gh ends an API error with `(HTTP nnn)`. The last one wins, in case a body quoted another. */
 function httpStatus(stderr: string): number | null {
   const all = [...stderr.matchAll(/\(HTTP (\d{3})\)/g)];
@@ -118,7 +126,9 @@ function httpStatus(stderr: string): number | null {
  *
  * Reads the status from gh's stderr, where gh prints it last. A status it
  * cannot find is `whole-review`, so a change in gh's wording can make the refusal cap
- * engage less often but can never pin a refusal on the wrong finding.
+ * engage less often but can never pin a refusal on the wrong finding. The same holds for
+ * the message: a 422 is `validation` only when it names a comment that could not be
+ * anchored (`ANCHOR_REFUSAL_RE`).
  *
  * `headUnmoved` is called only for a 422, and it is the only extra request a refusal costs:
  * GitHub also answers 422 for a review whose `commit_id` is no longer the pull request's
@@ -136,6 +146,7 @@ export async function classifyReviewRefusal(
   const stderr = res.stderr ?? "";
   if (SSO_REFUSAL_RE.test(stderr)) return "whole-review";
   if (httpStatus(stderr) !== 422) return "whole-review";
+  if (!ANCHOR_REFUSAL_RE.test(stderr)) return "whole-review";
   return (await headUnmoved()) ? "validation" : "whole-review";
 }
 

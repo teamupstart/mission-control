@@ -538,6 +538,7 @@ test("a run waits out the quiet period on green CI, then passes it", async ({
   const worklist = dashboard.getByRole("region", { name: "Review worklist" }).locator(".wf-run-worklist");
   await expect(worklist.locator("button.wf-run-worklist-row", { hasText: "Wait for CI" })).toHaveCount(1);
   await expect(worklist).not.toContainText("Missing persona");
+  if (process.env.MC_E2E_EVIDENCE) await worklist.screenshot({ path: `${EVIDENCE}04b-ci-passed-worklist.png` });
 });
 
 test("an action after Wait for CI carries CI's pass into the segment it opens", async ({ dashboard, daemon }) => {
@@ -554,6 +555,7 @@ test("an action after Wait for CI carries CI's pass into the segment it opens", 
   const ciRow = dashboard.locator('[aria-label="Workflow run pipeline"]')
     .locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
   await expect(ciRow.locator(".wf-pipeline-status")).toHaveText("Not re-run");
+  await shoot(dashboard, "10-run-ci-carried");
 });
 
 /** Both widths, for `workflow-session-action-evidence.spec.ts`' reason. */

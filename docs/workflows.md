@@ -132,7 +132,10 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Versions 21 and 22 use `gpt-6-sol` for all eight.
+the other seven on `gpt-5.6-terra`. Version 20 moves all eight to `gpt-6-sol`, and versions 21
+through 23 keep that routing: version 21 adds the
+[expanded documentation guidance](#documentation-review), version 22 the optional
+[CodeRabbit stage](#local-coderabbit-command), and current version 23 keeps all of it.
 App-wide and environment defaults cannot change these published snapshots.
 
 A Persona can also recommend a reasoning **effort** (`low`, `medium`, `high`, `xhigh` or
@@ -348,7 +351,12 @@ the newer version to adopt the updated policy.
 #### Implementation workflow versions
 
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
-Their next versions update only the pinned model to `gpt-6-sol`.
+Their next versions update only the pinned model to `gpt-6-sol`. The last version of every
+built-in workflow with a Pull Request action changes only that action's text: issue-backed work
+names its issue in the pull request body (`Closes #<n>`, or `Part of #<n>` when a human step
+remains). No-Mistakes Review takes it as version 23, after version 22's CodeRabbit stage, and
+Documentation Review as version 3. Every earlier version keeps the action text it was published
+with.
 Their earlier versions remain available with their original review graphs and completion policies.
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
@@ -505,7 +513,8 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 21 because it is current, with the [expanded documentation guidance](#documentation-review).
+take version 23 because it is current, with the [expanded documentation guidance](#documentation-review)
+and the optional [CodeRabbit stage](#local-coderabbit-command).
 Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
@@ -2836,8 +2845,8 @@ drawers.
 ## Local CodeRabbit Command
 
 The `coderabbit` Library Command works in any custom workflow evaluation stage, including
-stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and before Personas.
-Bindings keep their published version until explicitly upgraded. Earlier versions and other
+stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and before Personas,
+and version 23 keeps it. Bindings keep their published version until explicitly upgraded. Earlier versions and other
 built-ins are unchanged.
 
 Either `.coderabbit.yaml` or `.coderabbit.config.ts` in the repository root enables it, unless the

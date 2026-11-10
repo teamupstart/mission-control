@@ -80,7 +80,9 @@ and **For Agents** for direct links to the plan and technical documentation, tec
 handled failure modes. Links and technical context are descriptive references, without
 instructions to the reviewer. It does not inventory changed tests or repeat design detail
 already covered by the linked documents. Already-published workflow versions retain their frozen action prompts; newly published
-workflows capture the revised action. The full contract lives in
+workflows capture the revised action. Work that comes from a GitHub issue carries `Closes #<n>` in
+the body, or `Part of #<n>` when a human step remains, because a title's `(#<n>)` closes
+nothing. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
 **Always create draft PRs**, beside that row, defaults off. Turning it on makes new PRs

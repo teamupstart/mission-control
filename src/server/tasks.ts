@@ -4044,6 +4044,8 @@ export class TaskManager {
         const rows = getWorkflowPolicy().kindWorkflowDefaults;
         if (patch.workflowId === undefined && (becomesPlan
           || (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")
+            // A None plan row makes a stored null look like the default; it is an opt-out.
+            && t.workflowId !== null
             && t.workflowId === taskDefaultWorkflowId("plan", rows, t.planPolicy?.storage ?? "repository")))) {
           workflowId = taskDefaultWorkflowId("plan", rows, planPolicy.storage);
         }

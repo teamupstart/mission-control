@@ -1589,6 +1589,7 @@ function DispatchModal({
    */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
+    const guess = provisionalWorkflow.current;
     provisionalWorkflow.current = null;
     if (kind === "ship") {
       const stashed = stashedWorkflowId.current;
@@ -1608,6 +1609,10 @@ function DispatchModal({
       && !hasReviewableDiff(draft.kind)
       && target === taskDefaultWorkflowId(draft.kind, rows, storage)
     ) {
+      // The rows only agree as built-ins, so a guess still standing stays a guess.
+      if (guess && guess.kind === draft.kind && guess.workflowId === draft.workflowId) {
+        provisionalWorkflow.current = { kind, workflowId: guess.workflowId };
+      }
       return {};
     }
     if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
@@ -2432,6 +2437,22 @@ function DispatchModal({
     else (onDeleted ?? onClose)();
   }
 
+  /**
+   * The draft's Workflow, with a kind-switch guess still standing from before the rows loaded
+   * resolved against the real rows first: saved as-is it would pin a built-in the operator
+   * may have replaced. A create that cannot read them sends no Workflow, so the daemon
+   * resolves the row itself.
+   */
+  async function settledWorkflowId(d: DispatchDraft): Promise<DispatchDraft["workflowId"]> {
+    const guess = provisionalWorkflow.current;
+    if (workflowConfig || !guess || guess.kind !== d.kind || guess.workflowId !== d.workflowId) {
+      return d.workflowId;
+    }
+    const config = await workflowRequest<WorkflowConfig>("/api/workflows/config").catch(() => null);
+    if (!config) return editing ? d.workflowId : undefined;
+    return taskDefaultWorkflowId(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository");
+  }
+
   async function submit(dispatchNow: boolean): Promise<void> {
     // Ensemble has no route through here. Its primary action and Cmd/Ctrl+Enter follow
     // Review-then-Launch through `useEnsembleLaunch`; its shelve button is not rendered.
@@ -2487,7 +2508,8 @@ function DispatchModal({
     // field, update sends an explicit null to take an override back off a row that has
     // one. Either way the daemon resolves the default at launch, so a task shelved
     // today runs on the default in force when it is finally picked up.
-    const patch = editing ? taskUpdatePatch(editing, submitted, intent) : null;
+    const workflowId = await settledWorkflowId(submitted);
+    const patch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher
     // the repo and nothing else, and a Single dispatch posts the form.
@@ -2514,7 +2536,7 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           personaId: draftPersonaId(submitted) ?? undefined,
-          workflowId: submitted.workflowId,
+          workflowId,
           ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
@@ -3183,7 +3205,8 @@ function DispatchModal({
                         const savedDefault = editing?.kind === "plan"
                           && editing.workflowId === taskDefaultWorkflowId("plan", rows, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
-                          ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
+                          // A None plan row makes an explicit null look like the default.
+                          ...(draft.workflowId !== null && draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
                             ? undefined
                             : taskDefaultWorkflowId("plan", rows, storage ?? planStorage ?? "repository") } : {}) });
                       }}>

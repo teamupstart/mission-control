@@ -452,3 +452,56 @@ test("a mission kind picked before the Settings rows load is corrected to the co
   await expect(afterWork).toHaveValue(GENERAL_REVIEW);
   await shoot(dashboard, "mission-corrected-to-configured-row", afterWork);
 });
+
+test("a mission's Workflow chosen by hand after a kind switch survives a switch to ship", async ({
+  dashboard,
+  daemon,
+}) => {
+  await configureRows(daemon);
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  const configRead = editorConfigRead(dashboard);
+  await dashboard.getByRole("button", { name: "Create mission" }).click();
+  await configRead;
+  const kindSelect = dashboard.getByRole("combobox", { name: "Task kind" });
+  const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+
+  await kindSelect.selectOption("bugfix");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  // Two edits by hand, the second landing back on the row's own Workflow: still a choice.
+  await afterWork.selectOption("builtin-workflow:bug-fix-review");
+  await afterWork.selectOption(GENERAL_REVIEW);
+  await kindSelect.selectOption("ship");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+});
+
+test("a mission saved while the Settings rows load stores the configured row, not the guess", async ({
+  dashboard,
+  daemon,
+}) => {
+  await configureRows(daemon);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await dashboard.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() === "GET") await gate;
+    await route.continue();
+  });
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await dashboard.getByRole("button", { name: "Create mission" }).click();
+  const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+
+  await dashboard.getByRole("combobox", { name: "Task kind" }).selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await dashboard.getByPlaceholder("e.g. Dependency audit").fill("bugfix saved before the rows");
+  await dashboard.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dashboard.getByPlaceholder("e.g. Run dependency audit and update unsafe packages").fill("Fix early");
+  await dashboard.getByPlaceholder("What should the agent do each run?").fill("Do the requested work");
+  await dashboard.getByRole("button", { name: "Save paused" }).click();
+  release();
+  await expect.poll(async () => {
+    const all = await api<Array<StoredSchedule & { template: { kind: string; workflowId: string | null } }>>(daemon, "/api/schedules");
+    return all.find((entry) => entry.name === "bugfix saved before the rows")?.template;
+  }).toMatchObject({ kind: "bugfix", workflowId: GENERAL_REVIEW });
+});

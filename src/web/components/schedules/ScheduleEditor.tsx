@@ -279,8 +279,11 @@ export function ScheduleEditor({
     if (kind === draft.kind) return;
     provisionalWorkflow.current = null;
     const preset = (of: TaskKind): string | undefined => missionPresetWorkflowId(of, rows);
-    workflowBeforeKindDefault.current ??=
-      preset(draft.kind) !== undefined && draft.workflowId === preset(draft.kind) ? "" : null;
+    // Only before the first switch: null is also what an explicit After work edit leaves.
+    if (workflowBeforeKindDefault.current === undefined) {
+      workflowBeforeKindDefault.current =
+        preset(draft.kind) !== undefined && draft.workflowId === preset(draft.kind) ? "" : null;
+    }
     let workflowId = draft.workflowId;
     const kindPreset = preset(kind);
     if (kindPreset !== undefined) {
@@ -361,6 +364,22 @@ export function ScheduleEditor({
     return errors;
   }
 
+  /**
+   * The draft's definition, with a kind preset guessed before the rows loaded resolved
+   * against the real rows first: saved as-is, every future run would take a built-in the
+   * operator may have replaced. Rows that cannot be read keep the guess, as the hint says.
+   */
+  async function settledDefinition(): Promise<ScheduleDefinitionPayload> {
+    const guess = provisionalWorkflow.current;
+    if (kindWorkflowDefaults !== null || !guess || guess.kind !== draft.kind || guess.workflowId !== draft.workflowId) {
+      return definition;
+    }
+    const fetched = await fetchKindWorkflowDefaults();
+    setKindWorkflowDefaults(fetched ?? "unreadable");
+    const resolved = fetched ? missionPresetWorkflowId(guess.kind, fetched) : undefined;
+    return resolved === undefined ? definition : draftToDefinition({ ...draft, workflowId: resolved });
+  }
+
   async function save(enable: boolean): Promise<void> {
     const local = localValidation();
     if (Object.keys(local).length > 0) {
@@ -371,24 +390,25 @@ export function ScheduleEditor({
     setSaving(true);
     setFieldErrors({});
     setFormError(null);
+    const payload = await settledDefinition();
 
     // Save & enable must first obtain a successful preview for the CURRENT definition, so
     // a stale or failed cadence can never be enabled. Save paused skips this - a paused
     // schedule starts no clock - but still relies on the save route's own validation.
     if (enable) {
-      const preview = await previewSchedule({ ...definition, excludeScheduleId: schedule?.id });
+      const preview = await previewSchedule({ ...payload, excludeScheduleId: schedule?.id });
       if (!preview.ok) {
         setSaving(false);
         setFieldErrors({ [preview.error.field]: preview.error.message });
         setFormError("The cadence must preview successfully before it can be enabled.");
         return;
       }
-      setPreviewedOk(fingerprint);
+      setPreviewedOk(scheduleDefinitionFingerprint(payload));
     }
 
     // A create is atomic: the route takes `enabled` in one write.
     if (!schedule) {
-      const result = await createSchedule({ ...definition, enabled: enable });
+      const result = await createSchedule({ ...payload, enabled: enable });
       setSaving(false);
       if (!result.ok) {
         if (result.field) setFieldErrors({ [result.field]: result.error ?? "Invalid value." });
@@ -421,7 +441,7 @@ export function ScheduleEditor({
       }
     }
 
-    const result = await updateSchedule(schedule.id, definition);
+    const result = await updateSchedule(schedule.id, payload);
     if (!result.ok) {
       // The save failed: undo the pre-emptive pause so the mission is left exactly as it
       // was (enabled, previous revision) rather than stopped by a rejected edit.

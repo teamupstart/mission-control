@@ -210,3 +210,80 @@ test("a Workflow chosen by hand while the rows load is not replaced when they la
   await expect.poll(() => selectedLabel(afterWork)).not.toContain("loading");
   await expect(afterWork).toHaveValue("__none");
 });
+
+/** Fill what a backlog save needs, and return the dialog's Kind and After work controls. */
+async function openDispatch(page: Page, repo: string, intent: string) {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill(intent);
+  return {
+    dialog,
+    kind: dialog.getByRole("combobox", { name: "Kind", exact: true }),
+    afterWork: dialog.getByRole("combobox", { name: "After work", exact: true }),
+  };
+}
+
+async function addToBacklog(page: Page, dialog: Locator, before?: () => void): Promise<{ workflowId: string | null }> {
+  const created = page.waitForResponse((response) =>
+    response.request().method() === "POST" && new URL(response.url()).pathname === "/api/tasks");
+  await dialog.getByRole("button", { name: "Add to backlog", exact: true }).click();
+  before?.();
+  const response = await created;
+  expect(response.ok(), await response.text()).toBe(true);
+  return (await response.json()) as { workflowId: string | null };
+}
+
+test("a guess carried through a second rowless kind is still corrected when the rows land", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { chat: GENERAL_REVIEW });
+  const release = await holdConfigReads(dashboard);
+  const { kind, afterWork } = await openDispatch(dashboard, daemon.repo, "talk it through");
+
+  // Scout and chat both rest on None as built-ins, so the hop to chat changes nothing yet...
+  await kind.selectOption("scout");
+  await expect(afterWork).toHaveValue("__none");
+  await kind.selectOption("chat");
+  await expect(afterWork).toHaveValue("__none");
+
+  // ...but chat's real row names a Workflow, and that is what arrives.
+  release();
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+});
+
+test("a task saved while the rows load is filed on the kind's real row, not the guess", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: null });
+  const release = await holdConfigReads(dashboard);
+  const { dialog, kind, afterWork } = await openDispatch(dashboard, daemon.repo, "fix the flaky retry");
+
+  await kind.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  const task = await addToBacklog(dashboard, dialog, release);
+  expect(task.workflowId).toBe(null);
+});
+
+test("an explicit None on a plan survives a switch to local storage under a None plan row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { plan: null });
+  const { dialog, kind, afterWork } = await openDispatch(dashboard, daemon.repo, "plan the migration");
+  await expect.poll(() => selectedLabel(afterWork)).not.toContain("loading");
+
+  await kind.selectOption("plan");
+  await afterWork.selectOption("__none");
+  await dialog.getByRole("button", { name: /^Advanced/ }).click();
+  const storage = dialog.getByRole("combobox", { name: "Plan storage", exact: true });
+  await expect(storage).toBeEnabled();
+  await storage.selectOption("local");
+  await expect(afterWork).toHaveValue("__none");
+
+  const task = await addToBacklog(dashboard, dialog);
+  expect(task.workflowId).toBe(null);
+});

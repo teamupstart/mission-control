@@ -3,15 +3,17 @@ import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -96,6 +98,111 @@ test("scheduled and pre-migration generations have independent bounded retention
   assert.equal(names.filter((name) => name.startsWith("scheduled-")).length, 2);
   assert.equal(names.filter((name) => name.startsWith("pre-migration-")).length, 1);
   assert.equal(names.some((name) => name.includes(".tmp")), false);
+});
+
+function captureLeftovers(root: string): string[] {
+  return readdirSync(root).filter((name) => name.startsWith(".database-backup-"));
+}
+
+test("every published copy is one self-contained rollback-mode file", async (t) => {
+  const root = fixture("mission-database-backup-self-contained-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = openWalDatabase(join(root, "harness.db"));
+  t.after(() => source.close());
+  const backups = join(root, "backups");
+  let now = Date.UTC(2026, 9, 26, 12, 0, 0);
+  const service = new DatabaseBackupService(source, { root: backups, now: () => new Date(now++) });
+
+  await service.captureScheduled();
+  const newest = [await service.captureScheduled(), service.capturePreMigration()];
+  assert.deepEqual(captureLeftovers(backups), [], "a successful capture leaves no temp file");
+
+  for (const copy of newest) {
+    assert.equal((await verifyDatabaseBackupForRestore(copy.path)).integrity, "ok");
+    const reader = new DatabaseSync(copy.path, { readOnly: true });
+    const mode = (reader.prepare("PRAGMA journal_mode").get() as { journal_mode: string })
+      .journal_mode;
+    reader.close();
+    assert.equal(mode, "delete", `${copy.kind} copy must be in rollback mode`);
+  }
+  assert.deepEqual(
+    readdirSync(backups).filter((name) => !name.endsWith(".sqlite3")),
+    [],
+    "opening a published copy read-only creates no sidecar",
+  );
+});
+
+test("a capture that fails at any step leaves no temp file or sidecar", async (t) => {
+  const root = fixture("mission-database-backup-failure-cleanup-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = openWalDatabase(join(root, "harness.db"));
+  t.after(() => source.close());
+  // Each injected step leaves the temp file and all of its sidecars on disk before it throws.
+  const failAfterLeaving = (temporary: string, step: string): never => {
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      if (!existsSync(`${temporary}${suffix}`)) writeFileSync(`${temporary}${suffix}`, "partial");
+    }
+    throw new Error(`injected ${step} failure`);
+  };
+  const steps = {
+    "online backup": {
+      onlineBackup: async (_db: DatabaseSync, destination: string) =>
+        failAfterLeaving(destination, "online backup"),
+    },
+    "journal switch": {
+      selfContain: (temporary: string) => failAfterLeaving(temporary, "journal switch"),
+    },
+    validation: {
+      validate: (temporary: string) => failAfterLeaving(temporary, "validation"),
+    },
+  };
+
+  for (const [step, injected] of Object.entries(steps)) {
+    const backups = join(root, step.replace(" ", "-"));
+    const service = new DatabaseBackupService(source, { root: backups, ...injected });
+    await assert.rejects(service.captureScheduled(), new RegExp(`injected ${step} failure`));
+    assert.deepEqual(readdirSync(backups), [], `scheduled ${step} failure`);
+    if (step !== "online backup") {
+      assert.throws(() => service.capturePreMigration(), new RegExp(`injected ${step} failure`));
+      assert.deepEqual(readdirSync(backups), [], `pre-migration ${step} failure`);
+    }
+  }
+});
+
+test("the startup sweep removes leftover temp files and sidecars and nothing else", async (t) => {
+  const root = fixture("mission-database-backup-startup-sweep-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  const backups = join(root, "backups");
+  const service = new DatabaseBackupService(source, { root: backups });
+  const published = await service.captureScheduled();
+
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const leftovers = ["", "-wal", "-shm", "-journal"].map(
+    (suffix) => `.database-backup-${nonce}.tmp${suffix}`,
+  );
+  for (const name of leftovers) writeFileSync(join(backups, name), "partial");
+  const outside = join(root, "outside.tmp");
+  writeFileSync(outside, "not owned");
+  const kept = [
+    basename(published.path),
+    `${basename(published.path)}-wal`,
+    ".database-backup-abc.tmp",
+    `.database-backup-${nonce}.tmp.bak`,
+    "notes.txt",
+  ];
+  for (const name of kept.slice(1)) writeFileSync(join(backups, name), "operator file");
+  const linked = `.database-backup-${"f".repeat(32)}.tmp`;
+  symlinkSync(outside, join(backups, linked));
+  const directory = `.database-backup-${"e".repeat(32)}.tmp-wal`;
+  mkdirSync(join(backups, directory));
+
+  service.removeLeftoverTemporaries();
+
+  assert.deepEqual(readdirSync(backups).sort(), [...kept, linked, directory].sort());
+  assert.equal(readFileSync(outside, "utf8"), "not owned");
 });
 
 test("restore validation rejects corruption without changing healthy live state", async (t) => {

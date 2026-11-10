@@ -182,3 +182,49 @@ test("with the stream down after its snapshot, Back up now still shows the copy 
   await expect(dashboard.getByRole("article", { name: "Manual backups" })).not.toContainText("Last success: Never");
   expect(streams).toBeGreaterThanOrEqual(1);
 });
+
+test("a slow first read that lands after Back up now's re-read never replaces the newer copies", async ({
+  dashboard,
+  daemon,
+}) => {
+  // With the stream down, only the route reads can change the page, so the order they land in
+  // is the only thing deciding what it shows.
+  const snapshot = await realSnapshot(daemon);
+  let streams = 0;
+  await dashboard.route("**/events", (route) => {
+    streams += 1;
+    if (streams > 1) return route.abort();
+    return route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify(snapshot)}\n\n` });
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let held!: () => void;
+  const holding = new Promise<void>((resolve) => { held = resolve; });
+  let reads = 0;
+  await dashboard.route("**/api/storage", async (route) => {
+    reads += 1;
+    if (reads > 1) return route.continue();
+    const stale = await route.fetch();
+    held();
+    await released;
+    return route.fulfill({ response: stale });
+  });
+  await dashboard.reload();
+  await holding;
+
+  await dashboard.getByRole("button", { name: "Back up now" }).click();
+  await expect(dashboard.getByText("Backup taken.", { exact: false })).toBeVisible();
+  const manualRows = dashboard.getByRole("table", { name: "Kept copies, newest first" })
+    .getByRole("row").filter({ hasText: "Manual" });
+  await expect(manualRows).toHaveCount(1);
+
+  const staleLanded = dashboard.waitForResponse((response) => new URL(response.url()).pathname === "/api/storage");
+  release();
+  await staleLanded;
+  await dashboard.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(manualRows).toHaveCount(1);
+  await expect(dashboard.getByText("No copies are kept yet.", { exact: false })).toHaveCount(0);
+  expect(reads).toBe(2);
+});

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
 import type { StorageHealth, StorageView } from "@shared/storage-health.ts";
 import { api, fetchStorage } from "./lib/api.ts";
@@ -49,8 +49,13 @@ export function useStorage(live: StorageHealth | null): StorageState & StorageAc
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Back up now is clickable before the first read lands, so reads can overlap; only the
+  // newest one may write.
+  const reloadSeq = useRef(0);
   const reload = useCallback(async (): Promise<void> => {
+    const seq = ++reloadSeq.current;
     const next = await fetchStorage();
+    if (seq !== reloadSeq.current) return;
     if (next) {
       setView(next);
       setLoadError(null);

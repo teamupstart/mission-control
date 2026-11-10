@@ -8446,7 +8446,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!databaseBackups) return databaseBackupsUnavailable(c);
     const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(setDatabaseBackupsConfig(parsed.data, databaseBackups));
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    try {
+      return c.json(setDatabaseBackupsConfig(parsed.data, databaseBackups));
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
   });
 
   // Back up now: a `manual` copy through the same single-flight capture as the hourly one.

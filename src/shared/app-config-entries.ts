@@ -368,9 +368,10 @@ export const APP_CONFIG_ENTRIES = {
    * handle before migrations run (`src/server/database-backups/service.ts`), so the key and
    * schema must stay readable on a database that has not been upgraded yet.
    */
-  backups: fieldsEntry(
-    "backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields,
-  ),
+  backups: {
+    ...fieldsEntry("backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields),
+    optionalInSnapshot: true,
+  },
   /**
    * What the full-database backup captures last did: attempts, successes and the current
    * failure streak per kind. The daemon writes it through the same raw handle as the backup

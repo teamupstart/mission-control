@@ -366,6 +366,28 @@ test("a failed read changes nothing, and an unanswered item only moves to the ba
   assert.ok(first);
 });
 
+test("an issue whose blockers exceed the dependency limit is refused, not filed as an uneditable task", async () => {
+  const { tasks } = manager();
+  const nodes = Array.from({ length: 51 }, (_, i) => blocker(200 + i, "acme/x"));
+  const report = await ingest(source(), [candidate(ghIssue(80, { blockedBy: { nodes, totalCount: nodes.length } }))], tasks);
+  assert.equal(report.filed, 0);
+  assert.match(report.refused[0] ?? "", /acme\/demo#80: would carry more than 50 dependencies/);
+});
+
+test("an abandoned re-check still moves the items it failed to the back of the queue, and no others", async () => {
+  const { tasks } = manager();
+  const inst = source();
+  await ingest(inst, [candidate(ghIssue(70, { blockedBy: { nodes: [blocker(71, "acme/x"), blocker(72, "acme/x")], totalCount: 2 } }))], tasks);
+  await recheckSourceDependencies(inst, tasks, ctx, {
+    read: async () => ({ items: [], error: "the linked refresh was abandoned", itemErrors: { "acme/x#71": "could not be read" } }),
+  });
+  const checked = new Map(bySource(tasks, "acme/demo#70").dependencies.flatMap((d) =>
+    d.type === "source" ? [[d.externalId, d.checkedAt] as const] : []));
+  assert.notEqual(checked.get("acme/x#71"), null);
+  assert.equal(checked.get("acme/x#72"), null);
+  assert.deepEqual(sourceEdgesToRecheck(tasks.list(), inst.id, 1).map((r) => r.externalId), ["acme/x#72"]);
+});
+
 test("an unknown edge type is read as unsatisfied, kept on edit, and written back verbatim", async () => {
   const { registry, tasks } = manager();
   const t = tasks.create({ repoRoot: "/repo", intent: "x", title: "held", kind: "ship", agent: "claude", backlog: true });

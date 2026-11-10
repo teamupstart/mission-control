@@ -1975,8 +1975,10 @@ insert, so a swept task is never visible unblocked:
   [keep-updated refresh](#keeping-imported-backlog-tasks-updated).
 
 Each sweep re-reads the external items that waiting source dependencies name (for GitHub, one
-`gh issue view` each), at most 25 per sweep, least recently checked first. A failed read
-changes nothing. Whether the source is enabled or not, **Sweep now** runs the same re-check.
+`gh issue view` each), at most 25 per sweep, least recently checked first. A failed read never
+changes a dependency's state. An item whose own read failed moves to the back of that queue, even
+when the sweep ran out of time after trying it, so one unreadable link cannot hold the rest.
+Whether the source is enabled or not, **Sweep now** runs the same re-check.
 The links are read when an item is first filed. A blocking link added or removed upstream
 afterwards changes the task's dependencies only with
 [Keep imported backlog tasks updated](#keeping-imported-backlog-tasks-updated) on. The usual

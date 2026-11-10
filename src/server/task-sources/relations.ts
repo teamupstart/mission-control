@@ -161,9 +161,10 @@ export function observationsFrom(
   return refs.flatMap((ref): SourceItemObservation[] => {
     const item = found.get(ref.externalId);
     if (item?.state) return [{ externalId: ref.externalId, state: item.state, title: item.title }];
-    // A whole-read failure (auth, an abandoned sweep) says nothing about any one item, so
-    // it does not touch the queue; a per-item failure moves that item to the back of it.
-    if (read.error) return [];
+    // A whole-read failure (auth, an abandoned sweep) says nothing about an item it never
+    // reached, so it does not touch the queue; a per-item failure moves that item to the
+    // back of it, even when the sweep was abandoned after attempting it.
+    if (read.error && !read.itemErrors?.[ref.externalId]) return [];
     return [{ externalId: ref.externalId, state: null }];
   });
 }

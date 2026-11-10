@@ -427,6 +427,27 @@ test("a synced edge refused for another reason is reported with that reason, not
   assert.match(error,/dependency is no longer available/); assert.doesNotMatch(error,/cycle/);
   assert.deepEqual(getTask(task.id)!.dependencies,[]);
 });
+test("a synced edge past the dependency limit is refused whole and reported",async()=>{
+  const {src,registry,tasks,task}=await setupRelated();
+  const own=Array.from({length:50},(_,i)=>mkTask({id:`own-${i}`,status:"backlog",source:null}));
+  for(const t of own) registry.upsertTask(t);
+  assert.ok((await tasks.update(task.id,{dependencies:own.map((t)=>({type:"task" as const,taskId:t.id}))})).ok);
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(9)},candidate(2),candidate(3)])).skipped,1);
+  assert.match(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!,/more than 50 dependencies/);
+  assert.equal(getTask(task.id)!.dependencies.length,50);
+});
+test("a finished blocker the registry evicted still stands for its source item",async()=>{
+  const {src,registry,tasks,task,byRef}=await setupRelated();
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)}])).updated,1);
+  const blocker=byRef(2);
+  registry.upsertTask({...getTask(blocker.id)!,status:"done"});
+  for(let i=0;i<51;i++) registry.upsertTask(mkTask({id:`finished-${i}`,status:"done",source:null,updatedAt:Date.now()+1000+i}));
+  assert.equal(registry.getTask(blocker.id),undefined); assert.ok(getTask(blocker.id));
+  // Read through the live registry alone, the evicted edge looked like a local removal and
+  // this upstream addition became a conflict whose review could never be applied.
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,3)}])).updated,1);
+  assert.deepEqual(synced(task.id),[`task:${blocker.id}`,`task:${byRef(3).id}`].sort());
+});
 test("Use source on a dependencies conflict that would close a cycle is refused and changes nothing",async()=>{
   const {src,tasks,task,byRef}=await setupRelated();
   await tasks.update(task.id,{dependencies:[{type:"task",taskId:byRef(3).id}]});

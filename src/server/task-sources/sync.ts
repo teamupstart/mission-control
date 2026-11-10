@@ -112,7 +112,7 @@ export async function refreshSourceTasks(
   for (const { task, saved, record } of eligible) {
     if (ctx.signal.aborted || !current()) { counts.skipped++; continue; }
     const groups = syncGroups(inst, record);
-    const local = localSourceContent(task, relation(inst, () => tasks.list()));
+    const local = localSourceContent(task, relation(inst, () => tasks.sourceRelationTasks(task)));
     let content = local;
     // Set once the candidate is confirmed to be this task's item: its parent is then
     // overwritten as source-owned display data, whatever the merge below decides.
@@ -177,7 +177,7 @@ export async function resolveSourceSync(
     return { ok: false, error: "Enable updates for this source and choose an unstarted backlog task." };
   }
   const record = getSourceSync(taskId);
-  const local = localSourceContent(task, relation(inst, () => tasks.list()));
+  const local = localSourceContent(task, relation(inst, () => tasks.sourceRelationTasks(task)));
   if (!record?.pending || record.error || syncGroups(inst, record).length === 0
     || reviewVersion(task, local, inst, record) !== version) {
     return { ok: false, error: "This review changed. Sweep again and review the current values." };

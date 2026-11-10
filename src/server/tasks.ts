@@ -64,6 +64,7 @@ import {
   taskKindCreator,
   taskKindPersonaRefusal,
   taskRequeueRefusal,
+  MAX_TASK_DEPENDENCIES,
 } from "@shared/task.ts";
 import {
   isPersonaLaunchRefusal,
@@ -2873,6 +2874,33 @@ export class TaskManager {
     return newTaskEdgeRefusal(target, activeSessionFor(target.id, this.registry.snapshot().sessions)) === null;
   }
 
+  /**
+   * `resolved` with `source` edges added for `refs`. Refused past the limit every task
+   * request enforces, since a task saved over it could not be edited back under it.
+   */
+  private withSourceDependencyEdges(resolved: TaskDependency[], refs: TaskSourceRef[]): TaskDependency[] {
+    const dependencies = [...resolved, ...this.sourceDependencyEdges(refs, resolved)];
+    if (dependencies.length > MAX_TASK_DEPENDENCIES) {
+      throw new TaskDependencyError(`would carry more than ${MAX_TASK_DEPENDENCIES} dependencies`);
+    }
+    return dependencies;
+  }
+
+  /**
+   * Live tasks plus the durable row of each edge target the registry has evicted, so which
+   * of `task`'s edges stand for a source's items never depends on terminal-task eviction.
+   */
+  sourceRelationTasks(task: Task): Task[] {
+    const live = this.registry.listTasks();
+    const liveIds = new Set(live.map((t) => t.id));
+    const evicted = task.dependencies.flatMap((d) => {
+      if (d.type !== "task" || liveIds.has(d.taskId)) return [];
+      const durable = getDurableTask(d.taskId);
+      return durable ? [durable] : [];
+    });
+    return evicted.length > 0 ? [...live, ...evicted] : live;
+  }
+
   /** New `source` edges for a sweep's external blockers, de-duplicated against `resolved`. */
   private sourceDependencyEdges(refs: TaskSourceRef[], resolved: TaskDependency[]): TaskDependency[] {
     const seen = new Set(resolved.map(dependencyKey));
@@ -3091,10 +3119,7 @@ export class TaskManager {
     const resolvedDependencies = this.resolveDependencies(input.dependencies ?? [], id);
     // Source edges cannot close a cycle - no task depends on an external item's task - so
     // they join after the resolver's cycle check rather than inside it.
-    const dependencies = [
-      ...resolvedDependencies,
-      ...this.sourceDependencyEdges(input.sourceDependencies ?? [], resolvedDependencies),
-    ];
+    const dependencies = this.withSourceDependencyEdges(resolvedDependencies, input.sourceDependencies ?? []);
     validatePlanInputDependencies({ planInputs, dependencies });
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const backlogged = Boolean(input.backlog) || mustBacklog;
@@ -4348,9 +4373,10 @@ export class TaskManager {
    *
    * With `relates` (the source's kind can relate), the content's `blockedBy` is the
    * `dependencies` group and is compared and applied too: see `sourceSyncedDependencies`.
-   * Synced edges the resolver refuses refuse the whole update with `refused: true`, and
-   * `cycle: true` when the refusal is a cycle, so nothing is half-applied and the caller can
-   * say why.
+   * Synced edges a hand edit would refuse (the resolver's rules, the dependency limit, or a
+   * pinned plan input losing its prerequisite) refuse the whole update with `refused: true`,
+   * and `cycle: true` when the refusal is a cycle, so nothing is half-applied and the caller
+   * can say why.
    */
   async applySourceContent(
     id: string,
@@ -4373,7 +4399,7 @@ export class TaskManager {
       || taskWorkEpisodeForTask(id) || historicalTaskWorkEpisodeBindingsForTask(id).length > 0) {
       return { ok: false, error: "the task has started, is being assigned, or is no longer in the backlog" };
     }
-    const local = localSourceContent(task, relates ? { sourceId: source.sourceId, tasks: this.registry.listTasks() } : null);
+    const local = localSourceContent(task, relates ? { sourceId: source.sourceId, tasks: this.sourceRelationTasks(task) } : null);
     if (task.source?.sourceId !== source.sourceId || task.source.externalId !== source.externalId
       || !sameSourceContent(local, expected) || !stillCurrent()) {
       return { ok: false, error: "the task or source changed; sweep again before applying this update" };
@@ -4385,8 +4411,9 @@ export class TaskManager {
     if (relates && content.blockedBy && !sameSourceContent({ ...local, blockedBy: content.blockedBy }, local)) {
       try {
         dependencies = this.sourceSyncedDependencies(task, source.sourceId, content.blockedBy);
+        validatePlanInputDependencies({ planInputs: task.planInputs, dependencies });
       } catch (error) {
-        if (error instanceof TaskDependencyError) {
+        if (error instanceof TaskDependencyError || error instanceof PlanStoreError) {
           return { ok: false, refused: true, cycle: error instanceof TaskDependencyCycleError, error: error.message };
         }
         throw error;
@@ -4411,7 +4438,7 @@ export class TaskManager {
    * resolver as an operator's edit, so a synced task edge that would close a cycle throws.
    */
   private sourceSyncedDependencies(task: Task, sourceId: string, blockedBy: SourceBlocker[]): TaskDependency[] {
-    const tasks = this.registry.listTasks();
+    const tasks = this.sourceRelationTasks(task);
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const refOf = (d: TaskDependency): string | null => sourceBlockerOf(d, sourceId, byId)?.externalId ?? null;
     const wanted = new Map(blockedBy.map((b) => [b.externalId, b]));
@@ -4428,7 +4455,7 @@ export class TaskManager {
     );
     const inputs: TaskDependencyInput[] = [...kept.map(dependencyInputOf), ...added.dependencies];
     const resolved = this.resolveDependencies(inputs, task.id, task.dependencies);
-    return [...resolved, ...this.sourceDependencyEdges(added.sourceDependencies, resolved)];
+    return this.withSourceDependencyEdges(resolved, added.sourceDependencies);
   }
 
   /**

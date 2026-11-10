@@ -641,8 +641,11 @@ async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: S
   await Promise.all(Array.from({ length: Math.min(4, refs.length) }, async () => {
     while (!ctx.signal.aborted && next < refs.length) await read(refs[next++]!);
   }));
-  if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned" };
-  return { items, error: null, ...(errors.length ? { itemErrors: Object.fromEntries(errors) } : {}) };
+  // Reads already attempted keep their own outcome when the sweep is cut off; otherwise a
+  // few slow failures at the front of the oldest-first queue would be retried forever.
+  const itemErrors = errors.length ? { itemErrors: Object.fromEntries(errors) } : {};
+  if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned", ...itemErrors };
+  return { items, error: null, ...itemErrors };
 }
 
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {

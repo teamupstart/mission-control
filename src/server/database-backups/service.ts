@@ -48,6 +48,7 @@ interface DatabaseBackupServiceOptions {
   onlineBackup?: (source: DatabaseSync, destination: string) => Promise<void>;
   selfContain?: (temporary: string) => void;
   validate?: (temporary: string) => DatabaseBackupValidation;
+  removeFile?: (path: string) => void;
 }
 
 /**
@@ -224,6 +225,7 @@ export class DatabaseBackupService {
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
   private readonly selfContain: (temporary: string) => void;
   private readonly validate: (temporary: string) => DatabaseBackupValidation;
+  private readonly removeFile: (path: string) => void;
   private scheduledCapture: Promise<DatabaseBackupRecord> | null = null;
 
   constructor(
@@ -238,6 +240,7 @@ export class DatabaseBackupService {
     });
     this.selfContain = options.selfContain ?? useRollbackJournal;
     this.validate = options.validate ?? validateDatabaseBackupForRestore;
+    this.removeFile = options.removeFile ?? safeUnlink;
     for (const [kind, count] of Object.entries(this.retention)) {
       if (!Number.isSafeInteger(count) || count < 1) {
         throw new RangeError(`Database backup retention for ${kind} must be a positive integer`);
@@ -299,17 +302,26 @@ export class DatabaseBackupService {
    * Remove temporary files and sidecars that an interrupted capture left in the backup root.
    * Call it once at startup, before the first capture: that is the only time no capture of
    * this daemon can be in flight. Published copies and unrelated files are never touched.
+   * One entry that cannot be removed does not stop the sweep: `readdirSync` order is stable,
+   * so stopping would strand every leftover after it on every start.
    */
   removeLeftoverTemporaries(): void {
     this.ensureRoot();
+    const failures: string[] = [];
     for (const filename of readdirSync(this.root)) {
       if (!OWNED_TEMPORARY.test(filename)) continue;
       const path = join(this.root, filename);
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      safeUnlink(path);
+      try {
+        const stat = lstatSync(path);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        this.removeFile(path);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+        failures.push(`${filename}: ${errorMessage(error)}`);
+      }
     }
     syncFile(this.root);
+    if (failures.length > 0) throw new Error(failures.join("; "));
   }
 
   private prune(): void {

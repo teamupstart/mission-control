@@ -243,6 +243,30 @@ test("the startup sweep removes leftover temp files and sidecars and nothing els
   assert.equal(readFileSync(outside, "utf8"), "not owned");
 });
 
+test("one leftover that cannot be removed does not stop the startup sweep", (t) => {
+  const root = fixture("mission-database-backup-startup-sweep-failure-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  const backups = join(root, "backups");
+  mkdirSync(backups);
+  const stuck = `.database-backup-${"0".repeat(32)}.tmp`;
+  const removable = ["1", "2", "3"].map((digit) => `.database-backup-${digit.repeat(32)}.tmp-wal`);
+  for (const name of [stuck, ...removable]) writeFileSync(join(backups, name), "partial");
+  const service = new DatabaseBackupService(source, {
+    root: backups,
+    removeFile: (path) => {
+      if (basename(path) === stuck) {
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      }
+      rmSync(path);
+    },
+  });
+
+  assert.throws(() => service.removeLeftoverTemporaries(), /\.database-backup-0{32}\.tmp: operation not permitted/);
+  assert.deepEqual(readdirSync(backups), [stuck]);
+});
+
 test("restore validation rejects corruption without changing healthy live state", async (t) => {
   const root = fixture("mission-database-backup-corrupt-");
   t.after(() => rmSync(root, { recursive: true, force: true }));

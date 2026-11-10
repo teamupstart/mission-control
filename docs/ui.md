@@ -894,8 +894,9 @@ available:
   Service or Other), **Blocker reason**, **Waiting on**, **Blocker link** (a glyph that opens
   the thread, pull request or status page) and **Reply flagged** (a pill once a resident or you
   saw a likely answer). A blocked idle session stays in the Idle column. The Conversation tab
-  opens with a red band that always shows every field, the collapsible details and any flagged
-  reply, with **Flag reply** and **Clear blocker** buttons.
+  opens with a red band: one row with the kind, reason, age, **Flag reply** and **Clear
+  blocker**, which expands in place to every other field and the collapsible details. Any
+  flagged reply prints under the row.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
   ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the

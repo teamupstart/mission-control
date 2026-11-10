@@ -270,7 +270,6 @@ const uiFields = {
   hiddenDisplayItems: "setting",
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
-  showEmptyColumnStash: "setting",
   boardSidebarAllSessions: "setting",
   residentPlacement: "setting",
   residentDrawerPinned: "setting",

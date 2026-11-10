@@ -141,6 +141,10 @@ export function isCleanReview(
  * line, so its anchor is the round header, matched as a WHOLE line so that round 1 never
  * claims round 12's review. The body must also carry `BODY_ONLY_FINDINGS_MARKER`, which
  * only a review with demoted findings has. Fails closed on a null login, like `isOurs`.
+ *
+ * Reviews from before the rename to GitHub Inspector open with `**⌕ Inspector**`. Those
+ * from before the marker existed carry the `---` separator instead, which that builder
+ * wrote only when it demoted findings, so the separator counts only under the old header.
  */
 export function isOurBodyFindingsReview(
   review: AuthoredComment,
@@ -149,9 +153,10 @@ export function isOurBodyFindingsReview(
 ): boolean {
   if (!login) return false;
   if (review.author !== login) return false;
-  const header = reviewHeader(round);
-  if (review.body !== header && !review.body.startsWith(`${header}\n`)) return false;
-  return review.body.includes(BODY_ONLY_FINDINGS_MARKER);
+  const opensWith = (header: string) => review.body === header || review.body.startsWith(`${header}\n`);
+  if (opensWith(reviewHeader(round))) return review.body.includes(BODY_ONLY_FINDINGS_MARKER);
+  if (!opensWith(`**⌕ Inspector** · round ${round}`)) return false;
+  return review.body.includes(BODY_ONLY_FINDINGS_MARKER) || review.body.includes("\n---\n");
 }
 
 /**

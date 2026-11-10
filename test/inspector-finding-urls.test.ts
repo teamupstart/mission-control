@@ -429,6 +429,41 @@ test("an inline finding takes the link of our marker thread, and a demoted one o
   assert.equal(findingUrls(snap.value, null, [row(inline, 4, 2), row(demoted, null, 2)]).size, 0);
 });
 
+test("a demoted finding takes the link of a review written before the rename or the marker", async () => {
+  const legacy = (url: string, round: number, tail: string, author = US): FakeReview => ({
+    url,
+    body: [`**⌕ Inspector** · round ${round}`, "", "Summary", "", tail].join("\n"),
+    author: { login: author },
+    commit: { oid: "head-1" },
+  });
+  writeGithubState({
+    reviews: [
+      legacy(`${PR}7#pullrequestreview-30`, 5, ["---", "", "- **src/a.ts** · `minor` - Old", "", "  detail"].join("\n")),
+      legacy(`${PR}7#pullrequestreview-31`, 6, BODY_ONLY_FINDINGS_MARKER),
+      legacy(`${PR}7#pullrequestreview-32`, 7, "---\n", "stranger"),
+      legacy(`${PR}7#pullrequestreview-33`, 8, "All good."),
+      // The current header still needs the marker: a summary that holds a rule is not a findings review.
+      { url: `${PR}7#pullrequestreview-34`, body: `${reviewHeader(9)}\n\nSummary\n---\nmore`, author: { login: US }, commit: { oid: "h" } },
+    ],
+  });
+  const snap = await fetchPr(null, "mission", "control", 7);
+  assert.ok(snap.ok && snap.value);
+  const row = (fp: string, round: number) => ({ fingerprint: fp, line: null, round, githubUrl: null });
+
+  const got = findingUrls(snap.value, US, [
+    row("fp-pre-marker", 5),
+    row("fp-pre-rename", 6),
+    row("fp-stranger", 7),
+    row("fp-summary-only", 8),
+    row("fp-current-rule", 9),
+    row("fp-other-round", 50),
+  ]);
+  assert.deepEqual(Object.fromEntries(got), {
+    "fp-pre-marker": `${PR}7#pullrequestreview-30`,
+    "fp-pre-rename": `${PR}7#pullrequestreview-31`,
+  });
+});
+
 test("a finding posted more than once links to its newest thread, whatever order GitHub lists them in", async () => {
   const fp = "fp-again";
   const older = thread("T_old", `${PR}7#discussion_r1`, formatMarker({ id: "a", fingerprint: fp, round: 1 }), US, true);

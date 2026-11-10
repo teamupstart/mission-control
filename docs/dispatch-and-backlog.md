@@ -1541,7 +1541,10 @@ so the agent's first prompt has the actual text rather than a number to go and l
 
 Blocking links come with it: the sweep asks `gh` for each issue's `blockedBy` and `parent`,
 and the issues blocking it arrive as the task's dependencies. See [Blocking links become
-dependencies](#blocking-links-become-dependencies).
+dependencies](#blocking-links-become-dependencies). Those fields need gh 2.101 or newer. An older
+`gh` refuses them, and the sweep then asks again without them: issues are still filed and kept
+updated, but without their blocking links or parent, and keep-updated leaves a task's existing
+dependencies and parent as they are until `gh` is upgraded.
 
 #### Sweeping the public product-feedback tracker
 
@@ -1963,6 +1966,9 @@ insert, so a swept task is never visible unblocked:
 - A blocker that is already one of your tasks, still backlogged or running under a live session,
   becomes an ordinary task dependency (the same rule that decides what you can select by hand). It follows that task to its merge like one you selected yourself. Blockers
   filed by the same sweep are filed first, so the order issues are listed in does not matter.
+  Issues that block each other upstream would leave two tasks waiting on each other, so the one
+  that would close the cycle is not filed: the sweep reports it as refused, and files it once the
+  cycle is broken upstream.
 - Any other blocker - outside the source's filter, in another repository, or linked to a task
   that is still starting, already finished, or stopped - becomes a **source dependency** on the
   external item. It
@@ -1975,9 +1981,10 @@ insert, so a swept task is never visible unblocked:
   [keep-updated refresh](#keeping-imported-backlog-tasks-updated).
 
 Each sweep re-reads the external items that waiting source dependencies name (for GitHub, one
-`gh issue view` each), at most 25 per sweep, least recently checked first. A failed read never
-changes a dependency's state. An item whose own read failed moves to the back of that queue, even
-when the sweep ran out of time after trying it, so one unreadable link cannot hold the rest.
+`gh issue view` each), at most 25 per sweep, least recently checked first, with a deadline of its
+own so a slow sweep or refresh cannot crowd it out. A failed read never changes a dependency's
+state. An item whose own read failed moves to the back of that queue, and so does a whole batch
+the deadline cut off, so a few slow links cannot hold the rest.
 Whether the source is enabled or not, **Sweep now** runs the same re-check.
 The links are read when an item is first filed. A blocking link added or removed upstream
 afterwards changes the task's dependencies only with

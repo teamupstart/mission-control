@@ -402,21 +402,3 @@ test("preflight under a vanished checkout names the checkout, never gh", async (
     else process.env.MISSION_GH_BIN = before;
   }
 });
-
-// A sweep cut off mid re-check must still report the reads it already attempted, or the
-// same failing blockers stay at the front of the oldest-first queue on every sweep.
-test("a linked read cut off by the sweep keeps the failures it already saw", async () => {
-  const before = process.env.MISSION_GH_BIN;
-  process.env.MISSION_GH_BIN = process.execPath;
-  try {
-    let checks = 0;
-    const signal = { get aborted() { return checks++ > 0; } } as AbortSignal;
-    const ref = { sourceId: ctx.sourceId, externalId: "acme/demo#7", url: "https://github.com/acme/demo/issues/7" };
-    const read = await githubIssues.readLinked({ ...cfg(), repo: "acme/demo" }, [ref], { ...ctx, repoRoot: process.cwd(), signal });
-    assert.equal(read.error, "the linked refresh was abandoned");
-    assert.match(read.itemErrors?.["acme/demo#7"] ?? "", /could not be read/);
-  } finally {
-    if (before === undefined) delete process.env.MISSION_GH_BIN;
-    else process.env.MISSION_GH_BIN = before;
-  }
-});

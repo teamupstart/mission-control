@@ -7,7 +7,7 @@ import {
 import { normalizeLabels } from "@shared/task.ts";
 import { sameSourceRef, type SweepContext, type SweepResult, type TaskCandidate, type TaskSourceInstance } from "@shared/task-source.ts";
 import type { Task } from "@shared/types.ts";
-import { getTask, listTaskSourceBacklog, listTasks } from "../db.ts";
+import { getTask, listTaskSourceBacklog } from "../db.ts";
 import type { TaskManager } from "../tasks.ts";
 import { taskSourceById } from "./config.ts";
 import { canRelateTo, readLinkedSource } from "./index.ts";
@@ -28,16 +28,28 @@ export function syncGroups(inst: TaskSourceInstance, record: SourceSyncRecord): 
   const groups = record.origin === "pushed" ? PUSHED_SOURCE_GROUPS : SOURCE_CONTENT_GROUPS;
   return groups.filter((group) => group !== "dependencies" || canRelateTo(inst));
 }
-function relation(inst: TaskSourceInstance, tasks: () => Task[]): { sourceId: string; tasks: Task[] } | null {
-  return canRelateTo(inst) ? { sourceId: inst.id, tasks: tasks() } : null;
+function relation(
+  inst: TaskSourceInstance, tasks: () => Task[], relates = canRelateTo(inst),
+): { sourceId: string; tasks: Task[] } | null {
+  return relates ? { sourceId: inst.id, tasks: tasks() } : null;
 }
-function projection(inst: TaskSourceInstance, candidate: TaskCandidate, record: SourceSyncRecord): SourceContent {
+/** The tasks `task`'s own edges lead to, read durably: all its source projection needs. */
+function edgeTargets(task: Task): Task[] {
+  return task.dependencies.flatMap((d) => {
+    if (d.type !== "task") return [];
+    const target = getTask(d.taskId);
+    return target ? [target] : [];
+  });
+}
+function projection(
+  inst: TaskSourceInstance, candidate: TaskCandidate, record: SourceSyncRecord, relates = canRelateTo(inst),
+): SourceContent {
   return SourceContentSchema.parse({
     title: candidate.title.trim(), intent: candidate.intent.trim(),
     priority: candidate.priority === undefined ? record.defaults.priority : candidate.priority,
     labels: normalizeLabels([...record.defaults.labels, ...(candidate.labels ?? [])]),
     // The same refs ingest turns into edges: this source's, never the item itself.
-    ...(canRelateTo(inst) ? { blockedBy: sourceBlockers((candidate.blockedBy ?? []).filter((ref) =>
+    ...(relates ? { blockedBy: sourceBlockers((candidate.blockedBy ?? []).filter((ref) =>
       ref.sourceId === inst.id && ref.externalId !== candidate.ref.externalId)) } : {}),
   });
 }
@@ -53,9 +65,8 @@ function reviewVersion(task: Task, local: SourceContent, inst: TaskSourceInstanc
 
 export function sourceSyncReviews(sources: TaskSourceInstance[]): SourceSyncReview[] {
   return sources.flatMap((inst) => {
-    const relate = relation(inst, listTasks);
     return listTaskSourceBacklog(inst.id).filter(canRefreshSourceTask).flatMap((task) => {
-      const local = localSourceContent(task, relate);
+      const local = localSourceContent(task, relation(inst, () => edgeTargets(task)));
       let saved: SourceSyncRecord | null;
       try { saved = getSourceSync(task.id); }
       catch { return [{ taskId: task.id, sourceId: inst.id, externalId: task.source!.externalId,
@@ -111,14 +122,17 @@ export async function refreshSourceTasks(
   for (const candidate of read.items) candidates.set(candidate.ref.externalId, candidate);
   for (const { task, saved, record } of eligible) {
     if (ctx.signal.aborted || !current()) { counts.skipped++; continue; }
-    const groups = syncGroups(inst, record);
-    const local = localSourceContent(task, relation(inst, () => tasks.sourceRelationTasks(task)));
+    const candidate = candidates.get(task.source!.externalId);
+    // A read that could not ask for blocking links says nothing about them, so this pass
+    // leaves the task's dependencies and parent exactly as they are.
+    const relates = canRelateTo(inst) && candidate?.relationsUnknown !== true;
+    const groups = syncGroups(inst, record).filter((group) => relates || group !== "dependencies");
+    const local = localSourceContent(task, relation(inst, () => tasks.sourceRelationTasks(task), relates));
     let content = local;
     // Set once the candidate is confirmed to be this task's item: its parent is then
     // overwritten as source-owned display data, whatever the merge below decides.
     let parent: TaskCandidate["parent"] | null | undefined;
     let next: SourceSyncRecord = { ...record, checkedAt: Date.now(), error: null };
-    const candidate = candidates.get(task.source!.externalId);
     if (identities.get(task.source!.externalId)! > 1) {
       next.error = "Several backlog tasks link to this item. Remove the unwanted copies before refreshing.";
     } else if (record.externalId !== task.source!.externalId) {
@@ -129,9 +143,9 @@ export async function refreshSourceTasks(
     } else if (candidate.ref.url !== task.source!.url) {
       next.error = "The source returned a different issue link. The existing task was kept.";
     } else {
-      parent = candidate.parent ?? null;
+      parent = relates ? candidate.parent ?? null : undefined;
       try {
-        const remote = projection(inst, candidate, record);
+        const remote = projection(inst, candidate, record, relates);
         if (!record.baseline && record.origin !== "pushed") {
           // Legacy links also include locally-authored pushes. Adoption is always explicit.
           next = { ...next, pending: remote, conflicts: groups };
@@ -151,7 +165,7 @@ export async function refreshSourceTasks(
     }
     const stillCurrent = () => !ctx.signal.aborted && current() && sameRecord(getSourceSync(task.id), saved);
     const applied = await tasks.applySourceContent(task.id, task.source!, local, content,
-      () => saveSourceSync(task.id, inst.id, next), stillCurrent, canRelateTo(inst), parent);
+      () => saveSourceSync(task.id, inst.id, next), stillCurrent, relates, parent);
     // A refused edge (a cycle, most often) is refused whole, like a hand edit. Say so beside
     // the task, and retry on later sweeps, when the source or the local graph may have moved.
     // Only the check and the error are recorded: `next` carries the merge's advanced baseline,

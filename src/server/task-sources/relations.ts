@@ -152,19 +152,26 @@ export interface SourceItemObservation {
   title?: string;
 }
 
-/** What one re-read learned, per item. `state: null` is an item the read could not answer. */
+/**
+ * What one re-read learned, per item. `state: null` is an item the read could not answer.
+ *
+ * `cutOff` is a read the sweep's deadline abandoned. An abandoned read cannot say which
+ * items it reached, so every selected item without an answer moves to the back of the
+ * queue, the way refresh records its attempts before reading; otherwise the same slow
+ * items would hold the front of the queue on every sweep.
+ */
 export function observationsFrom(
   refs: TaskSourceRef[],
   read: LinkedReadResult,
+  cutOff = false,
 ): SourceItemObservation[] {
   const found = new Map(read.items.map((item) => [item.ref.externalId, item]));
   return refs.flatMap((ref): SourceItemObservation[] => {
     const item = found.get(ref.externalId);
     if (item?.state) return [{ externalId: ref.externalId, state: item.state, title: item.title }];
-    // A whole-read failure (auth, an abandoned sweep) says nothing about an item it never
-    // reached, so it does not touch the queue; a per-item failure moves that item to the
-    // back of it, even when the sweep was abandoned after attempting it.
-    if (read.error && !read.itemErrors?.[ref.externalId]) return [];
+    // A whole-read failure (auth, say) says nothing about any one item, so it does not
+    // touch the queue; a per-item failure moves that item to the back of it.
+    if (read.error && !cutOff) return [];
     return [{ externalId: ref.externalId, state: null }];
   });
 }
@@ -194,7 +201,7 @@ export async function recheckSourceDependencies(
   const refs = sourceEdgesToRecheck(tasks.list(), inst.id);
   if (refs.length === 0 || ctx.signal.aborted) return 0;
   const read = await (deps.read ?? readLinkedSource)(inst, refs, ctx);
-  const observations = observationsFrom(refs, read);
+  const observations = observationsFrom(refs, read, ctx.signal.aborted);
   if (observations.length > 0) tasks.observeSourceItems(inst.id, observations);
   return refs.length;
 }

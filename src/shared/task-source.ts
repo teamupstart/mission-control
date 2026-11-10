@@ -120,6 +120,12 @@ export interface TaskCandidate {
    * kinds, which is how the sweep learns that a blocking item closed and how.
    */
   state?: TaskSourceItemState;
+  /**
+   * Set when this read could not ask for `blockedBy`, `parent` and `state` (an older gh,
+   * say), so their absence says nothing. Keep-updated then leaves the task's dependencies
+   * and parent as they are, instead of reading the absence as "no blockers upstream".
+   */
+  relationsUnknown?: true;
 }
 
 /** The outcome of one sweep. */

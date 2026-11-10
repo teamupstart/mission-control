@@ -148,9 +148,16 @@ export async function sweepOnce(
         () => entry.healthGeneration === healthGeneration
           && JSON.stringify(getTaskSourcesConfig().sources.find((s) => s.id === inst.id)) === JSON.stringify(inst));
     }
-    // The external items `source` dependency edges wait on, re-read within this sweep's
-    // own budget and timeout. A failed read leaves every edge as it was.
-    await recheckSourceDependencies(inst, tasks, contextFor(inst, controller.signal));
+    // The external items `source` dependency edges wait on, re-read within their own budget
+    // and their own deadline: on the sweep's, a refresh that used it up would starve them on
+    // every sweep, and a blocker that closed would never release its dependent.
+    const recheck = new AbortController();
+    const recheckTimer = unref(setTimeout(() => recheck.abort(), SWEEP_TIMEOUT_MS));
+    try {
+      await recheckSourceDependencies(inst, tasks, contextFor(inst, recheck.signal));
+    } finally {
+      clearTimeout(recheckTimer);
+    }
     if (entry.healthGeneration === healthGeneration) {
       entry.lastSweepAt = Date.now();
       entry.lastFiled = report.filed;

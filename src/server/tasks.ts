@@ -2705,6 +2705,8 @@ export class TaskManager {
     inputs: TaskDependencyInput[],
     taskId: string,
     current: Task["dependencies"] = [],
+    /** The item this task stands for, when it is being created and is not registered yet. */
+    selfSource?: TaskSourceRef,
   ): TaskDependency[] {
     const selectedAt = Date.now();
     const kept = new Map(current.map((dependency) => [dependencyKey(dependency), dependency]));
@@ -2856,7 +2858,7 @@ export class TaskManager {
       seen.add(key);
     }
 
-    if (this.createsDependencyCycle(taskId, resolved)) {
+    if (this.createsDependencyCycle(taskId, resolved, selfSource ?? this.registry.getTask(taskId)?.source ?? undefined)) {
       throw new TaskDependencyCycleError("task dependencies cannot form a cycle");
     }
     return resolved;
@@ -2927,8 +2929,19 @@ export class TaskManager {
     return out;
   }
 
-  private createsDependencyCycle(taskId: string, proposed: TaskDependency[]): boolean {
+  private createsDependencyCycle(taskId: string, proposed: TaskDependency[], selfSource?: TaskSourceRef): boolean {
     const tasks = new Map(this.registry.listTasks().map((task) => [task.id, task]));
+    // A source edge waits on its item closing, which happens when the task filed for that
+    // item finishes, so for the cycle check it leads to that task.
+    const itemKey = (sourceId: string, externalId: string): string => JSON.stringify([sourceId, externalId]);
+    const filedFor = new Map<string, string>();
+    for (const task of tasks.values()) if (task.source) filedFor.set(itemKey(task.source.sourceId, task.source.externalId), task.id);
+    if (selfSource) filedFor.set(itemKey(selfSource.sourceId, selfSource.externalId), taskId);
+    const targetOf = (dependency: TaskDependency): string | null =>
+      dependency.type === "plan" ? planRevisionRecord(dependency.planId, dependency.revision).task_id
+        : dependency.type === "task" ? dependency.taskId
+          : dependency.type === "source" ? filedFor.get(itemKey(dependency.sourceId, dependency.externalId)) ?? null
+            : null;
     const visiting = new Set<string>();
     const reachesTask = (id: string): boolean => {
       if (id === taskId) return true;
@@ -2937,16 +2950,17 @@ export class TaskManager {
       const dependencies = id === taskId ? proposed : tasks.get(id)?.dependencies ?? [];
       for (const dependency of dependencies) {
         if (dependency.satisfiedAt !== null) continue;
-        const target = dependency.type === "plan" ? planRevisionRecord(dependency.planId, dependency.revision).task_id : dependency.type === "task" ? dependency.taskId : null;
+        const target = targetOf(dependency);
         if (target && reachesTask(target)) return true;
       }
       return false;
     };
-    return proposed.some(
-      (dependency) =>
-        dependency.satisfiedAt === null &&
-        (dependency.type === "task" ? reachesTask(dependency.taskId) : dependency.type === "plan" ? reachesTask(planRevisionRecord(dependency.planId, dependency.revision).task_id ?? "") : false),
-    );
+    return proposed.some((dependency) => {
+      if (dependency.satisfiedAt !== null) return false;
+      const target = targetOf(dependency);
+      if (dependency.type === "source" && target === taskId) return false;
+      return target !== null && reachesTask(target);
+    });
   }
 
   /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
@@ -3116,9 +3130,10 @@ export class TaskManager {
       const problem = localWorkflowProblem(workflowId);
       if (problem) throw new PlanStoreError(problem);
     }
-    const resolvedDependencies = this.resolveDependencies(input.dependencies ?? [], id);
-    // Source edges cannot close a cycle - no task depends on an external item's task - so
-    // they join after the resolver's cycle check rather than inside it.
+    const resolvedDependencies = this.resolveDependencies(input.dependencies ?? [], id, [], input.source);
+    // This task's own source edges name items with no task that may take an edge, so none
+    // can lead back here; they join after the cycle check. Another task's source edge naming
+    // this task's item is followed by the check, which is how an upstream cycle is refused.
     const dependencies = this.withSourceDependencyEdges(resolvedDependencies, input.sourceDependencies ?? []);
     validatePlanInputDependencies({ planInputs, dependencies });
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);

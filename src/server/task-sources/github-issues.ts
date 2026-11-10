@@ -46,6 +46,30 @@ const GH_TIMEOUT_MS = 20_000;
  * blocker is always settled by reading it, never from the sweep row.
  */
 const JSON_FIELDS = "number,title,body,url,labels,assignees,updatedAt,state,stateReason,blockedBy,parent";
+/**
+ * What a `gh` that predates the relation fields is asked for instead. `state` goes too: read
+ * without `stateReason`, a not-planned close would look completed and release a dependent.
+ */
+const BASE_JSON_FIELDS = "number,title,body,url,labels,assignees,updatedAt";
+
+/** True when `gh` refused a relation field it does not know, which releases before 2.101 do. */
+export function refusedRelationFields(res: Pick<RunResult, "code" | "stderr">): boolean {
+  return res.code !== 0 && /Unknown JSON field: "(state|stateReason|blockedBy|parent)"/.test(res.stderr);
+}
+
+/**
+ * Run one `gh ... --json` read, retrying with the base fields when this `gh` refuses the
+ * relation fields, so an older `gh` keeps sweeping as it did before sources could relate.
+ */
+async function runGhJson(
+  argsFor: (fields: string) => string[], cwd: string, relating = true,
+): Promise<{ res: RunResult; relations: boolean }> {
+  if (relating) {
+    const res = await run(ghBin(), argsFor(JSON_FIELDS), { cwd, timeoutMs: GH_TIMEOUT_MS });
+    if (!refusedRelationFields(res)) return { res, relations: true };
+  }
+  return { res: await run(ghBin(), argsFor(BASE_JSON_FIELDS), { cwd, timeoutMs: GH_TIMEOUT_MS }), relations: false };
+}
 
 /** Longest issue body carried into an intent, so one enormous issue can't fill a card. */
 const BODY_LIMIT = 4000;
@@ -111,7 +135,7 @@ export function issueState(issue: Pick<GhIssue, "state" | "stateReason">): TaskS
  * must carry every one you pass), while the config asks for ANY - so more than one label
  * has to go through `--search`, where GitHub's comma is OR.
  */
-export function ghIssueListArgs(cfg: GithubIssuesConfig): string[] {
+export function ghIssueListArgs(cfg: GithubIssuesConfig, fields = JSON_FIELDS): string[] {
   const args = ["issue", "list", "--state", "open", "--limit", String(cfg.limit)];
   if (cfg.repo) args.push("--repo", cfg.repo);
 
@@ -130,7 +154,7 @@ export function ghIssueListArgs(cfg: GithubIssuesConfig): string[] {
   if (cfg.milestone) args.push("--milestone", cfg.milestone);
   if (search.length > 0) args.push("--search", search.join(" "));
 
-  args.push("--json", JSON_FIELDS);
+  args.push("--json", fields);
   return args;
 }
 
@@ -193,6 +217,7 @@ export function candidateFrom(
   issue: GhIssue,
   cfg: GithubIssuesConfig,
   ctx: SweepContext,
+  relations = true,
 ): TaskCandidate | null {
   const url = typeof issue.url === "string" ? issue.url : "";
   const title = typeof issue.title === "string" ? issue.title.trim() : "";
@@ -211,9 +236,9 @@ export function candidateFrom(
   // opinion", which is what lets the source's default apply. Setting null here made every
   // swept task unset no matter what the operator chose.
   const mapped = priorityFor(labels, cfg.priorityFrom);
-  const blockedBy = blockedByRefs(issue.blockedBy, ctx);
-  const parent = linkedRef(issue.parent, ctx);
-  const state = issueState(issue);
+  const blockedBy = relations ? blockedByRefs(issue.blockedBy, ctx) : [];
+  const parent = relations ? linkedRef(issue.parent, ctx) : null;
+  const state = relations ? issueState(issue) : undefined;
 
   return {
     ref: { sourceId: ctx.sourceId, externalId: externalIdFor(url), url },
@@ -227,6 +252,7 @@ export function candidateFrom(
     ...(blockedBy.length > 0 ? { blockedBy } : {}),
     ...(parent ? { parent } : {}),
     ...(state ? { state } : {}),
+    ...(relations ? {} : { relationsUnknown: true as const }),
   };
 }
 
@@ -243,6 +269,7 @@ export function sweepResultFrom(
   res: Pick<RunResult, "stdout" | "stderr" | "code" | "missingCwd">,
   cfg: GithubIssuesConfig,
   ctx: SweepContext,
+  relations = true,
 ): SweepResult {
   const gone = repoRootGone(res);
   if (gone) return { items: [], error: gone };
@@ -262,18 +289,15 @@ export function sweepResultFrom(
   if (!Array.isArray(parsed)) return { items: [], error: "gh returned an unexpected shape" };
 
   const items = parsed
-    .map((i) => candidateFrom(i as GhIssue, cfg, ctx))
+    .map((i) => candidateFrom(i as GhIssue, cfg, ctx, relations))
     .filter((c): c is TaskCandidate => c !== null);
   return { items, error: null };
 }
 
 /** Ask `gh` for the open issues this config selects, from inside the repo's checkout. */
 async function sweep(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<SweepResult> {
-  const res = await run(ghBin(), ghIssueListArgs(cfg), {
-    cwd: ctx.repoRoot,
-    timeoutMs: GH_TIMEOUT_MS,
-  });
-  return sweepResultFrom(res, cfg, ctx);
+  const { res, relations } = await runGhJson((fields) => ghIssueListArgs(cfg, fields), ctx.repoRoot);
+  return sweepResultFrom(res, cfg, ctx, relations);
 }
 
 /**
@@ -294,10 +318,7 @@ async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<st
   }
   // Ask for zero issues: this proves the repo resolves and is readable under that auth
   // without spending a page of results, and it exercises the same filters the sweep will.
-  const probe = await run(ghBin(), [...ghIssueListArgs({ ...cfg, limit: 1 })], {
-    cwd: ctx.repoRoot,
-    timeoutMs: GH_TIMEOUT_MS,
-  });
+  const { res: probe } = await runGhJson((fields) => ghIssueListArgs({ ...cfg, limit: 1 }, fields), ctx.repoRoot);
   if (probe.code !== 0) {
     const why = (probe.stderr || probe.stdout).trim().split("\n")[0] ?? "";
     return `gh cannot list issues here${why ? ` - ${why}` : ""}`;
@@ -602,33 +623,36 @@ async function resolve(
 }
 
 /** A linked issue remains readable after closure or leaving the source's search filter. */
-export function ghLinkedIssueArgs(ref: TaskSourceRef): string[] {
+export function ghLinkedIssueArgs(ref: TaskSourceRef, fields = JSON_FIELDS): string[] {
   const url = new URL(ref.url ?? "");
   if (url.protocol !== "https:" || url.username || url.password
     || !/\/issues\/\d+$/.test(url.pathname) || externalIdFor(url.href) !== ref.externalId) {
     throw new Error("the linked GitHub issue has no valid issue identity");
   }
-  return ["issue", "view", url.href, "--json", JSON_FIELDS];
+  return ["issue", "view", url.href, "--json", fields];
 }
 async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
   const items: TaskCandidate[] = [];
   const errors: [string, string][] = [];
+  // Once one read learns this gh predates the relation fields, the rest skip straight to
+  // the base fields instead of being refused one by one.
+  let relating = true;
   async function read(ref: TaskSourceRef): Promise<void> {
-    let args: string[];
-    try { args = ghLinkedIssueArgs(ref); }
+    try { ghLinkedIssueArgs(ref); }
     catch {
       errors.push([ref.externalId, "The linked GitHub issue has no valid issue identity."]);
       return;
     }
     try {
-      const res = await run(ghBin(), args, { cwd: ctx.repoRoot, timeoutMs: GH_TIMEOUT_MS });
+      const { res, relations } = await runGhJson((fields) => ghLinkedIssueArgs(ref, fields), ctx.repoRoot, relating);
+      if (!relations) relating = false;
       // Sync errors are persisted and served to the dashboard. Never copy command output
       // or parser exceptions, which can contain credentials, paths, or account details.
       if (res.code !== 0) {
         errors.push([ref.externalId, "The linked GitHub issue could not be read. Check access and authentication, then sweep again."]);
         return;
       }
-      const candidate = candidateFrom(JSON.parse(res.stdout) as GhIssue, cfg, ctx);
+      const candidate = candidateFrom(JSON.parse(res.stdout) as GhIssue, cfg, ctx, relations);
       if (candidate?.ref.externalId === ref.externalId) items.push(candidate);
       else errors.push([ref.externalId, "The linked GitHub issue identity changed or its content was unreadable."]);
     } catch {
@@ -641,11 +665,8 @@ async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: S
   await Promise.all(Array.from({ length: Math.min(4, refs.length) }, async () => {
     while (!ctx.signal.aborted && next < refs.length) await read(refs[next++]!);
   }));
-  // Reads already attempted keep their own outcome when the sweep is cut off; otherwise a
-  // few slow failures at the front of the oldest-first queue would be retried forever.
-  const itemErrors = errors.length ? { itemErrors: Object.fromEntries(errors) } : {};
-  if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned", ...itemErrors };
-  return { items, error: null, ...itemErrors };
+  if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned" };
+  return { items, error: null, ...(errors.length ? { itemErrors: Object.fromEntries(errors) } : {}) };
 }
 
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {

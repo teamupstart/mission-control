@@ -447,6 +447,18 @@ test("a finished blocker the registry evicted still stands for its source item",
   // this upstream addition became a conflict whose review could never be applied.
   assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,3)}])).updated,1);
   assert.deepEqual(synced(task.id),[`task:${blocker.id}`,`task:${byRef(3).id}`].sort());
+  assert.deepEqual(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.local.blockedBy!.map((b)=>b.externalId),
+    ["acme/demo#2","acme/demo#3"]);
+});
+test("a refresh read without the relation fields keeps the task's dependencies and parent",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  const parent=candidate(9).ref;
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2),parent},candidate(2),candidate(3)])).updated,1);
+  assert.equal((await refresh(src,tasks,[{...candidate(),title:"Renamed upstream",relationsUnknown:true},candidate(2),candidate(3)])).updated,1);
+  assert.equal(getTask(task.id)!.title,"Renamed upstream");
+  assert.deepEqual(synced(task.id),[`task:${byRef(2).id}`]);
+  assert.ok(sameSourceRef(getTask(task.id)!.sourceParent,parent));
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy!.map((b)=>b.externalId),["acme/demo#2"]);
 });
 test("Use source on a dependencies conflict that would close a cycle is refused and changes nothing",async()=>{
   const {src,tasks,task,byRef}=await setupRelated();

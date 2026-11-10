@@ -542,8 +542,10 @@ export class DatabaseBackupService {
         .map((copy) => copy.filename);
       for (const filename of expired) {
         const path = join(this.root, filename);
-        safeUnlink(path);
+        // Sidecars first: only the copy itself is listed, so a failure must leave it in place
+        // for the next prune to retry, never an orphaned journal no listing can find.
         for (const suffix of SQLITE_SIDECARS) safeUnlink(`${path}${suffix}`);
+        safeUnlink(path);
       }
     }
     syncFile(this.root);
@@ -573,6 +575,9 @@ export class DatabaseBackupService {
    * every wake, "now" would keep moving and the wait would never end.
    */
   scheduledDue(): boolean {
+    // A scheduled capture queued now would run right after it whatever the manual capture's
+    // outcome, skipping the backoff a failure records, so the next wake decides instead.
+    if (this.pending.has("manual")) return false;
     const now = this.now().getTime();
     const { intervalHours } = storedDatabaseBackupsConfig(this.source);
     const { consecutiveFailures, lastAttemptAt } = this.status().scheduled;

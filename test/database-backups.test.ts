@@ -1035,7 +1035,11 @@ test("a prune that fails after the copy is published is a warning, and the captu
   });
 
   const record = await service.captureScheduled();
-  assert.deepEqual(kept(backupRoot, "scheduled"), [record.filename]);
+  assert.deepEqual(
+    kept(backupRoot, "scheduled"),
+    [expired!, record.filename].sort(),
+    "a copy whose sidecar could not be removed stays listed, so the next prune retries it",
+  );
   const status = service.status().scheduled;
   assert.equal(status.consecutiveFailures, 0);
   assert.equal(status.failingSince, null);
@@ -1045,6 +1049,12 @@ test("a prune that fails after the copy is published is a warning, and the captu
     warnings.mock.calls.some((call) => /prune failed after capture/.test(String(call.arguments[0]))),
     "the prune failure is reported",
   );
+
+  // The unlink error clears, as a transient one does, and the next prune removes both.
+  rmSync(join(backupRoot, `${expired}-wal`), { recursive: true });
+  writeFileSync(join(backupRoot, `${expired}-wal`), "journal");
+  service.prune();
+  assert.deepEqual(readdirSync(backupRoot).filter((name) => name.startsWith("scheduled-")), [record.filename]);
 });
 
 test("a temporary that cannot be removed never hides the capture's own failure", async (t) => {
@@ -1092,11 +1102,36 @@ test("a prune that fails after a pre-migration copy is published only warns, so 
   });
 
   const record = service.capturePreMigration();
-  assert.deepEqual(kept(backupRoot, "pre-migration"), [record.filename]);
+  assert.deepEqual(kept(backupRoot, "pre-migration"), [expired!, record.filename].sort());
   assert.ok(
     warnings.mock.calls.some((call) => /prune failed after capture/.test(String(call.arguments[0]))),
     "the prune failure is reported",
   );
+});
+
+test("no scheduled capture is due while a Back up now is pending, so its failure's backoff holds", async (t) => {
+  const root = fixture("mission-database-backup-due-during-manual-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  source.exec("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  let release!: () => void;
+  const service = new DatabaseBackupService(source, {
+    root: join(root, "backups"),
+    onlineBackup: async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      throw new Error("ENOSPC: no space left on device");
+    },
+  });
+
+  assert.equal(service.scheduledDue(), true, "no copy exists yet");
+  const manual = service.captureManual();
+  assert.equal(service.scheduledDue(), false, "the wake defers to the Back up now's outcome");
+  while (!release) await new Promise<void>((resolve) => setImmediate(resolve));
+  release();
+  await assert.rejects(manual, /ENOSPC/);
+  assert.equal(service.scheduledDue(), false, "the manual failure's backoff now applies");
 });
 
 test("a second Back up now joins the one running even with a scheduled capture queued behind it", async (t) => {

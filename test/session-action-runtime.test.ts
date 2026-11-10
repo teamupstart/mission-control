@@ -2300,6 +2300,28 @@ test("Wait for CI blocks with a plain reason, and retrying waits on the same hea
   }
 });
 
+test("the store refuses to retry a Wait for CI block whose recovery is a new round", async () => {
+  const h = await harness("ci-unknown-retry", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    const waiting = ciAttempts(h, runId)[0]!;
+    h.store.updateWaitForCiState(waiting.id, { ...(waiting.output as WaitForCiState), pullRequestKey: null, expectedHeadOid: null }, Date.now());
+    await h.manager.sweepWaitForCi();
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_pull_request_unknown");
+    assert.equal(h.manager.retry(runId, { requestId: "retry-unknown" }).ok, false);
+
+    // The guard below the manager, for a caller that reaches the store directly.
+    const blocked = ciAttempts(h, runId)[0]!;
+    assert.throws(
+      () => h.store.manualInfrastructureRetry(runId, blocked.submissionId, blocked, "retry-unknown-store", "attempt-unknown"),
+      /not in a retryable Command phase/,
+    );
+    assert.equal(ciAttempts(h, runId).length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
 test("disabling Wait for CI passes it without reading CI", async () => {
   const h = await harness("ci-disabled", { pullRequest: true, waitForCiMinutes: 45 });
   try {

@@ -579,6 +579,25 @@ test("marking or unmarking a check required resets the quiet clock, and other no
   assert.equal(allMarked!.state.quietSince, T0 + 10 + QUIET_MS);
 });
 
+test("a Required-fallback failure past the timeout fails rather than blocking as a timeout", () => {
+  const required = configured({ strictness: "required" });
+  const red = [run("build", "passing"), run("lint", "failing")];
+  // First settled at or after the timeout: no quiet period can start.
+  const fresh = decideWaitForCi(required, at(red, LIMIT + 1), LIMIT + 1);
+  assert.equal(fresh.kind, "fail");
+  assert.equal(fresh.state.requiredFallback, true);
+  if (fresh.kind === "fail") assert.deepEqual(fresh.failing.map((check) => check.name), ["lint"]);
+  // A quiet period running at the timeout that gets no new observation before its grace ends.
+  const start = LIMIT - 60_000;
+  const quiet = decideWaitForCi(required, at(red, start), start);
+  assert.equal(quiet.kind, "wait");
+  const stalled = decideWaitForCi(quiet.state, at(red, start), start + QUIET_MS + WAIT_FOR_CI_QUIET_GRACE_MS);
+  assert.equal(stalled.kind, "fail");
+  // A green fallback past the timeout still blocks: nothing failed to decide.
+  const green = decideWaitForCi(required, at([run("build", "passing")], LIMIT + 1), LIMIT + 1);
+  assert.equal(green.kind === "block" && green.code, "ci_timeout");
+});
+
 test("Required mode with nothing marked waits out the quiet period, then judges every check and records the fallback", () => {
   const required = configured({ strictness: "required" });
   // A failure is not decided at once: GitHub may mark the required checks late.

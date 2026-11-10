@@ -116,7 +116,7 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
  * Whether this phase is a Wait for CI block the operator clears by retrying the node. Read off
  * `WORKFLOW_PHASE_RECOVERY`'s own "retry" tag, so which blocks retry is stated once, there.
  */
-function waitForCiRetryPhase(phase: string): boolean {
+export function waitForCiRetryPhase(phase: string): boolean {
   return (WAIT_FOR_CI_BLOCK_CODES as readonly string[]).includes(phase)
     && WORKFLOW_PHASE_RECOVERY[phase as WaitForCiBlockCode] === "retry";
 }

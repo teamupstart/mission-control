@@ -452,9 +452,11 @@ export function quotedNames(names: readonly string[]): string {
  * - At the timeout: a quiet period already running may still finish on its first new
  *   observation, unchanged, but never starts or restarts. It blocks `ci_timeout` when the set
  *   changes, or when no new observation arrives within `WAIT_FOR_CI_QUIET_GRACE_MS` of the
- *   period's end. Otherwise it blocks, in order: `ci_missing` when no check ever appeared,
- *   `ci_timeout` naming the counted checks still running, `ci_expected_missing` naming the
- *   expected checks never reported, and `ci_timeout` when the set kept changing.
+ *   period's end. A Required-fallback failure fails instead of blocking either way, since no
+ *   late required mark can be waited for any more. Otherwise it blocks, in order: `ci_missing`
+ *   when no check ever appeared, `ci_timeout` naming the counted checks still running,
+ *   `ci_expected_missing` naming the expected checks never reported, and `ci_timeout` when the
+ *   set kept changing.
  */
 export function decideWaitForCi(
   state: WaitForCiState,
@@ -521,12 +523,15 @@ export function decideWaitForCi(
       if (since !== null && sameChecks(previous, settling)) {
         if (observation.observedAt - since >= quietMs) return verdict();
         if (timedOut(next, now) && now - since >= quietMs + WAIT_FOR_CI_QUIET_GRACE_MS) {
+          if (failing.length > 0) return verdict();
           return timeoutBlock(next, "No new CI observation arrived to finish the quiet period "
             + `within ${WAIT_FOR_CI_QUIET_GRACE_MS / 60_000} minutes of its end.`);
         }
         return { kind: "wait", state: next };
       }
       if (timedOut(next, now)) {
+        // A fallback failure waits only for late required marks; past the timeout none can count.
+        if (failing.length > 0) return verdict();
         return timeoutBlock(next, `CI had not stayed settled for the ${settings.quietMinutes}-minute quiet `
           + `period after ${next.timeoutMinutes} minutes.`);
       }

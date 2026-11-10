@@ -6,7 +6,7 @@ import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { projectWorkflowRecovery } from "./recovery.ts";
+import { projectWorkflowRecovery, waitForCiRetryPhase } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -8892,9 +8892,10 @@ export class WorkflowStore {
       }
       const recoveryPhase = this.mustRun(runId).currentPhase;
       const latest = this.latestAttemptForNode(submissionId, failed.nodeId);
-      // A Wait for CI block retries in the phase it was blocked in; its attempt carries its CI
-      // state. Every other retry must come from a retryable Command phase.
-      const ciWaitRetry = latest !== null && readWaitForCiState(latest.output) !== null;
+      // A Wait for CI block retries only from a phase its recovery table marks retry, and its
+      // attempt carries its CI state. Every other retry must come from a retryable Command phase.
+      const ciWaitRetry = latest !== null && readWaitForCiState(latest.output) !== null
+        && waitForCiRetryPhase(recoveryPhase);
       if (!ciWaitRetry && recoveryPhase !== "infrastructure_error" && recoveryPhase !== "command_action_required") {
         throw new Error(`Workflow run ${runId} is not in a retryable Command phase`);
       }

@@ -868,7 +868,7 @@ once the checks read have settled for the quiet period, the node blocks as `ci_c
 | CI on the head | Outcome |
 | --- | --- |
 | Any counted check still running, or nothing reported yet | Keeps waiting. |
-| Every counted check finished, one or more failing | **Fail** at once, with no quiet period (after it, in the Required fallback): a repair packet asks for one change per counted failing check, with its conclusion, title, summary excerpt, and link. Checks past the verdict's 20-change or 12,000-byte limit share one last change that names each with its conclusion and link. Expected checks that have not appeared are named in the summary: `Not reported when CI failed: "deploy".` |
+| Every counted check finished, one or more failing | **Fail** at once, with no quiet period (after it, in the Required fallback, or at the timeout if that comes first): a repair packet asks for one change per counted failing check, with its conclusion, title, summary excerpt, and link. Checks past the verdict's 20-change or 12,000-byte limit share one last change that names each with its conclusion and link. Expected checks that have not appeared are named in the summary: `Not reported when CI failed: "deploy".` |
 | Every counted check passed, an expected check not reported yet | Keeps waiting for it. |
 | Every counted check passed, every expected check reported | **Passes** at once: the quiet period is skipped. |
 | Every counted check passed, no expected checks | The **quiet period** starts, and the node **passes** once every counted check has stayed settled and unchanged for it (at once with 0). |

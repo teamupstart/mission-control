@@ -687,6 +687,10 @@ test("the Inspector summary carries a compact CI projection and never the check 
   assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "truncated pass");
   observe([run("lint", "passing"), run("build", "failing", true)], 140);
   assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false }, "truncated failure");
+  // A node the read skipped (null, or an unknown shape) under 100 checks is not truncation, as
+  // Wait for CI judges it, so the required checks still decide.
+  observe([run("lint", "failing"), run("build", "passing", true)], 3);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "passing", inspectorEnabled: false }, "skipped node");
 
   // Switching the Inspector on changes no ledger row, so the flag is read at resolution.
   setInspectorConfig({ enabled: true });

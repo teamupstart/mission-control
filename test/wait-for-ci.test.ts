@@ -443,6 +443,32 @@ test("the verdicts cite the attempt and carry each failing check's own words", (
   assert.equal(waitForCiVerdict(passing, "attempt-2")?.summary, `CI passed on ${HEAD.slice(0, 12)}.`);
 });
 
+test("a failure too large for the verdict budget still settles, naming every failing check", () => {
+  const long = (name: string): CiCheckRun => ({
+    ...run(name, "failing"),
+    title: "t".repeat(300),
+    summary: "s".repeat(1_500),
+    detailsUrl: `https://ci/${name}`,
+  });
+  for (const count of [8, 30]) {
+    const checks = Array.from({ length: count }, (_, index) => long(`check-${index}`));
+    const failing = decideWaitForCi(state(), seen(checks), T0 + 1);
+    if (failing.kind !== "fail") return assert.fail("expected a fail");
+    const verdict = waitForCiVerdict(failing, "attempt-1");
+    if (verdict?.verdict !== "fail") return assert.fail(`no verdict for ${count} checks`);
+    assert.ok(verdict.requestedChanges.length <= 20, String(count));
+    const shared = verdict.requestedChanges.at(-1)!;
+    assert.match(shared.title, /^Fix the other \d+ failing CI checks$/);
+    const named = verdict.requestedChanges.slice(0, -1).map((change) => change.title.match(/"(.+)"$/)![1]!);
+    for (const check of checks) {
+      assert.ok(named.includes(check.name) || shared.rationale.includes(`"${check.name}": FAILURE (https://ci/${check.name})`), check.name);
+    }
+    assert.deepEqual(verdict.requestedChanges.at(-1)!.evidence, [
+      { kind: "check", path: "attempt-1", quote: `${count - named.length} failing checks on the pull request's head commit.` },
+    ]);
+  }
+});
+
 // ---- node settings: strictness, quiet period, expected checks -------------------------------
 
 const req = (name: string, runState: CiCheckRun["state"]): CiCheckRun => ({ ...run(name, runState), required: true });

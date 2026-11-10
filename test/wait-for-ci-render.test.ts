@@ -67,7 +67,7 @@ const SAYS: Record<WaitForCiBlockCode, RegExp[]> = {
   ],
   ci_checks_truncated: [
     /^GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed\. /,
-    /Check the rest on GitHub; if they pass, an operator can disable this node for the run\.$/,
+    /Check the rest on GitHub; if they pass, an operator can disable this node for the run, then wait for CI again\.$/,
   ],
 };
 

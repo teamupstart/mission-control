@@ -4100,7 +4100,7 @@ export const WAIT_FOR_CI_BLOCK_SENTENCES: Record<WaitForCiBlockCode, (state: Wai
   },
   ci_checks_truncated: (state) =>
     `${waitForCiTruncationText(state.checksTotal)}, so this node cannot confirm CI passed. Check the `
-    + "rest on GitHub; if they pass, an operator can disable this node for the run.",
+    + "rest on GitHub; if they pass, an operator can disable this node for the run, then wait for CI again.",
 };
 
 /**

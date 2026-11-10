@@ -757,11 +757,9 @@ export function PipelineEditor({
     event.stopPropagation();
     if (!dragging || dragging.kind !== "member") return endDrag();
     const moved = evaluationStage(pipeline, dragging.ref.stage)?.members[dragging.ref.member];
-    if (moved) {
-      apply(
-        moveMember(pipeline, dragging.ref, to),
-        `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
-      );
+    const next = moveMember(pipeline, dragging.ref, to);
+    if (moved && next !== pipeline) {
+      apply(next, `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`);
     }
     endDrag();
   };
@@ -775,11 +773,9 @@ export function PipelineEditor({
         stage: stageIndex,
         member: evaluationStage(pipeline, stageIndex)?.members.length ?? 0,
       };
-      if (moved && dragging.ref.stage !== stageIndex) {
-        apply(
-          moveMember(pipeline, dragging.ref, to),
-          `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
-        );
+      const next = moveMember(pipeline, dragging.ref, to);
+      if (moved && dragging.ref.stage !== stageIndex && next !== pipeline) {
+        apply(next, `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`);
       }
     }
     endDrag();

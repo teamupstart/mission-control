@@ -216,7 +216,8 @@ export function WaitForCiNodeFieldset({
   onChange: (next: WaitForCiNodeFields) => void;
 }): React.JSX.Element {
   return (
-    <div className="wf-ci-fields">
+    // The Pipeline row around these fields moves focus or removes the node on arrow and Delete keys.
+    <div className="wf-ci-fields" onKeyDown={(event) => event.stopPropagation()}>
       <WaitForCiTimeoutField
         value={node.timeoutMinutes}
         readOnly={readOnly}

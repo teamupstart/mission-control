@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -74,6 +74,17 @@ test("the Pipeline editor adds Wait for CI after a Pull Request action, with its
   await expect(timeout).toHaveValue("45");
   await timeout.fill("60");
   await expect(row).toContainText("Required checks · quiet 3 min · blocks after 60 min · expects 2 checks");
+  // Keys typed into the fields edit them rather than reaching the row's move and remove keys.
+  await timeout.press("Backspace");
+  await expect(timeout).toHaveValue("6");
+  await expect(row).toContainText("blocks after 6 min");
+  await timeout.press("0");
+  await expect(timeout).toHaveValue("60");
+  const expected = pipeline.getByRole("textbox", { name: /^Expected checks/ });
+  await expected.press("Home");
+  await expected.press("ArrowDown");
+  await expect(expected).toBeFocused();
+  await expect(row).toContainText("Required checks · quiet 3 min · blocks after 60 min · expects 2 checks");
   // A Wait for CI stage holds nothing else, so it has no "add a reviewer" control.
   await expect(pipeline.getByLabel("Add a reviewer or Command to Stage 2")).toHaveCount(0);
 
@@ -98,6 +109,50 @@ test("the Pipeline editor adds Wait for CI after a Pull Request action, with its
     target: ci!.id,
   }));
   await shoot(dashboard, "01-editor-wait-for-ci");
+});
+
+/** One HTML5 drag through a page-made `DataTransfer`, for `backlog-reorder.spec.ts`' reason. */
+async function dragOnto(page: Page, source: Locator, target: Locator): Promise<void> {
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent("dragstart", { dataTransfer });
+  await target.dispatchEvent("dragover", { dataTransfer });
+  await target.dispatchEvent("drop", { dataTransfer });
+  await source.dispatchEvent("dragend", { dataTransfer });
+}
+
+test("a reviewer dropped onto the Wait for CI stage stays put, and nothing announces a move", async ({
+  dashboard,
+  daemon,
+}) => {
+  await api(daemon, "/api/workflows", { name: "E2E wait for CI drop" });
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: /E2E wait for CI drop/ }).click();
+
+  const pipeline = dashboard.locator(".wf-pipeline-strip");
+  await pipeline.getByLabel("Add the first stage").selectOption({ label: "Command · lint" });
+  await pipeline.getByLabel("Add a reviewer or Command to Stage 1").selectOption({ label: "Command · typecheck" });
+  await pipeline.getByLabel("Insert a stage after Stage 1").click();
+  await pipeline.getByLabel("Insert a stage after Stage 1").selectOption({ label: "Pull Request" });
+  await pipeline.getByLabel("Insert a stage after Stage 2").click();
+  await pipeline.getByLabel("Insert a stage after Stage 2").selectOption({ label: "Wait for CI" });
+
+  const stages = pipeline.locator("section.wf-pipeline-stage");
+  const lint = pipeline.getByRole("listitem", { name: /^Command · lint, / });
+  const typecheck = pipeline.getByRole("listitem", { name: /^Command · typecheck, / });
+  const ciRow = pipeline.locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
+  const ciStage = stages.filter({ has: dashboard.locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" }) });
+  const announcement = dashboard.locator('p.sr-only[aria-live="polite"]');
+
+  // A drop that moves something is announced, which is what makes the refusals below observable.
+  await dragOnto(dashboard, typecheck, lint);
+  await expect(announcement).toHaveText("Moved Command · typecheck into Stage 1");
+  await expect(typecheck).toHaveAccessibleName("Command · typecheck, Command 1 of 2 in Stage 1");
+
+  await dragOnto(dashboard, lint, ciStage);
+  await dragOnto(dashboard, lint, ciRow);
+  await expect(announcement).toHaveText("Moved Command · typecheck into Stage 1");
+  await expect(lint).toHaveAccessibleName("Command · lint, Command 2 of 2 in Stage 1");
+  await expect(ciStage.locator("li.wf-pipeline-reviewer")).toHaveCount(1);
 });
 
 test("Publish refuses a quiet period at or above the timeout, said on the node, and publishes once it fits", async ({
@@ -523,6 +578,7 @@ test("a run blocked for missing CI says why, and waiting again passes green CI",
   await again.click();
   await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
     message: "Wait for CI again did not reopen the run",
+    timeout: 60_000,
   }).toBe("running");
   await expect(ciRow).toContainText("Waiting for CI");
   await quietStarted(daemon, firstSeen);
@@ -644,7 +700,7 @@ test("green CI on a head with more than 100 checks blocks rather than pass on th
   const card = await ciCard(dashboard, daemon, runId, "Blocked", "attempt");
   await expect(card.locator(".wf-run-ci-headline")).toHaveText(
     "GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed. "
-    + "Check the rest on GitHub; if they pass, an operator can disable this node for the run.",
+    + "Check the rest on GitHub; if they pass, an operator can disable this node for the run, then wait for CI again.",
   );
   await expect(card.locator("p.wf-run-meta", { hasText: /^GitHub reported 140 checks; only the first 100 were read\.$/ })).toBeVisible();
   await expect(dashboard.getByText("over 100 checks").first()).toBeVisible();

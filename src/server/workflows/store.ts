@@ -8249,11 +8249,16 @@ export class WorkflowStore {
    * never move a settled attempt backwards.
    */
   updateWaitForCiState(attemptId: string, state: WaitForCiState, now: number): WorkflowNodeAttempt | null {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const attempt = this.getAttempt(attemptId);
       if (!attempt || attempt.state !== "waiting" || !readWaitForCiState(attempt.output)) return null;
-      return this.finishAttempt(attempt.id, { state: "waiting", output: workflowJson(state) }, now);
-    });
+      const changed = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET output_json = ?, updated_at = ?
+          WHERE id = ? AND state = 'waiting'`,
+      ).run(JSON.stringify(workflowJson(state)), now, attemptId);
+      return Number(changed.changes) === 1 ? this.getAttempt(attemptId) : null;
+    }, (result) => result ? { kind: "attempt", id: attemptId, now } : null);
   }
 
   /** Finish a waiting Wait for CI attempt with its verdict and outgoing receipts, once. */

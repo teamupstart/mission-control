@@ -351,7 +351,7 @@ function sameChecks(a: readonly CiCheckRun[], b: readonly CiCheckRun[]): boolean
 }
 
 /** Whether a head's total says GitHub reported more checks than were read. */
-function truncatedTotal(checksTotal: number | null | undefined): boolean {
+export function truncatedTotal(checksTotal: number | null | undefined): boolean {
   return checksTotal != null && checksTotal > CI_CHECK_RUNS_MAX;
 }
 

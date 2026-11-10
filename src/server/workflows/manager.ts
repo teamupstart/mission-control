@@ -5739,7 +5739,12 @@ export class WorkflowManager {
     if (!child || !binding) return;
     const head = await this.capturedContinuationHead(child, binding.sessionRepoRoot ?? null)
       ?? state.reportedHeadOid ?? null;
-    if (head) this.store.updateWaitForCiState(attempt.id, { ...state, expectedHeadOid: head }, now);
+    if (!head) return;
+    // A concurrent observer may have recorded checks during the await; the stale state would drop them.
+    const latest = this.store.getAttempt(attemptId);
+    const current = latest?.state === "waiting" ? readWaitForCiState(latest.output) : null;
+    if (!current || current.expectedHeadOid) return;
+    this.store.updateWaitForCiState(attemptId, { ...current, expectedHeadOid: head }, now);
   }
 
   private async observeWaitForCiAttempt(attemptId: string, now = Date.now()): Promise<void> {

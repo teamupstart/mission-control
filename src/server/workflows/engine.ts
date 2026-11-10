@@ -79,6 +79,7 @@ import {
   quotedNames,
   readWaitForCiState,
   waitForCiSettings,
+  type CiCheckRun,
   type CiObservation,
   type WaitForCiDecision,
   type WaitForCiState,
@@ -458,6 +459,11 @@ function disabledVerdict(node: WorkflowVerdictNode): PersonaVerdict | null {
  * excerpt and link: failure detail comes from each check run's own title and summary, never
  * from CI logs. Each cites the attempt as `kind: "check"` evidence, since the attempt's
  * output is where those check runs are recorded.
+ *
+ * The verdict has a byte and a change budget, and one that misses either normalizes to null,
+ * which would leave the node waiting for ever on a failure it already decided. So the checks
+ * that do not fit as changes of their own share one last change naming each with its
+ * conclusion and link, and the longest form that fits is the one recorded.
  */
 export function waitForCiVerdict(
   decision: Extract<WaitForCiDecision, { kind: "pass" | "fail" }>,
@@ -478,27 +484,57 @@ export function waitForCiVerdict(
   }
   // Only counted failures: in Required mode a failing check that is not required is shown in
   // the run panel, never sent for repair.
-  const names = quotedNames(decision.failing.map((check) => check.name));
+  const failing = decision.failing;
+  const names = quotedNames(failing.map((check) => check.name));
   const missing = decision.state.missingExpected ?? [];
   const unreported = missing.length > 0 ? ` ${notReportedWhenFailed(missing)}` : "";
-  return normalizePersonaVerdict({
+  const summary = `CI failed on ${head}: ${names}.${unreported}${fallback}`;
+  const evidence = (quote: string) => [{ kind: "check" as const, path: attemptId, quote }];
+  const ownChange = (check: CiCheckRun) => {
+    const said = [check.title, check.summary].filter((part): part is string => Boolean(part));
+    return {
+      title: `Fix the failing CI check "${check.name}"`,
+      rationale: [
+        `GitHub reports ${check.conclusion ?? "a failure"} for this check on the pull request's head commit.`,
+        ...said,
+        check.detailsUrl ? `Details: ${check.detailsUrl}` : null,
+      ].filter(Boolean).join("\n\n"),
+      evidence: evidence(said[0] ?? `The check concluded ${check.conclusion ?? "with a failure"}.`),
+    };
+  };
+  const sharedChange = (rest: readonly CiCheckRun[]) => ({
+    title: rest.length === failing.length
+      ? `Fix the ${rest.length} failing CI checks`
+      : `Fix the other ${rest.length} failing CI checks`,
+    rationale: rest
+      .map((check) => `"${check.name}": ${check.conclusion ?? "failure"}${check.detailsUrl ? ` (${check.detailsUrl})` : ""}`)
+      .join("\n"),
+    evidence: evidence(`${rest.length} failing checks on the pull request's head commit.`),
+  });
+  const verdict = (requestedChanges: unknown[], text = summary) => normalizePersonaVerdict({
     verdict: "fail",
-    summary: `CI failed on ${head}: ${names}.${unreported}${fallback}`,
-    requestedChanges: decision.failing.map((check) => {
-      const said = [check.title, check.summary].filter((part): part is string => Boolean(part));
-      const quote = said[0] ?? `The check concluded ${check.conclusion ?? "with a failure"}.`;
-      return {
-        title: `Fix the failing CI check "${check.name}"`,
-        rationale: [
-          `GitHub reports ${check.conclusion ?? "a failure"} for this check on the pull request's head commit.`,
-          ...said,
-          check.detailsUrl ? `Details: ${check.detailsUrl}` : null,
-        ].filter(Boolean).join("\n\n"),
-        evidence: [{ kind: "check" as const, path: attemptId, quote }],
-      };
-    }),
+    summary: text,
+    requestedChanges,
     confidence: 1,
   }, new Set(), new Set(), new Set([attemptId]));
+
+  const own = failing.map(ownChange);
+  if (failing.length <= WORKFLOW_EXECUTION_LIMITS.verdictChanges) {
+    const whole = verdict(own);
+    if (whole) return whole;
+  }
+  for (let kept = Math.min(failing.length, WORKFLOW_EXECUTION_LIMITS.verdictChanges) - 1; kept >= 0; kept--) {
+    const fitted = verdict([...own.slice(0, kept), sharedChange(failing.slice(kept))]);
+    if (fitted) return fitted;
+  }
+  return verdict(
+    [{
+      title: "Fix the failing CI checks",
+      rationale: "The run's Wait for CI panel lists each failing check.",
+      evidence: evidence(`${failing.length} failing checks.`),
+    }],
+    `CI failed on ${head}: ${failing.length} failing checks.${fallback}`,
+  );
 }
 
 /** The operator-disabled set, tolerant of rows written before the column existed. */
@@ -1185,6 +1221,8 @@ export class WorkflowEngine {
     }, now);
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
+    // Called from the manager's sweep, outside the pump, which would never claim what this queued.
+    this.wake();
     return true;
   }
 

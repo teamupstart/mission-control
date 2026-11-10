@@ -868,7 +868,7 @@ once the checks read have settled for the quiet period, the node blocks as `ci_c
 | CI on the head | Outcome |
 | --- | --- |
 | Any counted check still running, or nothing reported yet | Keeps waiting. |
-| Every counted check finished, one or more failing | **Fail** at once, with no quiet period (after it, in the Required fallback): a repair packet asks for one change per counted failing check, with its conclusion, title, summary excerpt, and link. Expected checks that have not appeared are named in the summary: `Not reported when CI failed: "deploy".` |
+| Every counted check finished, one or more failing | **Fail** at once, with no quiet period (after it, in the Required fallback): a repair packet asks for one change per counted failing check, with its conclusion, title, summary excerpt, and link. Checks past the verdict's 20-change or 12,000-byte limit share one last change that names each with its conclusion and link. Expected checks that have not appeared are named in the summary: `Not reported when CI failed: "deploy".` |
 | Every counted check passed, an expected check not reported yet | Keeps waiting for it. |
 | Every counted check passed, every expected check reported | **Passes** at once: the quiet period is skipped. |
 | Every counted check passed, no expected checks | The **quiet period** starts, and the node **passes** once every counted check has stayed settled and unchanged for it (at once with 0). |
@@ -903,8 +903,8 @@ the new head is reviewed and pushed. A block the retry cannot fix (`ci_pull_requ
 pull request or head to watch) offers only the new round. For `ci_expected_missing`, check that
 the workflows producing the expected checks run on pull requests, or correct the names in a new
 version. For `ci_checks_truncated`, check the remaining checks on GitHub; if they pass, an
-operator can disable the node for the run. Disabling the node for a run passes it without
-reading CI.
+operator can disable the node for the run, then use **Wait for CI again**: disabling alone does
+not reopen a blocked node, and the new attempt passes without reading CI.
 
 A blocked Wait for CI can be judged again from the dashboard or by the session itself with
 trigger_workflow_action `retry`. Disabling the node passes it without checking CI; leave that to

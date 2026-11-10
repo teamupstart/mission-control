@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
-import { CiObservationSchema, type CiObservation } from "@shared/wait-for-ci.ts";
+import { CiObservationSchema, truncatedTotal, type CiObservation } from "@shared/wait-for-ci.ts";
 import { requiredChecksRollup } from "@shared/ci-checks.ts";
 import {
   APP_CONFIG_ENTRIES,
@@ -222,7 +222,9 @@ let db: DatabaseSync | undefined;
 //     dismissed before the inbox could dismiss.
 // 25: durable session blockers (`session_blockers`), keyed by note key. Additive: an
 //     upgraded database gains an empty table and no session reads as blocked.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 25;
+// 26: a pull request's CI observation on its head commit (`inspector_prs.observed_ci_json`),
+//     nullable with no backfill: NULL is not yet polled, and a Wait for CI node keeps waiting.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 26;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -14914,7 +14916,7 @@ function ciProjection(json: string | null): InspectorCiProjection {
   const observation = parseCiObservation(json);
   if (!observation) return { headSha: null, required: null };
   const required = requiredChecksRollup(observation.checkRuns);
-  const truncated = (observation.totalCount ?? 0) > observation.checkRuns.length;
+  const truncated = truncatedTotal(observation.totalCount);
   return { headSha: observation.headSha, required: truncated && required !== "failing" ? null : required };
 }
 

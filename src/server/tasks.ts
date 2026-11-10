@@ -2878,12 +2878,20 @@ export class TaskManager {
 
   /**
    * `resolved` with `source` edges added for `refs`. Refused past the limit every task
-   * request enforces, since a task saved over it could not be edited back under it.
+   * request enforces, since a task saved over it could not be edited back under it, and
+   * refused when a new edge closes a cycle: an item can have a task that may not take a new
+   * task edge (one that failed, say) and that already waits on this one.
    */
-  private withSourceDependencyEdges(resolved: TaskDependency[], refs: TaskSourceRef[]): TaskDependency[] {
-    const dependencies = [...resolved, ...this.sourceDependencyEdges(refs, resolved)];
+  private withSourceDependencyEdges(
+    resolved: TaskDependency[], refs: TaskSourceRef[], taskId: string, selfSource?: TaskSourceRef,
+  ): TaskDependency[] {
+    const added = this.sourceDependencyEdges(refs, resolved);
+    const dependencies = [...resolved, ...added];
     if (dependencies.length > MAX_TASK_DEPENDENCIES) {
       throw new TaskDependencyError(`would carry more than ${MAX_TASK_DEPENDENCIES} dependencies`);
+    }
+    if (added.length > 0 && this.createsDependencyCycle(taskId, added, selfSource)) {
+      throw new TaskDependencyCycleError("task dependencies cannot form a cycle");
     }
     return dependencies;
   }
@@ -3131,10 +3139,9 @@ export class TaskManager {
       if (problem) throw new PlanStoreError(problem);
     }
     const resolvedDependencies = this.resolveDependencies(input.dependencies ?? [], id, [], input.source);
-    // This task's own source edges name items with no task that may take an edge, so none
-    // can lead back here; they join after the cycle check. Another task's source edge naming
-    // this task's item is followed by the check, which is how an upstream cycle is refused.
-    const dependencies = this.withSourceDependencyEdges(resolvedDependencies, input.sourceDependencies ?? []);
+    // Another task's source edge naming this task's item is followed by the cycle check, which
+    // is how an upstream cycle is refused; this task's own source edges are checked as added.
+    const dependencies = this.withSourceDependencyEdges(resolvedDependencies, input.sourceDependencies ?? [], id, input.source);
     validatePlanInputDependencies({ planInputs, dependencies });
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const backlogged = Boolean(input.backlog) || mustBacklog;
@@ -4470,7 +4477,7 @@ export class TaskManager {
     );
     const inputs: TaskDependencyInput[] = [...kept.map(dependencyInputOf), ...added.dependencies];
     const resolved = this.resolveDependencies(inputs, task.id, task.dependencies);
-    return this.withSourceDependencyEdges(resolved, added.sourceDependencies);
+    return this.withSourceDependencyEdges(resolved, added.sourceDependencies, task.id, task.source ?? undefined);
   }
 
   /**

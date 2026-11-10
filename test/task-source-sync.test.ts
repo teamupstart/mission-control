@@ -427,6 +427,16 @@ test("a synced edge refused for another reason is reported with that reason, not
   assert.match(error,/dependency is no longer available/); assert.doesNotMatch(error,/cycle/);
   assert.deepEqual(getTask(task.id)!.dependencies,[]);
 });
+test("a synced source edge to a failed blocker that waits on this task is refused as a cycle",async()=>{
+  const {src,registry,tasks,task,byRef}=await setupRelated();
+  await tasks.update(byRef(2).id,{dependencies:[{type:"task",taskId:task.id}]});
+  registry.upsertTask({...getTask(byRef(2).id)!,status:"failed"});
+  assert.equal(tasks.acceptsNewTaskEdgeTo(byRef(2).id),false);
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)},candidate(2),candidate(3)])).skipped,1);
+  assert.deepEqual(getTask(task.id)!.dependencies,[]);
+  assert.match(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!,/dependency cycle/);
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy,[]);
+});
 test("a synced edge past the dependency limit is refused whole and reported",async()=>{
   const {src,registry,tasks,task}=await setupRelated();
   const own=Array.from({length:50},(_,i)=>mkTask({id:`own-${i}`,status:"backlog",source:null}));

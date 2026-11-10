@@ -180,8 +180,8 @@ no task-owned pull request exists.
 Ownership order is strict. PR follow-through runs first. Human attention, queue items, pending
 turns, active Workflow runs, and any open pull request across every task repository all suppress
 pre-PR recovery. When a bound Workflow has parked but is still active, Workflow owns the session.
-Once any task-owned pull request appears, the shepherd stops and the existing review-comment and
-CI follow-through path owns later idle periods. It never adds a second PR poller.
+Once any task-owned pull request appears, the shepherd stops and the existing GitHub Inspector
+findings and CI follow-through path owns later idle periods. It never adds a second PR poller.
 
 The **Keep pre-PR ship tasks moving** setting governs both immediate held-gap delivery and the
 quiet-window shepherd. The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
@@ -254,12 +254,14 @@ queue that has never moved is exactly where you go looking for the reason.
 ### Keeping a PR on track
 
 Once work has an **open pull request**, its session can park while the
-[GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) posts comments or CI goes red. The Foreman
+[GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews it or CI goes red. The Foreman
 popover's **Pull requests** section has two independent, default-on controls, and a choice of
 which CI failures count:
 
-- **Keep sessions on track with review comments** nudges the parked session to resolve
-  GitHub Inspector comments already posted on its PR.
+- **Keep sessions on track with GitHub Inspector findings** (`trackReviewFeedback`) nudges the
+  parked session to address every unresolved GitHub Inspector finding on its PR, including
+  dry-run drafts that were never posted. The nudge carries each finding's text, so the session
+  can act on one that is not on GitHub (see [the findings it carries](#the-findings-a-nudge-carries)).
 - **Keep sessions on track with CI** nudges the parked session to fix failing checks. It
   never creates a PR; an existing open PR is a required input, and every fix stays on that
   PR's branch. It also adds CI follow-through instructions when a workflow prepares a Pull
@@ -281,8 +283,8 @@ which CI failures count:
   every check.
 
 Workflow PR instructions read the CI preference, and which failures count, at packet
-preparation, independently of the review-comment preference and the Foreman worker's mode or
-enabled state. With Required checks they ask the session to watch and fix the required checks. The workflow's own
+preparation, independently of the findings preference and the Foreman worker's mode or enabled
+state. With Required checks they ask the session to watch and fix the required checks. The workflow's own
 delivery authorization still controls whether the packet may be sent. Prepared and delivered
 packets keep their exact instructions across setting changes and retries; the next newly
 prepared action uses the new setting. Other action completion kinds receive no CI policy.
@@ -302,21 +304,87 @@ Both apply to parked sessions on harnesses Foreman can reliably drive - currentl
 and Codex sessions launched with Mission Control's scoped hooks - whether the PR came from
 **Straight to PR**, a review workflow, or one you shipped by hand.
 
+The session card shows only the PR its current work episode accepted, so a session that returned
+to an older PR's branch can show none. Foreman also follows the GitHub Inspector's adoption: an
+open PR the Inspector adopted under that session, in its repository, whose head branch is the
+session's current branch, has its unresolved findings relayed even when the card shows no PR.
+"Under that session" means the same session id, or the agent id recorded when the PR was
+adopted, which survives a restart that re-mints the session id. A PR adopted before the
+session's agent id was known matches on the session id alone. Such a PR carries only its
+findings. CI, CodeRabbit and stacked pull request follow-through stay
+with the card's PR.
+
 Each nudge is typed into the session's pane, so it carries the usual gates and one more:
 
 - it only **types** in **live** mode on an **allowlisted** repo, exactly like direct
   wrap-up - dry-run leaves the parked PR for you;
 - it fires only at a **settled-idle** session, so it never interrupts one already working the
-  fixes, and it does not nag a PR that's being handled: review comments re-arm **once per
-  GitHub Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
+  fixes, and it does not nag a PR that's being handled: findings re-arm **once per
+  GitHub Inspector round**, each time with the full unresolved set, and a failing CI re-arms **once per failure episode** - after the checks
   recover, a later failure counts as new (so a red CI is never permanently silenced, and a
-  CI that merely goes green does not re-nudge the comments already relayed);
+  CI that merely goes green does not re-nudge the findings already relayed);
 - it stands down while the session **needs you**, while it has a live **work queue**
   (the drain trigger owns that checkout), and while a non-terminal **workflow run owns the
-  session and branch**;
-- the review-comment half counts only GitHub Inspector findings **already posted on the PR**
-  (dry-run drafts and findings still being posted do not count) - the failing-CI half works
-  regardless.
+  session and branch**. A run **Blocked** where only you or the session can restart it is the
+  exception: one that spent its repair budget, or stopped on `unchanged_evidence_exhausted` or
+  `session_disappeared`, delivers nothing while it waits, so findings and failing CI reach the
+  session again. Granting rounds, reattaching or resubmitting puts the run back in charge, and
+  every other blocked phase keeps holding the session. CodeRabbit follow-up and stacked pull
+  request prompts still wait for the run to finish;
+- the findings half counts every **unresolved** GitHub Inspector finding, whether it was
+  posted on GitHub, is being posted, or was drafted and never posted (in dry run, for example).
+  The Inspector's mode decides only whether a finding reaches GitHub, never whether the session
+  hears about it. Foreman's own gates above still decide whether it types at all.
+
+When a gate holds a pull request that has unresolved GitHub Inspector findings, the Foreman worker
+logs one line naming the session, the pull request, the number of findings, the Inspector round
+and the gate, for example
+`[foreman] my-session: holding 3 GitHub Inspector finding(s) on owner/repo#123 (round 7) - an active workflow owns this session`.
+It logs once per pull request, round and reason, so the line appears again only when the
+Inspector finishes a round or a gate that has not yet held that pull request this round holds it. A pull request with no unresolved findings is
+never logged, and neither are the normal waiting states: a session that is still working, and a
+round that was already relayed.
+
+#### The findings a nudge carries
+
+When the nudge includes findings, Foreman reads them from the daemon
+(`GET /api/inspector/findings?pr=<prKey>`) first, then re-reads the session, its settings and its
+workflow ownership, and only then decides whether to type. Every gate above is therefore checked
+against what the session looks like after the read, so a session that started working, came to
+need you or was taken over by a workflow while the findings were being read is left alone. One
+more gate runs at that point, and only after a read: the round check below, which compares the
+round the findings route answered for with the round in the re-read session. The findings
+Foreman reads, not the session snapshot's count, decide what is sent:
+
+- if the read fails, Foreman logs it, types nothing and does not record the round as relayed,
+  so the next pass tries again;
+- if every finding resolved between the snapshot and the read, the findings part is dropped,
+  and with nothing else new to say the pass skips, again without recording the round;
+- if the findings route answered for a different GitHub Inspector round than the re-read session
+  shows (a round finished between the two reads), a nudge that carries findings is held: nothing
+  is typed and nothing is recorded, so the round it would have stamped is not the round whose
+  findings it carried. The next pass, whose two reads agree, relays that round once. A nudge
+  whose findings part dropped out, such as one for failing CI alone, has no round to compare and
+  is not held.
+
+The message opens with the counts, for example "PR #7 needs follow-through: GitHub Inspector
+has 3 unresolved findings on it (1 posted on GitHub, 2 not posted)." A draft GitHub refused 3
+times is counted among the not posted, and named: "2 not posted (1 refused by GitHub)". It is
+still unresolved, so it is still relayed. Its findings step asks the
+agent to address every finding listed below. It says a finding marked **Not posted** exists only
+in that message, so the agent should not look for it on GitHub or reply to it there. The agent
+may answer a posted finding it thinks is wrong in its GitHub thread, and should say which
+not-posted finding it disagrees with, and why, in its reply. The operator's per-PR **Resolve**
+closes findings; there is no other dispute channel.
+
+The findings follow the steps, rendered by the same renderer as the workflow
+`inspector_feedback` packet: severity and title, location, a line saying whether and where it
+was posted on GitHub, the body, and the fingerprint. The whole message stays under the same
+8,000-byte ceiling. Past it, whole findings are dropped from the lowest severity up, and a closing
+line says how many were left out. They stay open and come back in the next relay.
+
+The daemon-built CodeRabbit follow-up replaces Foreman's message for its pull request, so it
+carries the same findings, rendered the same way.
 
 **A session holding several pull requests is followed through on each of them.** A
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) opens one per

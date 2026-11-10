@@ -6,7 +6,7 @@ import { expect, test } from "../fixtures/test.ts";
 
 const PREFERENCES = [
   { key: "keepShipTasksMoving", label: "Keep pre-PR ship tasks moving" },
-  { key: "trackReviewFeedback", label: "Keep sessions on track with review comments" },
+  { key: "trackReviewFeedback", label: "Keep sessions on track with GitHub Inspector findings" },
   { key: "trackCiFailures", label: "Keep sessions on track with CI" },
 ] as const;
 

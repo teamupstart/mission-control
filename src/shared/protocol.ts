@@ -82,6 +82,13 @@ import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
 import {
   AGENT_TYPES,
+  INSPECTOR_COMMENT_STATUSES,
+  INSPECTOR_FAIL_KINDS,
+  INSPECTOR_LEGACY_POSTED,
+  INSPECTOR_OBSERVED_STATES,
+  INSPECTOR_PR_STATES,
+  INSPECTOR_SEVERITIES,
+  INSPECTOR_SOURCES,
   PROMPTED_COMPLETION_OUTCOMES,
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
@@ -94,10 +101,21 @@ import {
   THINKING_LEVELS,
   ADVISOR_CHOICES,
 } from "./types.ts";
-import type { AdvisorChoice, AgentType, SessionRuntime, Task, TaskKind, TaskRepoPrSummary } from "./types.ts";
+import type {
+  AdvisorChoice,
+  AgentType,
+  InspectorComment,
+  InspectorInspection,
+  SessionRuntime,
+  StackLineage,
+  Task,
+  TaskKind,
+  TaskRepoPrSummary,
+} from "./types.ts";
+import type { StackStanding } from "./stacking.ts";
 import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
-import { INSPECTOR_LIMITS } from "./inspector.ts";
+import { INSPECTOR_LIMITS, INSPECTOR_POSTURES } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   DEFAULT_WORKFLOW_POLICY,
@@ -2733,6 +2751,139 @@ export type ResolveFindings = z.infer<typeof ResolveFindingsSchema>;
 export interface ResolveFindingsResult {
   resolved: number;
 }
+
+/**
+ * A pull request key as the Inspector mints it from a PR URL (`parsePrUrl`):
+ * `owner/repo#123`. Carried in a query parameter by the findings route, so its shape is
+ * checked rather than trusted.
+ */
+export const INSPECTOR_PR_KEY_PATTERN = /^[\w.-]+\/[\w.-]+#\d{1,10}$/;
+
+export const InspectorCommentSchema = z.object({
+  id: z.string(),
+  prKey: z.string(),
+  fingerprint: z.string(),
+  path: z.string().nullable(),
+  line: z.number().int().nullable(),
+  title: z.string(),
+  body: z.string().nullable(),
+  severity: z.enum(INSPECTOR_SEVERITIES),
+  round: z.number().int(),
+  status: z.enum(INSPECTOR_COMMENT_STATUSES),
+  replies: z.number().int(),
+  answeredCommentId: z.number().int().nullable(),
+  resolutionPending: z.boolean().optional(),
+  postedAt: z.number().int().nullable().optional(),
+  githubUrl: z.string().nullable().optional(),
+  legacyPosted: z.enum(INSPECTOR_LEGACY_POSTED).nullable().optional(),
+  postRefusals: z.number().int().nonnegative().optional(),
+  lastPostError: z.string().nullable().optional(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export const InspectorInspectionSchema = z.object({
+  key: z.string(),
+  url: z.string(),
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  repoRoot: z.string().nullable(),
+  cwd: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  noteKey: z.string().nullable().optional(),
+  source: z.enum(INSPECTOR_SOURCES),
+  state: z.enum(INSPECTOR_PR_STATES),
+  headSha: z.string().nullable(),
+  reviewPosture: z.enum(INSPECTOR_POSTURES).nullable(),
+  reviewComplete: z.boolean().nullable().optional(),
+  cleanReviewHeadSha: z.string().nullable().optional(),
+  round: z.number().int(),
+  lastReviewedAt: z.number().nullable(),
+  lastError: z.string().nullable(),
+  failCount: z.number().int(),
+  lastFailKind: z.enum(INSPECTOR_FAIL_KINDS).nullable(),
+  nextAttemptAt: z.number().nullable(),
+  lastAttemptSha: z.string().nullable(),
+  mergedAt: z.number().nullable(),
+  mergeBlock: z.string().nullable(),
+  observedHeadSha: z.string().nullable(),
+  observedState: z.enum(INSPECTOR_OBSERVED_STATES).nullable(),
+  observedAt: z.number().nullable(),
+  headRefName: z.string().nullable(),
+  title: z.string().nullable(),
+  baseRefName: z.string().nullable().optional(),
+  reviewedBaseRef: z.string().nullable().optional(),
+  reviewedBaseSha: z.string().nullable().optional(),
+  mergeCommitSha: z.string().nullable().optional(),
+  // Stacked pull requests' lineage and standing are carried as objects but not restated
+  // field by field: no reader of this schema decides anything from them.
+  stack: z.custom<StackLineage | null>((value) => value === null || typeof value === "object").optional(),
+  stackStanding: z.custom<StackStanding | null>((value) => value === null || typeof value === "object").optional(),
+  adoptedAt: z.number(),
+  updatedAt: z.number(),
+  // `CodeRabbitSummary` in `code-rabbit.ts`, restated for the same reason as the rest of this
+  // schema.
+  codeRabbit: z.object({
+    status: z.enum(["unknown", "complete", "error"]),
+    observationId: z.string().nullable(),
+    headSha: z.string().nullable(),
+    observedAt: z.number().nullable(),
+    freshUntil: z.number().nullable(),
+    unresolved: z.number().nullable(),
+    error: z.string().nullable(),
+    threads: z.array(z.object({ id: z.string(), url: z.string(), path: z.string().nullable() })),
+    pending: z.number(),
+    delivery: z.string(),
+  }).optional(),
+  // `InspectorCiProjection` in `types.ts`: what Foreman's Required mode reads off an adopted row.
+  ci: z.object({
+    headSha: z.string().nullable(),
+    required: z.enum(["passing", "failing", "pending"]).nullable(),
+  }).optional(),
+  openFindings: z.number().int(),
+  postedOpenFindings: z.number().int(),
+  resolvedFindings: z.number().int(),
+});
+
+/** `GET /api/inspector/prs?state=`: only `open` is a reading the route serves. */
+export const InspectorPrsStateSchema = z.enum(["open"]);
+
+/**
+ * `GET /api/inspector/findings?pr=<prKey>`: one pull request's ledger row and every finding
+ * the Inspector recorded on it, in every status, unresolved first and then in the order
+ * the findings renderer uses (`orderInspectorFindings`).
+ *
+ * One schema, parsed by both Foreman's client and the dashboard's, so the two readers
+ * cannot disagree about the shape. Read-only: nothing here writes the ledger.
+ */
+export const InspectorFindingsResponseSchema = z.object({
+  pr: InspectorInspectionSchema,
+  findings: z.array(InspectorCommentSchema),
+});
+export type InspectorFindingsResponse = z.infer<typeof InspectorFindingsResponseSchema>;
+
+// The two schemas above restate `InspectorComment` and `InspectorInspection`, whose owners
+// are in `types.ts`. Their enums come from the same const arrays the types are derived
+// from, and these checks hold the rest: the schema's output and the interface must each be
+// assignable to the other. `satisfies z.ZodType<T>` alone is one-way, so a value or a field
+// added to the type would still typecheck while every client refused the daemon's answer.
+// With this, adding a field or widening a type without updating the schema fails the build.
+//
+// Assignability alone ignores an OPTIONAL field present on one side only, so the key sets
+// are compared as well.
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type SameShape<A, B> = MutuallyAssignable<A, B> extends true ? MutuallyAssignable<keyof A, keyof B> : false;
+const inspectorCommentSchemaMatchesType: SameShape<
+  z.infer<typeof InspectorCommentSchema>,
+  InspectorComment
+> = true;
+const inspectorInspectionSchemaMatchesType: SameShape<
+  z.infer<typeof InspectorInspectionSchema>,
+  InspectorInspection
+> = true;
+void inspectorCommentSchemaMatchesType;
+void inspectorInspectionSchemaMatchesType;
 
 // ---- Shipping (landing the pull requests we opened, unattended) ----
 

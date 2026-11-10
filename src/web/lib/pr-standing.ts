@@ -118,6 +118,15 @@ export function prStanding(row: InspectorInspection): PrStanding {
   }
 }
 
+/**
+ * How a closed pull request ended, or null while it is open. Folded from `prStanding` so the
+ * Inspector panel and the Ship log cannot disagree about a pull request a human merged.
+ */
+export function inspectorPrClosedAs(row: InspectorInspection): "merged" | "closed" | null {
+  if (row.state === "open") return null;
+  return prStanding(row) === "merged" ? "merged" : "closed";
+}
+
 /** The three-way tallies, over any set of rows - the whole week, or one repository's slice. */
 export function standingTallies(
   rows: readonly InspectorInspection[],

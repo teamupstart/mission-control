@@ -435,12 +435,12 @@ test("with no trigger armed the action group is disabled and says so", () => {
   assert.match(html, /<fieldset class="foreman-wrapup-action" disabled=""/);
 });
 
-test("pre-PR recovery, review comments, and CI render as independent default-on settings", () => {
+test("pre-PR recovery, GitHub Inspector findings, and CI render as independent default-on settings", () => {
   const html = renderPopover(mkState());
   assert.match(html, /<legend>Pull requests<\/legend>/);
   for (const label of [
     "Keep pre-PR ship tasks moving",
-    "Keep sessions on track with review comments",
+    "Keep sessions on track with GitHub Inspector findings",
     "Keep sessions on track with CI",
   ]) {
     const at = html.indexOf(label);
@@ -450,6 +450,8 @@ test("pre-PR recovery, review comments, and CI render as independent default-on 
   assert.match(html, /Invited managed Ship tasks only, in Live trusted repos/);
   assert.match(html, /Stops as soon as any\s+task-owned pull request appears/);
   assert.match(html, /Does not create a PR\. Once one exists, sends failing CI back to its session/);
+  assert.match(html, /Relays every unresolved finding, including dry-run drafts that were never posted\./);
+  assert.doesNotMatch(html, /with review comments/);
   assert.match(html, /New workflow PR instructions also ask the session to follow CI through completion/);
 });
 
@@ -458,7 +460,7 @@ test("the two PR follow-through permissions persist independently", () => {
     trackReviewFeedback: true,
     trackCiFailures: false,
   }));
-  const commentsAt = commentsOnly.indexOf("Keep sessions on track with review comments");
+  const commentsAt = commentsOnly.indexOf("Keep sessions on track with GitHub Inspector findings");
   const ciAt = commentsOnly.indexOf("Keep sessions on track with CI");
   assert.match(commentsOnly.slice(0, commentsAt).split("<input").pop() ?? "", /checked/);
   assert.doesNotMatch(commentsOnly.slice(0, ciAt).split("<input").pop() ?? "", /checked/);
@@ -496,7 +498,7 @@ test("a daemon too old to know the follow-through keys still renders them as on"
   const html = renderPopover(state);
   for (const label of [
     "Keep pre-PR ship tasks moving",
-    "Keep sessions on track with review comments",
+    "Keep sessions on track with GitHub Inspector findings",
     "Keep sessions on track with CI",
   ]) {
     const at = html.indexOf(label);

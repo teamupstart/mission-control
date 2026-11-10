@@ -247,24 +247,63 @@ A model is a **cost** choice here, not a latency one. The same 10KB PR measured 
 Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
 `MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
 
+### Whether a finding reached GitHub
+
+Every finding records whether, and when, it was posted. The time is stamped when GitHub
+accepts the review that carried it, or when the next round finds the comment of a review
+whose response was lost. It is never cleared, so a finding that was posted and later
+resolved still reads as posted, and one raised again in dry run reads as "not posted again,
+posted earlier".
+
+Findings recorded before Mission Control tracked posting report only what their row
+proves. An open finding, or one with replies, was on GitHub. A dry-run draft never was. A
+resolved finding with no replies could be either, and it reads as **unknown** rather than
+guessing, until a tick finds its own thread or review on the pull request, which proves it
+was posted.
+
+A posted finding also records where it is. An inline finding links to the first comment of
+its thread. A finding folded into the review body, because it had no line to anchor to,
+links to the review that carried it. The link comes from the pull request read each tick
+already makes, and from any later page of threads or reviews that the clean-review check
+reads, so it costs no extra GitHub call. It lands on the tick after the review is posted.
+Until then the finding reads as posted without a link. When a tick has read only some of a
+pull request's pages, it fills a missing link but does not replace a stored one that an
+unread page could still prove out of date. The same ownership rule
+that decides which threads are the GitHub Inspector's own decides which comment or review a
+finding links to, so a comment someone else wrote is never linked. The link is kept when a
+finding is raised again, so a finding that is not posted again still points at the comment
+where it was posted earlier.
+
+`GET /api/inspector/findings?pr=owner/repo%23123` returns one pull request's ledger row and
+every finding on it, in every status, unresolved first and then by severity, path and line.
+It answers 400 for a missing or malformed key and 404 for a pull request the GitHub
+Inspector never adopted. It is read-only, and it is how Foreman's worker, which never
+touches the database, can read finding text.
+
 ### Dry run
 
 `dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
 them, then records them instead of publishing. **Settings → GitHub Inspector → Inspections** is
-where you read what it would have said. Run it there on a few of your own PRs before you
-let it speak.
+where you read what it would have said: each row with findings has a **Findings** control
+that opens every draft for that pull request
+([Reading a pull request's findings](#reading-a-pull-requests-findings)). Run it there on a
+few of your own PRs before you let it speak.
 
 Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
 last round errored - hover the link for why), a finding count, or `clean`, beside a count
-of the findings that are no longer open and - on an open PR still carrying findings -
-a **Resolve** control that closes them ([why that exists](#how-a-finding-gets-closed)).
+of the findings that are no longer open, a **Findings** control on any row with at least one
+finding, and - on an open PR still carrying findings - a **Resolve** control that closes them
+([why that exists](#how-a-finding-gets-closed)).
 
 That second number says `closed`, not `fixed`, because it cannot tell you which: a finding
 closes in [three ways](#how-a-finding-gets-closed) and only one of them is a push that fixed
 it. The ledger records the outcome, not which route produced it. A PR that has since closed reads `merged` or
 `closed` and is dimmed: it left the sweep for good, so it is history rather than a queue. A
 closed PR that *was* reviewed keeps its findings, because what the GitHub Inspector said about
-something that landed is the more useful fact.
+something that landed is the more useful fact. Its count reads as left behind, `3 unresolved at
+merge` or `3 unresolved at close`, rather than `3 findings`, since nothing will review them
+again. `merged` follows GitHub's own state as of the last poll, so a PR you merged by hand reads
+`merged` too, not only one YOLO mode merged.
 
 The count strip above the table tallies those same states and filters to one when you click
 it - on a ledger that is mostly landed work, *with findings* is how you get to the two rows
@@ -280,6 +319,97 @@ control for shortening the list, so it has to stay in view while you read the li
 filters. Picking a tile starts that filtered list at its first page, and the pager is absent
 when everything already fits. The GitHub Inspector's list is the 50 most recently reviewed pull
 requests, so the total counts what this panel was served, not everything the database holds.
+
+### Drafts after a switch to live
+
+Switching a repository from dry run to live posts the findings dry run drafted. The switch
+makes the GitHub Inspector review the same head again (see
+[It needs the GitHub Inspector, fully on](#it-needs-the-github-inspector-fully-on)). The
+review prompt lists each draft under "Found earlier but never posted", and asks the model only
+whether the push fixed it. Whatever the model leaves alone, Mission Control posts itself, in
+the same review as anything new. A draft is posted only when all of these hold:
+
+- the model neither resolved it nor raised it again. A draft it raises again is posted as a
+  new finding;
+- its file is still in the diff, and its line snaps to one GitHub can anchor. A draft about a
+  file the push removed stays a draft;
+- GitHub has refused it fewer than 3 times.
+
+Drafts share the round's comment cap with new findings. At the same severity a new finding
+comes first.
+
+A refusal counts against a draft only when GitHub's answer is about that draft. Mission
+Control reads the HTTP status `gh` reports and GitHub's message:
+
+| GitHub's answer | What happens |
+| --- | --- |
+| A rate limit (429, or a 403 secondary limit), an auth or SSO refusal, a server error, any other status that is not 422 | The round fails as any failed review does: the findings stay drafts, the head is reviewed again after backoff, and nothing is counted. |
+| A 422 whose message names no comment that could not be anchored, such as the limit of one pending review per pull request | The same. A refusal about the review as a whole says nothing about any draft. |
+| A 422 that says a line, path or position could not be resolved or is not in the diff, on a head that moved during the review | The same, after one read of the pull request's head. |
+| That 422 on an unmoved head | A validation refusal, attributed below. |
+
+For a validation refusal, a review that also carried new findings is sent again at once
+without the drafts. If GitHub refuses that one too, nothing is counted and the round fails as
+above. Then the drafts are attributed. A single draft records the refusal. Several drafts are
+each posted in a review of their own, so a valid draft is never charged for a bad sibling. Each
+of those reviews is its own notification on the pull request. A draft refused alone is charged
+only when at least one of the others was accepted. When GitHub refuses every one, a refusal
+they all share cannot be pinned on any of them, so nothing is counted. The round still
+finishes, because reviewing the same head again would only repeat the refusals, and the drafts
+are offered again on the next push.
+A response that never arrived is not a refusal and is never counted.
+
+Every retry reuses the round's review, so no second model run is made. Once the refusals are
+pinned, the round finishes and the head counts as reviewed live. A refused draft stays a draft,
+still counts as an open finding for [Shipping](#shipping-yolo-mode), and is offered again on the
+next push. At 3 refusals it stops being offered. Its row keeps the count and GitHub's latest
+reason. It stays open until a push fixes it and the model resolves it, or you use
+[Resolve](#how-a-finding-gets-closed).
+
+The count and the reason show from the first refusal, not only at the cap. Below 3, the
+finding still reads **Not posted** in the [Findings modal](#reading-a-pull-requests-findings)
+and the workflow Completion tab, with "GitHub refused it 1 time" under it. At 3 it reads
+**Refused**. Either way it stays unresolved, so it still blocks [Shipping](#shipping-yolo-mode)
+and Foreman still relays it. The relay and the workflow `inspector_feedback` packet mark it
+"Not posted yet. GitHub refused it N time(s): <reason>. Mission Control offers it again on the
+next push." below the cap, and "Not posted. GitHub refused it 3 times: <reason>" at it.
+
+### Reading a pull request's findings
+
+**Findings** on an Inspections row opens every finding the GitHub Inspector generated for that
+pull request, open and closed, in a read-only modal. It is offered on any row with at least
+one finding, including a pull request that has since merged or closed. A row with no findings
+has no control.
+
+The modal names the pull request with a link to it, says whether it is open, merged or closed,
+and counts its review rounds. When the last review was not live and no finding on the pull
+request ever reached GitHub, it says so: "Dry run: nothing on this pull request was posted". It
+says nothing about posture for a row from a build that did not record it. On a pull request that
+merged or closed with findings still unresolved, one line says so: "This pull request merged with
+3 findings unresolved. They are kept as a record and will not be reviewed again." The findings
+stay on the ledger as the record of what the GitHub Inspector said, and each keeps its own Posted
+label.
+
+The table is the one the [Completion tab](workflows.md) uses. Each finding shows its severity,
+title, location, round and status, and a **Posted** column that reads
+[whether it reached GitHub](#whether-a-finding-reached-github):
+
+| Posted | Meaning |
+| --- | --- |
+| Posted, linked | On GitHub. The link opens its comment, or the review that carried it. |
+| Posted, no link | On GitHub. The link is recorded on a later tick. |
+| Not posted | A draft. It exists only in Mission Control. |
+| Not posted, "GitHub refused it N time(s)" | A draft GitHub refused once or twice after a switch to live. It is offered again on the next push. Hover for GitHub's reason, which **Show finding** also lists. |
+| Refused, "GitHub refused it 3 times" | A draft GitHub refused 3 times. It is no longer offered. The reason shows the same way. |
+| Not posted (posted earlier) | Raised again and not posted again. The link opens the earlier comment. |
+| Posting | Sent to GitHub, outcome not known yet. |
+| Unknown | Recorded before Mission Control tracked posting. |
+
+An unresolved finding's text is always shown. A resolved one's opens with **Show finding**,
+which also shows its fingerprint and timestamps. The modal reads
+`GET /api/inspector/findings` when it opens and again on the panel's 4-second poll while it
+stays open. It has no Resolve: that stays on the row, and closes every finding on the pull
+request at once.
 
 ## Shipping (YOLO mode)
 

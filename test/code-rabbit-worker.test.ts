@@ -86,7 +86,7 @@ test("GitHub review pages refuse oversized lists through snapshot and history re
   }
   // Ordinary malformed entries keep their existing tolerant projection within the bound.
   respond([null, { body: 42, author: null, commit: null }]);
-  assert.deepEqual((await fetchPr(dir, "a", "b", 1)).value?.reviews, [{ body: "", author: "unknown", headSha: "" }]);
+  assert.deepEqual((await fetchPr(dir, "a", "b", 1)).value?.reviews, [{ url: null, body: "", author: "unknown", headSha: "" }]);
   assert.deepEqual(await cleanReviewExists(input), { ok: true, value: false });
   assert.deepEqual(await hasBodyOnlyFindings(input), { ok: true, value: false });
 });

@@ -22,7 +22,14 @@ import {
   isLlmRunnerId,
 } from "@shared/llm.ts";
 import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
-import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
+import { z } from "zod";
+import {
+  ForemanConfigSchema,
+  InspectorConfigSchema,
+  InspectorFindingsResponseSchema,
+  InspectorInspectionSchema,
+  TRANSCRIPT_DEFAULT_TAIL_TURNS,
+} from "@shared/protocol.ts";
 import type { ForemanHealthSnapshot } from "@shared/foreman-health.ts";
 import type {
   BacklogPlanInput,
@@ -30,6 +37,8 @@ import type {
   ForemanInstructionsView,
   ForemanLeaseResult,
   ForemanPlannerControl,
+  InspectorConfig,
+  InspectorFindingsResponse,
   PromptedCompletionDisposition,
   PromptedRecoveryClaim,
   PromptedRecoveryDelivery,
@@ -44,6 +53,7 @@ import type {
   AssignRefusalScope,
   BacklogPlan,
   ForemanPlannerHealth,
+  InspectorInspection,
   ReviewItem,
   Session,
   SessionDiff,
@@ -1190,6 +1200,28 @@ export class ForemanClient implements ForemanActions {
   /** Current planning PR owner; malformed or unavailable daemon responses never mean unbound. */
   async planPublicationContext(id: string): Promise<PlanPublicationContext> {
     return PlanPublicationContextSchema.parse(await get(`/api/sessions/${enc(id)}/plan-publication`));
+  }
+
+  /**
+   * Every GitHub Inspector finding on one pull request, with whether each reached GitHub.
+   *
+   * Parsed rather than cast: the relay types finding text into a session, so a shape it
+   * cannot vouch for throws like a failed read, and the caller holds the round for the next
+   * pass instead of relaying something half-read.
+   */
+  async inspectorFindings(prKey: string): Promise<InspectorFindingsResponse> {
+    return InspectorFindingsResponseSchema.parse(
+      await get<unknown>(`/api/inspector/findings?pr=${enc(prKey)}`),
+    );
+  }
+
+  /** Every open pull request the Inspector adopted, with tallies. Parsed, as findings are. */
+  async openInspections(): Promise<InspectorInspection[]> {
+    return z.array(InspectorInspectionSchema).parse(await get<unknown>("/api/inspector/prs?state=open"));
+  }
+
+  async inspectorConfig(): Promise<InspectorConfig> {
+    return InspectorConfigSchema.parse(await get<unknown>("/api/inspector/config"));
   }
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */

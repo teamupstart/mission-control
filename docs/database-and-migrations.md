@@ -38,6 +38,10 @@ Mission Control creates verified recovery points for normal operation and schema
 [Backup and restore](sqlite-database.html#backup) in the database field guide for the authoritative
 backup, retention, validation, failure-handling, and offline-restore procedure.
 
+Backup status appears in **Settings > Storage**: the interval and counts, Back up now, the last
+success and last failure of each kind, the kept copies with their total size, and a Problems list
+that names a failing capture until a capture succeeds.
+
 ## Recovering the product database
 
 Use the supported recovery command from a current Mission Control checkout. Pass the absolute

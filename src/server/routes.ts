@@ -385,6 +385,11 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
+import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
+import type { DatabaseBackupService } from "./database-backups/service.ts";
+import type { StorageHealthService } from "./storage-health.ts";
+import type { StorageView } from "@shared/storage-health.ts";
+import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -1332,6 +1337,10 @@ export interface RouteDeps {
   fileCommentWalkthrough?: FileCommentWalkthrough;
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
   settingsBackups?: SettingsBackupService;
+  /** The daemon's full-database backup owner. Its routes return 503 without it. */
+  databaseBackups?: DatabaseBackupService;
+  /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
+  storageHealth?: StorageHealthService;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1387,6 +1396,8 @@ export const ROUTE_DEP_NAMES = [
   "fileComments",
   "fileCommentWalkthrough",
   "settingsBackups",
+  "databaseBackups",
+  "storageHealth",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1680,6 +1691,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     fileComments,
     fileCommentWalkthrough,
     settingsBackups,
+    databaseBackups,
+    storageHealth,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -8408,6 +8421,47 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, TerminalsConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     return c.json(setTerminalsConfig(parsed.data));
+  });
+
+  // --- Database backups: how many full recovery points of each kind are kept ---
+  //
+  // Saving prunes at once, so a lowered count frees its copies on save.
+  const databaseBackupsUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Database backup service is unavailable",
+  }, 503);
+  // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
+  // and reaches every open dashboard through the same `storage_health` event.
+  app.get("/api/storage", (c) => {
+    if (!storageHealth) {
+      return c.json({
+        error: "service_unavailable" as const,
+        message: "Storage health service is unavailable",
+      }, 503);
+    }
+    const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
+    return c.json(view);
+  });
+  app.put("/api/storage/backups/config", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setDatabaseBackupsConfig(parsed.data, databaseBackups));
+  });
+
+  // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
+  // It is never refused by the scheduled backoff; the service records its outcome either way.
+  app.post("/api/storage/backups", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    try {
+      const { kind, filename, createdAt } = await databaseBackups.captureManual();
+      return c.json({ kind, filename, createdAt }, 201);
+    } catch (error) {
+      return c.json({
+        error: "backup_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
   });
 
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---

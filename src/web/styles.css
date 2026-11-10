@@ -24151,13 +24151,13 @@ button.sc-row:focus-visible {
   border-left: 2px solid var(--border);
   background: var(--panel-2);
 }
-/* The resolve column is 62px, measured against its own longest real value rather than
-   rounded up: the cell holds one text button reading `Resolve`, or `Resolving…` for the
-   moment a request is in flight, and both fit at the row's 12px. It comes out of the pull
-   request's flexible track, which can afford it - that cell holds `repo#123`, the shortest
-   real value in the table, while every other track here is already measured. */
+/* The actions column is 124px, measured against its longest real value rather than rounded
+   up: `Findings` beside `Resolving…`, the moment a resolve is in flight, with the cell's 10px
+   gap, at the cell's 11px. It comes out of the pull request's flexible track, which can
+   afford it - that cell holds `repo#123`, the shortest real value in the table, while every
+   other track here is already measured. */
 .sc-table-inspector .sc-row {
-  grid-template-columns: minmax(0, 1fr) 148px 74px 104px 62px;
+  grid-template-columns: minmax(0, 1fr) 148px 74px 104px 124px;
 }
 .sc-table-shipping .sc-row {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
@@ -24355,13 +24355,77 @@ button.sc-row:focus-visible {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-/* The operator's way out of a stuck finding. Right-aligned to the row's edge like every
-   other trailing cell here, and 11px to sit with `Fixed` rather than to compete with the
-   verdict - it is a repair for an uncommon state, not the row's headline. */
+/* Findings and Resolve, the row's actions. Right-aligned to the row's edge like every
+   other trailing cell here, and 11px to sit with `Closed` rather than to compete with the
+   verdict - they are not the row's headline. */
 .sc-act {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
   font-size: 11px;
+}
+
+/* ---- Settings > GitHub Inspector's Findings modal ----
+   The summary sits in the shell's inset. The table band bleeds because it is its own
+   scrollport, so it re-applies the inset as its own padding. */
+.inspector-findings-summary {
+  padding-block: 12px 4px;
+  font-size: 12px;
+}
+.inspector-findings-summary p {
+  margin: 0 0 8px;
+}
+.inspector-findings-pr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+}
+.inspector-findings-pr a {
+  color: var(--fg);
+  font-weight: 600;
+}
+.inspector-findings-sep {
+  color: var(--dim);
+}
+.inspector-findings-mode {
+  color: var(--attention);
+}
+.inspector-findings-record {
+  color: var(--muted);
+}
+.inspector-findings-body {
+  padding: 0 var(--modal-inset, 18px) 14px;
+  max-height: 64vh;
+  overflow: auto;
+}
+/* The column names stay in view while a long list scrolls inside the band. The band is the
+   one scrollport, so the table's own horizontal scroller is turned off here or the sticky
+   header would stick to it instead. */
+.inspector-findings-body .wf-run-table {
+  overflow: visible;
+}
+.inspector-findings-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+}
+/* Separate borders, so each cell paints its own: collapsed borders are painted by the table
+   above a sticky header, and the severity rail would show through it as rows scroll under. */
+.inspector-findings-body table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+/* The Posted cell's second line on a draft GitHub refused, in every view the shared findings
+   table is drawn in. Attention rather than danger: the draft is still a finding to act on,
+   and the refusal is GitHub's answer about where it can be anchored, not a failure. */
+.inspector-finding-refusals {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--attention);
 }
 
 /* ---- the Foreman ledger's own cells ----

@@ -190,7 +190,8 @@ const {
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
-const { formatMarker } = await import("../src/server/inspector/marker.ts");
+const { fingerprint, formatMarker } = await import("../src/server/inspector/marker.ts");
+const { findingPublication } = await import("../src/shared/inspector-findings.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
 const { INSPECTOR_LIMITS } = await import("../src/shared/inspector.ts");
 
@@ -661,3 +662,128 @@ for (const scenario of ["disagrees", "no-reply", "already-answered", "already-re
     }
   });
 }
+// ---- Posting state: when GitHub confirmed a finding ----
+//
+// `posted_at` is stamped at the two points where this build learns a finding is on GitHub,
+// and carried, never cleared, everywhere else. These drive the real loop so the stamp is
+// pinned at the worker's confirmation points rather than at the upsert alone.
+
+test("an accepted live review stamps posted_at on every row it carried", async () => {
+  // Three findings in one review, so a promotion loop that stamped only its first row
+  // cannot pass.
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([
+    { path: "src/example.ts", line: 1, title: "Posted finding", body: "Needs attention", severity: "major" },
+    { path: "src/example.ts", line: 1, title: "Second posted finding", body: "Also this", severity: "minor" },
+    { path: "src/example.ts", line: 1, title: "Third posted finding", body: "And this", severity: "nit" },
+  ]);
+  writeGithubState({});
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false });
+  const key = adopt(610);
+  const before = Date.now();
+  await runOneSweep();
+  const after = Date.now();
+
+  assert.equal(readGithubState().posts.length, 1, "one review carried every finding and was accepted");
+  const rows = loadInspectorComments(key);
+  assert.deepEqual(
+    rows.map((r) => r.title).sort(),
+    ["Posted finding", "Second posted finding", "Third posted finding"],
+  );
+  for (const row of rows) {
+    assert.equal(row.status, "open", `${row.title} was promoted`);
+    assert.ok(row.postedAt != null && row.postedAt >= before && row.postedAt <= after,
+      `${row.title}: posted_at ${row.postedAt} is the confirmation time`);
+    assert.equal(row.githubUrl, null, "posted after this tick read its snapshot, so the link lands on the next tick");
+    assert.equal(row.legacyPosted, null);
+    assert.equal(findingPublication(row).state, "posted");
+  }
+
+  // Resolution carries it, so a posted finding still reads posted once it is closed.
+  assert.equal(resolveInspectorFindings(key, Date.now()), rows.length);
+  const stamped = new Map(rows.map((r) => [r.fingerprint, r.postedAt]));
+  for (const resolved of loadInspectorComments(key)) {
+    assert.equal(resolved.status, "resolved");
+    assert.equal(resolved.postedAt, stamped.get(resolved.fingerprint));
+    assert.equal(findingPublication(resolved).state, "posted");
+  }
+});
+
+test("posting reconciliation stamps a row it finds published, and only that row", async () => {
+  const publishedFp = "aaaaaaaaaaaa";
+  const lostFp = "bbbbbbbbbbbb";
+  const marker = formatMarker({ id: "finding-1", fingerprint: publishedFp, round: 1 });
+  writeGithubState({
+    headSha: "head-fixed",
+    threadBody: marker,
+    threadComments: [
+      { databaseId: 101, body: marker, createdAt: "2026-07-23T12:00:00Z", author: { login: "operator" } },
+    ],
+  });
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false });
+  const key = adopt(611);
+  // A round whose response was lost: both rows were written in `posting` ahead of a POST,
+  // on a head the next push has moved past.
+  updateInspectorPr(key, { headSha: "head-old", reviewPosture: "live", round: 1, lastReviewedAt: 1 }, Date.now());
+  //
+  // The lost row is about a file the new head no longer changes. Reconciliation turns it back
+  // into a draft, and a live round would otherwise carry that draft and post it at once (see
+  // `test/inspector-drafts-after-live.test.ts`), which would hide what reconciliation alone did.
+  for (const [id, fp, path, line] of [
+    ["finding-1", publishedFp, "src/example.ts", 1],
+    ["finding-2", lostFp, "src/no-longer-in-the-diff.ts", 3],
+  ] as const) {
+    upsertInspectorComment({
+      id, prKey: key, fingerprint: fp, path, line, title: `Issue ${fp}`,
+      body: "detail", severity: "major", round: 1, status: "posting", replies: 0,
+      answeredCommentId: null, postedAt: null, createdAt: 1, updatedAt: 1,
+    });
+  }
+  const before = Date.now();
+  await runOneSweep();
+
+  assert.equal(readFileSync(reviewCountPath, "utf8"), "1", "the new head was reviewed");
+  const rows = new Map(loadInspectorComments(key).map((r) => [r.fingerprint, r]));
+  const published = rows.get(publishedFp)!;
+  assert.equal(published.status, "open", "its marker thread is on the pull request");
+  assert.ok(published.postedAt != null && published.postedAt >= before);
+  const lost = rows.get(lostFp)!;
+  assert.equal(lost.status, "drafted", "no thread carries its marker, so it never posted");
+  assert.equal(lost.postedAt, null);
+});
+
+test("a finding raised again carries its earlier post until a new one is confirmed", async () => {
+  const title = "Retained finding";
+  const fp = fingerprint("src/example.ts", title);
+  const url = "https://github.com/mission/control/pull/612#discussion_r9";
+  process.env.FAKE_FIRST_FINDINGS = JSON.stringify([
+    { path: "src/example.ts", line: 1, title, body: "Back again", severity: "major" },
+  ]);
+  writeGithubState({});
+  // Dry run, so the re-raise is drafted rather than posted, and nothing re-stamps it.
+  setInspectorConfig({ enabled: true, mode: "dry-run", repoAllowlist: [project], maxCommentsPerRound: 8 });
+  setShippingConfig({ autoMerge: false });
+  const key = adopt(612);
+  upsertInspectorComment({
+    id: "finding-1", prKey: key, fingerprint: fp, path: "src/example.ts", line: 1, title,
+    body: "First time", severity: "major", round: 1, status: "resolved", replies: 1,
+    answeredCommentId: 7, postedAt: 1_234, githubUrl: url, createdAt: 1, updatedAt: 1,
+  });
+  await runOneSweep();
+
+  assert.equal(readGithubState().posts.length, 0, "dry run posts nothing");
+  const row = loadInspectorComments(key)[0]!;
+  assert.equal(row.status, "drafted");
+  assert.equal(row.body, "Back again", "the row really was raised again");
+  assert.equal(row.postedAt, 1_234);
+  assert.equal(row.githubUrl, url);
+  assert.deepEqual(findingPublication(row), {
+    state: "not-posted",
+    url,
+    postedAt: 1_234,
+    earlierPost: true,
+    refusals: 0,
+    reason: null,
+  });
+});

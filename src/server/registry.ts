@@ -1,5 +1,6 @@
 import { taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
+import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -332,6 +333,11 @@ import { pruneDelegatedTurns } from "./delegated-turns.ts";
 export interface PrOpened {
   url: string;
   sessionId: string;
+  /**
+   * The session's agent id once bound, which is its note key and survives the synthetic id
+   * re-minting on restart. Null before it binds: the synthetic id would stop matching then.
+   */
+  noteKey: string | null;
   cwd: string | null;
   repoRoot: string | null;
 }
@@ -3267,6 +3273,7 @@ export class Registry extends EventEmitter {
       this.emit("pr_opened", {
         url,
         sessionId: s.id,
+        noteKey: s.agentSessionId ?? null,
         cwd: s.cwd,
         repoRoot: s.repoRoot,
       } satisfies PrOpened);
@@ -9415,21 +9422,10 @@ export class Registry extends EventEmitter {
     const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
-      codeRabbit: codeRabbitSummary(row.key, owner),
+      ...inspectorSummaryOf(row, getInspectorConfig(), codeRabbitSummary(row.key, owner)),
       // Stacked pull requests: the lifecycle standing Foreman's follow-up reads to deliver a
       // catch-up or restack prompt, and the card reads to say why the child is held.
       stack: row.stack ? this.stackStanding(row) : null,
-      prKey: row.key,
-      url: row.url,
-      mode: getInspectorConfig().mode,
-      open: row.openFindings,
-      postedOpen: row.postedOpenFindings,
-      round: row.round,
-      lastReviewedAt: row.lastReviewedAt,
-      failed: row.lastError !== null,
-      reviewedHeadSha: row.headSha,
-      observedHeadSha: row.observedHeadSha,
-      cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
     };
   }
 

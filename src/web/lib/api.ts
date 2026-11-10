@@ -92,9 +92,11 @@ import type {
   WorktreesConfigPatch,
   AttentionDismissal,
   AttentionDismissalWrite,
+  InspectorFindingsResponse,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
+  InspectorFindingsResponseSchema,
   StandingInstructionsConflictSchema,
   StandingInstructionsViewSchema,
 } from "@shared/protocol.ts";
@@ -416,6 +418,16 @@ export const fetchInspectorPrs = (adoptedSince?: number) =>
       ? "/api/inspector/prs"
       : `/api/inspector/prs?adoptedSince=${Math.floor(adoptedSince)}`,
   );
+/**
+ * Every GitHub Inspector finding on one pull request, in every status, with whether each
+ * reached GitHub. Parsed through the same schema Foreman's client uses, so the two readers
+ * agree on the shape; null for a failed read, a 400 or 404, or a body that does not parse.
+ */
+export async function fetchInspectorFindings(prKey: string): Promise<InspectorFindingsResponse | null> {
+  const body = await fetchJson<unknown>(`/api/inspector/findings?pr=${encodeURIComponent(prKey)}`);
+  const parsed = InspectorFindingsResponseSchema.safeParse(body);
+  return parsed.success ? parsed.data : null;
+}
 export const fetchInspectorStatus = () => fetchJson<InspectorStatus>("/api/inspector/status");
 /** Which provider the app's offline work uses, and each background job's model override. */
 export const fetchLlmConfig = () => fetchJson<LlmConfig>("/api/llm/config");

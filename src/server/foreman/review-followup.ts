@@ -109,6 +109,8 @@ export interface FollowupPr {
   inspector: InspectorSummary | null;
   /** THIS pull request's CI rollup, or null when nothing has answered for it. */
   checks: PrChecks | null;
+  /** False for a pull request found by adoption alone: it carries findings, never CI. */
+  ciTracked?: false;
 }
 
 export interface ReviewFollowupInput {
@@ -294,6 +296,7 @@ export function reviewFollowupPrs(
       repoRoot: null,
       inspector,
       checks: null,
+      ciTracked: false,
     });
   }
   return out;
@@ -343,6 +346,9 @@ function ciSnapshotHead(pr: Pick<FollowupPr, "inspector">): string | null {
  * | required   | snapshot stored, nothing marked required          | `checks === "failing"`  |
  * | required   | snapshot stored, checks marked required           | required rollup failing |
  *
+ * A pull request found by adoption alone (`ciTracked: false`) is never failing: it carries
+ * findings only, and `required` still says which checks a findings nudge names.
+ *
  * "Off" is `InspectorConfig.enabled` alone: every check then counts, so Foreman nudges more,
  * never less. A summary without `ci` comes from a daemon older than this field and reads as
  * off. `held` neither nudges nor re-arms: there is nothing to say which checks are required.
@@ -351,15 +357,18 @@ function ciSnapshotHead(pr: Pick<FollowupPr, "inspector">): string | null {
  * one Inspector poll behind a push that the PR poller's rollup has already seen.
  */
 export function ciFollowup(
-  pr: Pick<FollowupPr, "checks" | "inspector">,
+  pr: Pick<FollowupPr, "checks" | "inspector" | "ciTracked">,
   ciStrictness: CiStrictness = "all",
 ): { failing: boolean; required: boolean } | "held" {
-  const everyCheck = { failing: pr.checks === "failing", required: false };
-  const ci = pr.inspector?.ci;
-  if (ciStrictness === "all" || !ci || !ci.inspectorEnabled) return everyCheck;
-  if (ci.headSha === null) return "held";
-  if (ci.required === null) return everyCheck;
-  return { failing: ci.required === "failing", required: true };
+  const decided = ((): { failing: boolean; required: boolean } | "held" => {
+    const everyCheck = { failing: pr.checks === "failing", required: false };
+    const ci = pr.inspector?.ci;
+    if (ciStrictness === "all" || !ci || !ci.inspectorEnabled) return everyCheck;
+    if (ci.headSha === null) return "held";
+    if (ci.required === null) return everyCheck;
+    return { failing: ci.required === "failing", required: true };
+  })();
+  return pr.ciTracked === false && decided !== "held" ? { ...decided, failing: false } : decided;
 }
 
 /** The CI half of `Feedback`, for the payload builders outside this file. */

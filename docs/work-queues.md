@@ -311,7 +311,7 @@ session's current branch, has its unresolved findings relayed even when the card
 "Under that session" means the same session id, or the agent id recorded when the PR was
 adopted, which survives a restart that re-mints the session id. A PR adopted before the
 session's agent id was known matches on the session id alone. Such a PR carries only its
-findings. CI, CodeRabbit and stacked pull request follow-through stay
+findings, whichever failures count. CI, CodeRabbit and stacked pull request follow-through stay
 with the card's PR.
 
 Each nudge is typed into the session's pane, so it carries the usual gates and one more:

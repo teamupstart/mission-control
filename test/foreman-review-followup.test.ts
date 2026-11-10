@@ -415,6 +415,7 @@ test("reviewFollowupPrs keeps the card's PR first and appends an adopted PR on t
     repoRoot: null,
     inspector: adoptedRow().inspector,
     checks: null,
+    ciTracked: false,
   });
 });
 
@@ -483,6 +484,29 @@ test("an adopted-only PR with unresolved findings asks for them, and with none i
     kind: "skip",
     why: "no enabled review comments or failing CI",
   });
+});
+
+test("an adopted-only PR with a failing required check gets no CI nudge in Required mode", () => {
+  // `checks: null` cannot mark these entries: a card PR whose rollup is unknown reads the same.
+  const requiredRed = (over: Partial<InspectorInspection> = {}): AdoptedInspection => {
+    const row = mkInspection({ key: ADOPTED_KEY, url: ADOPTED_URL, number: 9, ci: { headSha: HEAD, required: "failing" }, ...over });
+    return { row, inspector: inspectorSummaryOf(row, { mode: "dry-run", enabled: true }) };
+  };
+  const session = detached();
+  const required = { trackReviewComments: true, trackCiFailures: true, ciStrictness: "required" as const, settleMs: SETTLE };
+
+  const [quiet] = reviewFollowupPrs(session, [requiredRed({ openFindings: 0 })]);
+  assert.equal(quiet?.ciTracked, false);
+  assert.deepEqual(ciFollowup(quiet!, "required"), { failing: false, required: true });
+  assert.deepEqual(decide({ session, pr: quiet!, cfg: required }), NOTHING_OPEN);
+
+  // Its findings are still relayed, and the closing line still names the required checks.
+  const [withFindings] = reviewFollowupPrs(session, [requiredRed()]);
+  const d = decide({ session, pr: withFindings!, cfg: required });
+  assert.equal(d.kind, "nudge");
+  if (d.kind !== "nudge") return;
+  assert.doesNotMatch(d.payload, /CI checks are failing|gh pr checks/);
+  assert.match(d.payload, /until the required checks are green/);
 });
 
 test("a clean open PR - no findings, CI not red - is left alone", () => {

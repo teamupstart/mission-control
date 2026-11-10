@@ -463,7 +463,8 @@ function disabledVerdict(node: WorkflowVerdictNode): PersonaVerdict | null {
  * The verdict has a byte and a change budget, and one that misses either normalizes to null,
  * which would leave the node waiting for ever on a failure it already decided. So the checks
  * that do not fit as changes of their own share one last change naming each with its
- * conclusion and link, and the longest form that fits is the one recorded.
+ * conclusion and link, as many as a rationale holds and a count of the rest, and the longest
+ * form that fits is the one recorded.
  */
 export function waitForCiVerdict(
   decision: Extract<WaitForCiDecision, { kind: "pass" | "fail" }>,
@@ -502,13 +503,26 @@ export function waitForCiVerdict(
       evidence: evidence(said[0] ?? `The check concluded ${check.conclusion ?? "with a failure"}.`),
     };
   };
+  // Bounded here rather than left to the normalizer's clip, which would cut names silently.
+  const sharedRationale = (rest: readonly CiCheckRun[]): string => {
+    const limit = WORKFLOW_EXECUTION_LIMITS.verdictReason;
+    const lines: string[] = [];
+    let length = 0;
+    for (const [index, check] of rest.entries()) {
+      const line = `"${check.name}": ${check.conclusion ?? "failure"}${check.detailsUrl ? ` (${check.detailsUrl})` : ""}`;
+      const more = `...and ${rest.length - index} more, listed in the run's Wait for CI panel.`;
+      const room = index === rest.length - 1 ? limit : limit - more.length - 1;
+      if (length + line.length + (lines.length > 0 ? 1 : 0) > room) return [...lines, more].join("\n");
+      lines.push(line);
+      length += line.length + (lines.length > 1 ? 1 : 0);
+    }
+    return lines.join("\n");
+  };
   const sharedChange = (rest: readonly CiCheckRun[]) => ({
     title: rest.length === failing.length
       ? `Fix the ${rest.length} failing CI checks`
       : `Fix the other ${rest.length} failing CI checks`,
-    rationale: rest
-      .map((check) => `"${check.name}": ${check.conclusion ?? "failure"}${check.detailsUrl ? ` (${check.detailsUrl})` : ""}`)
-      .join("\n"),
+    rationale: sharedRationale(rest),
     evidence: evidence(`${rest.length} failing checks on the pull request's head commit.`),
   });
   const verdict = (requestedChanges: unknown[], text = summary) => normalizePersonaVerdict({

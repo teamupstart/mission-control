@@ -469,6 +469,25 @@ test("a failure too large for the verdict budget still settles, naming every fai
   }
 });
 
+test("a shared change that cannot list every remaining check says how many it left to the panel", () => {
+  const checks = Array.from({ length: 100 }, (_, index): CiCheckRun => ({
+    ...run(`e2e shard ${index + 1}/100 (chromium)`, "failing"),
+    detailsUrl: `https://github.com/owner/repo/actions/runs/42790370697/job/${129741944076 + index}`,
+  }));
+  const failing = decideWaitForCi(state(), seen(checks), T0 + 1);
+  if (failing.kind !== "fail") return assert.fail("expected a fail");
+  const verdict = waitForCiVerdict(failing, "attempt-1");
+  if (verdict?.verdict !== "fail") return assert.fail("no verdict");
+  const shared = verdict.requestedChanges.at(-1)!;
+  const rest = Number(shared.title.match(/^Fix the (?:other )?(\d+) failing CI checks$/)![1]);
+  const lines = shared.rationale.split("\n");
+  const more = lines.at(-1)!.match(/^\.\.\.and (\d+) more, listed in the run's Wait for CI panel\.$/);
+  assert.ok(more, "the shared change says it is incomplete");
+  assert.equal(lines.length - 1 + Number(more[1]), rest);
+  assert.ok(shared.rationale.length <= 4_000);
+  for (const line of lines.slice(0, -1)) assert.match(line, /^"e2e shard \d+\/100 \(chromium\)": FAILURE \(https:\/\/github\.com\/.+\/job\/\d+\)$/);
+});
+
 // ---- node settings: strictness, quiet period, expected checks -------------------------------
 
 const req = (name: string, runState: CiCheckRun["state"]): CiCheckRun => ({ ...run(name, runState), required: true });

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // The one file that touches the REAL `@earendil-works/pi-coding-agent`.
 //
@@ -35,6 +35,56 @@ const { piVariables, PI_SESSION_VARIABLES } = await import(
 );
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
+
+test("a custom Mission home loads its checked extension alongside normal Pi discovery across new sessions", async (t) => {
+  const { piMetadataSource, writePiIntegration } = await import("./helpers/pi-integration.ts");
+  const { piExtensionHealthyForDispatch, piExtensionLinkPath } = await import("../src/server/environment/pi-extension.ts");
+  const { createRuntime } = await import("../src/server/harness/pi/sdk-deps.ts");
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const prior = { MISSION_HOME: process.env.MISSION_HOME, MISSION_PI_EXTENSION: process.env.MISSION_PI_EXTENSION,
+    MISSION_MCP_SERVER: process.env.MISSION_MCP_SERVER };
+  process.env.MISSION_HOME = join(home, "state");
+  const integration = join(home, "mission-integration");
+  const tools = (names: string[]) => `pi => { for (const name of ${JSON.stringify(names)}) pi.registerTool({
+    name, label:name, description:name, parameters:{type:'object',properties:{}},
+    execute:async()=>({content:[{type:'text',text:'fixture'}]}) }); }`;
+  writePiIntegration(integration, piMetadataSource.replace("() => {}", tools(["create_task", "dispatch_task"])));
+  process.env.MISSION_PI_EXTENSION = join(integration, "extension.js");
+  process.env.MISSION_MCP_SERVER = join(integration, "mcp-server.mjs");
+  const link = piExtensionLinkPath();
+  assert.ok(link.startsWith(join(home, "state")), "the checked extension is outside Pi's discovery directory");
+  const discovered = join(agentDir, "extensions", "normal-discovery.js");
+  t.after(() => {
+    rmSync(link, { force: true });
+    rmSync(discovered, { force: true });
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  mkdirSync(dirname(link), { recursive: true });
+  symlinkSync(join(integration, "extension.js"), link);
+  mkdirSync(dirname(discovered), { recursive: true });
+  writeFileSync(discovered, `export default ${tools(["normally_discovered_tool"])};`);
+  assert.equal(await piExtensionHealthyForDispatch(), true, "the extension the daemon checked is healthy");
+  const launchedTools: string[][] = [];
+  const runtime = await createRuntime({ ...pi,
+    async createAgentSessionFromServices(options) {
+      const created = await pi.createAgentSessionFromServices(options);
+      launchedTools.push(created.session.getAllTools().map((tool) => tool.name));
+      return created;
+    },
+  }, { cwd: checkout("mission-extension-runtime"), sessionPath: null, model: null,
+    thinkingLevel: null, projectTrust: false, appendSystemPrompt: [], toolEnv: {} });
+  try {
+    for (const replacement of [false, true]) {
+      if (replacement) await runtime.newSession();
+      const names = launchedTools.at(-1)!;
+      for (const name of ["create_task", "dispatch_task", "normally_discovered_tool"]) {
+        assert.equal(names.filter((value) => value === name).length, 1, `${name} is available exactly once`);
+      }
+    }
+  } finally { await runtime.dispose(); }
+});
 
 test("the real Pi loader cannot execute local extension factories before trust allows them", async () => {
   const sdk = await defaultPiSdkDeps.load();

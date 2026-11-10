@@ -210,7 +210,7 @@ import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { noteTaskDeparture } from "./telemetry/index.ts";
 import { summariseTaskTitle } from "./task-title.ts";
-import { resolveTaskWorkflowId } from "./workflows/config.ts";
+import { getWorkflowPolicy, resolveTaskWorkflowId } from "./workflows/config.ts";
 import { canonicalWorktreePath } from "./worktrees/path.ts";
 
 export interface CreateTaskInput {
@@ -4041,10 +4041,11 @@ export class TaskManager {
         if (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")) {
           if (await taskPlanStorageLocked(t)) throw new PlanStoreError("Plan storage is locked after planning starts; existing plans cannot be moved");
         }
+        const rows = getWorkflowPolicy().kindWorkflowDefaults;
         if (patch.workflowId === undefined && (becomesPlan
           || (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")
-            && t.workflowId === taskDefaultWorkflowId("plan", null, t.planPolicy?.storage ?? "repository")))) {
-          workflowId = taskDefaultWorkflowId("plan", null, planPolicy.storage);
+            && t.workflowId === taskDefaultWorkflowId("plan", rows, t.planPolicy?.storage ?? "repository")))) {
+          workflowId = taskDefaultWorkflowId("plan", rows, planPolicy.storage);
         }
       }
       const roots = [patch.repoRoot ?? t.repoRoot, ...(patch.extraRepoRoots ?? t.extraRepos.map((r) => r.repoRoot))];

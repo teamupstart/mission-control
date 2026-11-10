@@ -385,7 +385,7 @@ test("the legacy config route reads overrides out of the catalog and writes back
       repoAllowlist: ["/repo"],
       // Null rather than the shipped default: this fixture builds no workflow manager, and
       // the route refuses a dispatch default it cannot verify is published.
-      defaultWorkflowId: null,
+      kindWorkflowDefaults: { ship: null },
       checksEnabled: true,
       checkCommands: [
         { repoRoot: "/repo", slot: "typecheck", command: ["npm", "run", "typecheck"] },
@@ -421,7 +421,7 @@ test("the legacy config route reads overrides out of the catalog and writes back
     body: body({
       liveEnabled: false,
       repoAllowlist: ["/repo"],
-      defaultWorkflowId: null,
+      kindWorkflowDefaults: { ship: null },
       checksEnabled: true,
       checkCommands: config.checkCommands,
     }),
@@ -434,7 +434,7 @@ test("the legacy config route reads overrides out of the catalog and writes back
     body: body({
       liveEnabled: false,
       repoAllowlist: ["/repo"],
-      defaultWorkflowId: null,
+      kindWorkflowDefaults: { ship: null },
       checksEnabled: true,
     }),
   });
@@ -457,7 +457,7 @@ test("a refused legacy write leaves neither policy nor catalog changed", async (
     body: body({
       liveEnabled: false,
       repoAllowlist: ["/repo"],
-      defaultWorkflowId: null,
+      kindWorkflowDefaults: { ship: null },
       checkCommands: [
         { repoRoot: "/repo", slot: "test", command: ["a"] },
         { repoRoot: "/repo", slot: "test", command: ["b"] },

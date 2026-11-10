@@ -10,8 +10,7 @@ import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { TASK_STATUSES, type Task } from "../src/shared/types.ts";
-import { DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
-import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { McpTaskConfigurationSchema, type McpTaskSnapshot } from "../src/shared/protocol.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
@@ -218,7 +217,7 @@ test("MCP advertises and persists every backlog configuration field without laun
   const prerequisite = await f.create();
   const created = await f.create({
     kind: "bugfix", agent: "codex", model: "gpt-6-sol", effort: "high",
-    workflowId: DEFAULT_WORKFLOW_POLICY.defaultWorkflowId, enabled: false,
+    workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID, enabled: false,
     priority: "high", labels: [" api ", "api", "mcp"],
     additionalRepositories: ["secondary"], dependsOnTaskIds: [prerequisite.id],
   });
@@ -227,7 +226,7 @@ test("MCP advertises and persists every backlog configuration field without laun
   assert.equal(created.model, "gpt-6-sol");
   assert.equal(created.effort, "high");
   assert.equal(created.kind, "bugfix");
-  assert.equal(created.workflowId, DEFAULT_WORKFLOW_POLICY.defaultWorkflowId);
+  assert.equal(created.workflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.equal(created.enabled, false);
   assert.equal(created.priority, "high");
   assert.deepEqual(created.labels, ["api", "mcp"]);

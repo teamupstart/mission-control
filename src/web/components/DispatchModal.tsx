@@ -39,7 +39,6 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   taskDefaultWorkflowId,
-  taskHasOwnDefaultWorkflow,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -1496,7 +1495,15 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
-  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null, draft.planStorage ?? planStorage ?? "repository");
+  // Null while the config is out, as it always was: the rows are not known yet, and arming a
+  // built-in the operator may have replaced would gate the launch on Foreman for nothing.
+  const defaultWorkflowId = workflowConfig
+    ? taskDefaultWorkflowId(
+      draft.kind,
+      workflowConfig.kindWorkflowDefaults,
+      draft.planStorage ?? planStorage ?? "repository",
+    )
+    : null;
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
@@ -1554,35 +1561,75 @@ function DispatchModal({
   }
 
   /**
-   * What a ship-to-scout switch put aside, so switching back can hand it straight back.
+   * What a switch away from Ship put aside, so switching back can hand it straight back.
    *
    * A ref rather than draft state: it is scratch belonging to one uninterrupted sequence
    * of clicks, not something a shelved task should carry. Losing it on close is correct -
    * a reopened form has no reversal in flight - and the no-stash path leaves the stored
-   * selection alone rather than inventing one.
+   * selection alone rather than inventing one. Handing it back needs no config fetch, which
+   * is what keeps an edit's stored Workflow safe while the config is still loading.
    */
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
   const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
+  /**
+   * A kind default written while the Settings rows were still unknown, resolved against the
+   * built-ins. Held so the rows can correct it when they land: the value is otherwise
+   * indistinguishable from an operator's pick and would override their configured row.
+   */
+  const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string | null } | null>(null);
 
-  /** Preserve the prior selection until the operator makes an explicit after-work choice. */
+  /**
+   * A kind switch arms that kind's row under Settings -> Tasks -> Dispatch defaults.
+   *
+   * Ship is the kind the stash belongs to: leaving it puts the current choice aside, and
+   * returning hands it back, unless the operator chose an after-work Workflow by hand in
+   * between (which clears the stash, so their choice stands). Every other kind arms its row.
+   * Moving between two kinds with no diff whose rows agree leaves the choice alone, so a
+   * Workflow picked by hand on chat survives a hop to scout.
+   */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
-    if (taskHasOwnDefaultWorkflow(kind)) {
+    provisionalWorkflow.current = null;
+    if (kind === "ship") {
+      const stashed = stashedWorkflowId.current;
+      stashedWorkflowId.current = NO_STASH;
+      return stashed === NO_STASH ? {} : { workflowId: stashed };
+    }
+    if (kind === "plan") {
       if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
       // Plan defaults resolve with storage at save time, even if Settings changed.
-      return { workflowId: kind === "plan"
-        ? undefined
-        : taskDefaultWorkflowId(kind, null, draft.planStorage ?? planStorage ?? "repository") };
+      return { workflowId: undefined };
     }
-    if (!hasReviewableDiff(kind)) {
-      if (!hasReviewableDiff(draft.kind)) return {};
-      if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: null };
+    const rows = workflowConfig?.kindWorkflowDefaults ?? {};
+    const storage = draft.planStorage ?? planStorage ?? "repository";
+    const target = taskDefaultWorkflowId(kind, rows, storage);
+    if (
+      !hasReviewableDiff(kind)
+      && !hasReviewableDiff(draft.kind)
+      && target === taskDefaultWorkflowId(draft.kind, rows, storage)
+    ) {
+      return {};
     }
-    const stashed = stashedWorkflowId.current;
-    stashedWorkflowId.current = NO_STASH;
-    return stashed === NO_STASH ? {} : { workflowId: stashed };
+    if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
+    if (!workflowConfig) provisionalWorkflow.current = { kind, workflowId: target };
+    return { workflowId: target };
   }
+
+  // The rows landed after a kind switch guessed at them: replace the guess with the kind's
+  // real row, unless the operator has since chosen, or the kind has moved on.
+  useEffect(() => {
+    const guess = provisionalWorkflow.current;
+    if (!workflowConfig || !guess) return;
+    provisionalWorkflow.current = null;
+    if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
+    const resolved = taskDefaultWorkflowId(
+      guess.kind,
+      workflowConfig.kindWorkflowDefaults,
+      draft.planStorage ?? planStorage ?? "repository",
+    );
+    if (resolved !== guess.workflowId) update({ workflowId: resolved });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
+  }, [workflowConfig]);
 
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
   function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
@@ -1750,6 +1797,7 @@ function DispatchModal({
       // that was already lit. Taking None at that question therefore stands, and a later
       // kind switch leaves it alone.
       stashedWorkflowId.current = NO_STASH;
+      provisionalWorkflow.current = null;
       update({ workflowId });
     };
     const defaultName = defaultWorkflow
@@ -3130,13 +3178,14 @@ function DispatchModal({
                     <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
                       onChange={(event) => {
                         const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
-                        const previousDefault = taskDefaultWorkflowId("plan", null, draft.planStorage ?? planStorage ?? "repository");
+                        const rows = workflowConfig?.kindWorkflowDefaults ?? {};
+                        const previousDefault = taskDefaultWorkflowId("plan", rows, draft.planStorage ?? planStorage ?? "repository");
                         const savedDefault = editing?.kind === "plan"
-                          && editing.workflowId === taskDefaultWorkflowId("plan", null, editing.planPolicy?.storage ?? "repository");
+                          && editing.workflowId === taskDefaultWorkflowId("plan", rows, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
                           ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
                             ? undefined
-                            : taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
+                            : taskDefaultWorkflowId("plan", rows, storage ?? planStorage ?? "repository") } : {}) });
                       }}>
                       <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
                       <option value="local">Local plan store</option>
@@ -3186,6 +3235,7 @@ function DispatchModal({
                   // Chosen by hand, so a later kind switch must not hand back what scout
                   // put aside and revert this underneath the operator.
                   stashedWorkflowId.current = NO_STASH;
+                  provisionalWorkflow.current = null;
                   update({
                     workflowId:
                       value === "__default"

@@ -22,6 +22,12 @@ writeFileSync(
 chmodSync(join(bin, "gh"), 0o755);
 process.env.HARNESS_HOME = join(home, "state");
 process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+// Named outright as well as put first on PATH. `run` resolves a bare name through the
+// executable locator, which may consult the login shell's PATH rather than this process's,
+// so under a runner whose shell finds a real `gh` first the fake never ran and the gate below
+// was never opened. An absolute path is not a lookup at all, and the highest-precedence alias
+// outranks anything the environment brought with it.
+process.env.MISSION_GH_BIN = join(bin, "gh");
 
 const { openDb } = await import("../src/server/db.ts");
 const { sweepOnce, taskSourceStatuses } = await import(

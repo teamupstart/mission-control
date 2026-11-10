@@ -161,6 +161,18 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["agent", "model", "effort", "auto mode", "permission mode", "dispatch"],
   },
   {
+    id: "tasks",
+    label: "Tasks",
+    icon: "❏",
+    blurb: "What each kind of task is dispatched with",
+    // `sessions` / `machine`, beside Harnesses: both say what a dispatched session starts
+    // with, and everything here is daemon-backed, so it reaches tasks created from the API,
+    // a task source or a recurring mission as well as from this dashboard.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["task kind", "per kind", "dispatch default", "after work", "workflow", "default"],
+  },
+  {
     id: "worktrees",
     label: "Worktrees",
     icon: "⑂",

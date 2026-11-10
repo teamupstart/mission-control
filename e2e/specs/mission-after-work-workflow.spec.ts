@@ -106,7 +106,7 @@ async function publishDefaultWorkflow(daemon: DaemonHandle): Promise<string> {
   });
   await api(daemon, "/api/workflows/config", {
     method: "PUT",
-    body: { liveEnabled: false, repoAllowlist: [], defaultWorkflowId: workflow.workflow.id },
+    body: { liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: { ship: workflow.workflow.id } },
   });
   return workflow.workflow.id;
 }
@@ -342,3 +342,113 @@ for (const [kind, workflowId] of [
     await expect.poll(() => storedWorkflowId(daemon, mission.id)).toBe(null);
   });
 }
+
+/**
+ * Settings -> Tasks -> Dispatch defaults reaches the mission editor's kind switch.
+ *
+ * The rows are set to an operator's choices that differ from every built-in, so an editor that
+ * ignored the fetched config and armed the built-ins would fail each assertion. Ship's row is
+ * set too, and must NOT be preselected: a mission's Ship has always rested on None.
+ */
+const GENERAL_REVIEW = "builtin-workflow:general-review";
+
+async function configureRows(daemon: DaemonHandle): Promise<void> {
+  await api(daemon, "/api/workflows/config", {
+    method: "PUT",
+    body: {
+      liveEnabled: false,
+      repoAllowlist: [],
+      kindWorkflowDefaults: { ship: GENERAL_REVIEW, bugfix: GENERAL_REVIEW, plan: null },
+    },
+  });
+}
+
+/** Resolves once the editor's own read of the Dispatch defaults has landed. */
+function editorConfigRead(page: Page): Promise<unknown> {
+  return page.waitForResponse((response) =>
+    response.url().endsWith("/api/workflows/config") && response.request().method() === "GET");
+}
+
+test("a mission's kind switch preselects that kind's Dispatch default row, never Ship's", async ({
+  dashboard,
+  daemon,
+}) => {
+  await configureRows(daemon);
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  const configRead = editorConfigRead(dashboard);
+  await dashboard.getByRole("button", { name: "Create mission" }).click();
+  await configRead;
+  const kindSelect = dashboard.getByRole("combobox", { name: "Task kind" });
+  const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+
+  await kindSelect.selectOption("bugfix");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  await shoot(dashboard, "bugfix-configured-row", afterWork);
+  await kindSelect.selectOption("plan");
+  await expect(afterWork).toHaveValue("");
+  await kindSelect.selectOption("ship");
+  await expect(afterWork).toHaveValue("");
+
+  await kindSelect.selectOption("bugfix");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  await dashboard.getByPlaceholder("e.g. Dependency audit").fill("bugfix on the configured row");
+  await dashboard.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dashboard.getByPlaceholder("e.g. Run dependency audit and update unsafe packages").fill("Fix on the row");
+  await dashboard.getByPlaceholder("What should the agent do each run?").fill("Do the requested work");
+  await dashboard.getByRole("button", { name: "Save paused" }).click();
+  await expect.poll(async () => {
+    const all = await api<Array<StoredSchedule & { template: { kind: string; workflowId: string | null } }>>(daemon, "/api/schedules");
+    return all.find((entry) => entry.name === "bugfix on the configured row")?.template;
+  }).toMatchObject({ kind: "bugfix", workflowId: GENERAL_REVIEW });
+});
+
+test("editing a saved mission on its configured row clears it when switching to ship", async ({
+  dashboard,
+  daemon,
+}) => {
+  await configureRows(daemon);
+  const mission = await seedMission(daemon, "Saved configured bugfix", "bugfix", GENERAL_REVIEW);
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await dashboard.getByRole("button", { name: "Saved configured bugfix", exact: false }).first().click();
+  const configRead = editorConfigRead(dashboard);
+  await dashboard.getByRole("button", { name: "Edit" }).first().click();
+  await configRead;
+  const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+
+  // The stored Workflow IS the bugfix row, so it counts as the kind's default and Ship
+  // returns to None - read against the Settings row, not the built-in Bug Fix Review.
+  await dashboard.getByRole("combobox", { name: "Task kind" }).selectOption("ship");
+  await expect(afterWork).toHaveValue("");
+  await dashboard.getByRole("button", { name: "Save paused" }).click();
+  await expect.poll(() => storedWorkflowId(daemon, mission.id)).toBe(null);
+});
+
+test("a mission kind picked before the Settings rows load is corrected to the configured row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await configureRows(daemon);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await dashboard.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() === "GET") await gate;
+    await route.continue();
+  });
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await dashboard.getByRole("button", { name: "Create mission" }).click();
+  const kindSelect = dashboard.getByRole("combobox", { name: "Task kind" });
+  const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+
+  await kindSelect.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await shoot(dashboard, "mission-guess-while-rows-load", afterWork);
+  const read = editorConfigRead(dashboard);
+  release();
+  await read;
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  await shoot(dashboard, "mission-corrected-to-configured-row", afterWork);
+});

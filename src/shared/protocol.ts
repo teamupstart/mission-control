@@ -1,5 +1,6 @@
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
 import { ModelIdSchema } from "./model-id.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
@@ -7033,6 +7034,20 @@ export const UpdateWorkflowCommandSchema = z.object({
 export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
 
 /**
+ * One row per kind this app launches (`HARNESS_LAUNCHED_TASK_KINDS`). An absent key follows
+ * the kind's built-in, `null` is an explicit None, and a string names a workflow identity.
+ * `pipeline` has no key: Conductor owns what runs after its work.
+ *
+ * Not `.strict()`: the tolerant read below falls back to the COMPLETE default on any parse
+ * failure, so a key a newer build added would otherwise cost the operator their allowlist.
+ */
+const KindWorkflowDefaultsSchema = z.object(
+  Object.fromEntries(
+    HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, z.string().min(1).max(500).nullable().optional()]),
+  ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<z.ZodNullable<z.ZodString>>>,
+);
+
+/**
  * The STRICT policy schema: everything about workflows that is still stored in `app_config`.
  *
  * No `.catch()` anywhere in it, deliberately: this is a write path, and `.catch()` on a
@@ -7045,8 +7060,8 @@ export const WorkflowPolicySchema = z.object({
   skipPassedJudges: z.boolean().default(DEFAULT_WORKFLOW_POLICY.skipPassedJudges),
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
-  defaultWorkflowId: z.string().min(1).max(500).nullable()
-    .default(DEFAULT_WORKFLOW_POLICY.defaultWorkflowId),
+  kindWorkflowDefaults: KindWorkflowDefaultsSchema
+    .default(DEFAULT_WORKFLOW_POLICY.kindWorkflowDefaults),
   retention: z.object({
     rawEvidenceDays: z.number().int().min(1).max(365)
       .default(DEFAULT_WORKFLOW_POLICY.retention.rawEvidenceDays),
@@ -7060,6 +7075,51 @@ export const WorkflowPolicySchema = z.object({
 export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
 
 /**
+ * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.
+ *
+ * The old single `defaultWorkflowId` was Ship's dispatch default. Every save wrote it, so it
+ * cannot tell "chose No-Mistakes" from "never touched it"; both read as the built-in, which
+ * behaves identically and lets an untouched install follow a later change to it. Any other
+ * value, `null` included, becomes an explicit Ship row. A blob that already has the map
+ * keeps it and the legacy key is dropped.
+ *
+ * Read-time and never written back, like `keepPreFieldCommandConsent`: the next save through
+ * Settings writes only the map. Old settings backups restore through this same schema, so
+ * they need no translation of their own.
+ */
+function migrateLegacyDefaultWorkflowId(blob: unknown): unknown {
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return blob;
+  if (!Object.prototype.hasOwnProperty.call(blob, "defaultWorkflowId")) return blob;
+  const { defaultWorkflowId: legacy, ...rest } = blob as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(rest, "kindWorkflowDefaults")) return rest;
+  if (legacy === NO_MISTAKES_REVIEW_WORKFLOW_ID || legacy === undefined) return rest;
+  return { ...rest, kindWorkflowDefaults: { ship: legacy } };
+}
+
+/**
+ * `PUT /api/workflows/config`'s deprecated alias: a `defaultWorkflowId` in the body sets the
+ * Ship row, by the same rule the stored read applies.
+ *
+ * A write that names the old field means to set Ship's default, so it wins over a Ship key
+ * in the same body's map: a client that read the config, changed `defaultWorkflowId` and
+ * wrote it all back would otherwise be a silent no-op. Every other row in the map stands.
+ */
+function aliasLegacyDefaultWorkflowId(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  if (!Object.prototype.hasOwnProperty.call(body, "defaultWorkflowId")) return body;
+  const { defaultWorkflowId: legacy, ...rest } = body as Record<string, unknown>;
+  if (legacy === undefined) return rest;
+  const rows = rest.kindWorkflowDefaults ?? {};
+  // Not a map, so there is no Ship row to set; the schema refuses the body as it stands.
+  if (!rows || typeof rows !== "object" || Array.isArray(rows)) return rest;
+  const { ship: _replaced, ...others } = rows as Record<string, unknown>;
+  return {
+    ...rest,
+    kindWorkflowDefaults: legacy === NO_MISTAKES_REVIEW_WORKFLOW_ID ? others : { ...others, ship: legacy },
+  };
+}
+
+/**
  * Policy PLUS the legacy flat command list: the complete body `PUT /api/workflows/config`
  * still accepts.
  *
@@ -7068,7 +7128,7 @@ export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
  * schema is what lets the existing Settings form keep saving through one request while the
  * durable owner changes underneath it.
  */
-export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
+export const WorkflowConfigSchema = z.preprocess(aliasLegacyDefaultWorkflowId, WorkflowPolicySchema.extend({
   checkCommands: z
     .array(WorkflowCheckCommandSchema)
     .max(WORKFLOW_LIMITS.checkCommands)
@@ -7088,7 +7148,7 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
       { message: "Each repository may configure a slot only once" },
     )
     .default([]),
-});
+}));
 
 /**
  * The policy read back off `app_config`, where a value this build cannot parse must not
@@ -7115,7 +7175,9 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
  * longer takes an operator's configured commands with it: those live in their own table with
  * their own revisions, and a preference this build cannot parse says nothing about them.
  */
-export const StoredWorkflowPolicySchema = WorkflowPolicySchema.catch(DEFAULT_WORKFLOW_POLICY);
+export const StoredWorkflowPolicySchema = z
+  .preprocess(migrateLegacyDefaultWorkflowId, WorkflowPolicySchema)
+  .catch(DEFAULT_WORKFLOW_POLICY);
 
 export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,

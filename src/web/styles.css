@@ -23275,13 +23275,18 @@ select.foreman-model-input {
 .wf-judge-passes input {
   accent-color: var(--working);
 }
+.wf-default-rows {
+  display: grid;
+  gap: 6px;
+}
 .wf-default-row {
   display: flex;
   align-items: center;
   gap: 9px;
 }
-.wf-default-flow {
+.wf-default-kind {
   flex: none;
+  width: 56px;
   color: color-mix(in oklab, var(--working) 72%, var(--muted));
   font: 10px var(--mono);
   letter-spacing: 0.02em;

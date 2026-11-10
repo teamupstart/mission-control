@@ -353,8 +353,8 @@ the newer version to adopt the updated policy.
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
 Their next versions update only the pinned model to `gpt-6-sol`. The last version of every
 built-in workflow with a Pull Request action changes only that action's text: issue-backed work
-names its issue in the pull request body (`Closes #<n>`, or `Part of #<n>` when a human step
-remains). No-Mistakes Review takes it as version 23, after version 22's CodeRabbit stage, and
+names its issue in the pull request body (`Closes #<n>`, or `Part of #<n>` while a sibling
+pull request, a later plan phase or a human step remains). No-Mistakes Review takes it as version 23, after version 22's CodeRabbit stage, and
 Documentation Review as version 3. Every earlier version keeps the action text it was published
 with.
 Their earlier versions remain available with their original review graphs and completion policies.

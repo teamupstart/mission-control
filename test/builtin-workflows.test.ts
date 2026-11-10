@@ -1375,7 +1375,7 @@ const PULL_REQUEST_ACTION_BEFORE_ISSUE_CLOSING_LINE_SHA256 =
  * published workflows, never a shipped built-in version.
  */
 const PULL_REQUEST_ACTION_WITH_ISSUE_CLOSING_LINE_SHA256 =
-  "38a31167eead7cd3ffaf0b501ee95113c10adff06f3dc86db1e08426799621fb";
+  "dfbc1ebe5259d9bd920b4972be4a249f9125e0870a57f9439655ab782b538216";
 
 /** The built-ins with a Pull Request action, each given an issue closing line version last. */
 const ISSUE_CLOSING_LINE_SLUGS = [

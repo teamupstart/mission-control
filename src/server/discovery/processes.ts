@@ -1,4 +1,4 @@
-import { run, type RunResult } from "../util/exec.ts";
+import { run, unansweredOutcome, type RunResult } from "../util/exec.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
 import type { Harness } from "../harness/types.ts";
@@ -277,6 +277,11 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
  */
 const PS_TIMEOUT_MS = 30_000;
 
+/** How a read runs. `timeoutScale` multiplies its usual timeout, for a caller's retry. */
+export interface ReadOptions {
+  timeoutScale?: number;
+}
+
 /**
  * Which way a `ps` read failed, in words an operator can act on.
  *
@@ -288,6 +293,8 @@ const PS_TIMEOUT_MS = 30_000;
  */
 export function describeFailure(result: RunResult): string {
   if (result.overflowed) return "the process listing was too large to buffer";
+  const unanswered = unansweredOutcome(result);
+  if (unanswered) return `the process listing ${unanswered}`;
   if (result.outcomeUnknown) {
     return "the process listing was killed before it answered (timed out, or stopped from outside)";
   }
@@ -298,6 +305,8 @@ export interface ProcessSnapshot {
   processes: Proc[];
   /** Non-null when either system-wide ps read did not produce a complete answer. */
   unknownReason: string | null;
+  /** The listing was too large to buffer, which asking again cannot change. */
+  overflowed?: boolean;
   /** Non-zombie PIDs owned by the daemon's effective user, whose cwd it can inspect. */
   cwdScopePids: number[];
   /** Completed ps helpers that may appear in their own system-wide snapshot. */
@@ -308,10 +317,14 @@ export interface ProcessSnapshot {
  * The process snapshot plus the health of the two underlying reads. Discovery may use the
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
-export async function listProcessesSnapshot(runCommand: typeof run = run): Promise<ProcessSnapshot> {
+export async function listProcessesSnapshot(
+  runCommand: typeof run = run,
+  options?: ReadOptions,
+): Promise<ProcessSnapshot> {
+  const timeoutMs = PS_TIMEOUT_MS * (options?.timeoutScale ?? 1);
   const [a, b] = await Promise.all([
-    runCommand("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs: PS_TIMEOUT_MS }),
-    runCommand("ps", ["-ww", "-A", "-o", "pid=,command="], { timeoutMs: PS_TIMEOUT_MS }),
+    runCommand("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs }),
+    runCommand("ps", ["-ww", "-A", "-o", "pid=,command="], { timeoutMs }),
   ]);
 
   const commands = new Map<number, string>();
@@ -355,6 +368,7 @@ export async function listProcessesSnapshot(runCommand: typeof run = run): Promi
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,
+    overflowed: failed?.overflowed === true,
     cwdScopePids,
     completedCollectorPids: [a.childPid, b.childPid].filter(
       (pid): pid is number => Number.isInteger(pid) && (pid ?? 0) > 0,

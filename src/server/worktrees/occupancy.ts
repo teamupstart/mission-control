@@ -4,15 +4,24 @@ import {
   listProcessesSnapshot,
   type Proc,
   type ProcessSnapshot,
+  type ReadOptions,
 } from "../discovery/processes.ts";
 import {
   readProcCwdsSnapshot,
   type ProcCwdSnapshot,
 } from "../discovery/proc-cwd.ts";
+import {
+  bothAttempts,
+  OBSERVATION_RETRY_DELAY_MS,
+  OBSERVATION_RETRY_TIMEOUT_SCALE,
+  pauseFor,
+} from "./observation-retry.ts";
 import { ownWorktreeProcesses } from "./own-processes.ts";
 
 const MAX_TARGETS = 256;
 const MAX_COMMAND_BYTES = 512;
+/** How many PIDs the cwd listing omitted are re-read one at a time before the rest stay unresolved. */
+const MAX_SINGLE_REREADS = 8;
 
 export interface WorktreeOccupant {
   pid: number;
@@ -30,19 +39,31 @@ export type WorktreeOccupancy =
   | { status: "unknown"; reason: string };
 
 export interface WorktreeOccupancyDeps {
-  listProcesses: () => Promise<ProcessSnapshot>;
-  readCwds: (pids: number[]) => Promise<ProcCwdSnapshot>;
+  listProcesses: (options?: ReadOptions) => Promise<ProcessSnapshot>;
+  readCwds: (pids: number[], options?: ReadOptions) => Promise<ProcCwdSnapshot>;
   knownOwner: (process: Proc) => string | null;
   /** This daemon's running worktree Git commands; never occupants of the slot they read. */
   ownProcesses: () => ReadonlySet<number>;
+  /** The wait before the one retry of a failed inspection. */
+  pause: (ms: number) => Promise<void>;
 }
 
 const DEFAULT_DEPS: WorktreeOccupancyDeps = {
-  listProcesses: listProcessesSnapshot,
+  listProcesses: (options) => listProcessesSnapshot(undefined, options),
   readCwds: readProcCwdsSnapshot,
   knownOwner: () => null,
   ownProcesses: ownWorktreeProcesses,
+  pause: pauseFor,
 };
+
+/**
+ * Every in-scope process with its resolved cwd, or why they could not all be resolved.
+ * `overflowed` marks a listing too large to buffer: the retry doubles the timeout, not the
+ * buffer, so asking again would only report the same overflow 2 s later.
+ */
+type Observation =
+  | { ok: true; processes: Proc[]; cwds: ReadonlyMap<number, string> }
+  | { ok: false; reason: string; overflowed?: boolean };
 
 async function physical(path: string): Promise<string> {
   try {
@@ -81,7 +102,9 @@ function ownDescendants(processes: readonly Proc[], roots: ReadonlySet<number>):
 
 /**
  * One bounded all-process query projected over one or more worktrees. Both system reads run
- * exactly once. Unknown system evidence returns unknown for every target, never an empty set.
+ * once per attempt. A failed attempt (a listing or cwd read that failed, or a PID that stayed
+ * unresolved) is retried once, 2 s later with double the timeouts, and only a second failure
+ * returns unknown for every target, never an empty set.
  */
 export async function inspectWorktreeOccupancy(
   targetPaths: readonly string[],
@@ -98,100 +121,24 @@ export async function inspectWorktreeOccupancy(
     return result;
   }
 
-  let snapshot: ProcessSnapshot;
-  try {
-    snapshot = await d.listProcesses();
-  } catch (error) {
-    const reason = `process listing failed: ${String(error)}`;
-    for (const target of targets) result.set(target, { status: "unknown", reason });
+  let observed = await observe(d, {});
+  if (!observed.ok && !observed.overflowed) {
+    await d.pause(OBSERVATION_RETRY_DELAY_MS);
+    const retried = await observe(d, { timeoutScale: OBSERVATION_RETRY_TIMEOUT_SCALE });
+    observed = retried.ok ? retried : { ok: false, reason: bothAttempts(observed.reason, retried.reason) };
+  }
+  if (!observed.ok) {
+    for (const target of targets) result.set(target, { status: "unknown", reason: observed.reason });
     return result;
   }
-  if (snapshot.unknownReason) {
-    for (const target of targets) {
-      result.set(target, { status: "unknown", reason: snapshot.unknownReason });
-    }
-    return result;
-  }
-
-  // Mission Control is a per-user daemon. macOS exposes other users' processes through ps
-  // while withholding their cwd from an unprivileged lsof, so they are outside the process
-  // security boundary the daemon can positively observe. Within that boundary every PID must
-  // resolve, disappear under a fresh stable-identity snapshot, or make occupancy unknown.
-  const cwdScope = new Set(snapshot.cwdScopePids);
-  const completedCollectors = new Set(snapshot.completedCollectorPids);
-  const own = ownDescendants(snapshot.processes, d.ownProcesses());
-  const processes = snapshot.processes.filter(
-    (process) =>
-      Number.isInteger(process.pid) &&
-      process.pid > 0 &&
-      cwdScope.has(process.pid) &&
-      !completedCollectors.has(process.pid) &&
-      !own.has(process.pid),
-  );
-  let cwdSnapshot: ProcCwdSnapshot;
-  try {
-    cwdSnapshot = await d.readCwds(processes.map((process) => process.pid));
-  } catch (error) {
-    const reason = `cwd listing failed: ${String(error)}`;
-    for (const target of targets) result.set(target, { status: "unknown", reason });
-    return result;
-  }
-  // Treat the dependency result as untrusted evidence: even a reader that reports itself
-  // healthy cannot make omission prove that a ps-listed process exited. Re-list and compare
-  // stable process identity so only independently proven PID churn is ignored. A failed cwd
-  // read starts with every PID unresolved: an all-empty `lsof` result is safe only when the
-  // fresh snapshot proves every process in the original scope exited during the read.
-  const cwdFailure = cwdSnapshot.unknownReason;
-  let unresolved = cwdFailure
-    ? processes
-    : processes.filter((process) => !cwdSnapshot.cwds.has(process.pid));
-  if (unresolved.length > 0) {
-    let confirmation: ProcessSnapshot;
-    try {
-      confirmation = await d.listProcesses();
-    } catch (error) {
-      const reason = `process disappearance check failed: ${String(error)}`;
-      for (const target of targets) result.set(target, { status: "unknown", reason });
-      return result;
-    }
-    if (confirmation.unknownReason) {
-      for (const target of targets) {
-        result.set(target, { status: "unknown", reason: confirmation.unknownReason });
-      }
-      return result;
-    }
-    const confirmed = new Map(confirmation.processes.map((process) => [process.pid, process]));
-    // Still alive means still in scope, by the same rule the first snapshot used. A short-lived
-    // process caught mid-exit - its cwd already released, so the cwd reader omits it - is
-    // listed again as a zombie with the same start time. A zombie holds no cwd and cannot
-    // occupy anything; counting it as alive turned every busy moment of this daemon's own Git
-    // reads into unknown occupancy and a refused cleanup.
-    const confirmedScope = new Set(confirmation.cwdScopePids);
-    unresolved = unresolved.filter((process) => {
-      const current = confirmed.get(process.pid);
-      return current?.startRaw === process.startRaw && confirmedScope.has(process.pid);
-    });
-  }
-  if (unresolved.length > 0) {
-    if (cwdFailure) {
-      for (const target of targets) result.set(target, { status: "unknown", reason: cwdFailure });
-      return result;
-    }
-    const unresolvedPids = unresolved.map((process) => process.pid);
-    const shown = unresolvedPids.slice(0, 8).join(", ");
-    const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";
-    const reason =
-      `cwd listing omitted ${unresolvedPids.length} ps-listed PID${unresolvedPids.length === 1 ? "" : "s"}: ${shown}${remainder}`;
-    for (const target of targets) result.set(target, { status: "unknown", reason });
-    return result;
-  }
+  const { processes, cwds } = observed;
 
   const canonicalTargets = new Map<string, string>();
   await Promise.all(targets.map(async (target) => canonicalTargets.set(target, await physical(target))));
   const byPid = new Map(processes.map((process) => [process.pid, process]));
   const occupants = new Map(targets.map((target) => [target, [] as WorktreeOccupant[]]));
 
-  for (const [pid, cwdPath] of cwdSnapshot.cwds) {
+  for (const [pid, cwdPath] of cwds) {
     const process = byPid.get(pid);
     if (!process) continue; // PID churn: lsof saw a process the ps snapshot did not.
     const cwd = await physical(cwdPath);
@@ -216,4 +163,102 @@ export async function inspectWorktreeOccupancy(
     });
   }
   return result;
+}
+
+/** One attempt at resolving every in-scope process's cwd. */
+async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<Observation> {
+  let snapshot: ProcessSnapshot;
+  try {
+    snapshot = await d.listProcesses(options);
+  } catch (error) {
+    return { ok: false, reason: `process listing failed: ${String(error)}` };
+  }
+  if (snapshot.unknownReason) {
+    return { ok: false, reason: snapshot.unknownReason, overflowed: snapshot.overflowed === true };
+  }
+
+  // Mission Control is a per-user daemon. macOS exposes other users' processes through ps
+  // while withholding their cwd from an unprivileged lsof, so they are outside the process
+  // security boundary the daemon can positively observe. Within that boundary every PID must
+  // resolve, disappear under a fresh stable-identity snapshot, or make occupancy unknown.
+  const cwdScope = new Set(snapshot.cwdScopePids);
+  const completedCollectors = new Set(snapshot.completedCollectorPids);
+  const own = ownDescendants(snapshot.processes, d.ownProcesses());
+  const processes = snapshot.processes.filter(
+    (process) =>
+      Number.isInteger(process.pid) &&
+      process.pid > 0 &&
+      cwdScope.has(process.pid) &&
+      !completedCollectors.has(process.pid) &&
+      !own.has(process.pid),
+  );
+  let cwdSnapshot: ProcCwdSnapshot;
+  try {
+    cwdSnapshot = await d.readCwds(processes.map((process) => process.pid), options);
+  } catch (error) {
+    return { ok: false, reason: `cwd listing failed: ${String(error)}` };
+  }
+  // Treat the dependency result as untrusted evidence: even a reader that reports itself
+  // healthy cannot make omission prove that a ps-listed process exited. Re-list and compare
+  // stable process identity so only independently proven PID churn is ignored. A failed cwd
+  // read starts with every PID unresolved: an all-empty `lsof` result is safe only when the
+  // fresh snapshot proves every process in the original scope exited during the read.
+  //
+  // A PID a healthy listing omitted is first re-read on its own: a batched `lsof` under load
+  // drops a PID it answers for when asked alone, and one such omission used to make a whole
+  // pass unknown. The re-reads run one at a time and stop at the first that does not answer
+  // (or throws): under the load that causes a timeout the next would time out too, so an
+  // attempt spends at most one cwd timeout on them rather than eight.
+  const cwdFailure = cwdSnapshot.unknownReason;
+  const cwds = new Map(cwdSnapshot.cwds);
+  let unresolved = cwdFailure
+    ? processes
+    : processes.filter((process) => !cwds.has(process.pid));
+  if (!cwdFailure) {
+    for (const process of unresolved.slice(0, MAX_SINGLE_REREADS)) {
+      let alone: ProcCwdSnapshot;
+      try {
+        alone = await d.readCwds([process.pid], options);
+      } catch {
+        break; // This and the rest stay unresolved; the disappearance check below decides.
+      }
+      if (alone.unanswered) break;
+      // Only this PID's own answer counts, whatever else the reader returned.
+      const cwd = alone.cwds.get(process.pid);
+      if (cwd !== undefined) cwds.set(process.pid, cwd);
+    }
+    unresolved = unresolved.filter((process) => !cwds.has(process.pid));
+  }
+  if (unresolved.length > 0) {
+    let confirmation: ProcessSnapshot;
+    try {
+      confirmation = await d.listProcesses(options);
+    } catch (error) {
+      return { ok: false, reason: `process disappearance check failed: ${String(error)}` };
+    }
+    if (confirmation.unknownReason) {
+      return { ok: false, reason: confirmation.unknownReason, overflowed: confirmation.overflowed === true };
+    }
+    const confirmed = new Map(confirmation.processes.map((process) => [process.pid, process]));
+    // Still alive means still in scope, by the same rule the first snapshot used. A short-lived
+    // process caught mid-exit - its cwd already released, so the cwd reader omits it - is
+    // listed again as a zombie with the same start time. A zombie holds no cwd and cannot
+    // occupy anything; counting it as alive turned every busy moment of this daemon's own Git
+    // reads into unknown occupancy and a refused cleanup.
+    const confirmedScope = new Set(confirmation.cwdScopePids);
+    unresolved = unresolved.filter((process) => {
+      const current = confirmed.get(process.pid);
+      return current?.startRaw === process.startRaw && confirmedScope.has(process.pid);
+    });
+  }
+  if (unresolved.length > 0) {
+    if (cwdFailure) return { ok: false, reason: cwdFailure, overflowed: cwdSnapshot.overflowed === true };
+    const unresolvedPids = unresolved.map((process) => process.pid);
+    const shown = unresolvedPids.slice(0, 8).join(", ");
+    const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";
+    const reason =
+      `cwd listing omitted ${unresolvedPids.length} ps-listed PID${unresolvedPids.length === 1 ? "" : "s"}: ${shown}${remainder}`;
+    return { ok: false, reason };
+  }
+  return { ok: true, processes, cwds };
 }

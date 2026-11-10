@@ -8,6 +8,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type WorktreeGit } from "../src/server/worktrees/git.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -359,4 +360,160 @@ test("maintenance planning refuses every unsafe class and identifies safe right-
   assert.match(bySlot.get(leases[5]!.slotId)?.reason ?? "", /cwd scan failed/);
   assert.match(bySlot.get(leases[6]!.slotId)?.reason ?? "", /leased/);
   assert.equal(plan.filter((candidate) => candidate.rightSize).length, 6);
+});
+
+/** What `run` reports for a child it killed at its timeout. */
+function timedOut(timeoutMs: number | undefined): RunResult {
+  return {
+    stdout: "",
+    stderr: "",
+    code: 1,
+    outcomeUnknown: true,
+    overflowed: false,
+    timedOut: true,
+    signal: "SIGTERM",
+    timeoutMs,
+  };
+}
+
+test("a Git read killed at its timeout on both attempts records both, never `exit 1`", async () => {
+  const repository = repo("mission-reconcile-git-timeout-");
+  const referenced = new Set<string>();
+  let failStatus = false;
+  const statusTimeouts: Array<number | undefined> = [];
+  const pauses: number[] = [];
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => {
+      if (failStatus && args.includes("status")) {
+        statusTimeouts.push(opts?.timeoutMs);
+        return timedOut(opts?.timeoutMs);
+      }
+      return run(bin, args, opts);
+    },
+    async (ms) => {
+      pauses.push(ms);
+    },
+  );
+  const manager = harness({ referenced, git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-git-timeout" },
+    }),
+  );
+  referenced.add(lease.leaseId);
+  failStatus = true;
+
+  await manager.reconcile();
+  assert.deepEqual(statusTimeouts, [15_000, 30_000], "the retry runs with double the timeout");
+  assert.deepEqual(pauses, [2_000], "2 s after the first failure");
+  const slot = manager.store.slot(lease.slotId)!;
+  // A slot whose Git state is still unknown after the retry is quarantined, as before.
+  assert.equal(slot.state, "quarantined");
+  assert.equal(slot.quarantineReason, "slot Git state is unknown");
+  assert.equal(slot.lastError, "git status timed out after 15 s, and after 30 s on retry");
+});
+
+test("a worktree listing that fails once and then succeeds changes nothing", async () => {
+  const repository = repo("mission-reconcile-list-retry-");
+  const referenced = new Set<string>();
+  let failNextList = false;
+  let lists = 0;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => {
+      if (args.includes("list")) {
+        lists++;
+        if (failNextList) {
+          failNextList = false;
+          return timedOut(opts?.timeoutMs);
+        }
+      }
+      return run(bin, args, opts);
+    },
+    async () => {},
+  );
+  const manager = harness({ referenced, git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-list-retry" },
+    }),
+  );
+  referenced.add(lease.leaseId);
+  const before = manager.store.slot(lease.slotId)!;
+  lists = 0;
+  failNextList = true;
+
+  await manager.reconcile();
+  assert.equal(lists, 2, "the failed listing was read once more");
+  const after = manager.store.slot(lease.slotId)!;
+  assert.equal(after.state, "leased");
+  assert.equal(after.quarantineReason, null);
+  assert.equal(after.lastError, before.lastError);
+  assert.equal(after.activeLeaseId, lease.leaseId);
+});
+
+test("an owner lookup that throws once is retried before it counts as unknown", async () => {
+  const repository = repo("mission-reconcile-owner-retry-");
+  let leaseId = "";
+  let throws = 1;
+  const pauses: number[] = [];
+  const manager = new WorktreeManager(db, {
+    resolvePolicy: () => ({ enabled: true, maxSlots: 16, setupArgv: null }),
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+    ownerReferenced: async (reference) => {
+      if (reference.leaseId !== leaseId) return false;
+      if (throws-- > 0) throw new Error("database is locked");
+      return true;
+    },
+    pause: async (ms) => {
+      pauses.push(ms);
+    },
+  });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-owner-retry:0" },
+    }),
+  );
+  leaseId = lease.leaseId;
+
+  await manager.reconcile();
+  assert.deepEqual(pauses, [2_000]);
+  // The retry proved the owner still references the lease, so the slot keeps it.
+  const slot = manager.store.slot(lease.slotId)!;
+  assert.equal(slot.state, "leased");
+  assert.equal(slot.quarantineReason, null);
+  assert.equal(slot.activeLeaseId, lease.leaseId);
+});
+
+test("a Git read that exits with its own error is answered at once, without a retry", async () => {
+  const repository = repo("mission-reconcile-git-definite-");
+  let failStatus = false;
+  let statusReads = 0;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => {
+      if (failStatus && args.includes("status")) {
+        statusReads++;
+        return { stdout: "", stderr: "fatal: index file corrupt\n", code: 128, outcomeUnknown: false, overflowed: false };
+      }
+      return run(bin, args, opts);
+    },
+    async () => assert.fail("a Git that reported its own exit would say the same again"),
+  );
+  const manager = harness({ git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-git-definite" },
+    }),
+  );
+  failStatus = true;
+  const inspected = await git.inspect(lease.path);
+  assert.equal(statusReads, 1);
+  assert.deepEqual(inspected, { ok: false, reason: "git status failed: fatal: index file corrupt", outcomeUnknown: false });
 });

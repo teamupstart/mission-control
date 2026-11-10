@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeProvider } from "@shared/types.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
-import { run } from "../util/exec.ts";
+import { run, unansweredOutcome } from "../util/exec.ts";
 import { unref } from "../util/timers.ts";
 import {
   worktreeRepositoryIdentity,
@@ -21,6 +21,7 @@ import {
   type WorktreeRegistration,
 } from "./git.ts";
 import { ensureWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
+import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observation-retry.ts";
 import {
   inspectWorktreeOccupancy,
   pathContains,
@@ -133,6 +134,8 @@ export interface WorktreeManagerDeps {
   now: () => number;
   randomId: () => string;
   poolsDirectory: string;
+  /** The wait before an owner lookup that threw is tried once more. */
+  pause: (ms: number) => Promise<void>;
 }
 
 const DEFAULT_DEPS: WorktreeManagerDeps = {
@@ -148,11 +151,12 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
       timeoutMs: 120_000,
       maxBuffer: 64 * 1024,
     });
+    const unanswered = unansweredOutcome(result);
     return result.code === 0 && !result.outcomeUnknown && !result.overflowed
       ? { ok: true, reason: null, outcomeUnknown: false }
       : {
           ok: false,
-          reason: result.stderr.trim() ||
+          reason: (unanswered ? `setup ${unanswered}` : result.stderr.trim()) ||
             (result.outcomeUnknown ? "setup outcome could not be proven" : `setup exited ${result.code}`),
           outcomeUnknown: result.outcomeUnknown,
         };
@@ -161,6 +165,7 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   now: Date.now,
   randomId: randomUUID,
   poolsDirectory: WORKTREE_POOLS_DIR,
+  pause: pauseFor,
 };
 
 const SLOT_OBSERVATION_CONCURRENCY = 8;
@@ -410,9 +415,20 @@ export class WorktreeManager {
       : null;
   }
 
-  private ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
-    if (this.pendingDomainLeases.has(reference.leaseId)) return Promise.resolve(true);
-    return this.deps.ownerReferenced(reference);
+  /** A domain lookup that throws is tried once more (`observation-retry.ts`) before it is unknown. */
+  private async ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
+    if (this.pendingDomainLeases.has(reference.leaseId)) return true;
+    try {
+      return await this.deps.ownerReferenced(reference);
+    } catch (first) {
+      await this.deps.pause(OBSERVATION_RETRY_DELAY_MS);
+      try {
+        return await this.deps.ownerReferenced(reference);
+      } catch (second) {
+        const text = (error: unknown) => (error instanceof Error ? error.message : String(error));
+        throw new Error(bothAttempts(text(first), text(second)));
+      }
+    }
   }
 
   /** Complete the in-memory handoff after a task/check row durably records this lease. */

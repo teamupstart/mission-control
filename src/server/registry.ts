@@ -333,6 +333,8 @@ import { pruneDelegatedTurns } from "./delegated-turns.ts";
 export interface PrOpened {
   url: string;
   sessionId: string;
+  /** `noteKeyFor` the session, which survives the id re-minting on restart. */
+  noteKey: string;
   cwd: string | null;
   repoRoot: string | null;
 }
@@ -3268,6 +3270,7 @@ export class Registry extends EventEmitter {
       this.emit("pr_opened", {
         url,
         sessionId: s.id,
+        noteKey: noteKeyFor(s),
         cwd: s.cwd,
         repoRoot: s.repoRoot,
       } satisfies PrOpened);

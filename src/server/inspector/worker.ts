@@ -436,7 +436,7 @@ function noteFailure(
  */
 export function adoptOpenedPr(
   registry: Pick<Registry, "taskForSession" | "workEpisodeForSession">,
-  e: Pick<PrOpened, "url" | "sessionId" | "cwd" | "repoRoot">,
+  e: Pick<PrOpened, "url" | "sessionId" | "cwd" | "repoRoot"> & Partial<Pick<PrOpened, "noteKey">>,
   now: number,
 ): boolean {
   const source = {
@@ -448,7 +448,12 @@ export function adoptOpenedPr(
   // ordinary pull request that the stacking gates would never evaluate.
   try {
     return inTransaction(() => {
-      const adopted = adoptPr(e.url, { sessionId: e.sessionId, cwd: e.cwd, repoRoot: e.repoRoot }, "hook", now);
+      const adopted = adoptPr(
+        e.url,
+        { sessionId: e.sessionId, noteKey: e.noteKey, cwd: e.cwd, repoRoot: e.repoRoot },
+        "hook",
+        now,
+      );
       const parsed = adopted ? parsePrUrl(e.url) : null;
       if (parsed) adoptStackLineage(parsed.key, source, now);
       return adopted;
@@ -465,7 +470,7 @@ export function adoptOpenedPr(
  */
 export function adoptPr(
   url: string,
-  ctx: { sessionId: string | null; cwd: string | null; repoRoot: string | null },
+  ctx: { sessionId: string | null; noteKey?: string | null; cwd: string | null; repoRoot: string | null },
   source: InspectorSource,
   now: number,
 ): boolean {
@@ -480,6 +485,7 @@ export function adoptPr(
     repoRoot: ctx.repoRoot,
     cwd: ctx.cwd,
     sessionId: ctx.sessionId,
+    noteKey: ctx.noteKey ?? null,
     source,
     state: "open",
     headSha: null,

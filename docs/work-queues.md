@@ -292,7 +292,9 @@ The session card shows only the PR its current work episode accepted, so a sessi
 to an older PR's branch can show none. Foreman also follows the GitHub Inspector's adoption: an
 open PR the Inspector adopted under that session, in its repository, whose head branch is the
 session's current branch, has its unresolved findings relayed even when the card shows no PR.
-Such a PR carries only its findings. CI, CodeRabbit and stacked pull request follow-through stay
+"Under that session" means the session's note key, which survives a restart that re-mints its
+id. A PR adopted before the note key was recorded matches on the session id alone. Such a PR
+carries only its findings. CI, CodeRabbit and stacked pull request follow-through stay
 with the card's PR.
 
 Each nudge is typed into the session's pane, so it carries the usual gates and one more:

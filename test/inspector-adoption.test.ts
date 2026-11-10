@@ -86,9 +86,13 @@ test("authorship is announced once per session per PR, on either evidence path",
   } as DiscoveredSession;
   r.applyDiscovery([discovered]);
   const hook = { agent: "claude" as const, event: "PostToolUse", sessionId: null, cwd: null, transcriptPath: null, env: { tmuxPane: "%77" }, prUrl: URL_1, prCreated: true };
+  const noteKeys: string[] = [];
+  r.onPrOpened((e) => noteKeys.push(e.noteKey));
   r.applyHook(hook);
   r.applyHook(hook);
   assert.deepEqual(opened, [{ url: URL_1, sessionId: "proc:ttys7:900:0" }], "a repeated hook is not news");
+  // No agent id is known for this session yet, so its note key is the synthetic id.
+  assert.deepEqual(noteKeys, ["proc:ttys7:900:0"]);
 
   // The driver path: the same claim, from a session with no pane at all.
   const sdkId = `${SDK_SESSION_ID_PREFIX}22222222-2222-4222-8222-222222222222`;
@@ -118,6 +122,18 @@ test("adopting records the PR under a key that survives clones and worktrees", (
   // rather than deciding it has already seen this head.
   assert.equal(row?.headSha, null);
   assert.equal(row?.round, 0);
+});
+
+test("adopting records the opening session's note key, which outlives its synthetic id", () => {
+  const withKey = "https://github.com/mancej/ai-harness/pull/71";
+  const without = "https://github.com/mancej/ai-harness/pull/72";
+  assert.equal(adoptPr(withKey, { ...CTX, noteKey: "agent-71" }, "hook", 1000), true);
+  assert.equal(adoptPr(without, CTX, "hook", 1000), true);
+  assert.equal(getInspectorPr("mancej/ai-harness#71")?.noteKey, "agent-71");
+  assert.equal(getInspectorPr("mancej/ai-harness#72")?.noteKey, null);
+  // Adoption is a fact about the past: a later sighting cannot re-point it.
+  assert.equal(adoptPr(withKey, { ...CTX, noteKey: "agent-other" }, "hook", 2000), false);
+  assert.equal(getInspectorPr("mancej/ai-harness#71")?.noteKey, "agent-71");
 });
 
 test("inspection tallies distinguish posted findings from pending rows", () => {

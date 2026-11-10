@@ -2776,6 +2776,7 @@ export const InspectorInspectionSchema = z.object({
   repoRoot: z.string().nullable(),
   cwd: z.string().nullable(),
   sessionId: z.string().nullable(),
+  noteKey: z.string().nullable().optional(),
   source: z.enum(INSPECTOR_SOURCES),
   state: z.enum(INSPECTOR_PR_STATES),
   headSha: z.string().nullable(),

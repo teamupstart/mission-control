@@ -416,6 +416,19 @@ test("reviewFollowupPrs keeps the card's PR first and appends an adopted PR on t
   });
 });
 
+test("reviewFollowupPrs follows an adopted row by note key across a session id re-mint", () => {
+  // The row names the predecessor's synthetic id; the restarted session kept its agent id.
+  const restarted = mkSession({ id: "s1-restarted", agentSessionId: "agent-1", prUrl: null, prNumber: null, prState: null, inspector: null });
+  const byNoteKey = adoptedRow({ sessionId: "s1", noteKey: "agent-1" });
+  assert.deepEqual(reviewFollowupPrs(restarted, [byNoteKey]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  // A recorded note key is the identity: the same synthetic id under another note key is not this session.
+  const reused = mkSession({ id: "s1", agentSessionId: "agent-2", prUrl: null, prNumber: null, prState: null, inspector: null });
+  assert.deepEqual(reviewFollowupPrs(reused, [byNoteKey]), []);
+  // A row adopted before the note key was recorded still matches on the id.
+  assert.deepEqual(reviewFollowupPrs(detached(), [adoptedRow({ noteKey: null })]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  assert.deepEqual(reviewFollowupPrs(restarted, [adoptedRow({ noteKey: null })]), []);
+});
+
 test("reviewFollowupPrs ignores an adopted row that is not this session's open PR on this branch", () => {
   const session = detached();
   const ignored: Array<[string, Partial<InspectorInspection>]> = [

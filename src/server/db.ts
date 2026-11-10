@@ -224,8 +224,9 @@ let db: DatabaseSync | undefined;
 // 26: a swept item's parent (`tasks.source_parent`), nullable with no backfill: NULL is an item
 //     with no recorded parent, which is what every older task has.
 // 27: whether each GitHub Inspector finding was posted (`inspector_comments.posted_at`,
-//     `github_url`, `legacy_posted`) and draft refusals (`post_refusals`,
-//     `last_post_error`). `legacy_posted` is backfilled once, so this one rewrites rows.
+//     `github_url`, `legacy_posted`), draft refusals (`post_refusals`, `last_post_error`),
+//     and the adopting session's note key (`inspector_prs.note_key`, nullable, no backfill).
+//     `legacy_posted` is backfilled once, so this one rewrites rows.
 export const CURRENT_DATABASE_SCHEMA_VERSION = 27;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
@@ -4439,6 +4440,10 @@ function migrate(d: DatabaseSync): void {
   // No index: nothing selects on either column.
   addColumn(d, "inspector_comments", "post_refusals", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "inspector_comments", "last_post_error", "TEXT");
+  // The adopting session's note key, written once at adoption like `session_id`. The session
+  // id re-mints on every restart and the note key does not, so Foreman matches adopted pull
+  // requests on this. NULL for a row adopted before it, which falls back to `session_id`.
+  addColumn(d, "inspector_prs", "note_key", "TEXT");
 
   // Whether a parked repair round resumes itself. NULLABLE with NO default on purpose: a
   // NULL is the truthful record of a draft authored, or a version PUBLISHED, by a build
@@ -14489,6 +14494,7 @@ interface InspectorPrRow {
   repo_root: string | null;
   cwd: string | null;
   session_id: string | null;
+  note_key?: string | null;
   source: string;
   state: string;
   head_sha: string | null;
@@ -14572,6 +14578,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     repoRoot: r.repo_root,
     cwd: r.cwd,
     sessionId: r.session_id,
+    noteKey: r.note_key ?? null,
     source: r.source === "hook" || r.source === "pipeline" ? r.source : "legacy",
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
@@ -14614,12 +14621,12 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
   const res = openDb()
     .prepare(
       `INSERT INTO inspector_prs
-         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+         (key, url, owner, repo, number, repo_root, cwd, session_id, note_key, source, state,
           head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block,
           observed_head_sha, observed_state, observed_at, head_ref_name, title,
           adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -14631,6 +14638,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.repoRoot,
       pr.cwd,
       pr.sessionId,
+      pr.noteKey ?? null,
       pr.source,
       pr.state,
       pr.headSha,

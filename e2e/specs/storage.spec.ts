@@ -101,6 +101,31 @@ test("Storage shows backup config, status and kept copies, saves counts that pru
   await shoot(dashboard, "02-saved-and-backed-up");
 });
 
+test("Save sends only the field edited here, so a setting another window saved is not put back", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  const interval = dashboard.getByLabel("Backup interval");
+  const scheduledCount = dashboard.getByLabel("Scheduled copies kept");
+  await expect(interval).toHaveValue("1");
+
+  // Another window saves a longer interval; this page still holds the config it loaded.
+  const elsewhere = await dashboard.request.put(`${daemon.baseURL}/api/storage/backups/config`, {
+    data: { intervalHours: 6 },
+  });
+  expect(elsewhere.ok()).toBe(true);
+
+  await scheduledCount.fill("5");
+  await dashboard.getByRole("button", { name: "Save" }).click();
+  await expect(dashboard.getByText("Backup settings saved.", { exact: false })).toBeVisible();
+  const stored = await (await dashboard.request.get(`${daemon.baseURL}/api/storage`)).json() as {
+    config: { scheduledCount: number; preMigrationCount: number; intervalHours: number };
+  };
+  expect(stored.config).toEqual({ scheduledCount: 5, preMigrationCount: 2, intervalHours: 6 });
+  await expect(interval).toHaveValue("6");
+});
+
 test("a failed Back up now appears in Problems and clears on the next success", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
   await expect(dashboard.getByText("No storage problems.")).toBeVisible();

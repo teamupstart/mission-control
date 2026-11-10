@@ -120,18 +120,17 @@ export function StorageSettingsPanelView({
     if (config) setDraft(draftOf(config));
   }, [config?.scheduledCount, config?.preMigrationCount, config?.intervalHours]);
 
-  const patch = draft
-    ? DatabaseBackupsConfigPatchSchema.safeParse({
-        scheduledCount: Number(draft.scheduledCount),
-        preMigrationCount: Number(draft.preMigrationCount),
-        intervalHours: Number(draft.intervalHours),
-      })
+  // Only the fields edited here: this page's config can be stale after another window saved,
+  // and sending an untouched field would put that window's value back.
+  const edited = draft && config
+    ? Object.fromEntries(
+        (["scheduledCount", "preMigrationCount", "intervalHours"] as const)
+          .filter((key) => draft[key] !== String(config[key]))
+          .map((key) => [key, Number(draft[key])]),
+      )
     : null;
-  const changed = Boolean(draft && config && (
-    draft.scheduledCount !== String(config.scheduledCount)
-    || draft.preMigrationCount !== String(config.preMigrationCount)
-    || draft.intervalHours !== String(config.intervalHours)
-  ));
+  const patch = edited ? DatabaseBackupsConfigPatchSchema.safeParse(edited) : null;
+  const changed = Boolean(edited && Object.keys(edited).length > 0);
   const busy = state.saving || state.backingUp;
   const health = state.health;
   const copies = health?.backups.copies ?? [];

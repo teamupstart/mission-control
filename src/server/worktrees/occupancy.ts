@@ -210,6 +210,7 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
   // (or throws): under the load that causes a timeout the next would time out too, so an
   // attempt spends at most one cwd timeout on them rather than eight.
   const cwdFailure = cwdSnapshot.unknownReason;
+  const cwdOverflowed = cwdSnapshot.overflowed === true;
   const cwds = new Map(cwdSnapshot.cwds);
   let unresolved = cwdFailure
     ? processes
@@ -234,10 +235,14 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
     try {
       confirmation = await d.listProcesses(options);
     } catch (error) {
-      return { ok: false, reason: `process disappearance check failed: ${String(error)}` };
+      return { ok: false, reason: `process disappearance check failed: ${String(error)}`, overflowed: cwdOverflowed };
     }
     if (confirmation.unknownReason) {
-      return { ok: false, reason: confirmation.unknownReason, overflowed: confirmation.overflowed === true };
+      return {
+        ok: false,
+        reason: confirmation.unknownReason,
+        overflowed: cwdOverflowed || confirmation.overflowed === true,
+      };
     }
     const confirmed = new Map(confirmation.processes.map((process) => [process.pid, process]));
     // Still alive means still in scope, by the same rule the first snapshot used. A short-lived
@@ -252,7 +257,7 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
     });
   }
   if (unresolved.length > 0) {
-    if (cwdFailure) return { ok: false, reason: cwdFailure, overflowed: cwdSnapshot.overflowed === true };
+    if (cwdFailure) return { ok: false, reason: cwdFailure, overflowed: cwdOverflowed };
     const unresolvedPids = unresolved.map((process) => process.pid);
     const shown = unresolvedPids.slice(0, 8).join(", ");
     const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";

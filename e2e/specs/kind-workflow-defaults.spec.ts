@@ -304,3 +304,41 @@ test("an explicit None on a plan survives a switch to local storage under a None
   const task = await addToBacklog(dashboard, dialog);
   expect(task.workflowId).toBe(null);
 });
+
+test("a guess left by a cancelled backlog edit is still corrected when the edit reopens", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const title = "Edit before the rows";
+  const seeded = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, {
+    data: { repoRoot: daemon.repo, title, intent: "decide the kind later", agent: "claude", kind: "ship", backlog: true },
+  });
+  expect(seeded.ok()).toBe(true);
+  const taskId = ((await seeded.json()) as { id: string }).id;
+  const layout = await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  expect(layout.ok()).toBe(true);
+  await dashboard.reload();
+  const card = dashboard.locator(".bl-card", { hasText: title });
+  await expect(card).toBeVisible();
+
+  const release = await holdConfigReads(dashboard);
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  release();
+
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await expect(dialog.getByRole("combobox", { name: "Kind", exact: true })).toHaveValue("bugfix");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(async () => {
+    const all = (await (await dashboard.request.get(`${daemon.baseURL}/api/tasks`)).json()) as Array<{ id: string; workflowId: string | null }>;
+    return all.find((task) => task.id === taskId)?.workflowId;
+  }).toBe(GENERAL_REVIEW);
+});

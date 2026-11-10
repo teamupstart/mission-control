@@ -683,6 +683,7 @@ export function DispatchLayer({
   // frame of whatever the slot last held - an empty form, or the PREVIOUS task's text -
   // and a task whose intent blinks blank is a task that looks like it lost its intent.
   const [edit, setEdit] = useState<EditSlot | null>(null);
+  const editProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   const stored = editTask ? draftFromTask(editTask) : null;
   // Which task the open form is over. Held as state so the staleness test below runs
   // exactly once per opening, and never again while the form is up: re-testing on every
@@ -696,6 +697,11 @@ export function DispatchLayer({
     // that no longer exists. Dropping it costs an abandoned draft; keeping it costs
     // whoever made that change their change, silently, on the next Save.
     if (openOn && edit?.id === openOn && stored && !draftsEqual(edit.seed, stored)) setEdit(null);
+    // The guess belongs to the slot: a form opened without that slot, on another task or
+    // after it was saved, dropped or reverted, must not inherit it.
+    if (openOn && !(edit?.id === openOn && !(stored && !draftsEqual(edit.seed, stored)))) {
+      editProvisionalWorkflow.current = null;
+    }
   }
   /**
    * The mode the OPERATOR last chose, as distinct from one a launch intent imposed.
@@ -1016,6 +1022,7 @@ export function DispatchLayer({
         sessions={sessions}
         draft={editDraft}
         onDraftChange={onEditDraftChange}
+        provisionalWorkflowRef={editProvisionalWorkflow}
         onAttachmentsChange={onEditAttachmentsChange}
         onRevert={onEditRevert}
         onClose={onClose}

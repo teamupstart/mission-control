@@ -169,6 +169,44 @@ test("a capture that fails at any step leaves no temp file or sidecar", async (t
   }
 });
 
+test("a temp file that cannot be removed never changes a capture's outcome", async (t) => {
+  const root = fixture("mission-database-backup-cleanup-failure-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = openWalDatabase(join(root, "harness.db"));
+  t.after(() => source.close());
+  const warn = t.mock.method(console, "warn", () => {});
+  // A directory where the -shm sidecar would be cannot be unlinked, so its removal fails.
+  const blockShm = (temporary: string): void => {
+    const copy = new DatabaseSync(temporary);
+    copy.exec("PRAGMA journal_mode = DELETE");
+    copy.close();
+    mkdirSync(`${temporary}-shm`);
+  };
+
+  const published = new DatabaseBackupService(source, {
+    root: join(root, "published"),
+    selfContain: blockShm,
+  });
+  const scheduled = await published.captureScheduled();
+  const preMigration = published.capturePreMigration();
+  for (const copy of [scheduled, preMigration]) assert.equal(existsSync(copy.path), true);
+
+  const failed = new DatabaseBackupService(source, {
+    root: join(root, "failed"),
+    selfContain: blockShm,
+    validate: () => {
+      throw new Error("injected validation failure");
+    },
+  });
+  await assert.rejects(failed.captureScheduled(), /injected validation failure/);
+  assert.throws(() => failed.capturePreMigration(), /injected validation failure/);
+
+  assert.equal(warn.mock.callCount(), 4);
+  for (const call of warn.mock.calls) {
+    assert.match(String(call.arguments[0]), /database backup temporary \.database-backup-[a-f0-9]{32}\.tmp-shm was not removed/);
+  }
+});
+
 test("the startup sweep removes leftover temp files and sidecars and nothing else", async (t) => {
   const root = fixture("mission-database-backup-startup-sweep-");
   t.after(() => rmSync(root, { recursive: true, force: true }));

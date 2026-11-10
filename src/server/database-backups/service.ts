@@ -131,10 +131,21 @@ function safeUnlink(path: string): void {
   }
 }
 
-/** Remove a capture's temporary file and every journal file SQLite may have left beside it. */
+/**
+ * Remove a capture's temporary file and every journal file SQLite may have left beside it.
+ * It runs in `finally`, so a removal failure is only logged: throwing would replace the
+ * capture's own error, or fail a capture that has already been published.
+ */
 function removeTemporary(temporary: string): void {
-  safeUnlink(temporary);
-  for (const suffix of SQLITE_SIDECARS) safeUnlink(`${temporary}${suffix}`);
+  for (const path of [temporary, ...SQLITE_SIDECARS.map((suffix) => `${temporary}${suffix}`)]) {
+    try {
+      safeUnlink(path);
+    } catch (error) {
+      console.warn(
+        `[mission-control] database backup temporary ${basename(path)} was not removed: ${errorMessage(error)}`,
+      );
+    }
+  }
 }
 
 /**

@@ -537,6 +537,27 @@ test("a build with no supervisor refuses the runtime rather than silently using 
   assert.match(task.error ?? "", /no session supervisor/);
 });
 
+test("a managed Pi chat launches with healthy extension tools and no MCP descriptor", async () => {
+  const repo = seedRepo("pi-chat-extension-repo");
+  setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "task-pi-chat", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat", workflowId: null,
+  }));
+  const supervisor = fakeSupervisor(registry);
+  await new Dispatcher(registry, async () => {}, {
+    supervisor,
+    piExtensionInstalled: async () => true,
+    missionMcpDescriptor: async () => { throw new Error("Pi uses its extension, not an MCP descriptor"); },
+    verifyMissionMcpTools: async () => { throw new Error("the extension health check already verifies its bridge"); },
+  }).dispatch("task-pi-chat");
+  const task = registry.getTask("task-pi-chat")!;
+  assert.equal(task.status, "running", task.error ?? "Pi chat must reach running");
+  assert.equal(supervisor.starts.length, 1);
+  assert.equal(supervisor.starts[0]!.agent, "pi");
+  assert.equal(supervisor.starts[0]!.mcp, null);
+});
+
 test("a managed Pi dispatch refuses before provisioning when its extension is not ready", async () => {
   const repo = seedRepo("pi-extension-missing-repo");
   setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });

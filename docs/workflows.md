@@ -913,7 +913,9 @@ the operator.
 A fail is an ordinary repair round: the session fixes the change, the round runs the whole
 pipeline again, the Pull Request action pushes the new head, and the node waits on that head.
 A path from a Pull Request action through Wait for CI to End still counts as a shipping-only
-continuation, so it keeps the evidence-readiness exemption and the **verified shipping** label.
+continuation, so it keeps the evidence-readiness exemption and the **verified shipping** label,
+as long as Wait for CI's fail route returns to Session. A fail route into a reviewer or Command
+would run it inside the continuation, so that path is an ordinary evaluator-bound one.
 
 The run view shows what the node is waiting for - the pull request, the head, elapsed time
 against the limit - a settings line such as `Required checks · expects "deploy" · quiet 3 min ·

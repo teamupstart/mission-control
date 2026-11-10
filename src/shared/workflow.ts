@@ -2279,11 +2279,14 @@ export function sessionActionContinuationReachesOnlyEnd(
     const target = nodes.get(targetId);
     if (!target) return false;
     // Wait for CI reads the pull request the action just shipped and nothing else, so a
-    // path through it is still shipping. Only its `pass` route continues: `fail` returns to
-    // Session as a repair round, which is a new submission rather than this continuation.
+    // path through it is still shipping. Only its `pass` route continues, and only while
+    // `fail` returns to Session as a repair round, a new submission rather than this
+    // continuation: a `fail` into a reviewer would run that reviewer here.
     if (target.kind === "wait_for_ci") {
-      const passes = graph.edges.filter((edge) => edge.source === targetId && edge.sourcePort === "pass");
+      const out = graph.edges.filter((edge) => edge.source === targetId);
+      const passes = out.filter((edge) => edge.sourcePort === "pass");
       if (passes.length === 0) return false;
+      if (out.some((edge) => edge.sourcePort === "fail" && nodes.get(edge.target)?.kind !== "session")) return false;
       for (const edge of passes) pending.push(edge.target);
       continue;
     }

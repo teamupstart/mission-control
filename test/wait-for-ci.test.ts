@@ -940,6 +940,12 @@ test("a continuation through Wait for CI to End is still shipping-only, and owns
     edges: graph.edges.map((edge) => edge.id === "e5" ? { ...edge, target: "late", targetPort: "activate" } : edge),
   };
   assert.equal(sessionActionContinuationReachesOnlyEnd(reviewed, "pr"), false);
+  // So does a reviewer on the fail route: it would run inside this continuation, not a repair.
+  const reviewedOnFail: PublishedWorkflowGraph = {
+    nodes: [...graph.nodes, { id: "triage", kind: "check", slot: "lint", position: { x: 0, y: 0 } }],
+    edges: graph.edges.map((edge) => edge.id === "e6" ? { ...edge, target: "triage", targetPort: "activate" } : edge),
+  };
+  assert.equal(sessionActionContinuationReachesOnlyEnd(reviewedOnFail, "pr"), false);
 });
 
 

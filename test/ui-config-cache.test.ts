@@ -58,8 +58,6 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
-  // On: the Board has always drawn its empty-column stash, so an upgrade moves nothing.
-  assert.equal(config.showEmptyColumnStash, true);
   assert.equal(config.boardSidebarAllSessions, false);
   // The drawer, floating: residents leave the fleet for an install that never chose.
   assert.equal(config.residentPlacement, "drawer");
@@ -107,8 +105,6 @@ test("a written cache round-trips", () => {
     // for the one operator who turned it off. Asserting the non-default value is the only way
     // round-tripping this field says anything.
     groupBoardByRepo: false,
-    // FALSE for the same reason: it defaults to true.
-    showEmptyColumnStash: false,
     boardSidebarAllSessions: true,
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
@@ -137,7 +133,6 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
-  assert.equal(config.showEmptyColumnStash, false);
   assert.equal(config.boardSidebarAllSessions, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);

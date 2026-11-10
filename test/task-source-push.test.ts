@@ -266,6 +266,30 @@ test("a success records the seen row and the link, in that order, in ONE transac
   assert.equal(getTask("t1")!.status, "backlog", "the task stays in the backlog");
 });
 
+// ---- the dependencies baseline: exactly what the source vouches for ----
+
+test("a clean push that wrote no blockers records an empty dependencies baseline, not none", async () => {
+  const { tasks, task } = setup();
+  const r = await pushTask(mkSource(), task, tasks, { push: spy({ ...created, blockedBy: [] }).push });
+  assert.equal(r.ok, true);
+  assert.deepEqual(getSourceSync(task.id)!.baseline?.blockedBy, []);
+});
+
+test("a push records the blocking links the source confirms as the dependencies baseline", async () => {
+  const { tasks, task } = setup();
+  const blocker: TaskSourceRef = { sourceId: "src-1", externalId: "acme/demo#3", url: "https://github.com/acme/demo/issues/3" };
+  const r = await pushTask(mkSource(), task, tasks, { push: spy({ ...created, blockedBy: [blocker] }).push });
+  assert.equal(r.ok, true);
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy, [{ externalId: "acme/demo#3", url: blocker.url }]);
+});
+
+test("a push whose source cannot vouch for its links records no dependencies baseline", async () => {
+  const { tasks, task } = setup();
+  const r = await pushTask(mkSource(), task, tasks, { push: spy(created).push });
+  assert.equal(r.ok, true);
+  assert.equal(getSourceSync(task.id)!.baseline, null);
+});
+
 // A task the operator launched during the two seconds `gh` was running still takes the
 // link. The issue was created FOR it, and `source` is a record of something that happened
 // rather than a provisioning field - so refusing on status here would throw away the

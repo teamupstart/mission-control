@@ -6,7 +6,7 @@ import { provisioningTasks } from "@shared/session.ts";
 import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
 import { latestLaunchFailure } from "@shared/launch-failure.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
-import { stateDisplay, type Tone } from "../../lib/format.ts";
+import { stateDisplay } from "../../lib/format.ts";
 import { backlogColumnMode, boardColumnModes } from "../../lib/tone.ts";
 import {
   clusterFallbackLabel,
@@ -94,12 +94,10 @@ interface PendingDrop {
  *
  * EMPTY COLUMNS. An empty column is noise - a headed box reading "nothing here" is a
  * board reporting on its own schema instead of your fleet, and horizontal room is the
- * one thing the board never has enough of. So every empty column leaves, the Backlog
- * and "needs you" included, and the remaining columns expand into the space. A stash
- * on the right keeps them one click from coming back, so an empty column is stowed
- * rather than lost - unless the operator has switched the stash off
- * (`showEmptyColumnStash`), in which case they simply leave. A column that fills comes
- * back in its place in the order.
+ * one thing the board never has enough of. So every empty column leaves, the Backlog,
+ * "needs you", "unconfirmed" and "gone" included, and the remaining columns expand into
+ * the space. Nothing is drawn in its place - no chip, no slim rail. A column that fills
+ * comes back in its place in the order.
  *
  * Opening a tile doesn't slide a cramped drawer over the board; it morphs the board
  * INTO the console. The clicked column collapses everything either side of it, slides
@@ -115,12 +113,6 @@ interface PendingDrop {
 export function BoardView(props: SessionViewProps): React.JSX.Element {
   const boardTourRef = useTourTargetRef<HTMLElement>("see-work:board");
   const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
-  // Empty columns the operator pulled back out of the stash. Deliberately local and
-  // un-persisted: it's a "let me look at that for a second", not a setting, and it
-  // should not still be in force tomorrow morning.
-  const [revealed, setRevealed] = useState<ReadonlySet<Tone>>(() => new Set());
-  // The same, for an empty Backlog: it is not a tone, so it is not in the set above.
-  const [backlogRevealed, setBacklogRevealed] = useState(false);
   // A refused drop (agent went busy, wrong repo, pane locked). Shown on the board
   // rather than swallowed, because the card silently staying in the backlog looks
   // identical to a drag that simply missed.
@@ -160,7 +152,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // Hoisted into its own const rather than read inline in the call below: a hook buried in an
   // argument list is one refactor away from ending up inside a condition, and the Rules of Hooks
   // violation that follows is not something this file's tests would catch.
-  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash, boardSidebarAllSessions } = useUiConfig();
+  const { groupBoardByRepo: groupByRepo, boardSidebarAllSessions } = useUiConfig();
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -228,14 +220,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   });
   const starters = pending.length + failed.length;
 
-  const modes = boardColumnModes(groups, revealed, focusedTone, starters);
-  // Hidden stash, empty list: the columns are still stashed (not drawn), there is just no
-  // chip to bring them back from.
-  const stashed = showEmptyColumnStash
-    ? groups.filter((g) => modes.get(g.tone) === "stashed")
-    : [];
-  const backlogMode = backlogColumnMode(props.backlog.length, backlogRevealed, focusedTone != null);
-  const backlogStashed = showEmptyColumnStash && backlogMode === "stashed";
+  const modes = boardColumnModes(groups, starters);
+  const backlogMode = backlogColumnMode(props.backlog.length);
+  // The open session's own column has no card in it - a drawer resident, or a session a
+  // fleet filter hides - so no rail is drawn. The detail takes the board, and its head
+  // carries the way back the rail head would have.
+  const railHidden = focusedTone != null && modes.get(focusedTone) === "hidden";
 
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
   // beside it are the SAME element with the same props - the frame is a wrapper, never a
@@ -388,9 +378,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       ref={boardTourRef}
       className="board"
       data-focus={focusedTone ?? "none"}
+      data-rail={railHidden ? "none" : undefined}
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
-      {backlogMode !== "stashed" && <BacklogColumn
+      {backlogMode !== "hidden" && <BacklogColumn
         width={columnWidthOf(widths, "backlog")}
         onWidthChange={(width) => setColumnWidth("backlog", width)}
         inert={focusedTone != null}
@@ -411,7 +402,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         sessions={props.sessions}
         workflowSummaries={props.workflowSummaries}
         stackShipping={props.stackShipping}
-        onHide={backlogMode === "revealed" && backlogRevealed ? () => setBacklogRevealed(false) : undefined}
       />}
 
       <RestoringSessionsColumn
@@ -420,7 +410,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       />
 
       {groups
-        .filter((g) => modes.get(g.tone) !== "stashed")
+        .filter((g) => modes.get(g.tone) !== "hidden")
         .map((g) => {
           const isRail = focusedTone === g.tone;
           const width = columnWidthOf(widths, g.tone);
@@ -455,8 +445,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
               {/* Double-click the head to expand, the gesture asked for. On the HEAD
                   rather than on the title alone: the head is the column's handle, the
                   title is a word inside it, and a 40px target is not one. It sits
-                  beside the toggle rather than instead of it - the same reveal the
-                  `×` restash uses, so neither gesture is the only way in.
+                  beside the width control rather than instead of it, so neither
+                  gesture is the only way in.
 
                   Not while this column IS the drill-in rail: the rail is a fixed-width
                   console fixture, so the gesture would record a width nothing draws and
@@ -529,25 +519,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     </Tooltip>
                   </>
                 )}
-                {/* A revealed column can be put back where it came from. Only offered
-                    on empty ones - a column with sessions in it is not stashable. */}
-                {modes.get(g.tone) === "revealed" && revealed.has(g.tone) && (
-                  <Tooltip label={`Hide the empty ${g.label} column again`}>
-                  <button
-                    className="board-restash"
-                    aria-label={`Hide the empty ${g.label} column`}
-                    onClick={() =>
-                      setRevealed((prev) => {
-                        const next = new Set(prev);
-                        next.delete(g.tone);
-                        return next;
-                      })
-                    }
-                  >
-                    ×
-                  </button>
-                  </Tooltip>
-                )}
               </header>
               <div className="board-col-body">
                 {/* Keep the placeholder at the top of Working, and use the rail shape while
@@ -558,11 +529,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 {g.tone === "working" && (
                   <FailedLaunchList groups={failed} variant={isRail ? "rail" : "tile"} />
                 )}
-                {g.sessions.length === 0 ? (
-                  g.tone === "working" && starters > 0 ? null : (
-                    <p className="board-col-empty">Nothing here</p>
-                  )
-                ) : isRail ? (
+                {/* Only Working is ever drawn with no sessions, and only while it is holding
+                    dispatch placeholders - every other empty column is not rendered. */}
+                {g.sessions.length === 0 ? null : isRail ? (
                   // The clicked column, now a console rail: the same RailRow (and the same
                   // cluster header) the console uses, so opening a column and switching to
                   // the console read alike.
@@ -662,31 +631,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           );
         })}
 
-      {(backlogStashed || stashed.length > 0) && (
-        <div className="board-stash">
-          <span className="board-stash-label">empty</span>
-          {backlogStashed && (
-            <Tooltip label="Show the empty Backlog column">
-              <button className="board-stash-chip board-stash-backlog" onClick={() => setBacklogRevealed(true)}>
-                <span className="board-swatch" aria-hidden />
-                Backlog
-              </button>
-            </Tooltip>
-          )}
-          {stashed.map((g) => (
-            <Tooltip key={g.tone} label={`Show the empty ${g.label} column`}>
-              <button
-                className={`board-stash-chip tone-${g.tone}`}
-                onClick={() => setRevealed((prev) => new Set(prev).add(g.tone))}
-              >
-                <span className="board-swatch" aria-hidden />
-                {g.label}
-              </button>
-            </Tooltip>
-          ))}
-        </div>
-      )}
-
       {dropError && (
         <p className="board-drop-error" role="status">
           {dropError}
@@ -722,7 +666,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         aria-label={selected ? "Session detail workspace" : undefined}
         aria-hidden={selected == null}
       >
-        {selected && <ConsoleDetail key={selected.id} view={props} session={selected} />}
+        {selected && (
+          <ConsoleDetail
+            key={selected.id}
+            view={props}
+            session={selected}
+            onBack={railHidden ? props.onDeselect : undefined}
+          />
+        )}
       </aside>
     </main>
   );

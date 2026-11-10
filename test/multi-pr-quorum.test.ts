@@ -617,7 +617,8 @@ for (const path of ["completion", "recovery", "save"] as const) {
     else if (path === "recovery") f.tasks.reconcileMergedTasks();
     else await f.tasks.update(id, { dependencies: [{ type: "task", taskId: f.taskId }] });
     const dependent = f.registry.getTask(id)!;
-    assert.equal(dependent.dependencies[0]!.prUrl, url);
+    const stored = dependent.dependencies[0]!; assert.equal(stored.type, "task");
+    assert.equal(stored.prUrl, url);
     assert.equal(typeof dependent.dependencies[0]!.satisfiedAt, "number");
     assert.deepEqual(f.tasks.dependencyBlockers(dependent), []);
     assert.equal(f.registry.workEpisodeForTask(f.taskId)!.prUrl, null, "the unchanged primary has no PR");

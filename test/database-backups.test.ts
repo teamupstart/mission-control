@@ -880,6 +880,30 @@ test("a prune that fails after the copy is published is a warning, and the captu
   );
 });
 
+test("a prune that fails after a pre-migration copy is published only warns, so startup goes on", (t) => {
+  const warnings = t.mock.method(console, "warn", () => undefined);
+  const root = fixture("mission-database-backup-pre-migration-prune-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  const backupRoot = join(root, "backups");
+  const [expired] = seedCopies(backupRoot, "preMigration", 1);
+  mkdirSync(join(backupRoot, `${expired}-wal`));
+  writeFileSync(join(backupRoot, `${expired}-wal`, "held"), "x");
+  const service = new DatabaseBackupService(source, {
+    root: backupRoot,
+    retention: { scheduled: 1, preMigration: 1 },
+  });
+
+  const record = service.capturePreMigration();
+  assert.deepEqual(kept(backupRoot, "pre-migration"), [record.filename]);
+  assert.ok(
+    warnings.mock.calls.some((call) => /prune failed after capture/.test(String(call.arguments[0]))),
+    "the prune failure is reported",
+  );
+});
+
 test("a second Back up now joins the one running even with a scheduled capture queued behind it", async (t) => {
   const root = fixture("mission-database-backup-join-behind-");
   t.after(() => rmSync(root, { recursive: true, force: true }));

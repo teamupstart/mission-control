@@ -586,12 +586,7 @@ export class DatabaseBackupService {
       await this.onlineBackup(this.source, capture.temporary);
       const record = this.publish(capture);
       this.record(() => this.recordSuccess(kind, this.now().getTime()));
-      // The copy is published, so a prune failure only leaves an extra copy for the next prune.
-      try {
-        this.pruneCopies();
-      } catch (error) {
-        console.warn(`[mission-control] database backup prune failed after capture: ${errorMessage(error)}`);
-      }
+      this.pruneAfterPublish();
       return record;
     } catch (error) {
       const label = kind === "manual" ? "Manual" : "Scheduled";
@@ -650,16 +645,29 @@ export class DatabaseBackupService {
 
   capturePreMigration(): DatabaseBackupRecord {
     const capture = this.paths("preMigration");
+    let record: DatabaseBackupRecord;
     try {
       this.source.prepare("VACUUM INTO ?").run(capture.temporary);
-      const record = this.publish(capture);
-      this.pruneCopies();
-      return record;
+      record = this.publish(capture);
     } catch (error) {
       safeUnlink(capture.temporary);
       throw new Error(`Pre-migration database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });
+    }
+    this.pruneAfterPublish();
+    return record;
+  }
+
+  /**
+   * Once a copy is published the capture has succeeded, so a prune failure only warns: it
+   * leaves an extra copy for the next prune, and never fails the capture or blocks a migration.
+   */
+  private pruneAfterPublish(): void {
+    try {
+      this.pruneCopies();
+    } catch (error) {
+      console.warn(`[mission-control] database backup prune failed after capture: ${errorMessage(error)}`);
     }
   }
 }

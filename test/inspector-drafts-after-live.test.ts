@@ -575,6 +575,22 @@ test("a draft the prompt cut for length is not posted, because the model never s
   assertRoundFinished(key);
 });
 
+test("a draft GitHub refused twice and then accepted carries no refusals into its next version", async () => {
+  const key = adopt(730);
+  seedDrafts(key, [{ title: "Refused twice, then anchored", postRefusals: 2 }]);
+  writeGithubState();
+  goLive();
+  await runOneSweep();
+
+  assert.equal(readGithubState().posts.length, 1);
+  const row = byTitle(key).get("Refused twice, then anchored")!;
+  assert.equal(row.status, "open");
+  assert.ok(row.postedAt != null);
+  assert.equal(row.postRefusals, 0, "GitHub accepted it, so the earlier refusals no longer count");
+  assert.equal(row.lastPostError, null);
+  assertRoundFinished(key);
+});
+
 test("a draft at the refusal cap, and a draft whose file left the diff, are not offered", async () => {
   const key = adopt(716);
   seedDrafts(key, [

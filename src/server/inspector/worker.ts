@@ -1323,7 +1323,7 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
   const { pr, dir, headSha, now, tick } = p;
   const first = await postReview(dir, pr.owner, pr.repo, pr.number, p.body, [...p.comments.values()], headSha);
   if (first.ok) {
-    writeRows(p, p.planned, { status: "open", postedAt: now });
+    writeRows(p, p.planned, confirmedPost(now));
     return true;
   }
   // The head sha stays where it is, so this push is reviewed again.
@@ -1353,7 +1353,7 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
       if (wasRefused(retry)) writeRows(p, fresh, { status: "drafted" });
       return noteFailure(pr, retry.error ?? "could not post the review", now, tick);
     }
-    writeRows(p, fresh, { status: "open", postedAt: now });
+    writeRows(p, fresh, confirmedPost(now));
   }
   return pinRefusal(p, carried, first);
 }
@@ -1390,7 +1390,7 @@ async function pinRefusal(
     const comment = p.comments.get(row.fingerprint)!;
     const res = await postReview(dir, pr.owner, pr.repo, pr.number, body, [comment], headSha);
     if (res.ok) {
-      writeRows(p, [row], { status: "open", postedAt: now });
+      writeRows(p, [row], confirmedPost(now));
       continue;
     }
     const untried = carried.slice(i + 1);
@@ -1415,6 +1415,14 @@ function headUnmoved(p: RoundPublication): () => Promise<boolean> {
     const head = await fetchHeadSha(p.dir, p.pr.owner, p.pr.repo, p.pr.number);
     return head.ok && head.value === p.headSha;
   };
+}
+
+/**
+ * A post GitHub confirmed. It clears the refusal pair: those refusals were about a draft
+ * GitHub has now accepted, and carried forward they would retire a later version of it early.
+ */
+function confirmedPost(now: number): Pick<InspectorComment, "status" | "postedAt" | "postRefusals" | "lastPostError"> {
+  return { status: "open", postedAt: now, postRefusals: 0, lastPostError: null };
 }
 
 /** One counted refusal on one draft: back to `drafted`, with the count and GitHub's reason. */
@@ -1538,10 +1546,9 @@ function reconcilePosting(
     const published = row.line === null || threads.has(fp);
     const next: InspectorComment = {
       ...row,
-      status: published ? "open" : "drafted",
       // Confirmed now, so stamped now. An unpublished row keeps whatever an earlier post of
       // the same finding recorded.
-      ...(published ? { postedAt: now } : {}),
+      ...(published ? confirmedPost(now) : { status: "drafted" as const }),
       updatedAt: now,
     };
     rows.set(fp, next);

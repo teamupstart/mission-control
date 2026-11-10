@@ -1,6 +1,7 @@
 import type { Session, Task, TaskDependency } from "@shared/types.ts";
 import type { ShippingConfig } from "@shared/protocol.ts";
 import { hasBlocker } from "@shared/session.ts";
+import { isWorkDependency } from "@shared/task-dependency.ts";
 import {
   effectiveEdgeMode,
   stackEligibility,
@@ -116,7 +117,7 @@ function pendingSecondary(parent: Task, finished: FinishedEpisode): string | nul
 }
 
 function stamped(edge: TaskDependency): boolean {
-  return edge.type !== "plan" && typeof edge.stackReadyAt === "number";
+  return isWorkDependency(edge) && typeof edge.stackReadyAt === "number";
 }
 
 export class StackReadiness {
@@ -407,7 +408,7 @@ export class StackReadiness {
   ): Promise<string | null> {
     let repositories: Awaited<ReturnType<StackGitHub["repositories"]>> | null = null;
     for (const edge of task.dependencies) {
-      if (edge.type === "plan" || edge.satisfiedAt === null || !edge.prUrl) continue;
+      if (!isWorkDependency(edge) || edge.satisfiedAt === null || !edge.prUrl) continue;
       if (edge.type === "task") {
         // Only a sibling we can still place in this repository: an ancestry question asked in
         // the wrong repository has no answer, and a gone task has no repository to ask about.

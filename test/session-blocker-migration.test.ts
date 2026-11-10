@@ -28,14 +28,14 @@ const {
 after(() => rmSync(home, { recursive: true, force: true }));
 
 test("a schema 24 database gains an empty session_blockers table and is stamped current", () => {
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 25);
+  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 25);
   const d = openDb();
   const columns = (d.prepare(`PRAGMA table_info(session_blockers)`).all() as { name: string }[]).map((c) => c.name);
   assert.deepEqual(columns, [
     "note_key", "task_id", "kind", "reason", "waiting_on", "resume_when", "details",
     "reference_url", "started_at", "updated_at", "checked_at", "reply", "last_held_at", "blocker_id",
   ]);
-  assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 25);
+  assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
   assert.deepEqual(loadSessionBlockers(), []);
 });
 

@@ -82,6 +82,7 @@ function mkTask(): Task {
     personaId: null,
     workflowId: null,
     source: null,
+    sourceParent: null,
     repoRoot: "/repo",
     worktreePath: "/repo",
     branch: null,

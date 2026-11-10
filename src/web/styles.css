@@ -31167,6 +31167,15 @@ span.line-run-prov {
   color: var(--fg);
   overflow-wrap: anywhere;
 }
+/* The tracker id of an external prerequisite, beside its title. */
+.bl-deadblock-ref {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+.bl-deadblock-name a {
+  color: inherit;
+}
 .bl-deadblock-state {
   flex: none;
   padding: 0 6px;

@@ -410,7 +410,10 @@ test("a verbose login shell cannot block PATH discovery on stderr backpressure",
   );
   chmodSync(shell, 0o755);
   try {
-    assert.deepEqual(await probeLoginShellPath(f.env, 2_000), {
+    // The budget is generous on purpose: what is under test is that a full stderr pipe
+    // cannot deadlock the probe, which would outlast any timeout. Two seconds only
+    // measured how fast a fresh Node process starts, and a loaded full suite missed it.
+    assert.deepEqual(await probeLoginShellPath(f.env, 10_000), {
       path: "/verbose/bin",
       problem: null,
     });

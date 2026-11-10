@@ -460,6 +460,20 @@ test("a draft whose file left the diff is not carried", () => {
   assert.equal(plan.droppedOffDiff, 0, "it was never a finding of this round to drop");
 });
 
+test("a draft in a file with nothing commentable is carried into the body, like a new finding there", () => {
+  const deletionOnly = `--- a/src/gone.ts
++++ b/src/gone.ts
+@@ -1,2 +1,0 @@
+-const a = 1;
+-const b = 2;
+`;
+  const d = draft({ path: "src/gone.ts", line: null, title: "Removed the only caller" });
+  const plan = planReview(base({ lines: commentableLines(deletionOnly), existing: existingOf(d) }));
+  assert.equal(plan.inline.length, 0);
+  assert.deepEqual(plan.demoted.map((c) => [c.fingerprint, c.line, c.carried]), [[d.fingerprint, null, true]]);
+  assert.match(plan.body, /Removed the only caller/);
+});
+
 test("a carried draft's line snaps to one the diff can anchor", () => {
   const plan = planReview(base({ existing: existingOf(draft({ line: 40 })) }));
   // The diff's right side runs to line 4, its trailing context line.

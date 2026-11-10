@@ -1,7 +1,7 @@
 import type { InspectorComment } from "@shared/types.ts";
 import type { StandardsBundle } from "../standards.ts";
 import type { Brief } from "./brief.ts";
-import { SEVERITY_RANK } from "./verdict.ts";
+import { SEVERITY_RANK, draftOffered } from "./verdict.ts";
 
 // The two prompts the Inspector sends: review a pull request, and answer a follow-up in
 // one of its own threads.
@@ -189,7 +189,9 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     // repeat it, never did, and nothing else posted it. The planner now carries a draft the
     // model leaves alone, so all the model has to say about one is whether this push fixed it.
     const posted = shownOpen.filter((c) => c.status !== "drafted");
-    const drafted = shownOpen.filter((c) => c.status === "drafted");
+    const diffPaths = new Set(input.changedPaths);
+    const drafted = shownOpen.filter((c) => c.status === "drafted" && draftOffered(c, diffPaths));
+    const held = shownOpen.filter((c) => c.status === "drafted" && !draftOffered(c, diffPaths));
     if (posted.length) {
       lines.push(
         "## Issues you raised earlier that are still open",
@@ -208,6 +210,17 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
         "Mission Control posts it.",
         "",
         ...drafted.map((c) => `- ${c.fingerprint} - ${c.path}: ${c.title}`),
+        "",
+      );
+    }
+    if (held.length) {
+      lines.push(
+        "## Found earlier, never posted, and not offered again",
+        "Mission Control will not post these: GitHub refused them too often, their file is no",
+        "longer in this diff, or their text was not kept. If this push fixes one, put its",
+        "fingerprint in `resolved`. Otherwise say nothing about it.",
+        "",
+        ...held.map((c) => `- ${c.fingerprint} - ${c.path}: ${c.title}`),
         "",
       );
     }

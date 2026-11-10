@@ -337,33 +337,47 @@ export function planReview(input: PlanInput): ReviewPlan {
  *  - the prompt listed it (`input.prompted`), so the model had the chance to resolve it;
  *  - the model neither resolved it nor raised it again (a raise is a new finding, posted by
  *    the loop above, and the refusal cap does not apply to it);
- *  - its path is still in this diff (layer 4), and its line snaps to a commentable one. A
- *    draft whose file has left the diff stays drafted and is not posted;
- *  - GitHub has refused it fewer than `INSPECTOR_LIMITS.maxPostRefusals` times;
- *  - it has a body to post. A row written before bodies were persisted has none.
+ *  - `draftOffered` holds: its path is still in this diff (layer 4), GitHub has refused it
+ *    fewer than `INSPECTOR_LIMITS.maxPostRefusals` times, and it has a body to post. A draft
+ *    whose file has left the diff stays drafted and is not posted.
+ *
+ * Its line snaps the way a new finding's does. In a file whose diff only deletes lines there
+ * is nothing to snap to, so like a new finding it goes in the review body (`demoted`).
  *
  * Title and body are scrubbed again even though they were scrubbed when first planned: the
  * check is cheap and it is the outbound boundary. The id and fingerprint are the row's own,
  * so the posted marker names the row it came from.
  */
+/**
+ * Whether a live round offers this drafted row again, given the paths in this diff. The one
+ * definition the planner and the review prompt share, so the prompt never promises to post a
+ * draft the planner will leave alone.
+ */
+export function draftOffered(
+  row: Pick<InspectorComment, "status" | "path" | "body" | "postRefusals">,
+  diffPaths: { has(path: string): boolean },
+): boolean {
+  return row.status === "drafted"
+    && row.path !== null
+    && row.body !== null
+    && (row.postRefusals ?? 0) < INSPECTOR_LIMITS.maxPostRefusals
+    && diffPaths.has(row.path);
+}
+
 function carriedDrafts(input: PlanInput, raised: Set<string>): PlannedComment[] {
   const resolved = new Set(input.verdict.resolved);
   const out: PlannedComment[] = [];
   for (const row of input.existing.values()) {
-    if (row.status !== "drafted") continue;
+    if (!draftOffered(row, input.lines)) continue;
     if (!input.prompted.has(row.fingerprint)) continue;
     if (raised.has(row.fingerprint) || resolved.has(row.fingerprint)) continue;
-    if ((row.postRefusals ?? 0) >= INSPECTOR_LIMITS.maxPostRefusals) continue;
-    if (row.path === null || row.body === null) continue;
-    const fileLines = input.lines.get(row.path);
-    if (!fileLines) continue;
-    const line = snapToLine(fileLines, row.line);
-    if (line === null) continue;
+    const fileLines = row.path === null ? undefined : input.lines.get(row.path);
+    if (row.path === null || row.body === null || !fileLines) continue;
     out.push({
       id: row.id,
       fingerprint: row.fingerprint,
       path: row.path,
-      line,
+      line: snapToLine(fileLines, row.line),
       severity: row.severity,
       title: scrubSecrets(row.title),
       body: scrubSecrets(row.body),

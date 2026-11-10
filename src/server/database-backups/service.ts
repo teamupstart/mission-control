@@ -250,6 +250,15 @@ function safeUnlink(path: string): void {
   }
 }
 
+/** On a failure path, so the capture's own error is the one recorded and rethrown. */
+function discardTemporary(path: string): void {
+  try {
+    safeUnlink(path);
+  } catch (error) {
+    console.warn(`[mission-control] database backup temporary was not removed: ${errorMessage(error)}`);
+  }
+}
+
 /**
  * Open a recovery candidate read-only and ask SQLite to validate every b-tree and page.
  * This function never opens the live database and never changes the candidate.
@@ -537,9 +546,8 @@ export class DatabaseBackupService {
 
   private recordSuccess(kind: RecordedDatabaseBackupKind, at: number): void {
     this.updateStatus((status) => {
-      // A manual success proves the capture path works, so it also ends the scheduled streak.
-      const cleared = kind === "manual" ? (["manual", "scheduled"] as const) : [kind];
-      for (const each of cleared) {
+      // Both kinds share one capture path, so any success ends both streaks.
+      for (const each of ["manual", "scheduled"] as const) {
         Object.assign(status[each], { consecutiveFailures: 0, failingSince: null, lastFailure: null });
       }
       status[kind].lastSuccessAt = at;
@@ -593,7 +601,7 @@ export class DatabaseBackupService {
       const failure = new Error(`${label} database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });
-      if (temporary) safeUnlink(temporary);
+      if (temporary) discardTemporary(temporary);
       this.record(() => this.recordFailure(kind, attemptedAt, error));
       throw failure;
     } finally {
@@ -650,7 +658,7 @@ export class DatabaseBackupService {
       this.source.prepare("VACUUM INTO ?").run(capture.temporary);
       record = this.publish(capture);
     } catch (error) {
-      safeUnlink(capture.temporary);
+      discardTemporary(capture.temporary);
       throw new Error(`Pre-migration database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });

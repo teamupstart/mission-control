@@ -880,6 +880,34 @@ test("a prune that fails after the copy is published is a warning, and the captu
   );
 });
 
+test("a temporary that cannot be removed never hides the capture's own failure", async (t) => {
+  const warnings = t.mock.method(console, "warn", () => undefined);
+  const root = fixture("mission-database-backup-stuck-temporary-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  source.exec("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const service = new DatabaseBackupService(source, {
+    root: join(root, "backups"),
+    onlineBackup: async (_db, destination) => {
+      // Left behind as a non-empty directory, so its unlink is refused.
+      mkdirSync(destination);
+      writeFileSync(join(destination, "held"), "x");
+      throw new Error("EROFS: read-only file system");
+    },
+  });
+
+  await assert.rejects(service.captureScheduled(), /Scheduled database backup failed: EROFS/);
+  const status = service.status().scheduled;
+  assert.equal(status.consecutiveFailures, 1);
+  assert.match(status.lastFailure?.message ?? "", /EROFS/);
+  assert.ok(
+    warnings.mock.calls.some((call) => /temporary was not removed/.test(String(call.arguments[0]))),
+    "the refused cleanup is reported",
+  );
+});
+
 test("a prune that fails after a pre-migration copy is published only warns, so startup goes on", (t) => {
   const warnings = t.mock.method(console, "warn", () => undefined);
   const root = fixture("mission-database-backup-pre-migration-prune-");

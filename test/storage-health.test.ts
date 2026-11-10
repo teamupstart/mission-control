@@ -120,6 +120,22 @@ test("a Back up now failure raises only backup-failed:manual, and a manual succe
   assert.deepEqual(cleared.backups.copies.map((copy) => copy.kind), ["manual"]);
 });
 
+test("a scheduled success clears a stale Back up now failure too", async () => {
+  let clock = Date.UTC(2026, 9, 27, 12);
+  const failing = daemon({ failing: true, now: () => clock });
+  await assert.rejects(failing.backups.captureManual(), /ENOSPC/);
+  assert.deepEqual(problemIds(failing.published.at(-1)!), [`backup-failed:manual:${clock}`]);
+
+  clock += HOUR;
+  const working = daemon({ now: () => clock });
+  await working.backups.captureScheduled();
+  const cleared = working.published.at(-1)!;
+  assert.deepEqual(cleared.problems, []);
+  assert.equal(cleared.backups.status.manual.failingSince, null);
+  assert.equal(cleared.backups.status.manual.consecutiveFailures, 0);
+  assert.equal(cleared.backups.status.manual.lastSuccessAt, null, "a scheduled success is not a manual one");
+});
+
 test("the aggregate lists kept copies newest first with their total size, and publishes only on change", () => {
   mkdirSync(backupRoot, { recursive: true });
   writeFileSync(join(backupRoot, `scheduled-20261027T100000000Z-${"a".repeat(32)}.sqlite3`), "12345");

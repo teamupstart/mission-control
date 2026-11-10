@@ -130,11 +130,6 @@ export interface DatabaseBackupRecord {
   createdAt: string;
 }
 
-interface InFlightCapture {
-  kind: RecordedDatabaseBackupKind;
-  capture: Promise<DatabaseBackupRecord>;
-}
-
 interface OwnedCopy {
   filename: string;
   /** The capture time its filename names, in epoch milliseconds. */
@@ -312,7 +307,8 @@ export class DatabaseBackupService {
   private readonly retention: DatabaseBackupRetention | undefined;
   private readonly now: () => Date;
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
-  private inFlight: InFlightCapture | null = null;
+  private readonly pending = new Map<RecordedDatabaseBackupKind, Promise<DatabaseBackupRecord>>();
+  private queueTail: Promise<unknown> = Promise.resolve();
   private stopping = false;
   private readonly changeListeners = new Set<() => void>();
 
@@ -606,20 +602,22 @@ export class DatabaseBackupService {
   }
 
   /**
-   * One online capture at a time. A request for the kind already in flight joins it; a request
-   * for the other kind starts once the one in flight settles, so the two never write at once.
+   * One online capture at a time. A request for a kind already running or queued joins it; a
+   * request for the other kind queues behind the last capture, so the two never write at once.
    */
   private captureSingleFlight(kind: RecordedDatabaseBackupKind): Promise<DatabaseBackupRecord> {
-    if (this.inFlight?.kind === kind) return this.inFlight.capture;
+    const joined = this.pending.get(kind);
+    if (joined) return joined;
     if (this.stopping) return Promise.reject(new Error("Database backups are stopping"));
-    const previous = this.inFlight?.capture.then(() => undefined, () => undefined);
+    const previous = this.queueTail.then(() => undefined, () => undefined);
     const capture = (async () => {
       await previous;
       return this.captureOnline(kind);
     })().finally(() => {
-      if (this.inFlight?.capture === capture) this.inFlight = null;
+      if (this.pending.get(kind) === capture) this.pending.delete(kind);
     });
-    this.inFlight = { kind, capture };
+    this.pending.set(kind, capture);
+    this.queueTail = capture;
     return capture;
   }
 
@@ -634,7 +632,7 @@ export class DatabaseBackupService {
    */
   async stop(): Promise<void> {
     this.stopping = true;
-    while (this.inFlight) await this.inFlight.capture.then(() => undefined, () => undefined);
+    await this.queueTail.then(() => undefined, () => undefined);
   }
 
   /**

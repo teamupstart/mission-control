@@ -849,6 +849,37 @@ test("captures are single-flight: the same kind joins, the other kind waits its 
   assert.equal(overlapped, false);
 });
 
+test("a second Back up now joins the one running even with a scheduled capture queued behind it", async (t) => {
+  const root = fixture("mission-database-backup-join-behind-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  const releases: Array<() => void> = [];
+  let captures = 0;
+  const service = new DatabaseBackupService(source, {
+    root: join(root, "backups"),
+    onlineBackup: async (db, destination) => {
+      captures += 1;
+      await new Promise<void>((resolve) => releases.push(resolve));
+      await sqliteBackup(db, destination);
+    },
+  });
+
+  const manual = service.captureManual();
+  const scheduled = service.captureScheduled();
+  assert.equal(service.captureManual(), manual, "a manual request joins the manual capture, not the queue tail");
+  assert.equal(service.captureScheduled(), scheduled);
+
+  while (!releases[0]) await new Promise<void>((resolve) => setImmediate(resolve));
+  releases.shift()!();
+  await manual;
+  while (!releases[0]) await new Promise<void>((resolve) => setImmediate(resolve));
+  releases.shift()!();
+  await scheduled;
+  assert.equal(captures, 2);
+});
+
 test("stop waits for a Back up now and the capture queued behind it, then refuses new ones", async (t) => {
   const root = fixture("mission-database-backup-stop-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -869,8 +900,8 @@ test("stop waits for a Back up now and the capture queued behind it, then refuse
   const scheduled = service.captureScheduled();
   let stopped = false;
   const stopping = service.stop().then(() => { stopped = true; });
-  await assert.rejects(service.captureManual(), /Database backups are stopping/);
-  assert.equal(service.captureScheduled(), scheduled, "a request for the kind in flight still joins it");
+  assert.equal(service.captureManual(), manual, "a request for a kind still pending joins it");
+  assert.equal(service.captureScheduled(), scheduled);
 
   while (!releases[0]) await new Promise<void>((resolve) => setImmediate(resolve));
   releases.shift()!();

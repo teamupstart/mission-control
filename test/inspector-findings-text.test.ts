@@ -88,7 +88,7 @@ test("a draft posted earlier is never called the only copy", () => {
   }
   // A legacy-unknown row is reachable only once resolved, and says it is unknown, never "only copy".
   const unknown = inspectorFindingPostedLine(
-    finding("f", "major", { status: "resolved", postedAt: null, legacyPosted: "unknown" }),
+    finding("f", "major", { status: "resolved", postedAt: null, githubUrl: null, legacyPosted: "unknown" }),
   );
   assert.match(unknown, /^Not known whether this was posted on GitHub/);
 });

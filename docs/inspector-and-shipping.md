@@ -240,7 +240,8 @@ posted earlier".
 Findings recorded before Mission Control tracked posting report only what their row
 proves. An open finding, or one with replies, was on GitHub. A dry-run draft never was. A
 resolved finding with no replies could be either, and it reads as **unknown** rather than
-guessing.
+guessing, until a tick finds its own thread or review on the pull request, which proves it
+was posted.
 
 A posted finding also records where it is. An inline finding links to the first comment of
 its thread. A finding folded into the review body, because it had no line to anchor to,

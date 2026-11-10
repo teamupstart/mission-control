@@ -220,7 +220,10 @@ let db: DatabaseSync | undefined;
 //     dismissed before the inbox could dismiss.
 // 25: durable session blockers (`session_blockers`), keyed by note key. Additive: an
 //     upgraded database gains an empty table and no session reads as blocked.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 25;
+// 26: whether each GitHub Inspector finding was posted (`inspector_comments.posted_at`,
+//     `github_url`, `legacy_posted`) and draft refusals (`post_refusals`,
+//     `last_post_error`). `legacy_posted` is backfilled once, so this one rewrites rows.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 26;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4418,7 +4421,7 @@ function migrate(d: DatabaseSync): void {
   // so the other two live here. Written ONCE, by this backfill: the upsert never names the
   // column, so `ON CONFLICT DO UPDATE` leaves it alone, and every row this build creates
   // keeps it NULL.
-  if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT")) backfillInspectorLegacyPosted(d);
+  migrateInspectorLegacyPosted(d);
   // Validation refusals GitHub pinned on a drafted finding the planner offered after a switch
   // to live, and GitHub's reason for the newest one. Zero and NULL are the truthful values for
   // every existing row: no build before this one offered a draft again, so none was refused.
@@ -4871,6 +4874,23 @@ function hasColumn(d: DatabaseSync, table: string, column: string): boolean {
  * hang a one-time data backfill off "the column is new" rather than re-running it on every
  * open - see the `home_name` migration.
  */
+/**
+ * Add `legacy_posted` and run its backfill in one transaction. `addColumn` answers "added" only
+ * once, so a column committed without its backfill would leave every legacy row NULL for good.
+ */
+function migrateInspectorLegacyPosted(d: DatabaseSync): void {
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT")) backfillInspectorLegacyPosted(d);
+    d.exec("COMMIT;");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw err;
+  }
+}
+
 /**
  * Classify every finding that predates `posted_at` by what its row proves.
  *

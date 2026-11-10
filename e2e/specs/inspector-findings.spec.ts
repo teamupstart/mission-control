@@ -157,6 +157,13 @@ test("the Findings modal lists every finding and whether each was posted", async
 
   const modal = findingsDialog(dashboard, 601);
   await expect(modal).toBeVisible();
+  await expect(modal).toHaveAttribute("aria-modal", "true");
+  await expect(modal).toBeFocused();
+  // Tab and Shift+Tab cycle inside the dialog, never reaching the Resolve control behind it.
+  for (const key of ["Tab", "Tab", "Shift+Tab", "Shift+Tab", "Shift+Tab"]) {
+    await dashboard.keyboard.press(key);
+    expect(await modal.evaluate((dialog) => dialog.contains(document.activeElement))).toBe(true);
+  }
   await expect(modal.getByRole("heading", { name: "GitHub Inspector findings" })).toBeVisible();
   await expect(modal.getByRole("link", { name: "owner/repo#601" }))
     .toHaveAttribute("href", "https://github.example/owner/repo/pull/601");
@@ -216,6 +223,7 @@ test("the Findings modal lists every finding and whether each was posted", async
 
   await modal.locator(".modal-foot").getByRole("button", { name: "Close" }).click();
   await expect(modal).toHaveCount(0);
+  await expect(open).toBeFocused();
   // Resolve was never touched from the modal, so the row still carries its findings.
   await expect(dashboard.locator(".sc-row").filter({ hasText: "repo#601" })).toContainText("4 findings");
 });

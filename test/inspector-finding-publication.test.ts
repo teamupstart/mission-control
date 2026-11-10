@@ -78,6 +78,16 @@ const cases: { name: string; row: FindingPublicationInput; want: Want }[] = [
     want: unknown,
   },
   {
+    name: "a resolved legacy row reads posted once a tick captures its own thread",
+    row: { status: "resolved", postedAt: null, githubUrl: URL_NOW, legacyPosted: "unknown" },
+    want: { state: "posted", url: URL_NOW, postedAt: null, earlierPost: false },
+  },
+  {
+    name: "a legacy unposted draft with a captured thread was posted earlier",
+    row: { status: "drafted", postedAt: null, githubUrl: URL_EARLIER, legacyPosted: "unposted" },
+    want: { state: "not-posted", url: URL_EARLIER, postedAt: null, earlierPost: true },
+  },
+  {
     name: "a resolved legacy row the backfill proved unposted reads not-posted",
     row: { status: "resolved", postedAt: null, githubUrl: null, legacyPosted: "unposted" },
     want: none,

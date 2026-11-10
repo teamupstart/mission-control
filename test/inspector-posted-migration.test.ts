@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -34,6 +34,7 @@ legacy.exec(`
     updated_at INTEGER NOT NULL
   );
   CREATE UNIQUE INDEX idx_inspector_comments_fp ON inspector_comments(pr_key, fingerprint);
+  PRAGMA user_version = 25;
 `);
 const insert = legacy.prepare(`INSERT INTO inspector_comments
   (id, pr_key, fingerprint, path, line, title, body, severity, round, status, replies,
@@ -57,6 +58,7 @@ LEGACY_ROWS.forEach(([fp, status, replies, answered], i) => {
 legacy.close();
 
 const {
+  CURRENT_DATABASE_SCHEMA_VERSION,
   closeDb,
   loadInspectorComments,
   openDb,
@@ -90,6 +92,22 @@ test("the posting columns are added by migrate(), nullable, and never in the CRE
   const block = create.slice(0, create.indexOf(");"));
   assert.doesNotMatch(block, /posted_at|github_url|legacy_posted/,
     "CREATE TABLE IF NOT EXISTS never reaches an upgrading database, so the columns live in migrate()");
+});
+
+test("a schema 25 database is backed up before the backfill rewrites its rows", () => {
+  openDb();
+  const backups = readdirSync(join(home, "backups", "database")).filter((name) => name.startsWith("pre-migration-"));
+  assert.equal(backups.length, 1);
+  const recovery = new DatabaseSync(join(home, "backups", "database", backups[0]!), { readOnly: true });
+  const columns = (recovery.prepare(`PRAGMA table_info(inspector_comments)`).all() as { name: string }[])
+    .map((c) => c.name);
+  recovery.close();
+  assert.ok(!columns.includes("legacy_posted"), "the recovery point precedes the posting columns");
+  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION > 25);
+  assert.equal(
+    (openDb().prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+    CURRENT_DATABASE_SCHEMA_VERSION,
+  );
 });
 
 test("the one-time backfill records what each legacy row proves, for every legacy status", () => {

@@ -59,11 +59,15 @@ export type FindingPublicationInput =
  * 2. `drafted` reads `refused` at `INSPECTOR_LIMITS.maxPostRefusals` refusals, and
  *    `not-posted` below it. Either way it carries `refusals` and GitHub's `reason` from the
  *    first counted refusal, so the reason shows straight away and not only at the cap.
- *    `earlierPost` is set when the row was posted before, by `postedAt` or by
- *    `legacyPosted = posted`, and `url` is then that earlier comment.
+ *    `earlierPost` is set when the row was posted before, by `postedAt`, by
+ *    `legacyPosted = posted` or by a captured `githubUrl`, and `url` is then that earlier
+ *    comment.
  * 3. `open` reads `posted`.
  * 4. `resolved` reads `posted` when it was posted, `unknown` when the backfill could not
  *    tell, and `not-posted` otherwise.
+ *
+ * A captured `githubUrl` is proof of posting on its own: `findingUrls` takes it only from a
+ * thread or review our login wrote for this finding, so it settles a legacy `unknown` too.
  *
  * A row whose `postedAt` is ABSENT (as against null) comes from a snapshot taken before
  * the field existed. Where the answer depends on that field, it reads `unknown` rather
@@ -72,7 +76,7 @@ export type FindingPublicationInput =
 export function findingPublication(row: FindingPublicationInput): FindingPublication {
   const postedAt = typeof row.postedAt === "number" ? row.postedAt : null;
   const url = typeof row.githubUrl === "string" && row.githubUrl ? row.githubUrl : null;
-  const postedBefore = postedAt !== null || row.legacyPosted === "posted";
+  const postedBefore = postedAt !== null || row.legacyPosted === "posted" || url !== null;
   const untracked = row.postedAt === undefined && row.legacyPosted === undefined;
   const plain = { url: null, postedAt: null, earlierPost: false, refusals: 0, reason: null };
   switch (row.status) {

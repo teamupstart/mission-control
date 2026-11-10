@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { InspectorComment, InspectorInspection } from "@shared/types.ts";
 import type { InspectorFindingsResponse } from "@shared/protocol.ts";
 import { findingPublication } from "@shared/inspector-findings.ts";
 import { fetchInspectorFindings } from "../lib/api.ts";
+import { containTourTab } from "../tour/focus-containment.ts";
 import { inspectorPrClosedAs } from "../lib/pr-standing.ts";
 import { InspectorFindingsTable } from "./InspectorFindingsTable.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -84,6 +85,26 @@ export function InspectorFindingsModal({
 }): React.JSX.Element {
   const [data, setData] = useState<InspectorFindingsResponse | null>(null);
   const [failed, setFailed] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const setPanel = useCallback((element: HTMLElement | null) => {
+    panelRef.current = element;
+  }, []);
+  const containTab = useCallback((event: KeyboardEvent) => {
+    if (panelRef.current) containTourTab(event, panelRef.current);
+  }, []);
+
+  // The Findings control that opened this stays behind the backdrop, so focus moves in and
+  // returns to it on close, unless it is gone by then. The panel takes it rather than a
+  // control, because a focused control opens its tooltip.
+  useEffect(() => {
+    const previous = document.activeElement;
+    const panel = panelRef.current;
+    panel?.setAttribute("tabindex", "-1");
+    panel?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -110,6 +131,9 @@ export function InspectorFindingsModal({
       className="modal inspector-findings-modal"
       role="dialog"
       ariaLabel={`GitHub Inspector findings on ${prKey}`}
+      ariaModal
+      onKeyDown={containTab}
+      surfaceRef={setPanel}
     >
       <header className="modal-head">
         <h2>GitHub Inspector findings</h2>

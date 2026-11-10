@@ -35,6 +35,7 @@ test("Pi chat starts with healthy extension tools without an MCP descriptor", as
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const dir = artifactsDir("chat-task-scheduling");
     mkdirSync(dir, { recursive: true });
+    await detail.getByText(/pi answered: Check Pi chat tools/).scrollIntoViewIfNeeded();
     await dashboard.screenshot({ path: join(dir, "pi-chat.png") });
   }
 });

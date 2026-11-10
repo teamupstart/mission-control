@@ -31,7 +31,7 @@ const { sweepOnce, taskSourceStatuses } = await import(
 openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const tasks = {} as TaskManager;
+const tasks = { list: () => [] } as unknown as TaskManager;
 
 function source(id: string, enabled: boolean): TaskSourceInstance {
   return {

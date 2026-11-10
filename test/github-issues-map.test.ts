@@ -47,7 +47,7 @@ test("the base sweep asks only for open issues, and only for the fields we map",
   assert.ok(args.slice(0, 2).join(" ") === "issue list");
   assert.equal(argAfter(args, "--state"), "open");
   assert.equal(argAfter(args, "--limit"), "50");
-  assert.equal(argAfter(args, "--json"), "number,title,body,url,labels,assignees,updatedAt");
+  assert.equal(argAfter(args, "--json"), "number,title,body,url,labels,assignees,updatedAt,state,stateReason,blockedBy,parent");
   // No filter was configured, so none is passed - the sweep must not narrow itself.
   assert.equal(args.includes("--label"), false);
   assert.equal(args.includes("--search"), false);
@@ -295,6 +295,16 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
   // The point of reusing `externalIdFor`: the id an issue gets on the way out is the id
   // it gets on the way back in, so a pushed issue is never swept in as a second task.
   assert.equal(r.ref!.externalId, externalIdFor(r.ref!.url!));
+});
+
+test("a clean create vouches for no blocking links; a partial failure vouches for none at all", () => {
+  const out = "https://github.com/acme/widgets/issues/42\n";
+  // A push writes no links, so a clean exit reports "none written", which is not "unknown".
+  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets");
+  assert.deepEqual(clean.blockedBy, []);
+  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not add label", code: 1 }), ctx, "acme/widgets");
+  assert.equal(partial.ref?.externalId, "acme/widgets#42");
+  assert.equal(partial.blockedBy, undefined);
 });
 
 // `gh` prints progress above the URL, so the URL is the LAST such line rather than the

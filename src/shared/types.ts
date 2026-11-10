@@ -2082,7 +2082,46 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    } & StackEdgeFields);
+    } & StackEdgeFields)
+  | {
+      /**
+       * An item in an external tracker that blocks this task and has no Mission Control
+       * task of its own - a blocking link a task source recovered (`canRelate`).
+       *
+       * Satisfied when the item closes as completed. Closed as not planned, it reports
+       * `stopped`, because the work it stood for will not happen on its own. The sweep of
+       * the source named by `sourceId` re-checks `state`; nothing else writes it.
+       */
+      type: "source";
+      sourceId: string;
+      externalId: string;
+      url: string | null;
+      title: string;
+      state: TaskSourceItemState;
+      /** When the owning source last read this item's state, for oldest-first re-checks. */
+      checkedAt: number | null;
+      selectedAt: number | null;
+      satisfiedAt: number | null;
+    }
+  | {
+      /**
+       * An edge written by a newer build, whose type this build does not know.
+       *
+       * Kept rather than dropped, and never satisfied, so running an older build cannot
+       * release work a newer one was holding back. `raw` is written back verbatim, so the
+       * newer build reads its own edge again after an upgrade.
+       */
+      type: "unknown";
+      /** The stored `type` string, for display. */
+      edgeType: string;
+      /** A stable identity for this edge (its stored JSON), so an edit can keep it. */
+      key: string;
+      title: string;
+      raw: Record<string, unknown>;
+      selectedAt: number | null;
+      /** Always null when read: this build cannot tell whether the edge is met. */
+      satisfiedAt: number | null;
+    };
 
 /**
  * Stacked pull requests, on a task or session edge. Every field is optional on read, so an
@@ -2106,6 +2145,15 @@ export interface StackEdgeFields {
   /** The prerequisite's primary-repository pull request the stamp was read from. */
   stackPrUrl?: string | null;
 }
+
+/**
+ * An external item's state, as a task source reports it.
+ *
+ * `completed` and `not_planned` are both closed. They are separate because they mean
+ * opposite things to a dependent: the first is work that landed, the second is work that
+ * will not happen, which is why only the first satisfies a `source` dependency.
+ */
+export type TaskSourceItemState = "open" | "completed" | "not_planned";
 
 /**
  * One SECONDARY repository attached to a multi-repo task.
@@ -2318,6 +2366,12 @@ export interface Task {
    * no-op. A seen row deliberately outlives the task; this field dies with it.
    */
   source: TaskSourceRef | null;
+  /**
+   * The item this task's source item is a sub-issue of, as the source last reported it, else
+   * null. Display only: written on ingest and on keep-updated refresh, and never read to
+   * create a dependency edge.
+   */
+  sourceParent: TaskSourceRef | null;
   /**
    * The provider run this pipeline dispatch owns.
    *

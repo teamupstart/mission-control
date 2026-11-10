@@ -14,7 +14,7 @@ import type {
   WritebackResult,
 } from "@shared/task-source.ts";
 import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
-import type { TaskPriority } from "@shared/types.ts";
+import type { TaskPriority, TaskSourceItemState } from "@shared/types.ts";
 import { ghBin } from "../config.ts";
 import { githubIssueCreateOutcome } from "../github/issue-create.ts";
 import { run } from "../util/exec.ts";
@@ -37,8 +37,15 @@ import { repoRootGone } from "./repo-root.ts";
 /** How long one `gh` call may take before it is abandoned. */
 const GH_TIMEOUT_MS = 20_000;
 
-/** The fields the mapping below reads, and no more - `gh` returns exactly what you ask for. */
-const JSON_FIELDS = "number,title,body,url,labels,assignees,updatedAt";
+/**
+ * The fields the mapping below reads, and no more - `gh` returns exactly what you ask for.
+ *
+ * `blockedBy` and `parent` are the `canRelate` half (gh 2.101 lists both); `state` and
+ * `stateReason` let the linked read say whether a blocking issue closed as completed or
+ * as not planned. A blocker's own entry carries a state but no reason, so a closed
+ * blocker is always settled by reading it, never from the sweep row.
+ */
+const JSON_FIELDS = "number,title,body,url,labels,assignees,updatedAt,state,stateReason,blockedBy,parent";
 
 /** Longest issue body carried into an intent, so one enormous issue can't fill a card. */
 const BODY_LIMIT = 4000;
@@ -50,6 +57,46 @@ interface GhIssue {
   body?: unknown;
   url?: unknown;
   labels?: unknown;
+  state?: unknown;
+  stateReason?: unknown;
+  /** `{nodes: [{number, title, state, url}], totalCount}` */
+  blockedBy?: unknown;
+  /** `{number, title, state, url}`, or null for an issue with no parent. */
+  parent?: unknown;
+}
+
+/** A linked issue (a blocker, a parent) as a ref, or null when it carries no usable URL. */
+function linkedRef(raw: unknown, ctx: SweepContext): TaskSourceRef | null {
+  const url = (raw as { url?: unknown } | null)?.url;
+  if (typeof url !== "string" || !url) return null;
+  return { sourceId: ctx.sourceId, externalId: externalIdFor(url), url };
+}
+
+/** The issues blocking this one, de-duplicated, in the order GitHub returned them. */
+export function blockedByRefs(raw: unknown, ctx: SweepContext): TaskSourceRef[] {
+  const nodes = (raw as { nodes?: unknown } | null)?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  const out = new Map<string, TaskSourceRef>();
+  for (const node of nodes) {
+    const ref = linkedRef(node, ctx);
+    if (ref && !out.has(ref.externalId)) out.set(ref.externalId, ref);
+  }
+  return [...out.values()];
+}
+
+/**
+ * An issue's state in our three words, or undefined when `gh` did not say.
+ *
+ * GitHub closes an issue as completed, not planned, or duplicate. A duplicate is read as
+ * not planned: the work will not happen under THIS issue, and a dependent released on it
+ * would start on a base nobody laid. A closed issue with no reason is an older close,
+ * which GitHub records as completed.
+ */
+export function issueState(issue: Pick<GhIssue, "state" | "stateReason">): TaskSourceItemState | undefined {
+  if (typeof issue.state !== "string") return undefined;
+  if (issue.state.toUpperCase() === "OPEN") return "open";
+  const reason = typeof issue.stateReason === "string" ? issue.stateReason.toUpperCase() : "";
+  return reason === "NOT_PLANNED" || reason === "DUPLICATE" ? "not_planned" : "completed";
 }
 
 /**
@@ -161,6 +208,9 @@ export function candidateFrom(
   // opinion", which is what lets the source's default apply. Setting null here made every
   // swept task unset no matter what the operator chose.
   const mapped = priorityFor(labels, cfg.priorityFrom);
+  const blockedBy = blockedByRefs(issue.blockedBy, ctx);
+  const parent = linkedRef(issue.parent, ctx);
+  const state = issueState(issue);
 
   return {
     ref: { sourceId: ctx.sourceId, externalId: externalIdFor(url), url },
@@ -171,6 +221,9 @@ export function candidateFrom(
     // `normalizeLabels` runs on the way in through `DispatchSchema` (see `ingest.ts`), and
     // it preserves case on purpose - `Type: Bug` has to keep matching the issue it came from.
     labels: cfg.copyLabels ? labels : [],
+    ...(blockedBy.length > 0 ? { blockedBy } : {}),
+    ...(parent ? { parent } : {}),
+    ...(state ? { state } : {}),
   };
 }
 
@@ -323,6 +376,9 @@ export function pushResultFrom(
         },
         error: null,
         outcomeUnknown: false,
+        // A push writes no blocking links, so a clean create vouches for none. A partial
+        // failure (the issue exists, but gh reported an error) vouches for nothing.
+        ...(outcome.partialFailure ? {} : { blockedBy: [] }),
       };
     case "refused":
       return {

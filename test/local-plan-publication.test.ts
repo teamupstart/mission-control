@@ -192,7 +192,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   const input = { ...f.input, files: ["plan.md", "phase-1.md"] };
   const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Pinned merge", intent: "Read this episode", backlog: true, workflowId: null,
     planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] });
-  assert.equal(dependent.dependencies[0]!.episodeId, oldEpisode);
+  assert.equal((dependent.dependencies[0] as { episodeId: string | null }).episodeId, oldEpisode);
   f.registry.upsertTask({ ...dependent, dependencies: dependent.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) });
   assert.equal(taskPlanInputProblem(f.tasks.get(dependent.id)!), null);
 
@@ -211,7 +211,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   // Stored inputs from before this guard must fail at both delivery boundaries too.
   f.registry.upsertTask({ ...f.tasks.get(dependent.id)!, planInputs: [nextInput] });
   const reloaded = loadActiveTasks().find((task) => task.id === dependent.id)!;
-  assert.equal(reloaded.dependencies[0]!.episodeId, oldEpisode);
+  assert.equal((reloaded.dependencies[0] as { episodeId: string | null }).episodeId, oldEpisode);
   assert.notEqual(reloaded.dependencies[0]!.satisfiedAt, null);
   assert.match(taskPlanInputProblem(reloaded)!, /originating.*episode/);
   for (const result of [await f.tasks.dispatch(dependent.id), await f.tasks.assign(dependent.id, f.id)]) {
@@ -220,7 +220,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   }
   const current = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Current episode", intent: "Wait for its merge", backlog: true, workflowId: null,
     planInputs: [nextInput], dependencies: [{ type: "task", taskId: f.task.id }] });
-  assert.equal(current.dependencies[0]!.episodeId, authority.episodeId);
+  assert.equal((current.dependencies[0] as { episodeId: string | null }).episodeId, authority.episodeId);
   assert.match(taskPlanInputProblem(current)!, /waiting/);
   assert.equal(taskPlanInputProblem({ ...current, dependencies: current.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) }), null);
   assert.throws(() => f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Wrong episode", intent: "Cannot substitute the current episode", backlog: true, workflowId: null,

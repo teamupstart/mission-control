@@ -14,7 +14,13 @@ import {
   needsYouReason,
   reportBucket,
 } from "@shared/session.ts";
-import { backlogIndex, declaredBlockers, deadBlockersFor } from "@shared/backlog.ts";
+import {
+  backlogIndex,
+  declaredBlockers,
+  deadBlockersFor,
+  deadSourceBlockersFor,
+  type DeadSourceBlocker,
+} from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
 import {
   backlogTaskNotice,
@@ -42,6 +48,7 @@ function BacklogReportRow({
   task,
   tasks,
   deadBlockers,
+  deadSources,
   onEditTask,
   onOpenSchedule,
   scheduleNameById,
@@ -52,6 +59,8 @@ function BacklogReportRow({
   tasks: Task[];
   /** Cancelled/failed tasks blocking this row, directly or up its chain. */
   deadBlockers: Task[];
+  /** External items closed as not planned blocking this row, directly or up its chain. */
+  deadSources: DeadSourceBlocker[];
   onEditTask: (taskId: string) => void;
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   scheduleNameById?: ReadonlyMap<string, string>;
@@ -109,8 +118,16 @@ function BacklogReportRow({
               case - so the fix is reachable from whichever backlog surface you are reading. */}
           <DeadBlockerButton
             deadBlockers={deadBlockers}
+            deadSources={deadSources}
             busy={toggleBusy}
             onOpenChange={setDeadBlockerOpen}
+            onRemoveSource={(blocker) =>
+              void resolveDead(
+                (ownerId) =>
+                  api.updateTask(ownerId, { dependencies: blocker.remainingDependencies }),
+                blocker.ownerTaskId,
+              )
+            }
             onReschedule={(id) => void resolveDead((deadId) => api.rescheduleTask(deadId), id)}
             onComplete={(id) =>
               void resolveDead(
@@ -481,6 +498,7 @@ export function ReportPanel({
               task={task}
               tasks={tasks}
               deadBlockers={deadBlockersFor(task, backlogDepIndex)}
+              deadSources={deadSourceBlockersFor(task, backlogDepIndex)}
               onEditTask={onEditTask}
               onOpenSchedule={onOpenSchedule}
               scheduleNameById={scheduleNameById}

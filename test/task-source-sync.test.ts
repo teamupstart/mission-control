@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema } from "../src/shared/task-source.ts";
+import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema, sameSourceRef } from "../src/shared/task-source.ts";
 import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/shared/task-source.ts";
 import { sourceContent } from "../src/shared/task-source-sync.ts";
+import { dependencyInputOf } from "../src/shared/task-dependency.ts";
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { getTask, listTasks, deleteTask, openDb, countTaskSourceSeen, inTransaction } = await import("../src/server/db.ts");
@@ -87,7 +88,13 @@ test("legacy links need adoption and newly pushed links are excluded",async()=>{
   const pushed=mkTask({id:"pushed",source:null}); registry.upsertTask(pushed);
   assert.ok(tasks.attachSource(pushed.id,candidate(2).ref).ok);
   assert.equal(getSourceSync(pushed.id)!.origin,"pushed");
-  assert.equal(sourceSyncReviews([src]).length,1);
+  // GitHub can relate, so a pushed task is listed for its dependencies group, with nothing to review yet.
+  const listed=sourceSyncReviews([src]).find((r)=>r.taskId===pushed.id)!;
+  assert.equal(listed.remote,null); assert.deepEqual(listed.conflicts,[]);
+  // A source that cannot relate has no group left for a pushed task.
+  const jira=TaskSourceInstanceSchema.parse({id:"s",kind:"jira",repoRoot:"/repo",keepUpdated:true,
+    config:{site:"acme.atlassian.net",jql:"project = MC"}});
+  assert.equal(sourceSyncReviews([jira]).some((r)=>r.taskId===pushed.id),false);
 });
 test("linked reads bypass discovery; missing results keep the task and show the error",async(t)=>{
   const {src,tasks,task}=await setup();
@@ -297,4 +304,202 @@ test("recorded execution excludes a task even after reschedule clears dispatched
   assert.equal((await refresh(src,tasks,[{...candidate(),title:"Remote"}])).updated,0);
   assert.equal((await tasks.applySourceContent(task.id,task.source!,sourceContent(task),
     {...sourceContent(task),title:"Remote"},()=>{},()=>true)).ok,false);
+});
+
+// The dependencies group: upstream blocking links follow into the linked task's edges.
+const blockedBy=(...ns:number[])=>ns.map((n)=>candidate(n).ref);
+async function setupRelated(){
+  const {src,registry,tasks}=await setup();
+  await ingestSweep(src,{items:[candidate(2),candidate(3)],error:null},tasks,{resolveRepoRoot:async()=>({ok:true,repoRoot:"/repo"})});
+  const byRef=(n:number)=>listTasks().find((t)=>t.source?.externalId===`acme/demo#${n}`)!;
+  return {src,registry,tasks,task:byRef(1),byRef};
+}
+const synced=(taskId:string)=>getTask(taskId)!.dependencies.map((d)=>d.type==="task"?`task:${d.taskId}`
+  :d.type==="source"?`source:${d.externalId}`:d.type).sort();
+test("upstream blocker changes update edges: linked items as task edges, others as source edges",async()=>{
+  const {src,registry,tasks,task,byRef}=await setupRelated();
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,9)}])).updated,1);
+  assert.deepEqual(synced(task.id),[`source:acme/demo#9`,`task:${byRef(2).id}`]);
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy!.map((b)=>b.externalId),["acme/demo#2","acme/demo#9"]);
+  // An operator's own edge is outside the group and survives the upstream removing everything.
+  const own=mkTask({id:"own",status:"backlog",source:null}); registry.upsertTask(own);
+  await tasks.update(task.id,{dependencies:[...getTask(task.id)!.dependencies.map(dependencyInputOf),{type:"task",taskId:own.id}]});
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:[]}])).updated,1);
+  assert.deepEqual(synced(task.id),[`task:${own.id}`]);
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:[]}])).unchanged,1);
+});
+test("a local dependency edit is kept, and a concurrent upstream change is a reviewable conflict",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)}]);
+  await tasks.update(task.id,{dependencies:[{type:"task",taskId:byRef(3).id}]});
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)}])).unchanged,1);
+  assert.deepEqual(synced(task.id),[`task:${byRef(3).id}`]);
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,9)}])).conflicted,1);
+  assert.deepEqual(synced(task.id),[`task:${byRef(3).id}`]);
+  const review=sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!;
+  assert.deepEqual(review.conflicts,["dependencies"]);
+  assert.deepEqual(review.local.blockedBy!.map((b)=>b.externalId),["acme/demo#3"]);
+  assert.deepEqual(review.remote!.blockedBy!.map((b)=>b.externalId),["acme/demo#2","acme/demo#9"]);
+  assert.ok((await resolveSourceSync(src,task.id,review.version,"source",tasks)).ok);
+  assert.deepEqual(synced(task.id),[`source:acme/demo#9`,`task:${byRef(2).id}`]);
+});
+test("pushed tasks follow upstream blockers but never take its other content",async()=>{
+  const {src,registry,tasks,byRef}=await setupRelated();
+  const pushed=mkTask({id:"pushed",source:null,title:"Written here"}); registry.upsertTask(pushed);
+  assert.ok(tasks.attachSource(pushed.id,candidate(7).ref).ok);
+  const remote=(...ns:number[])=>({...candidate(7),title:"Renamed upstream",blockedBy:blockedBy(...ns)});
+  // No baseline yet: agreeing on "none" becomes the baseline; later upstream changes apply.
+  await refresh(src,tasks,[remote()]);
+  assert.deepEqual(getSourceSync(pushed.id)!.baseline!.blockedBy,[]);
+  assert.equal(getSourceSync(pushed.id)!.origin,"pushed");
+  await refresh(src,tasks,[remote(3)]);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]); assert.equal(getTask(pushed.id)!.title,"Written here");
+  assert.equal(getSourceSync(pushed.id)!.origin,"pushed");
+});
+test("a pushed task with local blockers and no baseline is flagged for review, never auto-applied",async()=>{
+  const {src,registry,tasks,byRef}=await setupRelated();
+  const pushed=mkTask({id:"pushed",source:null}); registry.upsertTask(pushed);
+  assert.ok(tasks.attachSource(pushed.id,candidate(7).ref).ok);
+  await tasks.update(pushed.id,{dependencies:[{type:"task",taskId:byRef(3).id}]});
+  assert.equal((await refresh(src,tasks,[{...candidate(7),blockedBy:[]}])).conflicted,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]);
+  const review=sourceSyncReviews([src]).find((r)=>r.taskId===pushed.id)!;
+  assert.deepEqual(review.conflicts,["dependencies"]);
+  assert.ok((await resolveSourceSync(src,pushed.id,review.version,"local",tasks)).ok);
+  assert.equal(getSourceSync(pushed.id)!.origin,"pushed");
+  assert.equal((await refresh(src,tasks,[{...candidate(7),blockedBy:[]}])).unchanged,1);
+});
+// A push records the blocking links the source confirmed as the dependencies baseline.
+async function setupPushed(local:number[],written:number[]){
+  const {src,registry,tasks,byRef}=await setupRelated();
+  const pushed=mkTask({id:"pushed",source:null,title:"Written here"}); registry.upsertTask(pushed);
+  await tasks.update(pushed.id,{dependencies:local.map((n)=>({type:"task" as const,taskId:byRef(n).id}))});
+  assert.ok(tasks.attachSource(pushed.id,candidate(7).ref,inTransaction,blockedBy(...written)).ok);
+  const remote=(...ns:number[])=>({...candidate(7),title:"Renamed upstream",blockedBy:blockedBy(...ns)});
+  return {src,tasks,byRef,pushed,remote};
+}
+test("after a push that wrote no blockers, an upstream-added or upstream-removed blocker merges without review",async()=>{
+  const {src,tasks,byRef,pushed,remote}=await setupPushed([],[]);
+  assert.deepEqual(getSourceSync(pushed.id)!.baseline!.blockedBy,[]);
+  assert.equal((await refresh(src,tasks,[remote(3)])).updated,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]);
+  assert.equal(getSourceSync(pushed.id)!.pending,null);
+  assert.equal((await refresh(src,tasks,[remote()])).updated,1);
+  assert.deepEqual(synced(pushed.id),[]);
+  assert.equal(sourceSyncReviews([src]).find((r)=>r.taskId===pushed.id)!.conflicts.length,0);
+  assert.equal(getTask(pushed.id)!.title,"Written here");
+});
+test("after a push, a local blocker that never went out is not read as removed upstream",async()=>{
+  // #3 is a local blocker this source holds an item for, but the push wrote no links.
+  const {src,tasks,byRef,pushed,remote}=await setupPushed([3],[]);
+  assert.equal((await refresh(src,tasks,[remote()])).unchanged,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]);
+  assert.equal(getSourceSync(pushed.id)!.pending,null);
+  // Upstream adding a different one collides with the local-only edit: reviewed, never applied.
+  assert.equal((await refresh(src,tasks,[remote(2)])).conflicted,1);
+  assert.deepEqual(synced(pushed.id),[`task:${byRef(3).id}`]);
+});
+test("a synced edge that would close a cycle is refused whole and reported",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  await tasks.update(byRef(2).id,{dependencies:[{type:"task",taskId:task.id}]});
+  const remote={...candidate(),title:"Also renamed",blockedBy:blockedBy(2)};
+  assert.equal((await refresh(src,tasks,[remote,candidate(2),candidate(3)])).skipped,1);
+  assert.deepEqual(getTask(task.id)!.dependencies,[]); assert.equal(getTask(task.id)!.title,"Original 1");
+  assert.match(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!,/dependency cycle/);
+  // The refused pass must not advance the baseline, or the brief it never wrote is lost.
+  assert.equal(getSourceSync(task.id)!.baseline!.title,"Original 1");
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy,[]);
+  // The same unchanged upstream is still refused while the cycle stands...
+  assert.equal((await refresh(src,tasks,[remote,candidate(2),candidate(3)])).skipped,1);
+  assert.equal(getTask(task.id)!.title,"Original 1");
+  // ...and once it is gone, the held brief and dependencies both arrive.
+  await tasks.update(byRef(2).id,{dependencies:[]});
+  assert.equal((await refresh(src,tasks,[remote,candidate(2),candidate(3)])).updated,1);
+  assert.equal(getTask(task.id)!.title,"Also renamed");
+  assert.deepEqual(synced(task.id),[`task:${byRef(2).id}`]);
+  assert.equal(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error,null);
+});
+test("Use source on a dependencies conflict that would close a cycle is refused and changes nothing",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  await tasks.update(task.id,{dependencies:[{type:"task",taskId:byRef(3).id}]});
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)},candidate(2),candidate(3)])).conflicted,1);
+  const review=sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!;
+  assert.deepEqual(review.conflicts,["dependencies"]);
+  // The source's blocker now depends on this task, so taking the source side closes a cycle.
+  await tasks.update(byRef(2).id,{dependencies:[{type:"task",taskId:task.id}]});
+  const before=getSourceSync(task.id);
+  const resolved=await resolveSourceSync(src,task.id,review.version,"source",tasks);
+  assert.equal(resolved.ok,false); assert.match(resolved.error!,/dependency cycle/);
+  assert.deepEqual(synced(task.id),[`task:${byRef(3).id}`]);
+  assert.deepEqual(getSourceSync(task.id),before);
+});
+test("a blocker whose linked task cannot take a new task edge becomes a source edge",async()=>{
+  const {src,registry,tasks,task,byRef}=await setupRelated();
+  // Out of the backlog with no live session: `acceptsNewTaskEdgeTo` refuses it.
+  registry.upsertTask({...byRef(2),status:"done"});
+  assert.equal(tasks.acceptsNewTaskEdgeTo(byRef(2).id),false);
+  await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,3)}]);
+  assert.deepEqual(synced(task.id),[`source:acme/demo#2`,`task:${byRef(3).id}`]);
+});
+
+// The parent: source-owned display data, outside every merge group, and never an edge.
+const parentOf=(n:number):TaskSourceRef=>candidate(n).ref;
+test("ingest records a swept sub-issue's parent and creates no edge for it",async()=>{
+  const src=TaskSourceInstanceSchema.parse({id:"s",kind:"github-issues",repoRoot:"/repo",keepUpdated:true,
+    defaults:{agent:"claude",priority:"med",labels:[]}});
+  setTaskSourcesConfig({sources:[src]});
+  const tasks=new TaskManager(new Registry());
+  // The parent is itself a backlog task here, which is exactly when an edge would be tempting.
+  await ingestSweep(src,{items:[candidate(4),{...candidate(5),parent:parentOf(4)}],error:null},tasks,
+    {resolveRepoRoot:async()=>({ok:true,repoRoot:"/repo"})});
+  const child=listTasks().find((t)=>t.source?.externalId==="acme/demo#5")!;
+  assert.deepEqual(child.sourceParent,parentOf(4));
+  assert.deepEqual(child.dependencies,[]);
+  assert.equal(listTasks().find((t)=>t.source?.externalId==="acme/demo#4")!.sourceParent,null);
+});
+test("refresh overwrites the parent without review, adds no edge, and freezes once started",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  assert.equal(getTask(task.id)!.sourceParent,null);
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:parentOf(2)}])).updated,1);
+  assert.deepEqual(getTask(task.id)!.sourceParent,parentOf(2));
+  // The same parent again, even with its keys in another order, is unchanged: no rewrite.
+  const {url,externalId,sourceId}=parentOf(2); const before=getTask(task.id)!.updatedAt;
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:{url,externalId,sourceId}}])).unchanged,1);
+  assert.equal(getTask(task.id)!.updatedAt,before);
+  assert.deepEqual(synced(task.id),[]);
+  assert.equal(getSourceSync(task.id)!.pending,null); assert.deepEqual(getSourceSync(task.id)!.conflicts,[]);
+  // A local edit conflicting with upstream content does not hold the parent back.
+  await tasks.update(task.id,{title:"Local title"});
+  await refresh(src,tasks,[{...candidate(),title:"Remote title",parent:parentOf(3)}]);
+  assert.deepEqual(getTask(task.id)!.sourceParent,parentOf(3));
+  assert.deepEqual(synced(task.id),[]); assert.ok(byRef(3));
+  // Removed upstream: cleared.
+  await refresh(src,tasks,[{...candidate(),title:"Remote title"}]);
+  assert.equal(getTask(task.id)!.sourceParent,null);
+  // Started: frozen like every other refreshed field.
+  openDb().prepare(`INSERT INTO historical_task_work_episode_bindings
+    (task_id,episode_id,session_id,agent_session_id,bound_at,updated_at) VALUES (?,?,?,?,?,?)`)
+    .run(task.id,"ep-parent","session","agent",1,1);
+  await refresh(src,tasks,[{...candidate(),title:"Remote title",parent:parentOf(2)}]);
+  assert.equal(getTask(task.id)!.sourceParent,null);
+});
+test("sameSourceRef compares field by field: an absent url equals a null one, and a missing ref only another",()=>{
+  const ref={sourceId:"s",externalId:"acme/demo#2",url:null};
+  const noUrl={externalId:"acme/demo#2",sourceId:"s"} as unknown as TaskSourceRef;
+  assert.equal(sameSourceRef(noUrl,ref),true);
+  assert.equal(sameSourceRef(null,undefined),true);
+  assert.equal(sameSourceRef(null,ref),false);
+  assert.equal(sameSourceRef(ref,undefined),false);
+  assert.equal(sameSourceRef(parentOf(2),{...parentOf(2),url:"https://github.com/acme/demo/issues/99"}),false);
+  assert.equal(sameSourceRef(parentOf(2),{...parentOf(2),externalId:"acme/demo#3"}),false);
+});
+test("a stored parent with a null url is unchanged when the source reports it with no url",async()=>{
+  const {src,tasks,task}=await setup();
+  const stored={sourceId:"s",externalId:"acme/demo#2",url:null};
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:stored}])).updated,1);
+  assert.deepEqual(getTask(task.id)!.sourceParent,stored);
+  const before=getTask(task.id)!.updatedAt;
+  const noUrl={sourceId:"s",externalId:"acme/demo#2"} as unknown as TaskSourceRef;
+  assert.equal((await refresh(src,tasks,[{...candidate(),parent:noUrl}])).unchanged,1);
+  assert.equal(getTask(task.id)!.updatedAt,before);
 });

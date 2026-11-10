@@ -1,16 +1,16 @@
 import { createHash } from "node:crypto";
 import {
-  canRefreshSourceTask, copySourceGroup, reconcileSourceContent, sameSourceContent,
-  sourceContent, SourceContentSchema, SOURCE_CONTENT_GROUPS,
-  type SourceContent, type SourceSyncCounts, type SourceSyncRecord, type SourceSyncReview,
+  canRefreshSourceTask, copySourceGroup, localSourceContent, PUSHED_SOURCE_GROUPS, reconcileSourceContent,
+  sameSourceContent, sourceBlockers, sourceContent, SourceContentSchema, SOURCE_CONTENT_GROUPS,
+  type SourceContent, type SourceContentGroup, type SourceSyncCounts, type SourceSyncRecord, type SourceSyncReview,
 } from "@shared/task-source-sync.ts";
 import { normalizeLabels } from "@shared/task.ts";
-import type { SweepContext, SweepResult, TaskCandidate, TaskSourceInstance } from "@shared/task-source.ts";
+import { sameSourceRef, type SweepContext, type SweepResult, type TaskCandidate, type TaskSourceInstance } from "@shared/task-source.ts";
 import type { Task } from "@shared/types.ts";
-import { getTask, listTaskSourceBacklog } from "../db.ts";
+import { getTask, listTaskSourceBacklog, listTasks } from "../db.ts";
 import type { TaskManager } from "../tasks.ts";
 import { taskSourceById } from "./config.ts";
-import { readLinkedSource } from "./index.ts";
+import { canRelateTo, readLinkedSource } from "./index.ts";
 import { getSourceSync, saveSourceSync } from "./sync-store.ts";
 
 function legacyRecord(task: Task, inst: TaskSourceInstance): SourceSyncRecord {
@@ -20,11 +20,25 @@ function legacyRecord(task: Task, inst: TaskSourceInstance): SourceSyncRecord {
     baseline: null, pending: null, conflicts: [], checkedAt: null, appliedAt: null, error: null,
   };
 }
-function projection(candidate: TaskCandidate, record: SourceSyncRecord): SourceContent {
+/**
+ * The groups this record syncs. A source that cannot relate has no `dependencies` group,
+ * and a pushed task syncs only that one: its other content was written here.
+ */
+export function syncGroups(inst: TaskSourceInstance, record: SourceSyncRecord): SourceContentGroup[] {
+  const groups = record.origin === "pushed" ? PUSHED_SOURCE_GROUPS : SOURCE_CONTENT_GROUPS;
+  return groups.filter((group) => group !== "dependencies" || canRelateTo(inst));
+}
+function relation(inst: TaskSourceInstance, tasks: () => Task[]): { sourceId: string; tasks: Task[] } | null {
+  return canRelateTo(inst) ? { sourceId: inst.id, tasks: tasks() } : null;
+}
+function projection(inst: TaskSourceInstance, candidate: TaskCandidate, record: SourceSyncRecord): SourceContent {
   return SourceContentSchema.parse({
     title: candidate.title.trim(), intent: candidate.intent.trim(),
     priority: candidate.priority === undefined ? record.defaults.priority : candidate.priority,
     labels: normalizeLabels([...record.defaults.labels, ...(candidate.labels ?? [])]),
+    // The same refs ingest turns into edges: this source's, never the item itself.
+    ...(canRelateTo(inst) ? { blockedBy: sourceBlockers((candidate.blockedBy ?? []).filter((ref) =>
+      ref.sourceId === inst.id && ref.externalId !== candidate.ref.externalId)) } : {}),
   });
 }
 function sameRecord(a: SourceSyncRecord | null, b: SourceSyncRecord | null): boolean {
@@ -33,25 +47,31 @@ function sameRecord(a: SourceSyncRecord | null, b: SourceSyncRecord | null): boo
 function sourceIsCurrent(inst: TaskSourceInstance): boolean {
   return JSON.stringify(taskSourceById(inst.id)) === JSON.stringify(inst);
 }
-function reviewVersion(task: Task, inst: TaskSourceInstance, record: SourceSyncRecord | null): string {
-  return createHash("sha256").update(JSON.stringify([task.source, sourceContent(task), inst, record])).digest("hex");
+function reviewVersion(task: Task, local: SourceContent, inst: TaskSourceInstance, record: SourceSyncRecord | null): string {
+  return createHash("sha256").update(JSON.stringify([task.source, local, inst, record])).digest("hex");
 }
 
 export function sourceSyncReviews(sources: TaskSourceInstance[]): SourceSyncReview[] {
-  return sources.flatMap((inst) => listTaskSourceBacklog(inst.id).filter(canRefreshSourceTask).flatMap((task) => {
-    let saved: SourceSyncRecord | null;
-    try { saved = getSourceSync(task.id); }
-    catch { return [{ taskId: task.id, sourceId: inst.id, externalId: task.source!.externalId,
-      title: task.title, local: sourceContent(task), remote: null, conflicts: [], adoption: false,
-      error: "saved sync history is unreadable", checkedAt: null, version: "invalid" }]; }
-    if (saved?.origin === "pushed") return [];
-    const record = saved ?? legacyRecord(task, inst);
-    return [{ taskId: task.id, sourceId: inst.id, externalId: task.source!.externalId,
-      title: task.title, local: sourceContent(task), remote: record.pending,
-      conflicts: record.conflicts, adoption: record.baseline === null,
-      error: record.error, checkedAt: record.checkedAt, version: reviewVersion(task, inst, saved) }];
-  }));
+  return sources.flatMap((inst) => {
+    const relate = relation(inst, listTasks);
+    return listTaskSourceBacklog(inst.id).filter(canRefreshSourceTask).flatMap((task) => {
+      const local = localSourceContent(task, relate);
+      let saved: SourceSyncRecord | null;
+      try { saved = getSourceSync(task.id); }
+      catch { return [{ taskId: task.id, sourceId: inst.id, externalId: task.source!.externalId,
+        title: task.title, local, remote: null, conflicts: [], adoption: false,
+        error: "saved sync history is unreadable", checkedAt: null, version: "invalid" }]; }
+      const record = saved ?? legacyRecord(task, inst);
+      if (syncGroups(inst, record).length === 0) return [];
+      return [{ taskId: task.id, sourceId: inst.id, externalId: task.source!.externalId,
+        title: task.title, local, remote: record.pending,
+        conflicts: record.conflicts, adoption: record.baseline === null,
+        error: record.error, checkedAt: record.checkedAt, version: reviewVersion(task, local, inst, saved) }];
+    });
+  });
 }
+
+const CYCLE_ERROR = "The source's blocking links would form a dependency cycle. The task was kept as it is.";
 
 /** Refresh has its own bounded, oldest-checked-first budget; it never consumes creation slots. */
 export async function refreshSourceTasks(
@@ -66,7 +86,8 @@ export async function refreshSourceTasks(
   const eligible = all.flatMap((task) => {
     try {
       const saved = getSourceSync(task.id);
-      return saved?.origin === "pushed" ? [] : [{task, saved, record: saved ?? legacyRecord(task, inst)}];
+      const record = saved ?? legacyRecord(task, inst);
+      return syncGroups(inst, record).length === 0 ? [] : [{task, saved, record}];
     } catch { counts.skipped++; return []; }
   }).sort((a, b) => (a.record.checkedAt ?? 0) - (b.record.checkedAt ?? 0)
     || a.task.createdAt - b.task.createdAt || a.task.id.localeCompare(b.task.id)).slice(0, 25);
@@ -84,8 +105,12 @@ export async function refreshSourceTasks(
   for (const candidate of read.items) candidates.set(candidate.ref.externalId, candidate);
   for (const { task, saved, record } of eligible) {
     if (ctx.signal.aborted || !current()) { counts.skipped++; continue; }
-    const local = sourceContent(task);
+    const groups = syncGroups(inst, record);
+    const local = localSourceContent(task, relation(inst, () => tasks.list()));
     let content = local;
+    // Set once the candidate is confirmed to be this task's item: its parent is then
+    // overwritten as source-owned display data, whatever the merge below decides.
+    let parent: TaskCandidate["parent"] | null | undefined;
     let next: SourceSyncRecord = { ...record, checkedAt: Date.now(), error: null };
     const candidate = candidates.get(task.source!.externalId);
     if (identities.get(task.source!.externalId)! > 1) {
@@ -98,13 +123,19 @@ export async function refreshSourceTasks(
     } else if (candidate.ref.url !== task.source!.url) {
       next.error = "The source returned a different issue link. The existing task was kept.";
     } else {
+      parent = candidate.parent ?? null;
       try {
-        const remote = projection(candidate, record);
-        if (!record.baseline) {
+        const remote = projection(inst, candidate, record);
+        if (!record.baseline && record.origin !== "pushed") {
           // Legacy links also include locally-authored pushes. Adoption is always explicit.
-          next = { ...next, pending: remote, conflicts: [...SOURCE_CONTENT_GROUPS] };
+          next = { ...next, pending: remote, conflicts: groups };
         } else {
-          const merged = reconcileSourceContent(record.baseline, local, remote);
+          // A push records the blocking links it confirmed as the dependencies baseline. A
+          // pushed task without one (the source could not vouch for its links, or it was
+          // pushed before baselines were recorded) falls to that group's no-baseline rule:
+          // applied only where local and source already agree.
+          const baseline = record.baseline ?? { ...local, blockedBy: undefined };
+          const merged = reconcileSourceContent(baseline, local, remote, groups);
           content = merged.content;
           next = { ...next, baseline: merged.baseline, conflicts: merged.conflicts,
             pending: merged.conflicts.length ? remote : null };
@@ -112,12 +143,20 @@ export async function refreshSourceTasks(
         }
       } catch (error) { next.error = error instanceof Error ? error.message : String(error); }
     }
+    const stillCurrent = () => !ctx.signal.aborted && current() && sameRecord(getSourceSync(task.id), saved);
     const applied = await tasks.applySourceContent(task.id, task.source!, local, content,
-      () => saveSourceSync(task.id, inst.id, next),
-      () => !ctx.signal.aborted && current() && sameRecord(getSourceSync(task.id), saved));
+      () => saveSourceSync(task.id, inst.id, next), stillCurrent, canRelateTo(inst), parent);
+    // A cycle is refused whole, like a hand edit that closes one. Say so beside the task,
+    // and retry on later sweeps, when the source or the local graph may have moved. Only
+    // the check and the error are recorded: `next` carries the merge's advanced baseline,
+    // which would mark the groups this refused pass never wrote as already synced.
+    if (applied.cycle && stillCurrent()) {
+      saveSourceSync(task.id, inst.id, { ...record, checkedAt: next.checkedAt, error: CYCLE_ERROR });
+    }
     if (!applied.ok || next.error) counts.skipped++;
     else if (next.pending) counts.conflicted++;
-    else if (!sameSourceContent(local, content)) counts.updated++;
+    else if (!sameSourceContent(local, content)
+      || (parent !== undefined && !sameSourceRef(parent, task.sourceParent))) counts.updated++;
     else counts.unchanged++;
   }
   return counts;
@@ -131,23 +170,24 @@ export async function resolveSourceSync(
     return { ok: false, error: "Enable updates for this source and choose an unstarted backlog task." };
   }
   const record = getSourceSync(taskId);
-  if (!record?.pending || record.error || record.origin === "pushed"
-    || reviewVersion(task, inst, record) !== version) {
+  const local = localSourceContent(task, relation(inst, () => tasks.list()));
+  if (!record?.pending || record.error || syncGroups(inst, record).length === 0
+    || reviewVersion(task, local, inst, record) !== version) {
     return { ok: false, error: "This review changed. Sweep again and review the current values." };
   }
   if (listTaskSourceBacklog(inst.id).filter((t) => t.source?.externalId === task.source!.externalId).length !== 1) {
     return { ok: false, error: "Several backlog tasks link to this item; resolve the duplicates first." };
   }
-  const local = sourceContent(task);
-  const content = sourceContent(task);
+  const content = sourceContent(local);
   const baseline = sourceContent(record.baseline ?? record.pending);
   for (const group of record.conflicts) {
     copySourceGroup(baseline, record.pending, group);
     if (choice === "source") copySourceGroup(content, record.pending, group);
   }
-  const next: SourceSyncRecord = { ...record, origin: "imported", baseline, pending: null, conflicts: [],
-    appliedAt: choice === "source" ? Date.now() : record.appliedAt };
-  return tasks.applySourceContent(task.id, task.source, local, content,
+  const next: SourceSyncRecord = { ...record, origin: record.origin === "pushed" ? "pushed" : "imported",
+    baseline, pending: null, conflicts: [], appliedAt: choice === "source" ? Date.now() : record.appliedAt };
+  const applied = await tasks.applySourceContent(task.id, task.source, local, content,
     () => saveSourceSync(task.id, inst.id, next),
-    () => sourceIsCurrent(inst) && sameRecord(getSourceSync(task.id), record));
+    () => sourceIsCurrent(inst) && sameRecord(getSourceSync(task.id), record), canRelateTo(inst));
+  return applied.cycle ? { ok: false, error: CYCLE_ERROR } : applied;
 }

@@ -6,6 +6,7 @@ import { unref } from "../util/timers.ts";
 import type { TaskManager } from "../tasks.ts";
 import { getTaskSourcesConfig } from "./config.ts";
 import { ingestSweep } from "./ingest.ts";
+import { recheckSourceDependencies } from "./relations.ts";
 import { preflightSource, sweepSource } from "./index.ts";
 
 // Drives the configured task sources on their own schedules, and hands what they return
@@ -147,6 +148,9 @@ export async function sweepOnce(
         () => entry.healthGeneration === healthGeneration
           && JSON.stringify(getTaskSourcesConfig().sources.find((s) => s.id === inst.id)) === JSON.stringify(inst));
     }
+    // The external items `source` dependency edges wait on, re-read within this sweep's
+    // own budget and timeout. A failed read leaves every edge as it was.
+    await recheckSourceDependencies(inst, tasks, contextFor(inst, controller.signal));
     if (entry.healthGeneration === healthGeneration) {
       entry.lastSweepAt = Date.now();
       entry.lastFiled = report.filed;

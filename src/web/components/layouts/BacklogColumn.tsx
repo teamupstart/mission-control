@@ -3,7 +3,14 @@ import type { BacklogBlocker } from "@shared/backlog.ts";
 import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
 import type { ReorderTask } from "@shared/protocol.ts";
 import type { WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
-import { backlogIndex, blockersIn, deadBlockersFor, nextUpTaskId } from "@shared/backlog.ts";
+import {
+  backlogIndex,
+  blockersIn,
+  deadBlockersFor,
+  deadSourceBlockersFor,
+  nextUpTaskId,
+  type DeadSourceBlocker,
+} from "@shared/backlog.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
@@ -516,6 +523,7 @@ export function BacklogColumn({
                 stacking={index.byId}
                 stackShipping={stackShipping}
                 deadBlockers={deadBlockersFor(t, index)}
+                deadSources={deadSourceBlockersFor(t, index)}
                 nextUp={t.id === nextUp}
                 lifted={t.id === inAir}
                 // The cards this one is drawn BETWEEN, which is what the move controls send
@@ -715,6 +723,7 @@ function BacklogCard({
   task,
   blockers,
   deadBlockers,
+  deadSources,
   nextUp,
   lifted,
   above,
@@ -741,6 +750,8 @@ function BacklogCard({
   stackShipping?: StackShipping;
   /** Cancelled/failed tasks blocking this card, directly or up its chain. */
   deadBlockers: Task[];
+  /** External items closed as not planned blocking this card, directly or up its chain. */
+  deadSources: DeadSourceBlocker[];
   /** True on the item Foreman's autopilot would pick up next. */
   nextUp: boolean;
   /** True while THIS card is the one in the air, so the column can dim it. */
@@ -814,6 +825,15 @@ function BacklogCard({
       true,
     );
     if (!r.ok) onAssignError(r.error ?? "could not complete that task");
+    setBusy(false);
+  }
+  // An external item is resolved on the task that HOLDS the edge, which may be up the chain.
+  async function removeDeadSource(blocker: DeadSourceBlocker): Promise<void> {
+    setBusy(true);
+    const r = await api.updateTask(blocker.ownerTaskId, {
+      dependencies: blocker.remainingDependencies,
+    });
+    if (!r.ok) onAssignError(r.error ?? "could not remove that dependency");
     setBusy(false);
   }
 
@@ -1143,9 +1163,11 @@ function BacklogCard({
           buried up the chain, which the chip (direct blockers only) cannot name. */}
       <DeadBlockerButton
         deadBlockers={deadBlockers}
+        deadSources={deadSources}
         busy={busy}
         onReschedule={(id) => void rescheduleDead(id)}
         onComplete={(id) => void completeDead(id)}
+        onRemoveSource={(blocker) => void removeDeadSource(blocker)}
         onOpenChange={setDeadBlockerOpen}
       />
       {/* The CONSEQUENCE, not the setting - the switch above already says which way it

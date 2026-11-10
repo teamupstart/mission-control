@@ -1,4 +1,6 @@
 import type { BacklogPlan, BacklogPlanEntry, Task } from "./types.ts";
+import type { TaskDependencyInput } from "./protocol.ts";
+import { dependencyInputOf, dependencyKey } from "./task-dependency.ts";
 import { backlogTasks } from "./session.ts";
 import { taskKindAllowsBacklog } from "./task.ts";
 import { stackStartEdge } from "./stacking.ts";
@@ -38,6 +40,11 @@ export interface BacklogBlocker {
   state: BlockerState;
   /** Declared blockers are policy and cannot be manually overridden; inferred ones can. */
   source: "declared" | "inferred";
+  /**
+   * Set when the blocker is an item in an external tracker (a `source` edge) rather than
+   * a task - `taskId` is then the edge's key, which names no task.
+   */
+  external?: { sourceId: string; externalId: string; url: string | null };
 }
 
 /** The plan's entries by task id. Empty map for a missing plan, so callers need no branch. */
@@ -183,6 +190,32 @@ function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker
     if (dependency.type === "session") {
       out.push({
         taskId: dependency.sessionId,
+        title: dependency.title,
+        state: "waiting",
+        source: "declared",
+      });
+      continue;
+    }
+    if (dependency.type === "source") {
+      // Closed as not planned, the item's work will not happen: the same "a human has to
+      // act" answer as a cancelled task. Open, it is on its way.
+      out.push({
+        taskId: dependencyKey(dependency),
+        title: dependency.title,
+        state: dependency.state === "not_planned" ? "stopped" : "waiting",
+        source: "declared",
+        external: {
+          sourceId: dependency.sourceId,
+          externalId: dependency.externalId,
+          url: dependency.url,
+        },
+      });
+      continue;
+    }
+    if (dependency.type === "unknown") {
+      // A newer build's edge. Never satisfied here, so an older build cannot release work.
+      out.push({
+        taskId: dependencyKey(dependency),
         title: dependency.title,
         state: "waiting",
         source: "declared",
@@ -370,12 +403,60 @@ export function dependentsIn(task: Task, tasks: Task[], index: BacklogIndex): Ta
  * gates scheduling.
  */
 export function deadBlockersFor(task: Task, index: BacklogIndex): Task[] {
+  return walkDeadBlockers(task, index).tasks;
+}
+
+/** An external item closed as not planned, blocking a backlog card. */
+export interface DeadSourceBlocker {
+  /** The task whose `source` edge names the item - the one to edit to drop it. */
+  ownerTaskId: string;
+  /** The edge's key (`dependencyKey`), which names it in an update body. */
+  key: string;
+  title: string;
+  sourceId: string;
+  externalId: string;
+  url: string | null;
+  /** The owner's dependencies without this one: the update body that removes it. */
+  remainingDependencies: TaskDependencyInput[];
+}
+
+/**
+ * The external items closed as not planned that stop `task` from ever reaching the front
+ * of the queue - on its own edges, or up the same chain `deadBlockersFor` walks.
+ *
+ * The external twin of `deadBlockersFor`, from the same walk, so the two can never
+ * disagree about which chain gates a card. Each names the task that holds the edge,
+ * because that is the task an operator's "remove this dependency" has to edit.
+ */
+export function deadSourceBlockersFor(task: Task, index: BacklogIndex): DeadSourceBlocker[] {
+  return walkDeadBlockers(task, index).sources;
+}
+
+function walkDeadBlockers(
+  task: Task,
+  index: BacklogIndex,
+): { tasks: Task[]; sources: DeadSourceBlocker[] } {
   const dead = new Map<string, Task>();
+  const sources = new Map<string, DeadSourceBlocker>();
   const visiting = new Set<string>();
   const walk = (current: Task): void => {
     if (visiting.has(current.id)) return;
     visiting.add(current.id);
     for (const blocker of blockersIn(current, index)) {
+      if (blocker.external) {
+        if (blocker.state === "stopped") {
+          sources.set(`${current.id}\0${blocker.taskId}`, {
+            ownerTaskId: current.id,
+            key: blocker.taskId,
+            title: blocker.title,
+            ...blocker.external,
+            remainingDependencies: current.dependencies
+              .filter((dependency) => dependencyKey(dependency) !== blocker.taskId)
+              .map(dependencyInputOf),
+          });
+        }
+        continue;
+      }
       const dep = index.byId.get(blocker.taskId);
       if (!dep) continue; // a declared edge to a task that is GONE - nothing to act on
       if (blocker.state === "stopped") {
@@ -389,5 +470,5 @@ export function deadBlockersFor(task: Task, index: BacklogIndex): Task[] {
     visiting.delete(current.id);
   };
   walk(task);
-  return [...dead.values()];
+  return { tasks: [...dead.values()], sources: [...sources.values()] };
 }

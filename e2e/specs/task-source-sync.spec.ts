@@ -242,3 +242,46 @@ test.describe("scheduled review visibility", () => {
     expect((await tasks(page, daemon))[0]!.title).toBe("Imported issue");
   });
 });
+
+test("an upstream blocking-link change that overlaps a local dependency edit is reviewed as a dependencies conflict", async ({ page, daemon }) => {
+  const blocker = (number: number) => ({ number, state: "OPEN", title: `Blocker ${number}`,
+    url: `https://github.com/acme/infra/issues/${number}` });
+  const withBlockers = (...numbers: number[]) => {
+    writeFileSync(daemon.ghIssuesPath, JSON.stringify([
+      { ...original, state: "OPEN", stateReason: "",
+        blockedBy: { nodes: numbers.map(blocker), totalCount: numbers.length } },
+      // Outside the sweep's filter: only readable through `gh issue view`.
+      ...[98, 99].map((n) => ({ ...blocker(n), body: "", labels: [], stateReason: "", discoverable: false })),
+    ]));
+  };
+  await configure(page, daemon);
+  withBlockers(99);
+  await sweep(page);
+  const [task] = await tasks(page, daemon);
+  expect(task!.dependencies).toMatchObject([{ type: "source", externalId: "acme/infra#99" }]);
+  await enable(page, daemon);
+
+  // The operator drops the blocker locally while upstream swaps it for another one.
+  expect((await page.request.post(`${daemon.baseURL}/api/tasks/${task!.id}/update`, { data: { dependencies: [] } })).ok()).toBe(true);
+  withBlockers(98);
+  expect((await sweep(page)).sync.conflicted).toBe(1);
+  expect((await tasks(page, daemon))[0]!.dependencies).toEqual([]);
+
+  const review = page.getByRole("article", { name: "Source update for acme/demo#17" });
+  await expect(review.getByText("Local edits overlap with source changes.")).toBeVisible();
+  await expect(review.getByText("Blocked by: none", { exact: true })).toBeVisible();
+  await expect(review.getByText("Blocked by: acme/infra#98", { exact: true })).toBeVisible();
+  await expect(review.getByRole("button", { name: "Use source", exact: true })).toBeEnabled();
+  await expect(review.getByRole("button", { name: "Keep local", exact: true })).toBeEnabled();
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("task-source-sync"); mkdirSync(dir, { recursive: true });
+    await review.scrollIntoViewIfNeeded(); await page.mouse.move(0, 0);
+    await page.screenshot({ path: `${dir}dependencies-conflict.png` });
+  }
+  await review.getByRole("button", { name: "Use source", exact: true }).click();
+  await expect(review).toHaveCount(0);
+  const [resolved] = await tasks(page, daemon);
+  expect(resolved!.dependencies).toMatchObject([{ type: "source", externalId: "acme/infra#98" }]);
+  expect(resolved!.dependencies).toHaveLength(1);
+  expect((await sweep(page)).sync.unchanged).toBe(1);
+});

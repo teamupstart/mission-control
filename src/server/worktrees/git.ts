@@ -4,7 +4,13 @@ import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha } from "../git/remote-default.ts";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run, type RunResult } from "../util/exec.ts";
+import {
+  bothAttempts,
+  OBSERVATION_RETRY_DELAY_MS,
+  OBSERVATION_RETRY_TIMEOUT_SCALE,
+  pauseFor,
+} from "./observation-retry.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 import {
   worktreeRepositoryIdentity,
@@ -58,15 +64,15 @@ export interface WorktreeGit {
   remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean): Promise<GitResult<void>>;
 }
 
-function failure(step: string, result: Awaited<ReturnType<typeof run>>): GitResult<never> {
+function failure(step: string, result: RunResult): GitResult<never> {
   return {
     ok: false,
-    reason: `${step} failed: ${result.stderr.trim() || `exit ${result.code}`}`,
+    reason: describeCommandFailure(step, result),
     outcomeUnknown: result.outcomeUnknown,
   };
 }
 
-function commandFailed(result: Awaited<ReturnType<typeof run>>): boolean {
+function commandFailed(result: RunResult): boolean {
   return result.code !== 0 || result.outcomeUnknown || result.overflowed;
 }
 
@@ -108,21 +114,54 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
 /** Production Git operations for the native allocator. */
 export class NativeWorktreeGit implements WorktreeGit {
   private readonly execute: typeof run;
+  private readonly pause: (ms: number) => Promise<void>;
 
-  /** Every command is recorded while it runs, so occupancy never counts our own Git. */
-  constructor(execute: typeof run = run) {
+  /**
+   * Every command is recorded while it runs, so occupancy never counts our own Git. `pause`
+   * is the wait before an observation read's one retry, injected so a test need not wait.
+   */
+  constructor(execute: typeof run = run, pause: (ms: number) => Promise<void> = pauseFor) {
     this.execute = (bin, args, opts = {}) =>
       trackOwnWorktreeProcess((onSpawn) => execute(bin, args, { ...opts, onSpawn }));
+    this.pause = pause;
+  }
+
+  /**
+   * One observation read, retried once (see `observation-retry.ts`). `interpret` turns a
+   * command result into the read's answer. Only a failure whose outcome is unknown - a child
+   * killed at its timeout or by a signal - is retried; a Git that exited with its own error
+   * ("not a git repository", a corrupt index) would say the same again, so it is answered at
+   * once rather than adding 2 s to every status read of a broken slot. One that fails twice
+   * names both attempts. Mutations never come through here.
+   */
+  private async observe<T>(
+    args: string[],
+    timeoutMs: number,
+    interpret: (result: RunResult) => GitResult<T> | Promise<GitResult<T>>,
+  ): Promise<GitResult<T>> {
+    const first = await interpret(await this.execute("git", args, { timeoutMs }));
+    if (first.ok || !first.outcomeUnknown) return first;
+    await this.pause(OBSERVATION_RETRY_DELAY_MS);
+    const second = await interpret(
+      await this.execute("git", args, { timeoutMs: timeoutMs * OBSERVATION_RETRY_TIMEOUT_SCALE }),
+    );
+    if (second.ok) return second;
+    return {
+      ok: false,
+      reason: bothAttempts(first.reason, second.reason),
+      outcomeUnknown: first.outcomeUnknown || second.outcomeUnknown,
+    };
   }
 
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
-    const result = await this.execute(
-      "git",
+    const listed = await this.observe(
       ["-C", identity.mainCheckoutRoot, "worktree", "list", "--porcelain"],
-      { timeoutMs: 30_000 },
+      30_000,
+      (result): GitResult<string> =>
+        commandFailed(result) ? failure("git worktree list", result) : { ok: true, value: result.stdout },
     );
-    if (commandFailed(result)) return failure("git worktree list", result);
-    const parsed = parseWorktreePorcelain(result.stdout);
+    if (!listed.ok) return listed;
+    const parsed = parseWorktreePorcelain(listed.value);
     for (const registration of parsed) registration.path = await canonical(registration.path);
     return { ok: true, value: parsed };
   }
@@ -139,23 +178,28 @@ export class NativeWorktreeGit implements WorktreeGit {
    * transition and "we did not find out" must not read as "detached".
    */
   private async detachedAt(path: string): Promise<GitResult<boolean>> {
-    const probe = await this.execute("git", ["-C", path, "symbolic-ref", "--quiet", "HEAD"], {
-      timeoutMs: 15_000,
+    return this.observe(["-C", path, "symbolic-ref", "--quiet", "HEAD"], 15_000, (probe) => {
+      if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
+      if (probe.code === 0 && probe.stdout.trim().length > 0) return { ok: true, value: false };
+      if (probe.code === 1 && probe.stdout.trim().length === 0 && probe.stderr.trim().length === 0) {
+        return { ok: true, value: true };
+      }
+      return failure("git symbolic-ref HEAD", probe);
     });
-    if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
-    if (probe.code === 0 && probe.stdout.trim().length > 0) return { ok: true, value: false };
-    if (probe.code === 1 && probe.stdout.trim().length === 0 && probe.stderr.trim().length === 0) {
-      return { ok: true, value: true };
-    }
-    return failure("git symbolic-ref HEAD", probe);
   }
 
   private async status(path: string): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
-    const status = await this.execute(
-      "git", ["-C", path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { timeoutMs: 15_000 },
+    return this.observe(
+      ["-C", path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      15_000,
+      (status) => commandFailed(status) ? failure("git status", status) : this.statusOf(path, status),
     );
-    if (commandFailed(status)) return failure("git status", status);
+  }
+
+  private async statusOf(
+    path: string,
+    status: RunResult,
+  ): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
     const dirty: GitResult<{ dirty: boolean; scratch: string[] }> = {
       ok: true, value: { dirty: true, scratch: [] },
     };
@@ -190,18 +234,21 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
     const [head, status, detached] = await Promise.all([
-      this.execute("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
+      this.observe(["-C", path, "rev-parse", "HEAD"], 15_000, (result): GitResult<string> =>
+        commandFailed(result)
+          ? failure("git rev-parse HEAD", result)
+          : { ok: true, value: result.stdout.trim() }),
       this.status(path),
       this.detachedAt(path),
     ]);
-    if (commandFailed(head)) return failure("git rev-parse HEAD", head);
+    if (!head.ok) return head;
     if (!status.ok) return status;
     if (!detached.ok) return detached;
     return {
       ok: true,
       value: {
         path: await canonical(path),
-        head: head.stdout.trim(),
+        head: head.value,
         dirty: status.value.dirty,
         commonDirectory: identity.gitCommonDirectory,
         detached: detached.value,
@@ -271,7 +318,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     if (commandFailed(detach)) {
       return {
         ok: false,
-        reason: `git checkout --force --detach failed: ${detach.stderr.trim() || `exit ${detach.code}`}`,
+        reason: describeCommandFailure("git checkout --force --detach", detach),
         // A checkout that died mid-flight may have moved HEAD, replaced working files, or
         // done neither, and an overflowed one never reported which. Either way the slot is
         // quarantined for reconciliation rather than reset again in place.

@@ -10,7 +10,6 @@ import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
-import { noteKeyOf } from "./queue-apply.ts";
 import { hasBlocker, settledIdle } from "@shared/session.ts";
 import { buildStackPrompt, type StackPromptRequest } from "@shared/stacking.ts";
 import { findingPublication, type FindingPublicationState } from "@shared/inspector-findings.ts";
@@ -245,9 +244,9 @@ export interface AdoptedInspection {
 
 /**
  * The follow-through's PR list: `followupPrs(session)`, then each open pull request the
- * Inspector adopted under this session (by note key, or by id for a row adopted before the
- * note key was recorded), on this repository and on the session's current branch, that the
- * card does not already carry.
+ * Inspector adopted under this session (its id, or the agent id recorded at adoption, which
+ * survives a restart), on this repository and on the session's current branch, that the card
+ * does not already carry.
  *
  * The session card holds only a PR its current work episode accepts, so a session that went
  * back to an older PR's branch shows none. The Inspector's adoption rests on observed
@@ -265,9 +264,9 @@ export function reviewFollowupPrs(
   for (const { row, inspector } of adopted) {
     // `state` is checked here too: an older daemon ignores `?state=open` and answers every row.
     if (row.state !== "open") continue;
-    // The note key survives the session id re-minting on restart. A row adopted before it was
-    // recorded can only name the id.
-    const adoptedHere = row.noteKey ? row.noteKey === noteKeyOf(session) : row.sessionId === session.id;
+    // The same live session, or the same agent after a restart re-minted the session id.
+    const adoptedHere = row.sessionId === session.id
+      || (row.noteKey != null && row.noteKey === session.agentSessionId);
     if (!adoptedHere || row.repoRoot !== session.repoRoot) continue;
     if (row.headRefName === null || row.headRefName !== session.gitBranch) continue;
     const url = row.url.toLowerCase();

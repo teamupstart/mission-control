@@ -2918,7 +2918,7 @@ export interface InspectorPr {
   cwd: string | null;
   /** The session that opened it. Nullable: a PR outlives the session, deliberately. */
   sessionId: string | null;
-  /** That session's note key, which survives the id re-minting on restart. Null when unknown. */
+  /** That session's agent id when it was bound, which survives the id re-minting on restart. */
   noteKey?: string | null;
   source: InspectorSource;
   state: InspectorPrState;

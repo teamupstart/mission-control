@@ -416,17 +416,22 @@ test("reviewFollowupPrs keeps the card's PR first and appends an adopted PR on t
   });
 });
 
-test("reviewFollowupPrs follows an adopted row by note key across a session id re-mint", () => {
+test("reviewFollowupPrs follows an adopted row by its agent id across a session id re-mint", () => {
+  const card = { prUrl: null, prNumber: null, prState: null, inspector: null };
+  const byAgent = adoptedRow({ sessionId: "s1", noteKey: "agent-1" });
   // The row names the predecessor's synthetic id; the restarted session kept its agent id.
-  const restarted = mkSession({ id: "s1-restarted", agentSessionId: "agent-1", prUrl: null, prNumber: null, prState: null, inspector: null });
-  const byNoteKey = adoptedRow({ sessionId: "s1", noteKey: "agent-1" });
-  assert.deepEqual(reviewFollowupPrs(restarted, [byNoteKey]).map((pr) => pr.prKey), [ADOPTED_KEY]);
-  // A recorded note key is the identity: the same synthetic id under another note key is not this session.
-  const reused = mkSession({ id: "s1", agentSessionId: "agent-2", prUrl: null, prNumber: null, prState: null, inspector: null });
-  assert.deepEqual(reviewFollowupPrs(reused, [byNoteKey]), []);
-  // A row adopted before the note key was recorded still matches on the id.
-  assert.deepEqual(reviewFollowupPrs(detached(), [adoptedRow({ noteKey: null })]).map((pr) => pr.prKey), [ADOPTED_KEY]);
-  assert.deepEqual(reviewFollowupPrs(restarted, [adoptedRow({ noteKey: null })]), []);
+  const restarted = mkSession({ ...card, id: "s1-restarted", agentSessionId: "agent-1" });
+  assert.deepEqual(reviewFollowupPrs(restarted, [byAgent]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  // The same live session keeps it after its agent id binds or rotates: the id still names it.
+  const rebound = mkSession({ ...card, id: "s1", agentSessionId: "agent-after-clear" });
+  assert.deepEqual(reviewFollowupPrs(rebound, [byAgent]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  // Adopted before the agent id was bound: the session id is the only match, as before.
+  const provisional = adoptedRow({ sessionId: "s1", noteKey: null });
+  assert.deepEqual(reviewFollowupPrs(mkSession({ ...card, id: "s1", agentSessionId: "agent-1" }), [provisional]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  assert.deepEqual(reviewFollowupPrs(restarted, [provisional]), []);
+  // Another agent on another session is never this one.
+  const stranger = mkSession({ ...card, id: "s9", agentSessionId: "agent-9" });
+  assert.deepEqual(reviewFollowupPrs(stranger, [byAgent]), []);
 });
 
 test("reviewFollowupPrs ignores an adopted row that is not this session's open PR on this branch", () => {

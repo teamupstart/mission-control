@@ -4440,9 +4440,10 @@ function migrate(d: DatabaseSync): void {
   // No index: nothing selects on either column.
   addColumn(d, "inspector_comments", "post_refusals", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "inspector_comments", "last_post_error", "TEXT");
-  // The adopting session's note key, written once at adoption like `session_id`. The session
-  // id re-mints on every restart and the note key does not, so Foreman matches adopted pull
-  // requests on this. NULL for a row adopted before it, which falls back to `session_id`.
+  // The adopting session's agent id (its note key), written once at adoption like
+  // `session_id`. The session id re-mints on every restart and the agent id does not, so
+  // Foreman also matches adopted pull requests on this. NULL when the agent id was not yet
+  // bound, or for a row adopted before the column; either still matches on `session_id`.
   addColumn(d, "inspector_prs", "note_key", "TEXT");
 
   // Whether a parked repair round resumes itself. NULLABLE with NO default on purpose: a

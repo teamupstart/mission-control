@@ -86,13 +86,14 @@ test("authorship is announced once per session per PR, on either evidence path",
   } as DiscoveredSession;
   r.applyDiscovery([discovered]);
   const hook = { agent: "claude" as const, event: "PostToolUse", sessionId: null, cwd: null, transcriptPath: null, env: { tmuxPane: "%77" }, prUrl: URL_1, prCreated: true };
-  const noteKeys: string[] = [];
+  const noteKeys: Array<string | null> = [];
   r.onPrOpened((e) => noteKeys.push(e.noteKey));
   r.applyHook(hook);
   r.applyHook(hook);
   assert.deepEqual(opened, [{ url: URL_1, sessionId: "proc:ttys7:900:0" }], "a repeated hook is not news");
-  // No agent id is known for this session yet, so its note key is the synthetic id.
-  assert.deepEqual(noteKeys, ["proc:ttys7:900:0"]);
+  // No agent id is bound yet. The synthetic id is not recorded as the key: it stops matching
+  // the moment the agent id binds, so the row matches on the session id alone.
+  assert.deepEqual(noteKeys, [null]);
 
   // The driver path: the same claim, from a session with no pane at all.
   const sdkId = `${SDK_SESSION_ID_PREFIX}22222222-2222-4222-8222-222222222222`;

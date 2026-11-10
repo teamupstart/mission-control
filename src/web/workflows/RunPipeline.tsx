@@ -31,10 +31,8 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import {
   carriedStageStatus,
   carriedStatus,
-  checkStatus,
   newestInheritedSource,
-  reviewerStatus,
-  sessionActionStatus,
+  memberPipelineStatus,
   stageElapsed,
   stageStatus,
   type InheritedPass,
@@ -374,23 +372,21 @@ export function RunPipeline({
               // round already reached - a recorded failure painted as Disabled would claim
               // the toggle rewrote it. The row's red treatment carries the control's state.
               //
-              // An action reports LIFECYCLE, never a verdict, and gets its OWN status table
-              // rather than borrowing either evaluator's. A "Passed" chip on a node that judged
-              // nothing is the failure this third branch avoids, and routing it through
-              // `reviewerStatus` would also flatten every stage of a waiting turn into the one
-              // word "Waiting".
+              // Otherwise each kind reads its OWN status table, chosen in one place
+              // (`memberPipelineStatus`, shared with both ladders). An action reports
+              // LIFECYCLE, never a verdict, so a "Passed" chip on a node that judged nothing
+              // cannot appear, and a waiting turn is not flattened into the one word "Waiting".
               : (togglable && member.nodeId ? disabledChipFor?.(member.nodeId) ?? null : null)
-                ?? (member.kind === "session_action"
-                  ? sessionActionStatus(
-                      member.nodeId ? statuses[member.nodeId] : undefined,
-                      member.nodeId ? actionWaitFor?.(member.nodeId) ?? null : null,
-                    )
-                  : member.kind === "check"
-                    ? checkStatus(
-                        member.nodeId ? statuses[member.nodeId] : undefined,
-                        member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
-                      )
-                    : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
+                ?? memberPipelineStatus(
+                  member.kind,
+                  member.nodeId ? statuses[member.nodeId] : undefined,
+                  member.nodeId
+                    ? {
+                        checkOutcome: checkOutcomeFor?.(member.nodeId) ?? null,
+                        actionWait: actionWaitFor?.(member.nodeId) ?? null,
+                      }
+                    : {},
+                ),
           };
         });
         // The stage toggle needs every member addressable AND switchable; a projection member

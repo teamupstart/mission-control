@@ -205,6 +205,24 @@ request. The console rail carries the same mark without the link, and only when 
 something to say - open findings or a failed round - because a rail line is scanned rather
 than read.
 
+### CI on the head commit
+
+The same pull request query that reads the head also reads **CI on the head commit**, check by
+check, and stores it with the pull request, keyed to that commit. Nothing polls GitHub a second
+time for it. For each check the query also reads `isRequired(pullRequestNumber:)`, whether GitHub
+marks it required on this pull request, and for the head it reads `contexts.totalCount`, the
+number of checks GitHub reports, which can exceed the first 100 the query reads. Two things read
+the snapshot:
+
+- A workflow's [Wait for CI](workflows.md#wait-for-ci) node, which decides from it whether the
+  pull request's CI passed, failed, or never reported. A node set to Required checks counts the
+  checks marked required, and every node blocks rather than pass when the total says checks
+  were left unread.
+- Foreman, when **Which failures count** is set to Required checks
+  ([Keeping a PR on track](work-queues.md#keeping-a-pr-on-track)). It reads only the head the
+  snapshot was taken on and the required checks' rollup, through the session's Inspector
+  summary, and makes no GitHub call of its own.
+
 ### The review model
 
 **[Settings → Models](models.md#the-github-inspectors-review)** names what the review and the

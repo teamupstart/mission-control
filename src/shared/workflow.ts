@@ -19,6 +19,7 @@ import {
   NO_MISTAKES_REVIEW_WORKFLOW_ID,
   parseBuiltinWorkflowVersionId,
 } from "./builtin-workflow.ts";
+import type { WaitForCiStoredSettings } from "./wait-for-ci.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -2062,7 +2063,11 @@ export type WorkflowDraftNode =
   // `persona`, and for the same reason: a draft has to follow library edits, a version
   // must never see one.
   | { id: string; kind: "session_action"; sessionActionId: SessionActionId; position: Point }
-  | { id: string; kind: "end"; outcome: string; position: Point };
+  | { id: string; kind: "end"; outcome: string; position: Point }
+  // Appended: node kinds are persisted identifiers. Byte-identical in draft and published form,
+  // like `check`, because it snapshots nothing - it reads the pull request's CI through the
+  // Inspector's own snapshot. See `src/shared/wait-for-ci.ts`.
+  | ({ id: string; kind: "wait_for_ci"; timeoutMinutes: number; position: Point } & WaitForCiStoredSettings);
 
 export interface WorkflowEdge {
   id: string;
@@ -2153,11 +2158,23 @@ export type PublishedWorkflowNode =
  * The kinds that return a `PersonaVerdict`. SessionAction is deliberately NOT one of them
  * and must never be added: every reader of this type treats its node as something that
  * passed or failed a review, and an action that finished has done neither.
+ *
+ * Wait for CI IS one: green CI passes, and a failing check is a requested change the
+ * session has to fix, carried by the same repair packet a failed Check sends.
  */
-export type WorkflowVerdictNode = Extract<PublishedWorkflowNode, { kind: "persona" | "check" }>;
+export type WorkflowVerdictNode = Extract<
+  PublishedWorkflowNode,
+  { kind: "persona" | "check" | "wait_for_ci" }
+>;
 
 export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerdictNode {
-  return node.kind === "persona" || node.kind === "check";
+  return node.kind === "persona" || node.kind === "check" || node.kind === "wait_for_ci";
+}
+
+export type WorkflowWaitForCiNode = Extract<PublishedWorkflowNode, { kind: "wait_for_ci" }>;
+
+export function isWaitForCiNode(node: PublishedWorkflowNode): node is WorkflowWaitForCiNode {
+  return node.kind === "wait_for_ci";
 }
 
 /**
@@ -2214,6 +2231,7 @@ export function withNodeExecutionOverride<
 export function verdictAuthor(node: WorkflowVerdictNode): string {
   // "Command", not the wire kind. The node is serialized as `check` forever - see
   // `WorkflowCommandView` - and every surface a person reads says Command.
+  if (node.kind === "wait_for_ci") return "Wait for CI";
   return node.kind === "persona" ? node.persona.name : `Command · ${node.slot}`;
 }
 
@@ -2239,9 +2257,9 @@ export interface PublishedWorkflowGraph {
 /**
  * Whether an action's successful continuation is shipping-only.
  *
- * Every reachable node must be End, so a Persona, Command, join, SessionAction, or missing
- * route keeps the ordinary fresh-evidence contract. Keeping this browser-safe lets the
- * runtime and the run UI describe the same immutable published graph without duplicating
+ * Every reachable node must be End, or Wait for CI on the way to End, so a Persona, Command,
+ * join, SessionAction, or missing route keeps the ordinary fresh-evidence contract. Keeping
+ * this browser-safe lets the runtime and the run UI describe the same immutable published graph without duplicating
  * traversal rules.
  */
 export function sessionActionContinuationReachesOnlyEnd(
@@ -2259,12 +2277,36 @@ export function sessionActionContinuationReachesOnlyEnd(
     if (visited.has(targetId)) continue;
     visited.add(targetId);
     const target = nodes.get(targetId);
-    if (!target || target.kind !== "end") return false;
+    if (!target) return false;
+    // Wait for CI reads the pull request the action just shipped and nothing else, so a
+    // path through it is still shipping. Only its `pass` route continues: `fail` returns to
+    // Session as a repair round, which is a new submission rather than this continuation.
+    if (target.kind === "wait_for_ci") {
+      const passes = graph.edges.filter((edge) => edge.source === targetId && edge.sourcePort === "pass");
+      if (passes.length === 0) return false;
+      for (const edge of passes) pending.push(edge.target);
+      continue;
+    }
+    if (target.kind !== "end") return false;
     for (const edge of graph.edges) {
       if (edge.source === targetId) pending.push(edge.target);
     }
   }
   return true;
+}
+
+/**
+ * Whether a Wait for CI node follows this action's `complete` route directly.
+ *
+ * When one does, the node owns CI for the pull request the action opened, so the action's
+ * packet leaves out the CI follow-through contract that would otherwise have the agent chase
+ * the same checks.
+ */
+export function waitForCiFollows(graph: PublishedWorkflowGraph, nodeId: string): boolean {
+  return graph.edges.some((edge) =>
+    edge.source === nodeId
+    && edge.sourcePort === "complete"
+    && graph.nodes.some((node) => node.id === edge.target && node.kind === "wait_for_ci"));
 }
 
 export const WORKFLOW_DIAGNOSTIC_CODES = [
@@ -2302,6 +2344,9 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
   "unsupported_effort",
+  "wait_for_ci_placement",
+  "wait_for_ci_quiet_period",
+  "wait_for_ci_expected_checks",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 

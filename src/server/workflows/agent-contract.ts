@@ -1,14 +1,30 @@
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
 import { workflowEvidenceAuthorizationContract } from "../execution-authorization.ts";
 
-/** Runtime preference policy; the delivery ledger freezes it with the authored action. */
-export function workflowPullRequestCiContract(): string {
+/**
+ * Runtime preference policy; the delivery ledger freezes it with the authored action.
+ *
+ * `strictness` is Foreman's "Which failures count", read once with the CI preference when the
+ * packet is prepared. `all` is the text this policy always had, byte for byte; `required`
+ * points the agent at the checks GitHub marks required.
+ */
+export function workflowPullRequestCiContract(strictness: CiStrictness = "all"): string {
+  const required = strictness === "required";
   return [
     "## Workflow pull request CI follow-through",
-    "Foreman's Keep sessions on track with CI option was selected when this packet was prepared. This policy extends the Pull Request action's stopping point through CI, including when the frozen instruction below says opening the PR is the whole job. Preserve all other task and repository restrictions.",
-    "After opening or updating the PR, keep watching its checks. Wait for pending checks and inspect failing check logs. Follow only this action's PR and repository, on the same branch.",
-    "Repair actionable CI failures within the authorized scope. Run tests specific to the failure; when they pass, commit and push the repair. Do not rerun the full local test suite before each repair commit.",
-    "After every repair push, verify checks for the newly pushed head. Do not rely on an earlier green result. Continue until CI passes or a concrete external blocker prevents authorized progress; distinguish absent or unavailable checks from passing CI and report the blocker rather than retrying indefinitely.",
+    required
+      ? "Foreman's Keep sessions on track with CI option was selected when this packet was prepared, with Required checks chosen as the failures that count. This policy extends the Pull Request action's stopping point through CI, including when the frozen instruction below says opening the PR is the whole job. Preserve all other task and repository restrictions."
+      : "Foreman's Keep sessions on track with CI option was selected when this packet was prepared. This policy extends the Pull Request action's stopping point through CI, including when the frozen instruction below says opening the PR is the whole job. Preserve all other task and repository restrictions.",
+    required
+      ? "After opening or updating the PR, keep watching the checks GitHub marks required (`gh pr checks <url> --required`). Wait for pending required checks and inspect failing ones' logs. A failing check that is not required does not block; leave it alone unless the task asks. If no check is marked required, follow every check. Follow only this action's PR and repository, on the same branch."
+      : "After opening or updating the PR, keep watching its checks. Wait for pending checks and inspect failing check logs. Follow only this action's PR and repository, on the same branch.",
+    required
+      ? "Repair actionable failures of required checks within the authorized scope. Run tests specific to the failure; when they pass, commit and push the repair. Do not rerun the full local test suite before each repair commit."
+      : "Repair actionable CI failures within the authorized scope. Run tests specific to the failure; when they pass, commit and push the repair. Do not rerun the full local test suite before each repair commit.",
+    required
+      ? "After every repair push, verify the required checks for the newly pushed head. Do not rely on an earlier green result. Continue until the required checks pass or a concrete external blocker prevents authorized progress; distinguish absent or unavailable checks from passing CI and report the blocker rather than retrying indefinitely."
+      : "After every repair push, verify checks for the newly pushed head. Do not rely on an earlier green result. Continue until CI passes or a concrete external blocker prevents authorized progress; distinguish absent or unavailable checks from passing CI and report the blocker rather than retrying indefinitely.",
     "Report the PR, checked head, final CI outcome, and any blocker. Register useful new verification evidence when this workflow supports it, then end the turn so Mission Control can continue the workflow.",
     "This policy does not authorize merge, CI infrastructure changes, bypassing checks, or broader repository scope. Inspector review comments remain with the existing review workflow and Foreman review-comment policy. The workflow still validates published content against its reviewed snapshot.",
   ].join("\n");

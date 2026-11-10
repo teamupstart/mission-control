@@ -13,6 +13,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
+import { CiObservationSchema, type CiObservation } from "@shared/wait-for-ci.ts";
+import { requiredChecksRollup } from "@shared/ci-checks.ts";
 import {
   APP_CONFIG_ENTRIES,
   type AppConfigEntry,
@@ -60,6 +62,7 @@ import type {
   FileCommentThread,
   InspectorCommentStatus,
   InspectorFailKind,
+  InspectorCiProjection,
   InspectorInspection,
   InspectorPr,
   InspectorPrState,
@@ -2087,6 +2090,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       observed_at        INTEGER,
       head_ref_name      TEXT,           -- the branch the PR is opened FROM
       title              TEXT,           -- as of the last poll; NULL until one happens
+      observed_ci_json   TEXT,           -- the head commit's check runs, keyed to that commit
       base_ref_name      TEXT,           -- the branch the PR targets, as of the last poll
       reviewed_base_ref  TEXT,           -- the base head_sha's review was made against
       reviewed_base_sha  TEXT,           -- that base's tip, for the merge-base check
@@ -4360,6 +4364,12 @@ function migrate(d: DatabaseSync): void {
   // No index. The table gains single-digit rows a day and nothing selects on the title;
   // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
   addColumn(d, "inspector_prs", "title", "TEXT");
+  // What the poll's ONE PR query read about CI on the head commit: its check runs, as
+  // `CiObservation` JSON carrying the commit it was read for. Nullable with no default, on the
+  // four columns' terms above: NULL is "not looked at since the column existed", and a Wait
+  // for CI node reading it keeps waiting. Written by the same tick as `observed_head_sha`, so
+  // it is a durable form of what the poll already fetched, never a second poller.
+  addColumn(d, "inspector_prs", "observed_ci_json", "TEXT");
   addColumn(d, "inspector_prs", "code_rabbit_state", "TEXT");
   // Stacked pull requests. All nullable with no default. A row written before these existed
   // has no recorded base (its review counts only while the base is the default branch), no
@@ -14863,6 +14873,51 @@ export function noteInspectorPrStack(key: string, note: string | null, now: numb
     .run(note, now, key);
 }
 
+/** Record what the poll read about CI on a pull request's head commit. */
+export function recordInspectorCiObservation(key: string, observation: CiObservation): void {
+  openDb()
+    .prepare(`UPDATE inspector_prs SET observed_ci_json = ? WHERE key = ?`)
+    .run(JSON.stringify(observation), key);
+}
+
+/**
+ * The last CI observation for a pull request, or null when none has been recorded or the
+ * stored JSON no longer parses. Callers compare its `headSha` with the head they care about.
+ */
+export function getInspectorCiObservation(key: string): CiObservation | null {
+  const row = openDb()
+    .prepare(`SELECT observed_ci_json FROM inspector_prs WHERE key = ?`)
+    .get(key) as { observed_ci_json: string | null } | undefined;
+  return parseCiObservation(row?.observed_ci_json ?? null);
+}
+
+function parseCiObservation(json: string | null): CiObservation | null {
+  if (!json) return null;
+  try {
+    const parsed = CiObservationSchema.safeParse(JSON.parse(json));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The stored CI snapshot reduced to what Foreman's Required mode reads, the head it was read on
+ * and the required checks' rollup. Derived beside `codeRabbit` so the registry's cached ledger
+ * row carries it and no session snapshot reads the column again.
+ *
+ * A snapshot GitHub reported more checks for than were read (`totalCount`) is Wait for CI's
+ * truncation rule applied to Foreman: a failing required check among those read still decides,
+ * but nothing else can be confirmed, so it reads as nothing marked and every check counts.
+ */
+function ciProjection(json: string | null): InspectorCiProjection {
+  const observation = parseCiObservation(json);
+  if (!observation) return { headSha: null, required: null };
+  const required = requiredChecksRollup(observation.checkRuns);
+  const truncated = (observation.totalCount ?? 0) > observation.checkRuns.length;
+  return { headSha: observation.headSha, required: truncated && required !== "failing" ? null : required };
+}
+
 export function getInspectorPr(key: string): InspectorPr | null {
   const r = openDb().prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
     | InspectorPrRow
@@ -15107,6 +15162,8 @@ const INSPECTION_TALLY_FROM = `SELECT p.*,
          LEFT JOIN inspector_comments c ON c.pr_key = p.key`;
 
 type InspectionTallyRow = InspectorPrRow & {
+  /** Selected by `p.*`; `InspectorPrRow` does not name it. */
+  observed_ci_json?: string | null;
   open_findings: number;
   posted_open_findings: number;
   resolved_findings: number;
@@ -15116,6 +15173,7 @@ function rowToInspection(r: InspectionTallyRow): InspectorInspection {
   return {
     ...rowToInspectorPr(r),
     codeRabbit: codeRabbitSummary(r.key),
+    ci: ciProjection(r.observed_ci_json ?? null),
     openFindings: Number(r.open_findings),
     postedOpenFindings: Number(r.posted_open_findings),
     resolvedFindings: Number(r.resolved_findings),

@@ -326,3 +326,35 @@ test("positive driver refusal can retry; attached PRs require that repository's 
   setForemanConfig({ repoAllowlist: ["/tmp/main", "/tmp/repo"] });
   assert.equal(codeRabbitCandidate(sibling.registry, sibling.session.id, sibling.request).error, undefined);
 });
+
+test("the CodeRabbit message's CI lines follow which failures count", (t) => {
+  // This payload replaces Foreman's, so it counts CI failures the same way.
+  t.after(() => setForemanConfig({ trackCiFailures: false, ciStrictness: "all" }));
+  const payloadFor = (ciStrictness: "all" | "required", ci: { headSha: string | null; required: "passing" | "failing" | null }) => {
+    const f = fixture();
+    Object.assign(f.session, { prChecks: "failing" });
+    f.session.inspector!.ci = { ...ci, inspectorEnabled: true };
+    setForemanConfig({ trackCiFailures: true, ciStrictness });
+    const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+    assert.equal(candidate.error, undefined);
+    return { payload: candidate.payload!, number: f.session.prNumber! };
+  };
+
+  const quiet = payloadFor("required", { headSha: "head", required: "passing" }).payload;
+  assert.match(quiet, /CodeRabbit has 1 unresolved findings/);
+  assert.doesNotMatch(quiet, /CI checks are failing|gh pr checks/, "a non-required failure is not relayed");
+
+  const red = payloadFor("required", { headSha: "head", required: "failing" });
+  assert.match(red.payload, /its required CI checks are failing/);
+  assert.ok(red.payload.includes(`gh pr checks ${red.number} --repo a/b --required`));
+
+  // Held: no snapshot is stored yet, so CI is not relayed and every check is not asked for.
+  const held = payloadFor("required", { headSha: null, required: null }).payload;
+  assert.doesNotMatch(held, /CI checks are failing|gh pr checks/);
+  assert.match(held, /until the required checks are green/);
+
+  const all = payloadFor("all", { headSha: "head", required: "passing" });
+  assert.match(all.payload, /, and its CI checks are failing/);
+  assert.ok(all.payload.includes(`gh pr checks ${all.number} --repo a/b\``));
+  assert.doesNotMatch(all.payload, /--required/);
+});

@@ -1,7 +1,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 
 export type WorkflowCanvasNodeData = {
-  kind: "session" | "persona" | "all_pass" | "check" | "session_action" | "end";
+  kind: "session" | "persona" | "all_pass" | "check" | "session_action" | "end" | "wait_for_ci";
   label: string;
   subtitle: string;
   readOnly: boolean;
@@ -26,6 +26,7 @@ const INPUT_PORT_LABELS: Record<WorkflowCanvasNodeData["kind"], string> = {
   check: "activate",
   session_action: "activate",
   end: "terminal",
+  wait_for_ci: "activate",
 };
 
 /** The kind as it is printed on the node's own chip. */
@@ -36,6 +37,7 @@ const KIND_WORDS: Record<WorkflowCanvasNodeData["kind"], string> = {
   check: "check",
   session_action: "session action",
   end: "end",
+  wait_for_ci: "wait for CI",
 };
 
 /** The one shared custom leaf for every workflow node kind. */
@@ -47,7 +49,7 @@ export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX
       aria-description={`${data.incomingCount ?? 0} incoming and ${data.outgoingCount ?? 0} outgoing connections`}
     >
       {data.kind === "session" && <Handle aria-label="Return for changes input" type="target" id="return_for_changes" position={Position.Left} isConnectable={!data.readOnly} />}
-      {(data.kind === "persona" || data.kind === "check" || data.kind === "session_action") && <Handle aria-label="Activate input" type="target" id="activate" position={Position.Left} isConnectable={!data.readOnly} />}
+      {(data.kind === "persona" || data.kind === "check" || data.kind === "session_action" || data.kind === "wait_for_ci") && <Handle aria-label="Activate input" type="target" id="activate" position={Position.Left} isConnectable={!data.readOnly} />}
       {data.kind === "all_pass" && <Handle aria-label="Result input" type="target" id="result" position={Position.Left} isConnectable={!data.readOnly} />}
       {data.kind === "end" && <Handle aria-label="Terminal input" type="target" id="terminal" position={Position.Left} isConnectable={!data.readOnly} />}
       <span className="workflow-port-label workflow-port-input">
@@ -67,7 +69,7 @@ export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX
           <span className="workflow-port-label workflow-port-submitted">submitted</span>
         </>
       )}
-      {(data.kind === "persona" || data.kind === "all_pass" || data.kind === "check") && (
+      {(data.kind === "persona" || data.kind === "all_pass" || data.kind === "check" || data.kind === "wait_for_ci") && (
         <>
           <Handle aria-label="Pass output" type="source" id="pass" position={Position.Right} style={{ top: "38%" }} isConnectable={!data.readOnly} />
           <Handle aria-label="Fail output" type="source" id="fail" position={Position.Right} style={{ top: "72%" }} isConnectable={!data.readOnly} />
@@ -95,4 +97,5 @@ export const WORKFLOW_NODE_TYPES: Record<WorkflowCanvasNodeData["kind"], typeof 
   check: WorkflowNode,
   session_action: WorkflowNode,
   end: WorkflowNode,
+  wait_for_ci: WorkflowNode,
 };

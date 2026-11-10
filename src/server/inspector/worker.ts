@@ -13,6 +13,7 @@ import {
   loadOpenInspectorPrs,
   revokeInspectorPrStack,
   updateInspectorPr,
+  recordInspectorCiObservation,
   upsertInspectorComment,
 } from "../db.ts";
 import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
@@ -678,6 +679,9 @@ async function processPr(
     },
     now,
   );
+  // CI on the head commit, from the same query and the same instant. Keyed to the commit it
+  // was read for, so a Wait for CI node never mistakes one head's checks for another's.
+  if (s.ci) recordInspectorCiObservation(pr.key, { ...s.ci, observedAt: now });
   onObserved?.(s, now);
 
   // Stacked pull requests: observe the child and its current parent, reconcile the child's

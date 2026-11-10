@@ -1,4 +1,5 @@
 import type { InspectorSummary, PrChecks, Session } from "@shared/types.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -43,6 +44,8 @@ export interface ReviewFollowupConfig {
   codeRabbitAutoResolve?: boolean;
   /** Relay failing CI episodes from `ForemanConfig.trackCiFailures`. */
   trackCiFailures: boolean;
+  /** Which failing checks count, from `ForemanConfig.ciStrictness`. Absent reads as `all`. */
+  ciStrictness?: CiStrictness;
   /**
    * Deliver Stacked pull requests' catch-up and restack prompts. Not a separate Foreman
    * setting: a stacked child is held until it is restacked, and these prompts are what
@@ -143,6 +146,18 @@ export interface FollowupMark {
   findingsRound: number | null;
   /** Whether we have nudged for the CURRENT CI-failing episode; re-armed on recovery. */
   ciNudged: boolean;
+  /**
+   * The head of the Inspector's CI snapshot the episode was last nudged on, or null. In
+   * Required mode the snapshot decides, and it can be a poll behind the PR poller's rollup, so
+   * a recovery the rollup saw may never reach it; a decided pass or failure for another head
+   * re-arms the episode instead. All mode never reads it, so its re-arm rule is unchanged.
+   */
+  ciHead: string | null;
+}
+
+/** A mark that has relayed nothing yet about `prKey`. */
+function freshMark(prKey: string): FollowupMark {
+  return { prKey, findingsRound: null, ciNudged: false, ciHead: null };
 }
 
 /**
@@ -202,22 +217,83 @@ export function followupPrs(s: Session): FollowupPr[] {
  * session parks. Without a PR head sha on the snapshot this observed-recovery bit is the
  * only thing that can tell a re-failure from the one we already relayed.
  */
-export function advanceFollowupMark(prev: FollowupMark | null, pr: FollowupPr): FollowupMark {
-  const base: FollowupMark =
-    prev && prev.prKey === pr.prKey
-      ? prev
-      : { prKey: pr.prKey, findingsRound: null, ciNudged: false };
-  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it.
-  if (base.ciNudged && pr.checks !== "failing") return { ...base, ciNudged: false };
+export function advanceFollowupMark(
+  prev: FollowupMark | null,
+  pr: FollowupPr,
+  ciStrictness: CiStrictness = "all",
+): FollowupMark {
+  const base: FollowupMark = prev && prev.prKey === pr.prKey ? prev : freshMark(pr.prKey);
+  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it. In
+  // Required mode so is any episode once the snapshot has decided another head. A held
+  // snapshot re-arms nothing.
+  const ci = ciFollowup(pr, ciStrictness);
+  const head = ciSnapshotHead(pr);
+  const newHead = ciStrictness === "required" && base.ciHead !== null && head !== null && head !== base.ciHead;
+  if (base.ciNudged && ci !== "held" && (!ci.failing || newHead)) {
+    return { ...base, ciNudged: false, ciHead: null };
+  }
   return base;
+}
+
+/** The head the Inspector's stored CI snapshot was read on, or null when none is stored. */
+function ciSnapshotHead(pr: Pick<FollowupPr, "inspector">): string | null {
+  return pr.inspector?.ci?.headSha ?? null;
+}
+
+/**
+ * Whether this pull request's CI counts as failing under `ciStrictness`, and whether the
+ * required checks decided it rather than the whole rollup.
+ *
+ * | strictness | condition                                         | failing when            |
+ * | all        | always                                            | `checks === "failing"`  |
+ * | required   | the Inspector never adopted the PR, or is off     | `checks === "failing"`  |
+ * | required   | adopted and on, no CI snapshot stored yet         | never: `held`           |
+ * | required   | snapshot stored, nothing marked required          | `checks === "failing"`  |
+ * | required   | snapshot stored, checks marked required           | required rollup failing |
+ *
+ * "Off" is `InspectorConfig.enabled` alone: every check then counts, so Foreman nudges more,
+ * never less. A summary without `ci` comes from a daemon older than this field and reads as
+ * off. `held` neither nudges nor re-arms: there is nothing to say which checks are required.
+ *
+ * The snapshot is the Inspector's own read of the head, from its one PR query, so it can be
+ * one Inspector poll behind a push that the PR poller's rollup has already seen.
+ */
+export function ciFollowup(
+  pr: Pick<FollowupPr, "checks" | "inspector">,
+  ciStrictness: CiStrictness = "all",
+): { failing: boolean; required: boolean } | "held" {
+  const everyCheck = { failing: pr.checks === "failing", required: false };
+  const ci = pr.inspector?.ci;
+  if (ciStrictness === "all" || !ci || !ci.inspectorEnabled) return everyCheck;
+  if (ci.headSha === null) return "held";
+  if (ci.required === null) return everyCheck;
+  return { failing: ci.required === "failing", required: true };
+}
+
+/** The CI half of `Feedback`, for the payload builders outside this file. */
+export function ciFeedback(
+  pr: Pick<FollowupPr, "checks" | "inspector">,
+  cfg: Pick<ReviewFollowupConfig, "trackCiFailures" | "ciStrictness">,
+): Pick<Feedback, "ciFailing" | "ciRequired"> {
+  const ci = cfg.trackCiFailures ? ciFollowup(pr, cfg.ciStrictness) : null;
+  if (ci === null) return { ciFailing: false, ciRequired: false };
+  // Held is Required mode with no snapshot yet: nothing is relayed about CI, but a findings
+  // nudge sent meanwhile must still not ask for every check to go green.
+  if (ci === "held") return { ciFailing: false, ciRequired: true };
+  return { ciFailing: ci.failing, ciRequired: ci.required };
 }
 
 /** What is actionable on one pull request right now. */
 interface Feedback {
   /** The Inspector has open findings that are actually posted on the PR. */
   findings: boolean;
-  /** The PR's CI rollup is failing (as opposed to pending or passing). */
+  /** The PR's CI counts as failing under `ciStrictness` (see `ciFollowup`). */
   ciFailing: boolean;
+  /**
+   * The required checks decided `ciFailing`, or are the ones that will once a held snapshot
+   * catches up, so the nudge names required checks.
+   */
+  ciRequired?: boolean;
   codeRabbit?: boolean;
   /** A stack catch-up or restack prompt is pending for this pull request. */
   stack?: boolean;
@@ -233,7 +309,7 @@ export function activeWorkflowOwnsSession(
 function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig, now: number): Feedback {
   const findings = cfg.trackReviewComments && !!pr.inspector && pr.inspector.postedOpen > 0;
   const cr = pr.inspector?.codeRabbit;
-  return { findings, ciFailing: cfg.trackCiFailures && pr.checks === "failing",
+  return { findings, ...ciFeedback(pr, cfg),
     codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && cr.pending > 0
       && !!cr.observationId && (cr.freshUntil ?? 0) >= now,
     stack: !!cfg.stackPrompts && pr.inspector?.stack?.prompt?.status === "pending",
@@ -293,7 +369,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
       kind: "nudge",
       stack: { prKey: pr.prKey, kind: prompt.kind, tip: prompt.tip },
       prKey: pr.prKey,
-      mark: mark && mark.prKey === pr.prKey ? mark : { prKey: pr.prKey, findingsRound: null, ciNudged: false },
+      mark: mark && mark.prKey === pr.prKey ? mark : freshMark(pr.prKey),
       reason: prompt.kind === "restack" ? "stacked parent merged - restack onto the default branch" : "stacked parent has new commits - catch up",
       payload: buildStackPrompt(prompt.kind, standing.facts),
     };
@@ -303,9 +379,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   // clocks (see `FollowupMark`): findings by the Inspector round, CI by whether the
   // current failing episode has been relayed. `mark` has already had this pass's recovery
   // folded in by `advanceFollowupMark`, so a re-failure after a recovery reads as new.
-  const cur: FollowupMark = mark && mark.prKey === pr.prKey
-    ? mark
-    : { prKey: pr.prKey, findingsRound: null, ciNudged: false };
+  const cur: FollowupMark = mark && mark.prKey === pr.prKey ? mark : freshMark(pr.prKey);
   const round = pr.inspector?.round ?? 0;
   const findingsNew = fb.findings && cur.findingsRound !== round;
   const ciNew = fb.ciFailing && !cur.ciNudged;
@@ -317,6 +391,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     prKey: pr.prKey,
     findingsRound: fb.findings ? round : cur.findingsRound,
     ciNudged: cur.ciNudged || fb.ciFailing,
+    ciHead: fb.ciFailing ? ciSnapshotHead(pr) : cur.ciHead,
   };
   return {
     kind: "nudge",
@@ -443,9 +518,10 @@ function describe(pr: FollowupPr, fb: Feedback): string {
   if (fb.codeRabbit) return "Unresolved CodeRabbit feedback";
   const open = pr.inspector?.postedOpen ?? 0;
   const where = pr.repoRoot !== null ? ` in ${pr.repoRoot}` : "";
-  if (fb.findings && fb.ciFailing) return `${open} review comment(s) + CI failing${where}`;
+  const ci = fb.ciRequired ? "required CI failing" : "CI failing";
+  if (fb.findings && fb.ciFailing) return `${open} review comment(s) + ${ci}${where}`;
   if (fb.findings) return `${open} review comment(s)${where}`;
-  return `CI failing${where}`;
+  return `${ci}${where}`;
 }
 
 /**
@@ -492,7 +568,7 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
     const n = pr.inspector?.postedOpen ?? 0;
     problems.push(`GitHub Inspector left ${n} unresolved review comment${n === 1 ? "" : "s"} on it`);
   }
-  if (fb.ciFailing) problems.push("its CI checks are failing");
+  if (fb.ciFailing) problems.push(fb.ciRequired ? "its required CI checks are failing" : "its CI checks are failing");
 
   const steps: string[] = [];
   if (pr.repoRoot !== null) {
@@ -520,13 +596,15 @@ export function buildPayload(pr: FollowupPr, fb: Feedback): string {
     steps.push("Run focused checks for each fix, commit and push to this PR's existing branch, then follow the review to resolution. This feedback grants no merge authority.");
   }
   if (fb.ciFailing) {
-    steps.push(
-      `Look at the failing CI (\`gh pr checks${num}${scope}\`), reproduce it locally, and fix it.`,
-    );
+    steps.push(fb.ciRequired
+      ? `Look at the failing required checks (\`gh pr checks${num}${scope} --required\`), reproduce them locally, and fix them.`
+      : `Look at the failing CI (\`gh pr checks${num}${scope}\`), reproduce it locally, and fix it.`);
   }
   steps.push("Commit and push.");
+  // Whenever the required checks decide, failing, passing or held, "CI is green" would send
+  // the agent after a non-required check the operator chose not to count.
   steps.push(
-    "Then keep watching the PR until CI is green and the review threads are resolved - " +
+    `Then keep watching the PR until ${fb.ciRequired ? "the required checks are" : "CI is"} green and the review threads are resolved - ` +
       "GitHub Inspector re-reviews each push automatically, so wait for it and answer anything new.",
   );
 

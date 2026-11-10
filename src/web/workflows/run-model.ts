@@ -50,7 +50,16 @@ import {
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import { blockedPhaseClause, workflowCaptureFailure, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
-import type { Stage } from "@shared/workflow-stages.ts";
+import {
+  ciStrictnessLabel,
+  quotedNames,
+  readWaitForCiState,
+  waitForCiSettings,
+  waitForCiTruncationText,
+  type WaitForCiBlockCode,
+  type WaitForCiState,
+} from "@shared/wait-for-ci.ts";
+import type { Stage, StageMember } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
   SessionActionAttemptStateSchema,
@@ -4032,4 +4041,126 @@ export function runRemedy(
   }
 
   return null;
+}
+
+/** A Wait for CI attempt's recorded state, or null for any other attempt. */
+export function waitForCiStateOf(
+  attempt: Pick<WorkflowNodeAttempt, "output"> | null | undefined,
+): WaitForCiState | null {
+  return attempt ? readWaitForCiState(attempt.output) : null;
+}
+
+/**
+ * Wait for CI's chips. Its own table, like a Check's, because its words differ: it waits on
+ * CI rather than reviewing, and an attempt stopped in `error` is a CI block, not a provider
+ * failure.
+ */
+const WAIT_FOR_CI_STATUSES: Record<
+  WorkflowNodeAttemptState | PersonaVerdict["verdict"],
+  PipelineStatus
+> = {
+  pass: { tone: "passed", label: "CI passed" },
+  fail: { tone: "failed", label: "CI failed" },
+  queued: { tone: "waiting", label: "Queued" },
+  running: { tone: "running", label: "Waiting for CI" },
+  retry_wait: { tone: "waiting", label: "Retrying" },
+  waiting: { tone: "running", label: "Waiting for CI" },
+  completed: { tone: "waiting", label: "No result" },
+  error: { tone: "failed", label: "Blocked" },
+  cancelled: { tone: "waiting", label: "Cancelled" },
+};
+
+export function waitForCiStatus(raw: string | undefined): PipelineStatus {
+  if (!raw) return { tone: "waiting", label: "Not started" };
+  return WAIT_FOR_CI_STATUSES[raw as keyof typeof WAIT_FOR_CI_STATUSES]
+    ?? { tone: "waiting", label: raw.replaceAll("_", " ") };
+}
+
+/**
+ * What each Wait for CI block means to the person who has to clear it. Two read the attempt's
+ * own state: the expected checks it never saw, and how many checks GitHub reported.
+ */
+export const WAIT_FOR_CI_BLOCK_SENTENCES: Record<WaitForCiBlockCode, (state: WaitForCiState) => string> = {
+  ci_missing: () =>
+    "No CI check appeared on the pull request's head commit before the timeout. Check that CI "
+    + "runs on pull requests and that GitHub Inspector is on, then wait for CI again.",
+  ci_timeout: () =>
+    "CI was still running, or had not stayed settled for the quiet period, when the timeout ran "
+    + "out. Wait for CI again once it finishes, or raise the node's timeout in a new version.",
+  ci_pull_request_unknown: () =>
+    "This node could not tell which commit to watch: the step before it recorded no pull "
+    + "request, or the pull request's head could not be identified. Start a new round so the "
+    + "Pull Request action runs again.",
+  ci_expected_missing: (state) => {
+    const missing = state.missingExpected ?? [];
+    return "These expected checks never appeared on the head commit before the timeout"
+      + (missing.length > 0 ? `: ${quotedNames(missing)}. ` : ". ")
+      + "Check that the workflows producing them run on pull requests, or correct the names in a "
+      + "new version, then wait for CI again.";
+  },
+  ci_checks_truncated: (state) =>
+    `${waitForCiTruncationText(state.checksTotal)}, so this node cannot confirm CI passed. Check the `
+    + "rest on GitHub; if they pass, an operator can disable this node for the run.",
+};
+
+/**
+ * What a Wait for CI attempt judged under, in one line:
+ * `Required checks · expects "deploy", "e2e" · quiet 3 min · limit 45 min`.
+ */
+export function waitForCiSettingsLine(state: WaitForCiState): string {
+  const settings = waitForCiSettings(state);
+  return [
+    ciStrictnessLabel(settings.strictness),
+    settings.expectedChecks.length > 0 ? `expects ${quotedNames(settings.expectedChecks)}` : null,
+    `quiet ${settings.quietMinutes} min`,
+    `limit ${state.timeoutMinutes} min`,
+  ].filter(Boolean).join(" · ");
+}
+
+/** One line saying what a Wait for CI attempt is waiting for, or what it decided. */
+export function waitForCiHeadline(state: WaitForCiState, now: number): string {
+  const pr = state.pullRequestNumber !== null ? `PR #${state.pullRequestNumber}` : "the pull request";
+  const head = state.expectedHeadOid ? state.expectedHeadOid.slice(0, 12) : "an unknown head";
+  if (state.disabled) return "Disabled for this run, so it passed without waiting for CI.";
+  if (state.outcome === "pass") return `CI passed on ${pr} at ${head}.`;
+  if (state.outcome === "fail") return `CI failed on ${pr} at ${head}.`;
+  if (state.outcome === "blocked" && state.blocked) {
+    return WAIT_FOR_CI_BLOCK_SENTENCES[state.blocked.code](state);
+  }
+  if (state.outcome === null && state.quietSince != null && state.observedAt !== null) {
+    // Measured the way the node measures it: between observations, never against the clock.
+    const quiet = waitForCiSettings(state).quietMinutes;
+    const sofar = Math.min(quiet, Math.max(0, Math.floor((state.observedAt - state.quietSince) / 60_000)));
+    return `Every counted check has settled on ${pr} at ${head}. Passing once nothing changes `
+      + `for ${quiet} min (${sofar} of ${quiet} so far).`;
+  }
+  const elapsed = Math.max(0, Math.floor((now - state.waitingSince) / 60_000));
+  return `Waiting for CI on ${pr} at ${head} · ${elapsed} of ${state.timeoutMinutes} min.`;
+}
+
+/**
+ * One stage member's chip, by kind. The ONE place that decides which status table a member
+ * reads - the run pipeline and both ladders call it - so a new member kind is taught here once.
+ *
+ * `raw` is the member's `nodeStatusesForSubmission` entry. `checkOutcome` is a Command's
+ * recorded status and `actionWait` a session action's wait; each is ignored for other kinds.
+ */
+export function memberPipelineStatus(
+  kind: StageMember["kind"] | "session_action",
+  raw: string | undefined,
+  detail: {
+    checkOutcome?: WorkflowCheckStatus | null;
+    actionWait?: SessionActionWaitReason | null;
+  } = {},
+): PipelineStatus {
+  switch (kind) {
+    case "session_action":
+      return sessionActionStatus(raw, detail.actionWait ?? null);
+    case "check":
+      return checkStatus(raw, detail.checkOutcome ?? null);
+    case "wait_for_ci":
+      return waitForCiStatus(raw);
+    case "persona":
+      return reviewerStatus(raw);
+  }
 }

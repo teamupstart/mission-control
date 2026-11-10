@@ -5,6 +5,12 @@ import { ModelIdSchema } from "./model-id.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
+import {
+  WAIT_FOR_CI_EXPECTED_CHECKS,
+  WAIT_FOR_CI_QUIET_MINUTES,
+  WAIT_FOR_CI_TIMEOUT_MINUTES,
+} from "./wait-for-ci.ts";
+import { CI_STRICTNESS } from "./ci-checks.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
@@ -2238,6 +2244,15 @@ export const ForemanConfigSchema = z.object({
    * failing episode until CI recovers and fails again.
    */
   trackCiFailures: z.boolean().default(true),
+  /**
+   * Which failing checks count for `trackCiFailures`. `required` counts only the checks GitHub
+   * marks required on the pull request, read from the GitHub Inspector's stored snapshot
+   * (`InspectorSummary.ci`), and falls back to every check when the Inspector is off, never
+   * adopted the pull request, or nothing is marked required. It also picks the wording of the
+   * Pull Request action's CI instructions. A stored config without the key reads as `all`,
+   * today's behavior.
+   */
+  ciStrictness: z.enum(CI_STRICTNESS).default("all"),
   /** Permission for bounded recovery before the first task-owned pull request exists. */
   keepShipTasksMoving: z.boolean().default(true),
   /** Quiet minutes before the first pre-PR recovery attempt. */
@@ -5805,6 +5820,33 @@ export const SessionActionCapabilitiesSchema = z.object({
 });
 export type SessionActionCapabilities = z.infer<typeof SessionActionCapabilitiesSchema>;
 
+/**
+ * A Wait for CI node's settings, identical on both arms. Optional with no `.default()`, like
+ * `executionOverride`: a graph written before they existed is never rewritten when it is read,
+ * and absence means `WAIT_FOR_CI_LEGACY_SETTINGS`. Publish, not the schema, limits the list to
+ * `WAIT_FOR_CI_EXPECTED_CHECKS.max` unique names, so the editor can say so on the node.
+ */
+const WaitForCiNodeSettingsShape = {
+  strictness: z.enum(CI_STRICTNESS).optional(),
+  quietMinutes: z.number().int()
+    .min(WAIT_FOR_CI_QUIET_MINUTES.min)
+    .max(WAIT_FOR_CI_QUIET_MINUTES.max)
+    .optional(),
+  expectedChecks: z.array(z.string().trim().min(1).max(WAIT_FOR_CI_EXPECTED_CHECKS.nameMax))
+    .max(WAIT_FOR_CI_EXPECTED_CHECKS.schemaMax)
+    .optional(),
+};
+
+const WaitForCiNodeSchema = z.object({
+  id: WorkflowNodeIdSchema,
+  kind: z.literal("wait_for_ci"),
+  timeoutMinutes: z.number().int()
+    .min(WAIT_FOR_CI_TIMEOUT_MINUTES.min)
+    .max(WAIT_FOR_CI_TIMEOUT_MINUTES.max),
+  position: WorkflowPointSchema,
+  ...WaitForCiNodeSettingsShape,
+});
+
 export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("session"), position: WorkflowPointSchema }),
   z.object({
@@ -5837,6 +5879,9 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     outcome: WorkflowOutcomeSchema,
     position: WorkflowPointSchema,
   }),
+  // Appended: node kinds are persisted identifiers. Identical to the draft arm, like a Check:
+  // it snapshots nothing.
+  WaitForCiNodeSchema,
 ]);
 
 export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
@@ -5874,6 +5919,9 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     outcome: WorkflowOutcomeSchema,
     position: WorkflowPointSchema,
   }),
+  // Appended: node kinds are persisted identifiers. Identical to the draft arm, like a Check:
+  // it snapshots nothing.
+  WaitForCiNodeSchema,
 ]);
 
 export const WorkflowEdgeSchema = z.object({

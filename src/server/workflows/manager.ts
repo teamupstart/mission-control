@@ -101,6 +101,7 @@ import {
   selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
+  waitForCiFollows,
   type WorkflowLaunchBlock,
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
@@ -217,11 +218,14 @@ import {
   loadAdoptedInspectorPrsSince,
   loadInspectorInspections,
   loadOpenInspectorPrs,
+  getInspectorCiObservation,
   primaryRepoPrForTask,
   taskReposFor,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
 import { parsePrUrl } from "../inspector/github.ts";
+import { readWaitForCiState, type CiObservation } from "@shared/wait-for-ci.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
@@ -341,6 +345,16 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
 export interface WorkflowManagerOptions {
   /** Foreman's CI preference, read only when preparing a new PR action packet. */
   trackCiFailures?: () => boolean;
+  /**
+   * Foreman's "Which failures count", read with `trackCiFailures` and frozen with the packet.
+   * Absent reads as `all`.
+   */
+  ciStrictness?: () => CiStrictness;
+  /**
+   * The Inspector's stored CI snapshot for one pull request, which is all Wait for CI reads.
+   * Injected by tests; the daemon reads the adoption ledger's column.
+   */
+  ciObservation?: (pullRequestKey: string) => CiObservation | null;
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
   /**
@@ -677,6 +691,13 @@ export class WorkflowManager {
           this.scheduleSessionActionDelivery(attemptId);
           options.engine?.onSessionActionWaiting?.(attemptId);
         },
+        // Observed at once, so a node whose CI already finished - or that the operator
+        // disabled - does not sit until the next sweep. A microtask, because the engine calls
+        // this from inside its own structure walk.
+        onWaitForCi: (attemptId) => {
+          queueMicrotask(() => this.trackBackgroundTask(this.observeWaitForCiAttempt(attemptId)));
+          options.engine?.onWaitForCi?.(attemptId);
+        },
         onSubmissionSucceeded: (submissionId) =>
           this.enterInspectorGate(submissionId) || Boolean(configuredSucceeded?.(submissionId)),
         // The CodeRabbit merge base follows the same stacked base as the Persona diff.
@@ -712,6 +733,8 @@ export class WorkflowManager {
         // until the next fifteen-second sweep happened to look, on every push, for every
         // action. The sweep still runs; this only stops it being the sole way forward.
         this.scheduleSessionActionProofCheck();
+        // Wait for CI reads the check runs this same poll just stored.
+        this.trackBackgroundTask(this.sweepWaitForCi());
       });
     }
     this.resetRecoveredGateObservations();
@@ -2750,8 +2773,10 @@ export class WorkflowManager {
     }
     this.publishRun(run.id);
     // A disabled node whose attempt is already queued auto-passes at claim time; wake the
-    // engine so that claim happens now rather than on the next scheduled pump.
+    // engine so that claim happens now rather than on the next scheduled pump. A waiting
+    // Wait for CI passes on its next observation, so observe now.
     this.engine.wake();
+    this.trackBackgroundTask(this.sweepWaitForCi());
     return { ok: true, value: updated };
   }
 
@@ -5528,6 +5553,12 @@ export class WorkflowManager {
       skillCommand = required.command;
     }
 
+    // Off when a Wait for CI node follows this action: the node owns CI then, and an
+    // agent chasing it too would push while the node judges the head it was given. Its
+    // strictness is read only when the policy rides the packet, and frozen with it.
+    const pullRequestCi = snapshot.completion.kind === "pull_request"
+      && this.options.trackCiFailures?.() === true
+      && !waitForCiFollows(version.graph, attempt.nodeId);
     const rendered = renderSessionAction({
       origin: {
         kind: "run",
@@ -5543,8 +5574,8 @@ export class WorkflowManager {
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,
       workflowEvidence: versionSupportsWorkflowEvidence(version),
-      pullRequestCi: snapshot.completion.kind === "pull_request"
-        && this.options.trackCiFailures?.() === true,
+      pullRequestCi,
+      pullRequestCiStrictness: pullRequestCi ? this.options.ciStrictness?.() ?? "all" : undefined,
       pullRequestPolicy: snapshot.completion.kind === "pull_request"
         || snapshot.requiredSkillId === PULL_REQUEST_SKILL,
       stackInstruction: snapshot.completion.kind === "pull_request"
@@ -5673,6 +5704,57 @@ export class WorkflowManager {
    * Driven by the same timer as the resumption sweep rather than a poller of its own: both
    * ask "has the bound session stopped?", and two loops asking that would be two answers.
    */
+  /**
+   * Observe every waiting Wait for CI attempt against the Inspector's stored CI snapshot.
+   *
+   * Driven by the Inspector's update event and the resumption timer, never by a poll of its
+   * own: the Inspector is the only thing that talks to GitHub. One failing attempt is logged
+   * and does not stop the others being looked at.
+   */
+  async sweepWaitForCi(now = Date.now()): Promise<void> {
+    for (const attempt of this.store.listWaitingActionAttempts()) {
+      if (attempt.sessionAction) continue;
+      await this.observeWaitForCiAttempt(attempt.id, now);
+    }
+  }
+
+  /**
+   * The full head a Wait for CI attempt watches.
+   *
+   * The continuation the Pull Request action opened captured the checkout's own head, which is
+   * what the session pushed, so that commit - resolved to a full object id exactly as the
+   * capture check resolves it - is what the node watches. The adapter's reported head is NOT
+   * preferred: the action completes on adoption, and on a pull request that already existed
+   * the ledger can still hold the head from before this push, whose CI already finished.
+   * The reported head is used only when the capture cannot be resolved; with neither, the
+   * node blocks rather than guessing.
+   */
+  private async resolveWaitForCiHead(attemptId: string, now: number): Promise<void> {
+    const attempt = this.store.getAttempt(attemptId);
+    const state = attempt?.state === "waiting" ? readWaitForCiState(attempt.output) : null;
+    if (!attempt || !state || state.expectedHeadOid || !state.pullRequestKey) return;
+    const child = this.store.getSubmission(attempt.submissionId);
+    const run = child ? this.store.getRun(child.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (!child || !binding) return;
+    const head = await this.capturedContinuationHead(child, binding.sessionRepoRoot ?? null)
+      ?? state.reportedHeadOid ?? null;
+    if (head) this.store.updateWaitForCiState(attempt.id, { ...state, expectedHeadOid: head }, now);
+  }
+
+  private async observeWaitForCiAttempt(attemptId: string, now = Date.now()): Promise<void> {
+    try {
+      await this.resolveWaitForCiHead(attemptId, now);
+      this.engine.observeWaitForCi(attemptId, this.options.ciObservation ?? getInspectorCiObservation, now);
+    } catch (error) {
+      workflowLog("error", {
+        event: "wait_for_ci_observe_failed",
+        call: attemptId,
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+
   async sweepSessionActions(now = Date.now()): Promise<void> {
     if (this.sessionActionSweepRunning) return;
     this.sessionActionSweepRunning = true;
@@ -7485,6 +7567,7 @@ export class WorkflowManager {
     this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
     this.engine.start();
     this.recoverSessionActions();
+    this.trackBackgroundTask(this.sweepWaitForCi());
     this.lastRecoveryAt = Date.now();
     workflowLog("info", { event: "recovery_complete", at: this.lastRecoveryAt });
     void this.sweepRetention();
@@ -7499,6 +7582,9 @@ export class WorkflowManager {
           // session stopped?", and a second poller asking that would be a second answer -
           // with its own window, its own settle threshold, and its own idea of idle.
           void this.sweepSessionActions();
+          // Wait for CI's timeout and its quiet-period grace are measured on this timer, so
+          // a pull request the Inspector has stopped reporting on still blocks on time.
+          void this.sweepWaitForCi();
           // Also here rather than on a timer of its own: this asks whether provider-owned
           // cleanup for a blocked run has settled. One observer, one interval, one answer.
           this.engine.resumeClearedCheckCleanup();

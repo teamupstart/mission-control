@@ -18,6 +18,7 @@ import {
   type WorkflowTargetPort,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
+import { WAIT_FOR_CI_TIMEOUT_MINUTES, newWaitForCiNodeSettings } from "@shared/wait-for-ci.ts";
 import type { LlmProviderView } from "@shared/types.ts";
 import {
   WORKFLOW_NODE_SOURCE_PORTS,
@@ -632,7 +633,15 @@ export function WorkflowLibrary({
           ? { id, kind: "check", slot: spec.slot, position }
           : spec.kind === "session_action"
             ? { id, kind: "session_action", sessionActionId: spec.sessionActionId, position }
-            : { id, kind: "end", outcome: "Complete", position };
+            : spec.kind === "wait_for_ci"
+              ? {
+                  id,
+                  kind: "wait_for_ci",
+                  timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default,
+                  position,
+                  ...newWaitForCiNodeSettings(),
+                }
+              : { id, kind: "end", outcome: "Complete", position };
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });
     setAnnouncement(
@@ -894,6 +903,9 @@ export function WorkflowLibrary({
             </Tooltip>
             <Tooltip label="Add a gate on whatever this machine configures for that Command - or drag it onto the canvas">
               <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "check", slot: paletteSlot }))} onClick={() => addNode({ kind: "check", slot: paletteSlot })}>＋ Command</button>
+            </Tooltip>
+            <Tooltip label="Add a gate that waits for the pull request's CI - connect it after a Pull Request action's complete route">
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "wait_for_ci" }))} onClick={() => addNode({ kind: "wait_for_ci" })}>＋ Wait for CI</button>
             </Tooltip>
             {/* What that slot is actually configured to run, said where the node is added.
                 The workflow stays portable - it stores the slot and nothing else - so this is

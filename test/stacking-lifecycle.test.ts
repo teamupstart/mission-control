@@ -90,7 +90,7 @@ function snapshot(over: Partial<PrSnapshot> = {}): PrSnapshot {
     state: "OPEN", headSha: CHILD_HEAD, headRefName: "feat/child", baseRefName: "feat/parent", defaultBranch: "main",
     mergeCommitSha: null, title: "child", body: "", isDraft: false, threads: [], reviews: [],
     reviewsPageInfo: { hasPreviousPage: false, startCursor: null }, createdAt: 0, mergeable: "MERGEABLE",
-    reviewDecision: null, checks: "passing", ...over,
+    reviewDecision: null, checks: "passing", ci: null, ...over,
   };
 }
 

@@ -35,7 +35,9 @@ import {
   workflowEvidenceReadinessPolicyEnforces,
 } from "@shared/workflow.ts";
 import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
-import { nodeLabel } from "@shared/workflow-stages.ts";
+import { WAIT_FOR_CI_LABEL, nodeLabel } from "@shared/workflow-stages.ts";
+import { WaitForCiPanel } from "./WaitForCiPanel.tsx";
+import { waitForCiStateOf } from "./run-model.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
 import { PersonaDirectiveEditor } from "./PersonaDirectiveEditor.tsx";
@@ -669,11 +671,12 @@ function VerdictCard({
         <span className={`workflow-chip workflow-${verdict.verdict === "pass" ? "passed" : "failed"}`}>
           {verdict.verdict === "pass" ? "Passed" : "Changes requested"}
         </span>
-        <strong>{attempt.persona?.name ?? "Missing persona"}</strong>
+        <strong>{attempt.persona?.name ?? (waitForCiStateOf(attempt) ? WAIT_FOR_CI_LABEL : "Missing persona")}</strong>
         <span className="wf-run-confidence">{Math.round(verdict.confidence * 100)}% confident</span>
       </header>
       <PersonaReadinessInput attempt={attempt} />
       <p className="wf-run-summary">{verdict.summary}</p>
+      <WaitForCiPanel attempt={attempt} />
       {verdict.verdict === "pass" ? (
         <div className="wf-run-card-body">
           <h5>Approval rationale</h5>
@@ -737,6 +740,7 @@ function AttemptCard({
         ].filter(Boolean).join(" · ")}
       </p>
       <PersonaReadinessInput attempt={attempt} />
+      <WaitForCiPanel attempt={attempt} />
       {(attempt.reviewRejections?.length ?? 0) > 0 && (
         <details>
           <Tooltip label="Show the review responses rejected by the review contract">

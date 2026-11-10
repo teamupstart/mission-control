@@ -7,6 +7,7 @@ import { Tooltip } from "./Tooltip.tsx";
 import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
 import { ForemanErrors } from "./ForemanErrors.tsx";
 import type { ForemanHealthIssue } from "@shared/foreman-health.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
@@ -701,6 +702,28 @@ export function ForemanPopover({
             Keep sessions on track with CI
           </label>
         </Tooltip>
+        {/*
+          `?? "all"` for the same reason as the `!== false` above: a daemon too old to know the
+          key counts every check, so that is what this must show.
+        */}
+        <Tooltip label="Choose which failing checks Foreman sends back to a parked PR session, and which checks new workflow PR instructions ask it to follow">
+          <label className="alert-row">
+            Which failures count
+            <select
+              aria-label="Which failures count"
+              value={config.ciStrictness ?? "all"}
+              disabled={config.trackCiFailures === false}
+              onChange={(e) => void update({ ciStrictness: e.target.value as CiStrictness })}
+            >
+              <option value="all">All checks</option>
+              <option value="required">Required checks</option>
+            </select>
+          </label>
+        </Tooltip>
+        <p className="alert-hint dim">
+          Required checks: only checks GitHub marks required on the PR count, read through
+          GitHub Inspector. With none marked, or the Inspector off, every check counts.
+        </p>
         <p className="alert-hint dim">
           Does not create a PR. Once one exists, sends failing CI back to its session.
           {" "}New workflow PR instructions also ask the session to follow CI through completion.

@@ -13,6 +13,7 @@ import type {
   WorkflowVersion,
 } from "@shared/workflow.ts";
 import type { InspectorComment } from "@shared/types.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 import { executionAuthorizationContract } from "../execution-authorization.ts";
@@ -145,6 +146,8 @@ export interface SessionActionPacketInput {
   workflowEvidence: boolean;
   /** Enabled only for workflow PR completion actions at packet preparation. */
   pullRequestCi?: boolean;
+  /** Which failures the CI policy counts, read with `pullRequestCi`. */
+  pullRequestCiStrictness?: CiStrictness;
   /** PR completion or a required Pull Request skill, including older published actions. */
   pullRequestPolicy?: boolean;
   /**
@@ -778,7 +781,7 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
     workflowContinuation: input.origin.kind === "run",
   });
   const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
-    ? ["", workflowPullRequestCiContract(), ""]
+    ? ["", workflowPullRequestCiContract(input.pullRequestCiStrictness), ""]
     : [];
   const prPolicy = input.pullRequestPolicy
     ? ["", pullRequestPolicyContract(), ...(input.stackInstruction ? ["", sanitizeWorkflowFeedback(input.stackInstruction)] : []), ""]

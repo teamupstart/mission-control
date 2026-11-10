@@ -372,7 +372,7 @@ test("the seeded workflow is No-Mistakes Review v3's shape, minus the Inspector 
           ? member.personaId
           : member.kind === "check"
             ? `check:${member.slot}`
-            : `action:${member.sessionActionId}`));
+            : member.kind === "wait_for_ci" ? "wait_for_ci" : `action:${member.sessionActionId}`));
 
   // Same stages, in the same order, naming the same shipped roles - compared against the built-in's
   // own published graph rather than against a description of it, so a version-3 edit fails here.

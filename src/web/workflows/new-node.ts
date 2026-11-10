@@ -16,7 +16,8 @@ export type NewWorkflowNode =
   | { kind: "all_pass" }
   | { kind: "check"; slot: WorkflowCheckSlot }
   | { kind: "session_action"; sessionActionId: string }
-  | { kind: "end" };
+  | { kind: "end" }
+  | { kind: "wait_for_ci" };
 
 /** The `dataTransfer` type the palette writes and the canvas reads. */
 export const NEW_NODE_MIME = "application/mission-workflow-node";
@@ -41,7 +42,9 @@ export function parseDroppedNode(raw: string): NewWorkflowNode | null {
     sessionActionId?: unknown;
     slot?: unknown;
   };
-  if (spec.kind === "all_pass" || spec.kind === "end") return { kind: spec.kind };
+  if (spec.kind === "all_pass" || spec.kind === "end" || spec.kind === "wait_for_ci") {
+    return { kind: spec.kind };
+  }
   if (spec.kind === "persona") {
     return typeof spec.personaId === "string" && spec.personaId
       ? { kind: "persona", personaId: spec.personaId }

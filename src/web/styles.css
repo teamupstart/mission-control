@@ -3587,6 +3587,101 @@ button.wf-run-version:focus-visible {
   color: var(--muted);
 }
 
+/* Wait for CI: what the node is waiting for, and what CI said. */
+.wf-run-ci {
+  display: grid;
+  gap: 6px;
+}
+
+.wf-run-ci-failing,
+.wf-run-ci-checks {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.wf-run-ci-checks .is-failing {
+  color: var(--danger);
+}
+
+/* Wait for CI's node fields, in the Pipeline row's panel and the Graph rail. */
+.wf-ci-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.wf-ci-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.wf-ci-fields textarea {
+  min-height: 52px;
+  resize: vertical;
+}
+
+.wf-ci-strictness {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.wf-ci-strictness legend {
+  margin-bottom: 4px;
+  padding: 0;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.wf-ci-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wf-ci-fields .wf-ci-choice label {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--fg);
+}
+
+/* A radio, not a text field: the rail sizes and boxes every input it holds. */
+.wf-ci-fields .wf-ci-choice input[type="radio"] {
+  flex: none;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  accent-color: var(--select);
+}
+
+/* Under the label's text, past the radio. */
+.wf-ci-choice small {
+  padding-left: 19px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* Why a check counts in Required mode: Required, Expected or Not required. */
+.wf-run-ci-tag {
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+
 /* A cited quote is evidence, not the claim, and it was rendering a size larger than the
    heading above it and the code reference beside it. Both lists live only in the worklist's
    detail pane, so this is the same 12px the rest of that card now reads at. */

@@ -38,7 +38,7 @@ import type {
   WorkflowTargetPort,
 } from "@shared/workflow.ts";
 import { connectionAllowed } from "@shared/workflow-graph.ts";
-import { checkLabel } from "@shared/workflow-stages.ts";
+import { WAIT_FOR_CI_LABEL, checkLabel } from "@shared/workflow-stages.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { personaRoutingLabel } from "../library/library-model.ts";
 import { nodeRoutingLabel, snapshotRoutingLabel } from "./node-execution.ts";
@@ -170,6 +170,7 @@ const NODE_KIND_WORDS: Record<WorkflowDraftNode["kind"], string> = {
   check: "Command",
   session_action: "Session action",
   end: "End",
+  wait_for_ci: "Wait for CI",
 };
 
 function isPublishedSessionAction(
@@ -256,6 +257,9 @@ export function canvasNodes(
     } else if (node.kind === "end") {
       fallbackLabel = node.outcome;
       subtitle = "Terminal outcome";
+    } else if (node.kind === "wait_for_ci") {
+      fallbackLabel = WAIT_FOR_CI_LABEL;
+      subtitle = `Pull request CI · times out after ${node.timeoutMinutes} min`;
     }
     const label = labelFor?.(node) ?? fallbackLabel;
     return {

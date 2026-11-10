@@ -116,7 +116,7 @@ const evaluation = (stage: Stage | undefined): EvaluationStage => {
 /** Each stage's members, named by Persona id or by slot, so a mixed stage reads in one list. */
 const memberIdsOf = (pipeline: StagePipeline): string[][] =>
   pipeline.stages.map((stage) => evaluation(stage).members.map((member) =>
-    member.kind === "persona" ? member.personaId : member.slot));
+    member.kind === "persona" ? member.personaId : member.kind === "check" ? member.slot : member.kind));
 
 test("adding the first reviewer to a fresh draft publishes-valid, and adding a second parallelizes it", () => {
   // The headline complaint the migration exists to kill: two reviewers on the submission was

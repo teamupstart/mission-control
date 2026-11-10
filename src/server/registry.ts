@@ -9417,6 +9417,13 @@ export class Registry extends EventEmitter {
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
       codeRabbit: codeRabbitSummary(row.key, owner),
+      // The compact projection only, never the check list. `enabled` is read here, not on the
+      // row, because turning the Inspector off changes no row.
+      ci: {
+        headSha: row.ci?.headSha ?? null,
+        required: row.ci?.required ?? null,
+        inspectorEnabled: getInspectorConfig().enabled,
+      },
       // Stacked pull requests: the lifecycle standing Foreman's follow-up reads to deliver a
       // catch-up or restack prompt, and the card reads to say why the child is held.
       stack: row.stack ? this.stackStanding(row) : null,

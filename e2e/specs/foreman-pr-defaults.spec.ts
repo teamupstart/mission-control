@@ -60,3 +60,61 @@ test("all three pull-request controls default on and preserve independent saved 
     await controls.screenshot({ path: `${artifactsDir("foreman-pr-defaults")}saved-off.png` });
   }
 });
+
+test("Which failures count defaults to All checks, follows the CI toggle and persists Required", async ({
+  dashboard,
+  daemon,
+}) => {
+  // A fresh install: no Foreman config is seeded.
+  await dashboard.setViewportSize({ width: 1500, height: 1100 });
+  const readConfig = async () => {
+    const response = await fetch(`${daemon.baseURL}/api/foreman/config`);
+    expect(response.ok).toBe(true);
+    return response.json();
+  };
+  expect(await readConfig()).toMatchObject({ trackCiFailures: true, ciStrictness: "all" });
+
+  const openControls = async () => {
+    await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+    const dialog = dashboard.getByRole("dialog", { name: "Foreman settings", exact: true });
+    await expect(dialog).toBeVisible();
+    return dialog.getByRole("group", { name: "Pull requests", exact: true });
+  };
+  let controls = await openControls();
+  const picker = () => controls.getByRole("combobox", { name: "Which failures count", exact: true });
+  const ci = () => controls.getByRole("checkbox", { name: "Keep sessions on track with CI", exact: true });
+  await expect(picker()).toBeEnabled();
+  await expect(picker()).toHaveValue("all");
+  await expect(picker().locator("option:checked")).toHaveText("All checks");
+  const pickerRow = controls.locator("label", {
+    has: dashboard.getByRole("combobox", { name: "Which failures count", exact: true }),
+  });
+  await expect(pickerRow).toHaveAccessibleDescription(
+    "Choose which failing checks Foreman sends back to a parked PR session, and which checks new workflow PR instructions ask it to follow",
+  );
+  await expect(controls.getByText(
+    "Required checks: only checks GitHub marks required on the PR count, read through GitHub Inspector. "
+      + "With none marked, or the Inspector off, every check counts.",
+  )).toBeVisible();
+
+  // Off with the CI toggle, and back on with it.
+  await ci().uncheck();
+  await expect.poll(readConfig).toMatchObject({ trackCiFailures: false });
+  await expect(picker()).toBeDisabled();
+  await ci().check();
+  await expect.poll(readConfig).toMatchObject({ trackCiFailures: true });
+  await expect(picker()).toBeEnabled();
+
+  await picker().selectOption({ label: "Required checks" });
+  await expect.poll(readConfig).toMatchObject({ ciStrictness: "required", trackCiFailures: true });
+  await dashboard.reload();
+  controls = await openControls();
+  await expect(picker()).toHaveValue("required");
+  await expect(picker().locator("option:checked")).toHaveText("Required checks");
+  await expectContentClearsBorder(controls);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("foreman-pr-defaults");
+    mkdirSync(dir, { recursive: true });
+    await controls.screenshot({ path: `${dir}which-failures-count.png` });
+  }
+});

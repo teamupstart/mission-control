@@ -26,8 +26,15 @@ const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-tracking-"));
 process.env.HARNESS_HOME = home;
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
-const { getInspectorPr, openDb, primaryRepoPrForTask, taskReposFor, workEpisodeRepoPrsForTask } =
-  await import("../src/server/db.ts");
+const {
+  getInspectorPr,
+  openDb,
+  primaryRepoPrForTask,
+  recordInspectorCiObservation,
+  taskReposFor,
+  workEpisodeRepoPrsForTask,
+} = await import("../src/server/db.ts");
+const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { adoptPr } = await import("../src/server/inspector/worker.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -646,4 +653,48 @@ test("the Inspector's findings reach the repository they were left on", () => {
   const summary = repoPrLines(f).get("/other")?.feedback?.inspector;
   assert.equal(summary?.prKey, "example/other#20");
   assert.equal(summary?.postedOpen, 0);
+});
+
+test("the Inspector summary carries a compact CI projection and never the check list", () => {
+  // What Foreman's "Which failures count" reads. Derived from the stored snapshot beside
+  // `codeRabbit`, with whether the Inspector is on read when it is resolved.
+  const f = fixture("live-inspector-ci");
+  f.registry.reconcileRepoPrs(new Map([repoMatch(f, "/other")]), new Set());
+  adoptPr(PR_B, { sessionId: f.id, cwd: "/wt/live-inspector-ci-1", repoRoot: "/other" }, "hook", 1);
+  f.registry.refreshInspections();
+  const ci = () => repoPrLines(f).get("/other")?.feedback?.inspector?.ci;
+  assert.deepEqual(ci(), { headSha: null, required: null, inspectorEnabled: false }, "no snapshot yet");
+
+  const run = (name: string, state: "passing" | "failing" | "pending", required?: boolean) => ({
+    name, state, conclusion: state === "failing" ? "FAILURE" : null, detailsUrl: null, title: null, summary: null,
+    ...(required === undefined ? {} : { required }),
+  });
+  const observe = (checkRuns: ReturnType<typeof run>[], totalCount = checkRuns.length) => {
+    recordInspectorCiObservation("example/other#20", { headSha: "head-20", observedAt: 5_000, checkRuns, totalCount });
+    f.registry.refreshInspections();
+  };
+
+  observe([run("lint", "failing"), run("build", "passing", true)]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "passing", inspectorEnabled: false });
+  observe([run("lint", "passing"), run("build", "failing", true)]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false });
+  observe([run("lint", "failing"), run("build", "passing")]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "nothing marked");
+
+  // GitHub reported more checks than were read: Wait for CI's truncation rule. A required
+  // failure among those read still decides; a pass cannot be confirmed, so every check counts.
+  observe([run("lint", "failing"), run("build", "passing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "truncated pass");
+  observe([run("lint", "passing"), run("build", "failing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false }, "truncated failure");
+
+  // Switching the Inspector on changes no ledger row, so the flag is read at resolution.
+  setInspectorConfig({ enabled: true });
+  try {
+    f.registry.refreshInspections();
+    assert.equal(ci()?.inspectorEnabled, true);
+  } finally {
+    setInspectorConfig({ enabled: false });
+  }
+  assert.doesNotMatch(JSON.stringify(f.registry.getSession(f.id)), /"lint"|checkRuns/);
 });

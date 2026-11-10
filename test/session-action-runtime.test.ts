@@ -28,6 +28,8 @@ import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import type { CiCheckRun, CiObservation } from "../src/shared/wait-for-ci.ts";
+import type { CiStrictness } from "../src/shared/ci-checks.ts";
 import { prCreationFixture } from "./helpers/pr-creation-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
@@ -40,7 +42,10 @@ const { SessionActionManager } = await import("../src/server/workflows/session-a
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
-const { getForemanConfig } = await import("../src/server/foreman/config.ts");
+const { foremanPullRequestPacketPreferences, getForemanConfig, setForemanConfig } = await import(
+  "../src/server/foreman/config.ts"
+);
+const { workflowPullRequestCiContract } = await import("../src/server/workflows/agent-contract.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
@@ -158,6 +163,11 @@ interface HarnessOptions {
   /** Make the pane positively reject the write, the way a guard or a busy pane does. */
   refuseInject?: boolean;
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
+  /** Put a Wait for CI node, with this timeout, between the last action and End. */
+  waitForCiMinutes?: number;
+  /** The Wait for CI node's own settings, spread onto it as a version stores them. */
+  waitForCiSettings?: Record<string, unknown>;
+  ciStrictness?: () => CiStrictness;
 }
 
 async function harness(sessionId: string, options: HarnessOptions = {}) {
@@ -198,8 +208,12 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const captureHead: { sha: string | null } = { sha: null };
   const adopted: SessionActionAdoptedPullRequest[] = [];
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
+  /** What the Inspector last stored about CI, as a test states it. */
+  const ci: { observation: CiObservation | null } = { observation: null };
   const manager = new WorkflowManager(registry, store, {
     trackCiFailures: options.trackCiFailures,
+    ciStrictness: options.ciStrictness,
+    ciObservation: (key) => key === "owner/repo#7" ? ci.observation : null,
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -341,6 +355,15 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     ...(options.downstream
       ? [{ id: "downstream", kind: "persona", personaId: downstreamId, position: { x: 700, y: 0 } }]
       : []),
+    ...(options.waitForCiMinutes
+      ? [{
+          id: "ci",
+          kind: "wait_for_ci",
+          timeoutMinutes: options.waitForCiMinutes,
+          position: { x: 800, y: 0 },
+          ...options.waitForCiSettings,
+        }]
+      : []),
     { id: "end", kind: "end", outcome: "Approved", position: { x: 900, y: 0 } },
   ];
   const edges: unknown[] = [
@@ -368,10 +391,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   } else {
     const sequence = ["upstream", ...chain.map((entry) => entry.node)];
     if (options.downstream) sequence.push("downstream");
+    if (options.waitForCiMinutes) sequence.push("ci");
     for (let index = 0; index < sequence.length; index += 1) {
       const from = sequence[index]!;
       const to = sequence[index + 1] ?? "end";
-      const port = from === "upstream" || from === "downstream" ? "pass" : "complete";
+      const port = from === "upstream" || from === "downstream" || from === "ci" ? "pass" : "complete";
       const targetPort = to === "end" ? "terminal" : "activate";
       edges.push({ id: `e-${from}`, source: from, sourcePort: port, target: to, targetPort });
       if (port === "pass" && from !== "upstream") {
@@ -513,6 +537,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     reportIdle,
     reportWorking,
     runActionTurn,
+    ci,
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     setVerdict: (next: () => "pass" | "fail") => { verdictChoice = next; },
     stop: () => manager.stop(),
@@ -698,16 +723,40 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
 });
 
 test("an unstored Foreman CI preference reaches PR packets as default-on", async () => {
+  // The daemon's own wiring, not a copy of it: `src/server/index.ts` spreads this helper.
   const h = await harness("ci-policy-default", {
     pullRequest: true,
-    trackCiFailures: () => getForemanConfig().trackCiFailures,
+    ...foremanPullRequestPacketPreferences(),
     deliveryMode: "preview",
   });
   try {
     const runId = await runToAction(h);
     await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
-    assert.match(h.store.listDeliveries(runId)[0]!.payload, /Workflow pull request CI follow-through/);
+    const payload = h.store.listDeliveries(runId)[0]!.payload;
+    assert.ok(payload.includes(workflowPullRequestCiContract("all")), "an unstored strictness is All checks");
   } finally {
+    await h.stop();
+  }
+});
+
+test("a saved Required checks reaches PR packets through the daemon's wiring", async () => {
+  // The stored Foreman setting, read through the same helper the daemon spreads into
+  // `WorkflowManager`, so dropping its `ciStrictness` reader fails here.
+  assert.equal(getForemanConfig().ciStrictness, "all");
+  setForemanConfig({ ciStrictness: "required" });
+  const h = await harness("ci-strictness-wiring", {
+    pullRequest: true,
+    ...foremanPullRequestPacketPreferences(),
+    deliveryMode: "preview",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+    const payload = h.store.listDeliveries(runId)[0]!.payload;
+    assert.ok(payload.includes(workflowPullRequestCiContract("required")));
+    assert.ok(!payload.includes(workflowPullRequestCiContract("all")));
+  } finally {
+    setForemanConfig({ ciStrictness: "all" });
     await h.stop();
   }
 });
@@ -735,6 +784,68 @@ test("a prepared PR packet keeps its CI policy across setting changes and restar
     assert.equal(recovered[0]!.payloadSha256, original.payloadSha256);
     assert.equal(reads, 1, "restart re-read policy for an already prepared packet");
     assert.equal(h.injected.length, 0, "restart sent a preview packet");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a prepared PR packet keeps its CI strictness across setting changes and restart", async () => {
+  // "Which failures count" is read once, with the CI preference, and the Required wording is
+  // then part of the recorded payload.
+  let strictness: CiStrictness = "required";
+  let reads = 0;
+  const h = await harness("ci-strictness-durable", {
+    pullRequest: true,
+    trackCiFailures: () => true,
+    ciStrictness: () => { reads++; return strictness; },
+    deliveryMode: "preview",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+    const original = h.store.listDeliveries(runId)[0]!;
+    assert.ok(original.payload.includes(workflowPullRequestCiContract("required")));
+    strictness = "all";
+    await h.manager.stop();
+    h.manager.start();
+    await h.manager.sweepSessionActions(SETTLED());
+    const recovered = h.store.listDeliveries(runId);
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0]!.payload, original.payload);
+    assert.equal(reads, 1, "restart re-read the strictness for an already prepared packet");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("retrying a refused PR delivery keeps its recorded CI strictness", async () => {
+  let strictness: CiStrictness = "required";
+  let reads = 0;
+  const options: HarnessOptions = {
+    pullRequest: true,
+    trackCiFailures: () => true,
+    ciStrictness: () => { reads++; return strictness; },
+    refuseInject: true,
+  };
+  const h = await harness("ci-strictness-retry", options);
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some((item) => item.state === "refused"), "no refused packet");
+    const original = h.store.listDeliveries(runId)[0]!;
+    assert.ok(original.payload.includes(workflowPullRequestCiContract("required")));
+    strictness = "all";
+    options.refuseInject = false;
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const retried = await h.manager.retryDelivery(original.id, {
+      requestId: "retry-ci-strictness",
+      expectedSessionId: binding.sessionId!,
+      expectedNoteKey: binding.noteKey,
+    });
+    assert.equal(retried.ok, true);
+    if (!retried.ok) return;
+    assert.equal(retried.value.payloadSha256, original.payloadSha256);
+    assert.deepEqual(h.injected, [original.payload]);
+    assert.equal(reads, 1, "retry must not re-read the strictness");
   } finally {
     await h.stop();
   }
@@ -1846,3 +1957,353 @@ test("a pull request already open at the reviewed commit completes without a sec
     await h.stop();
   }
 });
+
+// ---- Wait for CI after the Pull Request action ------------------------------------------
+//
+// The node reads CI only through the Inspector's stored snapshot (`ciObservation` here), so
+// each test states what CI looked like and sweeps, exactly as the Inspector's update event
+// and the resumption timer do in the daemon.
+
+const ciRun = (
+  name: string,
+  state: CiCheckRun["state"],
+  extra: Partial<CiCheckRun> = {},
+): CiCheckRun => ({
+  name,
+  state,
+  conclusion: state === "pending" ? null : state === "failing" ? "FAILURE" : "SUCCESS",
+  detailsUrl: `https://ci.example/${encodeURIComponent(name)}`,
+  title: null,
+  summary: null,
+  ...extra,
+});
+
+function observeCi(
+  h: Harness,
+  headSha: string,
+  checkRuns: CiCheckRun[],
+  observedAt = Date.now(),
+): void {
+  h.ci.observation = { headSha, observedAt, checkRuns };
+}
+
+/**
+ * Green CI as two Inspector polls one quiet period apart, each swept: the first starts the
+ * node's quiet clock, the second passes it. The first is backdated so no test waits minutes.
+ */
+async function observeGreenCi(h: Harness, headSha: string, checkRuns: CiCheckRun[]): Promise<void> {
+  observeCi(h, headSha, checkRuns, Date.now() - 4 * 60_000);
+  await h.manager.sweepWaitForCi();
+  observeCi(h, headSha, checkRuns);
+  await h.manager.sweepWaitForCi();
+}
+
+function ciAttempts(h: Harness, runId: string) {
+  return h.store.listSubmissions(runId)
+    .flatMap((submission) => h.store.listAttempts(submission.id))
+    .filter((attempt) => attempt.nodeId === "ci")
+    .sort((a, b) => a.attempt - b.attempt);
+}
+
+/** Drive the run through the Pull Request action until Wait for CI is waiting. */
+async function runToCiWait(
+  h: Harness,
+  adoption: Parameters<Harness["adoptPr"]>[0] = { atHead: "head-2" },
+): Promise<string> {
+  const runId = await runToAction(h);
+  await waitFor(
+    () => h.store.listDeliveries(runId).some((delivery) =>
+      delivery.kind === "session_action" && delivery.state === "delivered"),
+    "the pull request packet was never delivered",
+  );
+  h.head.sha = "head-2";
+  h.runActionTurn();
+  h.adoptPr(adoption);
+  await h.manager.sweepSessionActions(SETTLED());
+  await waitFor(
+    () => ciAttempts(h, runId).at(-1)?.state === "waiting",
+    `Wait for CI never started waiting: ${JSON.stringify(ciAttempts(h, runId).at(-1)?.output ?? null)}`,
+  );
+  return runId;
+}
+
+test("Wait for CI judges only the proven head, and passes green CI once it has stayed settled", async () => {
+  const h = await harness("ci-pass", {
+    pullRequest: true,
+    waitForCiMinutes: 45,
+    trackCiFailures: () => true,
+    evidenceReadinessPolicy: "criterion_mapped_v1",
+  });
+  try {
+    const runId = await runToCiWait(h);
+    // The node owns CI, so the action's packet leaves the agent's CI follow-through out.
+    const packet = h.store.listDeliveries(runId).find((delivery) => delivery.kind === "session_action")!;
+    assert.doesNotMatch(packet.payload, /Workflow pull request CI follow-through/);
+
+    const waiting = ciAttempts(h, runId)[0]!;
+    const state = waiting.output as { expectedHeadOid: string; pullRequestKey: string; timeoutMinutes: number };
+    assert.equal(state.expectedHeadOid, h.full("head-2"));
+    assert.equal(state.pullRequestKey, "owner/repo#7");
+    assert.equal(state.timeoutMinutes, 45);
+    // A waiting CI attempt holds no model slot.
+    assert.deepEqual(h.store.listRunnableAttempts(Date.now()), []);
+
+    // Another head's green CI is not this head's.
+    observeCi(h, h.full("head-3"), [ciRun("unit", "passing"), ciRun("e2e", "passing")]);
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.deepEqual((ciAttempts(h, runId)[0]!.output as { checkRuns: unknown[] }).checkRuns, []);
+
+    // Still running: keep waiting, but record what was seen.
+    observeCi(h, h.full("head-2"), [ciRun("unit", "passing"), ciRun("e2e", "pending")]);
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.equal((ciAttempts(h, runId)[0]!.output as { checkRuns: unknown[] }).checkRuns.length, 2);
+
+    const green = [
+      ciRun("unit", "passing"),
+      ciRun("e2e", "passing"),
+      ciRun("docs", "passing", { conclusion: "NEUTRAL", title: "1 warning" }),
+    ];
+    // Settled, but one observation is not a quiet period: the sweep alone never passes it.
+    const firstSeen = Date.now() - 4 * 60_000;
+    observeCi(h, h.full("head-2"), green, firstSeen);
+    await h.manager.sweepWaitForCi();
+    await h.manager.sweepWaitForCi(Date.now() + 10 * 60_000);
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.equal((ciAttempts(h, runId)[0]!.output as { quietSince: number | null }).quietSince, firstSeen);
+    // The next poll, a quiet period later, with nothing changed.
+    observeCi(h, h.full("head-2"), green);
+    await h.manager.sweepWaitForCi();
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "green CI did not reach End");
+
+    const passed = ciAttempts(h, runId)[0]!;
+    assert.equal((passed.verdict as { verdict: string }).verdict, "pass");
+    const output = passed.output as { outcome: string };
+    assert.equal(output.outcome, "pass");
+    // Still a shipping-only continuation: no readiness cycle for the PR segment.
+    const child = h.store.listSubmissions(runId)[1]!;
+    assert.equal(child.readiness, null);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a failing CI check sends a repair packet naming every failing check", async () => {
+  const h = await harness("ci-fail", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    observeCi(h, h.full("head-2"), [
+      ciRun("unit (node 24)", "failing", { title: "2 tests failed", summary: "test/a.test.ts failed twice" }),
+      ciRun("lint", "passing"),
+      ciRun("e2e", "failing"),
+    ]);
+    await h.manager.sweepWaitForCi();
+    await waitFor(() => h.store.getRun(runId)?.status === "waiting_for_session", "failing CI did not return to Session");
+
+    const failed = ciAttempts(h, runId)[0]!;
+    const verdict = failed.verdict as { verdict: string; requestedChanges: { title: string }[] };
+    assert.equal(verdict.verdict, "fail");
+    assert.deepEqual(verdict.requestedChanges.map((change) => change.title), [
+      'Fix the failing CI check "unit (node 24)"',
+      'Fix the failing CI check "e2e"',
+    ]);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.kind === "persona_feedback"),
+      "no repair packet was prepared",
+    );
+    const repair = h.store.listDeliveries(runId).find((delivery) => delivery.kind === "persona_feedback")!;
+    assert.match(repair.payload, /## Wait for CI/);
+    assert.match(repair.payload, /Fix the failing CI check "unit \(node 24\)"/);
+    assert.match(repair.payload, /2 tests failed/);
+    assert.match(repair.payload, /https:\/\/ci\.example\/unit/);
+    assert.match(repair.payload, /CI check "e2e"/);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a Wait for CI outcome records the node's strictness, the fallback and the missing expected checks", async () => {
+  /** The `wait_for_ci_outcome` event the run recorded, which the run views and telemetry read. */
+  const outcome = (h: Harness, runId: string) =>
+    h.store.listEvents(runId).find((event) => event.kind === "wait_for_ci_outcome")?.payload as Record<string, unknown>;
+
+  // Required, with marks: only the marked failure fails it, and the expected check not yet
+  // reported is counted in the event and named in the verdict.
+  const required = await harness("ci-outcome-required", {
+    pullRequest: true,
+    waitForCiMinutes: 45,
+    waitForCiSettings: { strictness: "required", quietMinutes: 0, expectedChecks: ["deploy", "e2e"] },
+  });
+  try {
+    const runId = await runToCiWait(required);
+    // The attempt copied the node's settings when it started waiting.
+    const waiting = ciAttempts(required, runId)[0]!.output as Record<string, unknown>;
+    assert.deepEqual(
+      [waiting.strictness, waiting.quietMinutes, waiting.expectedChecks],
+      ["required", 0, ["deploy", "e2e"]],
+    );
+    observeCi(required, required.full("head-2"), [
+      ciRun("build", "failing", { required: true }),
+      ciRun("lint", "failing"),
+      ciRun("e2e", "passing"),
+    ]);
+    await required.manager.sweepWaitForCi();
+    await waitFor(() => outcome(required, runId) !== undefined, "Wait for CI recorded no outcome");
+    assert.deepEqual(outcome(required, runId), {
+      nodeId: "ci",
+      attemptId: ciAttempts(required, runId)[0]!.id,
+      submissionId: ciAttempts(required, runId)[0]!.submissionId,
+      outcome: "fail",
+      failing: ["build"],
+      strictness: "required",
+      requiredFallback: false,
+      missingExpected: 1,
+    });
+    const verdict = ciAttempts(required, runId)[0]!.verdict as { summary: string; requestedChanges: { title: string }[] };
+    assert.deepEqual(verdict.requestedChanges.map((change) => change.title), ['Fix the failing CI check "build"']);
+    assert.match(verdict.summary, /Not reported when CI failed: "deploy"\.$/);
+  } finally {
+    await required.stop();
+  }
+
+  // Required, with nothing marked: the fallback judged every check, and the event says so.
+  const fallback = await harness("ci-outcome-fallback", {
+    pullRequest: true,
+    waitForCiMinutes: 45,
+    waitForCiSettings: { strictness: "required", quietMinutes: 0, expectedChecks: [] },
+  });
+  try {
+    const runId = await runToCiWait(fallback);
+    observeCi(fallback, fallback.full("head-2"), [ciRun("unit", "passing"), ciRun("lint", "passing")]);
+    await fallback.manager.sweepWaitForCi();
+    await waitFor(() => fallback.store.getRun(runId)?.status === "completed", "the fallback did not pass green CI");
+    assert.deepEqual(
+      [outcome(fallback, runId).outcome, outcome(fallback, runId).strictness, outcome(fallback, runId).requiredFallback, outcome(fallback, runId).missingExpected],
+      ["pass", "required", true, 0],
+    );
+  } finally {
+    await fallback.stop();
+  }
+
+  // A node published before the settings existed activates under the legacy settings, written
+  // out on the attempt, and records the legacy strictness.
+  const legacy = await harness("ci-outcome-legacy", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(legacy);
+    const activated = ciAttempts(legacy, runId)[0]!.output as Record<string, unknown>;
+    assert.deepEqual([activated.strictness, activated.quietMinutes, activated.expectedChecks], ["all", 3, []]);
+    await observeGreenCi(legacy, legacy.full("head-2"), [ciRun("unit", "passing")]);
+    await waitFor(() => legacy.store.getRun(runId)?.status === "completed", "legacy green CI did not pass");
+    assert.deepEqual(
+      [outcome(legacy, runId).strictness, outcome(legacy, runId).requiredFallback, outcome(legacy, runId).missingExpected],
+      ["all", false, 0],
+    );
+  } finally {
+    await legacy.stop();
+  }
+});
+
+test("Wait for CI blocks with a plain reason, and retrying waits on the same head again", async () => {
+  const h = await harness("ci-block", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    const firstState = ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string };
+
+    // Green CI whose quiet period stalls past the timeout: no new poll ever finishes it.
+    observeCi(h, h.full("head-2"), [ciRun("unit", "passing")]);
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    await h.manager.sweepWaitForCi(Date.now() + 46 * 60_000);
+    assert.equal(h.store.getRun(runId)?.status, "blocked");
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_timeout");
+    assert.equal(ciAttempts(h, runId)[0]!.state, "error");
+    // Waiting again on the same head is the primary move; a new round stays available for a
+    // fix that needs a new commit.
+    const recovery = h.store.runSummary(runId)?.recovery;
+    assert.equal(recovery?.primary, "retry");
+    assert.ok(recovery?.resubmit, "a CI block must still offer a new round");
+
+    const retry = (requestId: string): void => {
+      const retried = h.manager.retry(runId, { requestId });
+      assert.equal(retried.ok, true, JSON.stringify(retried));
+      const latest = ciAttempts(h, runId).at(-1)!;
+      assert.equal(latest.state, "waiting");
+      assert.equal((latest.output as { expectedHeadOid: string }).expectedHeadOid, firstState.expectedHeadOid);
+      assert.equal(h.store.getRun(runId)?.status, "running");
+    };
+    retry("retry-quiet");
+
+    // Nothing ever appears on the head: missing CI at the timeout.
+    h.ci.observation = null;
+    await h.manager.sweepWaitForCi(Date.now() + 46 * 60_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_missing");
+    retry("retry-missing");
+
+    // Checks that never finish: a timeout.
+    observeCi(h, h.full("head-2"), [ciRun("unit", "pending")]);
+    await h.manager.sweepWaitForCi(Date.now() + 46 * 60_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_timeout");
+    assert.equal(ciAttempts(h, runId).at(-1)!.error, 'ci_timeout: Still running after 45 minutes: "unit".');
+    assert.equal(ciAttempts(h, runId).length, 3);
+    // No repair round was spent on any of it.
+    assert.equal(h.store.listSubmissions(runId).every((submission) => submission.round === 1), true);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("disabling Wait for CI passes it without reading CI", async () => {
+  const h = await harness("ci-disabled", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    const disabled = h.manager.setNodesDisabled(runId, { requestId: "disable-ci", nodeIds: ["ci"], disabled: true });
+    assert.equal(disabled.ok, true, JSON.stringify(disabled));
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "a disabled Wait for CI did not pass");
+    const output = ciAttempts(h, runId)[0]!.output as { disabled?: boolean; outcome: string };
+    assert.equal(output.disabled, true);
+    assert.equal(output.outcome, "pass");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("before the Inspector has polled, Wait for CI watches the head the continuation captured", async () => {
+  const h = await harness("ci-unobserved", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    // Adopted from the creation hook, with no provider head yet: the action completes on
+    // adoption alone and records no expected head.
+    const runId = await runToCiWait(h, { observedHeadOid: null, observedState: null });
+    await waitFor(
+      () => (ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string | null }).expectedHeadOid === h.full("head-2"),
+      "Wait for CI did not adopt the continuation's captured head",
+    );
+    await observeGreenCi(h, h.full("head-2"), [ciRun("unit", "passing")]);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "green CI on the captured head did not pass");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("Wait for CI watches the pushed head, not a stale head the Inspector last reported", async () => {
+  const h = await harness("ci-stale-report", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    // The pull request already existed at head-1; the session pushed head-2, and the
+    // Inspector has not polled since. The action still completes (with a warning).
+    const runId = await runToCiWait(h, { atHead: "head-1" });
+    await waitFor(
+      () => (ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string | null }).expectedHeadOid === h.full("head-2"),
+      "Wait for CI did not watch the captured head",
+    );
+    const state = ciAttempts(h, runId)[0]!.output as { reportedHeadOid: string | null };
+    assert.equal(state.reportedHeadOid, h.full("head-1"));
+    // The old head's finished, failing CI is not this head's.
+    observeCi(h, h.full("head-1"), [ciRun("unit", "failing")]);
+    await h.manager.sweepWaitForCi();
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.equal(h.store.getRun(runId)?.status, "running");
+  } finally {
+    await h.stop();
+  }
+});
+

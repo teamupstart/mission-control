@@ -4,7 +4,7 @@ import { reportBucket } from "@shared/session.ts";
 import { taskRepoRefs } from "@shared/task-repos.ts";
 import { codeRabbitSummary, getInspectorPr, readCodeRabbit } from "../db.ts";
 import { getForemanConfig } from "../foreman/config.ts";
-import { activeWorkflowOwnsSession, buildPayload, decideReviewFollowup, followupPrs } from "../foreman/review-followup.ts";
+import { activeWorkflowOwnsSession, buildPayload, ciFeedback, decideReviewFollowup, followupPrs } from "../foreman/review-followup.ts";
 import { foremanMayActLive } from "../foreman/verdict.ts";
 import { noteKeyFor, type Registry } from "../registry.ts";
 import { codeRabbitEnabled } from "../shipping/config.ts";
@@ -49,7 +49,7 @@ export function codeRabbitCandidate(registry: Registry, sessionId: string, reque
   if (decision.kind === "skip") return { error: decision.why } as const;
   const payload = buildPayload({ ...currentPr, repoRoot: checkout }, {
     findings: cfg.trackReviewFeedback && (pr.inspector?.postedOpen ?? 0) > 0,
-    ciFailing: cfg.trackCiFailures && pr.checks === "failing", codeRabbit: true,
+    ...ciFeedback(pr, cfg), codeRabbit: true,
   });
   return { owner, session, payload, summary, checkout } as const;
 }

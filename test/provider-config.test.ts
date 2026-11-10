@@ -82,6 +82,7 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
   assert.equal(upgraded.keepShipTasksMoving, true);
   assert.equal(upgraded.trackReviewFeedback, true);
   assert.equal(upgraded.trackCiFailures, true);
+  assert.equal(upgraded.ciStrictness, "all", "a stored config without the key counts every check");
   assert.equal(upgraded.shipRecoveryMinutes, 20);
 });
 
@@ -115,6 +116,13 @@ test("Foreman persists review-comment and CI follow-through independently", () =
   const bothOff = setForemanConfig({ trackReviewFeedback: false });
   assert.equal(bothOff.trackReviewFeedback, false);
   assert.equal(bothOff.trackCiFailures, false);
+});
+
+test("Foreman persists which CI failures count, beside the CI toggle", () => {
+  const required = setForemanConfig({ ciStrictness: "required" });
+  assert.equal(required.ciStrictness, "required");
+  assert.equal(setForemanConfig({ trackCiFailures: true }).ciStrictness, "required");
+  assert.equal(setForemanConfig({ ciStrictness: "all" }).ciStrictness, "all");
 });
 
 test("Foreman preserves every combination of the three PR preferences on unrelated updates", () => {

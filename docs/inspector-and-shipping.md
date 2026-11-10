@@ -335,8 +335,10 @@ without the drafts. If GitHub refuses that one too, nothing is counted and the r
 above. Then the drafts are attributed. A single draft records the refusal. Several drafts are
 each posted in a review of their own, so a valid draft is never charged for a bad sibling. Each
 of those reviews is its own notification on the pull request. A draft refused alone is charged
-only when at least one of the others was accepted: when GitHub refuses every one, the refusal
-is about the review rather than any draft, so nothing is counted and the round fails as above.
+only when at least one of the others was accepted. When GitHub refuses every one, a refusal
+they all share cannot be pinned on any of them, so nothing is counted. The round still
+finishes, because reviewing the same head again would only repeat the refusals, and the drafts
+are offered again on the next push.
 A response that never arrived is not a refusal and is never counted.
 
 Every retry reuses the round's review, so no second model run is made. Once the refusals are

@@ -530,7 +530,7 @@ test("a drafts-only review refused with a 422 that names no comment charges noth
   assertRoundFailed(key);
 });
 
-test("when every isolated post is refused, the refusal is the review's and no draft counts it", async () => {
+test("when every isolated post is refused, no draft counts it and the round still finishes", async () => {
   const key = adopt(732);
   const fps = seedDrafts(key, [{ title: "Draft one" }, { title: "Draft two" }, { title: "Draft three" }]);
   writeGithubState({ rejectFingerprints: [...fps.values()] });
@@ -545,7 +545,11 @@ test("when every isolated post is refused, the refusal is the review's and no dr
     assert.equal(row.postRefusals, 0, `${row.title} counts no refusal`);
     assert.equal(row.lastPostError, null);
   }
-  assertRoundFailed(key);
+  // Reviewing the same head again would only repeat the refusals, so it is recorded as reviewed.
+  assertRoundFinished(key);
+  await runOneSweep();
+  assert.equal(reviewCount(), 1, "the same head is not reviewed again");
+  assert.equal(readGithubState().attempts.length, 4);
 });
 
 test("a whole-review refusal partway through isolation stops it, with nothing counted", async () => {

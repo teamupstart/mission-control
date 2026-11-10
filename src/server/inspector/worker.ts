@@ -1373,10 +1373,12 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
  *
  * Several: each is posted in its own review, so a valid draft never counts toward the cap
  * because of a bad sibling. Accepted, it is `open`. A validation refusal is charged to that
- * draft alone, but only once some isolated post was accepted: when every one is refused, the
- * refusal is about the review rather than any draft, so it fails the round the usual way and
- * nothing is counted. A whole-review refusal or a lost response stops isolation and fails the
- * round the same way, with nothing counted for the drafts not yet tried. The cost is one
+ * draft alone, but only once some isolated post was accepted. When every one is refused,
+ * nothing is counted, since a refusal they all share cannot be pinned on one of them, but the
+ * round still finishes: each refusal named a comment GitHub could not anchor on an unmoved
+ * head, so reviewing the same head again would only repeat it. The drafts are offered again on
+ * the next push. A whole-review refusal or a lost response stops isolation and fails the round
+ * the usual way, with nothing counted for the drafts not yet tried. The cost is one
  * review, and so one notification, per carried draft, at most `maxCommentsPerRound`; it
  * happens only after a validation refusal, which a snapped line makes rare.
  */
@@ -1428,7 +1430,6 @@ async function pinRefusal(
     return noteFailure(pr, res.error ?? "could not post the review", now, tick);
   }
   settleCharges();
-  if (accepted === 0) return noteFailure(pr, refused.error ?? "could not post the review", now, tick);
   return true;
 }
 

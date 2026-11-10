@@ -14,7 +14,6 @@ import type {
 import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
-import { piExtensionHealthyForDispatch, piExtensionLinkPath } from "../../environment/pi-extension.ts";
 import { PiSdkError, redact } from "./sdk-errors.ts";
 import type { PiHostUI } from "./sdk-ui.ts";
 import type {
@@ -420,6 +419,9 @@ export async function createRuntime(
   // clear replaces them, rather than closing over the one this launch happened to build.
   let services: AgentSessionServices | null = null;
   const factory: CreateAgentSessionRuntimeFactory = async (target) => {
+    // Keep machine/state resolution out of this adapter's import graph: pure server
+    // policies also import the harness registry before a state home has been selected.
+    const { piExtensionHealthyForDispatch, piExtensionLinkPath } = await import("../../environment/pi-extension.ts");
     // A custom Mission home owns an extension link outside Pi's normal discovery tree.
     // Add only the checked integration, and keep Pi's ordinary discovery and trust rules.
     // Re-entering this factory on /new must load the integration again too.

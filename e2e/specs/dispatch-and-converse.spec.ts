@@ -41,10 +41,15 @@ async function captureForemanEvidence(
   mkdirSync(FOREMAN_EVIDENCE, { recursive: true });
 
   console.log("OBSERVED Foreman Then exposes Ask and Straight to PR, with no automatic review option");
-  console.log("OBSERVED review-comment and CI follow-through are separate checked controls");
+  console.log("OBSERVED GitHub Inspector findings and CI follow-through are separate checked controls");
   console.log("OBSERVED the CI control says it does not create a PR and requires one to exist");
   await popover.screenshot({ path: join(FOREMAN_EVIDENCE, "foreman-settings.png") });
   console.log("CAPTURED e2e/.artifacts/foreman-pr-follow-through/foreman-settings.png");
+  // The popover scrolls, so its own screenshot stops above the Pull requests group.
+  const pullRequests = popover.getByRole("group", { name: "Pull requests" });
+  await pullRequests.scrollIntoViewIfNeeded();
+  await pullRequests.screenshot({ path: join(FOREMAN_EVIDENCE, "foreman-pull-requests.png") });
+  console.log("CAPTURED e2e/.artifacts/foreman-pr-follow-through/foreman-pull-requests.png");
 
   // The workflow evidence packet can name a binary PNG but cannot display its pixels. Serialize
   // the exact asserted browser DOM beside it and link the dashboard's real stylesheet, giving the
@@ -599,7 +604,7 @@ test("Foreman completion safeguards default on and persist independently", async
   await expect(recoveryWait).toHaveValue("37");
 });
 
-test("Foreman removes automatic review and separates CI follow-through from review comments", async ({
+test("Foreman removes automatic review and separates CI follow-through from GitHub Inspector findings", async ({
   dashboard,
   daemon,
 }) => {
@@ -620,13 +625,17 @@ test("Foreman removes automatic review and separates CI follow-through from revi
   await expect(popover.getByRole("radio", { name: /Straight to PR/ })).toBeVisible();
 
   const comments = popover.getByRole("checkbox", {
-    name: "Keep sessions on track with review comments",
+    name: "Keep sessions on track with GitHub Inspector findings",
   });
   const ci = popover.getByRole("checkbox", { name: "Keep sessions on track with CI" });
   const recovery = popover.getByRole("checkbox", { name: "Keep pre-PR ship tasks moving" });
   await expect(recovery).toBeChecked();
   await expect(comments).toBeChecked();
   await expect(ci).toBeChecked();
+  await expect(popover).toContainText(
+    "Relays every unresolved finding, including dry-run drafts that were never posted.",
+  );
+  await expect(popover.getByText("Keep sessions on track with review comments")).toHaveCount(0);
   await expect(popover).toContainText(
     "Does not create a PR. Once one exists, sends failing CI back to its session.",
   );
@@ -652,7 +661,7 @@ test("Foreman removes automatic review and separates CI follow-through from revi
   await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
   const reopened = dashboard.getByRole("dialog", { name: "Foreman settings" });
   await expect(reopened.getByRole("checkbox", {
-    name: "Keep sessions on track with review comments",
+    name: "Keep sessions on track with GitHub Inspector findings",
   })).toBeChecked();
   await expect(reopened.getByRole("checkbox", {
     name: "Keep sessions on track with CI",

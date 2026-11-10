@@ -2422,6 +2422,15 @@ all - so all three surfaces read one derivation, which answers "which pull reque
 rather than assuming there is one. A run holding no gate is told plainly that cancelling
 clears the run and keeps its history, and nothing more.
 
+A blocked run also keeps its session, with one exception. Foreman's
+[PR follow-through](work-queues.md#keeping-a-pr-on-track) stops waiting on a run that spent its
+repair budget or stopped on `unchanged_evidence_exhausted` or `session_disappeared`, because
+only the operator or the session can restart it and it delivers nothing until then. Unresolved
+GitHub Inspector findings and failing CI reach the session again, while the run keeps
+its Shipping veto and CodeRabbit follow-up keeps waiting for it. The list is
+`WORKFLOW_FOLLOWUP_RELEASE_PHASES` in `src/shared/workflow.ts`, and it is an allowlist: every
+other blocked phase, including one added later, keeps holding the follow-through.
+
 ### One run, one lifecycle state
 
 A run says where it is in three stored columns - its status, its phase, and a free-form detail
@@ -2589,10 +2598,16 @@ an Inspector gate or a Foreman completion claim - most runs have neither and are
 tab. A stat strip carries the gate state, the open and resolved finding counts, the adopted pull
 request with its observed state, and the Inspector's review round; the counts are the ledger rows
 the table under them draws, not the Inspector's own tallies, which keep their own fields in the
-ledger disclosure. Findings are a table - severity, title, `path:line`, round and status - with
-one row each. A finding that is not resolved is why the gate has not passed, so its body is on
-screen rather than behind its row's control; a resolved one opens its body and the fingerprint the
-gate tracks it by on request. The label carries the open-finding count in amber. Findings never
+ledger disclosure. Findings are a table - severity, title, `path:line`, round, status and
+posted - with one row each. The Posted column says whether the finding reached GitHub: **Posted**
+(a link to its comment once GitHub Inspector has recorded one), **Not posted**, **Not posted
+(posted earlier)** linking to the earlier version's comment, **Posting**, or **Unknown** for a row
+recorded before Mission Control tracked posting. A draft GitHub refused reads **Not posted** with
+"GitHub refused it N time(s)" under it, or **Refused** at 3, with GitHub's reason on hover and in
+the finding's detail
+([drafts after a switch to live](inspector-and-shipping.md#drafts-after-a-switch-to-live)). A finding that is not resolved is why the gate
+has not passed, so its body is on screen rather than behind its row's control; a resolved one
+opens its body and the fingerprint the gate tracks it by on request. The label carries the open-finding count in amber. Findings never
 appear in the [review worklist](#the-review-worklist), which is built from Persona verdicts only,
 so this is the one place they are listed. The findings policy, the missing-PR policy and
 **Open GitHub Inspector settings** sit at the foot of the same tab.
@@ -2639,6 +2654,26 @@ Persona. The narrower `inspector_only` policy waits for GitHub Inspector to obse
 head, records an immutable attempt-free bypass submission, and reviews that head normally. It
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
+
+The packet's findings section comes from a pure, shared renderer
+(`src/server/inspector/findings-text.ts`). The packet is its first caller. The renderer imports
+nothing that reaches the database or the network, so Foreman's review follow-through can adopt it
+in a later change. Each finding carries one posted marker from
+`findingPublication`: posted on GitHub with its comment link, posted in the review summary,
+posted with the link not captured yet, being posted now, not posted and so only in this message,
+or not posted again with a link to the earlier version that was. A draft GitHub refused says how
+many times and GitHub's reason from the first refusal: below the cap of 3 it adds that it is
+offered again on the next push, and at the cap it does not. A draft whose earlier version was
+posted is never called the only copy. Fields still clip at the per-field limit. Past the payload
+limit the packet drops whole findings from the tail, lowest severity first, and ends the section
+with how many it left out. It never cuts a finding part way: when not even the highest-severity
+finding fits whole, none is listed and the section carries the count alone, without promising a
+resend. The finding stays unresolved either way. Room for that count is reserved before the header
+is sized, so a header whose fields together outgrow the payload is clipped instead and the count
+always survives. The findings get every byte the packet really has left: the truncation notice is
+reserved only when the packet will carry it. The packet keeps its own header and closing, and its
+failed count is every unresolved finding, listed or not. A prepared packet keeps the bytes and hash
+it was frozen with: delivery and restart recovery send those stored bytes and never render it again.
 
 If no adopted PR exists, the published policy waits, offers **Prepare PR in session**, or prepares
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate

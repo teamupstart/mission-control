@@ -29,6 +29,7 @@ let ids = 0;
 function base(over: Partial<PlanInput> = {}): PlanInput {
   return {
     mode: "live",
+    live: true,
     maxComments: 8,
     round: 1,
     verdict: { summary: "Looks reasonable.", findings: [], resolved: [] },
@@ -37,6 +38,8 @@ function base(over: Partial<PlanInput> = {}): PlanInput {
     threads: new Map(),
     newId: () => `id-${++ids}`,
     ...over,
+    // By default the prompt listed every seeded row, as it does below its length cap.
+    prompted: over.prompted ?? new Set(over.existing?.keys() ?? []),
   };
 }
 
@@ -389,4 +392,129 @@ test("a fingerprint we have no row for is not closed anywhere", () => {
   );
   assert.deepEqual(plan.resolve, []);
   assert.deepEqual(plan.resolveLocal, []);
+});
+
+// ---- carried drafts: posting dry-run findings after a switch to live ----
+//
+// A draft the model leaves alone is posted by the planner, not by the model, so the checks a
+// new finding gets have to hold for it too: still in the diff, a line that snaps, the scrub,
+// the cap. And a draft GitHub keeps refusing has to stop being offered.
+
+function draft(over: Partial<InspectorComment> = {}): InspectorComment {
+  const title = over.title ?? "Previewed in dry run";
+  const path = over.path ?? "src/a.ts";
+  return row({
+    id: `draft-${title}`,
+    fingerprint: fingerprint(path ?? "", title),
+    path,
+    line: 2,
+    title,
+    body: "What the dry run found.",
+    status: "drafted",
+    postRefusals: 0,
+    ...over,
+  });
+}
+
+function existingOf(...rows: InspectorComment[]): Map<string, InspectorComment> {
+  return new Map(rows.map((r) => [r.fingerprint, r]));
+}
+
+test("a live round carries a draft the model neither resolved nor raised again", () => {
+  const d = draft();
+  const plan = planReview(base({ existing: existingOf(d) }));
+  assert.deepEqual(plan.inline.map((c) => [c.id, c.fingerprint, c.line, c.carried]), [[d.id, d.fingerprint, 2, true]]);
+  assert.equal(plan.inline[0]!.body, "What the dry run found.");
+  assert.equal(plan.clean, true, "the model still reported nothing new");
+});
+
+test("a round that will not publish carries nothing", () => {
+  const plan = planReview(base({ live: false, existing: existingOf(draft()) }));
+  assert.equal(plan.inline.length, 0);
+});
+
+test("a draft the model resolved is closed, not carried", () => {
+  const d = draft();
+  const plan = planReview(base({
+    existing: existingOf(d),
+    verdict: { summary: "", findings: [], resolved: [d.fingerprint] },
+  }));
+  assert.equal(plan.inline.length, 0);
+  assert.deepEqual(plan.resolveLocal, [d.fingerprint]);
+});
+
+test("a draft the model raised again is a new finding, and the refusal cap does not apply to it", () => {
+  const d = draft({ title: "Reaches into the concrete type", postRefusals: 3 });
+  const plan = planReview(base({
+    existing: existingOf(d),
+    verdict: { summary: "", findings: [finding()], resolved: [] },
+  }));
+  assert.equal(plan.inline.length, 1);
+  assert.equal(plan.inline[0]!.carried, undefined, "raised this round, so not carried");
+  assert.equal(plan.inline[0]!.id, d.id, "on its own row");
+});
+
+test("a draft whose file left the diff is not carried", () => {
+  const plan = planReview(base({ existing: existingOf(draft({ path: "src/gone.ts" })) }));
+  assert.equal(plan.inline.length + plan.demoted.length, 0);
+  assert.equal(plan.droppedOffDiff, 0, "it was never a finding of this round to drop");
+});
+
+test("a carried draft's line snaps to one the diff can anchor", () => {
+  const plan = planReview(base({ existing: existingOf(draft({ line: 40 })) }));
+  // The diff's right side runs to line 4, its trailing context line.
+  assert.equal(plan.inline[0]!.line, 4);
+});
+
+test("a draft is carried below the refusal cap and not at it", () => {
+  const twice = draft({ title: "Refused twice", postRefusals: 2 });
+  const thrice = draft({ title: "Refused three times", postRefusals: 3 });
+  const plan = planReview(base({ existing: existingOf(twice, thrice) }));
+  assert.deepEqual(plan.inline.map((c) => c.title), ["Refused twice"]);
+});
+
+test("a legacy draft with no persisted body is not carried", () => {
+  const plan = planReview(base({ existing: existingOf(draft({ body: null })) }));
+  assert.equal(plan.inline.length, 0);
+});
+
+test("only drafted rows are carried", () => {
+  const plan = planReview(base({
+    existing: existingOf(
+      draft({ title: "Open", status: "open" }),
+      draft({ title: "Posting", status: "posting" }),
+      draft({ title: "Resolved", status: "resolved" }),
+    ),
+  }));
+  assert.equal(plan.inline.length, 0);
+});
+
+test("carried drafts share the cap, new findings first at equal severity", () => {
+  const carriedMajor = draft({ title: "Carried major", severity: "major" });
+  const carriedBlocker = draft({ title: "Carried blocker", severity: "blocker" });
+  const plan = planReview(base({
+    maxComments: 2,
+    existing: existingOf(carriedMajor, carriedBlocker),
+    verdict: { summary: "", findings: [finding({ title: "New major" })], resolved: [] },
+  }));
+  assert.deepEqual(plan.inline.map((c) => c.title), ["Carried blocker", "New major"]);
+  assert.equal(plan.droppedOverCap, 1, "the carried major is held back, and the body says so");
+  assert.match(plan.body, /held back/);
+});
+
+test("a draft the prompt cut for length is not carried, since the model never saw it", () => {
+  const shown = draft({ title: "Listed in the prompt" });
+  const cut = draft({ title: "Cut from the prompt" });
+  const plan = planReview(base({
+    existing: existingOf(shown, cut),
+    prompted: new Set([shown.fingerprint]),
+  }));
+  assert.deepEqual(plan.inline.map((c) => c.title), ["Listed in the prompt"]);
+});
+
+test("a carried draft is scrubbed on the way out like any other comment", () => {
+  const plan = planReview(base({
+    existing: existingOf(draft({ body: "Leaked ghp_abcdefghijklmnopqrstuvwxyz0123456789 here." })),
+  }));
+  assert.doesNotMatch(plan.inline[0]!.body, /ghp_abcdefghijklmnopqrstuvwxyz0123456789/);
 });

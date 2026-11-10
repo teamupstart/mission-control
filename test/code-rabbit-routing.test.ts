@@ -11,7 +11,7 @@ import { Registry } from "../src/server/registry.ts";
 import { buildApp, type RouteDeps } from "../src/server/routes.ts";
 import { adoptPr } from "../src/server/inspector/worker.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "../src/server/inspector/code-rabbit-delivery.ts";
-import { codeRabbitSummary, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr } from "../src/server/db.ts";
+import { codeRabbitSummary, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr, upsertInspectorComment } from "../src/server/db.ts";
 import { claimInjectionEcho, observeInjections, originOf } from "../src/server/injections.ts";
 import { setShippingConfig } from "../src/server/shipping/config.ts";
 import { setForemanConfig } from "../src/server/foreman/config.ts";
@@ -290,6 +290,20 @@ test("busy, awaiting-input, uninvited, queued, exited and workflow-owned session
   }
 });
 
+test("CodeRabbit follow-up keeps waiting for a blocked run that has released the review follow-through", async () => {
+  for (const phase of ["round_limit", "unchanged_evidence_exhausted", "session_disappeared", "check_cleanup_unresolved"]) {
+    const f = fixture();
+    f.setRuns([{ noteKey: f.owner.noteKey, sessionId: f.session.id, status: "blocked", phase, round: 4, maxRepairRounds: 3 } as unknown as WorkflowRunSummary]);
+    assert.equal(codeRabbitStanding(f.registry, f.key).delivery, "an active workflow owns this session", phase);
+    assert.equal(codeRabbitCandidate(f.registry, f.session.id, f.request).error, "an active workflow owns this session", phase);
+    const response = await f.post();
+    assert.ok(response.status >= 400, phase);
+    assert.match(await response.text(), /an active workflow owns this session/i, phase);
+    assert.deepEqual(f.messages, [], phase);
+    assert.deepEqual(readCodeRabbit(f.key)!.receipts, [], phase);
+  }
+});
+
 test("revocation, workflow, ownership, intent, queue and head races at the write lock positively release the exact claim", async () => {
   for (const mutate of [
     (f: ReturnType<typeof fixture>) => { f.session.foremanInvite = null; },
@@ -325,4 +339,42 @@ test("positive driver refusal can retry; attached PRs require that repository's 
   assert.ok(codeRabbitCandidate(sibling.registry, sibling.session.id, sibling.request).error);
   setForemanConfig({ repoAllowlist: ["/tmp/main", "/tmp/repo"] });
   assert.equal(codeRabbitCandidate(sibling.registry, sibling.session.id, sibling.request).error, undefined);
+});
+
+// The daemon-built CodeRabbit message replaces Foreman's, so it carries Foreman's findings
+// relay too: the unresolved findings' text, not a count.
+test("the CodeRabbit message carries the open Inspector findings' text", () => {
+  const f = fixture();
+  upsertInspectorComment({ id: `finding-${f.key}`, prKey: f.key, fingerprint: "fp-open", path: "src/a.ts", line: 3,
+    title: "Null deref in the parser", body: "The parser reads a field it never checked.", severity: "major",
+    round: 1, status: "drafted", replies: 0, answeredCommentId: null, createdAt: 1000, updatedAt: 1000 });
+  upsertInspectorComment({ id: `resolved-${f.key}`, prKey: f.key, fingerprint: "fp-resolved", path: "src/b.ts", line: 1,
+    title: "Already fixed finding", body: "Resolved since.", severity: "minor",
+    round: 1, status: "resolved", replies: 0, answeredCommentId: null, createdAt: 1000, updatedAt: 1000 });
+  setForemanConfig({ trackReviewFeedback: true });
+  const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+  assert.equal(candidate.error, undefined);
+  const payload = candidate.payload!;
+  assert.match(payload, /CodeRabbit has 1 unresolved findings \(review threads or pre-merge checks\)/);
+  assert.match(payload, /GitHub Inspector has 1 unresolved finding on it \(0 posted on GitHub, 1 not posted\)/);
+  assert.match(payload, /Null deref in the parser/);
+  assert.match(payload, /The parser reads a field it never checked\./);
+  assert.doesNotMatch(payload, /Already fixed finding/);
+});
+
+test("the CodeRabbit message leaves out findings when review feedback is off or none is open", () => {
+  for (const variant of ["switched off", "nothing open"] as const) {
+    const f = fixture();
+    if (variant === "switched off") {
+      upsertInspectorComment({ id: `finding-${f.key}`, prKey: f.key, fingerprint: "fp-open", path: "src/a.ts", line: 3,
+        title: "Null deref in the parser", body: "Detail", severity: "major",
+        round: 1, status: "open", replies: 0, answeredCommentId: null, createdAt: 1000, updatedAt: 1000 });
+    }
+    setForemanConfig({ trackReviewFeedback: variant !== "switched off" });
+    const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+    assert.equal(candidate.error, undefined, variant);
+    const payload = candidate.payload!;
+    assert.match(payload, /CodeRabbit has 1 unresolved findings \(review threads or pre-merge checks\)/, variant);
+    assert.doesNotMatch(payload, /GitHub Inspector has|Null deref in the parser/, variant);
+  }
 });

@@ -41,6 +41,17 @@ export const CLEAN_REVIEW_FINGERPRINT = "clean-review";
 export const BODY_ONLY_FINDINGS_MARKER = "<!-- mission-inspector:body-findings:v1 -->";
 
 /**
+ * The first line of every top-level review a round posts. `reviewBody` opens a findings
+ * review with it, and `renderCleanReview` puts it right after the marker.
+ *
+ * A findings review has no marker line of its own, so its column 0 is this header. That is
+ * why `isOurBodyFindingsReview` anchors on it, the way `isOurs` anchors on the marker.
+ */
+export function reviewHeader(round: number): string {
+  return `**⌕ GitHub Inspector** · round ${round}`;
+}
+
+/**
  * Matches our marker ONLY at the very start of a body.
  *
  * The anchor is the point, not decoration. GitHub's quote-reply prefixes every line
@@ -119,6 +130,28 @@ export function isCleanReview(
   if (!isOurs(comment, login)) return false;
   const marker = parseMarker(comment.body);
   return marker?.fingerprint === CLEAN_REVIEW_FINGERPRINT && comment.headSha === headSha;
+}
+
+/**
+ * Whether this top-level review is the one OUR round `round` posted with body-only
+ * findings, the findings `planReview` demoted because they had no line to anchor to.
+ *
+ * The same two-part rule as `isOurs`, for the same reasons: the author must be our login,
+ * and the body must open with our anchor at column 0. A findings review carries no marker
+ * line, so its anchor is the round header, matched as a WHOLE line so that round 1 never
+ * claims round 12's review. The body must also carry `BODY_ONLY_FINDINGS_MARKER`, which
+ * only a review with demoted findings has. Fails closed on a null login, like `isOurs`.
+ */
+export function isOurBodyFindingsReview(
+  review: AuthoredComment,
+  login: string | null,
+  round: number,
+): boolean {
+  if (!login) return false;
+  if (review.author !== login) return false;
+  const header = reviewHeader(round);
+  if (review.body !== header && !review.body.startsWith(`${header}\n`)) return false;
+  return review.body.includes(BODY_ONLY_FINDINGS_MARKER);
 }
 
 /**

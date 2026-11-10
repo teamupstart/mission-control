@@ -124,6 +124,7 @@ import {
   type PromptedRecoveryDelivery,
 } from "@shared/protocol.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
+import { isInspectorLegacyPosted } from "@shared/inspector-findings.ts";
 import { nextShipRecoveryAt } from "./foreman/ship-shepherd.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
 import {
@@ -4401,6 +4402,30 @@ function migrate(d: DatabaseSync): void {
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
+  // Whether, and when, a finding was published on GitHub. `status` cannot say it once a row
+  // is `resolved`, and a resolved finding that was posted must keep reading as posted.
+  //
+  // `posted_at` is stamped by the worker when GitHub confirms a post, and never cleared:
+  // the upsert keeps the stored value when a caller omits it. Nullable with no default,
+  // because a build that never tracked posting cannot say when anything was posted, and
+  // inventing a time for a legacy row would break the rule that NULL stays truthful.
+  addColumn(d, "inspector_comments", "posted_at", "INTEGER");
+  // The finding's GitHub comment, or for a finding demoted into the review body, the review
+  // that carried it. NULL until a tick captures it from the PR snapshot.
+  addColumn(d, "inspector_comments", "github_url", "TEXT");
+  // What a row written before `posted_at` existed can prove about posting: `posted`,
+  // `unposted` or `unknown`. A NULL `posted_at` can carry only one of those three answers,
+  // so the other two live here. Written ONCE, by this backfill: the upsert never names the
+  // column, so `ON CONFLICT DO UPDATE` leaves it alone, and every row this build creates
+  // keeps it NULL.
+  if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT")) backfillInspectorLegacyPosted(d);
+  // Validation refusals GitHub pinned on a drafted finding the planner offered after a switch
+  // to live, and GitHub's reason for the newest one. Zero and NULL are the truthful values for
+  // every existing row: no build before this one offered a draft again, so none was refused.
+  // Written only by `upsertInspectorComment`, as a pair, and carried forward like `replies`.
+  // No index: nothing selects on either column.
+  addColumn(d, "inspector_comments", "post_refusals", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "inspector_comments", "last_post_error", "TEXT");
 
   // Whether a parked repair round resumes itself. NULLABLE with NO default on purpose: a
   // NULL is the truthful record of a draft authored, or a version PUBLISHED, by a build
@@ -4846,6 +4871,25 @@ function hasColumn(d: DatabaseSync, table: string, column: string): boolean {
  * hang a one-time data backfill off "the column is new" rather than re-running it on every
  * open - see the `home_name` migration.
  */
+/**
+ * Classify every finding that predates `posted_at` by what its row proves.
+ *
+ * - `posted`: an `open` row is confirmed on GitHub, and replies or an answered comment
+ *   exist only on a GitHub thread.
+ * - `unposted`: a `drafted` row was never posted.
+ * - `unknown`: everything else - a resolved row with no replies, or one left in `posting`.
+ *
+ * Runs once, in the migration that adds the column, so it can only ever see legacy rows.
+ */
+function backfillInspectorLegacyPosted(d: DatabaseSync): void {
+  d.exec(`UPDATE inspector_comments
+             SET legacy_posted = CASE
+               WHEN status = 'open' OR replies > 0 OR answered_comment_id IS NOT NULL THEN 'posted'
+               WHEN status = 'drafted' THEN 'unposted'
+               ELSE 'unknown'
+             END`);
+}
+
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
   if (hasColumn(d, table, column)) return false;
   d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
@@ -14955,6 +14999,11 @@ interface InspectorCommentRow {
   replies: number;
   answered_comment_id: number | null;
   resolution_pending: number;
+  posted_at: number | null;
+  github_url: string | null;
+  legacy_posted: string | null;
+  post_refusals: number;
+  last_post_error: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -14974,6 +15023,11 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
     replies: r.replies,
     answeredCommentId: r.answered_comment_id,
     ...(r.resolution_pending === 1 ? { resolutionPending: true } : {}),
+    postedAt: r.posted_at,
+    githubUrl: r.github_url,
+    legacyPosted: isInspectorLegacyPosted(r.legacy_posted) ? r.legacy_posted : null,
+    postRefusals: r.post_refusals,
+    lastPostError: r.last_post_error,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -14987,14 +15041,24 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
  * second one. That is also what lets a resolved-then-regressed issue come back: the
  * row flips out of `resolved` and gets a fresh comment id, rather than being blocked
  * by a primary key it can't reuse.
+ *
+ * `posted_at` and `github_url` are kept, never cleared, when the caller passes null or
+ * omits them: a finding confirmed on GitHub stays confirmed through resolution and
+ * re-raising, and a writer that forgot to carry the field cannot erase the record.
+ * `legacy_posted` is never named here, so only its one-time backfill ever writes it.
+ *
+ * `post_refusals` and `last_post_error` are written as a pair. A caller that passes
+ * `postRefusals` writes both as given; one that omits it keeps both stored values, so a
+ * writer that forgot to carry the refusal record cannot reset a draft's count toward the cap.
  */
 export function upsertInspectorComment(c: InspectorComment): void {
   openDb()
     .prepare(
       `INSERT INTO inspector_comments
          (id, pr_key, fingerprint, path, line, title, body, severity,
-          round, status, replies, answered_comment_id, resolution_pending, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          round, status, replies, answered_comment_id, resolution_pending, posted_at, github_url,
+          created_at, updated_at, post_refusals, last_post_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?18, 0), ?19)
        ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
          path = excluded.path,
          line = excluded.line,
@@ -15006,6 +15070,10 @@ export function upsertInspectorComment(c: InspectorComment): void {
          replies = excluded.replies,
          answered_comment_id = excluded.answered_comment_id,
          resolution_pending = excluded.resolution_pending,
+         posted_at = COALESCE(excluded.posted_at, inspector_comments.posted_at),
+         github_url = COALESCE(excluded.github_url, inspector_comments.github_url),
+         post_refusals = COALESCE(?18, inspector_comments.post_refusals),
+         last_post_error = CASE WHEN ?18 IS NULL THEN inspector_comments.last_post_error ELSE ?19 END,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -15022,8 +15090,12 @@ export function upsertInspectorComment(c: InspectorComment): void {
       c.replies,
       c.answeredCommentId,
       Number(c.resolutionPending ?? false),
+      c.postedAt ?? null,
+      c.githubUrl ?? null,
       c.createdAt,
       c.updatedAt,
+      c.postRefusals ?? null,
+      c.postRefusals === undefined ? null : (c.lastPostError ?? null),
     );
 }
 
@@ -15122,6 +15194,18 @@ function rowToInspection(r: InspectionTallyRow): InspectorInspection {
   };
 }
 
+/** One ledger row with its finding tallies, through the same grouped query, or null. */
+export function loadInspectorInspection(prKey: string): InspectorInspection | null {
+  const row = openDb()
+    .prepare(
+      `${INSPECTION_TALLY_FROM}
+        WHERE p.key = ?
+        GROUP BY p.key`,
+    )
+    .get(prKey) as unknown as InspectionTallyRow | undefined;
+  return row ? rowToInspection(row) : null;
+}
+
 /**
  * Every ledger row with its finding tallies, most recently REVIEWED first - the settings
  * panel's list, and what the per-session chip is derived from.
@@ -15144,6 +15228,25 @@ export function loadInspectorInspections(limit?: number): InspectorInspection[] 
         LIMIT ?`,
     )
     .all(limit ?? -1) as unknown as InspectionTallyRow[];
+  return rows.map(rowToInspection);
+}
+
+/**
+ * Every OPEN ledger row with its tallies, ordered like `loadInspectorInspections`.
+ *
+ * Foreman's PR follow-through reads this to find an open pull request the Inspector adopted
+ * under a session whose card no longer carries it. Uncapped, because a cap would silently drop
+ * an open PR off the bottom; closed rows are excluded, which is what keeps it small.
+ */
+export function loadOpenInspectorInspections(): InspectorInspection[] {
+  const rows = openDb()
+    .prepare(
+      `${INSPECTION_TALLY_FROM}
+        WHERE p.state = 'open'
+        GROUP BY p.key
+        ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC`,
+    )
+    .all() as unknown as InspectionTallyRow[];
   return rows.map(rowToInspection);
 }
 

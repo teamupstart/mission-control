@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
 import type { InspectorState } from "../useInspector.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { InspectorFindingsModal } from "./InspectorFindingsModal.tsx";
+import { inspectorPrClosedAs } from "../lib/pr-standing.ts";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import {
@@ -57,8 +59,8 @@ export function ago(then: number | null, now: number): string {
  *
  * Deliberately NOT the same question as `inspectionSummary`, which is what the row SAYS
  * about itself. A closed pull request that was reviewed with three findings still reports
- * "3 findings" (that is the record of what the Inspector said about something that has
- * since landed) while belonging in `retired`, because it is out of the sweep for good and
+ * "3 unresolved at merge" (that is the record of what the Inspector said about something
+ * that has since landed) while belonging in `retired`, because it is out of the sweep for good and
  * counting it as work in hand is the bug this feature already shipped once. One row, two
  * honest answers; conflating them is how the list became a backlog nobody could act on.
  */
@@ -89,14 +91,17 @@ export function inspectionBucket(row: InspectorInspection): InspectionBucket {
  * PRs said "queued / not yet reviewed" on this panel, which is not a slow queue being
  * reported honestly, it is a finished one being reported wrongly.
  *
- * A retired row that WAS reviewed keeps its findings instead: that is the record of what
- * the Inspector said about a PR that has since landed, and it is the more useful fact.
+ * A retired row that WAS reviewed keeps its findings instead, worded as left at merge or
+ * close: that is the record of what the Inspector said about a PR that has since landed,
+ * and a bare "3 findings" there reads as work nobody finished.
  */
 export function inspectionSummary(row: InspectorInspection): string {
   if (row.lastError) return "failed";
-  if (row.state === "closed" && row.round === 0) return row.mergedAt ? "merged" : "closed";
+  const closedAs = inspectorPrClosedAs(row);
+  if (closedAs && row.round === 0) return closedAs;
   if (row.round === 0) return "queued";
   if (row.openFindings === 0) return "clean";
+  if (closedAs) return `${row.openFindings} unresolved at ${closedAs === "merged" ? "merge" : "close"}`;
   return `${row.openFindings} finding${row.openFindings === 1 ? "" : "s"}`;
 }
 
@@ -204,7 +209,7 @@ const COLUMNS: readonly ConsoleColumn[] = [
   { label: "Verdict" },
   { label: "Closed" },
   { label: "Reviewed", className: "sc-when" },
-  { label: "Resolve", className: "sc-act" },
+  { label: "Actions", className: "sc-act" },
 ];
 
 /**
@@ -216,6 +221,14 @@ const COLUMNS: readonly ConsoleColumn[] = [
  */
 export function canResolveFindings(row: InspectorInspection): boolean {
   return row.state === "open" && row.openFindings > 0;
+}
+
+/**
+ * Whether this row offers the Findings modal: any finding, open or closed, on a pull request
+ * in any state. A retired row's findings are the record of what was said about it.
+ */
+export function canViewFindings(row: InspectorInspection): boolean {
+  return row.openFindings + row.resolvedFindings > 0;
 }
 
 export function InspectorSettingsPanel({
@@ -233,6 +246,8 @@ export function InspectorSettingsPanel({
   const [filter, setFilter] = useState<string | null>(null);
   /** The PR key whose findings are being resolved right now, so its button can say so. */
   const [resolving, setResolving] = useState<string | null>(null);
+  /** The PR key whose Findings modal is open. */
+  const [viewing, setViewing] = useState<string | null>(null);
   const tallies = inspectionTallies(inspections);
   const health = inspectorHealth(inspections);
   // The tile the filter belongs to, so the ledger's own chrome can say what is being
@@ -416,7 +431,7 @@ export function InspectorSettingsPanel({
                 ? "Nothing yet. A pull request appears here once Mission Control opens one."
                 : EMPTY_FILTER[active.id]
             }
-            foot="In dry run this table is the only place GitHub Inspector's findings exist - nothing is posted, and nothing else in the app shows them."
+            foot="In dry run nothing is posted to GitHub. Open a pull request's Findings to read what GitHub Inspector found."
             renderRow={(row) => {
               const bucket = inspectionBucket(row);
               return (
@@ -461,12 +476,24 @@ export function InspectorSettingsPanel({
                     )}
                   </span>
                   <span className="sc-when">{ago(row.lastReviewedAt, now)}</span>
-                  {/* The way out of a finding that has genuinely been addressed and that
-                      nothing else can close - see `resolveInspectorFindings`. Blank on
-                      every row that has nothing to resolve, like the Fixed column beside
-                      it, so the column reads as "these need you" rather than as a row of
-                      buttons daring you to press one. */}
+                  {/* Findings opens the read-only list of every finding on the row. Resolve
+                      is the way out of a finding that has genuinely been addressed and that
+                      nothing else can close - see `resolveInspectorFindings`. Each is blank
+                      on a row it has nothing to do for, like the Closed column beside it, so
+                      the column does not read as a row of buttons daring you to press one. */}
                   <span className="sc-act">
+                    {canViewFindings(row) && (
+                      <Tooltip label={`Read every finding GitHub Inspector recorded on ${row.key}, and whether each was posted`}>
+                        <button
+                          type="button"
+                          className="settings-link"
+                          aria-label={`View GitHub Inspector's findings on ${row.key}`}
+                          onClick={() => setViewing(row.key)}
+                        >
+                          Findings
+                        </button>
+                      </Tooltip>
+                    )}
                     {canResolveFindings(row) && (
                       <Tooltip
                         label={
@@ -500,6 +527,14 @@ export function InspectorSettingsPanel({
       </div>
 
       {error && <p className="settings-error">{error}</p>}
+
+      {viewing !== null && (
+        <InspectorFindingsModal
+          prKey={viewing}
+          refreshSignal={inspections}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </section>
   );
 }

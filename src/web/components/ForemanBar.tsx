@@ -675,7 +675,7 @@ export function ForemanPopover({
           Invited managed Ship tasks only, in Live trusted repos. Stops as soon as any
           task-owned pull request appears.
         </p>
-        <Tooltip label="Nudge a parked session back onto its open PR to resolve GitHub Inspector comments">
+        <Tooltip label="Nudge a parked session back onto its open PR with the text of every unresolved GitHub Inspector finding">
           <label className="alert-row">
             {/*
               `!== false`, not the value itself: a web build newer than the daemon it is
@@ -688,9 +688,12 @@ export function ForemanPopover({
               checked={config.trackReviewFeedback !== false}
               onChange={(e) => void update({ trackReviewFeedback: e.target.checked })}
             />
-            Keep sessions on track with review comments
+            Keep sessions on track with GitHub Inspector findings
           </label>
         </Tooltip>
+        <p className="alert-hint dim">
+          Relays every unresolved finding, including dry-run drafts that were never posted.
+        </p>
         <Tooltip label="Nudge parked PR sessions to fix CI, and include CI follow-through in newly prepared workflow PR instructions">
           <label className="alert-row">
             <input

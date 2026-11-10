@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REVIEW_PROMPT_CAPS, buildReplyPrompt, buildReviewPrompt } from "../src/server/inspector/prompt.ts";
+import { REVIEW_PROMPT_CAPS, buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "../src/server/inspector/prompt.ts";
 import { InspectorReplySchema } from "../src/server/inspector/verdict.ts";
 import type { ReplyPromptInput, ReviewPromptInput } from "../src/server/inspector/prompt.ts";
 import type { StandardsBundle } from "../src/server/standards.ts";
@@ -206,4 +206,50 @@ test("the reply prompt asks for the object the worker parses, and says what clos
 test("the reply prompt marks a truncated diff, so absence is never read as evidence", () => {
   assert.ok(buildReplyPrompt(replyInput({ diffTruncated: true })).includes("## The diff (truncated)"));
   assert.ok(buildReplyPrompt(replyInput()).includes("## The diff"));
+});
+
+// A drafted row never reached GitHub, so it must not be listed as "already on the pull
+// request": told that, the model never raised it again and nothing posted it after a switch
+// to live. Drafts get their own section, which asks only whether this push fixed them.
+test("drafted findings are listed in their own section, apart from posted ones", () => {
+  const posted = openRow(1, "major");
+  const posting = { ...openRow(2, "minor"), status: "posting" as const };
+  const drafted = { ...openRow(3, "blocker"), status: "drafted" as const };
+  const prompt = buildReviewPrompt(input({ open: [posted, posting, drafted] }));
+
+  const postedAt = prompt.indexOf("## Issues you raised earlier that are still open");
+  const draftedAt = prompt.indexOf("## Found earlier but never posted");
+  assert.ok(postedAt >= 0 && draftedAt > postedAt);
+  assert.ok(prompt.includes(
+    "If this push fixes one, put its fingerprint in `resolved`. Otherwise say nothing:\nMission Control posts it.",
+  ));
+  const postedSection = prompt.slice(postedAt, draftedAt);
+  const draftedSection = prompt.slice(draftedAt, prompt.indexOf("## The diff"));
+  assert.ok(postedSection.includes(posted.fingerprint) && postedSection.includes(posting.fingerprint));
+  assert.ok(!postedSection.includes(drafted.fingerprint));
+  assert.ok(draftedSection.includes(drafted.fingerprint));
+  assert.ok(!draftedSection.includes("already on the pull request"));
+
+  const onlyDrafts = buildReviewPrompt(input({ open: [drafted] }));
+  assert.ok(!onlyDrafts.includes("## Issues you raised earlier that are still open"));
+  const onlyPosted = buildReviewPrompt(input({ open: [posted] }));
+  assert.ok(!onlyPosted.includes("## Found earlier but never posted"));
+});
+
+// The planner carries a draft only when this cut listed it, so the cut and the prompt's two
+// sections must be the same rows. A draft below the cut is in neither section.
+test("the drafted section lists exactly the drafts the prompted cut keeps", () => {
+  const posted = Array.from({ length: REVIEW_PROMPT_CAPS.openRows }, (_, i) => openRow(i, "major"));
+  const cutDraft = { ...openRow(9999, "minor"), status: "drafted" as const };
+  const keptDraft = { ...openRow(9998, "blocker"), status: "drafted" as const };
+  const open = [...posted, cutDraft, keptDraft];
+
+  const kept = new Set(promptedOpenRows(open).map((c) => c.fingerprint));
+  assert.ok(kept.has(keptDraft.fingerprint));
+  assert.ok(!kept.has(cutDraft.fingerprint), "posted rows of higher severity fill the cap first");
+
+  const prompt = buildReviewPrompt(input({ open }));
+  const draftedSection = prompt.slice(prompt.indexOf("## Found earlier but never posted"));
+  assert.ok(draftedSection.includes(keptDraft.fingerprint));
+  assert.ok(!prompt.includes(cutDraft.fingerprint));
 });

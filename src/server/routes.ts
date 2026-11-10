@@ -5119,6 +5119,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
+  // Same task authority as creation/update. The dashboard and MCP share every launch gate.
+  app.post("/mcp/tasks/:id/dispatch", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    return dispatchSavedTask(c, c.req.param("id"));
+  });
+
   app.post("/mcp/retros/no-change", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CompleteRetroNoChangeSchema);
@@ -9170,10 +9176,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  app.post("/api/tasks/:id/dispatch", async (c) => {
+  async function dispatchSavedTask(c: Context, id: string) {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const id = c.req.param("id");
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
     const r = await tasks.dispatch(id, parsed.data);
@@ -9181,7 +9186,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
-  });
+  }
+
+  app.post("/api/tasks/:id/dispatch", (c) => dispatchSavedTask(c, c.req.param("id")));
 
   app.post("/api/tasks/:id/pipeline/readiness", async (c) => {
     const r = await tasks.recheckPipelineReadiness(c.req.param("id"));

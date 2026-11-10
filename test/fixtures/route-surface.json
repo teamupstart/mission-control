@@ -343,6 +343,7 @@
   "POST /mcp/session-control/read": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/status": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/tasks/:id/dispatch": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks/:id/update": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks/delete": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks/get": "401 {\"error\":\"unauthorized\"}",

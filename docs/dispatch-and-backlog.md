@@ -350,8 +350,10 @@ diff is not suppressed as an incidental review artifact.
 like to talk about?**, and that opener is required and delivered exactly as written. A chat
 launches immediately from the manual single-agent Dispatch form. It cannot be added to the
 backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
-for an Ensemble member. Mission Control adds no task-kind prompt appendix, Mission MCP tool,
-artifact, or archive contract.
+for an Ensemble member. Mission Control adds no task-kind prompt appendix, artifact, or archive
+contract. Chat agents can still schedule separate work with Mission MCP's `create_task` and
+launch it with `dispatch_task`; both tools are pre-approved on chat launches. These tasks use
+the ordinary backlog and dispatch checks while the original conversation stays a chat.
 
 With **After work** left at **None**, chat completion stays human-ended. Foreman can recognize
 that the agent has answered, but it does not offer or send an automatic completion action; the

@@ -42,6 +42,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/telemetry/organization/notice", "Managed telemetry notice acknowledgement; excluded from recursive primary-action and error capture."],
   ["POST", "/api/telemetry/organization/recheck", "Managed telemetry detection refresh; excluded from recursive primary-action and error capture like the other telemetry controls."],
   ["POST", "/api/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
+  ["POST", "/mcp/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome through the shared dashboard dispatch path; add request surface only."],
   ["POST", "/api/tasks/:id/assign", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/cancel", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/complete", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],

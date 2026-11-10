@@ -3,10 +3,12 @@ import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevis
 import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
 import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
 import type { ManagedPlanPolicy, TaskPlanInput } from "@shared/managed-plans.ts";
-import { dependencyInputKey } from "@shared/task-bulk.ts";
 import { transferForTask } from "./session-transfers/store.ts";
-import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
+import {
+  canRefreshSourceTask, localSourceContent, sameSourceContent, sourceBlockerOf, sourceBlockers, type SourceBlocker, type SourceContent,
+} from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
+import { blockerDependencies } from "./task-sources/relations.ts";
 import { inTransaction } from "./db.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
@@ -25,6 +27,7 @@ import type {
   TaskDependency,
   TaskKind,
   TaskPriority,
+  TaskSourceItemState,
 } from "@shared/types.ts";
 import type {
   BulkUpdateTasks,
@@ -35,7 +38,7 @@ import type {
   TaskDependencyInput,
   UpdateTask,
 } from "@shared/protocol.ts";
-import type { TaskSourceRef } from "@shared/task-source.ts";
+import { sameSourceRef, type TaskSourceRef } from "@shared/task-source.ts";
 import {
   pipelineRecoveryOutcomeFor,
   pipelineRunKeyOf,
@@ -50,6 +53,7 @@ import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harnes
 import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
+import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
 import {
   taskHasRepository,
   dispatchHasNoProvisionedResources,
@@ -60,6 +64,7 @@ import {
   taskKindCreator,
   taskKindPersonaRefusal,
   taskRequeueRefusal,
+  MAX_TASK_DEPENDENCIES,
 } from "@shared/task.ts";
 import {
   isPersonaLaunchRefusal,
@@ -259,11 +264,26 @@ export interface CreateTaskInput {
   planInputs?: TaskPlanInput[];
   planStorage?: "repository" | "local" | null;
   /**
+   * External items this task waits on, recovered from blocking links by a task source's
+   * sweep (`relations.ts`). Each becomes a new `source` dependency edge.
+   *
+   * A separate field rather than a `source` entry in `dependencies`, and that is the trust
+   * boundary: `dependencies` arrives from request bodies, where a `source` input may only
+   * KEEP an edge the task already has. No wire schema declares this field, so only daemon
+   * code - the sweep's ingest - can originate an external dependency.
+   */
+  sourceDependencies?: TaskSourceRef[];
+  /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
    * decide whether an item has been filed before.
    */
   source?: TaskSourceRef;
+  /**
+   * The item `source` is a sub-issue of, as the sweep read it. Display only (see
+   * `Task.sourceParent`): it never becomes a dependency edge.
+   */
+  sourceParent?: TaskSourceRef;
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
 }
@@ -361,6 +381,27 @@ export type TaskReorderResult =
 
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
+
+export class TaskDependencyCycleError extends TaskDependencyError {}
+
+/** The live session a task is bound to, if any - what makes a non-backlog task a target. */
+function activeSessionFor(taskId: string, sessions: Session[]): Session | undefined {
+  return sessions.find((session) => session.state !== "exited" && session.task?.id === taskId);
+}
+
+/**
+ * Why a NEW task edge may not point at `target`, or null when it may.
+ *
+ * A backlogged task, or one bound to a live session whose lifecycle hooks report, since that
+ * is what lets the edge follow the work to its merge. Asked only for an edge the dependent
+ * does not already carry: an existing edge is kept whatever became of its target.
+ */
+function newTaskEdgeRefusal(target: Task, activeSession: Session | undefined): string | null {
+  if (target.status === "backlog") return null;
+  if (!activeSession) return "dependency task is neither backlogged nor active";
+  if (!activeSession.hooksSeen) return "dependency task has no observable work lifecycle";
+  return null;
+}
 
 /** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
@@ -714,7 +755,7 @@ const DISABLED_REFUSAL =
  * the readiness stamp: a stamp records a decision made under the old mode, and the daemon
  * re-derives it on its next pass.
  */
-function withEdgeMode<T extends Exclude<TaskDependency, { type: "plan" }>>(
+function withEdgeMode<T extends WorkDependency>(
   edge: T,
   mode: "merge" | "stack" | undefined,
 ): T {
@@ -2664,13 +2705,14 @@ export class TaskManager {
     inputs: TaskDependencyInput[],
     taskId: string,
     current: Task["dependencies"] = [],
+    /** The item this task stands for, when it is being created and is not registered yet. */
+    selfSource?: TaskSourceRef,
   ): TaskDependency[] {
     const selectedAt = Date.now();
+    const kept = new Map(current.map((dependency) => [dependencyKey(dependency), dependency]));
+    // Task and session edges, which the branches below rebuild from live state.
     const existing = new Map(
-      current.map((dependency) => [
-        dependencyInputKey(dependency),
-        dependency,
-      ]),
+      current.filter(isWorkDependency).map((dependency) => [dependencyKey(dependency), dependency]),
     );
     const sessions = this.registry.snapshot().sessions;
     const resolved: TaskDependency[] = [];
@@ -2686,11 +2728,27 @@ export class TaskManager {
         if (saved.task_id === taskId) throw new TaskDependencyError("a task cannot depend on its own plan publication");
         dependency = { ...input, title: `${manifest.slug} revision ${input.revision} publication`, sessionId: null, episodeId: null, agentSessionId: null, branch: null, prUrl: null,
           selectedAt, satisfiedAt: publicationReceipt(input)?.publishedAt ?? null };
+      } else if (input.type === "source") {
+        // An external item. Only a task source's sweep originates one (see
+        // `CreateTaskInput.sourceDependencies`); a request can keep or remove it, never
+        // create it, so its observed state survives an edit and cannot be fabricated.
+        const stored = kept.get(dependencyKey(input));
+        if (stored?.type !== "source") {
+          throw new TaskDependencyError("dependency is no longer available");
+        }
+        dependency = stored;
+      } else if (input.type === "unknown") {
+        // Written by a newer build. It can be kept or removed, never created.
+        const stored = kept.get(dependencyKey(input));
+        if (stored?.type !== "unknown") {
+          throw new TaskDependencyError("dependency is no longer available");
+        }
+        dependency = stored;
       } else if (input.type === "session") {
         const kept = existing.get(`session:${input.sessionId}`);
         if (kept?.type === "session") {
           dependency = withEdgeMode(kept, input.mode);
-          const key = `session:${dependency.sessionId}`;
+          const key = dependencyKey(dependency);
           if (!seen.has(key)) resolved.push(dependency);
           seen.add(key);
           continue;
@@ -2751,9 +2809,7 @@ export class TaskManager {
           if (!kept) throw new TaskDependencyError("dependency task is no longer available");
           dependency = kept;
         } else {
-          const activeSession = sessions.find(
-            (session) => session.state !== "exited" && session.task?.id === target.id,
-          );
+          const activeSession = activeSessionFor(target.id, sessions);
           const previousEdge = existing.get(`task:${target.id}`);
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
@@ -2767,12 +2823,9 @@ export class TaskManager {
           const mergedUrl = merged && (previousEdge || binding)
             ? this.mergeUrlForDependency(mergeCandidate, merged.url)
             : null;
-          const eligible = target.status === "backlog" || Boolean(activeSession);
-          if (!eligible && !existing.has(`task:${target.id}`)) {
-            throw new TaskDependencyError("dependency task is neither backlogged nor active");
-          }
-          if (target.status !== "backlog" && activeSession && !activeSession.hooksSeen && !previousEdge) {
-            throw new TaskDependencyError("dependency task has no observable work lifecycle");
+          if (!previousEdge) {
+            const refusal = newTaskEdgeRefusal(target, activeSession);
+            if (refusal) throw new TaskDependencyError(refusal);
           }
           dependency = {
             type: "task",
@@ -2794,8 +2847,10 @@ export class TaskManager {
         }
       }
 
-      if (input.type !== "plan" && dependency.type !== "plan") dependency = withEdgeMode(dependency, input.mode);
-      const key = dependencyInputKey(dependency);
+      if ((input.type === "task" || input.type === "session") && isWorkDependency(dependency)) {
+        dependency = withEdgeMode(dependency, input.mode);
+      }
+      const key = dependencyKey(dependency);
       if (dependency.type === "task" && dependency.taskId === taskId) {
         throw new TaskDependencyError("a task cannot depend on itself");
       }
@@ -2803,14 +2858,98 @@ export class TaskManager {
       seen.add(key);
     }
 
-    if (this.createsDependencyCycle(taskId, resolved)) {
-      throw new TaskDependencyError("task dependencies cannot form a cycle");
+    if (this.createsDependencyCycle(taskId, resolved, selfSource ?? this.registry.getTask(taskId)?.source ?? undefined)) {
+      throw new TaskDependencyCycleError("task dependencies cannot form a cycle");
     }
     return resolved;
   }
 
-  private createsDependencyCycle(taskId: string, proposed: TaskDependency[]): boolean {
+  /**
+   * Whether a NEW task edge may point at this task - the rule `resolveDependencies` holds,
+   * asked ahead of time. A task source's ingest reads it to decide between a task edge and
+   * a `source` edge, so the rule has one owner and a sweep cannot build an edge the
+   * resolver would refuse (which would refuse the whole swept item).
+   */
+  acceptsNewTaskEdgeTo(taskId: string): boolean {
+    const target = this.registry.getTask(taskId);
+    if (!target) return false;
+    return newTaskEdgeRefusal(target, activeSessionFor(target.id, this.registry.snapshot().sessions)) === null;
+  }
+
+  /**
+   * `resolved` with `source` edges added for `refs`. Refused past the limit every task
+   * request enforces, since a task saved over it could not be edited back under it, and
+   * refused when a new edge closes a cycle: an item can have a task that may not take a new
+   * task edge (one that failed, say) and that already waits on this one.
+   */
+  private withSourceDependencyEdges(
+    resolved: TaskDependency[], refs: TaskSourceRef[], taskId: string, selfSource?: TaskSourceRef,
+  ): TaskDependency[] {
+    const added = this.sourceDependencyEdges(refs, resolved);
+    const dependencies = [...resolved, ...added];
+    if (dependencies.length > MAX_TASK_DEPENDENCIES) {
+      throw new TaskDependencyError(`would carry more than ${MAX_TASK_DEPENDENCIES} dependencies`);
+    }
+    if (added.length > 0 && this.createsDependencyCycle(taskId, added, selfSource)) {
+      throw new TaskDependencyCycleError("task dependencies cannot form a cycle");
+    }
+    return dependencies;
+  }
+
+  /**
+   * Live tasks plus the durable row of each edge target the registry has evicted, so which
+   * of `task`'s edges stand for a source's items never depends on terminal-task eviction.
+   */
+  sourceRelationTasks(task: Task): Task[] {
+    const live = this.registry.listTasks();
+    const liveIds = new Set(live.map((t) => t.id));
+    const evicted = task.dependencies.flatMap((d) => {
+      if (d.type !== "task" || liveIds.has(d.taskId)) return [];
+      const durable = getDurableTask(d.taskId);
+      return durable ? [durable] : [];
+    });
+    return evicted.length > 0 ? [...live, ...evicted] : live;
+  }
+
+  /** New `source` edges for a sweep's external blockers, de-duplicated against `resolved`. */
+  private sourceDependencyEdges(refs: TaskSourceRef[], resolved: TaskDependency[]): TaskDependency[] {
+    const seen = new Set(resolved.map(dependencyKey));
+    const selectedAt = Date.now();
+    const out: TaskDependency[] = [];
+    for (const ref of refs) {
+      const edge: TaskDependency = {
+        type: "source",
+        sourceId: ref.sourceId,
+        externalId: ref.externalId,
+        url: ref.url,
+        title: ref.externalId,
+        // Open until the owning source's next re-check reads the item (`observeSourceItems`).
+        state: "open",
+        checkedAt: null,
+        selectedAt,
+        satisfiedAt: null,
+      };
+      const key = dependencyKey(edge);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(edge);
+    }
+    return out;
+  }
+
+  private createsDependencyCycle(taskId: string, proposed: TaskDependency[], selfSource?: TaskSourceRef): boolean {
     const tasks = new Map(this.registry.listTasks().map((task) => [task.id, task]));
+    // A source edge waits on its item closing, which happens when the task filed for that
+    // item finishes, so for the cycle check it leads to that task.
+    const itemKey = (sourceId: string, externalId: string): string => JSON.stringify([sourceId, externalId]);
+    const filedFor = new Map<string, string>();
+    for (const task of tasks.values()) if (task.source) filedFor.set(itemKey(task.source.sourceId, task.source.externalId), task.id);
+    if (selfSource) filedFor.set(itemKey(selfSource.sourceId, selfSource.externalId), taskId);
+    const targetOf = (dependency: TaskDependency): string | null =>
+      dependency.type === "plan" ? planRevisionRecord(dependency.planId, dependency.revision).task_id
+        : dependency.type === "task" ? dependency.taskId
+          : dependency.type === "source" ? filedFor.get(itemKey(dependency.sourceId, dependency.externalId)) ?? null
+            : null;
     const visiting = new Set<string>();
     const reachesTask = (id: string): boolean => {
       if (id === taskId) return true;
@@ -2819,16 +2958,17 @@ export class TaskManager {
       const dependencies = id === taskId ? proposed : tasks.get(id)?.dependencies ?? [];
       for (const dependency of dependencies) {
         if (dependency.satisfiedAt !== null) continue;
-        const target = dependency.type === "plan" ? planRevisionRecord(dependency.planId, dependency.revision).task_id : dependency.type === "task" ? dependency.taskId : null;
+        const target = targetOf(dependency);
         if (target && reachesTask(target)) return true;
       }
       return false;
     };
-    return proposed.some(
-      (dependency) =>
-        dependency.satisfiedAt === null &&
-        (dependency.type === "task" ? reachesTask(dependency.taskId) : dependency.type === "plan" ? reachesTask(planRevisionRecord(dependency.planId, dependency.revision).task_id ?? "") : false),
-    );
+    return proposed.some((dependency) => {
+      if (dependency.satisfiedAt !== null) return false;
+      const target = targetOf(dependency);
+      if (dependency.type === "source" && target === taskId) return false;
+      return target !== null && reachesTask(target);
+    });
   }
 
   /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
@@ -2998,7 +3138,10 @@ export class TaskManager {
       const problem = localWorkflowProblem(workflowId);
       if (problem) throw new PlanStoreError(problem);
     }
-    const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
+    const resolvedDependencies = this.resolveDependencies(input.dependencies ?? [], id, [], input.source);
+    // Another task's source edge naming this task's item is followed by the cycle check, which
+    // is how an upstream cycle is refused; this task's own source edges are checked as added.
+    const dependencies = this.withSourceDependencyEdges(resolvedDependencies, input.sourceDependencies ?? [], id, input.source);
     validatePlanInputDependencies({ planInputs, dependencies });
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const backlogged = Boolean(input.backlog) || mustBacklog;
@@ -3045,6 +3188,7 @@ export class TaskManager {
       // selected workflow's current immutable version there.
       workflowId,
       source: input.source ?? null,
+      sourceParent: input.sourceParent ?? null,
       // Filled by pipeline dispatch before its host starts. Null remains valid for backlog
       // rows and for tasks persisted by builds that learned the link only from a child.
       pipelineRun: null,
@@ -4246,7 +4390,16 @@ export class TaskManager {
     };
   }
 
-  /** Apply only source-owned content, atomically with its accepted comparison baseline. */
+  /**
+   * Apply only source-owned content, atomically with its accepted comparison baseline.
+   *
+   * With `relates` (the source's kind can relate), the content's `blockedBy` is the
+   * `dependencies` group and is compared and applied too: see `sourceSyncedDependencies`.
+   * Synced edges a hand edit would refuse (the resolver's rules, the dependency limit, or a
+   * pinned plan input losing its prerequisite) refuse the whole update with `refused: true`,
+   * and `cycle: true` when the refusal is a cycle, so nothing is half-applied and the caller
+   * can say why.
+   */
   async applySourceContent(
     id: string,
     source: TaskSourceRef,
@@ -4254,25 +4407,77 @@ export class TaskManager {
     content: SourceContent,
     persist: () => void,
     stillCurrent: () => boolean,
-  ): Promise<Ok> {
+    relates = false,
+    /**
+     * The item's parent as the source reports it now. Source-owned display data outside the
+     * merge: overwritten whenever given, with no group and no conflict review. Undefined
+     * leaves the stored parent as it is.
+     */
+    parent?: TaskSourceRef | null,
+  ): Promise<Ok & { refused?: boolean; cycle?: boolean }> {
     await this.titling.get(id);
     const task = this.registry.getTask(id);
     if (!task || !canRefreshSourceTask(task) || this.assigningTasks.has(id)
       || taskWorkEpisodeForTask(id) || historicalTaskWorkEpisodeBindingsForTask(id).length > 0) {
       return { ok: false, error: "the task has started, is being assigned, or is no longer in the backlog" };
     }
+    const local = localSourceContent(task, relates ? { sourceId: source.sourceId, tasks: this.sourceRelationTasks(task) } : null);
     if (task.source?.sourceId !== source.sourceId || task.source.externalId !== source.externalId
-      || !sameSourceContent(task, expected) || !stillCurrent()) {
+      || !sameSourceContent(local, expected) || !stillCurrent()) {
       return { ok: false, error: "the task or source changed; sweep again before applying this update" };
     }
-    const changed = !sameSourceContent(task, content);
-    const next = { ...task, ...content, updatedAt: Date.now() };
+    const sourceParent = parent === undefined ? task.sourceParent : parent;
+    const changed = !sameSourceContent(local, content)
+      || !sameSourceRef(sourceParent, task.sourceParent);
+    let dependencies = task.dependencies;
+    if (relates && content.blockedBy && !sameSourceContent({ ...local, blockedBy: content.blockedBy }, local)) {
+      try {
+        dependencies = this.sourceSyncedDependencies(task, source.sourceId, content.blockedBy);
+        validatePlanInputDependencies({ planInputs: task.planInputs, dependencies });
+      } catch (error) {
+        if (error instanceof TaskDependencyError || error instanceof PlanStoreError) {
+          return { ok: false, refused: true, cycle: error instanceof TaskDependencyCycleError, error: error.message };
+        }
+        throw error;
+      }
+    }
+    const { blockedBy: _blockedBy, ...fields } = content;
+    const next: Task = { ...task, ...fields, dependencies, sourceParent, updatedAt: Date.now() };
     const displaced = inTransaction(() => {
       persist();
       return changed ? dbUpsertTask(next) : [];
     });
     if (changed) this.registry.publishPersistedTask(next, displaced);
     return { ok: true };
+  }
+
+  /**
+   * The task's edges once its synced blockers are `blockedBy`.
+   *
+   * Only edges that stand for this source's items are in play (see `localSourceContent`);
+   * every other edge is kept as it is. A blocker already present keeps its edge. A new one
+   * gets the edge ingest would give it (`blockerDependencies`). The result goes through the same
+   * resolver as an operator's edit, so a synced task edge that would close a cycle throws.
+   */
+  private sourceSyncedDependencies(task: Task, sourceId: string, blockedBy: SourceBlocker[]): TaskDependency[] {
+    const tasks = this.sourceRelationTasks(task);
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const refOf = (d: TaskDependency): string | null => sourceBlockerOf(d, sourceId, byId)?.externalId ?? null;
+    const wanted = new Map(blockedBy.map((b) => [b.externalId, b]));
+    const kept = task.dependencies.filter((d) => {
+      const ref = refOf(d);
+      return ref === null || wanted.has(ref);
+    });
+    const present = new Set(kept.map(refOf));
+    const added = blockerDependencies(
+      task.source?.externalId ?? "",
+      blockedBy.filter((b) => !present.has(b.externalId)).map((b) => ({ sourceId, ...b })),
+      tasks,
+      (taskId) => this.acceptsNewTaskEdgeTo(taskId),
+    );
+    const inputs: TaskDependencyInput[] = [...kept.map(dependencyInputOf), ...added.dependencies];
+    const resolved = this.resolveDependencies(inputs, task.id, task.dependencies);
+    return this.withSourceDependencyEdges(resolved, added.sourceDependencies, task.id, task.source ?? undefined);
   }
 
   /**
@@ -4312,6 +4517,8 @@ export class TaskManager {
     id: string,
     ref: TaskSourceRef,
     transaction: typeof inTransaction = inTransaction,
+    /** The blocking links the push confirmed: the `dependencies` baseline. Absent means none. */
+    pushedBlockers?: SourceBlocker[],
   ): Ok & { task?: Task } {
     const attached = transaction(() => {
       const t = this.registry.getTask(id);
@@ -4327,7 +4534,11 @@ export class TaskManager {
       saveSourceSync(task.id, ref.sourceId, {
         origin: "pushed", externalId: ref.externalId,
         defaults: { priority: task.priority, labels: task.labels },
-        baseline: null, pending: null, conflicts: [], checkedAt: null, appliedAt: null, error: null,
+        // A pushed task syncs only `dependencies`; the rest of the baseline is never read.
+        baseline: pushedBlockers
+          ? { ...localSourceContent(task, null), blockedBy: sourceBlockers(pushedBlockers) }
+          : null,
+        pending: null, conflicts: [], checkedAt: null, appliedAt: null, error: null,
       });
       return { ok: true as const, task, displaced };
     });
@@ -5618,6 +5829,45 @@ export class TaskManager {
         if (verifiedUrl === null) return dependency;
         changed = true;
         return { ...dependency, satisfiedAt: at, prUrl: verifiedUrl ?? dependency.prUrl };
+      });
+      if (changed) {
+        this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
+      }
+    }
+  }
+
+  /**
+   * Record what a task source just read about the external items `source` edges wait on.
+   *
+   * The only writer of a source edge's `state`. An item closed as completed stamps
+   * `satisfiedAt`, exactly as a merged pull request does for a task edge, and it stays
+   * satisfied: a later reopen upstream does not re-block work that may already be running.
+   * Closed as not planned, the edge stays unsatisfied and reports `stopped`. An item the
+   * read could not answer for (`state: null`) only has its `checkedAt` moved, so one broken
+   * link cannot hold the oldest-first re-check queue on itself.
+   */
+  observeSourceItems(
+    sourceId: string,
+    observations: { externalId: string; state: TaskSourceItemState | null; title?: string }[],
+    at = Date.now(),
+  ): void {
+    const byId = new Map(observations.map((o) => [o.externalId, o]));
+    for (const task of this.registry.listTasks()) {
+      let changed = false;
+      const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type !== "source" || dependency.sourceId !== sourceId) return dependency;
+        if (dependency.satisfiedAt !== null) return dependency;
+        const seen = byId.get(dependency.externalId);
+        if (!seen) return dependency;
+        changed = true;
+        const state = seen.state ?? dependency.state;
+        return {
+          ...dependency,
+          state,
+          title: seen.title?.trim() || dependency.title,
+          checkedAt: at,
+          satisfiedAt: state === "completed" ? at : null,
+        };
       });
       if (changed) {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });

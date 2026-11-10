@@ -162,19 +162,6 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
-    // Somebody looking for this types what they saw beside the last column ("empty", "stash")
-    // or what they want gone ("hide empty columns").
-    id: "board-empty-columns",
-    label: "Show the empty-column stash",
-    description:
-      "Show or hide the chips the Board's empty columns fold into, beside the last column.",
-    category: "display",
-    anchor: "display/board-empty-columns",
-    keywords: ["empty", "stash", "column", "columns", "hide", "board", "chip"],
-    kind: "jump",
-    backup: backupDomains("ui"),
-  },
-  {
     id: "board-sidebar",
     label: "Show all sessions in sidebar",
     description: "Select Board layout to show every session state in the drill-in sidebar.",

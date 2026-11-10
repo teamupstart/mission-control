@@ -347,11 +347,9 @@ card draws - and a one-tile preview, which is what the Board card panel offers, 
 grouping. See [Layout](ui.md#layout-console-or-board-in-settings) for what the heading says and
 why a repository can appear in more than one column.
 
-The same panel carries **Show the empty-column stash**, which also ships checked. The Board
-folds each empty column into a chip beside its last column, and a chip brings its column
-back. Uncheck it to hide that stash, so empty columns leave the board entirely. That
-includes an empty **needs you** column and an empty **Backlog**, which leave and return
-like any other.
+There is no setting for empty columns. The Board draws a column only while it has a card in
+it - **needs you**, **unconfirmed**, **gone** and the **Backlog** included - and an empty one
+leaves nothing behind. See [Layout](ui.md#layout-console-or-board-in-settings).
 
 Display's **Board card** panel is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,

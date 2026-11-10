@@ -149,6 +149,9 @@ interface DatabaseBackupServiceOptions {
   retention?: DatabaseBackupRetention;
   now?: () => Date;
   onlineBackup?: (source: DatabaseSync, destination: string) => Promise<void>;
+  selfContain?: (temporary: string) => void;
+  validate?: (temporary: string) => DatabaseBackupValidation;
+  removeFile?: (path: string) => void;
 }
 
 /** The one place a kind meets its filename prefix; the regex and reverse lookup derive from it. */
@@ -225,6 +228,8 @@ export function scrubWriteOnlySecrets(path: string): void {
   }
 }
 
+const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:-wal|-shm|-journal)?$/;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -250,12 +255,37 @@ function safeUnlink(path: string): void {
   }
 }
 
-/** On a failure path, so the capture's own error is the one recorded and rethrown. */
-function discardTemporary(path: string): void {
+/**
+ * Remove a capture's temporary file and every journal file SQLite may have left beside it.
+ * It runs in `finally`, so a removal failure is only logged: throwing would replace the
+ * capture's own error, or fail a capture that has already been published.
+ */
+function removeTemporary(temporary: string): void {
+  for (const path of [temporary, ...SQLITE_SIDECARS.map((suffix) => `${temporary}${suffix}`)]) {
+    try {
+      safeUnlink(path);
+    } catch (error) {
+      console.warn(
+        `[mission-control] database backup temporary ${basename(path)} was not removed: ${errorMessage(error)}`,
+      );
+    }
+  }
+}
+
+/**
+ * An online backup copies the source's WAL journal mode, and a read-only validation of a WAL
+ * file cannot clean up its WAL index. Switching the copy to rollback mode before validation
+ * makes every published copy one self-contained file that opens without creating sidecars.
+ */
+function useRollbackJournal(temporary: string): void {
+  const copy = new DatabaseSync(temporary);
   try {
-    safeUnlink(path);
-  } catch (error) {
-    console.warn(`[mission-control] database backup temporary was not removed: ${errorMessage(error)}`);
+    const row = copy.prepare("PRAGMA journal_mode = DELETE").get() as { journal_mode: string };
+    if (row.journal_mode !== "delete") {
+      throw new Error(`journal mode stayed ${row.journal_mode}`);
+    }
+  } finally {
+    copy.close();
   }
 }
 
@@ -316,6 +346,9 @@ export class DatabaseBackupService {
   private readonly retention: DatabaseBackupRetention | undefined;
   private readonly now: () => Date;
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
+  private readonly selfContain: (temporary: string) => void;
+  private readonly validate: (temporary: string) => DatabaseBackupValidation;
+  private readonly removeFile: (path: string) => void;
   private readonly pending = new Map<RecordedDatabaseBackupKind, Promise<DatabaseBackupRecord>>();
   private queueTail: Promise<unknown> = Promise.resolve();
   private stopping = false;
@@ -331,6 +364,9 @@ export class DatabaseBackupService {
     this.onlineBackup = options.onlineBackup ?? (async (db, destination) => {
       await sqliteBackup(db, destination);
     });
+    this.selfContain = options.selfContain ?? useRollbackJournal;
+    this.validate = options.validate ?? validateDatabaseBackupForRestore;
+    this.removeFile = options.removeFile ?? safeUnlink;
     for (const [kind, count] of Object.entries(this.retention ?? {})) {
       if (!Number.isSafeInteger(count) || count < 1) {
         throw new RangeError(`Database backup retention for ${kind} must be a positive integer`);
@@ -396,14 +432,41 @@ export class DatabaseBackupService {
   private publish(
     capture: DatabaseBackupRecord & { temporary: string },
   ): DatabaseBackupRecord {
+    this.selfContain(capture.temporary);
     chmodSync(capture.temporary, 0o600);
     scrubWriteOnlySecrets(capture.temporary);
     syncFile(capture.temporary);
-    validateDatabaseBackupForRestore(capture.temporary);
+    this.validate(capture.temporary);
     renameSync(capture.temporary, capture.path);
     syncFile(this.root);
     const { temporary: _temporary, ...record } = capture;
     return record;
+  }
+
+  /**
+   * Remove temporary files and sidecars that an interrupted capture left in the backup root.
+   * Call it once at startup, before the first capture: that is the only time no capture of
+   * this daemon can be in flight. Published copies and unrelated files are never touched.
+   * One entry that cannot be removed does not stop the sweep: `readdirSync` order is stable,
+   * so stopping would strand every leftover after it on every start.
+   */
+  removeLeftoverTemporaries(): void {
+    this.ensureRoot();
+    const failures: string[] = [];
+    for (const filename of readdirSync(this.root)) {
+      if (!OWNED_TEMPORARY.test(filename)) continue;
+      const path = join(this.root, filename);
+      try {
+        const stat = lstatSync(path);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        this.removeFile(path);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+        failures.push(`${filename}: ${errorMessage(error)}`);
+      }
+    }
+    syncFile(this.root);
+    if (failures.length > 0) throw new Error(failures.join("; "));
   }
 
   private ownedCopies(): Record<DatabaseBackupKind, OwnedCopy[]> {
@@ -601,10 +664,10 @@ export class DatabaseBackupService {
       const failure = new Error(`${label} database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });
-      if (temporary) discardTemporary(temporary);
       this.record(() => this.recordFailure(kind, attemptedAt, error));
       throw failure;
     } finally {
+      if (temporary) removeTemporary(temporary);
       this.notifyChange();
     }
   }
@@ -658,10 +721,11 @@ export class DatabaseBackupService {
       this.source.prepare("VACUUM INTO ?").run(capture.temporary);
       record = this.publish(capture);
     } catch (error) {
-      discardTemporary(capture.temporary);
       throw new Error(`Pre-migration database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });
+    } finally {
+      removeTemporary(capture.temporary);
     }
     this.pruneAfterPublish();
     return record;

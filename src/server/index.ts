@@ -807,6 +807,14 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
+  // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
+  // temporary files can be removed safely.
+  try {
+    databaseBackups.removeLeftoverTemporaries();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
+  }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:

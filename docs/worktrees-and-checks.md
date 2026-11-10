@@ -93,6 +93,18 @@ rows persist that ID before work starts. Cleanup reads the recorded provider and
 than deciding again from current configuration, and refuses a stale lease or any slot whose
 process occupancy cannot be proved empty. Startup reconciliation uses the same fail-closed rules.
 
+An observation read gets one retry before it counts as unknown. The process and cwd listings
+behind occupancy and an owner lookup that throws each try once more in the same pass, 2 seconds
+later and with double the timeout. A listing too large to buffer is not retried, because asking
+again cannot make it smaller. So do `git worktree list` and each Git read of a slot
+inspection when they timed out or were killed; a Git that exited with its own error is answered
+at once, because it would say the same again. A PID that an otherwise healthy cwd listing
+omitted is first re-read on its own, one at a time and stopping at the first re-read that does
+not answer, and only one that is still unresolved, and still alive with the same start time,
+leaves occupancy unknown. A read that fails twice records both attempts, for example "git status
+timed out after 15 s, and after 30 s on retry". A command killed at its timeout is named as a
+timeout, and one killed by another signal names that signal, so neither reads as "exit 1".
+
 `make session` is a loopback client for that daemon-owned inventory:
 
 ```sh

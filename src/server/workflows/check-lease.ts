@@ -6,7 +6,14 @@ import { CHECK_WORKTREES_DIR } from "../config.ts";
 import { openDb } from "../db.ts";
 import { verifyPinnedBase } from "../dispatcher.ts";
 import { verifyHeadIs } from "../git/ensemble-snapshot.ts";
-import { run, stubRun, type RunResult } from "../util/exec.ts";
+import {
+  commandFailureText,
+  describeCommandFailure,
+  run,
+  stubRun,
+  unansweredOutcome,
+  type RunResult,
+} from "../util/exec.ts";
 import { LegacyTreehouseService } from "../worktrees/legacy-treehouse.ts";
 import { WorktreeManager } from "../worktrees/manager.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
@@ -454,7 +461,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
       { timeoutMs: GIT_WORKTREE_ADD_TIMEOUT_MS },
     );
     if (added.code !== 0) {
-      throw new Error(`git worktree add failed: ${added.stderr.trim() || `exit ${added.code}`}`);
+      throw new Error(describeCommandFailure("git worktree add", added));
     }
 
     try {
@@ -475,8 +482,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
       throw new Error(
         removed.code === 0
           ? cause
-          : `${cause} - and the git worktree could not be removed: ` +
-              (removed.stderr.trim() || `exit ${removed.code}`),
+          : `${cause} - and the git worktree could not be removed: ${commandFailureText(removed)}`,
       );
     }
   }
@@ -496,7 +502,9 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
       return {
         state: "unreadable",
         reason:
-          `git worktree list ${listed.outcomeUnknown ? "did not complete" : `exited ${listed.code}`}` +
+          `git worktree list ${
+            unansweredOutcome(listed) ?? (listed.outcomeUnknown ? "did not complete" : `exited ${listed.code}`)
+          }` +
           (listed.stderr.trim() ? `: ${listed.stderr.trim()}` : ""),
       };
     }
@@ -907,7 +915,7 @@ export class CheckLeaseManager {
               : "git worktree";
           throw new Error(
             `${cause} - and the ${mechanism} could not be returned: ` +
-              `${returned.stderr.trim() || `exit ${returned.code}`} (${path} is still held` +
+              `${commandFailureText(returned)} (${path} is still held` +
               // A tree we could neither record nor return. Naming it is all we can do: there
               // is no row to reclaim it from, so a human has to hand it back.
               (inserted ? ")" : ", and no lease row could be written for it)"),
@@ -997,7 +1005,7 @@ export class CheckLeaseManager {
     }
     const returned = await provider.handBack(row);
     if (returned.code !== 0) {
-      return this.failedReturn(row, returned.stderr.trim() || `exit ${returned.code}`);
+      return this.failedReturn(row, commandFailureText(returned));
     }
     this.settle(row, "returned");
     return { outcome: "returned" };

@@ -1,6 +1,7 @@
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import { missingTaskRepoRoots } from "@shared/allowlist.ts";
 import { allowsBacklogAutopilot, PRIORITY_LABELS, priorityRank } from "@shared/task.ts";
+import { isWorkDependency } from "@shared/task-dependency.ts";
 import type { ForemanStatus, Task } from "@shared/types.ts";
 import { relativeTime, repoLeaf } from "./format.ts";
 import { effectiveEdgeMode, stackCandidate, stackEligibility, stackPrNumber, stackStartEdge, type StackingMode } from "@shared/stacking.ts";
@@ -74,7 +75,7 @@ export interface StackShipping {
 export function stackWaitLabel(task: Task, byId: ReadonlyMap<string, Task>, shipping: StackShipping = {}): string | null {
   if (task.status !== "backlog") return null;
   const modeOf = (edge: Task["dependencies"][number]): StackingMode | undefined =>
-    edge.type === "plan" ? "merge" : shipping.stacking ? effectiveEdgeMode(edge, { stacking: shipping.stacking }) : edge.mode;
+    !isWorkDependency(edge) ? "merge" : shipping.stacking ? effectiveEdgeMode(edge, { stacking: shipping.stacking }) : edge.mode;
   const wantsStack = task.dependencies.some(
     (edge) => edge.type === "task" && edge.satisfiedAt === null && modeOf(edge) === "stack",
   );

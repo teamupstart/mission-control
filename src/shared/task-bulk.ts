@@ -1,22 +1,11 @@
 import type { BulkUpdateTasks, TaskDependencyInput, UpdateTask } from "./protocol.ts";
 import { MAX_LABELS, MAX_TASK_DEPENDENCIES, normalizeLabels } from "./task.ts";
-import type { Task, TaskDependency } from "./types.ts";
+import { dependencyInputOf, dependencyKey } from "./task-dependency.ts";
+import type { Task } from "./types.ts";
 
-/** One dependency's identity, the same `task:`/`session:` key the dispatch form uses. */
-export function dependencyInputKey(dependency: TaskDependencyInput): string {
-  return dependency.type === "plan" ? `plan:${dependency.repoKey}:${dependency.planId}:${dependency.revision}` : dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
-}
-
-/** A stored edge as the input that names it, which is what an update body carries. */
-export function dependencyInputOf(dependency: TaskDependency): TaskDependencyInput {
-  if (dependency.type === "plan") return { type: "plan", repoKey: dependency.repoKey, planId: dependency.planId, revision: dependency.revision };
-  // The operator's stack/after-merge override travels with the edge, so an edit that only
-  // touches another field does not silently reset it to the inherited default.
-  const mode = dependency.mode ? { mode: dependency.mode } : {};
-  return dependency.type === "task"
-    ? { type: "task", taskId: dependency.taskId, ...mode }
-    : { type: "session", sessionId: dependency.sessionId, ...mode };
-}
+/** One dependency's identity, the same key every dependency surface uses. */
+export const dependencyInputKey: (dependency: TaskDependencyInput) => string = dependencyKey;
+export { dependencyInputOf };
 
 /** Labels compare case-insensitively everywhere else (`normalizeLabels`), so here too. */
 const labelKey = (label: string): string => label.trim().toLowerCase();

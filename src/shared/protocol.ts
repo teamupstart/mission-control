@@ -30,6 +30,7 @@ import {
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { dependencyKey as dependencyInputKey } from "./task-dependency.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
@@ -1075,6 +1076,17 @@ export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task"), taskId: z.string().min(1), mode: DependencyModeSchema.optional() }),
   z.object({ type: z.literal("session"), sessionId: z.string().min(1), mode: DependencyModeSchema.optional() }),
   PlanIdentitySchema.extend({ type: z.literal("plan") }).strict(),
+  // An item in a task source's tracker. A task source's sweep is what creates these; an
+  // edit names an existing one to keep it.
+  z.object({
+    type: z.literal("source"),
+    sourceId: z.string().min(1).max(64),
+    externalId: z.string().min(1).max(500),
+    url: z.string().max(2000).nullable().optional(),
+    title: z.string().max(500).optional(),
+  }),
+  // An edge a newer build wrote. It can only be kept, never created.
+  z.object({ type: z.literal("unknown"), key: z.string().min(1).max(20_000) }),
 ]);
 export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
 
@@ -1085,7 +1097,7 @@ const TaskDependenciesSchema = z
     const seen = new Set<string>();
     for (let i = 0; i < dependencies.length; i++) {
       const dependency = dependencies[i]!;
-      const key = dependency.type === "plan" ? `plan:${dependency.planId}:${dependency.revision}` : dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      const key = dependencyInputKey(dependency);
       if (seen.has(key)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i], message: "duplicate task dependency" });
       }
@@ -4063,13 +4075,6 @@ export const UI_CONFIG_DEFAULTS = {
    * one flat list per column unchecks it.
    */
   groupBoardByRepo: true,
-  /**
-   * TRUE, so an upgrade changes nothing on screen: the Board has always stowed its empty
-   * columns as chips in an "empty" stash beside the last column. Unchecking it removes that
-   * stash entirely, for an operator who never brings an empty column back and would rather
-   * the board spent those pixels on the columns that hold sessions.
-   */
-  showEmptyColumnStash: true,
   /** Show every state group in the Board drill-in sidebar. */
   boardSidebarAllSessions: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
@@ -4241,13 +4246,6 @@ export const UiConfigSchema = z.object({
    * only the layout moved.
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
-  /**
-   * Whether the Board draws its "empty" stash: the chips an empty column folds into, each of
-   * which puts that column back. Off hides the stash and every chip in it, so an empty column
-   * simply leaves the board. Every empty column folds the same way, the Backlog and "needs
-   * you" included.
-   */
-  showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.

@@ -37,7 +37,7 @@ legacy.exec(`
     VALUES ('id-open', 'o/r#7', 'open', 'Open issue', 'major', 1, 'open', 1, 1);
   CREATE TRIGGER fail_backfill BEFORE UPDATE ON inspector_comments
     BEGIN SELECT RAISE(ABORT, 'backfill interrupted'); END;
-  PRAGMA user_version = 25;
+  PRAGMA user_version = 26;
 `);
 legacy.close();
 

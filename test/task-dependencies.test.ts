@@ -1621,7 +1621,8 @@ test("an unconfirmed clear preserves the active episode until its PR merges", as
   assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, setup.id);
   assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "running");
   assert.equal(
-    setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.episodeId,
+    (setup.registry.getTask(setup.dependent.id)?.dependencies[0] as { episodeId?: string | null } | undefined)
+      ?.episodeId,
     episodeBefore.episodeId,
   );
 

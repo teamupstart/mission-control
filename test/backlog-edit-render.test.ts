@@ -264,6 +264,16 @@ test("a swept-in task shows what it came from, without asking the daemon anythin
   assert.doesNotMatch(html, /Create GitHub issue/);
 });
 
+test("a swept sub-issue names its parent beside the link, short when it shares the repo", () => {
+  const parent = { ...REF, externalId: "acme/demo-repo#7", url: "https://github.com/acme/demo-repo/issues/7" };
+  const html = editor(mkTask({ source: REF, sourceParent: parent }));
+  assert.match(html, /Sub-issue of <a class="source-provenance-link" href="https:\/\/github\.com\/acme\/demo-repo\/issues\/7" target="_blank" rel="noreferrer"[^>]*>#7<\/a>/);
+  // Another repo's parent keeps its full id, since "#7" alone would point at the wrong one.
+  const other = block({ link: REF, parent: { ...parent, externalId: "acme/other#7" }, sources: null, repoRoot: "/r" });
+  assert.match(other, />acme\/other#7<\/a>/);
+  assert.doesNotMatch(editor(mkTask({ source: REF })), /Sub-issue of/);
+});
+
 test("a scheduled task that is also filed upstream reads as two origins, not a conflict", () => {
   // Both banners at once, which used to be impossible on purpose: a task could only carry a
   // schedule AND a source through a bug, so the schedule note called it a "(conflict)". Filing

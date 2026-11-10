@@ -1,5 +1,8 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execPath } from "node:process";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -8,13 +11,13 @@ import { dispatchedSdkHookIdentity } from "../fixtures/sdk-hook-identity.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
- * The Board's empty columns: every empty column leaves the board, "needs you" included, and the
- * stash they fold into can be switched off in Settings.
+ * The Board's empty columns: every column exists, and it is drawn only while it has a card in
+ * it. An empty column - Backlog, needs you, idle, unconfirmed, gone - leaves nothing behind: no
+ * slim rail, and no "empty" stash of chips.
  *
- * Only a browser can settle either. "Takes no room" is laid-out geometry, not markup, and "comes
+ * Only a browser can settle this. "Takes no room" is laid-out geometry, not markup, and "comes
  * back when a session needs you" is a real session reaching the attention tone through the
- * daemon's own hook route and the column answering over the event stream. The stash toggle is a
- * checkbox that has to reach `app_config.ui` and then change what the Board draws after a reload.
+ * daemon's own hook route and the column answering over the event stream.
  *
  * No model tokens: the dispatched agent is `e2e/fixtures/fake-agents.ts`.
  */
@@ -61,12 +64,6 @@ async function putUi(daemon: DaemonHandle, patch: Record<string, unknown>): Prom
     body: JSON.stringify(patch),
   });
   expect(response.ok, "the daemon accepted the UI patch").toBe(true);
-}
-
-async function uiConfig(daemon: DaemonHandle): Promise<Record<string, unknown>> {
-  return ((await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()) as {
-    config: Record<string, unknown>;
-  }).config;
 }
 
 /** Board layout, then a reload: the store only hydrates an out-of-band write on load. */
@@ -136,10 +133,10 @@ test("an empty needs you column leaves the board and comes back when a session n
   const working = board.locator("section.board-col.tone-working");
   await expect(working.locator(".tile")).toHaveCount(1, { timeout: 30_000 });
 
-  // ---- empty: no column, not even a slim one - only a stash chip ----
+  // ---- empty: no column, not even a slim one, and no chip standing in for it ----
   await expect(needsYou).toHaveCount(0);
   await expect(board.getByRole("heading", { name: "needs you" })).toHaveCount(0);
-  await expect(board.locator(".board-stash").getByRole("button", { name: /^needs you$/i })).toBeVisible();
+  await expect(board.getByRole("button", { name: /^needs you$/i })).toHaveCount(0);
   // Working is the board's first column: the empty Backlog and the empty needs you that would
   // sit before it spend no width at all.
   const boardBox = await board.boundingBox();
@@ -156,7 +153,6 @@ test("an empty needs you column leaves the board and comes back when a session n
   await expect(needsYou.locator(".tile")).toHaveCount(1, { timeout: 30_000 });
   await expect(needsYou.getByRole("heading", { name: "needs you" })).toBeVisible();
   await expect.poll(() => width(needsYou)).toBeGreaterThanOrEqual(250);
-  await expect(board.locator(".board-stash-chip.tone-attention")).toHaveCount(0);
   observed(`with a session waiting needs you came back ${Math.round(await width(needsYou))}px wide`);
   await shoot(page, "needs-you-back", board);
 
@@ -165,11 +161,11 @@ test("an empty needs you column leaves the board and comes back when a session n
   await expect(needsYou).toHaveClass(/is-wide/);
   await postHook(daemon, "UserPromptSubmit", { prompt: "carry on" });
   await expect(needsYou).toHaveCount(0, { timeout: 30_000 });
-  await expect(board.locator(".board-stash-chip.tone-attention")).toBeVisible();
-  observed("once nothing was waiting again, needs you left the board for the stash");
+  await expect(board.getByRole("button", { name: /^needs you$/i })).toHaveCount(0);
+  observed("once nothing was waiting again, needs you left the board and left nothing behind");
 });
 
-test("an empty Backlog leaves the board, waits in the stash, and comes back with its first task", async ({
+test("an empty Backlog leaves the board and comes back with its first task", async ({
   dashboard: page,
   daemon,
 }) => {
@@ -178,74 +174,196 @@ test("an empty Backlog leaves the board, waits in the stash, and comes back with
 
   const board = page.locator("main.board");
   const backlog = board.locator("section.board-backlog");
-  const chip = board.locator(".board-stash").getByRole("button", { name: /^backlog$/i });
   await expect(board.locator("section.board-col.tone-working .tile")).toHaveCount(1, { timeout: 30_000 });
 
-  // ---- empty: no column, no "Nothing queued", only a chip ----
+  // ---- empty: no column, no "Nothing queued", and no chip to bring it back ----
   await expect(backlog).toHaveCount(0);
   await expect(board.getByText("Nothing queued")).toHaveCount(0);
-  await expect(chip).toBeVisible();
-  observed("with nothing queued the Board drew no Backlog column, only a Backlog chip in the stash");
-
-  // ---- the chip brings it back on request, and its × puts it away again ----
-  await chip.click();
-  await expect(backlog).toBeVisible();
-  await expect(backlog.locator(".board-col-n")).toHaveText("0");
-  await backlog.getByRole("button", { name: "Hide the empty Backlog column" }).click();
-  await expect(backlog).toHaveCount(0);
-  await expect(chip).toBeVisible();
+  await expect(board.getByRole("button", { name: /^backlog$/i })).toHaveCount(0);
+  observed("with nothing queued the Board drew no Backlog column and no Backlog chip");
 
   // ---- the first queued task brings the column back by itself ----
   await seedBacklogTask(daemon, "Tidy the release notes");
   await expect(backlog).toBeVisible({ timeout: 30_000 });
   await expect(backlog.locator(".bl-card")).toHaveCount(1);
-  await expect(chip).toHaveCount(0);
   observed("saving a task to the Backlog brought the Backlog column back with its card");
   await shoot(page, "backlog-back", board);
 });
 
-test("the empty-column stash can be switched off under Settings, Display", async ({
+test("no empty column leaves a stash behind, and Settings offers no stash to turn on", async ({
   dashboard: page,
   daemon,
 }) => {
   // An empty fleet draws "No agent sessions detected" instead of a board, so one session
-  // first. Its turn is held open, so it sits in Working and leaves needs you empty.
+  // first. Its turn is held open, so it sits in Working and every other column is empty.
   await dispatch(page, daemon, "check the linter config");
   await openBoard(page, daemon);
 
-  // ---- shipped on: the empty idle column (and the rest) fold into the stash ----
-  const stash = page.locator("main.board .board-stash");
-  await expect(stash).toBeVisible();
-  await expect(stash.getByRole("button", { name: /^idle$/i })).toBeVisible();
-  await expect(stash.getByText("empty")).toBeVisible();
-  // An empty needs you is a stash chip like the rest.
-  await expect(stash.getByRole("button", { name: /^needs you$/i })).toBeVisible();
-  await expect(stash.getByRole("button", { name: /^backlog$/i })).toBeVisible();
-  await shoot(page, "stash-on", page.locator("main.board"));
+  const board = page.locator("main.board");
+  await expect(board.locator("section.board-col.tone-working .tile")).toHaveCount(1, { timeout: 30_000 });
 
-  // ---- uncheck it in Settings ----
+  // ---- every empty column is gone, and nothing is drawn in its place ----
+  for (const tone of ["attention", "idle", "neutral", "exited"]) {
+    await expect(board.locator(`section.board-col.tone-${tone}`), `${tone} is not drawn`).toHaveCount(0);
+  }
+  await expect(board.locator("section.board-backlog")).toHaveCount(0);
+  for (const label of ["needs you", "idle", "unconfirmed", "gone", "Backlog"]) {
+    await expect(board.getByRole("button", { name: new RegExp(`^${label}$`, "i") }), `no ${label} chip`)
+      .toHaveCount(0);
+  }
+  await expect(board.getByText("empty", { exact: true })).toHaveCount(0);
+  // Working is the only column on the board: nothing sits beside it.
+  await expect(board.locator(":scope > section.board-col")).toHaveCount(1);
+  observed("with one working session the Board drew Working alone - no empty column and no stash");
+  await shoot(page, "no-stash", board);
+
+  // ---- a drill-in has no exception: opening the session mounts no empty column either ----
+  // The open session's own column is the rail; needs you, idle, unconfirmed, gone and the
+  // empty Backlog are not rendered even at zero width while the morph runs.
+  await board.locator("section.board-col.tone-working .tile").click();
+  await expect(board.locator("section.board-col.tone-working.is-rail")).toBeVisible();
+  await expect(board).toHaveAttribute("data-focus", "working");
+  for (const tone of ["attention", "idle", "neutral", "exited"]) {
+    await expect(board.locator(`section.board-col.tone-${tone}`), `${tone} is not drawn in the drill-in`)
+      .toHaveCount(0);
+  }
+  await expect(board.locator("section.board-backlog")).toHaveCount(0);
+  await expect(board.getByText("Nothing here")).toHaveCount(0);
+  await expect(board.locator(":scope > section.board-col")).toHaveCount(1);
+  // Read once the morph has settled: the rail animates in from the column's width to the
+  // fixed 320px console rail.
+  await expect.poll(() => width(board.locator("section.board-col.is-rail"))).toBeLessThanOrEqual(321);
+  observed("drilled into Working, the Board mounted only the Working rail - no empty column, reserved or Backlog");
+  await shoot(page, "drill-in-no-empty-columns", board);
+  await page.locator("body").press("Escape");
+  await expect(board).toHaveAttribute("data-focus", "none");
+
+  // ---- and Settings has no toggle that could bring a stash back ----
   await page.goto(`${daemon.baseURL}/#/settings/display`);
-  const toggle = page.getByRole("checkbox", { name: "Show the empty-column stash" });
-  await expect(toggle).toBeChecked();
-  await toggle.uncheck();
-  await expect(toggle).not.toBeChecked();
-  await expect.poll(async () => (await uiConfig(daemon)).showEmptyColumnStash).toBe(false);
-  observed("unchecking the toggle wrote app_config.ui.showEmptyColumnStash = false");
+  await expect(page.getByRole("checkbox", { name: "Group by repository" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /empty-column stash/i })).toHaveCount(0);
+  observed("Settings, Display offers no empty-column stash toggle");
+});
 
-  // ---- the Board draws no stash, and the empty columns simply leave ----
-  await page.goto(`${daemon.baseURL}/#/fleet`);
-  await expect(page.locator("main.board")).toBeVisible();
-  await expect(page.locator("main.board .board-stash")).toHaveCount(0);
-  await expect(page.locator("main.board section.board-col.tone-attention")).toHaveCount(0);
-  await expect(page.locator("main.board section.board-col.tone-idle")).toHaveCount(0);
-  await expect(page.locator("main.board section.board-backlog")).toHaveCount(0);
-  observed("with the stash off the Board drew no stash and no empty column, needs you and Backlog included");
-  await shoot(page, "stash-off", page.locator("main.board"));
+/** The three reserved columns, by the tone class the Board draws and the heading it prints. */
+const RESERVED = [
+  { tone: "attention", label: "needs you" },
+  { tone: "neutral", label: "unconfirmed" },
+  { tone: "exited", label: "gone" },
+] as const;
 
-  // ---- and back on again: not a one-way door ----
-  await page.goto(`${daemon.baseURL}/#/settings/display`);
-  await page.getByRole("checkbox", { name: "Show the empty-column stash" }).check();
-  await expect.poll(async () => (await uiConfig(daemon)).showEmptyColumnStash).toBe(true);
-  await page.goto(`${daemon.baseURL}/#/fleet`);
-  await expect(page.locator("main.board .board-stash")).toBeVisible();
+/**
+ * Unconfirmed and Gone, each with one card, in a real browser.
+ *
+ * An Unconfirmed card is a session the daemon can see but has no fresh lifecycle reading for,
+ * and the only door to one is terminal discovery: an agent in a real pane that has never
+ * posted a hook. A Gone card is a pane-backed session its own `SessionEnd` hook marked exited -
+ * an Agent SDK session cannot be one, because only its supervisor may close it and that
+ * removes the card. So both need a discovered pane, and this block turns discovery on for its
+ * own daemon, the way `backlog-reorder.spec.ts` does, and pays for it the same way: it
+ * addresses its own card by the tmux session name it generated, and never assumes the fleet
+ * is only that card.
+ *
+ * NO MODEL TOKENS: the thing in the pane is `node` under a symlink named `claude` - the shape
+ * `harnessOf` detects - running a script that only stays alive.
+ */
+test.describe("an agent with no lifecycle reading", () => {
+  test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+  test.skip(
+    spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0,
+    "tmux is not installed on this machine",
+  );
+
+  let cleanup: (() => void) | undefined;
+  test.afterEach(() => {
+    cleanup?.();
+    cleanup = undefined;
+  });
+
+  test("one unconfirmed card renders unconfirmed, and the same card ended renders gone", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    const dir = mkdtempSync(join(tmpdir(), "mc-e2e-unconfirmed-"));
+    const bin = join(dir, "fake-bin");
+    mkdirSync(bin);
+    symlinkSync(execPath, join(bin, "claude"));
+    // Never posts a hook and never writes a transcript: nothing can confirm its state.
+    const quiet = join(dir, "quiet-agent.mjs");
+    writeFileSync(quiet, "setInterval(() => {}, 60_000);\n");
+    const name = `mc-e2e-unconfirmed-${process.pid}-${Date.now()}`;
+    execFileSync("tmux", [
+      "new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, `${join(bin, "claude")} ${quiet}`,
+    ]);
+    const paneId = execFileSync("tmux", ["list-panes", "-t", name, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
+    cleanup = () => {
+      spawnSync("tmux", ["kill-pane", "-t", paneId], { stdio: "ignore" });
+      rmSync(dir, { recursive: true, force: true });
+    };
+
+    await openBoard(page, daemon);
+    const board = page.locator("main.board");
+    const unconfirmed = board.locator("section.board-col.tone-neutral");
+    const ours = unconfirmed.locator(".tile").filter({ hasText: name });
+    await expect(ours).toHaveCount(1, { timeout: 30_000 });
+    await expect(unconfirmed.getByRole("heading", { name: "unconfirmed" })).toBeVisible();
+    observed(`the quiet pane agent ${name} rendered the unconfirmed column with its card`);
+
+    // Discovery can also find agents this machine is running, so the fleet is not assumed to
+    // be ours alone. The rule is asserted as stated instead: every reserved column that is on
+    // the board holds at least one card, and when the daemon lists only our session the other
+    // two are not rendered at all.
+    for (const { tone, label } of RESERVED) {
+      const column = board.locator(`section.board-col.tone-${tone}`);
+      if ((await column.count()) > 0) {
+        expect(await column.locator(".tile, .rail-row").count(), `${label} is drawn only with a card`).toBeGreaterThan(0);
+      }
+    }
+    const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as unknown[];
+    if (sessions.length === 1) {
+      for (const { tone } of RESERVED.filter((r) => r.tone !== "neutral")) {
+        await expect(board.locator(`section.board-col.tone-${tone}`), `${tone} is not drawn`).toHaveCount(0);
+      }
+      await expect(board.locator(":scope > section.board-col")).toHaveCount(1);
+      observed("the daemon listed only the quiet pane agent: unconfirmed rendered alone, needs you and gone did not");
+    } else {
+      observed(`discovery also listed ${sessions.length - 1} of this machine's agents; every reserved column drawn held a card`);
+    }
+    await expect(board.locator("section.board-col.tone-exited")).toHaveCount(0);
+    await shoot(page, "unconfirmed-one-card", board);
+
+    // ---- the same card ends: it moves to Gone, which renders for it ----
+    // The hook a real Claude posts when its process ends, addressed to this pane exactly as
+    // `fixtures/pane-agent.mjs` addresses its own.
+    const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+    const ended = await fetch(`${daemon.baseURL}/hooks/SessionEnd`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": token },
+      body: JSON.stringify({ agent: "claude", cwd: daemon.repo, env: { tmuxPane: paneId }, reason: "other" }),
+    });
+    expect(ended.status, "the daemon accepted the SessionEnd hook").toBe(204);
+
+    const gone = board.locator("section.board-col.tone-exited");
+    await expect(gone.locator(".tile").filter({ hasText: name })).toHaveCount(1, { timeout: 30_000 });
+    await expect(gone.getByRole("heading", { name: "gone" })).toBeVisible();
+    await expect(unconfirmed.locator(".tile").filter({ hasText: name })).toHaveCount(0);
+    observed(`${name} ended: the gone column rendered with its card, and the card left unconfirmed`);
+    for (const { tone, label } of RESERVED) {
+      const column = board.locator(`section.board-col.tone-${tone}`);
+      if ((await column.count()) > 0) {
+        expect(await column.locator(".tile, .rail-row").count(), `${label} is drawn only with a card`).toBeGreaterThan(0);
+      }
+    }
+    const after = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as unknown[];
+    if (after.length === 1) {
+      // Ours alone: Unconfirmed just lost its only card, so it is not rendered at all.
+      for (const { tone } of RESERVED.filter((r) => r.tone !== "exited")) {
+        await expect(board.locator(`section.board-col.tone-${tone}`), `${tone} is not drawn`).toHaveCount(0);
+      }
+      observed("the daemon listed only the ended pane agent: gone rendered alone, unconfirmed and needs you did not");
+    } else {
+      observed("unconfirmed stayed only because this machine's own agents are cards in it; every reserved column drawn held a card");
+    }
+    await shoot(page, "gone-one-card", board);
+  });
 });

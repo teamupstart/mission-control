@@ -2052,6 +2052,12 @@ export const api = {
    */
   bulkUpdateTasks: (body: BulkUpdateTasksInput) => post(`/api/tasks/bulk-update`, body),
   /**
+   * Drop one dependency edge from a backlog task. The daemon removes it from the task as it
+   * holds it now, so an edge added after the caller last rendered the task survives.
+   */
+  removeTaskDependency: (id: string, dependency: TaskDependencyInput) =>
+    post(`/api/tasks/bulk-update`, { taskIds: [id], dependencies: { remove: [dependency] } } satisfies BulkUpdateTasksInput),
+  /**
    * Delete several backlog tasks. Not atomic (see `TaskManager.bulkRemove`), so a late
    * refusal carries the ids that did and did not go.
    */

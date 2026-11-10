@@ -38,7 +38,7 @@ export interface ToneGroup {
  * order they arrive in within each group.
  *
  * Every group is returned even when empty. That is NOT the same as every group being
- * drawn - the board hides most empty columns (see `boardColumnModes`) - but the
+ * drawn - the board hides every empty column (see `boardColumnModes`) - but the
  * decision of what to do with an empty group belongs to the view, and one consumer
  * needs them all regardless: App derives the board's arrow-key columns from this, and
  * `moveSelection` relies on the indices lining up with the tone order whether or not
@@ -59,34 +59,31 @@ export function groupByTone(
 
 /** What the board does with one tone column, given how full it is. */
 export type ColumnMode =
-  /** Has sessions in it: an ordinary column. */
+  /** Has a card in it: an ordinary column. */
   | "sessions"
-  /** Empty and stowed in the rail; the board doesn't render it at all. */
-  | "stashed"
-  /** Empty, but pulled back out of the rail by the operator. */
-  | "revealed";
+  /** Empty: the board doesn't render it at all. */
+  | "hidden";
 
 /**
- * How each column is treated, given what's in it and what the operator has revealed.
+ * How each column is treated, given what's in it.
  *
  * Pulled out of BoardView because it's the one genuinely rule-bound part of the
  * board's shape, and the rules are the sort that read as obviously right while being
- * wrong in exactly one state (a drill-in, a dispatch whose session does not exist yet).
- * Pure, so those states can be asserted without a dashboard.
+ * wrong in exactly one state (a dispatch whose session does not exist yet). Pure, so
+ * those states can be asserted without a dashboard.
  *
- * Every tone follows the same rule, "needs you" included: an empty column is stashed.
- * Horizontal room on the board is scarce, and a slim placeholder for an empty column
- * spends it on a column with nothing in it.
+ * Every tone follows the same rule, "needs you", "unconfirmed" and "gone" included: a
+ * column exists for every tone, and it is drawn only while it has a card in it. An empty
+ * column leaves no placeholder, chip, or slim rail behind - horizontal room on the board is
+ * scarce, and anything drawn for an empty column spends it on nothing.
  *
- * `focused` is the tone of the drill-in rail while a session is open, else null. During the
- * drill-in NOTHING is stashed, because the morph animates every column's width and they must
- * all stay mounted across it. An empty column that is itself the rail is drawn as a revealed
- * column - its head and "Nothing here" - like any other. See BoardView.
+ * That holds during a drill-in too. An empty column was not on the board before the session
+ * opened, so there is no width to animate it away from; and when the open session's own
+ * column is empty (a drawer resident, or a session a filter hides), no rail is drawn and
+ * the detail takes the board, carrying its own way back. See BoardView.
  */
 export function boardColumnModes(
   groups: readonly ToneGroup[],
-  revealed: ReadonlySet<Tone>,
-  focused: Tone | null,
   /** Provisioning tasks whose placeholders live in the Working column. */
   pending = 0,
 ): Map<Tone, ColumnMode> {
@@ -94,26 +91,19 @@ export function boardColumnModes(
   for (const g of groups) {
     if (g.sessions.length > 0) out.set(g.tone, "sessions");
     else if (g.tone === "working" && pending > 0) out.set(g.tone, "sessions");
-    else if (revealed.has(g.tone) || focused !== null) out.set(g.tone, "revealed");
-    else out.set(g.tone, "stashed");
+    else out.set(g.tone, "hidden");
   }
   return out;
 }
 
 /**
  * The Backlog column's treatment, by the same rule as the tone columns: drawn while it has
- * cards, stashed when it has none, and pulled back out by the operator or by a drill-in.
+ * cards, and not rendered at all when it has none.
  *
  * Hiding it costs no drop target. A Backlog card can only be dragged out of the Backlog
  * itself, so an empty Backlog has nothing that could be dropped into it, and a new task
  * arrives through the dispatch dialog, which brings the column straight back.
  */
-export function backlogColumnMode(
-  count: number,
-  revealed: boolean,
-  focused: boolean,
-): ColumnMode {
-  if (count > 0) return "sessions";
-  if (revealed || focused) return "revealed";
-  return "stashed";
+export function backlogColumnMode(count: number): ColumnMode {
+  return count > 0 ? "sessions" : "hidden";
 }

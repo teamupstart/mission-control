@@ -182,8 +182,10 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     }
   };
 
+  // Each observation read retries once; this proves where a twice-unknown read lands.
+  const noPause = async () => {};
   const listed = await new NativeWorktreeGit(async () =>
-    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`)
+    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`), noPause,
   ).list(identity);
   assertUnknown(listed, /git worktree list/);
 
@@ -198,7 +200,7 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     const inspected = await new NativeWorktreeGit(async (_bin, args) => {
       if (args.includes(unknownProbe)) return unknown(unknownProbe === "rev-parse" ? `${sha}\n` : "");
       return known(unknownProbe === "rev-parse" ? "" : `${sha}\n`);
-    }).inspect(clone);
+    }, noPause).inspect(clone);
     assertUnknown(inspected, step);
   }
 

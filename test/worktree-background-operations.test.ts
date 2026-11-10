@@ -655,7 +655,7 @@ test("a process scan during our own running worktree Git ignores it, and still s
   // remove: it runs with its cwd inside the slot for as long as the scan takes.
   const [slot] = await availableSlots("mission-worktree-bg-own-git-", 1);
   const git = new NativeWorktreeGit((_bin, _args, opts) =>
-    run("sh", ["-c", "sleep 6"], { ...opts, cwd: slot!.path, timeoutMs: 20_000 }));
+    run("sh", ["-c", "sleep 6"], { ...opts, cwd: slot!.path, timeoutMs: 20_000 }), async () => {});
   const running = git.inspect(slot!.path);
   while (ownWorktreeProcesses().size === 0) await new Promise((resolve) => setTimeout(resolve, 20));
 

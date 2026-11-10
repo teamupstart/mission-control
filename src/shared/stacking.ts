@@ -1,5 +1,6 @@
 import type { ShippingConfig } from "./protocol.ts";
 import type { Task, TaskDependency } from "./types.ts";
+import { isWorkDependency } from "./task-dependency.ts";
 
 // Stacked pull requests: the shared rules that decide when a dependent task may start on
 // its prerequisite's open pull request instead of waiting for it to merge, which branch its
@@ -48,7 +49,7 @@ export function effectiveEdgeMode(
   edge: TaskDependency,
   config: Pick<ShippingConfig, "stacking">,
 ): StackingMode {
-  if (edge.type === "plan") return "merge";
+  if (!isWorkDependency(edge)) return "merge";
   return edge.mode ?? effectiveStacking(config);
 }
 
@@ -288,7 +289,7 @@ export function stackReleased(facts: StackReleaseFacts): boolean {
  * was - in memory and as read back from SQLite.
  */
 export function withoutStackStamp<T extends TaskDependency>(edge: T): T {
-  if (edge.type === "plan") return edge;
+  if (!isWorkDependency(edge)) return edge;
   const { stackReadyAt: _a, stackBaseBranch: _b, stackBaseSha: _c, stackPrUrl: _d, ...rest } = edge;
   return rest as T;
 }

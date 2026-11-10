@@ -9,6 +9,7 @@ import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { z } from "zod";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
+import type { TaskSourceRef } from "@shared/task-source.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -220,10 +221,12 @@ let db: DatabaseSync | undefined;
 //     dismissed before the inbox could dismiss.
 // 25: durable session blockers (`session_blockers`), keyed by note key. Additive: an
 //     upgraded database gains an empty table and no session reads as blocked.
-// 26: whether each GitHub Inspector finding was posted (`inspector_comments.posted_at`,
+// 26: a swept item's parent (`tasks.source_parent`), nullable with no backfill: NULL is an item
+//     with no recorded parent, which is what every older task has.
+// 27: whether each GitHub Inspector finding was posted (`inspector_comments.posted_at`,
 //     `github_url`, `legacy_posted`) and draft refusals (`post_refusals`,
 //     `last_post_error`). `legacy_posted` is backfilled once, so this one rewrites rows.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 26;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 27;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -422,6 +425,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       source_id     TEXT,
       external_id   TEXT,
       source_url    TEXT,
+      -- JSON TaskSourceRef of the item the source item is a sub-issue of. Display only,
+      -- never a dependency edge. NULL when it has none or nobody swept this.
+      source_parent TEXT,
       repo_root     TEXT NOT NULL,
       workspace_kind TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
@@ -4246,6 +4252,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "source_id", "TEXT");
   addColumn(d, "tasks", "external_id", "TEXT");
   addColumn(d, "tasks", "source_url", "TEXT");
+  // `source_parent`: the JSON TaskSourceRef of the item's parent (a GitHub sub-issue's
+  // parent), shown beside the upstream link. Display only - it never becomes a dependency
+  // edge. Nullable: every older task genuinely has no recorded parent.
+  addColumn(d, "tasks", "source_parent", "TEXT");
   // The provider-run identity learned after a pipeline dispatch's first child agent appears.
   // Both nullable with no default: old and non-pipeline tasks have no provider lifecycle to
   // follow, and a half-written pair fails closed when the row is read.
@@ -5812,6 +5822,7 @@ interface TaskRow {
   source_id: string | null;
   external_id: string | null;
   source_url: string | null;
+  source_parent: string | null;
   repo_root: string;
   pipeline_provider: string | null;
   pipeline_slug: string | null;
@@ -6052,8 +6063,6 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
         const identity = PlanIdentitySchema.parse({ repoKey: row.repoKey, planId: row.planId, revision: row.revision });
         out.push({ ...identity, type: "plan", title: typeof row.title === "string" ? row.title : "Plan publication",
           sessionId: null, episodeId: null, agentSessionId: null, branch: null, prUrl: null, selectedAt, satisfiedAt });
-      } else if (row.type !== "task" && row.type !== "session") {
-        throw new Error("Unsupported dependency");
       } else if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
         const key = `task:${row.taskId}`;
         if (!seen.has(key)) {
@@ -6093,6 +6102,47 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
           });
         }
         seen.add(key);
+      } else if (
+        row.type === "source" &&
+        typeof row.sourceId === "string" &&
+        typeof row.externalId === "string"
+      ) {
+        const key = `source:${row.sourceId}:${row.externalId}`;
+        if (!seen.has(key)) {
+          out.push({
+            type: "source",
+            sourceId: row.sourceId,
+            externalId: row.externalId,
+            url: typeof row.url === "string" ? row.url : null,
+            title: typeof row.title === "string" ? row.title : row.externalId,
+            state:
+              row.state === "completed" || row.state === "not_planned" ? row.state : "open",
+            checkedAt: typeof row.checkedAt === "number" ? row.checkedAt : null,
+            selectedAt,
+            satisfiedAt,
+          });
+        }
+        seen.add(key);
+      } else if (row.type !== "task" && row.type !== "session" && row.type !== "source") {
+        // A type this build does not know - a newer build wrote it. Kept, unsatisfied, and
+        // written back verbatim: dropping it here would release work the newer build was
+        // holding back, the moment anybody ran this one. A malformed KNOWN type still fails
+        // closed below: this build does know what that edge should look like.
+        const key = JSON.stringify(row);
+        if (!seen.has(`unknown:${key}`)) {
+          const edgeType = typeof row.type === "string" ? row.type : "unknown";
+          out.push({
+            type: "unknown",
+            edgeType,
+            key,
+            title:
+              typeof row.title === "string" ? row.title : `Unrecognized dependency (${edgeType})`,
+            raw: row,
+            selectedAt: null,
+            satisfiedAt: null,
+          });
+        }
+        seen.add(`unknown:${key}`);
       } else { throw new Error("Invalid dependency"); }
     }
     return out;
@@ -6100,6 +6150,19 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
     return [{ type: "session", sessionId: "unsupported-prerequisite", title: "Unsupported or corrupt prerequisite; repair this task",
       episodeId: null, agentSessionId: null, branch: null, prUrl: null, selectedAt: null, satisfiedAt: null }];
   }
+}
+
+/**
+ * Dependency edges as the JSON the column stores, or null for none.
+ *
+ * An edge of a type this build does not know is written back as the object it was read
+ * from, so a newer build finds its own edge again - see `parseTaskDependencies`.
+ */
+export function serializeTaskDependencies(dependencies: Task["dependencies"]): string | null {
+  if (dependencies.length === 0) return null;
+  return JSON.stringify(
+    dependencies.map((dependency) => (dependency.type === "unknown" ? dependency.raw : dependency)),
+  );
 }
 
 function readTaskPlans(inputs: string | null, policy: string | null): Pick<Task, "planInputs" | "planPolicy" | "planInputError" | "planPolicyError"> {
@@ -6192,6 +6255,7 @@ function rowToTask(
       r.source_id && r.external_id
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
+    sourceParent: parseSourceParent(r.source_parent),
     repoRoot: r.repo_root,
     workspaceKind: r.workspace_kind === "resident-workspace" ? r.workspace_kind : null,
     pipelineRun:
@@ -6233,6 +6297,21 @@ function rowToTask(
   };
 }
 
+/**
+ * A stored `source_parent` blob, or null. A malformed one reads as no parent rather than
+ * throwing: it is display data, and one bad row must not take out `listTasks`.
+ */
+function parseSourceParent(raw: string | null): TaskSourceRef | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<TaskSourceRef> | null;
+    if (!v || typeof v.sourceId !== "string" || typeof v.externalId !== "string") return null;
+    return { sourceId: v.sourceId, externalId: v.externalId, url: typeof v.url === "string" ? v.url : null };
+  } catch {
+    return null;
+  }
+}
+
 export function upsertTask(t: Task): string[] {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
@@ -6263,7 +6342,7 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
          model, effort, advisor_model, persona_id,
-         workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
+         workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
@@ -6271,7 +6350,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -6281,7 +6360,7 @@ export function upsertTask(t: Task): string[] {
          persona_id=excluded.persona_id,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
-         source_url=excluded.source_url,
+         source_url=excluded.source_url, source_parent=excluded.source_parent,
          repo_root=excluded.repo_root, workspace_kind=excluded.workspace_kind,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
@@ -6312,7 +6391,7 @@ export function upsertTask(t: Task): string[] {
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
-      t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
+      serializeTaskDependencies(t.dependencies),
       t.planInputError ? JSON.stringify({ error: t.planInputError }) : t.planInputs?.length ? JSON.stringify(t.planInputs) : null,
       t.planPolicyError ? JSON.stringify({ error: t.planPolicyError }) : t.planPolicy ? JSON.stringify(t.planPolicy) : null,
       t.enabled ? 1 : 0,
@@ -6323,6 +6402,7 @@ export function upsertTask(t: Task): string[] {
       t.personaId,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
+      t.sourceParent ? JSON.stringify(t.sourceParent) : null,
       t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
@@ -6596,7 +6676,7 @@ function writeTaskDependencyRewrites(
   );
   for (const rewrite of rewrites) {
     const result = update.run(
-      rewrite.dependencies.length > 0 ? JSON.stringify(rewrite.dependencies) : null,
+      serializeTaskDependencies(rewrite.dependencies),
       rewrite.updatedAt,
       rewrite.taskId,
     );

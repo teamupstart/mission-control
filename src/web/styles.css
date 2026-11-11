@@ -953,6 +953,19 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-operation-removed { list-style: none; margin: 0; padding: 0; }
 .wt-operation-actions { display: flex; gap: 6px; margin-left: auto; }
 
+/* A Warm is one row per operation: its head, the slots it covers and what became of each, then
+   its live tail. The row stacks instead of wrapping, so the tail gets the full width. */
+.wt-warm { align-items: stretch; display: grid; gap: 6px; }
+.wt-warm-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.wt-warm-head strong { color: var(--fg); }
+.wt-warm-targets { display: grid; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.wt-warm-targets li { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.wt-warm-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.wt-warm-detail { color: var(--muted); flex: 1 1 100%; overflow-wrap: anywhere; }
+.wt-warm-tail { margin: 0; max-height: 180px; }
+.wt-warm-note { margin: 0; }
+.wt-warm-log { font-size: 11px; margin: 6px 0 0; }
+
 .wt-bulk-bar {
   align-items: center;
   background: color-mix(in oklab, var(--wt-danger) 7%, var(--bg-2));
@@ -1048,6 +1061,89 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 }
 
 .wt-argv-row input { min-width: 0; width: 100%; }
+
+/* The dependency claim editor reuses the argv frame. Its steps nest one frame deeper. */
+.wt-claim-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0 0 8px;
+}
+
+.wt-claim-step {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  margin: 0 0 8px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.wt-claim-step legend {
+  color: var(--dim);
+  font-size: 10px;
+  padding: 0 4px;
+}
+
+.wt-claim-step label,
+.wt-claim-fields label {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.wt-claim-step textarea,
+.wt-claim-step input,
+.wt-claim-fields textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 0;
+  width: 100%;
+}
+
+.wt-claim-step > .btn { justify-self: start; }
+
+.wt-claim-fields {
+  display: grid;
+  gap: 5px;
+  margin: 4px 0 8px;
+}
+
+.wt-claim-fields .wt-number { text-align: left; }
+
+.wt-claim-errors {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wt-claim-errors .settings-error { margin: 2px 0; }
+
+.wt-claim-vars {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 2px 0 4px;
+  padding: 0;
+}
+
+.wt-claim-vars li {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wt-claim-vars code { overflow-wrap: anywhere; }
+.wt-claim-var-where { color: var(--muted); }
+
+.wt-claim-saved {
+  color: var(--wt-ready);
+  font-size: 11px;
+  margin: 0 0 8px;
+}
 .wt-argv-actions,
 .wt-maintenance-actions,
 .wt-slot-actions {
@@ -1148,6 +1244,74 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 }
 
 .wt-diagnostic { color: var(--wt-attention); }
+
+/* A slot's dependency claim state. The chip and the sentence both say it. */
+.wt-deps {
+  border-top: 1px solid var(--border);
+  margin: 0 0 10px;
+  padding-top: 8px;
+}
+
+.wt-deps-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wt-deps-title {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.wt-deps-commit,
+.wt-deps-detail {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wt-deps-detail {
+  line-height: 1.45;
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* A command or failure summary can be hundreds of bytes; three lines say which one it is, and
+   the tooltip holds the rest. */
+.wt-deps-clamp {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--muted);
+  display: -webkit-box;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 3px 0 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.wt-deps-actions {
+  display: flex;
+  margin: 6px 0 0;
+}
+
+.wt-deps-tail {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  margin: 6px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* ---- Treehouse ---- */
 .wt-legacy-totals {

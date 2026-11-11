@@ -160,9 +160,22 @@ export interface NativeWorktreeSlotView {
   diskBytes: number | null;
   quarantineReason: string | null;
   diagnostic: string | null;
-  actions: Array<"return" | "destroy">;
+  actions: Array<"return" | "destroy" | "warm">;
   /** Null when the pool has no dependency claim configured. */
   dependencies: WorktreeSlotDependenciesView | null;
+  /**
+   * The log of the most recent Warm that held this slot, kept on the slot row so it stays
+   * reachable after a restart. Null when no Warm has held it, or that log is gone.
+   */
+  warmLog: WorktreeWarmLogView | null;
+}
+
+/** A Warm operation's full log, under the daemon's state directory. */
+export interface WorktreeWarmLogView {
+  /** The operation id, which names the log: `logs/worktree-warm/<id>.log`. */
+  id: string;
+  /** The log's absolute path on the daemon's disk. */
+  path: string;
 }
 
 export interface WorktreeRepositoryView {
@@ -251,6 +264,15 @@ export type WorktreeActionRequest =
   | {
       action: "legacyReturn";
       owner: { kind: "task" | "check"; id: string; position?: number };
+    }
+  | {
+      /**
+       * Prepare idle slots ahead of time: one available slot, or every available slot of a pool.
+       * Each is held under a `warm` lease, fetched, reset to origin's default branch, seeded or
+       * claimed under the pool's claim, and returned as available.
+       */
+      action: "warm";
+      target: { kind: "slot"; slotId: string } | { kind: "pool"; poolId: string };
     };
 
 export interface WorktreeActionRisk {
@@ -303,10 +325,56 @@ export interface WorktreeActionSubmitResult {
   operation: WorktreeOperationView;
 }
 
+/**
+ * What a Warm did to one of its targets.
+ *
+ * - `pending`: not reached yet.
+ * - `running`: held under the Warm's lease right now.
+ * - `warmed`: its dependencies now match origin's default branch (the steps ran or were skipped).
+ * - `claimFailed`: it was warmed, but the claim failed; the slot is back with a failed state.
+ * - `skipped`: never touched, because it was not idle when its turn came (leased, quarantined,
+ *   gone, or the pool changed).
+ * - `cancelled`: Cancel landed before or while it ran. One it was running on is back in the pool.
+ * - `failed`: something other than the claim went wrong; `detail` says what.
+ */
+export type WorktreeWarmTargetOutcome =
+  | "pending"
+  | "running"
+  | "warmed"
+  | "claimFailed"
+  | "skipped"
+  | "cancelled"
+  | "failed";
+
+export interface WorktreeWarmTargetView {
+  slotId: string;
+  ordinal: number;
+  path: string;
+  outcome: WorktreeWarmTargetOutcome;
+  detail: string | null;
+}
+
+/** A Warm operation's own facts, beside the shared operation fields. */
+export interface WorktreeWarmOperationView {
+  targets: WorktreeWarmTargetView[];
+  /** The last output of the running Warm, claim variable values removed. */
+  tail: string;
+  /** Output bytes dropped from the front of `tail`. */
+  truncatedBytes: number;
+  /** Null until the Warm first holds a slot: a Warm that skipped everything writes no log. */
+  log: WorktreeWarmLogView | null;
+  /** Cancel was asked for; the running step is being stopped. */
+  cancelRequested: boolean;
+}
+
 export interface WorktreeOperationView {
   id: string;
   request: WorktreeActionRequest;
-  state: "queued" | "running" | "failed";
+  /**
+   * `finished` is a Warm that ran to its end, kept so its results and log stay readable until
+   * it is dismissed. Every other operation that succeeds leaves the list.
+   */
+  state: "queued" | "running" | "failed" | "finished";
   /** The exact paths the accepted preview showed. Pending ones are withheld from new actions. */
   targets: Array<{ provider: WorktreeActionAffected["provider"]; id: string; path: string }>;
   error: string | null;
@@ -321,6 +389,13 @@ export interface WorktreeOperationView {
   completed: Array<{ id: string; path: string }>;
   queuedAt: number;
   finishedAt: number | null;
+  /** Null for every action but `warm`. */
+  warm: WorktreeWarmOperationView | null;
+}
+
+/** An operation still holding its targets: queued or running, not a report waiting to be read. */
+export function worktreeOperationPending(operation: Pick<WorktreeOperationView, "state">): boolean {
+  return operation.state === "queued" || operation.state === "running";
 }
 
 /**

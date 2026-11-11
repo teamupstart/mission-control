@@ -64,6 +64,7 @@ import {
   WorktreeStore,
   depsCutOff,
   isDepsWriteAhead,
+  type WorktreeClaimSlotState,
   type WorktreePoolRow,
   type WorktreeSlotRow,
 } from "./store.ts";
@@ -121,6 +122,27 @@ export type WorktreeAcquireResult =
     }
   | { outcome: "notAcquired"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
+
+/**
+ * What one Warm did to its target slot.
+ *
+ * - `warmed`: held, fetched, reset to origin's default, claimed (or skipped on a matching
+ *   fingerprint), and returned as available.
+ * - `claimFailed`: the same, but the claim failed, timed out or was stopped; the slot was
+ *   returned with the failure recorded, as any failed claim is.
+ * - `skipped`: never touched, because the slot was not idle, or its pool could not be warmed.
+ * - `cancelled`: Cancel landed before the slot was held, or before the claim began; a held
+ *   slot was returned.
+ * - `failed`: something other than the claim went wrong after the slot was held. The slot was
+ *   quarantined, or is still held by a `warm` owner nobody references, which the next
+ *   reconciliation returns or quarantines.
+ */
+export type WarmSlotResult =
+  | { outcome: "warmed"; stepsSkipped: boolean }
+  | { outcome: "claimFailed"; warning: WorktreeClaimWarning }
+  | { outcome: "skipped"; reason: string }
+  | { outcome: "cancelled"; reason: string }
+  | { outcome: "failed"; reason: string };
 
 export type WorktreeReleaseResult =
   | { outcome: "released" }
@@ -290,6 +312,35 @@ function notRunWarning(claim: WorktreeClaim, reason: string): WorktreeClaimWarni
     reason,
     tail: "",
     truncatedBytes: 0,
+  };
+}
+
+/** How a claim runs beyond its slot and commit. */
+interface ClaimOptions {
+  /** The state the slot holds while the claim writes: provisioning in an acquire, leased in a Warm. */
+  slotState?: WorktreeClaimSlotState;
+  /**
+   * Told what the claim is doing and every step's redacted output, for a view that follows it
+   * live. A promise it returns is backpressure on the running step's output.
+   */
+  output?: (text: string) => void | Promise<void>;
+}
+
+type Say = (text: string) => void | Promise<void>;
+
+/**
+ * Tell a live view something, handing back any backpressure it asks for. A listener that
+ * throws must never fail the claim it watches.
+ */
+function sayTo(output: Say | undefined): Say | null {
+  if (!output) return null;
+  return (text) => {
+    try {
+      return output(text);
+    } catch (error) {
+      console.warn(`[worktrees] claim output listener failed: ${bounded(String(error))}`);
+      return undefined;
+    }
   };
 }
 
@@ -465,6 +516,108 @@ function exactSlotPath(
     pathContains(pool.poolPath, slot.path) &&
     slot.path === join(pool.poolPath, String(slot.ordinal), identity.repositoryName)
   );
+}
+
+/**
+ * What decides whether a slot is idle: every fact the rule reads, however it was gathered.
+ * Acquisition gathers them fresh under its screening; the inventory reads them from its last
+ * observation. Both hand them to `idleSlotRefusal`, so the rule has one owner.
+ */
+export interface IdleSlotFacts {
+  state: string;
+  /** The slot's path is exactly the one its pool owns. */
+  exactPath: boolean;
+  activeIdentity: "none" | "present" | "invalid";
+  /** The last-released owner: none, an incomplete identity, still referencing it, gone, or unreadable. */
+  lastOwner: "none" | "invalid" | "referenced" | "absent" | "unknown";
+  /** Why the last owner could not be read, when `lastOwner` is unknown. */
+  lastOwnerError?: string | null;
+  occupancy: WorktreeOccupancy | undefined;
+  /** A Git registration that is not bare, locked or prunable. */
+  registrationSafe: boolean;
+  /**
+   * The slot's Git state. Left out to check only the rules before it, so a caller can skip a
+   * Git read for a slot an earlier rule already refuses: null then still needs these checks.
+   */
+  inspection?: { ok: true; pathMatches: boolean; dirty: boolean } | { ok: false; reason: string };
+}
+
+/**
+ * Why a slot is not idle. `quarantine` is acquisition's verdict on it: anything the slot cannot
+ * prove is quarantined, while a slot that is simply not available, or whose last owner still
+ * references it, is left as it is.
+ */
+export interface IdleSlotRefusal {
+  kind: "notAvailable" | "notIdle";
+  reason: string;
+  detail: string | null;
+  quarantine: boolean;
+}
+
+/**
+ * The one definition of an idle slot, which acquisition, seed-source selection, Warm's own
+ * check when a slot's turn comes, the Warm preview and the slot card's Warm action all share.
+ * Null when every rule passes (and, with `inspection` left out, every rule before it).
+ */
+export function idleSlotRefusal(facts: IdleSlotFacts): IdleSlotRefusal | null {
+  const refuse = (reason: string, detail: string | null = null): IdleSlotRefusal =>
+    ({ kind: "notIdle", reason, detail, quarantine: true });
+  if (facts.state !== "available") {
+    return { kind: "notAvailable", reason: `the slot is ${facts.state}`, detail: null, quarantine: false };
+  }
+  if (!facts.exactPath) return refuse("slot path is not the exact path owned by its native pool");
+  if (facts.activeIdentity === "invalid") return refuse("available slot has incomplete active lease identity");
+  if (facts.activeIdentity === "present") return refuse("available slot still carries active lease identity");
+  if (facts.lastOwner === "invalid") return refuse("last-released lease identity is incomplete");
+  if (facts.lastOwner === "referenced") {
+    // The recoverable release/domain-row crash window. The slot stays available but is not
+    // idle until the exact owner clears its durable row.
+    return { kind: "notIdle", reason: "its last owner still references it", detail: null, quarantine: false };
+  }
+  if (facts.lastOwner === "unknown") {
+    return refuse("last-released domain ownership could not be read", facts.lastOwnerError ?? null);
+  }
+  if (!facts.occupancy || facts.occupancy.status === "unknown") {
+    return refuse("slot occupancy is unknown", facts.occupancy?.status === "unknown" ? facts.occupancy.reason : null);
+  }
+  if (facts.occupancy.occupants.length > 0) return refuse("an available slot has process occupancy");
+  if (!facts.registrationSafe) return refuse("slot has no safe Git worktree registration");
+  if (!facts.inspection) return null;
+  if (!facts.inspection.ok) return refuse("slot Git state could not be inspected", facts.inspection.reason);
+  if (!facts.inspection.pathMatches) return refuse("slot belongs to a different Git common directory");
+  if (facts.inspection.dirty) return refuse("available slot has dirty or untracked work");
+  return null;
+}
+
+function identityFact(reference: WorktreeOwnerReference | null | "invalid"): IdleSlotFacts["activeIdentity"] {
+  return reference === null ? "none" : reference === "invalid" ? "invalid" : "present";
+}
+
+/**
+ * `idleSlotRefusal` over an inventory observation rather than a fresh screening. What the
+ * observation could not read counts against the slot, as it would at acquisition.
+ */
+export function observedIdleRefusal(status: NativeSlotStatus): IdleSlotRefusal | null {
+  const prior = lastReference(status.slot);
+  return idleSlotRefusal({
+    state: status.slot.state,
+    exactPath: status.nativePath,
+    activeIdentity: identityFact(activeReference(status.slot)),
+    lastOwner: prior === null
+      ? "none"
+      : prior === "invalid"
+        ? "invalid"
+        : status.ownerReferenced === true
+          ? "referenced"
+          : status.ownerReferenced === false
+            ? "absent"
+            : "unknown",
+    occupancy: status.occupancy,
+    registrationSafe: status.registered === true,
+    inspection: status.observedHead === null || status.dirty === null || status.repositoryMatches === null
+      ? { ok: false, reason: "the slot's Git state could not be read" }
+      : { ok: true, pathMatches: status.repositoryMatches, dirty: status.dirty },
+  });
 }
 
 /** Native worktree sweep interval, or null when MISSION_WORKTREE_SWEEP_MS disables it. */
@@ -793,78 +946,55 @@ export class WorktreeManager {
     const occupancy = await this.occupancy(available.map((slot) => slot.path));
     const idle: Array<{ slot: WorktreeSlotRow; head: string }> = [];
     for (const slot of available) {
-      if (!exactSlotPath(pool, identity, slot)) {
-        this.quarantine(slot, "slot path is not the exact path owned by its native pool");
-        continue;
-      }
-      const active = activeReference(slot);
-      if (active !== null) {
-        this.quarantine(
-          slot,
-          active === "invalid"
-            ? "available slot has incomplete active lease identity"
-            : "available slot still carries active lease identity",
-        );
-        continue;
-      }
       const priorReference = lastReference(slot);
-      if (priorReference === "invalid") {
-        this.quarantine(slot, "last-released lease identity is incomplete");
-        continue;
-      }
-      if (priorReference) {
+      let lastOwner: IdleSlotFacts["lastOwner"] = priorReference === null
+        ? "none"
+        : priorReference === "invalid" ? "invalid" : "absent";
+      let lastOwnerError: string | null = null;
+      if (priorReference && priorReference !== "invalid" && exactSlotPath(pool, identity, slot) && activeReference(slot) === null) {
         try {
-          if (await this.ownerReferenced(priorReference)) {
-            // This is the recoverable release/domain-row crash window. Keep the slot
-            // available but ineligible until the exact owner clears its durable row.
-            continue;
-          }
+          if (await this.ownerReferenced(priorReference)) lastOwner = "referenced";
         } catch (error) {
-          this.quarantine(slot, "last-released domain ownership could not be read", String(error));
-          continue;
+          lastOwner = "unknown";
+          lastOwnerError = String(error);
         }
       }
-      const observedOccupancy = occupancy.get(slot.path);
-      if (!observedOccupancy || observedOccupancy.status === "unknown") {
-        this.quarantine(
-          slot,
-          "slot occupancy is unknown",
-          observedOccupancy?.status === "unknown" ? observedOccupancy.reason : null,
-        );
-        continue;
-      }
-      if (observedOccupancy.occupants.length > 0) {
-        this.quarantine(slot, "an available slot has process occupancy");
-        continue;
-      }
       const registration = registrationFor(registrations.value, slot.path);
-      if (!registration || registration.bare || registration.locked || registration.prunable) {
-        this.quarantine(slot, "slot has no safe Git worktree registration");
+      const facts: IdleSlotFacts = {
+        state: slot.state,
+        exactPath: exactSlotPath(pool, identity, slot),
+        activeIdentity: identityFact(activeReference(slot)),
+        lastOwner,
+        lastOwnerError,
+        occupancy: occupancy.get(slot.path),
+        registrationSafe: Boolean(registration && !registration.bare && !registration.locked && !registration.prunable),
+      };
+      // The rules before the Git state first, so a slot one of them refuses costs no Git read.
+      let refusal = idleSlotRefusal(facts);
+      let head: string | null = null;
+      if (!refusal) {
+        let inspected: IdleSlotFacts["inspection"];
+        try {
+          const inspection = await this.deps.git.inspect(slot.path);
+          inspected = inspection.ok
+            ? {
+                ok: true,
+                pathMatches: inspection.value.path === slot.path &&
+                  inspection.value.commonDirectory === identity.gitCommonDirectory,
+                dirty: inspection.value.dirty,
+              }
+            : { ok: false, reason: inspection.reason };
+          if (inspection.ok) head = inspection.value.head;
+        } catch (error) {
+          inspected = { ok: false, reason: String(error) };
+        }
+        refusal = idleSlotRefusal({ ...facts, inspection: inspected });
+      }
+      if (refusal) {
+        if (refusal.quarantine) this.quarantine(slot, refusal.reason, refusal.detail);
         continue;
       }
-      let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
-      try {
-        inspection = await this.deps.git.inspect(slot.path);
-      } catch (error) {
-        this.quarantine(slot, "slot Git state could not be inspected", String(error));
-        continue;
-      }
-      if (!inspection.ok) {
-        this.quarantine(slot, "slot Git state could not be inspected", inspection.reason);
-        continue;
-      }
-      if (
-        inspection.value.path !== slot.path ||
-        inspection.value.commonDirectory !== identity.gitCommonDirectory
-      ) {
-        this.quarantine(slot, "slot belongs to a different Git common directory");
-        continue;
-      }
-      if (inspection.value.dirty) {
-        this.quarantine(slot, "available slot has dirty or untracked work");
-        continue;
-      }
-      idle.push({ slot, head: inspection.value.head });
+      idle.push({ slot, head: head! });
     }
     return { ok: true, idle };
   }
@@ -1174,7 +1304,10 @@ export class WorktreeManager {
     control: AbortController,
     onClaimStart: (() => void) | undefined,
     where: { pool: WorktreePoolRow; identity: WorktreeRepositoryIdentity; enabled: boolean },
+    options: ClaimOptions = {},
   ): Promise<ClaimRun> {
+    const slotState = options.slotState ?? "provisioning";
+    const say = sayTo(options.output);
     const fingerprint = await this.commitFingerprint(reservation.path, claim, sha);
     const recorded = this.store.slot(reservation.id);
     if (
@@ -1182,12 +1315,13 @@ export class WorktreeManager {
       recorded?.depsState === "current" &&
       recorded.depsFingerprint === fingerprint
     ) {
+      say?.("The slot's dependencies already match this commit, so the claim's steps are skipped.\n");
       return { kind: "skipped" };
     }
     notifyClaimStart(onClaimStart);
     // The whole claim, the seed included, spends one deadline.
     const deadline = this.deps.now() + claim.timeoutMinutes * 60_000;
-    if (!this.store.beginClaim(reservation.id, reservation.version, this.deps.now())) {
+    if (!this.store.beginClaim(reservation.id, reservation.version, this.deps.now(), slotState)) {
       return { kind: "unrecorded", reason: "the dependency claim intent could not be recorded" };
     }
     this.publish();
@@ -1197,6 +1331,7 @@ export class WorktreeManager {
         reservation.version,
         { state, error: encodeClaimFailure(warning) },
         this.deps.now(),
+        slotState,
       );
       if (!settled) return { kind: "unrecorded", reason: "the dependency claim outcome could not be recorded" };
       this.publish();
@@ -1209,6 +1344,7 @@ export class WorktreeManager {
     // be half renamed. A state a later build wrote is treated the same way.
     const interrupted = depsCutOff(recorded?.depsState ?? null);
     if (interrupted && claim.seed) {
+      say?.("This slot's last claim or seed was cut off, so its seed paths are removed first.\n");
       // The wipe spends the claim's deadline and honours its Stop like every seed phase, so a
       // large tree cannot hide a Stop or eat the steps' time unseen.
       const wiped = await wipeSeedPaths(reservation.path, claim.seed, {
@@ -1259,6 +1395,8 @@ export class WorktreeManager {
         deadline,
         pool: where.pool,
         identity: where.identity,
+        slotState,
+        say,
       });
       if (seeded) return seeded;
     }
@@ -1277,6 +1415,7 @@ export class WorktreeManager {
         this.claims.progress(reservation.id, control, step);
         this.publish();
       },
+      ...(say ? { onOutput: say } : {}),
     });
     if (!outcome.ok && this.claims.stopping) return { kind: "shutdown" };
     if (!outcome.ok) return settleFailed(outcome.warning);
@@ -1285,6 +1424,7 @@ export class WorktreeManager {
       reservation.version,
       { state: "current", fingerprint, sha },
       this.deps.now(),
+      slotState,
     );
     if (!settled) return { kind: "unrecorded", reason: "the dependency claim outcome could not be recorded" };
     this.publish();
@@ -1311,8 +1451,10 @@ export class WorktreeManager {
     deadline: number;
     pool: WorktreePoolRow;
     identity: WorktreeRepositoryIdentity;
+    slotState: WorktreeClaimSlotState;
+    say: Say | null;
   }): Promise<ClaimRun | null> {
-    const { reservation, claim, seed, sha, fingerprint, exactOnly, inherit, control, deadline } = input;
+    const { reservation, claim, seed, sha, fingerprint, exactOnly, inherit, control, deadline, slotState, say } = input;
     const seeded = await this.seedTree({
       pool: input.pool,
       identity: input.identity,
@@ -1327,10 +1469,11 @@ export class WorktreeManager {
       signal: control.signal,
       deadline,
       begin: () => {
-        if (!this.store.beginSeed(reservation.id, reservation.version, this.deps.now())) return false;
+        if (!this.store.beginSeed(reservation.id, reservation.version, this.deps.now(), slotState)) return false;
         this.publish();
         return true;
       },
+      ...(say ? { say } : {}),
     });
     if (seeded.kind === "unrecorded") {
       return { kind: "unrecorded", reason: "the dependency seed intent could not be recorded" };
@@ -1344,10 +1487,12 @@ export class WorktreeManager {
         reservation.version,
         { state: "interrupted", error: encodeClaimFailure(warning) },
         this.deps.now(),
+        slotState,
       );
       if (!settled) return { kind: "unrecorded", reason: "the dependency seed outcome could not be recorded" };
       this.publish();
       console.warn(`[worktrees] dependency seed interrupted in ${reservation.path}: ${seeded.reason}`);
+      say?.(`The seed was cut off: the claim's steps ${seeded.reason}.\n`);
       return { kind: "failed", warning };
     }
     if (inherit && seeded.kind === "placed" && fingerprint !== null && seeded.fingerprint === fingerprint) {
@@ -1358,16 +1503,23 @@ export class WorktreeManager {
         reservation.version,
         { state: "current", fingerprint, sha },
         this.deps.now(),
+        slotState,
       );
       if (!settled) return { kind: "unrecorded", reason: "the dependency seed outcome could not be recorded" };
       this.publish();
+      say?.("The seed's source matches this commit, so the claim's steps are skipped.\n");
       return { kind: "succeeded" };
     }
     if (seeded.kind === "abandoned") {
       console.warn(`[worktrees] dependency seed abandoned for ${reservation.path}: ${seeded.reason}`);
+      say?.(`The seed was abandoned, so the claim's steps run: ${seeded.reason}\n`);
+    } else if (seeded.kind === "none") {
+      say?.("No idle sibling could be seeded from, so the claim's steps run.\n");
+    } else if (seeded.kind === "placed") {
+      say?.("The seed was placed; the claim's steps run on top of it.\n");
     }
     // The steps run, under the claim's own write-ahead again when a seed took its place.
-    if (seeded.kind !== "none" && !this.store.beginClaim(reservation.id, reservation.version, this.deps.now())) {
+    if (seeded.kind !== "none" && !this.store.beginClaim(reservation.id, reservation.version, this.deps.now(), slotState)) {
       return { kind: "unrecorded", reason: "the dependency claim intent could not be recorded" };
     }
     return null;
@@ -1496,6 +1648,8 @@ export class WorktreeManager {
     signal: AbortSignal;
     deadline: number;
     begin: () => boolean;
+    /** Told which sibling the seed copies from, once it is held. */
+    say?: (text: string) => void;
   }): Promise<SeedRun> {
     this.liveWarmOwners.add(input.ownerKey);
     const stagingId = this.deps.randomId();
@@ -1513,6 +1667,7 @@ export class WorktreeManager {
         }
       }
       if (!source) return { kind: "none" };
+      input.say?.(`Seeding copy-on-write from the idle sibling ${source.path}\n`);
       let staged: Awaited<ReturnType<typeof stageSeed>>;
       try {
         if (!input.begin()) return { kind: "unrecorded" };
@@ -1581,6 +1736,295 @@ export class WorktreeManager {
     } catch (error) {
       console.warn(`[worktrees] seed source ${source.path} was not returned: ${bounded(String(error))}`);
     }
+  }
+
+  /**
+   * Warm one available slot ahead of time, for the Warm operation `operationId`.
+   *
+   * The slot is held under a `warm` lease owned by `warm:<operationId>`, through the ordinary
+   * reservation and `finalizeLease`, so nothing can lease, reset or quarantine it meanwhile and
+   * the occupancy rule never sees the claim's processes inside an available slot. Then origin is
+   * fetched, the slot is reset to its current default branch, the pool's claim runs under its
+   * ordinary rules (skip on a matching fingerprint, seed when cold or exactly matched, else the
+   * steps), the tree gets the same proof an acquired slot gets, and the slot goes back through
+   * the ordinary owner-authorized return.
+   *
+   * The claim runs in the leased state, so a crash leaves the slot leased to a `warm` owner with
+   * its write-ahead, and startup returns it through the ordinary return path as `interrupted`.
+   *
+   * Only a slot that is available and idle by acquisition's own screening is touched. Anything
+   * else, including one that was leased after the Warm was queued, is skipped untouched.
+   *
+   * `signal` is Cancel. Before the slot is held it skips the slot; while the claim runs it stops
+   * the step's process group (during a seed the slot records `interrupted`, during a step
+   * `failed`, the Stop rule), and either way the slot is returned as available.
+   */
+  async warmSlot(input: {
+    slotId: string;
+    operationId: string;
+    signal: AbortSignal;
+    /** Told what the Warm is doing and the claim's redacted output; a promise is backpressure. */
+    output: (text: string) => void | Promise<void>;
+    /**
+     * Recorded on the slot row once the slot is held, as its most recent Warm log, so the slot
+     * card can reach it after a restart. Called first, so the file exists before it is named.
+     */
+    log: { path: string; open: () => void } | null;
+  }): Promise<WarmSlotResult> {
+    const say = sayTo(input.output)!;
+    const owner: WorktreeOwner = { kind: "warm", key: input.operationId };
+    if (!validOwner(owner)) return { outcome: "skipped", reason: "the Warm operation id is invalid" };
+    const slot = this.store.slot(input.slotId);
+    if (!slot) return { outcome: "skipped", reason: "the slot no longer exists" };
+    if (slot.state !== "available") {
+      return { outcome: "skipped", reason: `the slot is ${slot.state}, and Warm never touches a slot that is not available` };
+    }
+    const pool = this.store.poolForSlot(slot.id);
+    if (!pool) return { outcome: "skipped", reason: "the slot's pool no longer exists" };
+    const identity = this.identity(pool.mainCheckoutRoot);
+    if (!identity || identity.gitCommonDirectory !== pool.gitCommonDirectory || identity.poolPath !== pool.poolPath) {
+      return { outcome: "skipped", reason: "the pool's repository identity can no longer be proven" };
+    }
+    let policy: WorktreePolicy;
+    try {
+      policy = this.deps.resolvePolicy(identity.gitCommonDirectory);
+    } catch (error) {
+      return { outcome: "skipped", reason: `the pool's policy is invalid: ${bounded(String(error))}` };
+    }
+    if (!policy.enabled) return { outcome: "skipped", reason: "native worktrees are disabled for this repository" };
+    const claim = policy.claim ?? null;
+    if (!claim) return { outcome: "skipped", reason: "the pool has no dependency claim configured" };
+    if (this.claims.stopping) return { outcome: "skipped", reason: STOPPING_REASON };
+    if (input.signal.aborted) return { outcome: "cancelled", reason: "cancelled before the slot was held" };
+
+    this.liveWarmOwners.add(owner.key);
+    try {
+      // Acquisition's own screening: a slot it would refuse or quarantine is never warmed.
+      const screened = await this.screenIdleSlots(pool, identity, [slot]);
+      const idle = screened.ok ? screened.idle.find((entry) => entry.slot.id === slot.id) ?? null : null;
+      if (!idle) {
+        const now = this.store.slot(slot.id);
+        return {
+          outcome: "skipped",
+          reason: !screened.ok
+            ? screened.reason
+            : now?.state === "quarantined"
+              ? `the slot was quarantined: ${now.quarantineReason ?? "it could not be proven idle"}`
+              : "the slot is not idle: its last owner still references it",
+        };
+      }
+      if (input.signal.aborted) return { outcome: "cancelled", reason: "cancelled before the slot was held" };
+      const leaseId = this.deps.randomId();
+      let reservation: WorktreeSlotRow | null;
+      try {
+        reservation = await this.withPoolReservation(pool.gitCommonDirectory, async () =>
+          this.store.reserveAvailable({
+            slotId: idle.slot.id,
+            version: idle.slot.version,
+            leaseId,
+            ownerKind: owner.kind,
+            ownerKey: owner.key,
+            requestedHeadSha: idle.head,
+            now: this.deps.now(),
+          }));
+      } catch (error) {
+        return { outcome: "failed", reason: `the slot could not be reserved: ${bounded(String(error))}` };
+      }
+      if (!reservation) return { outcome: "skipped", reason: "the slot was leased by something else first" };
+      const reserved = reservation;
+      // Registered in the same synchronous run as the reservation, as acquisition does, so
+      // maintenance skips this slot rather than queueing behind a Warm it did not see, and Stop
+      // and shutdown find the Warm's claim.
+      const control = this.claims.register(reserved.id, owner, this.deps.now());
+      if (!control) {
+        // Shutdown began between the check above and the reservation. Held but untouched, so
+        // startup returns it through the ordinary path.
+        this.store.finalizeLease(reserved.id, reserved.version, idle.head, this.deps.now());
+        return { outcome: "failed", reason: STOPPING_REASON };
+      }
+      const unfollow = followSignal(input.signal, control);
+      try {
+        return await this.withSlot(reserved.id, () => this.warmHeld({
+          reservation: reserved,
+          head: idle.head,
+          leaseId,
+          owner,
+          pool,
+          identity,
+          policy,
+          claim,
+          control,
+          log: input.log,
+          signal: input.signal,
+          say,
+        }));
+      } finally {
+        unfollow();
+        this.claims.unregister(reserved.id, control);
+      }
+    } finally {
+      this.liveWarmOwners.delete(owner.key);
+    }
+  }
+
+  /** `warmSlot`, under the slot lock, once the slot is reserved to the Warm. */
+  private async warmHeld(input: {
+    reservation: WorktreeSlotRow;
+    head: string;
+    leaseId: string;
+    owner: WorktreeOwner;
+    pool: WorktreePoolRow;
+    identity: WorktreeRepositoryIdentity;
+    policy: WorktreePolicy;
+    claim: WorktreeClaim;
+    control: AbortController;
+    log: { path: string; open: () => void } | null;
+    signal: AbortSignal;
+    say: Say;
+  }): Promise<WarmSlotResult> {
+    const { reservation, pool, identity, claim, say } = input;
+    const entered = await this.enteredSinceReservation(reservation, "it was warmed");
+    if (entered) return { outcome: "failed", reason: entered };
+    let leased: WorktreeSlotRow | null;
+    try {
+      leased = this.store.finalizeLease(reservation.id, reservation.version, input.head, this.deps.now());
+    } catch (error) {
+      this.quarantine(reservation, "Warm lease outcome is unknown", bounded(String(error)));
+      return { outcome: "failed", reason: "the Warm lease could not be recorded" };
+    }
+    if (!leased) {
+      this.quarantine(reservation, "Warm lease lost its slot compare-and-swap");
+      return { outcome: "failed", reason: "the Warm lease could not be recorded" };
+    }
+    const held = leased;
+    this.publish();
+    if (input.log) {
+      try {
+        input.log.open();
+        if (this.store.setDepsLogPath(held.id, input.leaseId, input.log.path, this.deps.now())) this.publish();
+      } catch (error) {
+        console.warn(`[worktrees] Warm log for ${held.path} could not be recorded: ${bounded(String(error))}`);
+      }
+    }
+    say(`Warming slot ${held.ordinal} at ${held.path}\n`);
+    const lease: NativeWorktreeLease = {
+      slotId: held.id,
+      poolId: pool.id,
+      path: held.path,
+      provider: "mission",
+      leaseId: input.leaseId,
+      owner: input.owner,
+      baseSha: input.head,
+      slotVersion: held.version,
+    };
+    // The ordinary owner-authorized return: occupancy, a fresh fetch, the reset to origin's
+    // default, and the clean, detached proof. Nothing is returned while the daemon stops:
+    // startup does that, through the same path.
+    //
+    // `discardStepChanges` is for a Cancel: the return's reset then discards whatever the
+    // stopped step left in the tree, tracked changes included, instead of refusing a dirty
+    // slot. Only this Warm's own step ran here since the slot was held idle and clean, so there
+    // is no one else's work to lose. The return still proves the reset tree clean and detached,
+    // and quarantines the slot if it cannot.
+    const giveBack = async (discardStepChanges: boolean): Promise<string | null> => {
+      if (this.claims.stopping) return STOPPED_REASON;
+      say(discardStepChanges
+        ? "Returning the slot to the pool, discarding what the stopped step changed\n"
+        : "Returning the slot to the pool\n");
+      try {
+        const released = await this.releaseLocked(lease, { ownerAuthorized: true, requireClean: !discardStepChanges });
+        return released.outcome === "released" || released.outcome === "alreadyReleased" ? null : released.reason;
+      } catch (error) {
+        return bounded(String(error));
+      }
+    };
+    const returnedAfter = async (outcome: WarmSlotResult, discardStepChanges = false): Promise<WarmSlotResult> => {
+      const refused = await giveBack(discardStepChanges);
+      if (!refused) return outcome;
+      say(`The slot could not be returned: ${refused}\n`);
+      return { outcome: "failed", reason: `the slot could not be returned to the pool: ${refused}` };
+    };
+
+    say("Fetching origin's default branch\n");
+    let target: GitResult<string>;
+    try {
+      target = await this.deps.git.fetchDefaultSha(identity);
+    } catch (error) {
+      target = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+    }
+    if (!target.ok) {
+      say(`The fetch failed: ${target.reason}\n`);
+      return returnedAfter({ outcome: "failed", reason: `origin's default branch could not be fetched: ${target.reason}` });
+    }
+    if (input.signal.aborted) return returnedAfter({ outcome: "cancelled", reason: "cancelled before the claim began" });
+    const sha = target.value;
+    say(`Resetting to origin's default branch at ${sha.slice(0, 12)}\n`);
+    let reset: GitResult<void>;
+    try {
+      reset = await this.deps.git.reset(held.path, sha);
+    } catch (error) {
+      reset = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+    }
+    if (!reset.ok) {
+      this.quarantine(held, "Warm reset failed", reset.reason);
+      return { outcome: "failed", reason: `the slot could not be reset: ${reset.reason}` };
+    }
+
+    const claimed = await this.claimDependencies(
+      held,
+      claim,
+      sha,
+      input.control,
+      undefined,
+      { pool, identity, enabled: input.policy.enabled },
+      { slotState: "leased", output: say },
+    );
+    if (claimed.kind === "shutdown") {
+      // Left leased to this Warm with its write-ahead. Startup marks it interrupted and returns
+      // it through the ordinary path.
+      return { outcome: "failed", reason: STOPPED_REASON };
+    }
+    if (claimed.kind === "unrecorded") {
+      this.quarantine(held, "dependency claim state could not be recorded", claimed.reason);
+      return { outcome: "failed", reason: claimed.reason };
+    }
+
+    // Cancel returns the slot as available, whatever its stopped step left behind: straight to
+    // the ordinary return, whose reset puts the tree back and whose own proof decides. The
+    // claim already recorded `deps_state` by the Stop rule.
+    if (claimed.kind === "failed" && input.signal.aborted) {
+      const { warning } = claimed;
+      return returnedAfter(
+        { outcome: "cancelled", reason: `cancelled while the claim ran: step ${warning.step} of ${warning.stepCount} ${warning.reason}` },
+        true,
+      );
+    }
+
+    // The proof an acquired slot gets before its grant. A claim step that modified a tracked
+    // file, or attached a branch, is quarantined here as it would be there.
+    let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+    try {
+      inspection = await this.deps.git.inspect(held.path);
+    } catch (error) {
+      inspection = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+    }
+    if (
+      !inspection.ok ||
+      inspection.value.path !== held.path ||
+      inspection.value.commonDirectory !== identity.gitCommonDirectory ||
+      inspection.value.head !== sha ||
+      inspection.value.dirty ||
+      !inspection.value.detached
+    ) {
+      const reason = inspection.ok
+        ? "warmed slot failed path, repository, exact HEAD, cleanliness, or detached-HEAD verification"
+        : inspection.reason;
+      this.quarantine(held, "warmed slot verification failed", reason);
+      say(`The warmed slot failed its verification and was quarantined: ${reason}\n`);
+      return { outcome: "failed", reason };
+    }
+    if (claimed.kind === "failed") return returnedAfter({ outcome: "claimFailed", warning: claimed.warning });
+    return returnedAfter({ outcome: "warmed", stepsSkipped: claimed.kind === "skipped" });
   }
 
   /**

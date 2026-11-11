@@ -364,6 +364,9 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   checkRecovery: checkRuntime.groupRecovery,
   notifyChanged: () => registry.emitWorktreesChanged(),
 });
+// No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
+// reconciliation above has already returned every slot a crashed Warm held.
+await worktreeOperations.sweepWarmLogs();
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
 // is the two-way seam the plan requires: Workflow asks Ensemble whether a session may be bound,

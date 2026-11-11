@@ -45,8 +45,9 @@ const overCapacityPool: WorktreeRepositoryView = {
     diskBytes: 4096,
     quarantineReason: null,
     diagnostic: null,
-    dependencies: null,
     actions: ["return", "destroy"],
+    dependencies: null,
+    warmLog: null,
   }],
 };
 
@@ -103,11 +104,12 @@ const state: WorktreesState = {
   busy: false,
   operations: [],
   refresh: noop,
-  updateConfig: noop,
+  updateConfig: async () => ({ ok: true }),
   requestPreview: noop,
   executePreview: async () => true,
   discardPreview: () => {},
   dismissOperation: noop,
+  cancelOperation: noop,
 };
 
 function render(next: Partial<WorktreesState> = {}): string {
@@ -310,6 +312,7 @@ const queuedDestroy: WorktreeOperationView = {
   completed: [],
   queuedAt: 1,
   finishedAt: null,
+  warm: null,
 };
 
 test("a destroyable slot offers a bulk selection checkbox and no bulk bar until one is ticked", () => {
@@ -426,4 +429,182 @@ test("Dismiss never claims a failure without confirmed removals changed nothing"
   });
   assert.match(html, /dismissing it does not undo or retry anything/);
   assert.doesNotMatch(html, /nothing was changed/);
+});
+
+test("a pool with a claim shows its editor, each name's presence, and every slot dependency state", () => {
+  const base = overCapacityPool.slots[0]!;
+  const at = { fingerprintSha: null, claimedAt: null };
+  const claimPool: WorktreeRepositoryView = {
+    ...roomToGrowPool,
+    // An attention pool renders open, so its detail and slots reach the markup.
+    status: "attention",
+    policy: {
+      ...roomToGrowPool.policy,
+      claim: {
+        steps: [{ argv: ["pnpm", "install", "--frozen-lockfile"], env: ["ARTIFACTORY_AUTH_TOKEN", "NPM_TOKEN"] }],
+        timeoutMinutes: 15,
+        fingerprintPaths: ["pnpm-lock.yaml", "apps/*/package.json"],
+        seed: { paths: ["node_modules", "apps/*/node_modules"], exclude: ["**/node_modules/.cache"] },
+      },
+    },
+    claimVariables: [
+      { name: "ARTIFACTORY_AUTH_TOKEN", present: true, source: "loginShell" },
+      { name: "NPM_TOKEN", present: false, source: null },
+    ],
+    slots: [
+      { ...base, id: "d1", ordinal: 1, dependencies: { ...at, state: "current", fingerprintSha: "c".repeat(40), defaultSha: "d".repeat(40) } },
+      { ...base, id: "d2", ordinal: 2, dependencies: { ...at, state: "stale", fingerprintSha: "c".repeat(40), defaultSha: "e".repeat(40) } },
+      { ...base, id: "d3", ordinal: 3, dependencies: { ...at, state: "never" } },
+      {
+        ...base,
+        id: "d4",
+        ordinal: 4,
+        state: "provisioning",
+        dependencies: {
+          ...at,
+          state: "installing",
+          claimId: "claim-d4",
+          startedAt: 0,
+          step: { step: 1, stepCount: 2, command: "pnpm install --frozen-lockfile", startedAt: 0 },
+        },
+      },
+      {
+        ...base,
+        id: "d5",
+        ordinal: 5,
+        dependencies: {
+          ...at,
+          state: "failed",
+          failure: {
+            step: 1, stepCount: 1, command: "pnpm install", reason: "exited with code 3", tail: "E401 Unauthorized\n", truncatedBytes: 0,
+            tailWithheld: false,
+          },
+        },
+      },
+      { ...base, id: "d6", ordinal: 6, dependencies: { ...at, state: "interrupted" } },
+      {
+        ...base,
+        id: "d7",
+        ordinal: 7,
+        // A failure an earlier build stored as text: the reason line and tail, no guessed command.
+        dependencies: {
+          ...at,
+          state: "failed",
+          failure: {
+            step: null, stepCount: null, command: null, reason: "legacy summary line", tail: "", truncatedBytes: 0,
+            tailWithheld: true,
+          },
+        },
+      },
+    ],
+  };
+  const html = render({ inventory: { ...inventory, repositories: [claimPool] } });
+  assert.match(html, /Dependency claim, run on every task lease/);
+  assert.match(html, /Step 1 command, one argument per line/);
+  assert.match(html, />pnpm\ninstall\n--frozen-lockfile<\/textarea>/);
+  assert.match(html, /value="ARTIFACTORY_AUTH_TOKEN NPM_TOKEN"/);
+  assert.match(html, /value="15"/);
+  assert.match(html, />pnpm-lock.yaml\napps\/\*\/package.json<\/textarea>/);
+  assert.match(html, /Seed paths, one repository-relative glob per line<\/label><textarea[^>]*>node_modules\napps\/\*\/node_modules<\/textarea>/);
+  assert.match(html, /Seed exclusions, one repository-relative glob per line<\/label><textarea[^>]*>\*\*\/node_modules\/\.cache<\/textarea>/);
+  assert.match(html, /<code>ARTIFACTORY_AUTH_TOKEN<\/code><span class="wt-chip wt-chip-ready">present<\/span><span class="wt-claim-var-where">in the login shell<\/span>/);
+  assert.match(html, /<code>NPM_TOKEN<\/code><span class="wt-chip wt-chip-danger">missing<\/span>/);
+
+  assert.match(html, /aria-label="Slot 1 dependencies"[\s\S]*?>current<[\s\S]*?Matches the fetched default branch at <code>ddddddddd<\/code>/);
+  assert.match(html, /aria-label="Slot 2 dependencies"[\s\S]*?>stale<[\s\S]*?default branch at <code>eeeeeeeee<\/code> needs different/);
+  assert.match(html, /aria-label="Slot 3 dependencies"[\s\S]*?>never installed</);
+  assert.match(html, /aria-label="Slot 4 dependencies"[\s\S]*?>installing<[\s\S]*?Step 1 of 2 · <span>[\s\S]*?elapsed<\/span>[\s\S]*?>pnpm install --frozen-lockfile<\/code>/);
+  assert.match(html, /aria-label="Slot 5 dependencies"[\s\S]*?>failed<[\s\S]*?Step 1 of 1 exited with code 3\.<\/p>[\s\S]*?>pnpm install<\/code>[\s\S]*?<pre[^>]*>E401 Unauthorized<\/pre>/);
+  // Only the installing slot offers Stop, named for its slot.
+  assert.match(html, /aria-label="Slot 4 dependencies"[\s\S]*?aria-label="Stop slot 4 dependency claim"[^>]*>Stop<\/button>/);
+  assert.equal(html.match(/dependency claim"/g)?.length, 1);
+  assert.match(html, /aria-label="Slot 6 dependencies"[\s\S]*?>interrupted<[\s\S]*?a stop during a seed[\s\S]*?removes the seed paths and starts cold/);
+  const legacy = html.slice(html.indexOf('aria-label="Slot 7 dependencies"'));
+  assert.match(legacy, /^[\s\S]*?>failed<[\s\S]*?<p class="wt-deps-detail">legacy summary line<\/p>/);
+  const legacyCard = legacy.slice(0, legacy.indexOf("</section>"));
+  assert.doesNotMatch(legacyCard, /Failed command|<pre/, "nothing guessed, no output shown");
+  assert.match(legacyCard, /recorded by an earlier version, before claim variable values were\s+redacted from step output, so its output is not shown\./);
+  // A failure this build recorded says nothing about withheld output.
+  const current = html.slice(html.indexOf('aria-label="Slot 5 dependencies"'));
+  assert.doesNotMatch(current.slice(0, current.indexOf("</section>")), /its output is not shown/);
+});
+
+test("a pool without a claim shows no slot dependency state and offers to add a step", () => {
+  const html = render();
+  assert.doesNotMatch(html, /dependencies"/);
+  assert.match(html, /No claim is configured\. Add a step to set one up\./);
+});
+
+test("Warm is offered on an idle slot and a pool with a claim, and a Warm shows its tail, Cancel, and log", () => {
+  const base = overCapacityPool.slots[0]!;
+  const claimPool: WorktreeRepositoryView = {
+    ...roomToGrowPool,
+    status: "attention",
+    counts: { ...roomToGrowPool.counts, available: 2 },
+    policy: {
+      ...roomToGrowPool.policy,
+      claim: { steps: [{ argv: ["yarn", "install"], env: [] }], timeoutMinutes: 10, fingerprintPaths: ["yarn.lock"] },
+    },
+    slots: [
+      {
+        ...base,
+        id: "w1",
+        ordinal: 1,
+        state: "available",
+        owner: null,
+        actions: ["destroy", "warm"],
+        warmLog: { id: "op-old", path: "/state/logs/worktree-warm/op-old.log" },
+      },
+      { ...base, id: "w2", ordinal: 2, state: "available", owner: null, actions: ["destroy", "warm"] },
+    ],
+  };
+  const running: WorktreeOperationView = {
+    id: "op-warm",
+    request: { action: "warm", target: { kind: "pool", poolId: claimPool.id } },
+    state: "running",
+    targets: [{ provider: "mission", id: "w2", path: "/state/worktrees/pool-2/2/repo" }],
+    error: null,
+    changed: false,
+    removals: [],
+    completed: [],
+    queuedAt: 1,
+    finishedAt: null,
+    warm: {
+      targets: [
+        { slotId: "w2", ordinal: 2, path: "/state/worktrees/pool-2/2/repo", outcome: "running", detail: null },
+        { slotId: "w3", ordinal: 3, path: "/state/worktrees/pool-2/3/repo", outcome: "skipped", detail: "the slot is leased" },
+      ],
+      tail: "$ yarn install\nresolving packages\n",
+      truncatedBytes: 0,
+      log: { id: "op-warm", path: "/state/logs/worktree-warm/op-warm.log" },
+      cancelRequested: false,
+    },
+  };
+  const html = render({ inventory: { ...inventory, repositories: [claimPool] }, operations: [running] });
+  assert.match(html, />Warm idle slots</);
+  assert.match(html, /aria-label="Warm operations"/);
+  assert.match(html, /aria-label="Warm idle slots output"[^>]*>\$ yarn install\nresolving packages</);
+  assert.match(html, />Cancel</);
+  assert.match(html, /href="\/api\/worktrees\/warm-logs\/op-warm"/);
+  assert.match(html, /aria-label="Download the full log of Warm idle slots"/);
+  assert.match(html, /skipped<\/span><span>Slot 3/);
+  assert.match(html, /the slot is leased/);
+  // The slot the Warm holds has a pending operation, so it offers no second Warm; the idle one does.
+  const slotOne = html.slice(html.indexOf('aria-label="Slot 1"'), html.indexOf('aria-label="Slot 2"'));
+  assert.match(slotOne, />Warm</);
+  assert.match(slotOne, /href="\/api\/worktrees\/warm-logs\/op-old"/);
+  assert.match(slotOne, />Last Warm log</);
+  const slotTwo = html.slice(html.indexOf('aria-label="Slot 2"'));
+  assert.match(slotTwo, /warm in progress/);
+  assert.doesNotMatch(slotTwo.slice(0, slotTwo.indexOf("</article>")), />Warm<\/button>/);
+  // A Warm is not a cleanup, so it is never listed among them.
+  assert.doesNotMatch(html, /aria-label="Background cleanup"/);
+
+  const finished = render({
+    inventory: { ...inventory, repositories: [claimPool] },
+    operations: [{ ...running, state: "finished", finishedAt: 2, warm: { ...running.warm!, cancelRequested: true } }],
+  });
+  assert.match(finished, />finished</);
+  assert.match(finished, />Dismiss</);
+  assert.doesNotMatch(finished, />Cancel</);
 });

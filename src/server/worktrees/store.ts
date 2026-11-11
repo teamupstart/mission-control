@@ -82,6 +82,8 @@ export interface WorktreeSlotRow {
   depsClaimedAt: number | null;
   /** The last claim's failure: the failing step and its output tail. */
   depsLastError: string | null;
+  /** The full log of the most recent Warm that held this slot. */
+  depsLogPath: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -134,10 +136,17 @@ function slotRow(row: Record<string, unknown>): WorktreeSlotRow {
       ? null
       : Number(row.deps_claimed_at),
     depsLastError: nullableString(row.deps_last_error),
+    depsLogPath: nullableString(row.deps_log_path),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
 }
+
+/**
+ * The slot states a claim's writes may land in: a reservation still provisioning inside its
+ * acquire, or a slot a Warm holds under its `warm` lease.
+ */
+export type WorktreeClaimSlotState = "provisioning" | "leased";
 
 /** The only reader/writer for native operational pool and slot rows. */
 export class WorktreeStore {
@@ -433,14 +442,14 @@ export class WorktreeStore {
    * dependency state is not a slot transition, and the lease commit's compare-and-swap still
    * names the reservation it was granted.
    */
-  beginClaim(slotId: string, version: number, now: number): boolean {
+  beginClaim(slotId: string, version: number, now: number, slotState: WorktreeClaimSlotState = "provisioning"): boolean {
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET deps_state = 'claiming', deps_fingerprint = NULL,
            deps_fingerprint_sha = NULL, updated_at = ?
-         WHERE id = ? AND state = 'provisioning' AND version = ?`,
+         WHERE id = ? AND state = ? AND version = ?`,
       )
-      .run(now, slotId, version);
+      .run(now, slotId, slotState, version);
     return Number(changed.changes) === 1;
   }
 
@@ -448,14 +457,14 @@ export class WorktreeStore {
    * The seed's write-ahead, before anything is renamed into the tree. The same shape as
    * `beginClaim`: one write that records the intent and clears the fingerprint.
    */
-  beginSeed(slotId: string, version: number, now: number): boolean {
+  beginSeed(slotId: string, version: number, now: number, slotState: WorktreeClaimSlotState = "provisioning"): boolean {
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET deps_state = 'seeding', deps_fingerprint = NULL,
            deps_fingerprint_sha = NULL, updated_at = ?
-         WHERE id = ? AND state = 'provisioning' AND version = ?`,
+         WHERE id = ? AND state = ? AND version = ?`,
       )
-      .run(now, slotId, version);
+      .run(now, slotId, slotState, version);
     return Number(changed.changes) === 1;
   }
 
@@ -472,13 +481,14 @@ export class WorktreeStore {
       | { state: "current"; fingerprint: string; sha: string }
       | { state: "interrupted"; error: string | null },
     now: number,
+    slotState: WorktreeClaimSlotState = "provisioning",
   ): boolean {
     const current = outcome.state === "current";
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET deps_state = ?, deps_fingerprint = ?, deps_fingerprint_sha = ?,
            deps_claimed_at = ?, deps_last_error = ?, updated_at = ?
-         WHERE id = ? AND state = 'provisioning' AND version = ? AND deps_state = 'seeding'`,
+         WHERE id = ? AND state = ? AND version = ? AND deps_state = 'seeding'`,
       )
       .run(
         outcome.state,
@@ -488,6 +498,7 @@ export class WorktreeStore {
         current ? null : outcome.error,
         now,
         slotId,
+        slotState,
         version,
       );
     return Number(changed.changes) === 1;
@@ -505,13 +516,14 @@ export class WorktreeStore {
       | { state: "current"; fingerprint: string | null; sha: string }
       | { state: "failed" | "interrupted"; error: string },
     now: number,
+    slotState: WorktreeClaimSlotState = "provisioning",
   ): boolean {
     const current = outcome.state === "current";
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET deps_state = ?, deps_fingerprint = ?, deps_fingerprint_sha = ?,
            deps_claimed_at = ?, deps_last_error = ?, updated_at = ?
-         WHERE id = ? AND state = 'provisioning' AND version = ? AND deps_state = 'claiming'`,
+         WHERE id = ? AND state = ? AND version = ? AND deps_state = 'claiming'`,
       )
       .run(
         outcome.state,
@@ -521,6 +533,7 @@ export class WorktreeStore {
         current ? null : outcome.error,
         now,
         slotId,
+        slotState,
         version,
       );
     return Number(changed.changes) === 1;
@@ -540,6 +553,28 @@ export class WorktreeStore {
       )
       .run(now, slotId, ...WORKTREE_DEPS_WRITE_AHEAD_STATES);
     return Number(changed.changes) === 1;
+  }
+
+  /**
+   * Record the log of the Warm holding this slot now, as the slot's most recent. Not a slot
+   * transition, so the version is left alone. Only the Warm's own lease can write it.
+   */
+  setDepsLogPath(slotId: string, leaseId: string, path: string, now: number): boolean {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET deps_log_path = ?, updated_at = ?
+         WHERE id = ? AND state = 'leased' AND active_lease_id = ? AND active_owner_kind = 'warm'`,
+      )
+      .run(path, now, slotId, leaseId);
+    return Number(changed.changes) === 1;
+  }
+
+  /** Every Warm log a slot row still names. */
+  depsLogPaths(): Set<string> {
+    const rows = this.db
+      .prepare(`SELECT deps_log_path FROM worktree_slots WHERE deps_log_path IS NOT NULL`)
+      .all() as Array<{ deps_log_path: string }>;
+    return new Set(rows.map((row) => String(row.deps_log_path)));
   }
 
   updateObserved(slotId: string, currentHeadSha: string | null, error: string | null, now: number): void {

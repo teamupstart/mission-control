@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import {
   WorktreeClaimSchema,
+  WorktreesConfigPatchSchema,
   type WorktreeClaim,
 } from "../src/shared/protocol.ts";
 import type { WorktreeClaimVariableView } from "../src/shared/worktrees.ts";
@@ -24,6 +25,17 @@ import { WorktreeManager, type WorktreeAcquireResult } from "../src/server/workt
 import { WorktreeOperationsService, slotDependencies } from "../src/server/worktrees/operations.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
+import {
+  claimErrorsFrom,
+  claimFromDraft,
+  draftFromClaim,
+  draftNames,
+  emptyClaimErrors,
+  hasClaimErrors,
+  hasClaimFieldErrors,
+  withoutStepErrors,
+  type ClaimDraft,
+} from "../src/web/lib/worktree-claim-draft.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 // What Settings > Worktrees shows about a pool's dependency claim: each slot's dependency state,
@@ -201,6 +213,118 @@ test("the registry records each step a claim reaches, and only for the claim tha
   assert.equal(registry.get("slot-1")?.step, null);
   registry.unregister("slot-1", next);
   assert.equal(registry.get("slot-1"), null);
+});
+
+test("the claim draft round-trips a stored claim and sends exactly what was typed", () => {
+  const claim = WorktreeClaimSchema.parse({
+    steps: [
+      { argv: ["yarn", "install", "--immutable"], env: ["ARTIFACTORY_AUTH_TOKEN", "NPM_TOKEN"] },
+      { argv: ["yarn", "rebuild"] },
+    ],
+    timeoutMinutes: 25,
+    fingerprintPaths: ["yarn.lock", "apps/*/package.json"],
+  });
+  const draft = draftFromClaim(claim);
+  assert.equal(draft.steps[0]!.argv, "yarn\ninstall\n--immutable");
+  assert.deepEqual(claimFromDraft(draft), claim);
+  assert.deepEqual(draftNames(" A_1,B_2\nC_3  "), ["A_1", "B_2", "C_3"]);
+  // An argument keeps its spaces: a line is an argument, never split on whitespace.
+  assert.deepEqual(
+    (claimFromDraft({ steps: [{ argv: "node\n-e\nconsole.log( 1 )\n", env: "" }], timeoutMinutes: "5", fingerprintPaths: "", seedPaths: "", seedExclude: "" }) as WorktreeClaim).steps[0]!.argv,
+    ["node", "-e", "console.log( 1 )"],
+  );
+  assert.equal(draftFromClaim(null).steps.length, 0);
+
+  // Seeding round-trips one glob per line, and blank seed fields leave the claim unseeded.
+  const seeded = WorktreeClaimSchema.parse({
+    ...claim,
+    seed: { paths: ["node_modules", "apps/*/node_modules"], exclude: ["**/node_modules/.cache"] },
+  });
+  const seededDraft = draftFromClaim(seeded);
+  assert.equal(seededDraft.seedPaths, "node_modules\napps/*/node_modules");
+  assert.equal(seededDraft.seedExclude, "**/node_modules/.cache");
+  assert.deepEqual(claimFromDraft(seededDraft), seeded);
+  assert.equal("seed" in (claimFromDraft(draft) as object), false, "an unseeded claim sends no seed at all");
+});
+
+test("the route's schema refusal lands beside the claim field that caused it", () => {
+  const draft: ClaimDraft = {
+    steps: [
+      { argv: "yarn\ninstall", env: "GOOD_NAME bad-name" },
+      { argv: "", env: "MISSION_API_TOKEN" },
+    ],
+    timeoutMinutes: "0",
+    fingerprintPaths: "yarn.lock\n../outside.json",
+    seedPaths: "node_modules\n**/node_modules",
+    seedExclude: "/abs/.cache",
+  };
+  const parsed = WorktreesConfigPatchSchema.safeParse({
+    repositories: { "/repo/.git": { claim: claimFromDraft(draft) } },
+  });
+  assert.equal(parsed.success, false);
+  // The route answers with exactly this text as its `error` (parseBody in routes.ts).
+  const errors = claimErrorsFrom(parsed.error!.message, draft);
+  assert.deepEqual(errors.general, []);
+  assert.equal(errors.env[0]?.length, 1);
+  assert.match(errors.env[0]![0]!, /^bad-name: a variable name is letters, digits and underscores$/);
+  assert.match(errors.env[1]![0]!, /^MISSION_API_TOKEN: PATH and MISSION_\/FLEET_\/HARNESS_ names are reserved$/);
+  assert.equal(errors.argv[1]?.length, 1, "an empty command is refused on its own step");
+  assert.equal(errors.argv[0], undefined);
+  assert.equal(errors.timeoutMinutes.length, 1);
+  assert.equal(errors.fingerprintPaths.length, 1);
+  assert.match(errors.fingerprintPaths[0]!, /^\.\.\/outside\.json: a fingerprint path is a repository-relative glob/);
+  assert.deepEqual(errors.seedPaths, ["**/node_modules: a seed path cannot use **; name each directory level, with * for one level"]);
+  assert.equal(errors.seedExclude.length, 1);
+  assert.match(errors.seedExclude[0]!, /^\/abs\/\.cache: a seed exclusion is a repository-relative glob/);
+
+  // Exclusions with no seed paths are sent as typed, so the route refuses them beside the paths.
+  const excludeOnly = { ...draft, steps: [{ argv: "true", env: "" }], timeoutMinutes: "10", fingerprintPaths: "", seedPaths: "", seedExclude: "**/.cache" };
+  const refusedExclude = WorktreesConfigPatchSchema.safeParse({
+    repositories: { "/repo/.git": { claim: claimFromDraft(excludeOnly) } },
+  });
+  assert.equal(refusedExclude.success, false);
+  assert.equal(claimErrorsFrom(refusedExclude.error!.message, excludeOnly).seedPaths.length, 1);
+
+  const blankTimeout = { ...draft, steps: [{ argv: "true", env: "" }], timeoutMinutes: "", fingerprintPaths: "", seedPaths: "", seedExclude: "" };
+  const refusedBlank = WorktreesConfigPatchSchema.safeParse({
+    repositories: { "/repo/.git": { claim: claimFromDraft(blankTimeout) } },
+  });
+  assert.equal(refusedBlank.success, false, "a blank timeout is sent as typed and refused, never defaulted silently");
+  assert.equal(claimErrorsFrom(refusedBlank.error!.message, blankTimeout).timeoutMinutes.length, 1);
+
+  const noSteps = { ...draft, steps: [] };
+  const refusedEmpty = WorktreesConfigPatchSchema.safeParse({
+    repositories: { "/repo/.git": { claim: claimFromDraft({ ...noSteps, timeoutMinutes: "10", fingerprintPaths: "", seedPaths: "", seedExclude: "" }) } },
+  });
+  assert.equal(claimErrorsFrom(refusedEmpty.error!.message, noSteps).steps.length, 1);
+
+  const unreachable = claimErrorsFrom("worktree operations unavailable", draft);
+  assert.deepEqual(unreachable.general, ["worktree operations unavailable"]);
+  // A refusal that names no field is still an error, but there is no field to send anyone to.
+  assert.equal(hasClaimErrors(unreachable), true);
+  assert.equal(hasClaimFieldErrors(unreachable), false);
+  assert.equal(hasClaimFieldErrors(errors), true);
+  assert.equal(hasClaimErrors(emptyClaimErrors()), false);
+});
+
+test("removing a step moves its successors' errors down with them and drops its own", () => {
+  const errors = {
+    ...emptyClaimErrors(),
+    timeoutMinutes: ["Number must be greater than or equal to 1"],
+    argv: { 0: ["Argument 1: bad first"], 2: ["Argument 1: bad third"] },
+    env: { 1: ["bad-name: a variable name is letters, digits and underscores"], 2: ["OTHER: reserved"] },
+  };
+  assert.deepEqual(withoutStepErrors(errors, 0), {
+    ...errors,
+    argv: { 1: ["Argument 1: bad third"] },
+    env: { 0: ["bad-name: a variable name is letters, digits and underscores"], 1: ["OTHER: reserved"] },
+  }, "step 2's name error now sits on step 1, where that step now is");
+  assert.deepEqual(withoutStepErrors(errors, 1).env, { 1: ["OTHER: reserved"] }, "the removed step's own errors go with it");
+  assert.deepEqual(withoutStepErrors(errors, 1).argv, { 0: ["Argument 1: bad first"], 1: ["Argument 1: bad third"] });
+  assert.deepEqual(withoutStepErrors(errors, 5), errors, "removing a step after every error changes nothing");
+  // Removing the only step with field errors leaves nothing to point the operator at.
+  const onlyStep = { ...emptyClaimErrors(), env: { 0: ["bad-name: no"] } };
+  assert.equal(hasClaimErrors(withoutStepErrors(onlyStep, 0)), false);
 });
 
 test("a failure record round-trips field for field, whatever the command and reason contain", () => {

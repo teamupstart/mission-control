@@ -140,11 +140,13 @@ test("worktree config defaults on, is bounded, and merges repository patches", (
     enabled: false,
     maxSlots: 4,
     setupArgv: ["npm", "install"],
+    claim: null,
   });
   assert.deepEqual(resolveWorktreePolicy("/unknown/.git", next), {
     enabled: true,
     maxSlots: 24,
     setupArgv: null,
+    claim: null,
   });
 
   const cleared = setWorktreesConfig(

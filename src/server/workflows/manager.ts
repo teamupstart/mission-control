@@ -2657,7 +2657,14 @@ export class WorkflowManager {
   cancel(runId: string, requestId: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    // Read before the cancel, which moves every running attempt to `cancelled`. A running check
+    // attempt may be running a dependency claim, or be on its way to one; the engine aborts it,
+    // the claim stops or never starts, and the attempt's result is recorded as audit-only.
+    const running = this.store.listAttemptsForRun(run.id)
+      .filter((attempt) => attempt.state === "running")
+      .map((attempt) => attempt.id);
     const cancelled = this.store.cancelRun(run.id, `cancelled:${requestId}`, now) ?? run;
+    if (running.length > 0) this.engine.stopCheckAttempts(running);
     this.publishRun(run.id);
     return { ok: true, value: cancelled, idempotent: run.status === "cancelled" };
   }

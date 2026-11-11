@@ -2,7 +2,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { openDb } from "../db.ts";
 import type { WorktreeOwnerReference } from "./manager.ts";
 
-function taskOwner(key: string): { taskId: string; position: number } | null {
+/**
+ * A task owner's key, `<taskId>:<position>`, read back. Position 0 is the task's primary
+ * repository and n > 0 its nth attached repository. Null for a key no task lease would carry.
+ */
+export function taskOwner(key: string): { taskId: string; position: number } | null {
   const split = key.lastIndexOf(":");
   if (split <= 0) return null;
   const position = Number(key.slice(split + 1));
@@ -61,5 +65,11 @@ export function nativeWorktreeOwnerReferenced(
             LIMIT 1`,
         )
         .get(reference.slotId, reference.leaseId, reference.owner.key) !== undefined;
+    case "warm":
+      // A `warm` owner is a Warm or a seed running in this daemon, and has no row anywhere.
+      // The manager answers for the ones running now before it asks here, so reaching this
+      // means the operation is gone. That is definite: at startup reconcile, which runs
+      // before anything can start one, every `warm` owner is unreferenced, never unknown.
+      return false;
   }
 }

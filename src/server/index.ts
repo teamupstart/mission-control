@@ -982,6 +982,10 @@ async function shutdown(): Promise<void> {
   // Kill before awaiting workflow workers, or a 120s Persona timeout becomes a 120s
   // daemon shutdown.
   killLiveLlmRuns();
+  // The same reason, for dependency claims: a claim may run for hours inside a dispatch nobody
+  // awaits, so it is killed here, long before `worktrees.stop()`, and no lease is granted
+  // after this point. Startup marks its slot interrupted.
+  worktrees.stopClaims();
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.

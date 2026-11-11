@@ -152,6 +152,7 @@ import {
   ManualWorktreeAcquireSchema,
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
+  StopWorktreeClaimSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -1883,10 +1884,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
     }
     const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const owner = { kind: "manual", key: ownerKey } as const;
+    // A claim may run far longer than one HTTP request, and a caller that gave up would leave
+    // the lease granted to nobody. So a pool with a claim is acquired in the background and
+    // polled for. A pool without one answers synchronously, exactly as before, which keeps an
+    // older `make session` working against this daemon.
+    if (worktrees.poolClaim(parsed.data.repositoryPath)) {
+      const requestId = worktrees.manualRequests.start({
+        repositoryPath: parsed.data.repositoryPath,
+        baseSha,
+        owner,
+      });
+      return c.json({ requestId, baseSha }, 202);
+    }
     const acquired = await worktrees.acquire({
       repositoryPath: parsed.data.repositoryPath,
       baseSha,
-      owner: { kind: "manual", key: ownerKey },
+      owner,
     });
     if (acquired.outcome === "acquired") {
       return c.json({
@@ -1899,6 +1913,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       { error: acquired.reason, outcome: acquired.outcome },
       acquired.outcome === "outcomeUnknown" ? 503 : 409,
     );
+  });
+
+  app.get("/api/worktrees/manual/requests/:requestId", (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const view = worktrees.manualRequests.view(c.req.param("requestId"));
+    // Requests live in daemon memory, so one this daemon does not know was accepted by a daemon
+    // that has since restarted, or never existed.
+    if (!view) return c.json({ error: "manual acquire request was not found" }, 404);
+    return c.json(view);
   });
 
   app.post("/api/worktrees/manual/return", async (c) => {
@@ -2013,6 +2036,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return worktreeOperations.dismiss(c.req.param("id"))
       ? c.json({ ok: true })
       : c.json({ error: "no failed worktree operation has that id" }, 404);
+  });
+
+  // Stop a running dependency claim, from its slot card or from the task card of the dispatch
+  // waiting on it. Found through the claim registry by slot and claim id; the step's process
+  // group is killed and the claim fails, so its lease is granted with the warning and the
+  // dispatch continues. 404 when that claim is no longer running.
+  app.post("/api/worktrees/:slotId/claim/stop", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, StopWorktreeClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const stopped = worktreeOperations.manager.stopClaim(c.req.param("slotId"), parsed.data.claimId);
+    return stopped
+      ? c.json({ ok: true })
+      : c.json({ error: "that dependency claim is no longer running" }, 404);
   });
 
   app.post("/api/worktrees/:slotId/open", async (c) => {

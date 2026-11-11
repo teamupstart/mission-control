@@ -368,6 +368,14 @@ export const executeWorktreeAction = (token: string, acknowledgements: WorktreeR
 export const dismissWorktreeOperation = (id: string) =>
   worktreeRequest<Record<string, never>>(`/api/worktrees/operations/${encodeURIComponent(id)}/dismiss`, "POST", {});
 
+/**
+ * Stop the dependency claim running in a slot. The claim fails and its lease is granted with
+ * the warning, so a dispatch waiting on it continues. The result reaches every card through the
+ * task and worktree events; a 404 means the claim had already finished.
+ */
+export const stopWorktreeClaim = (slotId: string, claimId: string) =>
+  worktreeRequest<Record<string, never>>(`/api/worktrees/${encodeURIComponent(slotId)}/claim/stop`, "POST", { claimId });
+
 export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
   worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });
 /**

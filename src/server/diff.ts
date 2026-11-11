@@ -287,6 +287,27 @@ export async function changedPathsSince(cwd: string | null): Promise<ChangedPath
   return { ok: true, repoRoot, paths: [...paths].sort() };
 }
 
+/**
+ * The merge base of `headSha` with the source ref `changedPathsSince` uses (origin's default
+ * branch). The same base, so a question about "what this change touched" agrees with the diff
+ * the session shows.
+ *
+ * Fails closed: no source ref, no shared history or a git failure is an error, never an answer
+ * that something did or did not change.
+ */
+export async function mergeBaseWithSource(
+  cwd: string,
+  headSha: string,
+): Promise<{ ok: true; base: string } | { ok: false; reason: string }> {
+  const ref = await sourceRef(cwd);
+  if (!ref) return { ok: false, reason: "no source branch is available" };
+  const mb = await git(cwd, ["merge-base", headSha, ref]);
+  const merged = mb.code === 0 ? mb.stdout.trim() : "";
+  return merged
+    ? { ok: true, base: merged }
+    : { ok: false, reason: `${headSha.slice(0, 12)} has no merge base with ${ref}` };
+}
+
 /** Count added lines in a unified diff body (`+` lines, excluding the `+++` header). */
 function countAdded(patch: string): number {
   let n = 0;

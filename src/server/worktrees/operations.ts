@@ -10,11 +10,14 @@ import {
   type WorktreeActionRequest,
   type WorktreeActionRisk,
   type WorktreeActionSubmitResult,
+  type WorktreeClaimVariableView,
   type WorktreeInventory,
   type WorktreeOperationView,
   type WorktreeOwnerView,
   type WorktreeRepositoryView,
   type WorktreeRiskKey,
+  type WorktreeSlotDependenciesView,
+  isWorktreeOwnerKind,
 } from "@shared/worktrees.ts";
 import { run } from "../util/exec.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
@@ -22,6 +25,13 @@ import type {
   CheckGroupRecovery,
   CheckLeaseManager,
 } from "../workflows/check-lease.ts";
+import {
+  claimVariableNames,
+  claimVariablePresence,
+  decodeClaimFailure,
+  renderClaimArgv,
+  type RunningClaim,
+} from "./claim.ts";
 import { getWorktreesConfig, setWorktreesConfig } from "./config.ts";
 import {
   LegacyTreehouseService,
@@ -37,6 +47,7 @@ import {
   type NativePoolStatus,
   type NativeSlotStatus,
 } from "./manager.ts";
+import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import {
   inspectWorktreeOccupancy,
   type WorktreeOccupancy,
@@ -89,6 +100,11 @@ export interface WorktreeOperationsDeps {
   diskMeasureBudgetMs: number;
   /** Schedule that budget's deadline. Injectable so tests do not measure host contention. */
   scheduleDiskMeasureDeadline: (delayMs: number, expire: () => void) => () => void;
+  /**
+   * Whether each claim variable name would reach a step, and from where: the daemon's
+   * environment, else the login-shell snapshot. Never a value.
+   */
+  claimVariablePresence: (names: readonly string[]) => Promise<WorktreeClaimVariableView[]>;
   /**
    * Operations listed at once - queued, running, and failed reports nobody has dismissed.
    * Further submissions are refused; nothing listed is ever dropped to make room.
@@ -156,7 +172,7 @@ function ownerView(
 ): WorktreeOwnerView | null {
   const kind = status.slot.activeOwnerKind;
   const key = status.slot.activeOwnerKey;
-  if ((kind !== "task" && kind !== "check" && kind !== "manual") || !key) return null;
+  if (!isWorktreeOwnerKind(kind) || !key) return null;
   if (kind === "task") {
     const parsed = taskIdentity(key);
     const row = parsed ? task.get(parsed.id) : null;
@@ -165,7 +181,11 @@ function ownerView(
   return {
     kind,
     key,
-    label: kind === "check" ? `Check ${key}` : `Manual lease ${key.slice(0, 8)}`,
+    label: kind === "check"
+      ? `Check ${key}`
+      : kind === "warm"
+        ? "Seeding another slot's dependencies"
+        : `Manual lease ${key.slice(0, 8)}`,
   };
 }
 
@@ -213,6 +233,64 @@ function uniqRisks(risks: WorktreeActionRisk[]): WorktreeActionRisk[] {
   return [...unique.values()];
 }
 
+/**
+ * A slot's dependency state for Settings, from the durable row, the claim running in it right
+ * now (if any) and the pool claim's fingerprint at the last fetched default branch. Pure: the
+ * inventory never fetches and never runs a claim to answer this.
+ *
+ * Null when the pool has no claim configured, because then there is nothing to be current or
+ * stale against.
+ */
+export function slotDependencies(input: {
+  hasClaim: boolean;
+  slot: Pick<WorktreeSlotRow, "depsState" | "depsFingerprint" | "depsFingerprintSha" | "depsClaimedAt" | "depsLastError">;
+  running: RunningClaim | null;
+  defaultSha: string | null;
+  defaultFingerprint: string | null;
+}): WorktreeSlotDependenciesView | null {
+  if (!input.hasClaim) return null;
+  const { slot, running } = input;
+  const base = { fingerprintSha: slot.depsFingerprintSha, claimedAt: slot.depsClaimedAt };
+  if (running) {
+    return {
+      ...base,
+      state: "installing",
+      claimId: running.id,
+      startedAt: running.startedAt,
+      step: running.step
+        ? {
+            step: running.step.step,
+            stepCount: running.step.stepCount,
+            command: renderClaimArgv(running.step.argv),
+            startedAt: running.step.startedAt,
+          }
+        : null,
+    };
+  }
+  // A write-ahead with no claim running, `interrupted`, or a state a later build wrote: the
+  // slot's last claim or seed was cut off, and nothing about it can be trusted as current.
+  // Startup records a write-ahead as interrupted; the next claim starts cold either way.
+  if (depsCutOff(slot.depsState)) return { ...base, state: "interrupted" };
+  switch (slot.depsState) {
+    case null:
+      return { ...base, state: "never" };
+    case "current": {
+      // Judged only when both sides have a fingerprint and the default commit is known. A claim
+      // with no fingerprint paths runs on every lease, so it is never stale; an unknown default
+      // is not evidence of staleness.
+      if (slot.depsFingerprint === null || input.defaultFingerprint === null || input.defaultSha === null) {
+        return { ...base, state: "current", defaultSha: null };
+      }
+      return slot.depsFingerprint === input.defaultFingerprint
+        ? { ...base, state: "current", defaultSha: input.defaultSha }
+        : { ...base, state: "stale", defaultSha: input.defaultSha };
+    }
+    default:
+      // Decoded and bounded where the record is written; values were redacted before it was.
+      return { ...base, state: "failed", failure: decodeClaimFailure(slot.depsLastError ?? "") };
+  }
+}
+
 export class WorktreeOperationsService {
   private readonly deps: WorktreeOperationsDeps;
   private readonly tokens = new Map<string, HeldPreview>();
@@ -240,6 +318,7 @@ export class WorktreeOperationsService {
         return () => clearTimeout(timer);
       },
       maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
+      claimVariablePresence,
       ...deps,
     };
   }
@@ -304,8 +383,20 @@ export class WorktreeOperationsService {
     } catch (error) {
       throw new WorktreeOperationError(503, `legacy worktree inventory unavailable: ${compact(String(error))}`, "unavailable");
     }
+    const shown = native.slice(0, WORKTREE_INVENTORY_LIMITS.repositories);
+    // One presence read for every pool together, so a login-shell probe is asked at most once.
+    const claimNames = [...new Set(shown.flatMap((pool) => claimVariableNames(pool.policy.claim)))].sort();
+    let presence = new Map<string, WorktreeClaimVariableView>();
+    if (claimNames.length > 0) {
+      try {
+        presence = new Map((await this.deps.claimVariablePresence(claimNames)).map((entry) => [entry.name, entry]));
+      } catch {
+        presence = new Map();
+      }
+    }
+    const running = new Map(this.manager.claims.list().map((claim) => [claim.slotId, claim]));
     const repositories: WorktreeRepositoryView[] = [];
-    for (const pool of native.slice(0, WORKTREE_INVENTORY_LIMITS.repositories)) {
+    for (const pool of shown) {
       const slots = pool.slots
         .slice(0, WORKTREE_INVENTORY_LIMITS.slotsPerRepository)
         .map((entry) => {
@@ -316,7 +407,11 @@ export class WorktreeOperationsService {
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
           const actions: Array<"return" | "destroy"> = [];
-          if (entry.slot.state === "leased") actions.push("return", "destroy");
+          // A `warm` lease belongs to the seed copying from it, which returns it the moment the
+          // copy ends. Nothing an operator could do to it here would be safer than that.
+          if (entry.slot.state === "leased") {
+            if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
+          }
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
             actions.push("destroy");
           }
@@ -346,6 +441,13 @@ export class WorktreeOperationsService {
             quarantineReason: compact(entry.slot.quarantineReason),
             diagnostic: compact(entry.slot.lastError),
             actions,
+            dependencies: slotDependencies({
+              hasClaim: Boolean(pool.policy.claim),
+              slot: entry.slot,
+              running: running.get(entry.slot.id) ?? null,
+              defaultSha: pool.observedDefaultSha,
+              defaultFingerprint: pool.defaultFingerprint,
+            }),
           };
         });
       const counts = {
@@ -365,7 +467,10 @@ export class WorktreeOperationsService {
           enabled: pool.policy.enabled,
           maxSlots: pool.policy.maxSlots,
           setupArgv: pool.policy.setupArgv ? [...pool.policy.setupArgv] : null,
+          claim: pool.policy.claim ?? null,
         },
+        claimVariables: claimVariableNames(pool.policy.claim).map((name) =>
+          presence.get(name) ?? { name, present: false, source: null }),
         counts,
         diskBytes: null,
         lastReconciledAt: pool.pool.lastReconciledAt,
@@ -1173,6 +1278,8 @@ export class WorktreeOperationsService {
         await this.reclaimTask(parsedTask.id);
       } else if (owner.kind === "check") {
         await this.recoverCheck(owner.key);
+      } else if (owner.kind === "warm") {
+        throw new WorktreeOperationError(409, "a dependency seed holds this slot and returns it when its copy ends", "changed");
       } else {
         const found = this.manager.lookupLease({ path: target.path, owner: { kind: "manual", key: owner.key } });
         if (found.state !== "active") throw new WorktreeOperationError(409, "manual lease changed after preview", "changed");

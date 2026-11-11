@@ -104,6 +104,12 @@ export const RESTART_CONTINUATION_PROMPT =
   "state before acting, do not repeat completed work, and ask again for any approval or " +
   "input you still need.";
 
+/** Task-backed extension launches require Mission tools, just as dispatch preflight does.
+ * Derive this again from the durable task association on restore, without a second setting. */
+function requiresInstalledMissionTools(agent: AgentType, taskId: string | null): boolean {
+  return taskId !== null && capabilitiesFor(agent).missionTools?.mechanism === "installed-extension";
+}
+
 /** Bind one launch-scoped MCP process to the SDK session Mission Control registered. */
 function missionMcpForSession(
   descriptor: MissionMcpDescriptor | null,
@@ -469,6 +475,7 @@ export class SdkSupervisor {
         advisorModel: input.advisorModel,
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
+        ...(requiresInstalledMissionTools(input.agent, input.taskId) ? { missionToolsRequired: true } : {}),
         residentMcp: input.residentMcp ?? null,
         extraDirs: input.extraDirs ?? [],
         standingInstructions: outOfBandStanding,
@@ -1383,6 +1390,7 @@ export class SdkSupervisor {
         advisorModel: row.advisorModel,
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
+        ...(requiresInstalledMissionTools(row.agent, row.taskId) ? { missionToolsRequired: true } : {}),
         // A resident's MCP set comes from its run's snapshot, never from native configuration,
         // so a restart resumes exactly the servers it launched with.
         residentMcp: task ? this.residentMcp?.(task) ?? null : null,

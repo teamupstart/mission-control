@@ -426,6 +426,9 @@ export async function createRuntime(
     // Add only the checked integration, and keep Pi's ordinary discovery and trust rules.
     // Re-entering this factory on /new must load the integration again too.
     const missionExtension = await piExtensionHealthyForDispatch() ? piExtensionLinkPath() : null;
+    if (!missionExtension && options.missionToolsRequired) {
+      throw new PiSdkError("provider-error", "Pi requires a healthy Mission Control extension for this task. Repair the integration in Settings > Setup before retrying.");
+    }
     const created = await pi.createAgentSessionServices({
       cwd: target.cwd,
       agentDir: target.agentDir,

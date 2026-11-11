@@ -73,7 +73,7 @@ test("a custom Mission home loads its checked extension alongside normal Pi disc
       launchedTools.push(created.session.getAllTools().map((tool) => tool.name));
       return created;
     },
-  }, { cwd: checkout("mission-extension-runtime"), sessionPath: null, model: null,
+  }, { cwd: checkout("mission-extension-runtime"), sessionPath: null, model: null, missionToolsRequired: true,
     thinkingLevel: null, projectTrust: false, appendSystemPrompt: [], toolEnv: {} });
   try {
     for (const replacement of [false, true]) {
@@ -83,7 +83,24 @@ test("a custom Mission home loads its checked extension alongside normal Pi disc
         assert.equal(names.filter((value) => value === name).length, 1, `${name} is available exactly once`);
       }
     }
+    const currentSession = runtime.session.sessionId;
+    rmSync(link);
+    await assert.rejects(runtime.newSession(), /requires a healthy Mission Control extension/);
+    assert.equal(runtime.session.sessionId, currentSession, "failed replacement preserves the current conversation");
+    assert.equal(launchedTools.length, 2, "an unhealthy required extension cannot create replacement services");
   } finally { await runtime.dispose(); }
+});
+
+test("a required Mission extension becoming unavailable before SDK creation refuses the launch", async () => {
+  const sdk = await defaultPiSdkDeps.load();
+  const runtimes: Awaited<ReturnType<typeof sdk.createRuntime>>[] = [];
+  try {
+    await assert.rejects(async () => {
+      runtimes.push(await sdk.createRuntime({ cwd: checkout("missing-required-extension"), sessionPath: null,
+        model: null, thinkingLevel: null, projectTrust: false, appendSystemPrompt: [], toolEnv: {},
+        missionToolsRequired: true }));
+    }, /requires a healthy Mission Control extension/);
+  } finally { await Promise.all(runtimes.map((runtime) => runtime.dispose())); }
 });
 
 test("the real Pi loader cannot execute local extension factories before trust allows them", async () => {

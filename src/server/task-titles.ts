@@ -39,10 +39,16 @@ export interface LiveTaskTitles {
  */
 const NOT_A_TASK_LIMIT = 4096;
 
+/** The durable half of a lookup: titles of whichever ids name a saved task, in any status. */
+export type SavedTaskTitles = (ids: readonly string[]) => Map<string, string>;
+
 export class TaskTitlePresenter {
   private readonly notATask = new Set<string>();
 
-  constructor(private readonly live: LiveTaskTitles) {}
+  constructor(
+    private readonly live: LiveTaskTitles,
+    private readonly saved: SavedTaskTitles = getTaskTitles,
+  ) {}
 
   /** `text` with every task id in it replaced by that task's quoted title. */
   text(text: string): string {
@@ -56,11 +62,15 @@ export class TaskTitlePresenter {
       else if (!this.notATask.has(id)) missing.push(id);
     }
     if (missing.length > 0) {
-      const durable = getTaskTitles(missing);
-      for (const id of missing) {
-        const title = durable.get(id);
-        if (title) titles.set(id, title);
-        else this.rememberNotATask(id);
+      const durable = this.savedTitles(missing);
+      // A failed read learns nothing, so nothing is remembered as "not a task": the next frame
+      // asks again rather than showing the id for as long as the cache holds it.
+      if (durable) {
+        for (const id of missing) {
+          const title = durable.get(id);
+          if (title) titles.set(id, title);
+          else this.rememberNotATask(id);
+        }
       }
     }
     return titles.size === 0 ? text : withTaskTitles(text, titles);
@@ -179,6 +189,24 @@ export class TaskTitlePresenter {
       return { ...decision, question, options };
     });
     return changed ? presented : decisions;
+  }
+
+  /**
+   * The saved table's answer, or null when it cannot be read.
+   *
+   * This runs on the write path of every dashboard event frame, every transcript frame and the
+   * Sitrep report, and titling is a projection of text that is already correct. A busy or closed
+   * database must cost the titles of finished tasks for that frame, never the frame itself: an
+   * exception here would end the dashboard's live feed. Live tasks are still named from the
+   * registry, and every other id is left as written.
+   */
+  private savedTitles(ids: string[]): Map<string, string> | null {
+    try {
+      return this.saved(ids);
+    } catch (error) {
+      console.warn(`[task-titles] could not read saved task titles: ${String(error)}`);
+      return null;
+    }
   }
 
   private rememberNotATask(id: string): void {

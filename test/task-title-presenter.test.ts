@@ -52,6 +52,32 @@ test("text names live and archived tasks and leaves every other id-shaped token 
   );
 });
 
+test("a saved-title read that fails costs only the archived titles, never the frame, and is retried", (t) => {
+  t.mock.method(console, "warn", () => {});
+  let failing = true;
+  let reads = 0;
+  const flaky = new TaskTitlePresenter(live, (ids) => {
+    reads += 1;
+    if (failing) throw new Error("SQLITE_BUSY: database is locked");
+    return new Map(ids.filter((id) => id === ARCHIVED).map((id) => [id, "Retire the old table"]));
+  });
+  const text = `${LIVE} replaces ${ARCHIVED}.`;
+  assert.equal(flaky.text(text), `"Add the schema" replaces ${ARCHIVED}.`, "live tasks are still named");
+  const session = mkSession({ activity: text });
+  assert.equal(
+    flaky.event({ type: "session_upsert", session }).type,
+    "session_upsert",
+    "an event frame is still produced while the database cannot be read",
+  );
+  failing = false;
+  assert.equal(
+    flaky.text(text),
+    `"Add the schema" replaces "Retire the old table".`,
+    "a failed read cached nothing, so the next one names the archived task",
+  );
+  assert.equal(reads, 3);
+});
+
 test("a session's status line and blocker are titled on a copy, never on the registry's object", () => {
   const original = mkSession({
     activity: `waiting for ${LIVE}`,

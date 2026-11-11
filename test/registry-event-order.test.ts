@@ -87,3 +87,11 @@ test("worktree invalidation is content-free and delivered synchronously", () => 
   assert.deepEqual(seen, [{ type: "worktrees_changed" }]);
   assert.deepEqual(Object.keys(seen[0]!), ["type"]);
 });
+
+test("storage config invalidation is content-free and delivered synchronously", () => {
+  const registry = new Registry();
+  const seen: ServerEvent[] = [];
+  registry.subscribe((event) => seen.push(event));
+  registry.emitStorageConfigChanged();
+  assert.deepEqual(seen, [{ type: "storage_config_changed" }]);
+});

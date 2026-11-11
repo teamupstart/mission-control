@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { run } from "../src/server/util/exec.ts";
+import {
+  commandFailureText,
+  describeCommandFailure,
+  run,
+  stubRun,
+} from "../src/server/util/exec.ts";
 import { wasRefused } from "../src/server/inspector/github.ts";
 
 // `run` is how everything in this app talks to `gh`, and the Inspector is the one caller
@@ -49,6 +54,10 @@ test("a command killed from outside is an unknown outcome, not a refusal", () =>
       true,
       "nothing reported an exit, so whether it did its work is unknown",
     );
+    // Not our timeout: the message names the signal instead.
+    assert.equal(res.timedOut, false);
+    assert.equal(res.signal, "SIGKILL");
+    assert.equal(describeCommandFailure("git status", res), "git status was killed by SIGKILL");
   });
 });
 
@@ -59,8 +68,37 @@ test("a command we time out on is an unknown outcome", () => {
     (res) => {
       assert.notEqual(res.code, 0);
       assert.equal(res.outcomeUnknown, true);
+      // And it says so, rather than the "exit 1" its coerced code would print.
+      assert.equal(res.timedOut, true);
+      assert.equal(res.timeoutMs, 150);
+      assert.equal(describeCommandFailure("git status", res), "git status timed out after 0.2 s");
     },
   );
+});
+
+test("a Git read killed at its 15 s timeout reads as a timeout, never `exit 1`", () => {
+  const killed = { ...stubRun({ stdout: "", stderr: "", code: 1 }), outcomeUnknown: true };
+  assert.equal(
+    describeCommandFailure("git status", { ...killed, timedOut: true, signal: "SIGTERM", timeoutMs: 15_000 }),
+    "git status timed out after 15 s",
+  );
+  assert.equal(
+    describeCommandFailure("git status", { ...killed, timedOut: false, signal: "SIGKILL", timeoutMs: 15_000 }),
+    "git status was killed by SIGKILL",
+  );
+  assert.equal(commandFailureText({ ...killed, timedOut: true, timeoutMs: 30_000 }), "timed out after 30 s");
+  // A command that did exit keeps its own report, or its code when it said nothing.
+  assert.equal(
+    describeCommandFailure("git status", stubRun({ stdout: "", stderr: "fatal: bad index\n", code: 128 })),
+    "git status failed: fatal: bad index",
+  );
+  assert.equal(describeCommandFailure("git status", stubRun({ stdout: "", stderr: "", code: 3 })), "git status failed: exit 3");
+});
+
+test("a command that exits by itself is neither timed out nor signalled", async () => {
+  const res = await run(process.execPath, ["-e", "process.exit(3)"]);
+  assert.equal(res.timedOut, false);
+  assert.equal(res.signal, null);
 });
 
 // A different flag for a different conclusion: too much output is not an unknown, it is a

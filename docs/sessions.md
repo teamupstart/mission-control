@@ -2114,9 +2114,12 @@ a blocked session's review, menu or form, which can only respond to the question
 On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
 flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
 [Board card items](ui.md). For now a blocked idle session stays in the Idle column.
-The Conversation tab opens with a red band showing every field, the collapsible details, any
-flagged reply, and two buttons: **Flag reply** marks a likely answer (with an optional note and
-link) without clearing anything or messaging the session, and **Clear blocker** ends the hold.
+The Conversation tab opens with a red band: one row with the kind, the reason, how long it has
+stood and two buttons. **Flag reply** marks a likely answer (with an optional note and link)
+without clearing anything or messaging the session, and **Clear blocker** ends the hold. Click
+the reason to expand the row in place to every other field and the collapsible details. A
+flagged reply prints under the row either way. The band never shrinks to make room for a long
+conversation, so its buttons are always in view.
 
 Residents and other controlling sessions use `read_sessions` with `blocked: true` to find
 blocked sessions, `control_session` with `{"action":"flag_blocker_reply","note":"...",

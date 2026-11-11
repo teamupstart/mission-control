@@ -1,5 +1,6 @@
 import { taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
+import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -63,6 +64,7 @@ import type {
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { residentRunSummary, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -102,6 +104,7 @@ import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, res
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
+import { isWorkDependency } from "@shared/task-dependency.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
@@ -331,6 +334,11 @@ import { pruneDelegatedTurns } from "./delegated-turns.ts";
 export interface PrOpened {
   url: string;
   sessionId: string;
+  /**
+   * The session's agent id once bound, which is its note key and survives the synthetic id
+   * re-minting on restart. Null before it binds: the synthetic id would stop matching then.
+   */
+  noteKey: string | null;
   cwd: string | null;
   repoRoot: string | null;
 }
@@ -614,6 +622,7 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "harnesses_config_changed",
   // Deliberately absent: worktree inventory and policy do not feed the Line's execution
   // fold. Its content-free event only tells an open Settings panel to re-observe.
+  // `storage_config_changed` is absent for the same reason: backup counts are no Line input.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -1149,6 +1158,12 @@ export class Registry extends EventEmitter {
     since: null,
     error: null,
   };
+  /**
+   * The storage aggregate, held for the snapshot. `StorageHealthService` computes it and pushes
+   * only changed values here. Null until it does: an empty placeholder would read as "no copies
+   * and no problems" and hide the real answer the Storage panel reads from its route.
+   */
+  private storageHealth: StorageHealth | null = null;
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -1243,6 +1258,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
     return {
@@ -1287,8 +1303,15 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      storageHealth: this.storageHealth,
       latestSettingsRestore: this.latestSettingsRestore,
     };
+  }
+
+  /** Adopt a recomputed storage aggregate. The service already dropped unchanged ones. */
+  setStorageHealth(health: StorageHealth): void {
+    this.storageHealth = health;
+    this.emitEvent({ type: "storage_health", health });
   }
 
   /**
@@ -1364,6 +1387,11 @@ export class Registry extends EventEmitter {
   /** Announce that the bounded Worktrees route should be re-observed. */
   emitWorktreesChanged(): void {
     this.emitEvent({ type: "worktrees_changed" });
+  }
+
+  /** Announce a saved database backup config, so every open Storage panel re-reads it. */
+  emitStorageConfigChanged(): void {
+    this.emitEvent({ type: "storage_config_changed" });
   }
 
   /** Announce that the attention-inbox dismissals changed, so every dashboard re-reads them. */
@@ -3266,6 +3294,7 @@ export class Registry extends EventEmitter {
       this.emit("pr_opened", {
         url,
         sessionId: s.id,
+        noteKey: s.agentSessionId ?? null,
         cwd: s.cwd,
         repoRoot: s.repoRoot,
       } satisfies PrOpened);
@@ -4107,8 +4136,7 @@ export class Registry extends EventEmitter {
     const episodeKeys = new Set<string>();
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.type === "plan") continue;
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "task") {
           if (dependency.episodeId === null) legacyTaskIds.add(dependency.taskId);
           else if (dependency.sessionId !== null) {
@@ -4239,6 +4267,7 @@ export class Registry extends EventEmitter {
         if (dependency.type === "plan") return dependency;
         if (
           dependency.satisfiedAt !== null ||
+          !isWorkDependency(dependency) ||
           dependency.sessionId !== previous.sessionId ||
           dependency.episodeId !== previous.episodeId ||
           dependency.agentSessionId !== previous.agentSessionId ||
@@ -5670,8 +5699,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.type === "plan") continue;
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "session") {
           if (dependency.prUrl) urls.add(dependency.prUrl);
           continue;
@@ -5788,8 +5816,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.type === "plan") continue;
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "session") {
           if (
             !dependency.prUrl ||
@@ -9416,21 +9443,10 @@ export class Registry extends EventEmitter {
     const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
-      codeRabbit: codeRabbitSummary(row.key, owner),
+      ...inspectorSummaryOf(row, getInspectorConfig(), codeRabbitSummary(row.key, owner)),
       // Stacked pull requests: the lifecycle standing Foreman's follow-up reads to deliver a
       // catch-up or restack prompt, and the card reads to say why the child is held.
       stack: row.stack ? this.stackStanding(row) : null,
-      prKey: row.key,
-      url: row.url,
-      mode: getInspectorConfig().mode,
-      open: row.openFindings,
-      postedOpen: row.postedOpenFindings,
-      round: row.round,
-      lastReviewedAt: row.lastReviewedAt,
-      failed: row.lastError !== null,
-      reviewedHeadSha: row.headSha,
-      observedHeadSha: row.observedHeadSha,
-      cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
     };
   }
 

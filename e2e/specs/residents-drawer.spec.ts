@@ -540,19 +540,30 @@ for (const width of [1024, 900]) {
     await expect(band(page)).toBeVisible();
     await expect(drawer).toBeVisible();
 
-    // The 330px drawer leaves the Board less than a 320px rail plus a 440px reader. The rail
-    // gives way, and nothing of the reader runs past the Board's edge into its hidden overflow.
+    // A drawer resident is not a card in any column, so its column is empty and no rail is drawn:
+    // an empty column never renders, not even as the drill-in rail. The reader takes the whole
+    // Board beside the 330px drawer - flush with its left edge, short of its right one - and
+    // nothing of it runs past the Board's edge into its hidden overflow.
+    await expect(page.locator(".board-col.is-rail")).toHaveCount(0);
+    await expect(page.locator("main.board section.board-col")).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => {
       const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
       const board = document.querySelector(".board")!;
       const reader = box(".board-detail > .cdetail");
       return {
         overflow: board.scrollWidth - board.clientWidth,
+        readerFromBoardLeft: Math.round(reader.left - box(".board").left),
         readerPastBoard: Math.round(reader.right - box(".board").right),
         readerPastDrawer: Math.round(reader.right - box(".residents-drawer").left),
-        railWidth: Math.round(box(".board-col.is-rail").width),
+        // The track that clips the reader, settled: it reveals the reader's whole width.
+        trackShortOfBoard: Math.round(box(".board").right - box(".board-detail").right),
       };
-    })).toMatchObject({ overflow: 0, readerPastBoard: 0, readerPastDrawer: 0 });
+    })).toMatchObject({
+      overflow: 0, readerFromBoardLeft: 0, readerPastBoard: 0, readerPastDrawer: 0, trackShortOfBoard: 0,
+    });
+    // With no rail head beside it, the reader's own head carries the way back to the board.
+    const back = page.locator(".board-detail .detail-head").getByRole("button", { name: "Back to the board" });
+    await expect(back).toBeVisible();
     // The reply box sits whole across the reader's width, short of the drawer. Horizontal only:
     // how much height the composer gets is the window's height and the top bar's wrapping (on
     // Linux's wider fonts the top bar takes two rows at 900px), which the drawer does not change.
@@ -565,6 +576,9 @@ for (const width of [1024, 900]) {
     expect(replyBox.x + replyBox.width).toBeLessThanOrEqual(readerBox.x + readerBox.width);
     expect(replyBox.x + replyBox.width).toBeLessThanOrEqual(drawerBox.x);
     await capture(page, `10-drill-in-beside-drawer-${width}`);
+    await back.click();
+    await expect(page.locator(".board-detail .cdetail")).toHaveCount(0);
+    await expect(page.locator("main.board")).toHaveAttribute("data-focus", "none");
   });
 }
 

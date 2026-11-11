@@ -120,6 +120,7 @@ import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
+import { StorageHealthService } from "./storage-health.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import {
   attachSessionTelemetry,
@@ -437,6 +438,13 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
+// and the backup loop's startup prune seeds it.
+const storageHealth = new StorageHealthService({
+  backups: databaseBackups,
+  publish: (health) => registry.setStorageHealth(health),
+});
+databaseBackups.onChange(() => storageHealth.recompute());
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -747,6 +755,8 @@ const app = buildApp({
   fileComments,
   fileCommentWalkthrough,
   settingsBackups,
+  databaseBackups,
+  storageHealth,
 });
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -797,6 +807,14 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
+  // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
+  // temporary files can be removed safely.
+  try {
+    databaseBackups.removeLeftoverTemporaries();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
+  }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
@@ -938,6 +956,7 @@ async function shutdown(): Promise<void> {
   noteDaemonShuttingDown();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
+  await databaseBackups.stop();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();

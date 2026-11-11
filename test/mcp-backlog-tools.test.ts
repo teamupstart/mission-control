@@ -443,7 +443,7 @@ test("configured MCP tasks combine direct prerequisites and the calling session"
   const created = (await f.call("create_task", args))!;
   assert.equal(created.model, "gpt-6-sol");
   assert.equal(created.effort, "high");
-  assert.deepEqual(created.dependencies.map((edge) => edge.type === "task" ? edge.taskId : edge.sessionId), [prerequisite.id, "sdk:backlog-test"]);
+  assert.deepEqual(created.dependencies.map((edge) => edge.type === "task" ? edge.taskId : edge.type === "session" ? edge.sessionId : edge.type), [prerequisite.id, "sdk:backlog-test"]);
   assert.equal(created.status, "backlog");
 });
 

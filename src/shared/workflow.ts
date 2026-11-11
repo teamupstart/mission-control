@@ -2529,6 +2529,18 @@ export function workflowRunResumesItself(
 export const WORKFLOW_RUN_SPENT_PHASES = ["round_limit", "inspector_round_limit"] as const;
 
 /**
+ * The blocked phases, beside a spent budget, where only the operator or the session can restart
+ * the run, so it stops holding Foreman's PR follow-through (`workflowRunReleasesFollowup`).
+ *
+ * An allowlist on purpose: a blocked phase added later keeps holding the follow-through until
+ * someone decides it belongs here.
+ */
+export const WORKFLOW_FOLLOWUP_RELEASE_PHASES = [
+  "unchanged_evidence_exhausted",
+  "session_disappeared",
+] as const;
+
+/**
  * Has this run given up - stopped in a way that will NEVER clear on its own?
  *
  * The distinction this draws is the whole point of leaving `blocked` non-terminal (see
@@ -2557,6 +2569,25 @@ export function workflowRunGaveUp(run: {
   // step - the existing resume and full-restart moves gate on the same inequality and come
   // back by themselves.
   return workflowRunHasNoRepairsLeft(run);
+}
+
+/**
+ * Has this blocked run stopped where it will deliver nothing until the operator or the session
+ * restarts it, so Foreman's PR follow-through may type into its session again?
+ *
+ * Only the follow-through reads this. The run keeps its Shipping veto and its session
+ * ownership everywhere else; see "Blocked runs are recoverable, not terminal" in
+ * `docs/workflows.md`.
+ */
+export function workflowRunReleasesFollowup(run: {
+  status: WorkflowRunStatus;
+  phase: string;
+  round: number;
+  maxRepairRounds: number;
+}): boolean {
+  if (run.status !== "blocked") return false;
+  return workflowRunGaveUp(run)
+    || (WORKFLOW_FOLLOWUP_RELEASE_PHASES as readonly string[]).includes(run.phase);
 }
 
 /**

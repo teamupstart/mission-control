@@ -2,6 +2,8 @@ import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
 import type { KindWorkflowDefaults } from "@shared/task.ts";
+import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
+import type { StorageView } from "@shared/storage-health.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -93,9 +95,11 @@ import type {
   WorktreesConfigPatch,
   AttentionDismissal,
   AttentionDismissalWrite,
+  InspectorFindingsResponse,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
+  InspectorFindingsResponseSchema,
   StandingInstructionsConflictSchema,
   StandingInstructionsViewSchema,
 } from "@shared/protocol.ts";
@@ -417,6 +421,16 @@ export const fetchInspectorPrs = (adoptedSince?: number) =>
       ? "/api/inspector/prs"
       : `/api/inspector/prs?adoptedSince=${Math.floor(adoptedSince)}`,
   );
+/**
+ * Every GitHub Inspector finding on one pull request, in every status, with whether each
+ * reached GitHub. Parsed through the same schema Foreman's client uses, so the two readers
+ * agree on the shape; null for a failed read, a 400 or 404, or a body that does not parse.
+ */
+export async function fetchInspectorFindings(prKey: string): Promise<InspectorFindingsResponse | null> {
+  const body = await fetchJson<unknown>(`/api/inspector/findings?pr=${encodeURIComponent(prKey)}`);
+  const parsed = InspectorFindingsResponseSchema.safeParse(body);
+  return parsed.success ? parsed.data : null;
+}
 export const fetchInspectorStatus = () => fetchJson<InspectorStatus>("/api/inspector/status");
 /** Which provider the app's offline work uses, and each background job's model override. */
 export const fetchLlmConfig = () => fetchJson<LlmConfig>("/api/llm/config");
@@ -431,6 +445,8 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+/** Settings > Storage: the storage aggregate plus the database backup config. */
+export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
 /** Machine-local roots that feed every repository picker and name resolver. */
 export const fetchRepoIndex = () => fetchJson<RepoIndexView>("/api/repo-index");
 /**
@@ -2059,6 +2075,12 @@ export const api = {
    */
   bulkUpdateTasks: (body: BulkUpdateTasksInput) => post(`/api/tasks/bulk-update`, body),
   /**
+   * Drop one dependency edge from a backlog task. The daemon removes it from the task as it
+   * holds it now, so an edge added after the caller last rendered the task survives.
+   */
+  removeTaskDependency: (id: string, dependency: TaskDependencyInput) =>
+    post(`/api/tasks/bulk-update`, { taskIds: [id], dependencies: { remove: [dependency] } } satisfies BulkUpdateTasksInput),
+  /**
    * Delete several backlog tasks. Not atomic (see `TaskManager.bulkRemove`), so a late
    * refusal carries the ids that did and did not go.
    */
@@ -2120,6 +2142,10 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
+  setDatabaseBackupsConfig: (patch: DatabaseBackupsConfigPatch) =>
+    put<ActionResult & { message?: string }>(`/api/storage/backups/config`, patch),
+  /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
+  backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
 
   // --- Repository discovery roots ---
   setRepoIndex: (cfg: RepoIndexConfigPatch) =>

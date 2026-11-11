@@ -535,10 +535,14 @@ export function BacklogBulkEditModal({
               })}
               {draft.dependenciesAdd.map((input) => {
                 const key = dependencyInputKey(input);
+                // Only tasks and sessions are offered to add here; the other edge types
+                // arrive on a task (a source's sweep) and are only ever removed.
                 const title =
                   input.type === "plan" ? `Plan ${input.planId} revision ${input.revision}` : input.type === "task"
                     ? (allTasks.find((t) => t.id === input.taskId)?.title ?? input.taskId)
-                    : (sessions.find((s) => s.id === input.sessionId)?.name ?? input.sessionId);
+                    : input.type === "session"
+                      ? (sessions.find((s) => s.id === input.sessionId)?.name ?? input.sessionId)
+                      : key;
                 return (
                   <Tooltip key={`add:${key}`} label={`Don't add "${title}" as a prerequisite after all`}>
                     <button

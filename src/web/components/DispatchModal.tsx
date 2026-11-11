@@ -1480,15 +1480,17 @@ function DispatchModal({
       });
     }
     // Durable completion takes precedence over current source availability or a newer episode.
-    // Keep unresolved disappeared targets visible so they can still be removed.
+    // Keep unresolved disappeared targets visible so they can still be removed. An external
+    // item a task source linked is listed under its tracker id: it can be removed here, and
+    // only the source's sweep adds one.
     for (const dependency of editing?.dependencies ?? []) {
       const input = dependencyInputOf(dependency);
       const key = dependencyKey(input);
-      if (dependency.satisfiedAt !== null || !out.has(key)) out.set(key, {
-        input,
-        label: `${dependency.title} (${dependency.satisfiedAt !== null ? dependency.type === "plan" ? "published" : "merged" : dependency.type === "plan" ? "waiting for publication" : "unavailable"})`,
-        group: "session",
-      });
+      const label =
+        dependency.type === "source"
+          ? `${dependency.title} (${dependency.externalId})`
+          : `${dependency.title} (${dependency.satisfiedAt !== null ? dependency.type === "plan" ? "published" : "merged" : dependency.type === "plan" ? "waiting for publication" : "unavailable"})`;
+      if (dependency.satisfiedAt !== null || !out.has(key)) out.set(key, { input, label, group: "session" });
     }
     return out;
   }, [editing, sessions, tasks]);
@@ -1500,7 +1502,9 @@ function DispatchModal({
         ) === dependencyKey(dependency),
     );
     if (stored?.satisfiedAt != null) return false;
-    if (dependency.type === "plan") return true;
+    // Only the source's sweep can satisfy an external item, only its publication a plan edge,
+    // and nothing satisfies an edge this build does not know.
+    if (dependency.type === "source" || dependency.type === "unknown" || dependency.type === "plan") return true;
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }
@@ -2350,6 +2354,8 @@ function DispatchModal({
   const push = editing && pushState?.taskId === editing.id ? pushState : null;
   // The link this form should draw: the row's own, or the one this opening just created.
   const taskLink = editing?.source ?? push?.ref ?? null;
+  // The parent a sweep recorded beside the row's own link. Display only, never an edge.
+  const taskParent = editing?.source ? editing.sourceParent : null;
   /**
    * The form holds edits the daemon has not been told about.
    *
@@ -2977,6 +2983,7 @@ function DispatchModal({
         {editing && (
           <PushToSourceBlock
             link={taskLink}
+            parent={taskParent}
             sources={taskSources}
             /* The STORED repo, never `draft.repoRoot`: the daemon compares a source against
                the row it holds, so filtering on an unsaved edit would offer sources for a repo
@@ -3488,7 +3495,7 @@ function DispatchModal({
                       const label = dependencyByKey.get(key)?.label ?? "unavailable";
                       const reason = removalReason(key);
                       const stackable = isStackable(dependency);
-                      const mode = dependency.type === "plan" ? undefined : dependency.mode;
+                      const mode = dependency.type === "task" || dependency.type === "session" ? dependency.mode : undefined;
                       const shown = mode ?? stackingDefault;
                       return (
                         <span key={key} className="dep-entry">
@@ -3771,6 +3778,18 @@ function DispatchModal({
 }
 
 /**
+ * The short form of an external id beside `sibling`: "#12" for a GitHub "owner/repo#12" in the
+ * same repo as the sibling, and the id as it is otherwise ("other/repo#12", "MC-14").
+ */
+function shortSourceId(externalId: string, sibling: string): string {
+  const hash = externalId.lastIndexOf("#");
+  if (hash < 0) return externalId;
+  return sibling.slice(0, sibling.lastIndexOf("#")) === externalId.slice(0, hash)
+    ? externalId.slice(hash)
+    : externalId;
+}
+
+/**
  * Where a backlog task meets the world outside Mission Control: the item it is linked to, or
  * the one action that creates one.
  *
@@ -3794,6 +3813,7 @@ function DispatchModal({
  */
 export function PushToSourceBlock({
   link,
+  parent = null,
   sources,
   repoRoot,
   selectedSourceId = null,
@@ -3806,6 +3826,11 @@ export function PushToSourceBlock({
 }: {
   /** The item this task is linked to - stored on the row, or minted by a push in this opening. */
   link: TaskSourceRef | null;
+  /**
+   * The item `link` is a sub-issue of, as the source last reported it. Display only: shown
+   * beside the link, and never a dependency.
+   */
+  parent?: TaskSourceRef | null;
   /**
    * The configured sources, or null while the read is out - AND if it never landed.
    *
@@ -3851,7 +3876,23 @@ export function PushToSourceBlock({
                shown as text rather than as a link to nowhere. */
             <strong>{link.externalId}</strong>
           )}
-          . This task stays in the backlog, and that source will not file it back as a new one.
+          .
+          {parent && (
+            <>
+              {" "}Sub-issue of{" "}
+              {parent.url ? (
+                <Tooltip label={`Open ${parent.externalId} in a new tab`}>
+                  <a className="source-provenance-link" href={parent.url} target="_blank" rel="noreferrer">
+                    {shortSourceId(parent.externalId, link.externalId)}
+                  </a>
+                </Tooltip>
+              ) : (
+                <strong>{shortSourceId(parent.externalId, link.externalId)}</strong>
+              )}
+              .
+            </>
+          )}
+          {" "}This task stays in the backlog, and that source will not file it back as a new one.
         </span>
       </div>
     );

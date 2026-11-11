@@ -33,7 +33,7 @@ function planInputEdges(input: TaskPlanInput, dependencies: Task["dependencies"]
   return dependencies.filter((edge) => edge.type === "plan"
     ? edge.planId === input.planId && edge.repoKey === input.repoKey && edge.revision === input.revision
     : edge.type === "task" ? edge.taskId === saved.task_id && edge.episodeId === saved.episode_id
-      : saved.task_id === null && edge.sessionId === saved.session_id && edge.episodeId === saved.episode_id);
+      : edge.type === "session" && saved.task_id === null && edge.sessionId === saved.session_id && edge.episodeId === saved.episode_id);
 }
 
 function missingPlanEdge(input: TaskPlanInput): string {

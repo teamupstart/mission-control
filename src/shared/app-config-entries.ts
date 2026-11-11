@@ -39,6 +39,11 @@ import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
 import { TelemetryConfigSchema } from "./telemetry.ts";
 import { TelemetryOrganizationRecordSchema } from "./organizations.ts";
+import {
+  DatabaseBackupsConfigSchema,
+  DatabaseBackupStatusSchema,
+  type DatabaseBackupsConfig,
+} from "./database-backups.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -279,7 +284,6 @@ const uiFields = {
   hiddenDisplayItems: "setting",
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
-  showEmptyColumnStash: "setting",
   boardSidebarAllSessions: "setting",
   residentPlacement: "setting",
   residentDrawerPinned: "setting",
@@ -291,6 +295,12 @@ const uiFields = {
 const repoIndexFields = {
   directories: "setting",
 } satisfies Record<keyof RepoIndexConfig, AppConfigValueClass>;
+
+const backupsFields = {
+  scheduledCount: "setting",
+  preMigrationCount: "setting",
+  intervalHours: "setting",
+} satisfies Record<keyof DatabaseBackupsConfig, AppConfigValueClass>;
 
 const ForemanLeaseSchema = z.object({
   workerId: z.string(),
@@ -363,6 +373,22 @@ export const APP_CONFIG_ENTRIES = {
     "repoIndex", RepoIndexConfigSchema, "repo-index", repoIndexFields,
   ),
   terminals: fieldsEntry("terminals", TerminalsConfigSchema, "terminals", terminalsFields),
+  /**
+   * Full-database backup counts and cadence. `openDb` reads this row straight through its own
+   * handle before migrations run (`src/server/database-backups/service.ts`), so the key and
+   * schema must stay readable on a database that has not been upgraded yet.
+   */
+  backups: {
+    ...fieldsEntry("backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields),
+    optionalInSnapshot: true,
+  },
+  /**
+   * What the full-database backup captures last did: attempts, successes and the current
+   * failure streak per kind. The daemon writes it through the same raw handle as the backup
+   * service reads `backups`. `operational` with no backup domain: it describes this machine's
+   * disk, and restored onto another installation it would report captures that never ran there.
+   */
+  backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
   /**
    * General telemetry collection and export.
    *

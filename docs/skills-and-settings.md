@@ -292,6 +292,13 @@ verified preview plus the exact final confirmation text. A successful restore re
 window that submitted it. Every other open window keeps its unsaved drafts and offers
 **Reload now** in a persistent notice.
 
+**Storage**, just above Restore, holds full-database backups: the interval and how many
+scheduled and pre-migration copies are kept, **Back up now**, the last success and failure of
+each kind, the kept copies and their total size, and a **Problems** list whose rows link to
+where each is fixed. It updates live from the `storage_health` event, and a config saved in
+another window reaches it through `storage_config_changed`. See
+[Backup and restore](sqlite-database.html#backup).
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
@@ -299,7 +306,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Tasks**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Tasks**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -341,11 +348,9 @@ card draws - and a one-tile preview, which is what the Board card panel offers, 
 grouping. See [Layout](ui.md#layout-console-or-board-in-settings) for what the heading says and
 why a repository can appear in more than one column.
 
-The same panel carries **Show the empty-column stash**, which also ships checked. The Board
-folds each empty column into a chip beside its last column, and a chip brings its column
-back. Uncheck it to hide that stash, so empty columns leave the board entirely. That
-includes an empty **needs you** column and an empty **Backlog**, which leave and return
-like any other.
+There is no setting for empty columns. The Board draws a column only while it has a card in
+it - **needs you**, **unconfirmed**, **gone** and the **Backlog** included - and an empty one
+leaves nothing behind. See [Layout](ui.md#layout-console-or-board-in-settings).
 
 Display's **Board card** panel is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,

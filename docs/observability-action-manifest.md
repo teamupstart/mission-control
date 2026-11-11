@@ -48,6 +48,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`fetchCostConfig`](../src/web/lib/api.ts#L384) | `/api/cost/config` |
 | [`fetchInspectorConfig`](../src/web/lib/api.ts#L385) | `/api/inspector/config` |
 | [`fetchInspectorPrs`](../src/web/lib/api.ts#L398) | `/api/inspector/prs`<br>`/api/inspector/prs?adoptedSince=:id` |
+| [`fetchInspectorFindings`](../src/web/lib/api.ts#L426) | `/api/inspector/findings?pr=:id` |
 | [`fetchInspectorStatus`](../src/web/lib/api.ts#L404) | `/api/inspector/status` |
 | [`fetchLlmConfig`](../src/web/lib/api.ts#L406) | `/api/llm/config` |
 | [`fetchLlmStatus`](../src/web/lib/api.ts#L414) | `/api/llm/status` |

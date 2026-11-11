@@ -1133,6 +1133,14 @@ Opening it names the stopped prerequisite and offers two ways out:
 Either action targets the *dead* task, so resolving it once frees every dependent behind
 it, not just the card you clicked from.
 
+A dependency can also be an **item in an external tracker** that a [task
+source](#blocking-links-become-dependencies) recovered from a blocking link. It is satisfied
+when the item closes as completed. Closed as **not planned** (on GitHub, a duplicate counts as
+not planned too), it is stopped in exactly the sense above, and the same warning button names
+it with its tracker id and a link to it. Mission Control cannot reschedule or complete
+somebody else's issue, so its way out is **Remove dependency**, which drops that edge from the
+task that holds it - possibly a task up the chain rather than the card you clicked from.
+
 ### The backlog order is the one you set
 
 The backlog has **one order, and it is yours.** Foreman takes the highest ready item in
@@ -1543,6 +1551,13 @@ works in that checkout, the source works.
 
 Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
 so the agent's first prompt has the actual text rather than a number to go and look up.
+
+Blocking links come with it: the sweep asks `gh` for each issue's `blockedBy` and `parent`,
+and the issues blocking it arrive as the task's dependencies. See [Blocking links become
+dependencies](#blocking-links-become-dependencies). Those fields need gh 2.101 or newer. An older
+`gh` refuses them, and the sweep then asks again without them: issues are still filed and kept
+updated, but without their blocking links or parent, and keep-updated leaves a task's existing
+dependencies and parent as they are until `gh` is upgraded.
 
 #### Sweeping the public product-feedback tracker
 
@@ -1955,6 +1970,48 @@ Two limits worth knowing before turning it on:
   through the CLI and the remote link says why it did not.
 
 
+### Blocking links become dependencies
+
+A source whose kind can report blocking links (GitHub issues can; Jira cannot yet) files each
+item with the items blocking it as [dependencies](#resolve-a-stopped-dependency), on the same
+insert, so a swept task is never visible unblocked:
+
+- A blocker that is already one of your tasks, still backlogged or running under a live session,
+  becomes an ordinary task dependency (the same rule that decides what you can select by hand). It follows that task to its merge like one you selected yourself. Blockers
+  filed by the same sweep are filed first, so the order issues are listed in does not matter.
+  Issues that block each other upstream would leave two tasks waiting on each other, so the one
+  that would close the cycle is not filed: the sweep reports it as refused, and files it once the
+  cycle is broken upstream.
+- Any other blocker - outside the source's filter, in another repository, or linked to a task
+  that is still starting, already finished, or stopped - becomes a **source dependency** on the
+  external item. It
+  is released when the item closes as completed. Closed as not planned, the card shows the
+  [stopped-dependency warning](#resolve-a-stopped-dependency).
+- A **parent** (sub-issue) link is never a dependency. A parent is the larger piece of work an
+  item belongs to, not something it waits on. It is kept for display instead: the task
+  editor shows **Sub-issue of #M** beside the **Filed upstream as** link, linking to the
+  parent. The parent is recorded when the item is filed and on every
+  [keep-updated refresh](#keeping-imported-backlog-tasks-updated).
+
+Each sweep re-reads the external items that waiting source dependencies name (for GitHub, one
+`gh issue view` each), at most 25 per sweep, least recently checked first, with a deadline of its
+own so a slow sweep or refresh cannot crowd it out. A failed read never changes a dependency's
+state. An item whose own read failed moves to the back of that queue, and so does a whole batch
+the deadline cut off, so a few slow links cannot hold the rest.
+Whether the source is enabled or not, **Sweep now** runs the same re-check.
+The links are read when an item is first filed. A blocking link added or removed upstream
+afterwards changes the task's dependencies only with
+[Keep imported backlog tasks updated](#keeping-imported-backlog-tasks-updated) on. The usual
+rules still hold: a dependency that would close a cycle is refused, and removing one in the task
+editor or from the warning stays removed: with that setting on, a later upstream change to the
+item's blocking links is offered for review rather than applied over it. Only a sweep creates a source dependency: the task editor and the
+task API can keep or remove one, never add one.
+
+A source dependency is stored in the task's existing dependency list, so no migration is
+involved. A build that does not recognize an edge's type keeps it, treats it as unsatisfied,
+and writes it back unchanged, so running an older build never releases work a newer one was
+holding back.
+
 ### A task you delete stays deleted
 
 Each source keeps its own ledger of what it has already filed, keyed on the item's id in
@@ -1973,10 +2030,19 @@ filed. It uses the existing sweep schedule, and **Sweep now** performs the same 
 when the schedule is paused. Leaving the setting off preserves import-only behavior.
 
 The same task keeps its ID and backlog position. The source can update its title and generated
-intent together, mapped priority, and copied labels where the provider offers them. Agent,
-model, task kind, workflow, dependencies, repositories, backlog position and autopilot eligibility
-remain local. Source defaults are captured when an item is imported; changing those defaults
-does not rewrite previously imported tasks. The existing description limit still applies:
+intent together, mapped priority, and copied labels where the provider offers them. A source
+whose kind can relate (GitHub today) also updates **dependencies**: the task's edges that stand
+for the source's own items, a `source` edge to an item or a task edge to the task linked to one,
+follow the item's blocking links. A new blocker becomes a task edge when a task is linked to it
+and a `source` edge otherwise, exactly as on import. Every other edge (a session, a task with no
+link to this source, another source's item) is local and never touched. A synced edge that a hand
+edit would refuse, most often one that would close a cycle, is refused the same way: the whole
+update is held, the task is kept as it is, and the reason is shown beside it until a later sweep
+no longer meets it. Agent, model, task
+kind, workflow, repositories, backlog position and autopilot eligibility remain local. Source defaults are captured when an item is imported; changing those defaults
+does not rewrite previously imported tasks. The item's **parent** (a GitHub sub-issue's parent
+issue) is source-owned display data outside every group: each refresh overwrites it from the
+source, with no baseline and no review, and it never becomes a dependency. The existing description limit still applies:
 GitHub and Jira carry at most 4,000 characters of the issue description into the intent.
 
 A saved import baseline lets Mission Control distinguish a remote change from an operator edit.
@@ -1987,8 +2053,16 @@ Independent, nonconflicting fields can still update. A review that changed while
 refused so an old click cannot overwrite newer work.
 
 Tasks imported before this feature have no baseline or reliable import-versus-push provenance.
-Sweep once, then review each older task before adopting it. Newly pushed tasks are excluded from
-automatic inbound updates. Turning the setting off retains existing baselines and reviews, but
+Sweep once, then review each older task before adopting it. A task imported before dependencies
+joined the sync has no dependencies baseline: when its local and source blockers already agree
+they become the baseline, and otherwise that group alone is flagged for review and never applied.
+Newly pushed tasks take only the dependencies group: their title, intent, priority and labels
+were written here and stay local. A push writes no blocking links, so it records an empty
+dependencies baseline, in the same transaction as the ledger row and the link, and a blocker added
+upstream later is applied without review. A blocker the task already had locally never went out:
+it stays local-only and is never read as removed upstream. When `gh` creates the issue but reports
+an error, the push records no dependencies baseline and the group falls to the rule above.
+Mission Control never writes dependency changes back upstream from this setting. Turning the setting off retains existing baselines and reviews, but
 prevents applying them until updates are enabled again.
 
 Refresh reads linked issues independently of the discovery filter, including closed GitHub issues

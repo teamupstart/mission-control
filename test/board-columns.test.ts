@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import type { Session } from "../src/shared/types.ts";
 import type { WorkflowRunStatus, WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { backlogColumnMode, boardColumnModes, groupByTone, TONE_GROUPS } from "../src/web/lib/tone.ts";
-import type { Tone } from "../src/web/lib/format.ts";
 import { canAcceptTask } from "../src/web/components/layouts/BacklogColumn.tsx";
 
 /**
@@ -58,28 +57,35 @@ function session(over: Partial<Session> = {}): Session {
   } as Session;
 }
 
-const NONE: ReadonlySet<Tone> = new Set();
-
-function modesFor(sessions: Session[], revealed: ReadonlySet<Tone> = NONE, focused: Tone | null = null) {
-  return boardColumnModes(groupByTone(sessions), revealed, focused);
+function modesFor(sessions: Session[]) {
+  return boardColumnModes(groupByTone(sessions));
 }
 
-test("an empty 'needs you' is stashed like every other empty column", () => {
-  // Horizontal room is scarce, so no empty column keeps a placeholder on the board -
-  // not even a slim one for "needs you". It comes back the moment a session needs you.
+test("every empty column is hidden, 'needs you', 'unconfirmed' and 'gone' included", () => {
+  // Horizontal room is scarce, so no empty column keeps anything on the board - no
+  // placeholder, no slim rail, no chip. It comes back the moment it has a card.
   const modes = modesFor([session({ state: "working" })]);
   assert.equal(modes.get("working"), "sessions");
   for (const tone of ["attention", "idle", "neutral", "exited"] as const) {
-    assert.equal(modes.get(tone), "stashed", tone);
+    assert.equal(modes.get(tone), "hidden", tone);
   }
 });
 
-test("an empty 'needs you' can be pulled back out of the stash like any other column", () => {
-  const modes = modesFor([session({ state: "working" })], new Set<Tone>(["attention"]));
-  assert.equal(modes.get("attention"), "revealed");
+test("each reserved column is decided on its own card count, independently of the others", () => {
+  // needs you, unconfirmed and gone each render with one card and hide with none, whatever
+  // the other two hold.
+  const card = { attention: "awaiting_input", neutral: "idle", exited: "exited" } as const;
+  const confirm = (tone: keyof typeof card) =>
+    tone === "neutral" ? { instrumented: false, stateConfirmed: false } : {};
+  for (const tone of Object.keys(card) as (keyof typeof card)[]) {
+    const modes = modesFor([session({ id: tone, state: card[tone], ...confirm(tone) })]);
+    for (const other of Object.keys(card) as (keyof typeof card)[]) {
+      assert.equal(modes.get(other), other === tone ? "sessions" : "hidden", `${tone} filled, ${other}`);
+    }
+  }
 });
 
-test("a column that has sessions is never stashed, whatever its tone", () => {
+test("a column that has sessions is never hidden, whatever its tone", () => {
   const modes = modesFor([session({ state: "idle" }), session({ id: "s2", state: "exited" })]);
   assert.equal(modes.get("idle"), "sessions");
   assert.equal(modes.get("exited"), "sessions");
@@ -90,51 +96,20 @@ test("'needs you' with sessions in it is an ordinary column", () => {
   assert.equal(modes.get("attention"), "sessions");
 });
 
-test("a revealed column comes back out of the stash, and only that one", () => {
-  const modes = modesFor([session({ state: "working" })], new Set<Tone>(["exited"]));
-  assert.equal(modes.get("exited"), "revealed");
-  assert.equal(modes.get("idle"), "stashed");
-  assert.equal(modes.get("neutral"), "stashed");
-});
-
-test("a drill-in stashes nothing: every column stays mounted across the morph", () => {
-  // Opening a session animates all five columns' widths into a rail plus a detail
-  // pane. Stashing one mid-morph would unmount it under its own animation, so while
-  // focused they are all rendered (collapsed to nothing) instead.
-  const modes = modesFor([session({ state: "working" })], NONE, "working");
-  for (const { tone } of TONE_GROUPS) {
-    assert.notEqual(modes.get(tone), "stashed", tone);
-  }
-});
-
-test("an empty 'needs you' that IS the drill-in rail is drawn as a full rail", () => {
-  // The open session asks for the Needs you rail but nothing else is in it. The rail is a
-  // fixed-width console fixture, so it keeps its head and body beside the open conversation.
-  const modes = modesFor([session({ state: "working" })], NONE, "attention");
-  assert.equal(modes.get("attention"), "revealed");
-  for (const { tone } of TONE_GROUPS) {
-    assert.notEqual(modes.get(tone), "stashed", tone);
-  }
-});
-
 test("a dispatch with no sessions yet keeps the working column, and only that one", () => {
   const before = modesFor([]);
-  assert.equal(before.get("working"), "stashed");
+  assert.equal(before.get("working"), "hidden");
 
-  const modes = boardColumnModes(groupByTone([]), NONE, null, 1);
+  const modes = boardColumnModes(groupByTone([]), 1);
   assert.equal(modes.get("working"), "sessions");
   for (const tone of ["attention", "idle", "neutral", "exited"] as const) {
-    assert.equal(modes.get(tone), "stashed", tone);
+    assert.equal(modes.get(tone), "hidden", tone);
   }
 });
 
-test("an empty Backlog is stashed like an empty tone column, and drawn while it has cards", () => {
-  assert.equal(backlogColumnMode(0, false, false), "stashed");
-  assert.equal(backlogColumnMode(2, false, false), "sessions");
-  // Pulled back out of the stash by the operator.
-  assert.equal(backlogColumnMode(0, true, false), "revealed");
-  // A drill-in stashes nothing, so the morph can animate the Backlog's width like the rest.
-  assert.equal(backlogColumnMode(0, false, true), "revealed");
+test("an empty Backlog is hidden like an empty tone column, and drawn while it has cards", () => {
+  assert.equal(backlogColumnMode(0), "hidden");
+  assert.equal(backlogColumnMode(2), "sessions");
 });
 
 test("every tone gets a verdict - no column can fall through the rules unrendered", () => {

@@ -162,19 +162,6 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
-    // Somebody looking for this types what they saw beside the last column ("empty", "stash")
-    // or what they want gone ("hide empty columns").
-    id: "board-empty-columns",
-    label: "Show the empty-column stash",
-    description:
-      "Show or hide the chips the Board's empty columns fold into, beside the last column.",
-    category: "display",
-    anchor: "display/board-empty-columns",
-    keywords: ["empty", "stash", "column", "columns", "hide", "board", "chip"],
-    kind: "jump",
-    backup: backupDomains("ui"),
-  },
-  {
     id: "board-sidebar",
     label: "Show all sessions in sidebar",
     description: "Select Board layout to show every session state in the drill-in sidebar.",
@@ -657,6 +644,36 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["identity", "pseudonym", "installation", "reset", "anonymous"],
     kind: "jump",
     backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "database-backups",
+    label: "Database backups",
+    description: "Backup interval, how many copies are kept, Back up now, and the kept copies.",
+    category: "storage",
+    anchor: "storage/backups",
+    keywords: [
+      "backup",
+      "back up now",
+      "interval",
+      "hourly",
+      "pre-migration",
+      "retention",
+      "copies",
+      "disk",
+      "database",
+    ],
+    kind: "jump",
+    backup: backupDomains("database-backups"),
+  },
+  {
+    id: "storage-problems",
+    label: "Storage problems",
+    description: "Failed backups and other storage problems, each linked to where it is fixed.",
+    category: "storage",
+    anchor: "storage/problems",
+    keywords: ["problem", "failed", "backup failed", "disk", "warning"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
   },
   {
     id: "restore-settings",

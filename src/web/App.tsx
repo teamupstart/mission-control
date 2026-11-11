@@ -333,8 +333,10 @@ export function App(): React.JSX.Element {
     lineSummary,
     settingsStatus,
     keepAwakeStatus,
+    storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
     attentionDismissalsRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
@@ -4517,6 +4519,8 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              storageHealth={storageHealth}
+              storageConfigRevision={storageConfigRevision}
               harnessesRevision={harnessesRevision}
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}

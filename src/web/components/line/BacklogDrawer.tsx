@@ -4,6 +4,8 @@ import {
   backlogIndex,
   blockersIn,
   deadBlockersFor,
+  deadSourceBlockersFor,
+  type DeadSourceBlocker,
   dependentsIn,
   readyBacklog,
 } from "@shared/backlog.ts";
@@ -98,6 +100,7 @@ interface Row {
   stackedOn: string | null;
   /** Why an item whose dependency is set to Stack is still waiting, in place of "after X". */
   stackWait: string | null;
+  deadSources: DeadSourceBlocker[];
 }
 
 /**
@@ -119,6 +122,7 @@ function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex,
     deadBlockers: deadBlockersFor(task, index),
     stackedOn: stackedStartLabel(task, index.byId),
     stackWait: stackWaitLabel(task, index.byId, stackShipping),
+    deadSources: deadSourceBlockersFor(task, index),
   });
   // One order for both bands now (`backlogTasks` is `byBacklogRank`), which is why this is a
   // plain set difference rather than a re-sort: a blocked row sits exactly where the operator
@@ -168,6 +172,7 @@ function BacklogRow({
   onSetPriority,
   onReschedule,
   onComplete,
+  onRemoveSource,
   notice,
   onManageTrust,
   highlight = "",
@@ -188,12 +193,13 @@ function BacklogRow({
   onSetPriority: (next: TaskPriority | null) => void;
   onReschedule: (deadId: string) => void;
   onComplete: (deadId: string) => void;
+  onRemoveSource: (blocker: DeadSourceBlocker) => void;
   notice: BacklogTaskNoticeView | null;
   onManageTrust?: () => void;
   /** The drawer's search text, marked in the title. */
   highlight?: string;
 }): React.JSX.Element {
-  const { task, band, blockers, deadBlockers, stackedOn, stackWait } = row;
+  const { task, band, blockers, deadBlockers, deadSources, stackedOn, stackWait } = row;
   const nextUp = planner !== null;
   // Amber down the leading edge only where a person is genuinely the missing part - a dead or
   // disabled prerequisite. Two rows this deliberately does NOT tone, against the mockup:
@@ -274,9 +280,11 @@ function BacklogRow({
             the chain, so this appears on rows whose own blocker chip says a plain "after X". */}
         <DeadBlockerButton
           deadBlockers={deadBlockers}
+          deadSources={deadSources}
           busy={busy}
           onReschedule={onReschedule}
           onComplete={onComplete}
+          onRemoveSource={onRemoveSource}
         />
         {/* The priority control IS the mark, never a read-only chip with an editor beside it -
             the board card settled this argument and the reasoning carries: two of them meant
@@ -469,6 +477,13 @@ export function BacklogDrawer({
           true,
           true,
         ), "could not complete that task"),
+      // An external item edits the task that HOLDS the edge, which may be up the chain.
+      onRemoveSource: (blocker) =>
+        void act(
+          id,
+          () => api.removeTaskDependency(blocker.ownerTaskId, blocker.dependency),
+          "could not remove that dependency",
+        ),
       notice: backlogTaskNotice(row.task, backlogTrust),
       onManageTrust: onManageTrust
         ? () => {

@@ -10,6 +10,7 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, builtinWorkflowVersionId } from "../src/shared/builtin-workflow.ts";
 import type { PlanIdentity } from "../src/shared/managed-plans.ts";
 import { declaredBlockers } from "../src/shared/backlog.ts";
+import { localSourceContent } from "../src/shared/task-source-sync.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-local-publication-")));
 process.env.MISSION_HOME = join(home, "state");
@@ -193,7 +194,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   const input = { ...f.input, files: ["plan.md", "phase-1.md"] };
   const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Pinned merge", intent: "Read this episode", backlog: true, workflowId: null,
     planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] });
-  assert.equal(dependent.dependencies[0]!.episodeId, oldEpisode);
+  assert.equal((dependent.dependencies[0] as { episodeId: string | null }).episodeId, oldEpisode);
   f.registry.upsertTask({ ...dependent, dependencies: dependent.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) });
   assert.equal(taskPlanInputProblem(f.tasks.get(dependent.id)!), null);
 
@@ -212,7 +213,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   // Stored inputs from before this guard must fail at both delivery boundaries too.
   f.registry.upsertTask({ ...f.tasks.get(dependent.id)!, planInputs: [nextInput] });
   const reloaded = loadActiveTasks().find((task) => task.id === dependent.id)!;
-  assert.equal(reloaded.dependencies[0]!.episodeId, oldEpisode);
+  assert.equal((reloaded.dependencies[0] as { episodeId: string | null }).episodeId, oldEpisode);
   assert.notEqual(reloaded.dependencies[0]!.satisfiedAt, null);
   assert.match(taskPlanInputProblem(reloaded)!, /originating.*episode/);
   for (const result of [await f.tasks.dispatch(dependent.id), await f.tasks.assign(dependent.id, f.id)]) {
@@ -221,7 +222,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   }
   const current = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Current episode", intent: "Wait for its merge", backlog: true, workflowId: null,
     planInputs: [nextInput], dependencies: [{ type: "task", taskId: f.task.id }] });
-  assert.equal(current.dependencies[0]!.episodeId, authority.episodeId);
+  assert.equal((current.dependencies[0] as { episodeId: string | null }).episodeId, authority.episodeId);
   assert.match(taskPlanInputProblem(current)!, /waiting/);
   assert.equal(taskPlanInputProblem({ ...current, dependencies: current.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) }), null);
   assert.throws(() => f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Wrong episode", intent: "Cannot substitute the current episode", backlog: true, workflowId: null,
@@ -809,4 +810,27 @@ test("storage edits fail closed when a prior task checkout cannot be inspected",
   assert.match(refused.error!, /Cannot verify existing plan artifacts/);
   assert.deepEqual(f.tasks.get(task.id), before);
   assert.deepEqual(loadActiveTasks().find((saved) => saved.id === task.id), savedBefore);
+});
+
+test("a source sync that would drop a pinned plan input's prerequisite is refused whole", async () => {
+  const f = await fixture(false, "ship");
+  const input = { ...f.input, files: ["plan.md"] };
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Pinned merge", intent: "Read this episode", backlog: true, workflowId: null,
+    planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] });
+  const issue = (externalId: string) => ({ sourceId: "s", externalId, url: `https://github.com/${externalId.replace("#", "/issues/")}` });
+  f.registry.upsertTask({ ...f.tasks.get(f.task.id)!, source: issue("acme/demo#2") });
+  f.registry.upsertTask({ ...f.tasks.get(dependent.id)!, source: issue("acme/demo#1") });
+  const task = f.tasks.get(dependent.id)!;
+  const local = localSourceContent(task, { sourceId: "s", tasks: f.tasks.sourceRelationTasks(task) });
+  assert.deepEqual(local.blockedBy?.map((b) => b.externalId), ["acme/demo#2"]);
+  let persisted = false;
+  const applied = await f.tasks.applySourceContent(task.id, task.source!, local, { ...local, title: "Renamed upstream", blockedBy: [] },
+    () => { persisted = true; }, () => true, true);
+  assert.equal(applied.ok, false);
+  assert.equal(applied.refused, true);
+  assert.equal(applied.cycle, false);
+  assert.match(applied.error!, /originating task\/session work episode/);
+  assert.equal(persisted, false, "a refused update must not advance the sync baseline");
+  assert.deepEqual(f.tasks.get(dependent.id)!.dependencies.map((d) => d.type === "task" ? d.taskId : d.type), [f.task.id]);
+  assert.equal(f.tasks.get(dependent.id)!.title, "Pinned merge");
 });

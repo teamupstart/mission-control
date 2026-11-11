@@ -31,6 +31,7 @@ import {
   readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
+import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -238,7 +239,13 @@ async function responseResult(res: Response): Promise<{ status: number; body: un
   }
 }
 
-const server = new McpServer({ name: "mission-control", version: "0.1.0" });
+// Server-level instructions reach every session this server is registered with, dispatched or
+// started by hand, on harnesses that read them. The task tools below repeat the same rule in
+// their own descriptions because tool descriptions reach every harness.
+const server = new McpServer(
+  { name: "mission-control", version: "0.1.0" },
+  { instructions: TASK_REFERENCE_RULE },
+);
 
 server.registerTool("list_workflow_runs", {
   description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
@@ -476,7 +483,8 @@ server.registerTool(
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
       "planPrerequisites wait for artifact publication; planInputs pin the readable Markdown revision. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id, saved configuration, and canonical repository set.",
+      "authority later. Returns the new task id, saved configuration, and canonical repository set. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       ...McpTaskConfigurationSchema.shape,
       title: z
@@ -627,7 +635,8 @@ server.registerTool(
       "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
       "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
       "Each task includes saved configuration, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
-      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot.",
+      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpListTasksSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -653,7 +662,8 @@ server.registerTool(
     description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
       "Includes linked sessionId, prUrl and per-repository repoPrs. " +
       "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
-      "Never launches, modifies or reorders work and does not read session-private state.",
+      "Never launches, modifies or reorders work and does not read session-private state. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpGetTaskSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -682,7 +692,8 @@ server.registerTool(
       "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
       "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
       "absolute local checkout path or unique repository directory name. An empty title derives " +
-      "a new title from the intent. Returns the saved task configuration without launching it.",
+      "a new title from the intent. Returns the saved task configuration without launching it. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       taskId: z.string().min(1).describe("Id of the backlog task to edit"),
       ...McpUpdateTaskSchema.shape,
@@ -710,7 +721,8 @@ server.registerTool(
       "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
       "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
       "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
-      "the task record remains and the error is returned. Returns the deleted task id.",
+      "the task record remains and the error is returned. Returns the deleted task id. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpDeleteTaskSchema,
   },
   async ({ taskId }) => {

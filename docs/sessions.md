@@ -2189,6 +2189,20 @@ stale item. The composer keeps unfinished uploads and edits across a
 closed confirmation or a failed submission, then clears only after the daemon accepts the
 review request.
 
+Task ids are tool arguments, not names. The dashboard shows tasks only by title, so the server's
+MCP instructions and the description of every task tool (`create_task`, `list_tasks`, `get_task`,
+`update_task`, `delete_task`) tell the agent to name another task by its title, never its id,
+whenever it mentions one to the human. An agent can still ignore that, so the daemon enforces it
+on everything it sends the dashboard: every task id in an agent's conversation turns, its status
+line, its blocker and its review or question cards arrives as the task's quoted title, including a
+task that has left the live board. A task id is a random UUID, so it is titled wherever it sits and
+in any case - `task-<id>`, `/tasks/<id>`, capitals and all - unless a letter or digit touches it.
+The one exception is a checkout path (`…/worktrees/<id>/…`), the only name Mission Control builds
+from a full task id, which is left as written so the path still opens its file. When titling would give two options of one question
+the same label, the titled one is numbered (` (2)`). The Sitrep report reads the same titled view.
+A diff review's patch is left byte for byte, and the human's own turns are shown exactly as typed.
+What is stored, and what agents and Foreman read back, keeps the agent's own words.
+
 The MCP tools are:
 
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable

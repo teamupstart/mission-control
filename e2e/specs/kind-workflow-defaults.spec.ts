@@ -343,6 +343,54 @@ test("a guess left by a cancelled backlog edit is still corrected when the edit 
   }).toBe(GENERAL_REVIEW);
 });
 
+test("reverting an edit drops its kind guess, so the restored Workflow is not retargeted", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const title = "Pinned bugfix";
+  const seeded = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, {
+    data: {
+      repoRoot: daemon.repo,
+      title,
+      intent: "fix the pinned thing",
+      agent: "claude",
+      kind: "bugfix",
+      workflowId: "builtin-workflow:bug-fix-review",
+      backlog: true,
+    },
+  });
+  expect(seeded.ok()).toBe(true);
+  const layout = await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  expect(layout.ok()).toBe(true);
+  await dashboard.reload();
+  const card = dashboard.locator(".bl-card", { hasText: title });
+  await expect(card).toBeVisible();
+
+  const release = await holdConfigReads(dashboard);
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await dialog.getByPlaceholder("What should this agent do?").fill("fix the pinned thing, differently");
+  await kind.selectOption("document");
+  await kind.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+
+  await dialog.getByRole("button", { name: "Revert", exact: true }).click();
+  await expect(dialog.getByPlaceholder("What should this agent do?")).toHaveValue("fix the pinned thing");
+  const read = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/workflows/config") && response.request().method() === "GET");
+  release();
+  await (await read).finished();
+  // A value assertion alone would pass before the rows-landed effect had a chance to run.
+  await dashboard.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 100)));
+  }));
+  // The pinned Bug Fix Review is the task's own choice, not a guess the bugfix row may replace.
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+});
+
 test("an edit whose kind guess cannot be checked is refused until After work is chosen", async ({
   dashboard,
   daemon,

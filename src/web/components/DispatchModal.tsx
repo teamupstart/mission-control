@@ -881,6 +881,9 @@ export function DispatchLayer({
    * means when the thing it was is still moving.
    */
   const onEditRevert = useCallback(() => {
+    // The form stays open, so the reset on opening never runs: a guess that matches the
+    // restored Workflow would otherwise retarget it when the rows land.
+    editProvisionalWorkflow.current = null;
     setEdit(null);
   }, []);
 

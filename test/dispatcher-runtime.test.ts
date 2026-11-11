@@ -537,25 +537,92 @@ test("a build with no supervisor refuses the runtime rather than silently using 
   assert.match(task.error ?? "", /no session supervisor/);
 });
 
-test("a managed Pi dispatch refuses before provisioning when its extension is not ready", async () => {
-  const repo = seedRepo("pi-extension-missing-repo");
+test("a managed Pi chat launches with healthy extension tools and no MCP descriptor", async () => {
+  const repo = seedRepo("pi-chat-extension-repo");
   setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
   const registry = new Registry();
-  registry.upsertTask(
-    mkTask({ id: "task-pi-extension", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat" }),
-  );
+  registry.upsertTask(mkTask({
+    id: "task-pi-chat", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat", workflowId: null,
+  }));
   const supervisor = fakeSupervisor(registry);
-
   await new Dispatcher(registry, async () => {}, {
     supervisor,
-    piExtensionInstalled: async () => false,
-  }).dispatch("task-pi-extension");
+    piExtensionInstalled: async () => true,
+    missionMcpDescriptor: async () => { throw new Error("Pi uses its extension, not an MCP descriptor"); },
+    verifyMissionMcpTools: async () => { throw new Error("the extension health check already verifies its bridge"); },
+  }).dispatch("task-pi-chat");
+  const task = registry.getTask("task-pi-chat")!;
+  assert.equal(task.status, "running", task.error ?? "Pi chat must reach running");
+  assert.equal(supervisor.starts.length, 1);
+  assert.equal(supervisor.starts[0]!.agent, "pi");
+  assert.equal(supervisor.starts[0]!.mcp, null);
+});
 
-  const task = registry.getTask("task-pi-extension")!;
-  assert.equal(task.status, "failed");
-  assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi extension.*Settings.*Setup/i);
-  assert.equal(task.worktreePath, null);
-  assert.equal(supervisor.starts.length, 0);
+test("Pi refuses chat, plan, and scout dispatch when the installed bridge lacks a required tool", async (t) => {
+  const prior = { MISSION_PI_EXTENSION: process.env.MISSION_PI_EXTENSION,
+    PI_EXTENSIONS_DIR: process.env.PI_EXTENSIONS_DIR, MISSION_MCP_SERVER: process.env.MISSION_MCP_SERVER };
+  t.after(() => {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const { symlinkSync } = await import("node:fs");
+  const { piBridgeSource, piMetadataSource, writePiIntegration } = await import("./helpers/pi-integration.ts");
+  const { missionToolsAvailability } = await import("../src/server/mission-tools.ts");
+  setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  delete process.env.MISSION_MCP_SERVER;
+
+  for (const [kind, missingTool] of [
+    ["chat", "dispatch_task"], ["plan", "publish_plan"], ["scout", "submit_scout_artifacts"],
+  ] as const) {
+    const integration = join(home, `pi-${kind}-incomplete-integration`);
+    // A healthy generation first proves this fixture is loadable, not merely broken.
+    writePiIntegration(integration);
+    process.env.MISSION_PI_EXTENSION = join(integration, "extension.js");
+    process.env.PI_EXTENSIONS_DIR = join(home, `pi-${kind}-extensions`);
+    mkdirSync(process.env.PI_EXTENSIONS_DIR, { recursive: true });
+    symlinkSync(process.env.MISSION_PI_EXTENSION, join(process.env.PI_EXTENSIONS_DIR, "mission-control.js"));
+    assert.equal((await missionToolsAvailability("pi")).available, true);
+    writePiIntegration(integration, piMetadataSource, piBridgeSource(
+      MISSION_MCP_TOOLS.filter((name) => name !== missingTool),
+    ));
+    const registry = new Registry();
+    const id = `task-pi-${kind}-missing-tool`;
+    registry.upsertTask(mkTask({
+      id, status: "dispatching", repoRoot: seedRepo(`pi-${kind}-missing-tool-repo`), agent: "pi", kind,
+    }));
+    const supervisor = fakeSupervisor(registry);
+    await new Dispatcher(registry, async () => {}, { supervisor }).dispatch(id);
+    const task = registry.getTask(id)!;
+    assert.equal(task.status, "failed", `${kind} must refuse a bridge missing ${missingTool}`);
+    assert.match(task.error ?? "", /healthy Mission Control Pi extension/);
+    assert.equal(task.worktreePath, null, "refuse before provisioning");
+    assert.equal(supervisor.starts.length, 0, "no agent starts without its required tool");
+  }
+});
+
+test("managed Pi dispatch requires its extension for ship, bugfix, and chat before provisioning", async () => {
+  setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  for (const kind of ["ship", "bugfix", "chat"] as const) {
+    const registry = new Registry();
+    registry.upsertTask(mkTask({
+      id: "task-pi-extension", status: "dispatching", agent: "pi", kind,
+      repoRoot: seedRepo(`pi-${kind}-extension-missing-repo`),
+    }));
+    const supervisor = fakeSupervisor(registry);
+
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      piExtensionInstalled: async () => false,
+    }).dispatch("task-pi-extension");
+
+    const task = registry.getTask("task-pi-extension")!;
+    assert.equal(task.status, "failed", `${kind} cannot bypass the managed SDK extension preflight`);
+    assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi extension.*Settings.*Setup/i);
+    assert.equal(task.worktreePath, null);
+    assert.equal(supervisor.starts.length, 0);
+  }
 });
 
 test("a managed Pi dispatch refuses before provisioning when Pi is missing but its extension is ready", async () => {

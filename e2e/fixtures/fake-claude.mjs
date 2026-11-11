@@ -1407,6 +1407,28 @@ async function withMissionMcp(work) {
   }
 }
 
+/** A conversation delegates work through the real MCP server without a model call. */
+async function runChatTaskScheduling() {
+  return withMissionMcp(async (request) => {
+    const call = async (name, args) => {
+      const called = await request("tools/call", { name, arguments: args });
+      const text = called.result?.content?.map((part) => part.text).join("\n");
+      if (called.error || called.result?.isError) throw new Error(text ?? JSON.stringify(called.error));
+      return JSON.parse(text);
+    };
+    await call("create_task", {
+      title: "Work scheduled from chat", intent: "Keep this separate work parked for later.",
+      workflowId: null, enabled: false,
+    });
+    const launch = await call("create_task", {
+      title: "Work dispatched from chat", intent: "Perform this separate work now.",
+      workflowId: null,
+    });
+    const dispatched = await call("dispatch_task", { taskId: launch.id });
+    return `Scheduled one backlog task and dispatched another from chat (${dispatched.status}).`;
+  });
+}
+
 /** The bug-report scenario waits for the public issue preview's human response. */
 async function runReportBug(prompt) {
   const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
@@ -1688,6 +1710,11 @@ rl.on("line", (line) => {
     // while the real `report_product_issue` call waits for the human's review.
     if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {
       beginHeldTurn(runResidentReview());
+      return;
+    }
+
+    if (prompt.includes("E2E_CHAT_SCHEDULE_TASKS")) {
+      beginHeldTurn(runChatTaskScheduling());
       return;
     }
 

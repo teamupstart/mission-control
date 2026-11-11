@@ -69,6 +69,7 @@ export const MISSION_MCP_TOOLS = [
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,
+  "dispatch_task",
   "list_tasks",
   "get_task",
   "update_task",
@@ -132,7 +133,9 @@ export interface MissionMcpRequirement {
  *
  * `Record<TaskKind, …>` rather than a chain of comparisons, matching `KIND_CONTRACT` in
  * `task-contract.ts`: a new kind does not compile until it has said what its launch needs,
- * including saying it needs nothing. `ship` is that empty case and it is not a placeholder -
+ * including saying it needs nothing. Chat needs scheduling and dispatch so a conversation
+ * can hand separate work to another task without turning itself into a delivery task.
+ * `ship` is an empty case and it is not a placeholder -
  * it is the reason every existing dispatch's argv is unchanged.
  */
 const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
@@ -142,7 +145,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL, "publish_plan"],
   pipeline: [],
-  chat: [],
+  chat: [PLAN_SCHEDULING_TOOL, "dispatch_task"],
   resident: ["schedule_next_iteration"],
 };
 

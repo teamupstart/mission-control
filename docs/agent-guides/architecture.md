@@ -249,7 +249,18 @@ After provisioning, dispatch branches once:
 
 An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
 
-A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. A dispatch declaring no tools never spawns the probe and is unaffected.
+A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. An MCP-client dispatch declaring no tools never spawns that probe and is unaffected.
+
+Installed-extension harnesses carry those tools through their extension instead of an MCP
+descriptor. Pi's pre-provisioning health check probes the actual bridge with `tools/list` and
+requires the entire `MISSION_MCP_TOOLS` registry, including every plan and scout requirement.
+An extension that loads but lacks even one registered tool cannot pass dispatch availability.
+
+Managed Pi SDK dispatch requires a healthy extension even for kinds such as `ship` and
+`bugfix` that declare no MCP requirement. Pipeline tasks use a separate provider-owned
+host path instead of the managed Pi SDK dispatcher. Task-backed SDK launch,
+restart restore, and `/new` preserve that policy; an unhealthy replacement preserves the
+current conversation. Direct SDK sessions without a task keep the optional-extension behavior.
 
 Scout report publication is also available on request from other registered sessions. Registry
 observations project signed session capabilities; the archive gateway checks live ownership,

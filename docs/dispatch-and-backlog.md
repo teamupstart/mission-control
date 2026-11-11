@@ -350,8 +350,10 @@ diff is not suppressed as an incidental review artifact.
 like to talk about?**, and that opener is required and delivered exactly as written. A chat
 launches immediately from the manual single-agent Dispatch form. It cannot be added to the
 backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
-for an Ensemble member. Mission Control adds no task-kind prompt appendix, Mission MCP tool,
-artifact, or archive contract.
+for an Ensemble member. Mission Control adds no task-kind prompt appendix, artifact, or archive
+contract. Chat agents can still schedule separate work with Mission MCP's `create_task` and
+launch it with `dispatch_task`; both tools are pre-approved on chat launches. These tasks use
+the ordinary backlog and dispatch checks while the original conversation stays a chat.
 
 With **After work** left at **None**, chat completion stays human-ended. Foreman can recognize
 that the agent has answered, but it does not offer or send an automatic completion action; the
@@ -1026,6 +1028,11 @@ list, so neither the fresh-worktree launch nor the assign-onto-an-idle-agent sho
 see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and `/assign` for a parked
 item **unless the request explicitly claims an override** - which the dashboard's own
 buttons do, and Foreman never does.
+
+An agent calling Mission MCP's `dispatch_task` can also explicitly set `overrideDisabled: true`
+to launch a parked task. Chat pre-approves this tool, including that option: the disabled switch
+is an autopilot hold, not a human approval or permission boundary against the calling agent.
+Dependencies, workflow readiness, and the remaining launch checks still apply.
 
 The refusing default is the point. The Foreman worker is a separate process you start by
 hand, so it can outlive a daemon restart; one that predates this feature sends no override

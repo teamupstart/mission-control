@@ -1907,10 +1907,15 @@ export class Dispatcher {
     const mcp = harnessMcp
       ? await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(wt.path, stateHome)
       : null;
+    // Installed-extension harnesses already passed missionToolsAvailability before
+    // provisioning. Pi's inspectMissionMcpTools handshake requires every MISSION_MCP_TOOLS
+    // entry, including plan/scout tools, so this covers every kind without an MCP descriptor.
+    const extensionProvidesMissionTools =
+      capabilitiesFor(task.agent).missionTools?.mechanism === "installed-extension";
     // Same rule the terminal path applies to its argv, asked of the thing that actually
     // reaches the child: a caller passing `missionMcp` declared those tools REQUIRED, and a
     // session that cannot call them would run to completion unable to report it.
-    if (missionMcp && !mcp) {
+    if (missionMcp && !extensionProvidesMissionTools && !mcp) {
       throw new Error(
         `the launch could not carry the required Mission MCP tools ` +
           `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
@@ -1921,7 +1926,7 @@ export class Dispatcher {
     // embedded session reaches our MCP server through the descriptor rather than an argv, but
     // a descriptor pointing at a stale bundle publishes exactly as little. See the sibling
     // guard in `dispatch` for what drifts and why the existence check cannot see it.
-    if (missionMcp) {
+    if (missionMcp && !extensionProvidesMissionTools) {
       const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
         missionMcp.tools,
         mcp,

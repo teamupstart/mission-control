@@ -2233,6 +2233,15 @@ The MCP tools are:
   use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
   ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `dispatch_task(taskId, overrideDisabled?, defaultModel?)` - launch a saved task, including one
+  just filed with `create_task`. Shares the dashboard's dispatch path and its dependency,
+  workflow, kind, and launch checks. Disabled backlog work needs `overrideDisabled: true`.
+  The calling agent can set this override itself, without human approval; disabled is an
+  autopilot hold, not a permission boundary against the agent.
+  `defaultModel` fills only a task without a pinned model. Returns the task's current status:
+  `dispatching` means accepted, so use `get_task` to confirm it reaches `running`. Uses the same
+  daemon-token authority as task creation without a Control other sessions grant. Chat launches
+  pre-approve task creation and dispatch so a conversation can delegate separate work.
 - `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
   work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`),
   `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),

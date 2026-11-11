@@ -63,7 +63,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     fetch: (req) => {
       const path = new URL(req.url).pathname;
       paths.push(path);
-      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path === "/mcp/tasks/delete")) {
+      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete")) {
         return new Response("Not Found", { status: 404 });
       }
       return app.fetch(req);
@@ -104,8 +104,125 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
   async function create(over: Record<string, unknown> = {}) {
     return (await call("create_task", { title: "Backlog work", intent: "Deliver the requested change", repository: repoA, ...over }))!;
   }
-  return { client, call, create, registry, tasks, app, paths, reviews };
+  function disconnectHttp() {
+    // Keep the port reserved but terminate connections before any HTTP response can exist.
+    server.on("connection", (socket) => socket.destroy());
+  }
+  return { client, call, create, registry, tasks, app, paths, reviews, disconnectHttp };
 }
+
+test("MCP dispatch uses the dashboard's validation and TaskManager launch path", async (t) => {
+  const f = await fixture(t);
+  const launched: string[] = [];
+  const seam = f.tasks as unknown as { dispatcher: { dispatch: (id: string) => Promise<unknown> } };
+  seam.dispatcher.dispatch = async (id) => { launched.push(id); return { ok: true }; };
+  const task = await f.create({ workflowId: null, enabled: false });
+
+  const unauthenticated = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  assert.equal(unauthenticated.status, 401);
+  const malformed = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ overrideDisabled: "yes" }),
+  });
+  assert.equal(malformed.status, 400);
+  await f.call("dispatch_task", { taskId: "missing" }, /404.*no such task/);
+  await f.call("dispatch_task", { taskId: task.id }, /409.*disabled/i);
+  assert.equal(getTask(task.id)!.status, "backlog");
+  assert.deepEqual(launched, []);
+
+  const dispatched = await f.call("dispatch_task", { taskId: task.id, overrideDisabled: true });
+  assert.equal(dispatched!.id, task.id);
+  assert.deepEqual(launched, [task.id]);
+  // The dispatcher is the only stubbed boundary; a real launch is covered in Playwright.
+  // Model its in-flight state to check TaskManager's existing repeat-dispatch behavior.
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "dispatching" });
+  const repeated = await f.call("dispatch_task", { taskId: task.id });
+  assert.equal(repeated!.status, "dispatching");
+  assert.deepEqual(launched, [task.id], "a repeated dispatch does not launch again");
+
+  const prerequisite = await f.create({ workflowId: null });
+  const dependent = await f.create({ workflowId: null, dependsOnTaskIds: [prerequisite.id] });
+  await f.call("dispatch_task", { taskId: dependent.id }, /409.*waiting on/);
+  assert.equal(getTask(dependent.id)!.status, "backlog");
+  const blocked = await f.create({ workflowId: null });
+  f.registry.upsertTask({ ...getTask(blocked.id)!, workflowId: "missing-workflow" });
+  await f.call("dispatch_task", { taskId: blocked.id }, /409.*[Ww]orkflow/);
+  assert.equal(getTask(blocked.id)!.status, "backlog");
+  assert.deepEqual(launched, [task.id]);
+});
+
+test("MCP dispatch on an older daemon reports failure without another launch route", async (t) => {
+  const f = await fixture(t, true);
+  await f.call("dispatch_task", { taskId: "old-task" }, /404/);
+  assert.deepEqual(f.paths, ["/mcp/tasks/old-task/dispatch"]);
+});
+
+test("MCP dispatch returns an error result when the HTTP request rejects", async (t) => {
+  const f = await fixture(t);
+  f.disconnectHttp();
+  const result = await f.client.callTool({ name: "dispatch_task", arguments: { taskId: "unreachable-task" } });
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.content, [{
+    type: "text", text: "Could not reach Mission Control: TypeError: fetch failed",
+  }]);
+  assert.deepEqual(f.paths, [], "the connection failed before an HTTP handler answered");
+});
+
+test("MCP dispatch defaultModel selects an unpinned launch model and preserves a pinned model", async (t) => {
+  const f = await fixture(t);
+  const { Dispatcher } = await import("../src/server/dispatcher.ts");
+  const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+  type Supervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  type Start = Parameters<Supervisor["start"]>[0];
+  const starts: Start[] = [];
+  const supervisor = {
+    async start(input: Start) {
+      starts.push(input);
+      return f.registry.registerSdkSession({
+        id: `sdk:model-selection-${starts.length}`, agent: input.agent, name: input.name, cwd: input.cwd,
+      });
+    },
+    taskLiveness: () => null,
+    stop: async () => {},
+  } as unknown as Supervisor;
+  const priorBin = process.env.MISSION_CLAUDE_BIN;
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  t.after(() => {
+    if (priorBin === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = priorBin;
+  });
+  const repo = gitRepo("dispatch-model-selection");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--allow-empty", "-qm", "Fixture base"]);
+  setHarnessesConfig({ defaultModel: { claude: "claude-haiku-4-5" } });
+  const dispatcher = new Dispatcher(f.registry, async () => {}, {
+    supervisor, resolveRuntime: () => "sdk", missionMcpDescriptor: async () => null,
+    worktrees: new WorktreeManager(undefined, {
+      resolvePolicy: () => ({ enabled: false, maxSlots: 1, setupArgv: null }),
+    }),
+  });
+  // Keep model resolution and launch composition real; fake only the SDK process boundary.
+  // Track the asynchronous dispatch so assertions run after it has reached the supervisor.
+  const launches: Promise<void>[] = [];
+  const seam = f.tasks as unknown as { dispatcher: Pick<typeof dispatcher, "dispatch"> };
+  seam.dispatcher = { dispatch: (...args) => {
+    const launch = dispatcher.dispatch(...args);
+    launches.push(launch);
+    return launch;
+  } };
+  for (const [pin, expected] of [[null, "claude-sonnet-5"], ["claude-opus-5", "claude-opus-5"]] as const) {
+    const task = await f.create({ repository: repo, agent: "claude", model: pin, workflowId: null });
+    await f.call("dispatch_task", { taskId: task.id, defaultModel: "claude-sonnet-5" });
+    await Promise.all(launches);
+    const stored = getTask(task.id)!;
+    assert.equal(stored.status, "running", stored.error ?? "dispatch must reach running");
+    assert.equal(starts.find((start) => start.taskId === task.id)?.model, expected,
+      "the resolved model must reach the SDK launch boundary");
+    assert.equal(stored.model, pin, "a launch default must not change the durable model pin");
+  }
+});
 
 test("MCP configuration and exact local plan inputs coexist without changing either dependency boundary", async (t) => {
   applySkillsConfig({ planStorage: "local", commitPlanHtml: true });

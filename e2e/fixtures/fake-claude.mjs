@@ -566,7 +566,34 @@ function foremanUsageFailure(prompt) {
   return prompt.includes('You are the BACKLOG PLANNER') && prompt.includes('E2E_FOREMAN_USAGE_LIMIT');
 }
 
+/**
+ * A marked backlog planner reply that names tasks by ID in its prose, as a model ignoring
+ * the prompt's title rule would. The first listed task is the foundation; every other one
+ * waits for it. The real `sanitizePlan` then decides what the board shows.
+ */
+function backlogPlannerCitingIds(prompt) {
+  if (!prompt.includes("You are the BACKLOG PLANNER") || !prompt.includes("E2E_PLANNER_CITES_TASK_IDS")) {
+    return null;
+  }
+  const ids = [...prompt.matchAll(/^### id: (.+)$/gm)].map((match) => match[1].trim());
+  const [foundation, ...rest] = ids;
+  // Any other task id the prompt carries - one a task's intent mentions without declaring it
+  // a dependency - is cited too, the way a model repeating what it read would.
+  const mentioned = [...new Set(prompt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g) ?? [])]
+    .filter((id) => !ids.includes(id));
+  return JSON.stringify({
+    tasks: [
+      { id: foundation, dependsOn: [], reason: `Unblocks ${rest.join(", ")}.` },
+      ...rest.map((id) => ({ id, dependsOn: [foundation], reason: `Waits for ${foundation} to land.` })),
+    ],
+    note: `${foundation} goes first; ${rest.join(", ")} build on it.`
+      + (mentioned.length > 0 ? ` See ${mentioned.join(", ")}.` : ""),
+  });
+}
+
 function headlessAnswer(prompt) {
+  const planner = backlogPlannerCitingIds(prompt);
+  if (planner !== null) return planner;
   // Foreman's completion verifier, for a session whose objective carries the marker. Without
   // a verdict the worker can never reach a Workflow claim, so a spec that needs Foreman itself
   // to start a bound Workflow puts this marker in the dispatched request.

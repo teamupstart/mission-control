@@ -6393,6 +6393,20 @@ export function upsertTask(t: Task): string[] {
   }
 }
 
+/**
+ * The titles of whichever of `ids` name a task, in any status. Ids that name nothing are
+ * absent from the result. Reads two columns rather than building whole `Task`s, because the
+ * only caller wants a name to print in place of an id.
+ */
+export function getTaskTitles(ids: readonly string[]): Map<string, string> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const rows = openDb()
+    .prepare(`SELECT id, title FROM tasks WHERE id IN (${unique.map(() => "?").join(", ")})`)
+    .all(...unique) as unknown as { id: string; title: string }[];
+  return new Map(rows.map((row) => [row.id, row.title]));
+}
+
 export function getTask(id: string): Task | undefined {
   const r = openDb().prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as unknown as
     | TaskRow

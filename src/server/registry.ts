@@ -64,6 +64,7 @@ import type {
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { residentRunSummary, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -621,6 +622,7 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "harnesses_config_changed",
   // Deliberately absent: worktree inventory and policy do not feed the Line's execution
   // fold. Its content-free event only tells an open Settings panel to re-observe.
+  // `storage_config_changed` is absent for the same reason: backup counts are no Line input.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -1156,6 +1158,12 @@ export class Registry extends EventEmitter {
     since: null,
     error: null,
   };
+  /**
+   * The storage aggregate, held for the snapshot. `StorageHealthService` computes it and pushes
+   * only changed values here. Null until it does: an empty placeholder would read as "no copies
+   * and no problems" and hide the real answer the Storage panel reads from its route.
+   */
+  private storageHealth: StorageHealth | null = null;
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -1250,6 +1258,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
     return {
@@ -1294,8 +1303,15 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      storageHealth: this.storageHealth,
       latestSettingsRestore: this.latestSettingsRestore,
     };
+  }
+
+  /** Adopt a recomputed storage aggregate. The service already dropped unchanged ones. */
+  setStorageHealth(health: StorageHealth): void {
+    this.storageHealth = health;
+    this.emitEvent({ type: "storage_health", health });
   }
 
   /**
@@ -1371,6 +1387,11 @@ export class Registry extends EventEmitter {
   /** Announce that the bounded Worktrees route should be re-observed. */
   emitWorktreesChanged(): void {
     this.emitEvent({ type: "worktrees_changed" });
+  }
+
+  /** Announce a saved database backup config, so every open Storage panel re-reads it. */
+  emitStorageConfigChanged(): void {
+    this.emitEvent({ type: "storage_config_changed" });
   }
 
   /** Announce that the attention-inbox dismissals changed, so every dashboard re-reads them. */

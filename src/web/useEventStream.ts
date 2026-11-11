@@ -14,6 +14,7 @@ import type {
   Task,
 } from "@shared/types.ts";
 import type { LineSummary } from "@shared/line.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import type {
   PersonaView,
   SessionAction,
@@ -191,6 +192,11 @@ export interface MissionState {
    */
   keepAwakeStatus: KeepAwakeStatus | null;
   /**
+   * Backups and storage problems, or null before the first snapshot and from an older daemon
+   * that sends none. Replaced whole by every `storage_health` frame.
+   */
+  storageHealth: StorageHealth | null;
+  /**
    * How many times the per-harness dispatch defaults have changed since this stream opened,
    * plus one per (re)connect. A COUNTER, not the config: `harnesses_config_changed` carries
    * no body, so surfaces that name those defaults - the Harnesses panel and the dispatch
@@ -203,6 +209,8 @@ export interface MissionState {
   harnessesRevision: number;
   /** Content-free invalidation counter for the bounded Settings > Worktrees query. */
   worktreesRevision: number;
+  /** Content-free invalidation counter for the backup config Settings > Storage edits. */
+  storageConfigRevision: number;
   /**
    * Content-free invalidation counter for the attention-inbox dismissals
    * (`GET /api/attention/dismissals`). Bumped on every (re)connect as well as on
@@ -277,8 +285,10 @@ export function useEventStream(): MissionState {
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
+  const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
+  const [storageConfigRevision, setStorageConfigRevision] = useState(0);
   const [attentionDismissalsRevision, setAttentionDismissalsRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
   const [settingsRestoreNotice, setSettingsRestoreNotice] = useState<SettingsRestoredEvent | null>(null);
@@ -300,6 +310,7 @@ export function useEventStream(): MissionState {
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
       setHarnessesRevision((n) => n + 1);
       setWorktreesRevision((n) => n + 1);
+      setStorageConfigRevision((n) => n + 1);
       setAttentionDismissalsRevision((n) => n + 1);
       // Same rule for the archive library, which rides no snapshot at all: bundles can be
       // reconciled, refused, or pruned while the channel is down, and a mounted Archives page
@@ -412,6 +423,8 @@ export function useEventStream(): MissionState {
           // development this build can connect to an older daemon whose snapshot has no
           // such field, and `undefined` must read as unknown - never as on.
           setKeepAwakeStatus(msg.keepAwake ?? null);
+          // The `?? null` is the version-skew guard: an older daemon's snapshot has no field.
+          setStorageHealth(msg.storageHealth ?? null);
           // A fresh window loaded current settings before this first snapshot, so the marker
           // is only its baseline. On reconnect, a changed marker means the one-shot event
           // landed during the gap. Reuse the same ownership check as the live event so an
@@ -652,6 +665,11 @@ export function useEventStream(): MissionState {
         case "keep_awake_status":
           setKeepAwakeStatus(msg.status);
           break;
+        // Replaced whole: the aggregate is one recompute, and a patch could draw a problem
+        // list from one pass beside backup status from another.
+        case "storage_health":
+          setStorageHealth(msg.health);
+          break;
         // Counted, not stored: the event carries no config (see its declaration), so the
         // number is the whole signal - it tells the harness pickers to re-read the route.
         case "harnesses_config_changed":
@@ -659,6 +677,9 @@ export function useEventStream(): MissionState {
           break;
         case "worktrees_changed":
           setWorktreesRevision((n) => n + 1);
+          break;
+        case "storage_config_changed":
+          setStorageConfigRevision((n) => n + 1);
           break;
         // Counted: the frame carries no rows, and the hook holding them re-reads the route.
         case "attention_dismissals_changed":
@@ -782,8 +803,10 @@ export function useEventStream(): MissionState {
     lineSummary,
     settingsStatus,
     keepAwakeStatus,
+    storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
     attentionDismissalsRevision,
     archivesRevision,
     settingsRestoreNotice,

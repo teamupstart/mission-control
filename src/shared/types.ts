@@ -3559,6 +3559,12 @@ export type ServerEvent =
        */
       keepAwake: KeepAwakeStatus;
       /**
+       * Backups and storage problems at connect time, so Settings > Storage is right from
+       * the first render. Null until the daemon's storage service has computed
+       * it once; absent from an older daemon, which sends none.
+       */
+      storageHealth?: import("./storage-health.ts").StorageHealth | null;
+      /**
        * The latest committed restore marker, or null when this daemon has restored nothing.
        * Bounded to the same three public scalars as the incremental event. A fresh browser
        * baselines it; a reconnect compares it with the marker seen before the stream gap.
@@ -3709,6 +3715,12 @@ export type ServerEvent =
    */
   | { type: "worktrees_changed" }
   /**
+   * The database backup config was saved. Content-free: `GET /api/storage` is the one reader
+   * of that config, and `storage_health` cannot stand in, because a save that prunes nothing
+   * leaves the aggregate unchanged and publishes no frame.
+   */
+  | { type: "storage_config_changed" }
+  /**
    * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
    * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the
    * inbox and the `to answer` count in every other.
@@ -3725,6 +3737,11 @@ export type ServerEvent =
    * `Registry.setKeepAwakeStatus`).
    */
   | { type: "keep_awake_status"; status: KeepAwakeStatus }
+  /**
+   * The storage aggregate moved: a capture settled or copies were pruned. Carries the whole aggregate, for `line_summary`'s reason,
+   * and is emitted only when it changed (see `StorageHealthService.recompute`).
+   */
+  | { type: "storage_health"; health: import("./storage-health.ts").StorageHealth }
   /**
    * The local archive library changed - a reconciliation batch indexed, refused, or pruned
    * at least one bundle. An invalidation signal: a surface showing archive history re-runs

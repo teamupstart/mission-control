@@ -250,6 +250,28 @@ export const SETTINGS_CATEGORIES = [
     ],
   },
   {
+    id: "storage",
+    label: "Storage",
+    icon: "◫",
+    blurb: "Database backups, what they keep, and storage problems",
+    // `sessions` / `machine`, beside Restore: both are about recovery points on this machine,
+    // and keeping them adjacent is what tells the two kinds of backup apart. Everything here
+    // is daemon-backed and local; nothing leaves the machine.
+    group: "sessions",
+    scope: "machine",
+    keywords: [
+      "backup",
+      "database",
+      "disk",
+      "space",
+      "copies",
+      "retention",
+      "back up now",
+      "problem",
+      "sqlite",
+    ],
+  },
+  {
     id: "restore",
     label: "Restore",
     icon: "↶",

@@ -7168,6 +7168,88 @@ a.btn {
   .restore-retry .btn { width: 100%; }
   .app-banner-restore { align-items: stretch; }
 }
+/* Settings > Storage. The status tiles and copies table follow Restore's, beside which the
+   category sits; the config row follows the Workflows retention row. */
+.storage-settings h3,
+.storage-problems h3 { margin: 0 0 6px; }
+.storage-config-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.storage-config-row label {
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.storage-config-row input {
+  width: 92px;
+  min-width: 0;
+  padding: 7px 8px;
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.storage-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.storage-status-grid article {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.storage-status-grid span,
+.storage-status-grid strong,
+.storage-status-grid small { display: block; overflow-wrap: anywhere; }
+.storage-status-grid span { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+.storage-status-grid strong { font-size: 14px; }
+.storage-status-grid small { color: var(--muted); font-size: 12px; margin-top: 5px; }
+.storage-status-grid small.storage-failure { color: var(--danger); }
+.storage-primary-action { display: flex; justify-content: flex-end; margin: 12px 0; }
+.storage-copies {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+.storage-copies caption { text-align: left; color: var(--muted); font-size: 12px; padding-bottom: 6px; }
+.storage-copies th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.storage-copies th,
+.storage-copies td { padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.storage-copies tr:last-child td { border-bottom: 0; }
+.storage-problem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.storage-problem-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: 10px;
+}
+.storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
+.storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .storage-status-grid { grid-template-columns: 1fr; }
+  .storage-problem-list li { align-items: stretch; flex-direction: column; }
+}
 /* Queue is a disclosure, not a command: it stays a plain button until the drawer is
    open, then holds the pressed tint for as long as the panel below it is showing -
    so the one control and the thing it opened read as the same object. */

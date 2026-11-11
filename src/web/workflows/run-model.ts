@@ -33,12 +33,13 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
-import type { InspectorComment, InspectorCommentStatus, InspectorSeverity } from "@shared/types.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isVerdictNode,
+  routingLine,
   sessionActionWaitsOnOperator,
   verdictAuthor,
   workflowResumptionWithheldSentence,
@@ -1716,43 +1717,6 @@ export interface RunRecordSummary {
 }
 
 /**
- * A finding's severity as a chip, on the tone mapping the finding CARD already used.
- *
- * The card split blocker and major (a danger edge) from minor and nit (an attention one). The
- * table keeps exactly that split rather than inventing a four-tone scale: the severity word
- * itself is on the chip, so the colour only has to say which half it is in.
- */
-export function inspectorFindingSeverityStatus(severity: InspectorSeverity): PipelineStatus {
-  return severity === "blocker" || severity === "major"
-    ? { tone: "failed", label: severity }
-    : { tone: "waiting", label: severity };
-}
-
-/** A finding's status as a chip. Only `resolved` is a finished fact. */
-export function inspectorFindingStatusStatus(status: InspectorCommentStatus): PipelineStatus {
-  if (status === "resolved") return { tone: "passed", label: status };
-  return status === "posting"
-    ? { tone: "waiting", label: status }
-    : { tone: "failed", label: status };
-}
-
-/** Where a finding is, as the table prints it. `general` for a finding with no path. */
-export function inspectorFindingLocation(finding: InspectorComment): string {
-  if (!finding.path) return "general";
-  return finding.line ? `${finding.path}:${finding.line}` : finding.path;
-}
-
-/**
- * A finding whose detail predates body persistence, said once.
- *
- * The card printed this sentence in place of the body; the row keeps it rather than drawing an
- * empty panel, because "this build has no body for this row" and "this finding had nothing to
- * say" are different claims and only one of them is true.
- */
-export const LEGACY_FINDING_SENTENCE =
-  "Legacy finding: detail was not persisted by the GitHub Inspector version that created this row.";
-
-/**
  * A Foreman completion claim's outcome, as a chip.
  *
  * The WORDS come from `completionClaimOutcome`, which is the one place this page says what a
@@ -1778,11 +1742,6 @@ export function completionClaimStatus(state: string): PipelineStatus {
     default:
       return { tone: "stopped", label };
   }
-}
-
-/** What a finding's row prints as its body, legacy arm included. */
-export function inspectorFindingBody(finding: InspectorComment): string {
-  return finding.body ?? LEGACY_FINDING_SENTENCE;
 }
 
 /** The three statuses in which the run itself is halted on the gate rather than moving. */
@@ -3115,8 +3074,33 @@ export function shortSha(sha: string | null | undefined): string | null {
 export interface VerdictMeta {
   runner: string | null;
   model: string | null;
+  /** The effort recorded with the model; null for the provider default. */
+  effort: ThinkingLevel | null;
+  /** A configured effort the model could not run, so the call ran at the provider default. */
+  effortUnsupported: ThinkingLevel | null;
   durationMs: number | null;
   costUsd: number | null;
+}
+
+/**
+ * `runner · model`, plus the effort when one was passed, for an attempt or a call - or null
+ * when it ran no model. What actually ran, as recorded, never re-resolved from settings. A
+ * configured effort the model could not run is named as such (`max effort unsupported,
+ * provider default`) rather than dropped from the line.
+ */
+export function recordedRoutingLabel(
+  record: {
+    runner: string | null;
+    model: string | null;
+    effort?: ThinkingLevel | null;
+    effortUnsupported?: ThinkingLevel | null;
+  },
+): string | null {
+  if (!record.runner || !record.model) return null;
+  return routingLine(record.runner, record.model, {
+    level: record.effort ?? null,
+    unsupported: record.effort ? null : record.effortUnsupported ?? null,
+  });
 }
 
 /**
@@ -3136,6 +3120,8 @@ export function verdictMeta(
   return {
     runner: attempt.runner,
     model: attempt.model,
+    effort: attempt.effort ?? null,
+    effortUnsupported: attempt.effortUnsupported ?? null,
     durationMs: attempt.startedAt !== null && attempt.finishedAt !== null
       ? Math.max(0, attempt.finishedAt - attempt.startedAt)
       : null,

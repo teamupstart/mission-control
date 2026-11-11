@@ -9,6 +9,7 @@ import {
   personaSnapshotIsOutdated,
   sessionActionCompletionLabel,
   sessionActionSnapshotIsOutdated,
+  routingLine,
 } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { InspectorFooter } from "./pipeline-bits.tsx";
@@ -88,7 +89,7 @@ export function WorkflowVersionDetail({
               <p>Persona default · {snapshotRoutingLabel(node.persona)}</p>
               <p>
                 {node.executionOverride
-                  ? `Workflow override · ${node.executionOverride.runner} · ${node.executionOverride.model}`
+                  ? `Workflow override · ${routingLine(node.executionOverride.runner, node.executionOverride.model, node.executionOverride.effort)}`
                   : "No workflow override · this node runs the Persona default above"}
               </p>
             </div>

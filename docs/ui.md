@@ -894,8 +894,9 @@ available:
   Service or Other), **Blocker reason**, **Waiting on**, **Blocker link** (a glyph that opens
   the thread, pull request or status page) and **Reply flagged** (a pill once a resident or you
   saw a likely answer). A blocked idle session stays in the Idle column. The Conversation tab
-  opens with a red band that always shows every field, the collapsible details and any flagged
-  reply, with **Flag reply** and **Clear blocker** buttons.
+  opens with a red band: one row with the kind, reason, age, **Flag reply** and **Clear
+  blocker**, which expands in place to every other field and the collapsible details. Any
+  flagged reply prints under the row.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
   ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the
@@ -981,16 +982,19 @@ available:
   and the heading's name is what tells them apart. Arrow keys walk straight past the headings.
   Turn the whole thing off with **Group by repository** in Settings → Display → Layout, and
   every column returns to one flat, tone-ordered list.
-- **Empty columns get out of the way.** A column with no cards in it leaves the board, and
-  the columns that remain widen into the space. That includes **needs you**: when nothing is
-  waiting on you it takes no room at all, and the moment a session needs you it comes back in
-  its place in the column order. It includes the **Backlog** too: with no tasks queued it
-  leaves, and the first task you save to the Backlog brings it back. An empty Backlog has
-  nothing to drag, so hiding it takes no drop target away. Each empty column becomes a chip
-  in the **empty** stash beside the last column; click a chip to bring that column back.
-  Uncheck **Show the empty-column stash** in Settings → Display → Layout to hide the stash
-  entirely, so empty columns simply leave. Drilled into **needs you**, the column is the
-  drill-in rail at full rail width with its heading, even when nothing else in it is asking.
+- **Empty columns get out of the way.** Every column exists, but it is drawn only while it
+  has a card in it. An empty column leaves the board and leaves nothing behind - no slim
+  rail and no chip - and the columns that remain widen into the space. That holds for every
+  column: **needs you**, **working**, **idle**, **unconfirmed**, **gone**, and the
+  **Backlog**. When nothing is waiting on you, **needs you** takes no room at all, and the
+  moment a session needs you it comes back in its place in the column order. With no tasks
+  queued the Backlog leaves, and the first task you save to it brings it back. An empty
+  Backlog has nothing to drag, so hiding it takes no drop target away. Opening a session
+  keeps the same rule: the drill-in rail is the open session's column, and no empty column
+  is mounted beside it, even for the morph. When the open session's own column has no card
+  to list - a resident opened from the Residents drawer, or a session a fleet filter hides -
+  no rail is drawn at all: the conversation takes the whole board, and a back button at the
+  front of its header returns you to the board, as <kbd>Esc</kbd> does.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they

@@ -104,7 +104,7 @@ rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#gui
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or GitHub Inspector setting. Personas you create or import live in Mission Control's SQLite
-database. Their name, description, optional provider and model overrides, and guidance are
+database. Their name, description, optional provider, model and effort overrides, and guidance are
 revisioned together. Saves use compare-and-swap, so a second tab editing an older revision
 gets an explicit conflict and keeps its local text. Archive is soft: archived Personas are
 read-only, remain addressable for future published history, and continue reserving their
@@ -135,8 +135,23 @@ Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gp
 the other seven on `gpt-5.6-terra`. Versions 21 and 22 use `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
+A Persona can also recommend a reasoning **effort** (`low`, `medium`, `high`, `xhigh` or
+`max`) beside its model, from the **effort** chip in the Persona editor. Unset means no effort
+flag at all, so the provider's own default applies exactly as before. The levels offered are
+the same capability table sessions and tasks launch with, for the Persona's provider and
+model; a Persona that inherits the app provider is offered only the levels every provider
+supports. Saving an effort the provider and model do not offer is refused rather than dropped.
+Published versions freeze the effort with the model, and it is recorded on each attempt and
+model call beside the model and shown wherever that model is shown (`codex · gpt-6-sol · high
+effort`). A configured effort the resolved model turns out not to support (an environment
+model override, say) is flagged as unsupported and the call runs at the provider default. The
+dropped level is recorded on the attempt and logged as `persona_effort_unsupported`, and the
+run detail prints it (`codex · gpt-5.6-luna · max effort unsupported, provider default`), so
+a reviewer never runs shallower than configured without saying so.
+
 A workflow can override that default for one reviewer node, without changing the Persona or
-copying it. See [per-node provider and model](#per-node-provider-and-model).
+copying it. See [per-node provider and model](#per-node-provider-and-model). Built-in
+Personas are read-only, so a node override is how you set effort for one of them.
 
 ### Importing a Persona from a file
 
@@ -589,12 +604,19 @@ until you pick it, nothing is saved and the node keeps running what it was alrea
 Model ids stay free text under the usual conventions - one absent from the suggestion list is
 allowed, and a provider this build cannot spawn is refused when the draft is saved.
 
+The override also carries an optional **Effort**, beside the model. It seeds from the
+Persona's effort when the override is turned on, offers only the levels this provider and
+model support, and is part of the override: an override with no effort runs at the provider
+default, never at a level the Persona chose for a different model. An effort the pair does not
+support (for example after changing the model) stays selected and is flagged, and Publish is
+refused with an `unsupported_effort` diagnostic until it is changed.
+
 Resolution, in one table:
 
 | Node setting | Provider and model used |
 | --- | --- |
-| No override | The existing Persona resolution, unchanged |
-| Explicit override | The node's own provider and model pair |
+| No override | The existing Persona resolution, unchanged, effort included |
+| Explicit override | The node's own provider and model pair, and its effort or the provider default |
 | Override removed in a draft | Live Persona defaults again, app and environment fallbacks included |
 | Published version with no override | The frozen Persona snapshot, with the usual fallbacks where its fields are unset |
 
@@ -2400,6 +2422,15 @@ all - so all three surfaces read one derivation, which answers "which pull reque
 rather than assuming there is one. A run holding no gate is told plainly that cancelling
 clears the run and keeps its history, and nothing more.
 
+A blocked run also keeps its session, with one exception. Foreman's
+[PR follow-through](work-queues.md#keeping-a-pr-on-track) stops waiting on a run that spent its
+repair budget or stopped on `unchanged_evidence_exhausted` or `session_disappeared`, because
+only the operator or the session can restart it and it delivers nothing until then. Unresolved
+GitHub Inspector findings and failing CI reach the session again, while the run keeps
+its Shipping veto and CodeRabbit follow-up keeps waiting for it. The list is
+`WORKFLOW_FOLLOWUP_RELEASE_PHASES` in `src/shared/workflow.ts`, and it is an allowlist: every
+other blocked phase, including one added later, keeps holding the follow-through.
+
 ### One run, one lifecycle state
 
 A run says where it is in three stored columns - its status, its phase, and a free-form detail
@@ -2567,10 +2598,16 @@ an Inspector gate or a Foreman completion claim - most runs have neither and are
 tab. A stat strip carries the gate state, the open and resolved finding counts, the adopted pull
 request with its observed state, and the Inspector's review round; the counts are the ledger rows
 the table under them draws, not the Inspector's own tallies, which keep their own fields in the
-ledger disclosure. Findings are a table - severity, title, `path:line`, round and status - with
-one row each. A finding that is not resolved is why the gate has not passed, so its body is on
-screen rather than behind its row's control; a resolved one opens its body and the fingerprint the
-gate tracks it by on request. The label carries the open-finding count in amber. Findings never
+ledger disclosure. Findings are a table - severity, title, `path:line`, round, status and
+posted - with one row each. The Posted column says whether the finding reached GitHub: **Posted**
+(a link to its comment once GitHub Inspector has recorded one), **Not posted**, **Not posted
+(posted earlier)** linking to the earlier version's comment, **Posting**, or **Unknown** for a row
+recorded before Mission Control tracked posting. A draft GitHub refused reads **Not posted** with
+"GitHub refused it N time(s)" under it, or **Refused** at 3, with GitHub's reason on hover and in
+the finding's detail
+([drafts after a switch to live](inspector-and-shipping.md#drafts-after-a-switch-to-live)). A finding that is not resolved is why the gate
+has not passed, so its body is on screen rather than behind its row's control; a resolved one
+opens its body and the fingerprint the gate tracks it by on request. The label carries the open-finding count in amber. Findings never
 appear in the [review worklist](#the-review-worklist), which is built from Persona verdicts only,
 so this is the one place they are listed. The findings policy, the missing-PR policy and
 **Open GitHub Inspector settings** sit at the foot of the same tab.
@@ -2617,6 +2654,27 @@ Persona. The narrower `inspector_only` policy waits for GitHub Inspector to obse
 head, records an immutable attempt-free bypass submission, and reviews that head normally. It
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
+
+The packet's findings section comes from a pure, shared renderer
+(`src/server/inspector/findings-text.ts`). Foreman's review follow-through relay and the
+daemon-built CodeRabbit follow-up render findings through it as well, so all three describe a
+finding the same way. The renderer imports nothing that reaches the database or the network,
+which is what lets the Foreman worker load it. Each finding carries one posted marker from
+`findingPublication`: posted on GitHub with its comment link, posted in the review summary,
+posted with the link not captured yet, being posted now, not posted and so only in this message,
+or not posted again with a link to the earlier version that was. A draft GitHub refused says how
+many times and GitHub's reason from the first refusal: below the cap of 3 it adds that it is
+offered again on the next push, and at the cap it does not. A draft whose earlier version was
+posted is never called the only copy. Fields still clip at the per-field limit. Past the payload
+limit the packet drops whole findings from the tail, lowest severity first, and ends the section
+with how many it left out. It never cuts a finding part way: when not even the highest-severity
+finding fits whole, none is listed and the section carries the count alone, without promising a
+resend. The finding stays unresolved either way. Room for that count is reserved before the header
+is sized, so a header whose fields together outgrow the payload is clipped instead and the count
+always survives. The findings get every byte the packet really has left: the truncation notice is
+reserved only when the packet will carry it. The packet keeps its own header and closing, and its
+failed count is every unresolved finding, listed or not. A prepared packet keeps the bytes and hash
+it was frozen with: delivery and restart recovery send those stored bytes and never render it again.
 
 If no adopted PR exists, the published policy waits, offers **Prepare PR in session**, or prepares
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate

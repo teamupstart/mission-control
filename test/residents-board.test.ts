@@ -436,7 +436,7 @@ function drawerMarkup(runs: ResidentRunSummary[], sessions: Session[]): string {
     onOpenLaunch: () => {},
     onManage: () => {},
     reviews: [],
-    renderReview: () => null,
+    onOpenReview: () => {},
   }));
 }
 
@@ -475,10 +475,12 @@ test("with no resident running, the drawer says so and the edge tab carries no n
   assert.match(one, /class="residents-edge-tab needs-you"/);
 });
 
-// ---- an open card's body: the ask or the latest message, then the actions; never a reply box ----
+// ---- an open card's body: what it asks or last said, then the actions; never a form or reply box ----
+
+const { reviewAskSummary } = await import("../src/web/lib/reviews.ts");
 
 /** A resident's open `request_input` question with two options. */
-function residentAsk(sessionId: string): ReviewItem {
+function residentAsk(sessionId: string, over: Partial<ReviewItem> = {}): ReviewItem {
   return {
     id: "rv-1", sessionId, kind: "input", status: "pending",
     title: "Ship the nightly migration?", body: "Ship the nightly migration?",
@@ -486,47 +488,134 @@ function residentAsk(sessionId: string): ReviewItem {
       { id: "yes", label: "Ship it" }, { id: "no", label: "Hold it" },
     ], allowOther: false }],
     response: null, createdAt: 1, resolvedAt: null,
+    ...over,
   } as ReviewItem;
 }
 
-/** The body as the drawer draws it, with the injected review renderer stubbed to a marker. */
-function cardBodyMarkup(session: Session, reviews: ReviewItem[] = []): string {
+/** The body as the drawer draws it, opening the conversation and the review modal. */
+function cardBodyMarkup(session: Session, reviews: ReviewItem[] = [], extra: { compressed?: boolean; status?: React.ReactNode } = {}): string {
   return renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
     session,
     name: "Triage Bot",
     reviews,
-    renderReview: (review: ReviewItem) => createElement("section", { className: "stub-review-card" }, review.title),
+    onOpen: () => {},
+    onOpenReview: () => {},
+    ...extra,
     children: createElement("div", { className: "residents-drawer-actions" }, "actions"),
   }));
 }
 
-test("with a pending ask, the card draws it through the injected ReviewCard, above its actions", () => {
+test("a pending ask is a row in the Needs you color naming it, never the form that answers it", () => {
   const session = mkSession({ id: "s1", activity: "checking the nightly job" });
   const html = cardBodyMarkup(session, [residentAsk("s1")]);
-  assert.match(html, /aria-label="Triage Bot is asking"/);
-  assert.match(html, /<section class="stub-review-card">Ship the nightly migration\?<\/section>/);
+  assert.match(html, /<ul class="residents-drawer-asks" aria-label="Triage Bot is asking">/);
+  assert.match(html, /<button type="button" class="residents-drawer-ask" aria-label="input: Ship the nightly migration\? - Ship it · Hold it"/);
+  assert.match(html, /class="tt-desc">Open the review to answer Triage Bot</);
+  // No option buttons, no form, no Dismiss or Chat about it: those live in the review modal.
+  assert.doesNotMatch(html, />Ship it<\/button>/);
+  assert.doesNotMatch(html, /role="radio"|type="radio"/);
+  assert.doesNotMatch(html, /Answer: Ship the nightly migration/);
+  assert.doesNotMatch(html, />Dismiss</);
+  assert.doesNotMatch(html, /Chat about it/);
   // The ask replaces the latest-message line rather than stacking under it.
   assert.doesNotMatch(html, /residents-drawer-latest/);
   assert.doesNotMatch(html, /checking the nightly job/);
-  // The card's own actions stay, after the question.
-  assert.ok(html.indexOf("stub-review-card") < html.indexOf("residents-drawer-actions"));
+  // The card's own actions stay, after the question and outside the region a click opens.
+  assert.ok(html.indexOf("residents-drawer-asks") < html.indexOf("residents-drawer-actions"));
 });
 
-test("a menu the resident is parked on is drawn as the Conversation draws it, its rows as buttons", () => {
+test("every pending review is its own row", () => {
+  const html = cardBodyMarkup(mkSession({ id: "s1" }), [
+    residentAsk("s1"),
+    residentAsk("s1", { id: "rv-2", kind: "plan-decisions", title: "Pick the cache layer", decisions: [
+      { id: "a", question: "Cache?", options: [{ id: "x", label: "Redis" }] },
+      { id: "b", question: "TTL?", options: [{ id: "y", label: "1h" }] },
+    ] }),
+  ]);
+  assert.equal((html.match(/class="residents-drawer-ask"/g) ?? []).length, 2);
+  assert.match(html, /aria-label="decisions: Pick the cache layer - 2 decisions to make"/);
+});
+
+test("a menu the resident is parked on is a row too, opening the review modal", () => {
   const session = mkSession({
     id: "s1",
     paneDialog: { prompt: "Run npm test?", options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }], highlighted: 1 },
   });
   const html = cardBodyMarkup(session);
   assert.match(html, /aria-label="Triage Bot is asking"/);
-  assert.match(html, /Run npm test\?/);
-  assert.match(html, /<button[^>]*>(?:(?!<\/button>).)*Yes/);
+  assert.match(html, /aria-label="menu: Run npm test\? - Yes · No"/);
+  assert.match(html, /class="tt-desc">Open the review to answer Triage Bot</);
+  // The menu's rows are answered in the review modal, never here.
+  assert.doesNotMatch(html, />Yes<\/button>/);
   assert.doesNotMatch(html, /residents-drawer-latest/);
+
+  // A form of several questions (the agent's own `AskUserQuestion`) says how many it asks.
+  const form = cardBodyMarkup(mkSession({
+    id: "s1",
+    paneDialog: {
+      prompt: "Claude has some questions.", options: [], highlighted: 0, source: "driver",
+      questions: [
+        { question: "Which linter?", options: [{ number: 1, label: "biome" }] },
+        { question: "Which checks should run?", options: [{ number: 1, label: "tests" }] },
+      ],
+    },
+  }));
+  assert.match(form, /aria-label="menu: Claude has some questions\. - 2 questions"/);
+  assert.doesNotMatch(form, /biome/);
+
+  // A form of exactly one question prints that question's own options, not the dialog's rows
+  // (a driver form's top-level options are empty) and not a count.
+  const single = cardBodyMarkup(mkSession({
+    id: "s1",
+    paneDialog: {
+      prompt: "Claude has a question.", options: [], highlighted: 0, source: "driver",
+      questions: [{ question: "Which linter?", options: [{ number: 1, label: "biome" }, { number: 2, label: "eslint" }] }],
+    },
+  }));
+  assert.match(single, /aria-label="menu: Claude has a question\. - biome · eslint"/);
+  assert.doesNotMatch(single, /1 questions?/);
+});
+
+test("a menu and a pending review are both rows, menu first, as the review modal draws them", () => {
+  const session = mkSession({
+    id: "s1",
+    paneDialog: { prompt: "Run npm test?", options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }], highlighted: 1 },
+  });
+  const html = cardBodyMarkup(session, [residentAsk("s1")]);
+  assert.equal((html.match(/class="residents-drawer-ask"/g) ?? []).length, 2);
+  const menu = html.indexOf('aria-label="menu: Run npm test? - Yes · No"');
+  const review = html.indexOf('aria-label="input: Ship the nightly migration? - Ship it · Hold it"');
+  assert.ok(menu >= 0 && review >= 0, "both requested decisions are drawn");
+  assert.ok(menu < review, "the menu leads, as it does in the review modal");
+  assert.equal((html.match(/aria-label="Triage Bot is asking"/g) ?? []).length, 1, "one list holds both");
+});
+
+test("what a pending review's row says: its kind and what answering it takes", () => {
+  assert.deepEqual(reviewAskSummary(residentAsk("s1")), { kind: "input", detail: "Ship it · Hold it" });
+  assert.deepEqual(
+    reviewAskSummary(residentAsk("s1", { decisions: [
+      { id: "a", question: "A?", options: [{ id: "1", label: "One" }] },
+      { id: "b", question: "B?", options: [{ id: "2", label: "Two" }] },
+    ] })),
+    { kind: "input", detail: "2 questions" },
+  );
+  // An open-ended question: its body when that says more than the title, else what it needs.
+  assert.deepEqual(
+    reviewAskSummary(residentAsk("s1", { title: "Which region?", body: "\nWhich region should the nightly run in?\nus-east is cheaper.", decisions: null })),
+    { kind: "input", detail: "Which region should the nightly run in?" },
+  );
+  assert.deepEqual(reviewAskSummary(residentAsk("s1", { decisions: null })), { kind: "input", detail: "Needs a written answer" });
+  assert.deepEqual(
+    reviewAskSummary(residentAsk("s1", { kind: "plan-decisions", decisions: [{ id: "a", question: "A?", options: [{ id: "1", label: "One" }] }] })),
+    { kind: "decisions", detail: "1 decision to make" },
+  );
+  assert.deepEqual(reviewAskSummary(residentAsk("s1", { kind: "plan", decisions: null })), { kind: "plan", detail: "Plan to approve" });
+  assert.deepEqual(reviewAskSummary(residentAsk("s1", { kind: "diff", decisions: null })), { kind: "diff", detail: "Changes to review" });
 });
 
 test("with nothing asked, the card shows the latest message and no reply box", () => {
   const html = cardBodyMarkup(mkSession({ id: "s1", activity: "checking the nightly job" }));
-  assert.match(html, /<p class="residents-drawer-latest" aria-label="Latest from Triage Bot">checking the nightly job<\/p>/);
+  assert.match(html, /<p class="residents-drawer-latest" aria-label="Latest from Triage Bot"[^>]*>checking the nightly job<\/p>/);
   assert.doesNotMatch(html, /is asking/);
   // A free-form reply belongs to the Conversation, which the card opens.
   assert.doesNotMatch(html, /<textarea/);
@@ -536,12 +625,12 @@ test("with nothing asked, the card shows the latest message and no reply box", (
 
 test("with no activity line, the latest message falls back to the session's goal", () => {
   const html = cardBodyMarkup(mkSession({ id: "s1", activity: null, goal: { text: "keep the nightly job green", source: null, updatedAt: 1 } }));
-  assert.match(html, /<p class="residents-drawer-latest" aria-label="Latest from Triage Bot">keep the nightly job green<\/p>/);
+  assert.match(html, /<p class="residents-drawer-latest" aria-label="Latest from Triage Bot"[^>]*>keep the nightly job green<\/p>/);
 });
 
 test("the activity line wins over the goal when both are present", () => {
   const html = cardBodyMarkup(mkSession({ id: "s1", activity: "checking the nightly job", goal: { text: "keep the nightly job green", source: null, updatedAt: 1 } }));
-  assert.match(html, /aria-label="Latest from Triage Bot">checking the nightly job<\/p>/);
+  assert.match(html, /aria-label="Latest from Triage Bot"[^>]*>checking the nightly job<\/p>/);
   assert.doesNotMatch(html, /keep the nightly job green/);
 });
 
@@ -550,6 +639,7 @@ test("with neither an activity line nor a goal, the card draws no empty latest-m
     const html = cardBodyMarkup(mkSession({ id: "s1", activity: null, goal }));
     assert.doesNotMatch(html, /residents-drawer-latest/);
     assert.doesNotMatch(html, /Latest from/);
+    assert.doesNotMatch(html, /residents-drawer-card-text/);
     // The actions are still drawn.
     assert.match(html, /residents-drawer-actions/);
   }
@@ -603,7 +693,7 @@ test("a compressed card keeps its live status line and controls and drops its lo
     const compressed = cardMarkup(html, "s1");
     assert.match(html, /class="residents-drawer-card is-collapsed[^"]*"[^>]*data-resident-card="s1"/);
     assert.match(compressed, /class="residents-drawer-card-head" aria-expanded="false"/);
-    assert.match(compressed, /<p class="residents-drawer-latest is-compressed" aria-label="Latest from Triage Bot">reading the nightly log<\/p>/);
+    assert.match(compressed, /<p class="residents-drawer-latest is-compressed" aria-label="Latest from Triage Bot"[^>]*>reading the nightly log<\/p>/);
     assert.match(compressed, /residents-drawer-actions/);
     assert.match(compressed, /aria-label="Open Triage Bot"/);
     assert.doesNotMatch(compressed, /Resident loop status/);
@@ -623,44 +713,54 @@ test("a compressed card keeps its live status line and controls and drops its lo
 });
 
 test("compressed, a pending ask waits for the card to open, and no activity falls back to the state", () => {
-  const asking = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
-    session: mkSession({ id: "s1", activity: "checking the nightly job" }),
-    name: "Triage Bot",
-    compressed: true,
-    reviews: [residentAsk("s1")],
-    renderReview: (review: ReviewItem) => createElement("section", { className: "stub-review-card" }, review.title),
-    children: createElement("div", { className: "residents-drawer-actions" }, "actions"),
-  }));
-  assert.doesNotMatch(asking, /stub-review-card/);
+  const asking = cardBodyMarkup(mkSession({ id: "s1", activity: "checking the nightly job" }), [residentAsk("s1")], { compressed: true });
+  assert.doesNotMatch(asking, /residents-drawer-ask/);
   assert.doesNotMatch(asking, /is asking/);
   assert.match(asking, />checking the nightly job<\/p>/);
   assert.match(asking, /residents-drawer-actions/);
 
   const quiet = mkSession({ id: "s1", activity: null, goal: null });
-  const html = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
-    session: quiet,
-    name: "Triage Bot",
-    compressed: true,
-    reviews: [],
-    renderReview: () => null,
-    children: null,
-  }));
-  assert.match(html, new RegExp(`aria-label="Latest from Triage Bot">${stateDisplay(quiet).label}</p>`));
+  const html = cardBodyMarkup(quiet, [], { compressed: true });
+  assert.match(html, new RegExp(`aria-label="Latest from Triage Bot"[^>]*>${stateDisplay(quiet).label}</p>`));
 });
 
-test("an open card's latest message is a way into the conversation; a compressed status line is not", () => {
+test("everything between a card's title and its actions is one way into the conversation, open or compressed", () => {
   const session = mkSession({ id: "s1", activity: "checking the nightly job" });
-  const open = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
-    session, name: "Triage Bot", onOpen: () => {}, reviews: [], renderReview: () => null, children: null,
-  }));
-  assert.match(open, /<p class="residents-drawer-latest is-openable" aria-label="Latest from Triage Bot"[^>]*>checking the nightly job<\/p>/);
-  assert.match(open, /class="tt-desc">Open Triage Bot&#x27;s conversation</);
+  const status = createElement("span", { className: "stub-status" }, "waiting on you");
+  for (const compressed of [false, true]) {
+    const html = cardBodyMarkup(session, [], { compressed, status: compressed ? null : status });
+    // The body is the target - the region and the gap under it - and the region sits first in it.
+    assert.match(html, new RegExp(`^<div class="residents-drawer-card-body${compressed ? " is-compressed" : ""} is-openable"><div class="residents-drawer-card-main">`));
+    const main = html.indexOf('class="residents-drawer-card-main"');
+    assert.ok(main >= 0, `the ${compressed ? "compressed" : "open"} card's body opens the conversation`);
+    // The latest message sits inside the region, and the actions after it, outside.
+    assert.ok(main < html.indexOf("Latest from Triage Bot"));
+    assert.ok(html.indexOf("Latest from Triage Bot") < html.indexOf("residents-drawer-actions"));
+    assert.match(html, /class="tt-desc">Open Triage Bot&#x27;s conversation</);
+    if (!compressed) {
+      // The loop facts are in the region too, before the message.
+      assert.ok(main < html.indexOf("stub-status"));
+      assert.ok(html.indexOf("stub-status") < html.indexOf("Latest from Triage Bot"));
+    }
+  }
 
-  const compressed = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
-    session, name: "Triage Bot", compressed: true, onOpen: () => {}, reviews: [], renderReview: () => null, children: null,
+  // Without a way to open the conversation, the region is not dressed as one.
+  const inert = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
+    session, name: "Triage Bot", reviews: [], children: null,
   }));
-  assert.doesNotMatch(compressed, /is-openable/);
-  assert.doesNotMatch(compressed, /Open Triage Bot&#x27;s conversation/);
+  assert.match(inert, /class="residents-drawer-card-main"/);
+  assert.doesNotMatch(inert, /is-openable/);
+  assert.doesNotMatch(inert, /Open Triage Bot&#x27;s conversation/);
+});
+
+test("a drawer card draws its loop facts inside the body that opens the conversation", () => {
+  const { runs, sessions } = twoResidents();
+  const card = cardMarkup(drawerMarkup(runs, sessions), "s1");
+  assert.match(card, /class="residents-drawer-card-body is-openable"><div class="residents-drawer-card-main">/);
+  const main = card.indexOf("residents-drawer-card-main");
+  assert.ok(main >= 0);
+  assert.ok(main < card.indexOf('aria-label="Resident loop status"'));
+  assert.ok(card.indexOf('aria-label="Resident loop status"') < card.indexOf("residents-drawer-actions"));
 });
 
 test("Manage residents is drawn under the title, before the cards and the profiles", () => {

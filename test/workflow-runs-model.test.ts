@@ -41,9 +41,6 @@ import {
   humanDecisionSummary,
   humanDecisionsSummary,
   initialRunRecordPane,
-  inspectorFindingLocation,
-  inspectorFindingSeverityStatus,
-  inspectorFindingStatusStatus,
   inheritedAttempts,
   inheritedPasses,
   priorAttemptPassed,
@@ -1803,25 +1800,6 @@ test("a completion claim state is never green by accident, and never invents its
   assert.equal(completionClaimStatus("blocked").tone, "failed");
   // A state a later daemon writes reads NEUTRAL rather than falling through to the pass tone.
   assert.deepEqual(completionClaimStatus("withdrawn"), { tone: "stopped", label: "withdrawn" });
-});
-
-test("a finding's severity, status and location are spelled once", () => {
-  assert.deepEqual(inspectorFindingSeverityStatus("blocker"), { tone: "failed", label: "blocker" });
-  assert.deepEqual(inspectorFindingSeverityStatus("major"), { tone: "failed", label: "major" });
-  assert.deepEqual(inspectorFindingSeverityStatus("minor"), { tone: "waiting", label: "minor" });
-  assert.deepEqual(inspectorFindingSeverityStatus("nit"), { tone: "waiting", label: "nit" });
-  assert.deepEqual(inspectorFindingStatusStatus("resolved"), { tone: "passed", label: "resolved" });
-  assert.deepEqual(inspectorFindingStatusStatus("posting"), { tone: "waiting", label: "posting" });
-  assert.deepEqual(inspectorFindingStatusStatus("drafted"), { tone: "failed", label: "drafted" });
-  assert.deepEqual(inspectorFindingStatusStatus("open"), { tone: "failed", label: "open" });
-  const located = finding("f1") as unknown as Parameters<typeof inspectorFindingLocation>[0];
-  assert.equal(inspectorFindingLocation(located), "src/gate.ts:42");
-  assert.equal(
-    inspectorFindingLocation({ ...located, line: null }),
-    "src/gate.ts",
-  );
-  // A finding with no path is "general", which is the word the card already used.
-  assert.equal(inspectorFindingLocation({ ...located, path: null, line: null }), "general");
 });
 
 test("the criterion ledger is total over the canonical criteria and sorts the loud ones up", () => {

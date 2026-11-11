@@ -2082,7 +2082,46 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    } & StackEdgeFields);
+    } & StackEdgeFields)
+  | {
+      /**
+       * An item in an external tracker that blocks this task and has no Mission Control
+       * task of its own - a blocking link a task source recovered (`canRelate`).
+       *
+       * Satisfied when the item closes as completed. Closed as not planned, it reports
+       * `stopped`, because the work it stood for will not happen on its own. The sweep of
+       * the source named by `sourceId` re-checks `state`; nothing else writes it.
+       */
+      type: "source";
+      sourceId: string;
+      externalId: string;
+      url: string | null;
+      title: string;
+      state: TaskSourceItemState;
+      /** When the owning source last read this item's state, for oldest-first re-checks. */
+      checkedAt: number | null;
+      selectedAt: number | null;
+      satisfiedAt: number | null;
+    }
+  | {
+      /**
+       * An edge written by a newer build, whose type this build does not know.
+       *
+       * Kept rather than dropped, and never satisfied, so running an older build cannot
+       * release work a newer one was holding back. `raw` is written back verbatim, so the
+       * newer build reads its own edge again after an upgrade.
+       */
+      type: "unknown";
+      /** The stored `type` string, for display. */
+      edgeType: string;
+      /** A stable identity for this edge (its stored JSON), so an edit can keep it. */
+      key: string;
+      title: string;
+      raw: Record<string, unknown>;
+      selectedAt: number | null;
+      /** Always null when read: this build cannot tell whether the edge is met. */
+      satisfiedAt: number | null;
+    };
 
 /**
  * Stacked pull requests, on a task or session edge. Every field is optional on read, so an
@@ -2106,6 +2145,15 @@ export interface StackEdgeFields {
   /** The prerequisite's primary-repository pull request the stamp was read from. */
   stackPrUrl?: string | null;
 }
+
+/**
+ * An external item's state, as a task source reports it.
+ *
+ * `completed` and `not_planned` are both closed. They are separate because they mean
+ * opposite things to a dependent: the first is work that landed, the second is work that
+ * will not happen, which is why only the first satisfies a `source` dependency.
+ */
+export type TaskSourceItemState = "open" | "completed" | "not_planned";
 
 /**
  * One SECONDARY repository attached to a multi-repo task.
@@ -2318,6 +2366,12 @@ export interface Task {
    * no-op. A seen row deliberately outlives the task; this field dies with it.
    */
   source: TaskSourceRef | null;
+  /**
+   * The item this task's source item is a sub-issue of, as the source last reported it, else
+   * null. Display only: written on ingest and on keep-updated refresh, and never read to
+   * create a dependency edge.
+   */
+  sourceParent: TaskSourceRef | null;
   /**
    * The provider run this pipeline dispatch owns.
    *
@@ -2808,10 +2862,12 @@ export interface MissionReport {
 export type InspectorMode = "dry-run" | "live";
 
 /** How a PR came to be adopted. Older persisted provenance is normalized to `legacy`. */
-export type InspectorSource = "hook" | "legacy" | "pipeline";
+export const INSPECTOR_SOURCES = ["hook", "legacy", "pipeline"] as const;
+export type InspectorSource = (typeof INSPECTOR_SOURCES)[number];
 
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
-export type InspectorPrState = "open" | "closed";
+export const INSPECTOR_PR_STATES = ["open", "closed"] as const;
+export type InspectorPrState = (typeof INSPECTOR_PR_STATES)[number];
 
 /**
  * What a failed attempt says about whether the NEXT PUSH is worth trying immediately.
@@ -2822,9 +2878,11 @@ export type InspectorPrState = "open" | "closed";
  * not answer in time for a diff nobody has meaningfully changed. Pushing buys nothing
  * there, so those are the failures the push-escape is capped on.
  */
-export type InspectorFailKind = "push-fixable" | "persistent";
+export const INSPECTOR_FAIL_KINDS = ["push-fixable", "persistent"] as const;
+export type InspectorFailKind = (typeof INSPECTOR_FAIL_KINDS)[number];
 
-export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
+export const INSPECTOR_SEVERITIES = ["blocker", "major", "minor", "nit"] as const;
+export type InspectorSeverity = (typeof INSPECTOR_SEVERITIES)[number];
 
 /**
  * `drafted` is a dry-run finding: computed, deduped, never posted. It occupies the
@@ -2839,7 +2897,12 @@ export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
  * operator's name. A `posting` row is read as "already raised" for dedup, so the
  * duplicate cannot happen; the next round reconciles it against the live threads.
  */
-export type InspectorCommentStatus = "drafted" | "posting" | "open" | "resolved";
+export const INSPECTOR_COMMENT_STATUSES = ["drafted", "posting", "open", "resolved"] as const;
+export type InspectorCommentStatus = (typeof INSPECTOR_COMMENT_STATUSES)[number];
+
+/** What GitHub reports a polled pull request's state to be. */
+export const INSPECTOR_OBSERVED_STATES = ["OPEN", "CLOSED", "MERGED"] as const;
+export type InspectorObservedState = (typeof INSPECTOR_OBSERVED_STATES)[number];
 
 /** One adopted pull request. The row's existence IS the permission to comment on it. */
 export interface InspectorPr {
@@ -2855,6 +2918,8 @@ export interface InspectorPr {
   cwd: string | null;
   /** The session that opened it. Nullable: a PR outlives the session, deliberately. */
   sessionId: string | null;
+  /** That session's agent id when it was bound, which survives the id re-minting on restart. */
+  noteKey?: string | null;
   source: InspectorSource;
   state: InspectorPrState;
   /**
@@ -2934,7 +2999,7 @@ export interface InspectorPr {
    */
   observedHeadSha: string | null;
   /** What that same poll saw the pull request's state to be, or null when never polled. */
-  observedState: "OPEN" | "CLOSED" | "MERGED" | null;
+  observedState: InspectorObservedState | null;
   /** When that observation was made, epoch ms, or null when never polled. */
   observedAt: number | null;
   /**
@@ -3059,9 +3124,37 @@ export interface InspectorComment {
   answeredCommentId: number | null;
   /** Inspector agreed to resolve the finding; its GitHub thread mutation is still pending. */
   resolutionPending?: boolean;
+  /**
+   * When this build confirmed the finding on GitHub, epoch ms. Stamped when an accepted
+   * review promotes the row to `open`, or when posting reconciliation finds it published;
+   * never cleared, so a posted finding that was later resolved still reads as posted.
+   *
+   * Null: not confirmed by a build that tracks posting. Absent: an older snapshot taken
+   * before the field existed, which `findingPublication` reads as unknown.
+   */
+  postedAt?: number | null;
+  /** The finding's GitHub comment, or the review that carried a demoted one. */
+  githubUrl?: string | null;
+  /** What a row recorded before `postedAt` existed proves about posting. Null on newer rows. */
+  legacyPosted?: InspectorLegacyPosted | null;
+  /**
+   * Validation refusals GitHub pinned on this finding while it was a draft being offered
+   * after a switch to live. At `INSPECTOR_LIMITS.maxPostRefusals` the planner stops offering
+   * it. Absent on an older snapshot taken before the field existed, which reads as zero.
+   */
+  postRefusals?: number;
+  /** GitHub's reason for the newest counted refusal, scrubbed and clipped. Null when none. */
+  lastPostError?: string | null;
   createdAt: number;
   updatedAt: number;
 }
+
+/**
+ * The one-time backfill's answer for a finding recorded before posting was tracked.
+ * Persisted values: never rename or reorder them.
+ */
+export const INSPECTOR_LEGACY_POSTED = ["posted", "unposted", "unknown"] as const;
+export type InspectorLegacyPosted = (typeof INSPECTOR_LEGACY_POSTED)[number];
 
 /**
  * The compact per-session view, denormalized onto a Session card like `TaskSummary`.

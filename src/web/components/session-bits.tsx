@@ -14,6 +14,7 @@ import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { modelLabel } from "@shared/model.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
+import type { DeadSourceBlocker } from "@shared/backlog.ts";
 import {
   compactTokens,
   contextTone,
@@ -2268,19 +2269,29 @@ export function LabelChips({
  */
 export function DeadBlockerButton({
   deadBlockers,
+  deadSources = [],
   busy = false,
   onReschedule,
   onComplete,
+  onRemoveSource,
   onOpenChange,
 }: {
   /** The cancelled/failed tasks blocking this card, from `deadBlockersFor`. */
   deadBlockers: Task[];
+  /**
+   * External items closed as not planned, from `deadSourceBlockersFor`. They cannot be
+   * rescheduled or completed from here - the tracker owns them - so their way out is to
+   * stop waiting on them, which edits the task that holds the edge.
+   */
+  deadSources?: DeadSourceBlocker[];
   /** A resolution is in flight; the controls are inert until it lands. */
   busy?: boolean;
   /** Put the dead task back in the backlog to run again. */
   onReschedule: (taskId: string) => void;
   /** Mark the dead task done (its work already landed), releasing this card. */
   onComplete: (taskId: string) => void;
+  /** Drop a not-planned external item from the dependencies of the task that holds it. */
+  onRemoveSource?: (blocker: DeadSourceBlocker) => void;
   onOpenChange?: (open: boolean) => void;
 }): React.JSX.Element | null {
   const [open, setOpen] = useState(false);
@@ -2314,15 +2325,18 @@ export function DeadBlockerButton({
       document.removeEventListener("keydown", onKey);
     };
   }, [changeOpen, open]);
+  const total = deadBlockers.length + deadSources.length;
   useEffect(() => {
-    if (deadBlockers.length === 0 && open) changeOpen(false);
-  }, [changeOpen, deadBlockers.length, open]);
+    if (total === 0 && open) changeOpen(false);
+  }, [changeOpen, total, open]);
 
-  if (deadBlockers.length === 0) return null;
+  if (total === 0) return null;
   const summary =
-    deadBlockers.length === 1
-      ? `"${deadBlockers[0]!.title}" was ${deadBlockers[0]!.status} and won't finish on its own`
-      : `${deadBlockers.length} prerequisites were cancelled or failed and won't finish on their own`;
+    total > 1
+      ? `${total} prerequisites were cancelled, failed or not planned and won't finish on their own`
+      : deadBlockers.length === 1
+        ? `"${deadBlockers[0]!.title}" was ${deadBlockers[0]!.status} and won't finish on its own`
+        : `"${deadSources[0]!.title}" was closed as not planned and won't finish on its own`;
 
   return (
     <span
@@ -2334,7 +2348,7 @@ export function DeadBlockerButton({
       <Tooltip label={summary}>
         <button
           className="bl-deadblock-btn"
-          aria-label={`Blocked by a stopped task: ${summary}`}
+          aria-label={`${deadBlockers.length > 0 ? "Blocked by a stopped task" : "Blocked by a stopped dependency"}: ${summary}`}
           aria-expanded={open}
           disabled={busy}
           onClick={() => changeOpen(!open)}
@@ -2345,8 +2359,10 @@ export function DeadBlockerButton({
       {open && (
         <div className="bl-deadblock-pop" role="dialog" aria-label="Resolve a stopped prerequisite">
           <p className="bl-deadblock-lead">
-            This can't be scheduled until the prerequisite below is resolved. Run it again, or mark
-            it done if its work already landed.
+            This can't be scheduled until the prerequisite below is resolved.{" "}
+            {deadBlockers.length > 0
+              ? "Run it again, or mark it done if its work already landed."
+              : "It was closed upstream without being done. Remove the dependency if this task no longer needs it."}
           </p>
           <ul className="bl-deadblock-list">
             {deadBlockers.map((d) => (
@@ -2379,6 +2395,39 @@ export function DeadBlockerButton({
                     </button>
                   </Tooltip>
                 </span>
+              </li>
+            ))}
+            {deadSources.map((d) => (
+              <li className="bl-deadblock-item" key={`${d.ownerTaskId}:${d.key}`}>
+                <span className="bl-deadblock-name">
+                  {d.url ? (
+                    <Tooltip label={`Open ${d.externalId} in its tracker`}>
+                      <a href={d.url} target="_blank" rel="noreferrer">
+                        {d.title}
+                      </a>
+                    </Tooltip>
+                  ) : (
+                    d.title
+                  )}{" "}
+                  <span className="bl-deadblock-ref">{d.externalId}</span>
+                </span>
+                <span className="bl-deadblock-state state-not-planned">not planned</span>
+                {onRemoveSource && (
+                  <span className="bl-deadblock-acts">
+                    <Tooltip label={`Stop waiting on "${d.title}" - it will not be done upstream`}>
+                      <button
+                        className="btn"
+                        disabled={busy}
+                        onClick={() => {
+                          onRemoveSource(d);
+                          changeOpen(false);
+                        }}
+                      >
+                        Remove dependency
+                      </button>
+                    </Tooltip>
+                  </span>
+                )}
               </li>
             ))}
           </ul>

@@ -208,7 +208,7 @@ test("a collapsed Backlog is the shared strip, holding its count, with no cards 
 
 test("a collapsed tone column is the shared strip, and the rest of the board is untouched", async () => {
   const working = mkSession({ id: "w1", state: "working" });
-  // A task in the Backlog, so the Backlog is drawn at all: an empty one waits in the stash.
+  // A task in the Backlog, so the Backlog is drawn at all: an empty one is not on the board.
   const task = mkTask({ id: "t1", title: "Ship it" });
   const html = await boardWithCollapsed(["working"], { ...props([working]), backlog: [task], tasks: [task] });
   assert.match(html, /class="board-col tone-working is-collapsed"/);
@@ -220,12 +220,12 @@ test("a collapsed tone column is the shared strip, and the rest of the board is 
 });
 
 test("an empty Needs you takes no room on the board, collapsed or not", async () => {
-  // Empty and not collapsed: no column at all, not even a slim placeholder - only a stash chip.
+  // Empty and not collapsed: no column at all, and nothing in its place - no slim rail, no chip.
   const working = mkSession({ id: "w1", state: "working" });
   const html = renderToStaticMarkup(createElement(BoardView, props([working])));
   assert.ok(!/<section class="board-col tone-attention/.test(html), "an empty Needs you must not draw a column");
   assert.ok(!html.includes("board-allclear"), "the all-clear rail is gone");
-  assert.match(html, /class="board-stash-chip tone-attention"/);
+  assert.ok(!html.includes("board-stash"), "an empty column leaves no stash chip behind");
 
   // Collapsed and empty: an empty strip is still an empty column, so it leaves too.
   const collapsed = await boardWithCollapsed(["attention"], props([working]));
@@ -233,24 +233,25 @@ test("an empty Needs you takes no room on the board, collapsed or not", async ()
     "a collapsed empty Needs you must not draw a strip");
 });
 
-test("an empty Backlog takes no room on the board, and waits in the stash", () => {
+test("an empty Backlog takes no room on the board, and comes back with a task", () => {
   const working = mkSession({ id: "w1", state: "working" });
   const html = renderToStaticMarkup(createElement(BoardView, props([working])));
   assert.ok(!/<section class="board-col board-backlog/.test(html), "an empty Backlog must not draw a column");
-  assert.match(html, /class="board-stash-chip board-stash-backlog"/);
+  assert.ok(!html.includes("board-stash"), "an empty Backlog leaves no stash chip behind");
 
-  // With a task in it, it is an ordinary column again and has no chip.
+  // With a task in it, it is an ordinary column again.
   const task = mkTask({ id: "t1", title: "Ship it" });
   const full = renderToStaticMarkup(createElement(BoardView, { ...props([working]), backlog: [task], tasks: [task] }));
   assert.match(full, /<section class="board-col board-backlog/);
-  assert.ok(!full.includes("board-stash-backlog"), "a Backlog with cards is not in the stash");
 });
 
 test("the Backlog leaves the tab order during a drill-in, collapsed or not", async () => {
   // The morph folds every non-rail column to zero width. A strip or card nobody can see must
   // not keep its controls reachable by Tab, which the tone columns already guarantee.
+  // A task in it, so the Backlog is on the board at all: an empty one is never rendered.
   const session = mkSession();
-  const drilled = { ...props([session]), detailId: session.id };
+  const task = mkTask({ id: "t1", title: "Ship it" });
+  const drilled = { ...props([session]), backlog: [task], tasks: [task], detailId: session.id };
   const backlogSection = (html: string): string =>
     /<section class="board-col board-backlog[^"]*"[^>]*>/.exec(html)?.[0] ?? "";
 
@@ -263,8 +264,71 @@ test("the Backlog leaves the tab order during a drill-in, collapsed or not", asy
   assert.match(collapsed, /\binert=""/);
 
   // And back on the overview, it is reachable again.
-  const overview = backlogSection(renderToStaticMarkup(createElement(BoardView, props([session]))));
+  const overview = backlogSection(renderToStaticMarkup(
+    createElement(BoardView, { ...props([session]), backlog: [task], tasks: [task] }),
+  ));
   assert.doesNotMatch(overview, /\binert/);
+});
+
+test("one card renders its reserved column - needs you, unconfirmed, gone - and only that one", () => {
+  // Through BoardView, not just the mode map: a card in exactly one reserved tone must draw
+  // that column with its card, while the other two reserved columns stay unrendered.
+  const reserved = {
+    attention: { label: "needs you", session: mkSession({ id: "r-attention", name: "Asks You", state: "awaiting_input" }) },
+    // No fresh lifecycle reading: "idle" is a guess, so it is Unconfirmed.
+    neutral: {
+      label: "unconfirmed",
+      session: mkSession({ id: "r-neutral", name: "Maybe Idle", state: "idle", instrumented: false, stateConfirmed: false }),
+    },
+    exited: { label: "gone", session: mkSession({ id: "r-exited", name: "Long Gone", state: "exited" }) },
+  } as const;
+  for (const [tone, { label, session }] of Object.entries(reserved)) {
+    const html = renderToStaticMarkup(createElement(BoardView, props([session])));
+    const column = new RegExp(`<section class="board-col tone-${tone}[^"]*">.*?</section>`, "s").exec(html)?.[0] ?? "";
+    assert.ok(column, `one ${label} card must render the ${label} column`);
+    assert.ok(column.includes(`<h2>${label}</h2>`), `the ${label} column carries its heading`);
+    assert.ok(column.includes(session.name!), `the ${label} column holds its card`);
+    for (const other of Object.keys(reserved)) {
+      if (other === tone) continue;
+      assert.ok(!html.includes(`board-col tone-${other}`), `with only a ${label} card, ${other} must not render`);
+    }
+  }
+});
+
+test("a drill-in renders no empty column - not the reserved ones, not the Backlog", () => {
+  // The rule has no drill-in exception: needs you, unconfirmed, gone and the empty Backlog
+  // were not on the board before the session opened, and they are not mounted during it.
+  const session = mkSession();
+  const html = renderToStaticMarkup(createElement(BoardView, { ...props([session]), detailId: session.id }));
+  assert.match(html, /<section class="board-col tone-working is-rail/, "the open session's own column is the rail");
+  for (const tone of ["attention", "idle", "neutral", "exited"]) {
+    assert.ok(!html.includes(`board-col tone-${tone}`), `an empty ${tone} column must not render`);
+  }
+  assert.ok(!html.includes("board-backlog"), "an empty Backlog must not render");
+  assert.ok(!html.includes("Nothing here"), "no column is drawn just to say it is empty");
+});
+
+test("a session opened from a column with no card draws no rail, and the detail carries the way back", () => {
+  // A drawer resident is kept out of `sessions`, so its column has no card to list. No empty
+  // rail is drawn beside it; the detail's own head offers the back button instead.
+  const listed = mkSession({ id: "w1", state: "working" });
+  const resident = mkSession({ id: "r1", state: "idle" });
+  const html = renderToStaticMarkup(createElement(BoardView, {
+    ...props([listed]),
+    detailId: resident.id,
+    detailSession: resident,
+  }));
+  assert.ok(!html.includes("is-rail"), "an empty column must not render as the rail");
+  assert.ok(!html.includes("board-col tone-idle"), "the resident's empty column must not render");
+  const head = /<header class="detail-head[^"]*"[^>]*>.*?<\/header>/s.exec(html)?.[0] ?? "";
+  assert.match(head, /aria-label="Back to the board"/, "the detail head offers the way back");
+
+  // With a rail beside it, the rail head owns that button and the detail head does not repeat it.
+  const railed = renderToStaticMarkup(createElement(BoardView, { ...props([listed]), detailId: listed.id }));
+  const railedHead = /<header class="detail-head[^"]*"[^>]*>.*?<\/header>/s.exec(railed)?.[0] ?? "";
+  assert.ok(railedHead, "the detail head renders");
+  assert.doesNotMatch(railedHead, /Back to the board/);
+  assert.match(railed, /is-rail/);
 });
 
 test("the drilled-in rail is never a strip and offers no width control", async () => {

@@ -187,7 +187,8 @@ import {
 } from "./intent-fingerprint.ts";
 import { classifyWorkflowGoalProvenance } from "./goal-provenance.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import type { SessionIntentGuard } from "@shared/types.ts";
+import { THINKING_LEVELS } from "@shared/types.ts";
+import type { SessionIntentGuard, ThinkingLevel } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { consumePromptedGeneration, openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
@@ -799,7 +800,20 @@ const PersonaRowSchema = z.object({
    * The blob's own contents are validated separately, and tolerantly.
    */
   import_provenance_json: nullableText.optional(),
+  /** Optional on the shape for the same reason: a pre-effort database returns no key. */
+  effort: nullableText.optional(),
 });
+
+/** A stored effort, or null for absent and for a level this build does not know. */
+function readPersonaEffort(value: string | null | undefined): ThinkingLevel | null {
+  return (THINKING_LEVELS as readonly string[]).includes(value ?? "") ? value as ThinkingLevel : null;
+}
+
+/** An attempt's or call's effort as a spread: absent stays absent, like every pre-effort row. */
+function withEffort(value: string | null | undefined): { effort?: ThinkingLevel } {
+  const effort = readPersonaEffort(value);
+  return effort ? { effort } : {};
+}
 
 /**
  * The provenance blob, or null - and null for a blob this build cannot read.
@@ -866,6 +880,7 @@ export function parsePersonaRow(value: unknown): Persona {
     // runner union; Persona resolution is the tolerant boundary that reports the fallback.
     runner: row.runner_id as LlmRunnerId | null,
     model: row.model_id,
+    effort: readPersonaEffort(row.effort),
     revision: row.revision,
     archivedAt: row.archived_at,
     createdAt: row.created_at,
@@ -1989,6 +2004,8 @@ const WorkflowNodeAttemptRowSchema = z.object({
   review_rejections_json: nullableText.optional().default(null),
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
+  effort: nullableText.optional(),
+  effort_unsupported: nullableText.optional(),
   verdict_json: nullableText,
   output_json: nullableText,
   retry_at: nullableInteger,
@@ -2078,6 +2095,10 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
     ) ?? undefined,
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,
+    ...withEffort(row.effort),
+    ...(readPersonaEffort(row.effort_unsupported)
+      ? { effortUnsupported: readPersonaEffort(row.effort_unsupported)! }
+      : {}),
     verdict: parseNullableJson(
       "workflow_node_attempts",
       row.id,
@@ -2250,6 +2271,7 @@ const WorkflowLlmCallRowSchema = z.object({
   purpose: z.enum(WORKFLOW_LLM_PURPOSES),
   runner_id: z.enum(LLM_RUNNER_IDS),
   model_id: nonempty,
+  effort: nullableText.optional(),
   attempt: positive,
   state: z.enum(WORKFLOW_LLM_CALL_STATES),
   started_at: integer,
@@ -2271,6 +2293,7 @@ export function parseWorkflowLlmCallRow(value: unknown): WorkflowLlmCall {
     purpose: row.purpose,
     runner: row.runner_id,
     model: row.model_id,
+    ...withEffort(row.effort),
     attempt: row.attempt,
     state: row.state,
     startedAt: row.started_at,
@@ -2435,7 +2458,9 @@ function transaction<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
-export interface PersonaInsert extends CreatePersona {
+export interface PersonaInsert extends Omit<CreatePersona, "effort"> {
+  /** Optional for the reason `provenance` is: most inserts take the provider default. */
+  effort?: CreatePersona["effort"];
   id: string;
   normalizedName: string;
   createdAt: number;
@@ -3232,9 +3257,9 @@ export class WorkflowStore {
       this.db
         .prepare(
           `INSERT INTO personas (
-             id, name, normalized_name, description, guidance_md, runner_id, model_id,
+             id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
              revision, archived_at, created_at, updated_at, import_provenance_json
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -3244,6 +3269,7 @@ export class WorkflowStore {
           input.guidanceMarkdown,
           input.runner,
           input.model,
+          input.effort ?? null,
           input.createdAt,
           input.updatedAt,
           serializePersonaProvenance(input.provenance ?? null),
@@ -3290,6 +3316,7 @@ export class WorkflowStore {
       if (patch.guidanceMarkdown !== undefined) add("guidance_md", patch.guidanceMarkdown);
       if ("runner" in patch) add("runner_id", patch.runner ?? null);
       if ("model" in patch) add("model_id", patch.model ?? null);
+      if ("effort" in patch) add("effort", patch.effort ?? null);
       // Presence, not truthiness, exactly like the two above: a re-import always names its new
       // provenance, and "no key" is how every other write says it is not touching this column.
       if ("provenance" in patch) {
@@ -3877,13 +3904,13 @@ export class WorkflowStore {
     const stagedPersonaIds = new Set(staged.personas.map((row) => row.id));
     const writePersona = this.db.prepare(
       `INSERT INTO personas (
-         id, name, normalized_name, description, guidance_md, runner_id, model_id,
+         id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
          revision, archived_at, created_at, updated_at, import_provenance_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, normalized_name=excluded.normalized_name,
          description=excluded.description, guidance_md=excluded.guidance_md,
-         runner_id=excluded.runner_id, model_id=excluded.model_id,
+         runner_id=excluded.runner_id, model_id=excluded.model_id, effort=excluded.effort,
          revision=excluded.revision, archived_at=excluded.archived_at,
          updated_at=excluded.updated_at, import_provenance_json=excluded.import_provenance_json`,
     );
@@ -3898,6 +3925,7 @@ export class WorkflowStore {
         row.guidanceMarkdown,
         row.runner,
         row.model,
+        row.effort ?? null,
         revision,
         row.archivedAt,
         current?.createdAt ?? row.createdAt,
@@ -8653,6 +8681,10 @@ export class WorkflowStore {
     runner: LlmRunnerId | null,
     model: string | null,
     now = Date.now(),
+    /** Recorded with the model it was resolved for; null is the provider default. */
+    effort: ThinkingLevel | null = null,
+    /** A configured level the model could not run, recorded so the drop stays visible. */
+    effortUnsupported: ThinkingLevel | null = null,
   ): WorkflowNodeAttempt | null {
     return this.mutate(() => {
       const initial = this.getAttempt(id);
@@ -8666,13 +8698,16 @@ export class WorkflowStore {
       }
       const result = this.db.prepare(
         `UPDATE workflow_node_attempts
-            SET state = 'running', runner_id = ?, model_id = ?, started_at = ?,
+            SET state = 'running', runner_id = ?, model_id = ?, effort = ?, effort_unsupported = ?,
+                started_at = ?,
                 updated_at = ?, retry_at = NULL,
                 operator_directive_json = COALESCE(operator_directive_json, ?)
           WHERE id = ? AND state IN ('queued', 'retry_wait')`,
       ).run(
         runner,
         model,
+        effort,
+        effortUnsupported,
         now,
         now,
         snapshot ? JSON.stringify(snapshot) : null,
@@ -10199,13 +10234,13 @@ export class WorkflowStore {
     return this.mutate(() => {
       this.db.prepare(
         `INSERT INTO workflow_llm_calls (
-           id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id,
+           id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id, effort,
            attempt, state, started_at, finished_at, duration_ms, input_bytes, output_bytes,
            cost_usd, error_code
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         call.id, call.runId, call.submissionId, call.nodeAttemptId, call.purpose,
-        call.runner, call.model, call.attempt, call.state, call.startedAt, call.finishedAt,
+        call.runner, call.model, call.effort ?? null, call.attempt, call.state, call.startedAt, call.finishedAt,
         call.durationMs, call.inputBytes, call.outputBytes, call.costUsd, call.errorCode,
       );
       workflowLog("info", {

@@ -10,9 +10,10 @@ import type { ReviewItem } from "../../src/shared/types.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
 
 /**
- * Answering a resident from the Residents drawer: an open card shows the open question with its
- * options and answers it through the same `ReviewCard` the attention inbox draws. The card has no
- * reply box of its own; a free-form reply is written in the resident's Conversation.
+ * Answering a resident from the Residents drawer: an open card names the open question as one row
+ * in the Needs you color, and a click on it opens the review modal, which answers it. The card
+ * never draws the form itself, and has no reply box; a free-form reply is written in the
+ * resident's Conversation.
  *
  * Same setup as `residents-drawer.spec.ts`. No model tokens are spent: every agent binary is
  * redirected by `e2e/fixtures/fake-agents.ts`, and the resident's question is posted on
@@ -116,7 +117,11 @@ const openDrawer = async (page: Page): Promise<void> => {
   await expect(drawerOf(page)).toBeVisible();
 };
 
-test("the selected card shows a resident's question with its options, and answering it clears the visitor card", async ({ dashboard: page, daemon }) => {
+/** The row a card draws for `askResident`'s question: its kind, its title and its options. */
+const ROW_NAME = "input: Ship the nightly migration? - Ship it · Hold it";
+const reviewModal = (page: Page): Locator => page.getByRole("dialog", { name: "Review request" });
+
+test("a resident's question is a Needs you row on its card, and a click on it opens the review modal that answers it", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   await useDrawer(page, daemon);
   const reviewId = await askResident(daemon);
@@ -125,89 +130,198 @@ test("the selected card shows a resident's question with its options, and answer
 
   await openDrawer(page);
   const drawer = drawerOf(page);
-  await expect(drawer).toBeVisible();
   const card = cardOf(drawer);
   await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
   const ask = card.getByLabel(`${NAME} is asking`);
-  await expect(ask.getByRole("heading", { name: "Ship the nightly migration?" })).toBeVisible();
-  const options = ask.getByRole("group", { name: "Answer: Ship the nightly migration?" });
-  await expect(options.getByRole("button", { name: "Ship it", exact: true })).toBeVisible();
-  await expect(options.getByRole("button", { name: "Hold it", exact: true })).toBeVisible();
-  await expect(options.getByRole("button", { name: "Dismiss" })).toBeVisible();
-  await expect(options.getByRole("button", { name: "Chat about it" })).toBeVisible();
-  await expect(ask.getByRole("radio")).toHaveCount(0);
-  await expect(ask.getByRole("button", { name: "Submit" })).toHaveCount(0);
-  await expect(card.getByRole("button", { name: `Open ${NAME}` })).toBeVisible();
-  // No reply box: the drawer answers questions, and the Conversation takes replies.
-  await expect(drawer.getByRole("textbox")).toHaveCount(0);
-  await expect(card.getByRole("button", { name: /^Send/ })).toHaveCount(0);
-  await expectContentClearsBorder(drawer);
-  await capture(page, "01-question-in-drawer");
+  const row = ask.getByRole("button", { name: ROW_NAME, exact: true });
+  await expect(row).toBeVisible();
+  await expect(row).toContainText("Ship the nightly migration?");
+  await expect(row).toContainText("Ship it · Hold it");
 
-  await options.getByRole("button", { name: "Ship it", exact: true }).click();
-  await expect(ask).toHaveCount(0);
+  // The row names the question; it is not the form. No option, Dismiss, Chat about it or
+  // Submit is on the card, and no reply box.
+  await expect(drawer.getByRole("button", { name: "Ship it", exact: true })).toHaveCount(0);
+  await expect(drawer.getByRole("group", { name: /^Answer: / })).toHaveCount(0);
+  await expect(drawer.getByRole("radio")).toHaveCount(0);
+  await expect(drawer.getByRole("button", { name: /^(Dismiss|Chat about it|Submit)/ })).toHaveCount(0);
+  await expect(drawer.getByRole("textbox")).toHaveCount(0);
+  await expect(card.getByRole("button", { name: `Open ${NAME}` })).toBeVisible();
+
+  // Drawn in the Needs you color, the one every skin sets as `--attention`.
+  const colors = await row.evaluate((el) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--attention)";
+    el.appendChild(probe);
+    const attention = getComputedStyle(probe).color;
+    probe.remove();
+    return { attention, kind: getComputedStyle(el.querySelector(".residents-drawer-ask-kind")!).color };
+  });
+  expect(colors.kind).toBe(colors.attention);
+  await expectContentClearsBorder(drawer);
+  await capture(page, "01-question-row-in-drawer");
+
+  // A click opens the review modal on this resident's queue, with its card selected, and the
+  // conversation stays shut: the row is not a way into the conversation.
+  await row.click();
+  const modal = reviewModal(page);
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("Ship the nightly migration?");
+  await expect(headOf(drawer)).toHaveAttribute("aria-current", "true");
+  await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toHaveCount(0);
+  await capture(page, "02-review-modal-from-drawer");
+
+  await modal.getByRole("radio", { name: "Ship it" }).check();
+  await modal.getByRole("button", { name: /^Submit/ }).click();
+  await expect(modal).toBeHidden();
   const answered = async (): Promise<ReviewItem | undefined> =>
     (await request<ReviewItem[]>(daemon, "/api/reviews", undefined, "GET")).find((review) => review.id === reviewId);
   await expect.poll(async () => (await answered())?.status).toBe("answered");
   const resolved = await answered();
-  expect(resolved?.selections).toEqual([{ decisionId: "q", selected: ["yes"], other: null }]);
+  expect(resolved?.selections?.[0]).toMatchObject({ decisionId: "q", selected: ["yes"] });
   expect(resolved?.response).toContain("Ship it");
+
+  // Answered, the row is gone and the card is no longer amber.
+  await expect(ask).toHaveCount(0);
   await expect(drawer).toBeVisible();
-  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
   await expect(card).not.toHaveClass(/needs-you/);
-  await capture(page, "02-answered-in-drawer");
+  await capture(page, "03-answered-from-modal");
 
   await closeDrawer(page);
   await expect(page.locator(".resident-visitor")).toHaveCount(0);
   await expect(edgeTab(page)).not.toHaveClass(/needs-you/);
 });
 
-test("Dismiss on a drawer question drops it unanswered, and Chat about it moves it to the conversation", async ({ dashboard: page, daemon }) => {
+test("Chat about it in the modal a drawer row opened moves the question to the resident's conversation", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   await useDrawer(page, daemon);
-  const review = async (id: string): Promise<ReviewItem | undefined> =>
-    (await request<ReviewItem[]>(daemon, "/api/reviews", undefined, "GET")).find((item) => item.id === id);
-  const drawer = drawerOf(page);
-  const options = drawer.getByRole("group", { name: "Answer: Ship the nightly migration?" });
-
-  const dismissed = await askResident(daemon);
-  await expect(visitorOf(page)).toBeVisible();
-  await openDrawer(page);
-  await options.getByRole("button", { name: "Dismiss" }).click();
-  await expect(options).toHaveCount(0);
-  await expect.poll(async () => (await review(dismissed))?.status).toBe("dismissed");
-  const afterDismiss = await review(dismissed);
-  expect(afterDismiss?.response ?? null).toBeNull();
-  expect(afterDismiss?.selections ?? null).toBeNull();
-  await expect(drawer).toBeVisible();
-  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
-  await closeDrawer(page);
-  await expect(page.locator(".resident-visitor")).toHaveCount(0);
-
   const chatted = await askResident(daemon);
   await expect(visitorOf(page)).toBeVisible();
   await openDrawer(page);
-  await options.getByRole("button", { name: "Chat about it" }).click();
-  await expect.poll(async () => (await review(chatted))?.status).toBe("answered");
-  const afterChat = await review(chatted);
-  expect(afterChat?.selections).toEqual([{ decisionId: "q", selected: [], other: null, chat: true }]);
-  expect(afterChat?.response).toContain("Chat about it");
-  // The conversation opens beside the drawer, which stays.
+  const drawer = drawerOf(page);
+
+  await cardOf(drawer).getByRole("button", { name: ROW_NAME, exact: true }).click();
+  const modal = reviewModal(page);
+  await expect(modal).toBeVisible();
+  await modal.getByRole("radio", { name: "Chat about it" }).check();
+  await modal.getByRole("button", { name: /^Submit/ }).click();
+  await expect(modal).toBeHidden();
+
+  const review = async (): Promise<ReviewItem | undefined> =>
+    (await request<ReviewItem[]>(daemon, "/api/reviews", undefined, "GET")).find((item) => item.id === chatted);
+  await expect.poll(async () => (await review())?.status).toBe("answered");
+  expect((await review())?.selections?.[0]).toMatchObject({ decisionId: "q", selected: [], chat: true });
+
+  // The conversation opens beside the drawer, which stays, with the cursor in its reply box.
   await expect(drawer).toBeVisible();
   const detail = page.locator(".board-detail");
   await expect(detail.getByRole("group", { name: `Resident ${NAME}` })).toBeVisible();
   await expect(detail.locator("textarea.transcript-input")).toBeFocused();
-  const answer = detail.locator(".transcript-log .review-answer");
-  await expect(answer.getByText("Moved to chat")).toBeVisible();
-  await capture(page, "07-chat-about-it-conversation");
+  await expect(detail.locator(".transcript-log .review-answer").getByText("Moved to chat")).toBeVisible();
+  await capture(page, "04-chat-about-it-conversation");
   await expect(page.locator(".resident-visitor")).toHaveCount(0);
+  await expect(cardOf(drawer).getByLabel(`${NAME} is asking`)).toHaveCount(0);
+});
 
-  // The first Escape leaves the Conversation's reply box, as it always does, and the next leaves
-  // the detail, putting the keyboard back on the resident's card.
-  await page.keyboard.press("Escape");
-  await expect(detail.locator("textarea.transcript-input")).not.toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(detail.getByRole("group", { name: `Resident ${NAME}` })).toHaveCount(0);
-  await expect(headOf(drawer)).toBeFocused();
-  await expect(options).toHaveCount(0);
+/** The turn `fake-claude.mjs` answers by raising its own `AskUserQuestion` menu and blocking. */
+const ASK_TURN = "ask me which linter to use";
+
+test("a menu the resident is parked on is a Needs you row too, and a click opens the review modal that answers it", async ({ dashboard: page, daemon }) => {
+  await launch(daemon);
+  await useDrawer(page, daemon);
+  const sessions = await request<Array<{ id: string; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
+  const sessionId = sessions.find((s) => s.task?.kind === "resident")?.id;
+  expect(sessionId, "the resident has a session to send the turn to").toBeTruthy();
+  // Stand in for the operator's turn that makes the resident ask through the agent's own menu,
+  // not through `request_input`: no review is created, only the menu it is parked on.
+  await request(daemon, `/api/sessions/${encodeURIComponent(sessionId!)}/send`, { text: ASK_TURN, submit: true, origin: "human" });
+
+  await openDrawer(page);
+  const drawer = drawerOf(page);
+  const card = cardOf(drawer);
+  const ask = card.getByLabel(`${NAME} is asking`);
+  const row = ask.getByRole("button", { name: "menu: Claude has some questions. - 2 questions", exact: true });
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  // The row names the menu; its rows are not on the card.
+  await expect(card.locator(".pane-dialog")).toHaveCount(0);
+  await expect(drawer.getByRole("radio")).toHaveCount(0);
+  await expect(drawer.getByRole("checkbox")).toHaveCount(0);
+  await expect(drawer.getByRole("button", { name: "Submit answers" })).toHaveCount(0);
+  expect((await request<ReviewItem[]>(daemon, "/api/reviews", undefined, "GET"))
+    .filter((review) => review.status === "pending")).toHaveLength(0);
+  await capture(page, "05-menu-row-in-drawer");
+
+  // A click opens the review modal, which draws the menu the way the Conversation does; the
+  // conversation itself stays shut.
+  await row.click();
+  const modal = reviewModal(page);
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("1 pending");
+  const form = modal.locator(".pane-dialog");
+  await expect(form).toContainText("Which linter?");
+  await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toHaveCount(0);
+  await expect(headOf(drawer)).toHaveAttribute("aria-current", "true");
+  await expectContentClearsBorder(modal);
+  await capture(page, "06-menu-in-review-modal");
+
+  await form.getByRole("radio", { name: /eslint/ }).click();
+  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("button", { name: "Submit answers" }).click();
+
+  // Answered, the menu is gone: the modal closes on its own and the card's row clears.
+  await expect(modal).toBeHidden({ timeout: 15_000 });
+  await expect(ask).toHaveCount(0);
+  await expect(drawer).toBeVisible();
+});
+
+test("a menu and a pending review are both rows on the card, and the review modal answers each in turn", async ({ dashboard: page, daemon }) => {
+  await launch(daemon);
+  await useDrawer(page, daemon);
+  const sessions = await request<Array<{ id: string; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
+  const sessionId = sessions.find((s) => s.task?.kind === "resident")?.id;
+  expect(sessionId, "the resident has a session to send the turn to").toBeTruthy();
+  await request(daemon, `/api/sessions/${encodeURIComponent(sessionId!)}/send`, { text: ASK_TURN, submit: true, origin: "human" });
+
+  await openDrawer(page);
+  const drawer = drawerOf(page);
+  const ask = cardOf(drawer).getByLabel(`${NAME} is asking`);
+  const menuRow = ask.getByRole("button", { name: "menu: Claude has some questions. - 2 questions", exact: true });
+  await expect(menuRow).toBeVisible({ timeout: 30_000 });
+  // With the menu still open, the resident also asks through `request_input`.
+  const reviewId = await askResident(daemon);
+  const reviewRow = ask.getByRole("button", { name: ROW_NAME, exact: true });
+  await expect(reviewRow).toBeVisible();
+  // Both are on the card, one row each, menu first - never one hiding the other.
+  await expect(ask.getByRole("button")).toHaveCount(2);
+  const [menuBox, reviewBox] = [await menuRow.boundingBox(), await reviewRow.boundingBox()];
+  expect(menuBox!.y, "the menu leads, as it does in the review modal").toBeLessThan(reviewBox!.y);
+  await capture(page, "07-menu-and-review-rows");
+
+  // Either row opens the one modal, holding both.
+  await reviewRow.click();
+  const modal = reviewModal(page);
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("2 pending");
+  const form = modal.locator(".pane-dialog");
+  await expect(form).toContainText("Which linter?");
+  await expect(modal).toContainText("Ship the nightly migration?");
+  await capture(page, "08-menu-and-review-in-modal");
+
+  // Answering the menu leaves the review: the modal stays open on it, and the card drops the
+  // menu's row but keeps the review's.
+  await form.getByRole("radio", { name: /eslint/ }).click();
+  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("button", { name: "Submit answers" }).click();
+  await expect(form).toHaveCount(0, { timeout: 15_000 });
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("1 pending");
+  await expect(menuRow).toHaveCount(0);
+  await expect(reviewRow).toBeVisible();
+
+  await modal.getByRole("radio", { name: "Ship it" }).check();
+  await modal.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(modal).toBeHidden();
+  await expect.poll(async () =>
+    (await request<ReviewItem[]>(daemon, "/api/reviews", undefined, "GET")).find((review) => review.id === reviewId)?.status,
+  ).toBe("answered");
+  await expect(ask).toHaveCount(0);
 });

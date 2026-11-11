@@ -47,6 +47,7 @@ import {
 } from "./WorkflowConfirmModal.tsx";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { InspectorFindingsTable } from "../components/InspectorFindingsTable.tsx";
 import { captureFocusBookmark, restoreFocusBookmark } from "../tour/focus-containment.ts";
 import type { FocusBookmark } from "../tour/focus-containment.ts";
 import { workflowRunTone } from "../components/session-bits.tsx";
@@ -98,10 +99,6 @@ import {
   gateWaitSentence,
   inheritedAttempts,
   inheritedPasses,
-  inspectorFindingBody,
-  inspectorFindingLocation,
-  inspectorFindingSeverityStatus,
-  inspectorFindingStatusStatus,
   inspectorGateSentence,
   inspectorFooterStatus,
   latestAttemptsFor,
@@ -148,6 +145,7 @@ import {
   spentInspectorGateCondition,
   spentInspectorGateStatus,
   verdictMeta,
+  recordedRoutingLabel,
   verdictOf,
   workflowCallCost,
   workflowFeedbackText,
@@ -656,7 +654,7 @@ function VerdictCard({
   meta: ReturnType<typeof verdictMeta>;
 }): React.JSX.Element {
   const parts = [
-    meta.runner && meta.model ? `${meta.runner} · ${meta.model}` : null,
+    recordedRoutingLabel(meta),
     meta.durationMs === null ? null : `${Math.round(meta.durationMs / 1000)}s`,
     meta.costUsd === null ? "cost unavailable" : `$${meta.costUsd.toFixed(4)}`,
     `attempt ${attempt.attempt}`,
@@ -731,7 +729,7 @@ function AttemptCard({
       </header>
       <p className="wf-run-meta">
         {[
-          attempt.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null,
+          recordedRoutingLabel(attempt),
           attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
         ].filter(Boolean).join(" · ")}
       </p>
@@ -1607,7 +1605,7 @@ function ChangeDetail({
         <strong>{row.personaName}</strong>
         <span className="wf-run-confidence">{Math.round(row.confidence * 100)}% confident</span>
         {meta?.runner && meta.model && (
-          <span className="wf-run-meta">{meta.runner} · {meta.model}</span>
+          <span className="wf-run-meta">{recordedRoutingLabel(meta)}</span>
         )}
       </header>
       {attempt && <PersonaReadinessInput attempt={attempt} />}
@@ -3176,7 +3174,6 @@ function CompletionPane({
   version: WorkflowVersion | null;
   onOpenInspectorSettings: () => void;
 }): React.JSX.Element {
-  const [openFinding, setOpenFinding] = useState<string | null>(null);
   const gate = detail.inspectorGate;
   const spentGateCondition = spentInspectorGateCondition(detail);
   return (
@@ -3225,91 +3222,12 @@ function CompletionPane({
               ? "No pull request is adopted yet, so no findings are recorded."
               : "No findings are recorded for this adopted pull request."}</p>
           ) : (
-            <div className="wf-run-table wf-run-ledger">
-              <table>
-                <caption className="sr-only">
-                  {spentGateCondition
-                    ? "Current Inspector findings"
-                    : "GitHub Inspector findings on the adopted pull request"}
-                </caption>
-                <thead>
-                  <tr>
-                    <th>Severity</th>
-                    <th>Finding</th>
-                    <th>Where</th>
-                    <th>Round</th>
-                    <th>Status</th>
-                    <th>Detail</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {gate.findings.map((finding) => {
-                    const severity = inspectorFindingSeverityStatus(finding.severity);
-                    const status = inspectorFindingStatusStatus(finding.status);
-                    const open = openFinding === finding.id;
-                    // An UNRESOLVED finding is why the gate has not passed, so its body is
-                    // never behind a disclosure - the same rule the delivery ledger applies to
-                    // a refused packet, and for the same reason: a reader should not have to go
-                    // looking for the thing that stopped the run.
-                    const unresolved = finding.status !== "resolved";
-                    return (
-                      <Fragment key={finding.id}>
-                        <tr className={`wf-run-ledger-row wf-run-finding-row is-${finding.severity}`}>
-                          <td>
-                            <span className={`workflow-chip workflow-${severity.tone}`}>
-                              {severity.label}
-                            </span>
-                          </td>
-                          <td>{finding.title}</td>
-                          <td><code>{inspectorFindingLocation(finding)}</code></td>
-                          <td>{finding.round}</td>
-                          <td>
-                            <span className={`workflow-chip workflow-${status.tone}`}>
-                              {status.label}
-                            </span>
-                          </td>
-                          <td>
-                            <Tooltip label={open
-                              ? "Hide this finding's fingerprint and its timestamps"
-                              : "Show the fingerprint the gate tracks this finding by, and when it moved"}>
-                              <button
-                                className="btn btn-ghost wf-run-ledger-toggle"
-                                aria-expanded={open}
-                                aria-controls={`wf-run-finding-${finding.id}`}
-                                onClick={() => setOpenFinding(open ? null : finding.id)}
-                              >
-                                {open ? "Hide finding" : "Show finding"}
-                              </button>
-                            </Tooltip>
-                          </td>
-                        </tr>
-                        {unresolved && (
-                          <tr className="wf-run-ledger-alert">
-                            <td colSpan={6}>
-                              <p className="wf-run-sentence">{inspectorFindingBody(finding)}</p>
-                            </td>
-                          </tr>
-                        )}
-                        {open && (
-                          <tr className="wf-run-ledger-detail" id={`wf-run-finding-${finding.id}`}>
-                            <td colSpan={6}>
-                              {/* A resolved finding's body opens here; an unresolved one is
-                                  already printed above rather than twice. */}
-                              {!unresolved && <p>{inspectorFindingBody(finding)}</p>}
-                              <dl className="wf-run-facts-list">
-                                <div><dt>Fingerprint</dt><dd><code>{finding.fingerprint}</code></dd></div>
-                                <div><dt>Recorded</dt><dd>{when(finding.createdAt)}</dd></div>
-                                <div><dt>Last change</dt><dd>{when(finding.updatedAt)}</dd></div>
-                              </dl>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <InspectorFindingsTable
+              findings={gate.findings}
+              caption={spentGateCondition
+                ? "Current Inspector findings"
+                : "GitHub Inspector findings on the adopted pull request"}
+            />
           )}
           <p className="wf-run-meta">
             Findings are not in the Review worklist - that list is built from Persona verdicts
@@ -4199,7 +4117,7 @@ export function WorkflowRunView({
             // provider again, so the first attempt's runner and model describe a call that is
             // over.
             const attempt = latestAttemptByNode.get(nodeId);
-            return attempt?.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null;
+            return attempt ? recordedRoutingLabel(attempt) : null;
           }}
           checkOutcomeFor={(nodeId) => {
             // Read from the attempt's recorded outcome, never inferred from its verdict: a
@@ -4529,7 +4447,7 @@ export function WorkflowRunView({
                 {calls.map((call) => (
                   <tr key={call.id}>
                     <td>{call.purpose.replaceAll("_", " ")}</td>
-                    <td>{call.runner} / {call.model}</td>
+                    <td>{call.runner} / {call.model}{call.effort ? ` · ${call.effort} effort` : ""}</td>
                     <td>{call.attempt}</td>
                     <td>{call.state}</td>
                     <td>{call.errorCode ?? "none"}</td>

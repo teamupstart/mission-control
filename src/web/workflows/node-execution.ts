@@ -1,5 +1,14 @@
 import { DEFAULT_LLM_RUNNER_ID, type LlmRunnerId } from "@shared/llm.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
+import { resolvePersonaEffort, routingLine } from "@shared/workflow.ts";
 import type { PersonaSnapshot, PersonaView, WorkflowNodeExecutionOverride } from "@shared/workflow.ts";
+
+/** What seeds a new override: the Persona's resolved provider, model and effort. */
+export interface NodeExecutionSeed {
+  runner: LlmRunnerId;
+  model: string;
+  effort?: ThinkingLevel | null;
+}
 
 // What a Persona NODE runs under, as the two surfaces that draw it and the one form that
 // edits it all need it. Pure, and deliberately apart from the component: the rules worth
@@ -27,8 +36,14 @@ export const NODE_ROUTING_SOURCE_LABEL = {
  */
 export function personaNodeRouting(
   persona: Pick<PersonaView, "execution"> | undefined,
-): { runner: LlmRunnerId; model: string } | null {
-  return persona ? { runner: persona.execution.runner.id, model: persona.execution.model.id } : null;
+): NodeExecutionSeed | null {
+  return persona
+    ? {
+        runner: persona.execution.runner.id,
+        model: persona.execution.model.id,
+        effort: persona.execution.effort?.level ?? null,
+      }
+    : null;
 }
 
 /**
@@ -39,8 +54,10 @@ export function personaNodeRouting(
  * starts, which for a version published months ago has not happened yet and may never. Naming
  * the fallback rather than guessing a model id is the only honest answer.
  */
-export function snapshotRoutingLabel(snapshot: Pick<PersonaSnapshot, "runner" | "model">): string {
-  return `${snapshot.runner ?? "App provider"} · ${snapshot.model ?? "Provider default"}`;
+export function snapshotRoutingLabel(
+  snapshot: Pick<PersonaSnapshot, "runner" | "model" | "effort">,
+): string {
+  return routingLine(snapshot.runner ?? "App provider", snapshot.model ?? "Provider default", snapshot.effort);
 }
 
 /**
@@ -56,7 +73,10 @@ export function nodeRoutingLabel(
   inherited: string | null,
 ): string {
   if (override) {
-    return `${override.runner} · ${override.model} · ${NODE_ROUTING_SOURCE_LABEL.workflow}`;
+    // Resolved against the override's own pair, so a level that pair cannot run reads as
+    // unsupported on the row rather than as a level the node will get.
+    const effort = resolvePersonaEffort(override.runner, override.model, override.effort);
+    return `${routingLine(override.runner, override.model, effort)} · ${NODE_ROUTING_SOURCE_LABEL.workflow}`;
   }
   return inherited === null
     ? "no reviewer this build can resolve"
@@ -69,7 +89,8 @@ export function sameNodeExecutionOverride(
   right: WorkflowNodeExecutionOverride | null,
 ): boolean {
   if (left === null || right === null) return left === right;
-  return left.runner === right.runner && left.model === right.model;
+  return left.runner === right.runner && left.model === right.model
+    && (left.effort ?? null) === (right.effort ?? null);
 }
 
 export type NodeExecutionMode = "inherit" | "override";
@@ -86,6 +107,12 @@ export interface NodeExecutionFormState {
   mode: NodeExecutionMode;
   runner: LlmRunnerId;
   model: string;
+  /**
+   * Empty for the provider default. Kept across a provider or model change rather than
+   * cleared: a level the new pair does not offer is FLAGGED (`unsupported_effort`) and blocks
+   * Publish, which is visible, where clearing it would silently drop the operator's choice.
+   */
+  effort: ThinkingLevel | "";
 }
 
 /**
@@ -105,7 +132,10 @@ export function nodeExecutionCommit(state: NodeExecutionFormState): NodeExecutio
   if (state.mode === "inherit") return { kind: "inherit" };
   const model = state.model.trim();
   if (!model) return { kind: "incomplete" };
-  return { kind: "override", override: { runner: state.runner, model } };
+  return {
+    kind: "override",
+    override: { runner: state.runner, model, ...(state.effort ? { effort: state.effort } : {}) },
+  };
 }
 
 /**
@@ -118,9 +148,11 @@ export function nodeExecutionCommit(state: NodeExecutionFormState): NodeExecutio
  */
 export function nodeExecutionFormState(
   override: WorkflowNodeExecutionOverride | null,
-  seed: { runner: LlmRunnerId; model: string } | null,
+  seed: NodeExecutionSeed | null,
 ): NodeExecutionFormState {
-  if (override) return { mode: "override", runner: override.runner, model: override.model };
+  if (override) {
+    return { mode: "override", runner: override.runner, model: override.model, effort: override.effort ?? "" };
+  }
   return {
     mode: "inherit",
     // The shipped runner only when nothing resolved at all, which means the node names a
@@ -129,6 +161,9 @@ export function nodeExecutionFormState(
     // by accident against a reviewer that is not there.
     runner: seed?.runner ?? DEFAULT_LLM_RUNNER_ID,
     model: seed?.model ?? "",
+    // The Persona's effort too, so turning the override on changes nothing that runs until
+    // the operator changes something. An override replaces the Persona's whole choice.
+    effort: seed?.effort ?? "",
   };
 }
 
@@ -136,7 +171,7 @@ export function nodeExecutionFormState(
 export function withNodeExecutionMode(
   state: NodeExecutionFormState,
   mode: NodeExecutionMode,
-  seed: { runner: LlmRunnerId; model: string } | null,
+  seed: NodeExecutionSeed | null,
 ): NodeExecutionFormState {
   if (mode === state.mode) return state;
   return mode === "inherit"

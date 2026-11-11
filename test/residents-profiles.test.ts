@@ -58,6 +58,7 @@ const PERSONA: Persona = {
   guidanceMarkdown: "Review code.",
   runner: null,
   model: null,
+  effort: null,
   revision: 1,
   archivedAt: null,
   createdAt: 0,

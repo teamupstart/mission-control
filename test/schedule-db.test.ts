@@ -181,6 +181,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     advisorModel: "opus",
     personaId: "persona-round-trip",
     source: { sourceId: "gh", externalId: "org/repo#1", url: "https://example.invalid/1" },
+    sourceParent: null,
     repoRoot: "/repo",
     baseSha: null,
     extraRepos: [],

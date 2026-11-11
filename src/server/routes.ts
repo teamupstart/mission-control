@@ -45,7 +45,7 @@ import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inpu
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
-import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
+import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
@@ -141,6 +141,7 @@ import {
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
+  INSPECTOR_PR_KEY_PATTERN,
   ResolveFindingsSchema,
   SetupBannerDismissRequestSchema,
   ShippingConfigPatchSchema,
@@ -275,8 +276,10 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
+  InspectorFindingsResponse,
   ResolveFindingsResult,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
@@ -290,6 +293,7 @@ import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
 import type { QueueManager } from "./queue.ts";
 import type {
+  InspectorInspection,
   InspectorStatus,
   LlmStatus,
   ReviewActor,
@@ -560,6 +564,9 @@ import {
   loadConversationResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  loadOpenInspectorInspections,
+  loadInspectorInspection,
+  loadInspectorComments,
   getInspectorPr,
   resolveInspectorFindings,
   updateInspectorPr,
@@ -2195,6 +2202,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         code,
         current: result.current,
       }, 409);
+    }
+    // A 400 on create and update alike: the request itself names a combination that cannot run.
+    if (result.reason === "unsupported_effort") {
+      return c.json({
+        error: "reasoning effort is not supported by this provider and model",
+        code,
+        current: result.current,
+      }, 400);
     }
     return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
   };
@@ -7417,17 +7432,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // against the Line's Shipped count, which is uncapped by construction (`prsOpenedSince`).
   // One route rather than two over the same table, for the reason `useShipping` records:
   // a second endpoint over one ledger is a second thing to keep honest.
+  //
+  // With `state=open`: every open row, uncapped, for Foreman's follow-through to find a pull
+  // request the Inspector adopted under a session whose card no longer carries it. It does not
+  // combine with `adoptedSince`, since the two orderings answer different questions.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) {
+    const state = c.req.query("state");
+    const withStanding = (rows: InspectorInspection[]) => {
       const sessions = registry.liveSessions();
       const foreman = getForemanConfig();
-      return c.json(loadInspectorInspections(50).map((row) => ({
+      return rows.map((row) => ({
         ...row,
         codeRabbit: codeRabbitStanding(registry, row.key),
         stackStanding: row.stack ? safeStackStanding(row, sessions, foreman) : null,
-      })));
+      }));
+    };
+    if (state !== undefined) {
+      const parsed = InspectorPrsStateSchema.safeParse(state);
+      if (!parsed.success) return c.json({ error: "state must be open" }, 400);
+      if (raw !== undefined) return c.json({ error: "state and adoptedSince do not combine" }, 400);
+      return c.json(withStanding(loadOpenInspectorInspections()));
     }
+    if (raw === undefined) return c.json(withStanding(loadInspectorInspections(50)));
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too
@@ -7445,6 +7472,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
     }
     return c.json(loadInspectionsAdoptedSince(since));
+  });
+  /**
+   * One pull request's findings, every one of them and in every status, with whether each
+   * reached GitHub - for Foreman's relay and the dashboard's findings view, which have no
+   * other way to read finding text: Foreman's worker never touches SQLite.
+   *
+   * The key is a query parameter rather than a path segment because it is `owner/repo#123`,
+   * and its shape is checked before the ledger is asked, so a malformed key is a 400 rather
+   * than a confident "no such pull request". Read-only.
+   */
+  app.get("/api/inspector/findings", (c) => {
+    const prKey = c.req.query("pr");
+    if (!prKey || !INSPECTOR_PR_KEY_PATTERN.test(prKey)) {
+      return c.json({ error: "pr must be a pull request key like owner/repo#123" }, 400);
+    }
+    const pr = loadInspectorInspection(prKey);
+    if (!pr) return c.json({ error: "no adopted pull request with that key" }, 404);
+    const findings = orderInspectorFindings(loadInspectorComments(prKey));
+    return c.json({ pr, findings } satisfies InspectorFindingsResponse);
   });
   /**
    * Close the findings the Inspector is carrying on one pull request.

@@ -36,6 +36,7 @@ const PR_KEY = "owner/repo#969";
 const OPEN_FINDING = "Coverage-claim carry tie-break is not oldest ancestry first past two hops";
 const RESOLVED_FINDING = "Digest-dedup during evidence carry can silently orphan a coverage link";
 const RESOLVED_BODY = "The carry deduplicates on digest and drops the coverage row that cited it.";
+const RESOLVED_COMMENT_URL = `https://github.example/owner/repo/pull/${PR_NUMBER}#discussion_r7001`;
 
 async function shoot(page: Page, target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
@@ -210,25 +211,30 @@ function seedCompletionRecord(daemon: DaemonHandle, runId: string): void {
     const finding = db.prepare(
       `INSERT INTO inspector_comments
          (id, pr_key, fingerprint, path, line, title, body, severity, round, status,
-          replies, answered_comment_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
+          replies, answered_comment_id, created_at, updated_at,
+          posted_at, github_url, legacy_posted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`,
     );
+    // Posted on GitHub before it was resolved, with the comment link a tick captured.
     finding.run(
       "finding-resolved", PR_KEY, "fingerprint-resolved", "src/server/workflows/store.ts", 87,
       RESOLVED_FINDING, RESOLVED_BODY, "major", 7, "resolved", now - 20_000, now - 15_000,
+      now - 18_000, RESOLVED_COMMENT_URL, null,
     );
     // A finding whose body predates body persistence, so the legacy arm is on screen rather
-    // than only in a unit fixture.
+    // than only in a unit fixture. It also predates posting tracking, and the backfill could
+    // not tell whether it was posted.
     finding.run(
       "finding-legacy", PR_KEY, "fingerprint-legacy", "src/server/workflows/images.ts", 812,
       "carriedEvidenceStillMatches swallows all errors as unchanged", null, "minor", 4,
-      "resolved", now - 19_000, now - 14_000,
+      "resolved", now - 19_000, now - 14_000, null, null, "unknown",
     );
-    // The one still open, which is why the gate has not passed.
+    // The one still open, which is why the gate has not passed. A dry-run draft: it never
+    // reached GitHub.
     finding.run(
       "finding-open", PR_KEY, "fingerprint-open", "src/server/workflows/store.ts", 87,
       OPEN_FINDING, "Past two hops the comparison is on the carried row rather than its source.",
-      "minor", 9, "drafted", now - 9_000, now - 1_000,
+      "minor", 9, "drafted", now - 9_000, now - 1_000, null, null, null,
     );
     const event = db.prepare(
       `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json)
@@ -342,6 +348,25 @@ test("the Completion tab folds the gate and the Foreman claims into one pane", a
   await expect(rows.filter({ hasText: OPEN_FINDING })).toContainText("drafted");
   await expect(rows.filter({ hasText: RESOLVED_FINDING })).toContainText("resolved");
   await expect(rows.filter({ hasText: RESOLVED_FINDING })).toContainText("major");
+
+  const postedCell = (title: string): Locator =>
+    rows.filter({ hasText: title }).locator("td").nth(5);
+  await expect(pane.getByRole("columnheader", { name: "Posted" })).toBeVisible();
+  await expect(postedCell(OPEN_FINDING)).toHaveText("Not posted");
+  await expect(postedCell(OPEN_FINDING).getByRole("link")).toHaveCount(0);
+  const postedLink = postedCell(RESOLVED_FINDING).getByRole("link", { name: "Posted" });
+  await expect(postedLink).toHaveAttribute("href", RESOLVED_COMMENT_URL);
+  await expect(postedLink).toHaveAttribute("target", "_blank");
+  const unknown = postedCell("swallows all errors").getByText("Unknown", { exact: true });
+  await expect(unknown).toBeVisible();
+  const unknownTip = await unknown.getAttribute("aria-describedby");
+  await expect(dashboard.locator(`#${unknownTip}`))
+    .toHaveText("Recorded before Mission Control tracked posting");
+  await unknown.hover();
+  await expect(dashboard.locator(".tooltip"))
+    .toHaveText("Recorded before Mission Control tracked posting");
+  await dashboard.mouse.move(0, 0);
+  await shoot(dashboard, pane.locator(".wf-run-ledger"), "07-posted-column");
   await shoot(dashboard, dashboard.locator("section.wf-run-record"), "01-completion-pane");
 
   // The OPEN finding's body is not behind a disclosure - it is why the gate has not passed,

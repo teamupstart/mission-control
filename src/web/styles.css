@@ -12834,6 +12834,42 @@ select:not([multiple]) option:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+}
+/* Everything between the title and the actions: the loop facts, then what the resident is
+   asking or last said. With the gap under it, one target: a click anywhere above the actions
+   opens the conversation, so the body is the pointer and the actions are not. */
+.residents-drawer-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.residents-drawer-card-body.is-openable {
+  cursor: pointer;
+}
+.residents-drawer-card-body.is-openable > :not(.residents-drawer-card-main) {
+  cursor: default;
+}
+.residents-drawer-card-body.is-openable > .residents-drawer-card-main {
+  border-radius: 6px;
+  margin-inline: -4px;
+  padding-inline: 4px;
+}
+/* Lit while the pointer is anywhere it would open the conversation: over the region or the gap
+   under it, never over the actions. */
+.residents-drawer-card-body.is-openable:hover:not(:has(> :not(.residents-drawer-card-main):hover)) > .residents-drawer-card-main {
+  background: color-mix(in oklab, var(--card-tone, var(--resident)) 8%, transparent);
+}
+.residents-drawer-card-body.is-openable:hover:not(:has(> :not(.residents-drawer-card-main):hover)) .residents-drawer-latest {
+  color: var(--fg);
+}
+/* What the resident says, ruled off from the loop facts above it. */
+.residents-drawer-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
   padding-top: 6px;
   border-top: 1px solid color-mix(in oklab, var(--resident) 18%, var(--border-soft));
 }
@@ -12856,7 +12892,7 @@ select:not([multiple]) option:focus-visible {
   font-size: 11px;
   overflow-wrap: anywhere;
 }
-/* The selected card's latest message: at most three lines, the rest a click away in Open. */
+/* The card's latest message: at most three lines, the rest a click away in its conversation. */
 .residents-drawer-latest {
   margin: 0;
   color: var(--muted);
@@ -12869,20 +12905,11 @@ select:not([multiple]) option:focus-visible {
   -webkit-line-clamp: 3;
   overflow: hidden;
 }
-/* An open card's latest message is a way into the conversation it continues. */
-.residents-drawer-latest.is-openable {
-  cursor: pointer;
-  border-radius: 6px;
-  margin-inline: -4px;
-  padding-inline: 4px;
-}
-.residents-drawer-latest.is-openable:hover {
-  color: var(--fg);
-  background: color-mix(in oklab, var(--resident) 8%, transparent);
-}
 /* Compressed: one line of what the resident is doing, then its controls. */
 .residents-drawer-card-body.is-compressed {
   gap: 5px;
+}
+.residents-drawer-card-body.is-compressed .residents-drawer-card-text {
   padding-top: 5px;
 }
 .residents-drawer-latest.is-compressed {
@@ -12890,67 +12917,81 @@ select:not([multiple]) option:focus-visible {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* The open question, drawn by `ReviewCard` or `PaneDialogPrompt` at the card's width. They are
-   sized for a modal and the Conversation; inside a 330px card they take less air. */
+/* What the resident is asking, one row per pending review (or the menu it is parked on), in the
+   Needs you color. A row only names the question; a click opens where it is answered. */
+.residents-drawer-asks {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .residents-drawer-ask {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.residents-drawer-ask .review {
-  padding: 2px 0 6px;
-}
-.residents-drawer-ask .review-head {
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.residents-drawer-ask .review-head h3 {
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
-}
-.residents-drawer-ask .answer-box,
-.residents-drawer-ask .note-input {
-  min-width: 0;
-}
-.residents-drawer-ask .pane-dialog {
-  margin-top: 0;
-}
-/* A one-question ask answered by one press (`QuickDecisionButtons`): the options as buttons,
-   then Dismiss and Chat about it. */
-.review-quick {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.review-quick-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.review-quick-option {
-  max-width: 100%;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 560;
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
-}
-.review-quick-option.is-recommended,
-.review-quick-option.is-foreman-pick {
-  border-color: var(--attention);
-}
-.review-quick-actions {
-  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--attention) 10%, var(--panel));
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.review-quick-actions .btn {
-  padding: 2px 8px;
+.residents-drawer-ask:hover:not(:disabled) {
+  border-color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 18%, var(--panel));
+}
+.residents-drawer-ask:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.residents-drawer-ask:disabled {
+  cursor: default;
+}
+.residents-drawer-ask-kind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--attention) 16%, transparent);
+  color: var(--attention);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.residents-drawer-ask-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.residents-drawer-ask-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.residents-drawer-ask-detail {
+  overflow: hidden;
+  color: var(--muted);
   font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.residents-drawer-ask-go {
+  flex: none;
+  color: var(--attention);
 }
 .residents-drawer-foot {
   flex: none;
@@ -24110,13 +24151,13 @@ button.sc-row:focus-visible {
   border-left: 2px solid var(--border);
   background: var(--panel-2);
 }
-/* The resolve column is 62px, measured against its own longest real value rather than
-   rounded up: the cell holds one text button reading `Resolve`, or `Resolving…` for the
-   moment a request is in flight, and both fit at the row's 12px. It comes out of the pull
-   request's flexible track, which can afford it - that cell holds `repo#123`, the shortest
-   real value in the table, while every other track here is already measured. */
+/* The actions column is 124px, measured against its longest real value rather than rounded
+   up: `Findings` beside `Resolving…`, the moment a resolve is in flight, with the cell's 10px
+   gap, at the cell's 11px. It comes out of the pull request's flexible track, which can
+   afford it - that cell holds `repo#123`, the shortest real value in the table, while every
+   other track here is already measured. */
 .sc-table-inspector .sc-row {
-  grid-template-columns: minmax(0, 1fr) 148px 74px 104px 62px;
+  grid-template-columns: minmax(0, 1fr) 148px 74px 104px 124px;
 }
 .sc-table-shipping .sc-row {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
@@ -24314,13 +24355,77 @@ button.sc-row:focus-visible {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-/* The operator's way out of a stuck finding. Right-aligned to the row's edge like every
-   other trailing cell here, and 11px to sit with `Fixed` rather than to compete with the
-   verdict - it is a repair for an uncommon state, not the row's headline. */
+/* Findings and Resolve, the row's actions. Right-aligned to the row's edge like every
+   other trailing cell here, and 11px to sit with `Closed` rather than to compete with the
+   verdict - they are not the row's headline. */
 .sc-act {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
   font-size: 11px;
+}
+
+/* ---- Settings > GitHub Inspector's Findings modal ----
+   The summary sits in the shell's inset. The table band bleeds because it is its own
+   scrollport, so it re-applies the inset as its own padding. */
+.inspector-findings-summary {
+  padding-block: 12px 4px;
+  font-size: 12px;
+}
+.inspector-findings-summary p {
+  margin: 0 0 8px;
+}
+.inspector-findings-pr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+}
+.inspector-findings-pr a {
+  color: var(--fg);
+  font-weight: 600;
+}
+.inspector-findings-sep {
+  color: var(--dim);
+}
+.inspector-findings-mode {
+  color: var(--attention);
+}
+.inspector-findings-record {
+  color: var(--muted);
+}
+.inspector-findings-body {
+  padding: 0 var(--modal-inset, 18px) 14px;
+  max-height: 64vh;
+  overflow: auto;
+}
+/* The column names stay in view while a long list scrolls inside the band. The band is the
+   one scrollport, so the table's own horizontal scroller is turned off here or the sticky
+   header would stick to it instead. */
+.inspector-findings-body .wf-run-table {
+  overflow: visible;
+}
+.inspector-findings-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+}
+/* Separate borders, so each cell paints its own: collapsed borders are painted by the table
+   above a sticky header, and the severity rail would show through it as rows scroll under. */
+.inspector-findings-body table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+/* The Posted cell's second line on a draft GitHub refused, in every view the shared findings
+   table is drawn in. Attention rather than danger: the draft is still a finding to act on,
+   and the refusal is GitHub's answer about where it can be anchored, not a failure. */
+.inspector-finding-refusals {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--attention);
 }
 
 /* ---- the Foreman ledger's own cells ----
@@ -28610,34 +28715,69 @@ span.line-run-prov {
   scrollbar-gutter: stable;
 }
 /* The session blocker band (SessionBlockerBand.tsx): the launch-failure danger treatment.
-   Natural height for an ordinary blocker, but capped like `.pane-dialog` above: expanded
-   details can be four thousand characters, and an uncapped band would push the transcript and
-   the reply box out of `.detail-body`. Past the cap the band scrolls on its own. */
+
+   It does not shrink. It used to be `flex: 0 1 auto` beside a transcript that is also allowed
+   to shrink, and flexbox shares shrinkage in proportion to each item's natural height - so a
+   transcript thousands of pixels tall took nearly all of the band's share, leaving only its
+   header row and scrolling the reason and both controls out of sight. Collapsed, the band is
+   one row and costs little. Expanded, it is capped like `.pane-dialog` above, because the
+   details can be four thousand characters and an uncapped band would push the transcript and
+   the reply box out of `.detail-body`; past the cap it scrolls on its own, and its row is
+   sticky so the controls never scroll away with the details. */
 .detail-conv > .blocker-band {
-  flex: 0 1 auto;
-  min-height: 0;
+  flex: none;
   max-height: 40%;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 .blocker-band {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--danger) 50%, var(--border));
   border-left: 3px solid var(--danger);
   border-radius: 8px;
   background: color-mix(in srgb, var(--danger) 8%, var(--panel));
   font-size: 12.5px;
 }
-.blocker-band-head {
+/* The row is the band's whole collapsed face: kind, reason, age and both controls. The
+   toggle's 22rem basis decides when the controls wrap under it: about 180px of reason
+   survives beside the controls, and a pane narrower than that moves the age and controls to
+   a second line, right-aligned, rather than cutting the reason to a word or two.
+   The reason never wraps here, open or not, so the sticky row's height is bounded by its
+   controls rather than by up to 200 characters of text; the expanded facts carry it whole. */
+.blocker-band-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 10px 7px 12px;
+  background: inherit;
+}
+.blocker-band-toggle {
+  flex: 1 1 22rem;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 8px;
+  padding: 2px 4px;
+  margin: 0 0 0 -4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.blocker-band-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 .blocker-band-flag {
+  flex: none;
   font-weight: 750;
   color: var(--danger);
   text-transform: uppercase;
@@ -28645,14 +28785,57 @@ span.line-run-prov {
   font-size: 11px;
 }
 .blocker-band-kind {
+  flex: none;
   font-weight: 650;
 }
-.blocker-band-since {
-  color: var(--muted);
-}
 .blocker-band-reason {
-  margin: 0;
+  min-width: 0;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The shared dropdown chevron, so the toggle reads as the same kind of thing as a select. */
+.blocker-band-chevron {
+  flex: none;
+  align-self: center;
+  width: 10px;
+  height: 6px;
+  margin-left: 2px;
+  background: var(--select-chevron) no-repeat center;
+  transition: transform 120ms ease;
+}
+.blocker-band.is-open .blocker-band-chevron {
+  transform: rotate(180deg);
+}
+.blocker-band-since {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Everything under the row: the expanded facts, a flagged reply, the flag form, an error. */
+.blocker-band-more {
+  margin: 0;
+  padding: 9px 14px 11px;
+  border-top: 1px dashed color-mix(in srgb, var(--danger) 30%, var(--border));
+}
+/* Open, the divider belongs to the sticky row, so it still separates the row from details
+   scrolling up beneath it. */
+.blocker-band.is-open .blocker-band-row {
+  border-bottom: 1px dashed color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: 7px 7px 0 0;
+}
+.blocker-band.is-open .blocker-band-facts-wrap {
+  border-top: 0;
+}
+.blocker-band-facts-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.blocker-band-facts-wrap[hidden] {
+  display: none;
 }
 .blocker-band-facts {
   display: grid;
@@ -28670,9 +28853,6 @@ span.line-run-prov {
 .blocker-band-details summary {
   cursor: pointer;
   color: var(--muted);
-}
-.blocker-band-reply {
-  margin: 0;
 }
 .blocker-band-reply-pill {
   padding: 1px 6px;
@@ -28697,11 +28877,16 @@ span.line-run-prov {
   font-size: 11.5px;
 }
 .blocker-band-actions {
+  flex: none;
   display: flex;
   gap: 8px;
 }
+/* Wrapped onto a line of their own in a narrow pane, the controls keep to the right edge,
+   where they sit on one line. */
+.blocker-band-row > .blocker-band-actions {
+  margin-left: auto;
+}
 .blocker-band-error {
-  margin: 0;
   color: var(--danger);
 }
 .detail-conv > .transcript {
@@ -29630,6 +29815,15 @@ span.line-run-prov {
     width: calc(100cqw - var(--board-rail-width));
   }
 }
+/* The open session's column had no card, so no rail is drawn (BoardView's `railHidden`): the
+   reader takes the whole Board instead of the Board less a rail that is not there. After the
+   container query above, and more specific than its rule, so it wins at every width. */
+.board[data-rail="none"] .board-detail > .cdetail {
+  width: 100cqw;
+}
+.board[data-rail="none"]:not([data-focus="none"]) .board-detail {
+  min-width: 100cqw;
+}
 @media (prefers-reduced-motion: no-preference) {
   .board {
     transition: padding 0.34s ease;
@@ -30178,83 +30372,11 @@ span.line-run-prov {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- empty columns: the stash they fold into ----
-   An empty tone column, "needs you" included, leaves the board entirely (BoardView simply
-   stops rendering it) and reappears as a chip in the stash, unless the stash is switched off
-   in Settings. */
-/* Put a revealed column back. Sits where the count does on a column that has one. */
-.board-restash {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--dim);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  cursor: pointer;
-}
-.board-restash:hover {
-  color: var(--fg);
-  border-color: var(--border);
-  background: var(--panel);
-}
-.board-stash {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-left: 14px;
-  padding-top: 2px;
-}
-.board-stash-label {
-  font-size: 9.5px;
-  font-weight: 800;
-  letter-spacing: 0.7px;
-  text-transform: uppercase;
-  color: var(--dim);
-  text-align: center;
-}
-.board-stash-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  font: inherit;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--dim);
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.board-stash-chip:hover {
-  color: var(--muted);
-  border-style: solid;
-  background: var(--panel);
-}
-.board-stash-chip .board-swatch {
-  opacity: 0.55;
-  box-shadow: none;
-}
-/* The Backlog's chip wears the Backlog's own square purple swatch, not a tone's dot. */
-.board-stash-backlog .board-swatch {
-  border-radius: 2px;
-  background: var(--pr-merged);
-}
-
 /* ---- backlog column ----
    Dashed and off-palette because it holds TASKS, not sessions: nothing in it is a
    live agent, and it should never be mistaken for a sixth state. Like the tone columns
-   it leaves the board when empty and waits in the stash: it only takes drops of its own
-   cards, so an empty Backlog has nothing to receive. */
+   it leaves the board when empty: it only takes drops of its own cards, so an empty
+   Backlog has nothing to receive. */
 .board-backlog {
   flex-grow: 0;
   flex-basis: 232px;
@@ -31108,6 +31230,15 @@ span.line-run-prov {
   font-size: 12px;
   color: var(--fg);
   overflow-wrap: anywhere;
+}
+/* The tracker id of an external prerequisite, beside its title. */
+.bl-deadblock-ref {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+.bl-deadblock-name a {
+  color: inherit;
 }
 .bl-deadblock-state {
   flex: none;

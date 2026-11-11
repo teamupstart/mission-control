@@ -65,14 +65,40 @@ test("db.ts carries exactly one writer of the status column, shared by both poli
   const db = readFileSync(join(SERVER_DIR, "db.ts"), "utf8");
   const writes = writesToInspectorComments(db);
 
-  // One INSERT (the upsert every caller goes through) and nothing else. A bare `UPDATE
-  // inspector_comments` here is the regression: it means a caller decided what a resolved
-  // row looks like on its own rather than handing a whole row to `upsertInspectorComment`.
+  // One INSERT (the upsert every caller goes through) and nothing else at runtime. A bare
+  // `UPDATE inspector_comments` here is the regression: it means a caller decided what a
+  // resolved row looks like on its own rather than handing a whole row to
+  // `upsertInspectorComment`.
+  //
+  // The one other statement is a MIGRATION, not a writer of finding rows: the one-time
+  // `legacy_posted` backfill, which runs only in the `addColumn` that creates that column.
+  // It is pinned as narrowly as it can be below, so it cannot grow into a second writer.
+  const backfillStart = db.indexOf("function backfillInspectorLegacyPosted");
+  assert.ok(backfillStart > 0, "the legacy_posted backfill lives in its own function");
+  const backfill = db.slice(backfillStart, db.indexOf("\n}", backfillStart));
+  const outsideBackfill = db.slice(0, backfillStart) + db.slice(backfillStart + backfill.length);
   assert.deepEqual(
-    writes,
+    writesToInspectorComments(outsideBackfill),
     ["INSERT INTO INSPECTOR_COMMENTS"],
     "a second statement means a second definition of a resolved row",
   );
+  assert.deepEqual(writesToInspectorComments(backfill), ["UPDATE INSPECTOR_COMMENTS"]);
+  assert.deepEqual(
+    [...backfill.matchAll(/\bSET\s+(\w+)\s*=/gi)].map((m) => m[1]),
+    ["legacy_posted"],
+    "the backfill assigns legacy_posted and no other column - never status",
+  );
+  assert.deepEqual(
+    [...db.matchAll(/backfillInspectorLegacyPosted\(d\)/g)].length,
+    1,
+    "and it is called exactly once",
+  );
+  assert.match(
+    db,
+    /if \(addColumn\(d, "inspector_comments", "legacy_posted", "TEXT"\)\) backfillInspectorLegacyPosted\(d\);/,
+    "only by the migration that creates the column, so it can only ever see legacy rows",
+  );
+  assert.deepEqual(writes.length, 2);
 
   // And the operator path is wired to that upsert rather than to a statement of its own -
   // the property the assertion above can only observe indirectly.

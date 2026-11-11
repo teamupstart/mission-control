@@ -424,6 +424,22 @@ test("Codex passes a materialized schema, cleans it up, and keeps command tools 
   assert.equal(lines(RUN_ENV)[3], "1");
 });
 
+test("a caller's effort reaches each CLI as that harness's own launch flag, and only when asked", async () => {
+  // The flag spellings come from the harness capability table, so a headless Persona call and
+  // an interactive session can never ask the same provider for effort two different ways.
+  await withPrintTransport(() =>
+    claudeRunner.run("review", { model: "claude-opus-5-5", effort: "xhigh", timeoutMs: 5000 })
+  );
+  assert.equal(flag("--effort"), "xhigh");
+  await withPrintTransport(() => claudeRunner.run("review", { model: "claude-opus-5-5", timeoutMs: 5000 }));
+  assert.equal(argv().includes("--effort"), false, "an unset effort must leave the provider default alone");
+
+  await codexRunner.run("review", { model: "gpt-6-sol", effort: "high", timeoutMs: 5000 });
+  assert.ok(argv().includes("model_reasoning_effort=high"));
+  await codexRunner.run("review", { model: "gpt-6-sol", timeoutMs: 5000 });
+  assert.equal(argv().some((arg) => arg.startsWith("model_reasoning_effort=")), false);
+});
+
 // The test above proves the plumbing with a schema written by hand, which is exactly the gap
 // that let `invalid_json_schema` reach production: the hand-written literal already listed
 // every key in `required`, while every schema a REAL call site renders did not. Codex hands

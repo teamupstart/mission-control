@@ -4,6 +4,7 @@ import { creatableStrategies } from "@shared/ensemble-strategies.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import {
   personaUpstreamLabel,
+  routingLine,
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
   workflowCommandFact,
@@ -200,7 +201,7 @@ export function workflowCards(summaries: readonly WorkflowSummary[]): LibraryCar
  * string.
  */
 export function personaRoutingLabel(persona: Pick<PersonaView, "execution">): string {
-  return `${persona.execution.runner.id} · ${persona.execution.model.id}`;
+  return routingLine(persona.execution.runner.id, persona.execution.model.id, persona.execution.effort);
 }
 
 export function personaCards(

@@ -17,6 +17,7 @@ import {
   SESSION_ACTION_COMPLETION_CAPABILITIES,
   WORKFLOW_LIMITS,
   WORKFLOW_MISSING_PR_ACTIONS,
+  personaEffortLevels,
 } from "./workflow.ts";
 
 export interface WorkflowGraphValidationInput {
@@ -341,6 +342,20 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
         if (count === 0) diagnostics.push(diagnostic("join_missing_outcome", `Join predecessor “${predecessorId}” is missing its ${port} route.`, { nodeId: join.id }));
         if (count > 1) diagnostics.push(diagnostic("join_duplicate_outcome", `Join predecessor “${predecessorId}” has more than one ${port} route.`, { nodeId: join.id }));
       }
+    }
+  }
+
+  // Structural, so it needs no catalog: the override names its own provider and model, and an
+  // effort they do not offer is refused at publish rather than passed to a CLI that rejects it.
+  for (const node of graph.nodes) {
+    if (node.kind !== "persona" || !node.executionOverride?.effort) continue;
+    const { runner, model, effort } = node.executionOverride;
+    if (!personaEffortLevels(runner, model).includes(effort)) {
+      diagnostics.push(diagnostic(
+        "unsupported_effort",
+        `${runner} · ${model} does not support ${effort} effort.`,
+        { nodeId: node.id },
+      ));
     }
   }
 

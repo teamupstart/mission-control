@@ -50,6 +50,8 @@ interface ErasedTaskSource {
   canAnnotate: boolean;
   /** Mirrors the kind's `canResolve`. */
   canResolve: boolean;
+  /** Mirrors the kind's `canRelate`. */
+  canRelate: boolean;
   /** Null when this kind cannot write a note back. Null rather than absent, as above. */
   annotate:
     | ((config: unknown, notice: WritebackNotice, ctx: WritebackContext) => Promise<WritebackResult>)
@@ -82,6 +84,7 @@ function erase<C>(impl: TaskSourceImpl<C>): ErasedTaskSource {
     canPush: TASK_SOURCE_KIND_INFO[impl.kind].canPush,
     canAnnotate: TASK_SOURCE_KIND_INFO[impl.kind].canAnnotate,
     canResolve: TASK_SOURCE_KIND_INFO[impl.kind].canResolve,
+    canRelate: TASK_SOURCE_KIND_INFO[impl.kind].canRelate,
     async preflight(config, ctx) {
       const parsed = impl.configSchema.safeParse(config ?? {});
       if (!parsed.success) return reason(parsed.error);
@@ -253,6 +256,16 @@ export function canAnnotateTo(inst: TaskSourceInstance): boolean {
 /** Can this configured source mark an item resolved? */
 export function canResolveTo(inst: TaskSourceInstance): boolean {
   return TASK_SOURCES[inst.kind].canResolve;
+}
+
+/**
+ * Does this configured source report blocking links, and its items' states?
+ *
+ * Asked by ingest before it reads a candidate's `blockedBy`, and by the sweeper before it
+ * re-checks `source` dependency edges, so neither branches on the kind.
+ */
+export function canRelateTo(inst: TaskSourceInstance): boolean {
+  return TASK_SOURCES[inst.kind].canRelate;
 }
 
 /**

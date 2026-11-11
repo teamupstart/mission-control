@@ -833,7 +833,7 @@ test("a recovery point redacts a Claude login server's definition too, and a run
 
 const PERSONA: Persona = {
   id: "persona-mcp", name: "MCP Persona", normalizedName: "mcp persona", description: "", guidanceMarkdown: "You use tools.",
-  runner: null, model: null, revision: 1, archivedAt: null, createdAt: 0, updatedAt: 0, provenance: null, builtin: false,
+  runner: null, model: null, effort: null, revision: 1, archivedAt: null, createdAt: 0, updatedAt: 0, provenance: null, builtin: false,
 };
 
 function manager(reader: GlobalReader) {

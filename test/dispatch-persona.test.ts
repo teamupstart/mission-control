@@ -72,6 +72,7 @@ function persona(over: Partial<Persona> = {}): Persona {
     guidanceMarkdown: GUIDANCE,
     runner: null,
     model: null,
+    effort: null,
     revision: 3,
     archivedAt: null,
     createdAt: 1,

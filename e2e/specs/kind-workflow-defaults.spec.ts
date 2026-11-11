@@ -342,3 +342,46 @@ test("a guess left by a cancelled backlog edit is still corrected when the edit 
     return all.find((task) => task.id === taskId)?.workflowId;
   }).toBe(GENERAL_REVIEW);
 });
+
+test("an edit whose kind guess cannot be checked is refused until After work is chosen", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { scout: GENERAL_REVIEW });
+  const title = "Edit with no rows";
+  const seeded = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, {
+    data: { repoRoot: daemon.repo, title, intent: "look around later", agent: "claude", kind: "ship", backlog: true },
+  });
+  expect(seeded.ok()).toBe(true);
+  const task = (await seeded.json()) as { id: string; workflowId: string | null };
+  const storedWorkflowId = async () => {
+    const all = (await (await dashboard.request.get(`${daemon.baseURL}/api/tasks`)).json()) as Array<{ id: string; workflowId: string | null }>;
+    return all.find((entry) => entry.id === task.id)?.workflowId;
+  };
+  const layout = await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  expect(layout.ok()).toBe(true);
+  await dashboard.reload();
+  const card = dashboard.locator(".bl-card", { hasText: title });
+  await expect(card).toBeVisible();
+
+  await dashboard.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() === "GET") await route.fulfill({ status: 500, body: "unavailable" });
+    else await route.continue();
+  });
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("scout");
+  await expect(afterWork).toHaveValue("__none");
+
+  // Scout's real row names a Workflow, so saving the built-in None would be a silent change.
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog.getByText(/Dispatch defaults could not be read/)).toBeVisible();
+  await expect(dialog).toBeVisible();
+  expect(await storedWorkflowId()).toBe(task.workflowId);
+
+  await afterWork.selectOption(GENERAL_REVIEW);
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(storedWorkflowId).toBe(GENERAL_REVIEW);
+});

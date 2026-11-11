@@ -270,6 +270,9 @@ function repoCollision(d: DispatchDraft): string | null {
 const NO_STASH = Symbol("no-stash");
 type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
 type ProvisionalWorkflow = { kind: TaskKind; workflowId: string | null };
+
+const UNRESOLVED_KIND_DEFAULT =
+  "Settings → Tasks → Dispatch defaults could not be read, so this kind's After work default is unknown. Choose an After work Workflow, or try again.";
 type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
@@ -2456,16 +2459,22 @@ function DispatchModal({
    * The draft's Workflow, with a kind-switch guess still standing from before the rows loaded
    * resolved against the real rows first: saved as-is it would pin a built-in the operator
    * may have replaced. A create that cannot read them sends no Workflow, so the daemon
-   * resolves the row itself.
+   * resolves the row itself. An edit cannot: no Workflow there keeps the old kind's, so it
+   * comes back unresolved and the save is refused until the rows can be read.
    */
-  async function settledWorkflowId(d: DispatchDraft): Promise<DispatchDraft["workflowId"]> {
+  async function settledWorkflowId(
+    d: DispatchDraft,
+  ): Promise<{ resolved: true; workflowId: DispatchDraft["workflowId"] } | { resolved: false }> {
     const guess = provisionalWorkflow.current;
     if (workflowConfig || !guess || guess.kind !== d.kind || guess.workflowId !== d.workflowId) {
-      return d.workflowId;
+      return { resolved: true, workflowId: d.workflowId };
     }
     const config = await workflowRequest<WorkflowConfig>("/api/workflows/config").catch(() => null);
-    if (!config) return editing ? d.workflowId : undefined;
-    return taskDefaultWorkflowId(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository");
+    if (!config) return editing ? { resolved: false } : { resolved: true, workflowId: undefined };
+    return {
+      resolved: true,
+      workflowId: taskDefaultWorkflowId(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository"),
+    };
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
@@ -2523,7 +2532,13 @@ function DispatchModal({
     // field, update sends an explicit null to take an override back off a row that has
     // one. Either way the daemon resolves the default at launch, so a task shelved
     // today runs on the default in force when it is finally picked up.
-    const workflowId = await settledWorkflowId(submitted);
+    const settled = await settledWorkflowId(submitted);
+    if (!settled.resolved) {
+      setPending(null);
+      fail(UNRESOLVED_KIND_DEFAULT);
+      return;
+    }
+    const { workflowId } = settled;
     const patch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher

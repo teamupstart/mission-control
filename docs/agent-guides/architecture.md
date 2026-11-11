@@ -251,6 +251,11 @@ An invalid stored runtime falls back to terminal and reports what was dropped. I
 
 A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. A dispatch declaring no tools never spawns the probe and is unaffected.
 
+Installed-extension harnesses carry those tools through their extension instead of an MCP
+descriptor. Pi's pre-provisioning health check probes the actual bridge with `tools/list` and
+requires the entire `MISSION_MCP_TOOLS` registry, including every plan and scout requirement.
+An extension that loads but lacks even one registered tool cannot pass dispatch availability.
+
 Scout report publication is also available on request from other registered sessions. Registry
 observations project signed session capabilities; the archive gateway checks live ownership,
 and directory-scoped capture jobs publish independent immutable bundles. Taskless jobs have

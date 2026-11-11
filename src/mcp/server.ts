@@ -710,6 +710,7 @@ server.registerTool(
       "Launch a saved Mission Control task by taskId, including work just scheduled with create_task. " +
       "Uses the dashboard's dispatch rules: dependencies, workflow readiness, task kind, and " +
       "launch preflights still apply. Disabled backlog work is refused unless overrideDisabled is true. " +
+      "The calling agent may set that override itself; disabled is an autopilot hold, not a human approval boundary. " +
       "defaultModel fills only an unpinned task's model. Returns the task and its current status; " +
       "dispatching means launch was accepted, not that the agent is running. Use get_task to check progress. " +
       "Uses the same daemon-token access as create_task; no Control other sessions opt-in is required.",

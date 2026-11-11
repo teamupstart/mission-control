@@ -1029,6 +1029,11 @@ see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and `/assign` fo
 item **unless the request explicitly claims an override** - which the dashboard's own
 buttons do, and Foreman never does.
 
+An agent calling Mission MCP's `dispatch_task` can also explicitly set `overrideDisabled: true`
+to launch a parked task. Chat pre-approves this tool, including that option: the disabled switch
+is an autopilot hold, not a human approval or permission boundary against the calling agent.
+Dependencies, workflow readiness, and the remaining launch checks still apply.
+
 The refusing default is the point. The Foreman worker is a separate process you start by
 hand, so it can outlive a daemon restart; one that predates this feature sends no override
 and is stopped, without the daemon having to work out who it is talking to. An external

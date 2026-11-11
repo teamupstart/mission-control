@@ -1907,8 +1907,9 @@ export class Dispatcher {
     const mcp = harnessMcp
       ? await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(wt.path, stateHome)
       : null;
-    // Installed-extension harnesses already passed the extension and bridged-tool health
-    // check before provisioning. They carry the required tools without an MCP descriptor.
+    // Installed-extension harnesses already passed missionToolsAvailability before
+    // provisioning. Pi's inspectMissionMcpTools handshake requires every MISSION_MCP_TOOLS
+    // entry, including plan/scout tools, so this covers every kind without an MCP descriptor.
     const extensionProvidesMissionTools =
       capabilitiesFor(task.agent).missionTools?.mechanism === "installed-extension";
     // Same rule the terminal path applies to its argv, asked of the thing that actually

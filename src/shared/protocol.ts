@@ -7083,9 +7083,9 @@ export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
  * value, `null` included, becomes an explicit Ship row. A blob that already has the map
  * keeps it and the legacy key is dropped.
  *
- * Read-time and never written back, like `keepPreFieldCommandConsent`: the next save through
- * Settings writes only the map. Old settings backups restore through this same schema, so
- * they need no translation of their own.
+ * Read-time, like `keepPreFieldCommandConsent`: a save writes the map, plus the legacy key as
+ * a rollback mirror of the Ship row that this read then drops. Old settings backups restore
+ * through this same schema, so they need no translation of their own.
  */
 function migrateLegacyDefaultWorkflowId(blob: unknown): unknown {
   if (!blob || typeof blob !== "object" || Array.isArray(blob)) return blob;

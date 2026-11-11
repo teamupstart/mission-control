@@ -96,6 +96,23 @@ test("a stored legacy defaultWorkflowId migrates into the Ship row on read", () 
   setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [], kindWorkflowDefaults: {} });
 });
 
+test("a save mirrors the effective Ship row as defaultWorkflowId for a rolled-back build", () => {
+  const stored = (rows: Record<string, string | null>) => {
+    setWorkflowPolicy({ repoAllowlist: [], kindWorkflowDefaults: rows });
+    return getAppConfig(APP_CONFIG_ENTRIES.workflows) as Record<string, unknown>;
+  };
+  assert.equal(stored({}).defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID, "an untouched row mirrors the built-in");
+  assert.equal(stored({ ship: null }).defaultWorkflowId, null, "an explicit None stays None");
+  const blob = stored({ ship: "workflow-mine", bugfix: "workflow-fix" });
+  assert.equal(blob.defaultWorkflowId, "workflow-mine");
+  assert.deepEqual(blob.kindWorkflowDefaults, { ship: "workflow-mine", bugfix: "workflow-fix" });
+  // This build reads the map and drops the mirror, so the other rows survive the round trip.
+  const read = getWorkflowPolicy();
+  assert.deepEqual(read.kindWorkflowDefaults, { ship: "workflow-mine", bugfix: "workflow-fix" });
+  assert.equal("defaultWorkflowId" in read, false);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [], kindWorkflowDefaults: {} });
+});
+
 test("a settings backup from before per-kind defaults restores its Ship choice", async () => {
   const { parseSettingPayload } = await import("../src/server/settings-backups/config-registry.ts");
   const legacy = {

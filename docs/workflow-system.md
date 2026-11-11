@@ -62,7 +62,9 @@ Plan Validation. Pipeline always resolves to None. Explicit IDs and null opt-out
 replaced the single `defaultWorkflowId`, which `StoredWorkflowPolicySchema` migrates into the
 Ship row on read (a stored No-Mistakes reads as the built-in), including for settings backups
 written before it. `PUT /api/workflows/config` still accepts the old field as a deprecated alias
-that sets the Ship row by the same rule, ahead of any Ship key in the same body's map.
+that sets the Ship row by the same rule, ahead of any Ship key in the same body's map. Each save
+also stores `defaultWorkflowId` as the effective Ship row, so rolling back to a build from before
+per-kind defaults keeps the Ship choice; this build ignores it whenever the map is present.
 Bugfix and Document share Ship's deferred publication, automatic wrap-up, backlog eligibility, and recovery
 through the existing registries and `isShippingTaskKind` predicate.
 

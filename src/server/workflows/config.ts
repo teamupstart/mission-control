@@ -77,10 +77,17 @@ export function resolveTaskWorkflowId(
  *
  * `checksEnabled` is the one field a full replace must not take from the schema, and
  * `keepStoredCommandConsent` explains why.
+ *
+ * The stored blob also carries `defaultWorkflowId`, the effective Ship row, so a build from
+ * before per-kind defaults keeps the operator's Ship default after a rollback. This build
+ * never reads it back: the stored read drops it whenever the map is present.
  */
 export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
   const next = WorkflowPolicySchema.parse(keepStoredCommandConsent(input));
-  setAppConfig(CONFIG_ENTRY, next);
+  setAppConfig(CONFIG_ENTRY, {
+    ...next,
+    defaultWorkflowId: taskDefaultWorkflowId("ship", next.kindWorkflowDefaults),
+  });
   return next;
 }
 

@@ -104,8 +104,9 @@ export const RESTART_CONTINUATION_PROMPT =
   "state before acting, do not repeat completed work, and ask again for any approval or " +
   "input you still need.";
 
-/** Task-backed extension launches require Mission tools, just as dispatch preflight does.
- * Derive this again from the durable task association on restore, without a second setting. */
+/** Managed Pi SDK dispatch requires a healthy extension even for kinds with no MCP
+ * requirement, such as ship and bugfix. Keep that launch policy
+ * on restore and /new via the durable task association, without a second setting. */
 function requiresInstalledMissionTools(agent: AgentType, taskId: string | null): boolean {
   return taskId !== null && capabilitiesFor(agent).missionTools?.mechanism === "installed-extension";
 }

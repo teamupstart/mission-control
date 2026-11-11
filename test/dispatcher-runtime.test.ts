@@ -602,25 +602,27 @@ test("Pi refuses chat, plan, and scout dispatch when the installed bridge lacks 
   }
 });
 
-test("a managed Pi dispatch refuses before provisioning when its extension is not ready", async () => {
-  const repo = seedRepo("pi-extension-missing-repo");
+test("managed Pi dispatch requires its extension for ship, bugfix, and chat before provisioning", async () => {
   setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
-  const registry = new Registry();
-  registry.upsertTask(
-    mkTask({ id: "task-pi-extension", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat" }),
-  );
-  const supervisor = fakeSupervisor(registry);
+  for (const kind of ["ship", "bugfix", "chat"] as const) {
+    const registry = new Registry();
+    registry.upsertTask(mkTask({
+      id: "task-pi-extension", status: "dispatching", agent: "pi", kind,
+      repoRoot: seedRepo(`pi-${kind}-extension-missing-repo`),
+    }));
+    const supervisor = fakeSupervisor(registry);
 
-  await new Dispatcher(registry, async () => {}, {
-    supervisor,
-    piExtensionInstalled: async () => false,
-  }).dispatch("task-pi-extension");
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      piExtensionInstalled: async () => false,
+    }).dispatch("task-pi-extension");
 
-  const task = registry.getTask("task-pi-extension")!;
-  assert.equal(task.status, "failed");
-  assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi extension.*Settings.*Setup/i);
-  assert.equal(task.worktreePath, null);
-  assert.equal(supervisor.starts.length, 0);
+    const task = registry.getTask("task-pi-extension")!;
+    assert.equal(task.status, "failed", `${kind} cannot bypass the managed SDK extension preflight`);
+    assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi extension.*Settings.*Setup/i);
+    assert.equal(task.worktreePath, null);
+    assert.equal(supervisor.starts.length, 0);
+  }
 });
 
 test("a managed Pi dispatch refuses before provisioning when Pi is missing but its extension is ready", async () => {

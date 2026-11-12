@@ -75,7 +75,7 @@ export type DispatchDraft = {
    */
   personaId: string;
   /**
-   * After-work Workflow choice. Undefined follows the machine dispatch default on a fresh
+   * After-work Workflow choice. Undefined follows the task kind's dispatch default on a fresh
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
   workflowId: string | null | undefined;

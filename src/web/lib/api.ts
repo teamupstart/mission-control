@@ -1,6 +1,7 @@
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
+import type { KindWorkflowDefaults } from "@shared/task.ts";
 import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
 import type { StorageView } from "@shared/storage-health.ts";
 import type {
@@ -1037,6 +1038,24 @@ export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
     return Array.isArray(data.repoAllowlist) ? (data.repoAllowlist as string[]) : [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * The per-kind dispatch defaults from Settings, or null when the config cannot be read.
+ *
+ * The one read of these rows for surfaces that need nothing else from the workflow config.
+ * Null is "not known", never "none configured": a caller must not resolve a kind against it
+ * as though it were `{}`, which would pass a built-in off as the operator's choice.
+ */
+export async function fetchKindWorkflowDefaults(): Promise<KindWorkflowDefaults | null> {
+  try {
+    const res = await actionFetch("/api/workflows/config");
+    if (!res.ok) return null;
+    const data = (await res.json()) as { kindWorkflowDefaults?: KindWorkflowDefaults };
+    return data.kindWorkflowDefaults ?? null;
+  } catch {
+    return null;
   }
 }
 

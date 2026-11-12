@@ -434,6 +434,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   },
   ...HARNESS_CONTROLS,
   {
+    id: "task-kind-workflow-defaults",
+    label: "Default dispatch workflow per task kind",
+    description: "The published Workflow each kind of task preselects to run after its work.",
+    category: "tasks",
+    anchor: "tasks/dispatch-defaults",
+    keywords: ["default", "dispatch", "after work", "workflow", "agent", "task", "task kind", "per kind"],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
     id: "worktree-policy",
     label: "Worktree policy",
     description: "Default and repository-specific native checkout capacity and setup argv.",
@@ -733,16 +743,6 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["episode", "decision", "answered", "escalated", "shadow", "ledger", "history"],
     kind: "jump",
     backup: backupNotApplicable("derived-status"),
-  },
-  {
-    id: "workflow-dispatch-default",
-    label: "Default dispatch workflow",
-    description: "The published Workflow preselected to run after each new agent dispatch.",
-    category: "workflows",
-    anchor: "workflows/dispatch-default",
-    keywords: ["default", "dispatch", "after work", "workflow", "agent", "task"],
-    kind: "jump",
-    backup: backupDomains("workflow-policy"),
   },
   {
     id: "workflow-live-delivery",

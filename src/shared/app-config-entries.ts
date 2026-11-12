@@ -81,6 +81,12 @@ export interface AppConfigFieldsEntry<
   classification: {
     kind: "fields";
     fields: Record<keyof z.output<Schema>, AppConfigValueClass>;
+    /**
+     * Setting fields a backup written by an older build may still carry, which the entry's
+     * own schema migrates on read. A restore accepts them instead of refusing the snapshot
+     * as holding unexpected fields; they are never written back.
+     */
+    legacyFields?: readonly string[];
   };
   backupDomain: SettingsBackupDomainId;
 }
@@ -96,13 +102,16 @@ function fieldsEntry<
   backupDomain: SettingsBackupDomainId,
   fields: Record<keyof z.output<Schema>, AppConfigValueClass>,
   capture: AppConfigCaptureKind = "generic",
+  legacyFields: readonly string[] = [],
 ): AppConfigFieldsEntry<Key, Schema> {
   return {
     key,
     schema,
     snapshotVersion: 1,
     backupDomain,
-    classification: { kind: "fields", fields },
+    classification: legacyFields.length > 0
+      ? { kind: "fields", fields, legacyFields }
+      : { kind: "fields", fields },
     capture,
   };
 }
@@ -197,7 +206,7 @@ const foremanFields = {
 const workflowFields = {
   liveEnabled: "setting",
   repoAllowlist: "setting",
-  defaultWorkflowId: "setting",
+  kindWorkflowDefaults: "setting",
   retention: "setting",
   checksEnabled: "setting",
   skipPassedJudges: "setting",
@@ -331,7 +340,9 @@ export const APP_CONFIG_ENTRIES = {
     "foreman-instructions",
   ),
   workflows: fieldsEntry(
-    "workflows", StoredWorkflowPolicySchema, "workflow-policy", workflowFields,
+    "workflows", StoredWorkflowPolicySchema, "workflow-policy", workflowFields, "generic",
+    // Ship's dispatch default before per-kind defaults; migrated by the schema.
+    ["defaultWorkflowId"],
   ),
   taskSources: fieldsEntry(
     "taskSources", TaskSourcesConfigSchema, "task-sources", taskSourcesFields,

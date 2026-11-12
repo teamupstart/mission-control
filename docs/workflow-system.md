@@ -53,8 +53,18 @@ Persona calls cannot read checkout files, so document and plan contracts request
 registered text and the relevant unchanged comparison material.
 
 Task workflow defaults resolve through `taskDefaultWorkflowId` in `src/shared/task.ts`, used by
-both the dispatch form and server task creation. Plan defaults to Plan Validation; Bugfix defaults
-to Bug Fix Review; Document defaults to Documentation Review; Ship retains the machine workflow setting. Explicit IDs and null opt-outs win.
+the dispatch form, the Recurring Mission editor, and server task creation. It reads the
+operator's per-kind rows (`WorkflowPolicy.kindWorkflowDefaults`, edited under Settings → Tasks →
+Dispatch defaults) and falls back to `BUILTIN_KIND_WORKFLOW_DEFAULTS`: Ship defaults to
+No-Mistakes Review, Bugfix to Bug Fix Review, Document to Documentation Review, Plan to Plan
+Validation, and Scout and Chat to None. A plan pinned to local storage always resolves to Local
+Plan Validation. Pipeline always resolves to None. Explicit IDs and null opt-outs win. The map
+replaced the single `defaultWorkflowId`, which `StoredWorkflowPolicySchema` migrates into the
+Ship row on read (a stored No-Mistakes reads as the built-in), including for settings backups
+written before it. `PUT /api/workflows/config` still accepts the old field as a deprecated alias
+that sets the Ship row by the same rule, ahead of any Ship key in the same body's map. Each save
+also stores `defaultWorkflowId` as the effective Ship row, so rolling back to a build from before
+per-kind defaults keeps the Ship choice; this build ignores it whenever the map is present.
 Bugfix and Document share Ship's deferred publication, automatic wrap-up, backlog eligibility, and recovery
 through the existing registries and `isShippingTaskKind` predicate.
 

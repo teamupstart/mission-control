@@ -151,10 +151,10 @@ A mission's template names the **Workflow** that runs when the task a run files 
 and it rests on **None**: nothing runs after the task unless the mission says so.
 
 That is deliberately not what an ordinary dispatch does. Dispatch may leave the field on
-*Dispatch default* and inherit whatever `Settings -> Workflows` currently names, resolved when
-the task is created. A recurring mission fires unattended, on a cadence, for as long as it is
-enabled - so inheriting would mean a default chosen in Settings today silently arming a review
-over a mission written months ago, on every run, with nobody watching. A mission states its
+*Dispatch default* and inherit whatever the kind's row under `Settings -> Tasks -> Dispatch
+defaults` currently names, resolved when the task is created. A recurring mission fires
+unattended, on a cadence, for as long as it is enabled - so inheriting would mean a default
+chosen in Settings today silently arming a review over a mission written months ago, on every run, with nobody watching. A mission states its
 own answer instead, and the daemon passes it to task creation explicitly so `null` reaches it
 as "no Workflow" rather than as an omission.
 

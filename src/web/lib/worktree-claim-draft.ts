@@ -9,6 +9,12 @@ export interface ClaimStepDraft {
   argv: string;
   /** Variable names, separated by spaces, commas or newlines. Names cannot contain any of those. */
   env: string;
+  /**
+   * The argv this step was loaded with. One argument per line cannot show an argument holding a
+   * line break or ending in a carriage return, so while `argv` is still the text it was loaded
+   * as, the step saves this instead of re-reading the text.
+   */
+  stored?: readonly string[];
 }
 
 export interface ClaimDraft {
@@ -48,7 +54,7 @@ export function draftFromClaim(claim: WorktreeClaim | null): ClaimDraft {
     };
   }
   return {
-    steps: claim.steps.map((step) => ({ argv: step.argv.join("\n"), env: step.env.join(" ") })),
+    steps: claim.steps.map((step) => ({ argv: step.argv.join("\n"), env: step.env.join(" "), stored: step.argv })),
     timeoutMinutes: String(claim.timeoutMinutes),
     fingerprintPaths: claim.fingerprintPaths.join("\n"),
     seedPaths: claim.seed?.paths.join("\n") ?? "",
@@ -78,7 +84,10 @@ export function claimFromDraft(draft: ClaimDraft): unknown {
   const seedPaths = draftLines(draft.seedPaths);
   const seedExclude = draftLines(draft.seedExclude);
   return {
-    steps: draft.steps.map((step) => ({ argv: draftLines(step.argv), env: draftNames(step.env) })),
+    steps: draft.steps.map((step) => ({
+      argv: step.stored && step.argv === step.stored.join("\n") ? [...step.stored] : draftLines(step.argv),
+      env: draftNames(step.env),
+    })),
     timeoutMinutes: Number.isFinite(timeout) ? timeout : typed,
     fingerprintPaths: draftLines(draft.fingerprintPaths),
     ...(seedPaths.length > 0 || seedExclude.length > 0

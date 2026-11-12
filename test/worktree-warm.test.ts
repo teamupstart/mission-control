@@ -268,6 +268,49 @@ test("a queued Warm skips a slot whose pool marker went missing, untouched", asy
   assert.equal(runCount(row.path), 0, "no step ran");
 });
 
+test("a pool Warm seeds a later slot from one it already warmed", async () => {
+  const fixture = repository("mission-warm-pool-seed-");
+  const m = manager({ claim: claimOf(INSTALL, SEED) });
+  const [first, second] = await idleSlots(m, fixture.clone, fixture.sha, 2);
+  const ops = service(m, logsDirectory());
+  const id = await warm(ops, { kind: "pool", poolId: m.store.poolForSlot(first!.slotId)!.id });
+  await ops.idle();
+
+  const view = await operation(ops, id);
+  assert.deepEqual(view.warm?.targets.map((target) => target.outcome), ["warmed", "warmed"]);
+  const firstPath = m.store.slot(first!.slotId)!.path;
+  const secondPath = m.store.slot(second!.slotId)!.path;
+  assert.equal(runCount(firstPath), 1, "the first slot had no warm sibling, so its steps ran");
+  // The pool Warm's one owner key must not keep the slot it already returned referenced.
+  assert.ok((view.warm?.tail ?? "").includes(`Seeding copy-on-write from the idle sibling ${firstPath}`));
+  assert.equal(readFileSync(join(secondPath, "deps", "marker"), "utf8"), firstPath, "the second slot's deps came from the first");
+});
+
+test("a publisher that throws as a Warm starts still settles it and runs its cleanup", async () => {
+  const fixture = repository("mission-warm-throwing-publisher-");
+  const m = manager({ claim: claimOf(INSTALL) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  let armed = false;
+  const ops = service(m, logsDirectory(), {
+    notifyChanged: () => {
+      if (!armed) return;
+      armed = false;
+      throw new Error("publisher exploded");
+    },
+  });
+  const preview = await ops.preview({ action: "warm", target: { kind: "slot", slotId: slot!.slotId } });
+  const id = ops.submit(preview.token, []).operation.id;
+  // The Warm starts in a later microtask, so its first notification is the one that throws.
+  armed = true;
+  await ops.idle();
+
+  const view = await operation(ops, id);
+  assert.equal(view.state, "failed");
+  assert.match(view.error ?? "", /publisher exploded/);
+  assert.ok(view.finishedAt !== null, "the cleanup ran");
+  assert.equal(m.store.slot(slot!.slotId)!.state, "available", "the slot was never held");
+});
+
 test("an inline Warm execute reports what its own targets did, not a blanket success", async () => {
   const fixture = repository("mission-warm-inline-");
   const m = manager({ claim: claimOf(INSTALL) });

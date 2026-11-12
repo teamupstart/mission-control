@@ -1430,8 +1430,9 @@ export class WorktreeOperationsService {
     const warm = entry.warm!;
     if (entry.view.state !== "queued") return;
     entry.view.state = "running";
-    this.deps.notifyChanged();
     try {
+      // Inside the try: a throwing publisher must still reach the cleanup below.
+      this.deps.notifyChanged();
       for (const target of warm.targets) {
         if (warm.controller.signal.aborted) {
           target.outcome = "cancelled";

@@ -346,6 +346,31 @@ test("a refused field's error follows its step when an earlier step is removed",
   await expect(editor.getByRole("alert")).toHaveCount(0);
 });
 
+test("saving another field keeps a stored argument the one-per-line editor cannot show", async ({ dashboard, daemon }) => {
+  const created = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "claim with a multi-line argument" },
+  });
+  expect(created.status()).toBe(201);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const commonDirectory = inventory.repositories.find((repo) => repo.name === "demo-repo")!.commonDirectory;
+  const argv = [process.execPath, "-e", "const a = 1;\nconsole.log(a);", "trailing\r"];
+  const stored = await dashboard.request.put(`${daemon.baseURL}/api/worktrees/config`, {
+    data: { repositories: { [commonDirectory]: { claim: { steps: [{ argv, env: [] }], timeoutMinutes: 5, fingerprintPaths: [] } } } },
+  });
+  expect(stored.status()).toBe(200);
+
+  const editor = await openClaim(await openPool(dashboard, daemon));
+  await editor.getByLabel("Claim timeout in minutes, for every step together").fill("30");
+  await editor.getByRole("button", { name: "Save claim" }).click();
+  await expect(editor.getByRole("status")).toHaveText("Claim saved.");
+  const config = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees/config`)).json() as {
+    config: { repositories: Record<string, { claim?: { steps: Array<{ argv: string[] }>; timeoutMinutes: number } }> };
+  };
+  const claim = config.config.repositories[commonDirectory]?.claim;
+  expect(claim?.timeoutMinutes).toBe(30);
+  expect(claim?.steps[0]?.argv).toEqual(argv);
+});
+
 test.afterAll(() => {
   rmSync(shellDir, { recursive: true, force: true });
 });

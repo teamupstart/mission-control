@@ -827,8 +827,13 @@ export class WorktreeManager {
   /** A domain lookup that throws is tried once more (`observation-retry.ts`) before it is unknown. */
   private async ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
     if (this.pendingDomainLeases.has(reference.leaseId)) return true;
-    // A `warm` owner has no domain row: its operation's life in this daemon is its reference.
-    if (reference.owner.kind === "warm") return this.liveWarmOwners.has(reference.owner.key);
+    // A `warm` owner has no domain row: it references a slot while its operation runs in this
+    // daemon and still holds that exact lease. A pool Warm keeps one owner key for every slot,
+    // so the key alone would keep each slot it already returned referenced.
+    if (reference.owner.kind === "warm") {
+      return this.liveWarmOwners.has(reference.owner.key) &&
+        this.store.slot(reference.slotId)?.activeLeaseId === reference.leaseId;
+    }
     try {
       return await this.deps.ownerReferenced(reference);
     } catch (first) {

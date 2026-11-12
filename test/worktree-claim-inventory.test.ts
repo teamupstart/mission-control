@@ -235,6 +235,18 @@ test("the claim draft round-trips a stored claim and sends exactly what was type
   );
   assert.equal(draftFromClaim(null).steps.length, 0);
 
+  // An argument one-per-line text cannot show survives a save of some other field.
+  const multiline = WorktreeClaimSchema.parse({
+    ...claim,
+    steps: [{ argv: ["node", "-e", "const a = 1;\nconsole.log(a);", "trailing\r"] }],
+  });
+  const editedTimeout = { ...draftFromClaim(multiline), timeoutMinutes: "30" };
+  assert.deepEqual((claimFromDraft(editedTimeout) as WorktreeClaim).steps[0]!.argv, multiline.steps[0]!.argv);
+  // An edited command is read as typed, one argument per line.
+  const editedStep = draftFromClaim(multiline);
+  editedStep.steps[0] = { ...editedStep.steps[0]!, argv: "node\n-e\nconsole.log(2)" };
+  assert.deepEqual((claimFromDraft(editedStep) as WorktreeClaim).steps[0]!.argv, ["node", "-e", "console.log(2)"]);
+
   // Seeding round-trips one glob per line, and blank seed fields leave the claim unseeded.
   const seeded = WorktreeClaimSchema.parse({
     ...claim,

@@ -40,6 +40,7 @@ import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
   taskHasRepository,
   dispatchHasNoProvisionedResources,
+  taskGrillsFirst,
   TASK_KIND_BEHAVIOR,
   taskKindAllowsBacklog,
   taskKindForcedRuntime,
@@ -100,6 +101,7 @@ import {
 } from "./mission-mcp.ts";
 import { isPlanTask } from "./plans/prompt.ts";
 import { planSkillsForAgent } from "./plans/skills.ts";
+import { grillAction, grillFirstForAgent } from "./grill-first.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
@@ -522,6 +524,12 @@ export class Dispatcher {
         ? (this.deps.planSkills ?? planSkillsForAgent)(task.agent)
         : null;
       if (planSkills && !planSkills.ok) throw new Error(planSkills.message);
+      // Grill me first's skill, resolved in the same place and for the same reason: a launch
+      // that cannot invoke it cannot run the interview its contract opens with.
+      const grillFirst = taskGrillsFirst(task)
+        ? grillFirstForAgent(task.agent, grillAction((id) => this.registry.getSessionAction(id)))
+        : null;
+      if (grillFirst && !grillFirst.ok) throw new Error(grillFirst.message);
       // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch
       // path. A task that attaches repositories and cannot be given write access to them
       // must not start at all: the worktrees would be provisioned and the intent manifest
@@ -684,6 +692,7 @@ export class Dispatcher {
       const composeTurnOne = (standingBlock: string) =>
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
+          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
           workflowEvidence,
           planDiscovery,
           // A stacked launch was just pinned to its prerequisite's open pull request, so the

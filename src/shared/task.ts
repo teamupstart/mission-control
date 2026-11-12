@@ -459,6 +459,26 @@ export function taskRequeueRefusal(task: RequeueCandidate): string | null {
 }
 
 /**
+ * The kinds that offer Grill me first: every kind this app launches a harness for. Pipeline
+ * and resident are not here because nothing here launches them.
+ */
+export const GRILL_FIRST_TASK_KINDS = HARNESS_LAUNCHED_TASK_KINDS;
+export type GrillFirstTaskKind = (typeof GRILL_FIRST_TASK_KINDS)[number];
+
+export function isGrillFirstTaskKind(kind: TaskKind | null | undefined): kind is GrillFirstTaskKind {
+  return (GRILL_FIRST_TASK_KINDS as readonly string[]).includes(kind ?? "");
+}
+
+/**
+ * Whether a task's session interviews the human with the Grill action before it starts its
+ * work: Grill me first, as the task was pinned with. The one reading the skill gate, both
+ * delivery seams, the launch's tool grant and the dashboard take.
+ */
+export function taskGrillsFirst(task: Pick<Task, "kind" | "grillFirst"> | null | undefined): boolean {
+  return isGrillFirstTaskKind(task?.kind) && task?.grillFirst === true;
+}
+
+/**
  * Whether a dispatch still has no durable milestone proving provisioning or launch began.
  *
  * Live failure handling and startup reconciliation share this resource proof; live handling

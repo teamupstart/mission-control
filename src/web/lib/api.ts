@@ -1614,6 +1614,8 @@ export interface DispatchInput {
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   planStorage?: "repository" | "local" | null;
+  /** Grill me first; omitted follows the Settings -> Tasks default. */
+  grillFirst?: boolean;
   /** Backlog-task or live-session prerequisites. */
   dependencies?: TaskDependencyInput[];
   backlog?: boolean;

@@ -22,6 +22,7 @@ import { ConductorPanel } from "./ConductorPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { checksArmedReading } from "../lib/trust.ts";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
+import { TaskSettingsPanel } from "./TaskSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
@@ -614,6 +615,8 @@ export function SettingsPage({
         return <SkillsPanel state={skills} />;
       case "harnesses":
         return <HarnessesPanel state={harnesses} setup={setup.view} />;
+      case "tasks":
+        return <TaskSettingsPanel skills={skills} />;
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} />;
       case "repositories":

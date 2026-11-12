@@ -319,6 +319,7 @@ import { openEndedRequests } from "./http-shutdown.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
+import { grillFirstDispatchBlock } from "./grill-first.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
@@ -2437,6 +2438,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, UpdateSessionActionSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.update(c.req.param("id"), parsed.data);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
+  });
+  // Reset an editable built-in (the Grill action) to its shipped instruction.
+  app.post("/api/session-actions/:id/reset", bodyLimit({
+    maxSize: REVISION_ONLY_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.reset(c.req.param("id"), parsed.data.expectedRevision);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
   });
@@ -7372,6 +7386,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       commitPlanHtml: cfg.commitPlanHtml,
       alwaysDraftPr: cfg.alwaysDraftPr,
       planStorage: cfg.planStorage,
+      grillFirstKinds: cfg.grillFirstKinds,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
@@ -8638,7 +8653,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (error instanceof PlanStoreError) return { ok: false, status: 409, body: { error: error.message } };
       throw error;
     }
-    const { workflowId } = creationPolicy;
+    const { workflowId, grillFirst } = creationPolicy;
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
@@ -8659,7 +8674,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
     if (!data.backlog) {
-      const planBlock = planDispatchBlock({ ...data, agent });
+      const planBlock = planDispatchBlock({ ...data, agent })
+        ?? grillFirstDispatchBlock({ kind: data.kind, agent, grillFirst });
       if (planBlock) return { ok: false, status: 409, body: { error: planBlock } };
     }
     try {

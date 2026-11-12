@@ -675,7 +675,11 @@ Archive is soft: an archived action is read-only, leaves the add
 controls, keeps reserving its normalized name, and stays readable because drafts and published
 versions name its id. Built-in actions ship with the application, are listed under their own
 **Built-in** rail group and tagged in the editor's header, and are read-only; **Duplicate to
-edit** is the way to a copy you own.
+edit** is the way to a copy you own. The one exception is **Grill**, which
+[Grill me first](dispatch-and-backlog.md#grill-me-first) sends ahead of a task's work by id: its
+instruction is edited in place and saved as this machine's text (tagged **edited**), and **Reset
+to built-in** in its `⋯` menu restores the shipped one. Its name, description, required skill and
+completion stay as shipped, and the edit is not part of a settings backup.
 
 The authored Markdown behind the built-ins is in this repository under [`actions/`](../actions/) -
 Mission Control session actions, not GitHub Actions - one document per action, beside the

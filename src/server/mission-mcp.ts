@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Task, TaskKind } from "@shared/types.ts";
+import { taskGrillsFirst } from "@shared/task.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   type ProductIssueClient,
@@ -160,14 +161,17 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
  * same object, `null` included - so every existing ship dispatch's argv stays byte-identical.
  */
 export function kindMissionMcpRequirement(
-  task: Pick<Task, "kind" | "workflowId" | "planInputs">,
+  task: Pick<Task, "kind" | "workflowId" | "planInputs" | "grillFirst">,
   requested: MissionMcpRequirement | null,
   workflowEvidence = false,
 ): MissionMcpRequirement | null {
   const required = KIND_MISSION_MCP_TOOLS[task.kind];
-  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length) return requested;
+  // Grill me first asks every round with `request_plan_decisions`, whatever the kind.
+  const grillFirst = taskGrillsFirst(task);
+  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length && !grillFirst) return requested;
   const tools = new Set<MissionMcpTool>(requested?.tools ?? []);
   for (const tool of required) tools.add(tool);
+  if (grillFirst) tools.add(PLAN_DECISIONS_TOOL);
   if (workflowEvidence) tools.add(SUBMIT_WORKFLOW_EVIDENCE_TOOL);
   if (task.planInputs?.length) tools.add(PLAN_READ_TOOL);
   return { tools: [...tools] };

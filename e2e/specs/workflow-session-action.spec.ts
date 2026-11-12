@@ -53,13 +53,15 @@ test("an operator authors a session action in the library, and the daemon stores
   await dashboard.goto(`${daemon.baseURL}/#/workflows/actions`);
 
   // The library opens on its own tab, beside Personas. The shipped Pull Request action is
-  // already in the catalog, so this is also the read-only built-in case: it is listed, it is
-  // selected, and its editor says why nothing here can be saved.
+  // already in the catalog, so this is also the read-only built-in case: it is listed, and
+  // once selected its editor says why nothing here can be saved. (Grill, the one built-in
+  // edited in place, sorts first; grill-first.spec.ts covers it.)
   await expect(dashboard.getByRole("heading", { name: "Session actions" })).toBeVisible();
   // Whose a row is, said once at the group head rather than as a tag on every row.
-  await expect(dashboard.getByRole("heading", { name: /^Built-in\s+2$/ })).toBeVisible();
-  await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Pull Request" }))
-    .toContainText("Skill · pull-request · Pull request is opened");
+  await expect(dashboard.getByRole("heading", { name: /^Built-in\s+3$/ })).toBeVisible();
+  const pullRequest = dashboard.locator(".wf-action-list-item").filter({ hasText: "Pull Request" });
+  await expect(pullRequest).toContainText("Skill · pull-request · Pull request is opened");
+  await pullRequest.click();
   await expect(dashboard.locator(".wf-state.builtin"))
     .toContainText("Duplicate it to make a copy you own and can edit");
 
@@ -333,9 +335,9 @@ test("an authored action becomes a pipeline stage, publishes, and freezes its in
   // rather than as a bare option so a Persona that happened to share the name could not satisfy
   // it, and exhaustively so every shipped built-in whose adapter this build can prove - Pull
   // Request, and Retro since `repo_commit` shipped - has to be accounted for rather than
-  // silently tolerated.
+  // silently tolerated. Grill shipped for Grill me first.
   await expect(picker.locator('optgroup[label="Session actions"] option'))
-    .toHaveText(["Pull Request", "Retro", "Tidy the workspace"]);
+    .toHaveText(["Grill", "Pull Request", "Retro", "Tidy the workspace"]);
   await picker.selectOption({ label: "Tidy the workspace" });
 
   // It lands as a singleton stage that names itself and says what happens after it.

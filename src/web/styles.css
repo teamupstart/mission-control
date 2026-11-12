@@ -11101,6 +11101,79 @@ span.task-outcome:hover {
 .dispatch-crew-hint {
   font-size: 11.5px;
 }
+/* Settings -> Tasks: one section per task kind, laid out as a grid of cards, each a short
+   list of that kind's settings with the name in a fixed column and its control beside it. */
+.task-kind-sections {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+.task-kind-settings {
+  display: grid;
+  gap: 10px;
+}
+.task-kind-setting {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.task-kind-setting-name {
+  font-size: 12px;
+  color: var(--muted);
+}
+.task-kind-setting-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.task-kind-setting .settings-hint {
+  margin: 0;
+}
+
+/* InfoTip: the "i" whose tooltip explains the control beside it. */
+button.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 15px;
+  min-width: 0;
+  height: 15px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: help;
+}
+button.info-tip:hover,
+button.info-tip:focus-visible {
+  color: var(--fg);
+}
+
+/* Grill me first on the dispatch form: one checkbox and its "i", under the crew row it belongs
+   to because it changes how the session starts. */
+.dispatch-grill-first {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+}
+.dispatch-grill-first-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
 /* Which advisor this launch gets. Read-only - the advisor is chosen on Settings ->
    Harnesses - so it is a sentence under the crew row rather than a fifth select in it. */
 .dispatch-advisor-line {

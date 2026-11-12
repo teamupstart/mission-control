@@ -8,6 +8,7 @@ import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
+  GRILL_FIRST_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
   RESIDENT_TASK_REFUSAL,
@@ -19,7 +20,7 @@ import {
   taskKindPersonaRefusal,
 } from "./task.ts";
 import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
-import type { HarnessLaunchedTaskKind } from "./task.ts";
+import type { GrillFirstTaskKind, HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -1242,6 +1243,12 @@ export const DispatchSchema = z
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
+    /**
+     * Grill me first. Omitted follows the kind's default (`SkillsConfig.grillFirstKinds`);
+     * either way the answer is pinned on the task at creation. Ignored for a kind that does
+     * not offer it (`GRILL_FIRST_TASK_KINDS`).
+     */
+    grillFirst: z.boolean().optional(),
     backlog: z.boolean().optional().default(false),
     /**
      * Whether Foreman's backlog autopilot may schedule this task. Defaults on for every
@@ -1570,7 +1577,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
  * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `personaId`, `workflowId`,
- * `dependencies` and `enabled` are PROVISIONING fields -
+ * `grillFirst`, `dependencies` and `enabled` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
  * command line and the Persona into its standing instructions, while dependencies and enabled decide whether a launch is allowed - so a
@@ -1632,6 +1639,8 @@ const UpdateTaskFieldsSchema = z
     personaId: TaskPersonaIdSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
+    /** Grill me first. Provisioning intent, like `workflowId`. */
+    grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
   });
@@ -1657,6 +1666,9 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   advisorModel: true,
   // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
   personaId: true,
+  // Grill me first is the human's choice at dispatch; a task an agent files takes the
+  // Settings default, so MCP neither advertises nor sets it.
+  grillFirst: true,
 }).strict();
 
 /** A separate route prevents older daemons from silently dropping task overrides. */
@@ -2613,6 +2625,15 @@ export const SkillsConfigSchema = z.object({
   /** Pinned by new managed plans; rendered previews are retained regardless. */
   commitPlanHtml: z.boolean().default(false),
   planStorage: z.enum(["repository", "local"]).default("repository"),
+  /**
+   * Grill me first: the kinds whose new tasks start with it on, from Settings -> Tasks. Empty,
+   * so every kind starts off. Pinned on each task at creation and overridable per dispatch.
+   * On, the session runs the Grill session action before its work; off, the task is exactly
+   * the task it always was. Bounded by the kinds that offer it: each appears at most once.
+   */
+  grillFirstKinds: z.array(z.enum(GRILL_FIRST_TASK_KINDS as unknown as [GrillFirstTaskKind, ...GrillFirstTaskKind[]]))
+    .max(GRILL_FIRST_TASK_KINDS.length)
+    .default([]),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
@@ -2649,7 +2670,7 @@ export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
 export const SkillsConfigPatchSchema = partialPatch(
-  SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, alwaysDraftPr: true }),
+  SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, grillFirstKinds: true, alwaysDraftPr: true }),
 )
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;

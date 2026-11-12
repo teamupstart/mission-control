@@ -57,6 +57,8 @@ import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency
 import {
   taskHasRepository,
   dispatchHasNoProvisionedResources,
+  isGrillFirstTaskKind,
+  taskGrillsFirst,
   RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
   taskKindAllowsBacklog,
@@ -140,6 +142,7 @@ import {
 } from "./mission-mcp.ts";
 import { isPlanTask } from "./plans/prompt.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
+import { grillAction, grillFirstDispatchBlock, grillFirstForSession } from "./grill-first.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
@@ -151,6 +154,7 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { getSkillsConfig } from "./skills/config.ts";
 import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
 import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
@@ -259,6 +263,11 @@ export interface CreateTaskInput {
    * the machine default; null explicitly means none.
    */
   workflowId?: string | null;
+  /**
+   * Grill me first. Omitted follows the kind's default (`SkillsConfig.grillFirstKinds`),
+   * resolved once in `prepareCreationPolicy`; ignored for a kind that does not offer it.
+   */
+  grillFirst?: boolean;
   /** Prerequisites selected from current backlog tasks or live sessions. */
   dependencies?: TaskDependencyInput[];
   planInputs?: TaskPlanInput[];
@@ -288,10 +297,30 @@ export interface CreateTaskInput {
   backlog: boolean;
 }
 
+/**
+ * THE rule for a task's Grill me first pin, which creation and every edit ask, so the column
+ * holds what its schema says: 0 on every kind that does not offer it. On a kind that does, it
+ * is the choice the caller named; otherwise a task that already offered it keeps its pin, and
+ * a task arriving at such a kind (a new one, or one switched from a kind without it) takes
+ * that kind's default from Settings -> Tasks then.
+ */
+export function resolveGrillFirstPin(
+  kind: TaskKind,
+  explicit: boolean | undefined,
+  previous?: Pick<Task, "kind" | "grillFirst">,
+): boolean {
+  if (!isGrillFirstTaskKind(kind)) return false;
+  if (explicit !== undefined) return explicit;
+  if (isGrillFirstTaskKind(previous?.kind)) return previous?.grillFirst ?? false;
+  return getSkillsConfig().grillFirstKinds.includes(kind);
+}
+
 /** Daemon-resolved creation decisions, never accepted from a request body. */
 export interface TaskCreationPolicy {
   planPolicy: ManagedPlanPolicy | null;
   workflowId: string | null;
+  /** The task's Grill me first pin; false for a kind that does not offer it. */
+  grillFirst: boolean;
 }
 
 export interface CreateRetroFollowupInput {
@@ -2972,10 +3001,15 @@ export class TaskManager {
   }
 
   /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
-  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId" | "planStorage">): TaskCreationPolicy {
+  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId" | "planStorage" | "grillFirst">): TaskCreationPolicy {
     if (input.planStorage !== undefined && input.kind !== "plan") throw new PlanStoreError("Plan storage is only available for plan tasks");
     const planPolicy = input.kind === "plan" ? newPlanPolicy(input.planStorage) : null;
-    return { planPolicy, workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage) };
+    return {
+      planPolicy,
+      workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage),
+      // Pinned like the plan policy, so a default changed later never rewrites a filed task.
+      grillFirst: resolveGrillFirstPin(input.kind, input.grillFirst),
+    };
   }
 
   /**
@@ -3128,7 +3162,7 @@ export class TaskManager {
       }
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
-    const { planPolicy, workflowId } = creationPolicy ?? this.prepareCreationPolicy(input);
+    const { planPolicy, workflowId, grillFirst } = creationPolicy ?? this.prepareCreationPolicy(input);
     const planInputs = input.planInputs ?? [];
     validatePlanInputs(planInputs, [input.repoRoot, ...(input.extraRepoRoots ?? [])]);
     for (const edge of input.dependencies ?? []) {
@@ -3166,6 +3200,7 @@ export class TaskManager {
       labels: input.labels ?? [],
       dependencies,
       planInputs, planPolicy, planInputError: null, planPolicyError: null,
+      grillFirst,
       backlogRank,
       // Human and internal callers remain schedulable by default. A task source can make
       // the opposite choice explicit in its settings, so every item it files arrives on
@@ -3493,7 +3528,7 @@ export class TaskManager {
       // that is not redundancy: this is the answer the operator's click and the autopilot's
       // pass both read, and that one is the backstop for every door that does not come
       // through here. Null for every other kind, so nothing else changes.
-      const planBlock = planDispatchBlock(t);
+      const planBlock = planDispatchBlock(t) ?? grillFirstDispatchBlock(t);
       if (planBlock) return { ok: false, error: planBlock, task: t };
       // The same backstop shape for a Persona archived or deleted while the task waited: the
       // click reads the refusal here, and the Dispatcher refuses it again for every other door.
@@ -4158,9 +4193,11 @@ export class TaskManager {
     const missionToolsTask = {
       kind: patch.kind ?? t.kind,
       workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
+      grillFirst: resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t),
     };
     if (
-      (patch.agent !== undefined || patch.kind !== undefined || patch.workflowId !== undefined) &&
+      (patch.agent !== undefined || patch.kind !== undefined || patch.workflowId !== undefined
+        || patch.grillFirst !== undefined) &&
       kindMissionMcpRequirement(
         missionToolsTask,
         null,
@@ -4214,6 +4251,7 @@ export class TaskManager {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return { ok: false, error: error.message };
       throw error;
     }
+    const grillFirst = resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t);
     const next: Task = {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
@@ -4234,6 +4272,9 @@ export class TaskManager {
       dependencies,
       ...(patch.planInputs === undefined ? {} : { planInputs: patch.planInputs, planInputError: null }),
       ...(planPolicy === t.planPolicy ? {} : { planPolicy }),
+      // Written only when the pin moves, like the plan policy above: an edit that leaves it
+      // alone (a retriage, a retitle) must not add a key the task did not carry.
+      ...(grillFirst === (t.grillFirst ?? false) ? {} : { grillFirst }),
       // Guarded by the status check above, like the provisioning fields and unlike
       // priority/labels: it is a statement about scheduling, and there is nothing left
       // to schedule once the task has left the backlog.
@@ -4919,6 +4960,13 @@ export class TaskManager {
     if (planSkills && !planSkills.ok) {
       return { ok: false, error: planSkills.message, scope: "task" };
     }
+    // Grill me first's skill, against this session's watermark like the planning skills above.
+    const grillFirst = taskGrillsFirst(t)
+      ? grillFirstForSession(s, grillAction((id) => this.registry.getSessionAction(id)))
+      : null;
+    if (grillFirst && !grillFirst.ok) {
+      return { ok: false, error: grillFirst.message, scope: "task" };
+    }
 
     // A reused agent starts the new task from origin's default branch with a cleared
     // context, not wherever the last one left it.
@@ -5077,6 +5125,7 @@ export class TaskManager {
           fallbackRoot: s.cwd,
           planDiscovery,
           planSkills: planSkills?.ok ? planSkills.commands : null,
+          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
           workflowEvidence,
         }),
         undefined,

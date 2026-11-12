@@ -434,6 +434,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   },
   ...HARNESS_CONTROLS,
   {
+    id: "grill-first-defaults",
+    label: "Grill me first per task kind",
+    description: "Which kinds of task start by interviewing you in rounds of decision forms.",
+    category: "tasks",
+    anchor: "tasks/kinds",
+    keywords: ["grill", "interview", "questions", "decisions", "before starting", "task kind", "per kind"],
+    kind: "jump",
+    backup: backupDomains("skills"),
+  },
+  {
     id: "worktree-policy",
     label: "Worktree policy",
     description: "Default and repository-specific native checkout capacity and setup argv.",

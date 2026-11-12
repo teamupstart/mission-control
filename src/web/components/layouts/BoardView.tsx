@@ -446,12 +446,19 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           // The drill-in rail folded to its strip: the same strip the Console's rail folds to,
           // counting only this column, since this column is all the rail lists. Kept as the
           // `is-rail` section so the morph and the reader's width rules still see a rail.
+          //
+          // One key whatever the tone, so it stays one strip as the open session moves between
+          // columns: when that session starts waiting the rail follows it into Needs you, and a
+          // strip remounted there would take the new count as its baseline and never pulse.
+          // `asking` is the fleet's Needs you count for the same reason - this column's count
+          // is not news just because focus moved into it.
           if (isRail && railFolded) {
             return (
-              <section key={g.tone} className={`board-col tone-${g.tone} is-rail is-folded`}>
+              <section key="folded-session-rail" className={`board-col tone-${g.tone} is-rail is-folded`}>
                 <FoldedSessionRail
                   label={g.label}
                   groups={[{ tone: g.tone, label: g.label, count }]}
+                  asking={groups.find((x) => x.tone === "attention")?.sessions.length ?? 0}
                   onUnfold={() => setRailFolded(false)}
                 />
               </section>

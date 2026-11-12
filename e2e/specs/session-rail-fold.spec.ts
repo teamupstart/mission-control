@@ -327,3 +327,54 @@ test("both Board drill-in rails fold to the strip and give the reader the width"
   await page.locator(".board-col.tone-idle .tile-name").click();
   await expect(page.locator(".board-col.is-rail .rail-row")).toHaveCount(1);
 });
+
+test("a folded Board rail pulses when the open session starts waiting, and not when focus just moves", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  // Two sessions: one that will ask while it is open, and one that is already waiting.
+  const opener = await dispatchIdleAgent(page, daemon, "Ask while open on the Board");
+  const waiting = await dispatchIdleAgent(page, daemon, "Already waiting on the Board");
+  await askForInput(daemon, waiting.cwd!);
+  await useUi(page, daemon, { layout: "board", sessionRailFolded: true, boardSidebarAllSessions: false });
+
+  // Open the idle one: its column is the rail, folded to a strip counting only idle.
+  await page.locator(".board-col.tone-idle .tile-name").click();
+  await expect(page.getByRole("button", { name: "Unfold idle: 1 idle" })).toBeVisible();
+
+  // Focus moves into Needs you with no new arrival - the arrow walks to the waiting session.
+  // Its count is not news, so the strip it lands on must not pulse.
+  await page.keyboard.press("ArrowLeft");
+  const calm = page.getByRole("button", { name: "Unfold needs you: 1 needs you" });
+  await expect(calm).toBeVisible();
+  await expect(calm.locator(".session-rail-strip-n.tone-attention")).toHaveText("1");
+  await expect(calm.locator(".session-rail-strip-n.tone-attention")).not.toHaveClass(/\bis-pulsing\b/);
+
+  // Back to the idle one, which then asks a question itself. The rail follows it into Needs you,
+  // where the count rose from 1 to 2 - an arrival, so it pulses even though focus moved too.
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("button", { name: "Unfold idle: 1 idle" })).toBeVisible();
+  await askForInput(daemon, opener.cwd!);
+  const arrived = page.getByRole("button", { name: "Unfold needs you: 2 needs you" });
+  await expect(arrived).toBeVisible();
+  await expect(arrived.locator(".session-rail-strip-n.tone-attention")).toHaveText("2");
+  await expect(arrived.locator(".session-rail-strip-n.tone-attention")).toHaveClass(/\bis-pulsing\b/);
+  await capture(page, "08-board-rail-follows-into-needs-you");
+});
+
+test("a folded Console keeps the single-column layout on a narrow window", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatchIdleAgent(page, daemon, "Read on a narrow window");
+  await useUi(page, daemon, { layout: "console", sessionRailFolded: true });
+  await page.setViewportSize({ width: 700, height: 720 });
+
+  // Below 760px the Console is one column with the rail hidden, folded or not. The fold's own
+  // 40px track must not survive into that layout and squeeze the detail into it.
+  const rail = page.getByRole("navigation", { name: "Sessions", exact: true });
+  const detail = page.locator(".console-detail");
+  await expect(rail).toBeHidden();
+  await expect.poll(() => widthOf(detail)).toBeGreaterThan(600);
+  await capture(page, "09-console-narrow-folded");
+});

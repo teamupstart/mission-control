@@ -33422,7 +33422,10 @@ span.line-run-prov {
 /* Below this the console's rail and the board's columns stop being a layout and start
    being a squeeze. Both collapse to one column rather than pretending. */
 @media (max-width: 760px) {
-  .console {
+  /* The folded Console too: its 40px strip track is more specific than `.console` and would
+     otherwise survive here, leaving the detail in a 40px column beside a hidden rail. */
+  .console,
+  .console[data-rail="folded"] {
     grid-template-columns: 1fr;
   }
   .console-rail {

@@ -7,6 +7,7 @@ import type {
   WorktreeOperationView,
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
+import { trailingRead } from "./lib/trailing-read.ts";
 import {
   cancelWorktreeOperation,
   dismissWorktreeOperation,
@@ -86,8 +87,7 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     setInventoryState(next);
   }, []);
 
-  const refresh = useCallback(async (): Promise<void> => {
-    if (!enabled) return;
+  const read = useCallback(async (): Promise<void> => {
     const seq = ++readSeq.current;
     const controller = new AbortController();
     setLoading(true);
@@ -112,7 +112,13 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     setInventory(next);
     setError(null);
     setSubmitted((current) => current.filter((entry) => entry.readSeq >= seq));
-  }, [enabled, setInventory]);
+  }, [setInventory]);
+
+  // A running Warm invalidates about once a second, so a read slower than that must still land.
+  const serialRead = useMemo(() => trailingRead(read), [read]);
+  const refresh = useCallback(async (): Promise<void> => {
+    if (enabled) await serialRead();
+  }, [enabled, serialRead]);
 
   useEffect(() => {
     if (!enabled) return;

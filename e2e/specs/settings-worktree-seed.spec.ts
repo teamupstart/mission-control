@@ -25,7 +25,9 @@ async function openEditor(page: Page, daemon: DaemonHandle): Promise<Locator> {
   const pool = page.locator(".wt-pool", { hasText: "demo-repo" });
   const disclosure = pool.getByRole("button", { name: /demo-repo/ });
   if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-  return pool.getByRole("group", { name: "Dependency claim, run on every task lease" });
+  const toggle = pool.getByRole("button", { name: "Dependency claim, run on every task lease", exact: true });
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+  return pool.getByRole("group", { name: "Dependency claim, run on every task lease", exact: true });
 }
 
 interface StoredClaim {

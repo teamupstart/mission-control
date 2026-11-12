@@ -99,6 +99,13 @@ async function openPool(page: Page, daemon: DaemonHandle): Promise<Locator> {
   return pool;
 }
 
+/** The claim editor starts folded; unfold it and hand back the group. */
+async function openClaim(pool: Locator): Promise<Locator> {
+  const toggle = pool.getByRole("button", { name: "Dependency claim, run on every task lease", exact: true });
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+  return pool.getByRole("group", { name: "Dependency claim, run on every task lease", exact: true });
+}
+
 /** The ordinal of the one slot whose dependencies are installing right now. */
 async function installingOrdinal(pool: Locator): Promise<number> {
   const region = pool.getByRole("region", { name: /^Slot \d+ dependencies$/ }).filter({ hasText: "installing" });
@@ -130,7 +137,7 @@ test("the claim editor saves through the settings route and every slot shows its
     const beforeRedaction = await acquire("failed under an earlier build");
 
     const pool = await openPool(dashboard, daemon);
-    const editor = pool.getByRole("group", { name: "Dependency claim, run on every task lease" });
+    const editor = await openClaim(pool);
     await expect(editor.getByText("No claim is configured. Add a step to set one up.")).toBeVisible();
 
     // A draft the route refuses: the refusal lands beside each field it names.
@@ -309,7 +316,7 @@ test("a refused field's error follows its step when an earlier step is removed",
   });
   expect(created.status()).toBe(201);
   const pool = await openPool(dashboard, daemon);
-  const editor = pool.getByRole("group", { name: "Dependency claim, run on every task lease" });
+  const editor = await openClaim(pool);
 
   // Two steps, the second naming a variable the schema refuses.
   await editor.getByRole("button", { name: "Add step" }).click();

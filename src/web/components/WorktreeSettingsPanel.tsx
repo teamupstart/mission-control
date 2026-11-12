@@ -700,6 +700,7 @@ function ClaimEditor({
   const [errors, setErrors] = useState<ClaimDraftErrors>(emptyClaimErrors);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   // A save, someone else's save, or a restore replaces the draft with what is now stored.
   useEffect(() => {
     setDraft(draftFromClaim(repo.policy.claim));
@@ -741,157 +742,180 @@ function ClaimEditor({
       return;
     }
     setErrors(claimErrorsFrom(result.error, draft));
+    // The section can be folded while a save is in flight; a refusal must never land hidden.
+    setOpen(true);
   }
 
   const invalid = hasClaimErrors(errors);
   return (
-    <fieldset className="wt-argv wt-claim" aria-describedby={invalid ? `${base}-general` : undefined}>
-      <legend>Dependency claim, run on every task lease</legend>
-      <p className="wt-claim-note">
-        Each step is an argv, never a shell. A step receives only the variables it names, from the
-        daemon&rsquo;s environment or the login shell. Mission Control stores names, never values.
-      </p>
-      {draft.steps.length === 0 && (
-        <p className="wt-claim-note">{repo.policy.claim ? "Every step was removed from this draft." : "No claim is configured. Add a step to set one up."}</p>
-      )}
-      {draft.steps.map((step, index) => {
-        const number = index + 1;
-        return (
-          <fieldset className="wt-claim-step" key={index}>
-            <legend>Step {number}</legend>
-            <label htmlFor={`${base}-argv-${index}`}>Step {number} command, one argument per line</label>
-            <textarea
-              id={`${base}-argv-${index}`}
-              rows={Math.min(6, Math.max(2, draftLines(step.argv).length + 1))}
-              spellCheck={false}
-              value={step.argv}
-              aria-invalid={errors.argv[index] ? true : undefined}
-              aria-describedby={errors.argv[index] ? `${base}-argv-${index}-errors` : undefined}
-              onChange={(event) => changeStep(index, { argv: event.target.value })}
-            />
-            <FieldErrors id={`${base}-argv-${index}-errors`} messages={errors.argv[index]} />
-            <label htmlFor={`${base}-env-${index}`}>Step {number} variable names</label>
-            <input
-              id={`${base}-env-${index}`}
-              spellCheck={false}
-              placeholder="ARTIFACTORY_AUTH_TOKEN"
-              value={step.env}
-              aria-invalid={errors.env[index] ? true : undefined}
-              aria-describedby={errors.env[index] ? `${base}-env-${index}-errors` : undefined}
-              onChange={(event) => changeStep(index, { env: event.target.value })}
-            />
-            <FieldErrors id={`${base}-env-${index}-errors`} messages={errors.env[index]} />
-            <VariablePresence step={number} names={draftNames(step.env)} saved={presence} />
-            <Tooltip label={`Remove step ${number} from this draft`}>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => {
-                  setSaved(null);
-                  setDraft((current) => ({ ...current, steps: current.steps.filter((_, at) => at !== index) }));
-                  // The errors move with their steps, so a refusal stays on the field that caused it.
-                  setErrors((current) => withoutStepErrors(current, index));
-                }}
-              >
-                Remove step {number}
-              </button>
-            </Tooltip>
-          </fieldset>
-        );
-      })}
-      <FieldErrors id={`${base}-steps-errors`} messages={errors.steps} />
-      <div className="wt-claim-fields">
-        <label htmlFor={`${base}-timeout`}>Claim timeout in minutes, for every step together</label>
-        <input
-          id={`${base}-timeout`}
-          className="wt-number"
-          inputMode="numeric"
-          value={draft.timeoutMinutes}
-          aria-invalid={errors.timeoutMinutes.length > 0 ? true : undefined}
-          aria-describedby={errors.timeoutMinutes.length > 0 ? `${base}-timeout-errors` : undefined}
-          onChange={(event) => {
-            setSaved(null);
-            setDraft((current) => ({ ...current, timeoutMinutes: event.target.value }));
-          }}
-        />
-        <FieldErrors id={`${base}-timeout-errors`} messages={errors.timeoutMinutes} />
-        <label htmlFor={`${base}-fingerprint`}>Fingerprint paths, one repository-relative glob per line</label>
-        <textarea
-          id={`${base}-fingerprint`}
-          rows={Math.min(8, Math.max(2, draftLines(draft.fingerprintPaths).length + 1))}
-          spellCheck={false}
-          placeholder={"yarn.lock\npackage.json"}
-          value={draft.fingerprintPaths}
-          aria-invalid={errors.fingerprintPaths.length > 0 ? true : undefined}
-          aria-describedby={errors.fingerprintPaths.length > 0 ? `${base}-fingerprint-errors` : undefined}
-          onChange={(event) => {
-            setSaved(null);
-            setDraft((current) => ({ ...current, fingerprintPaths: event.target.value }));
-          }}
-        />
-        <FieldErrors id={`${base}-fingerprint-errors`} messages={errors.fingerprintPaths} />
-        <p className="wt-claim-note">With no fingerprint paths the claim runs on every lease.</p>
-        <label htmlFor={`${base}-seed-paths`}>Seed paths, one repository-relative glob per line</label>
-        <textarea
-          id={`${base}-seed-paths`}
-          rows={Math.min(8, Math.max(2, draftLines(draft.seedPaths).length + 1))}
-          spellCheck={false}
-          placeholder={"node_modules\napps/*/node_modules"}
-          value={draft.seedPaths}
-          aria-invalid={errors.seedPaths.length > 0 ? true : undefined}
-          aria-describedby={errors.seedPaths.length > 0 ? `${base}-seed-paths-errors` : undefined}
-          onChange={(event) => {
-            setSaved(null);
-            setDraft((current) => ({ ...current, seedPaths: event.target.value }));
-          }}
-        />
-        <FieldErrors id={`${base}-seed-paths-errors`} messages={errors.seedPaths} />
-        <label htmlFor={`${base}-seed-exclude`}>Seed exclusions, one repository-relative glob per line</label>
-        <textarea
-          id={`${base}-seed-exclude`}
-          rows={Math.min(6, Math.max(2, draftLines(draft.seedExclude).length + 1))}
-          spellCheck={false}
-          placeholder="**/node_modules/.cache"
-          value={draft.seedExclude}
-          aria-invalid={errors.seedExclude.length > 0 ? true : undefined}
-          aria-describedby={errors.seedExclude.length > 0 ? `${base}-seed-exclude-errors` : undefined}
-          onChange={(event) => {
-            setSaved(null);
-            setDraft((current) => ({ ...current, seedExclude: event.target.value }));
-          }}
-        />
-        <FieldErrors id={`${base}-seed-exclude-errors`} messages={errors.seedExclude} />
-        <p className="wt-claim-note">
-          A cold slot (new, never claimed, failed or interrupted) clones these ignored paths
-          copy-on-write from an idle sibling before its steps run. A slot whose last claim succeeded
-          seeds only when it is stale and a sibling matches its commit exactly. Where the disk
-          cannot clone, there is no seed. With no seed paths, a slot never seeds.
-        </p>
-      </div>
-      <FieldErrors id={`${base}-general`} messages={errors.general} />
-      {invalid && (
-        <p className="settings-error" role="alert">
-          {!hasClaimFieldErrors(errors)
-            ? "The claim was not saved."
-            : "The claim was not saved. Fix the fields marked above."}
-        </p>
-      )}
-      {saved && <p className="wt-claim-saved" role="status">{saved}</p>}
-      <div className="wt-argv-actions">
-        <Tooltip label="Add one dependency step after the others">
-          <button type="button" className="btn btn-ghost" onClick={() => {
-            setSaved(null);
-            setDraft((current) => ({ ...current, steps: [...current.steps, { argv: "", env: "" }] }));
-          }}>Add step</button>
-        </Tooltip>
-        <Tooltip label="Save this whole claim for future task leases in this pool">
-          <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => void save(claimFromDraft(draft))}>
-            {saving ? "Saving…" : "Save claim"}
+    <fieldset
+      className="wt-argv wt-claim"
+      // Named by the toggle alone: the legend also holds the Tooltip's description.
+      aria-labelledby={`${base}-toggle`}
+      aria-describedby={invalid ? `${base}-general` : undefined}
+    >
+      <legend>
+        <Tooltip label={open ? "Hide this pool's dependency claim" : "Show this pool's dependency claim"}>
+          <button
+            id={`${base}-toggle`}
+            type="button"
+            className="wt-claim-toggle"
+            aria-expanded={open}
+            aria-controls={`${base}-body`}
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span className="wt-caret" aria-hidden>{open ? "▾" : "▸"}</span>
+            Dependency claim, run on every task lease
           </button>
         </Tooltip>
-        <Tooltip label="Remove this pool's claim; future leases run no dependency steps">
-          <button type="button" className="btn btn-ghost" disabled={saving || !repo.policy.claim} onClick={() => void save(null)}>Remove claim</button>
-        </Tooltip>
+      </legend>
+      <div id={`${base}-body`} hidden={!open}>
+        <p className="wt-claim-note">
+          Each step is an argv, never a shell. A step receives only the variables it names, from the
+          daemon&rsquo;s environment or the login shell. Mission Control stores names, never values.
+        </p>
+        {draft.steps.length === 0 && (
+          <p className="wt-claim-note">{repo.policy.claim ? "Every step was removed from this draft." : "No claim is configured. Add a step to set one up."}</p>
+        )}
+        {draft.steps.map((step, index) => {
+          const number = index + 1;
+          return (
+            <fieldset className="wt-claim-step" key={index}>
+              <legend>Step {number}</legend>
+              <label htmlFor={`${base}-argv-${index}`}>Step {number} command, one argument per line</label>
+              <textarea
+                id={`${base}-argv-${index}`}
+                rows={Math.min(6, Math.max(2, draftLines(step.argv).length + 1))}
+                spellCheck={false}
+                value={step.argv}
+                aria-invalid={errors.argv[index] ? true : undefined}
+                aria-describedby={errors.argv[index] ? `${base}-argv-${index}-errors` : undefined}
+                onChange={(event) => changeStep(index, { argv: event.target.value })}
+              />
+              <FieldErrors id={`${base}-argv-${index}-errors`} messages={errors.argv[index]} />
+              <label htmlFor={`${base}-env-${index}`}>Step {number} variable names</label>
+              <input
+                id={`${base}-env-${index}`}
+                spellCheck={false}
+                placeholder="ARTIFACTORY_AUTH_TOKEN"
+                value={step.env}
+                aria-invalid={errors.env[index] ? true : undefined}
+                aria-describedby={errors.env[index] ? `${base}-env-${index}-errors` : undefined}
+                onChange={(event) => changeStep(index, { env: event.target.value })}
+              />
+              <FieldErrors id={`${base}-env-${index}-errors`} messages={errors.env[index]} />
+              <VariablePresence step={number} names={draftNames(step.env)} saved={presence} />
+              <Tooltip label={`Remove step ${number} from this draft`}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setSaved(null);
+                    setDraft((current) => ({ ...current, steps: current.steps.filter((_, at) => at !== index) }));
+                    // The errors move with their steps, so a refusal stays on the field that caused it.
+                    setErrors((current) => withoutStepErrors(current, index));
+                  }}
+                >
+                  Remove step {number}
+                </button>
+              </Tooltip>
+            </fieldset>
+          );
+        })}
+        <FieldErrors id={`${base}-steps-errors`} messages={errors.steps} />
+        <div className="wt-claim-fields">
+          <label htmlFor={`${base}-timeout`}>Claim timeout in minutes, for every step together</label>
+          <input
+            id={`${base}-timeout`}
+            className="wt-number"
+            inputMode="numeric"
+            value={draft.timeoutMinutes}
+            aria-invalid={errors.timeoutMinutes.length > 0 ? true : undefined}
+            aria-describedby={errors.timeoutMinutes.length > 0 ? `${base}-timeout-errors` : undefined}
+            onChange={(event) => {
+              setSaved(null);
+              setDraft((current) => ({ ...current, timeoutMinutes: event.target.value }));
+            }}
+          />
+          <FieldErrors id={`${base}-timeout-errors`} messages={errors.timeoutMinutes} />
+          <label htmlFor={`${base}-fingerprint`}>Fingerprint paths, one repository-relative glob per line</label>
+          <textarea
+            id={`${base}-fingerprint`}
+            rows={Math.min(8, Math.max(2, draftLines(draft.fingerprintPaths).length + 1))}
+            spellCheck={false}
+            placeholder={"yarn.lock\npackage.json"}
+            value={draft.fingerprintPaths}
+            aria-invalid={errors.fingerprintPaths.length > 0 ? true : undefined}
+            aria-describedby={errors.fingerprintPaths.length > 0 ? `${base}-fingerprint-errors` : undefined}
+            onChange={(event) => {
+              setSaved(null);
+              setDraft((current) => ({ ...current, fingerprintPaths: event.target.value }));
+            }}
+          />
+          <FieldErrors id={`${base}-fingerprint-errors`} messages={errors.fingerprintPaths} />
+          <p className="wt-claim-note">With no fingerprint paths the claim runs on every lease.</p>
+          <label htmlFor={`${base}-seed-paths`}>Seed paths, one repository-relative glob per line</label>
+          <textarea
+            id={`${base}-seed-paths`}
+            rows={Math.min(8, Math.max(2, draftLines(draft.seedPaths).length + 1))}
+            spellCheck={false}
+            placeholder={"node_modules\napps/*/node_modules"}
+            value={draft.seedPaths}
+            aria-invalid={errors.seedPaths.length > 0 ? true : undefined}
+            aria-describedby={errors.seedPaths.length > 0 ? `${base}-seed-paths-errors` : undefined}
+            onChange={(event) => {
+              setSaved(null);
+              setDraft((current) => ({ ...current, seedPaths: event.target.value }));
+            }}
+          />
+          <FieldErrors id={`${base}-seed-paths-errors`} messages={errors.seedPaths} />
+          <label htmlFor={`${base}-seed-exclude`}>Seed exclusions, one repository-relative glob per line</label>
+          <textarea
+            id={`${base}-seed-exclude`}
+            rows={Math.min(6, Math.max(2, draftLines(draft.seedExclude).length + 1))}
+            spellCheck={false}
+            placeholder="**/node_modules/.cache"
+            value={draft.seedExclude}
+            aria-invalid={errors.seedExclude.length > 0 ? true : undefined}
+            aria-describedby={errors.seedExclude.length > 0 ? `${base}-seed-exclude-errors` : undefined}
+            onChange={(event) => {
+              setSaved(null);
+              setDraft((current) => ({ ...current, seedExclude: event.target.value }));
+            }}
+          />
+          <FieldErrors id={`${base}-seed-exclude-errors`} messages={errors.seedExclude} />
+          <p className="wt-claim-note">
+            A cold slot (new, never claimed, failed or interrupted) clones these ignored paths
+            copy-on-write from an idle sibling before its steps run. A slot whose last claim succeeded
+            seeds only when it is stale and a sibling matches its commit exactly. Where the disk
+            cannot clone, there is no seed. With no seed paths, a slot never seeds.
+          </p>
+        </div>
+        <FieldErrors id={`${base}-general`} messages={errors.general} />
+        {invalid && (
+          <p className="settings-error" role="alert">
+            {!hasClaimFieldErrors(errors)
+              ? "The claim was not saved."
+              : "The claim was not saved. Fix the fields marked above."}
+          </p>
+        )}
+        {saved && <p className="wt-claim-saved" role="status">{saved}</p>}
+        <div className="wt-argv-actions">
+          <Tooltip label="Add one dependency step after the others">
+            <button type="button" className="btn btn-ghost" onClick={() => {
+              setSaved(null);
+              setDraft((current) => ({ ...current, steps: [...current.steps, { argv: "", env: "" }] }));
+            }}>Add step</button>
+          </Tooltip>
+          <Tooltip label="Save this whole claim for future task leases in this pool">
+            <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => void save(claimFromDraft(draft))}>
+              {saving ? "Saving…" : "Save claim"}
+            </button>
+          </Tooltip>
+          <Tooltip label="Remove this pool's claim; future leases run no dependency steps">
+            <button type="button" className="btn btn-ghost" disabled={saving || !repo.policy.claim} onClick={() => void save(null)}>Remove claim</button>
+          </Tooltip>
+        </div>
       </div>
     </fieldset>
   );

@@ -499,7 +499,11 @@ test("a pool with a claim shows its editor, each name's presence, and every slot
     ],
   };
   const html = render({ inventory: { ...inventory, repositories: [claimPool] } });
-  assert.match(html, /Dependency claim, run on every task lease/);
+  // The claim starts folded and named by its toggle alone; its fields stay in the document.
+  assert.match(
+    html,
+    /<fieldset class="wt-argv wt-claim" aria-labelledby="(wt-claim-[^"]+)-toggle"><legend><button id="\1-toggle" type="button" class="wt-claim-toggle" aria-expanded="false" aria-controls="\1-body"[^>]*><span class="wt-caret" aria-hidden="true">▸<\/span>Dependency claim, run on every task lease<\/button>[\s\S]*?<\/legend><div id="\1-body" hidden="">/,
+  );
   assert.match(html, /Step 1 command, one argument per line/);
   assert.match(html, />pnpm\ninstall\n--frozen-lockfile<\/textarea>/);
   assert.match(html, /value="ARTIFACTORY_AUTH_TOKEN NPM_TOKEN"/);

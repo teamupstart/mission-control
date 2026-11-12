@@ -1063,6 +1063,26 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-argv-row input { min-width: 0; width: 100%; }
 
 /* The dependency claim editor reuses the argv frame. Its steps nest one frame deeper. */
+.wt-claim-toggle {
+  align-items: baseline;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 6px;
+  padding: 0;
+}
+
+.wt-claim-toggle:hover { color: var(--fg); }
+
+.wt-claim-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
 .wt-claim-note {
   color: var(--muted);
   font-size: 11px;

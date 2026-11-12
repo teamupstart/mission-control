@@ -23730,6 +23730,12 @@ button.wf-carried.is-link:focus-visible {
   margin: 0;
   white-space: nowrap;
 }
+/* What a blank Repository resolves to, under the field. Wraps: a resolver error names the
+   checkout and its remotes. */
+.ts-repo-hint {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .ts-defaults {
   margin-top: 14px;
 }

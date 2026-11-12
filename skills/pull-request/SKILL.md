@@ -10,7 +10,7 @@ metadata:
 # Pull Request
 
 Use this skill whenever this Mission Control session prepares, opens, or reports a pull
-request, including when you write the description before running `gh pr create`. Treat
+request, including when you write the description before opening it. Treat
 the pull request as the handoff to a reviewer, not as a log of commands you ran.
 
 ## Shared PR creation setting
@@ -22,8 +22,8 @@ phases. Do not keep a second setting in this skill, a repository, or a workflow 
 Read it again for each repository and each later turn. If the tool is unavailable or returns
 an error, stop before creating the PR and report the blocker; do not assume the setting is off.
 
-- When `alwaysDraftPr` is `true`, create every new PR with `gh pr create --draft` or the
-  equivalent API draft flag. Verify the created PR's `isDraft` value before reporting it.
+- When `alwaysDraftPr` is `true`, create every new PR as a draft by adding `-F draft=true` to
+  the REST create command below. Verify the created PR's `isDraft` value before reporting it.
   Only the human may promote it to ready for review. Never run `gh pr ready` or an equivalent
   API, including during CI repairs or to satisfy a workflow gate. If CI does not run on drafts,
   report that blocker and leave promotion to the human.
@@ -34,6 +34,28 @@ an error, stop before creating the PR and report the blocker; do not assume the 
 
 This preference controls creation status; it does not authorize creating, promoting, or merging
 a PR beyond the task's existing authorization.
+
+## Opening the pull request
+
+Open it through GitHub's REST API, on the repository your checkout's `origin` names, never with
+gh's own pull request creation subcommand. That subcommand always looks up the repository's
+parent, so on a fork of an organization that enforces SAML SSO it fails for a login not authorized
+there, with or without `--repo`. Run this from the repository's worktree, after pushing the branch,
+with `<base>`, `<title>` and `<body-file>` filled in:
+
+```sh
+repo=$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##') && gh api "repos/$repo/pulls" -f head="$(git branch --show-current)" -f base=<base> -f title="<title>" -F body=@<body-file> --jq .html_url
+```
+
+`<base>` is the base your task's instructions name, such as a stacked pull request's parent
+branch, and otherwise the repository's default branch, which
+`gh api "repos/$repo" --jq .default_branch` prints. Unlike gh's own creation subcommand, this
+command has no default: name it, and check it for each repository a task attached, since each keeps
+its own.
+
+Keep `--jq .html_url`: Mission Control adopts the pull request for review from that command and
+the one URL it prints. For anything else about an existing pull request, pass its URL rather
+than a number (`gh pr view <url>`, `gh pr checks <url>`), which never needs the parent either.
 
 ## One pull request per repository you changed
 
@@ -102,8 +124,8 @@ screenshot cannot be safely redacted while preserving its value as proof, do not
 report the evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image
 attachments, so when that version or a later one is installed, use the native `--attach` flag
 instead of browser automation. Use
-`gh pr create --attach` or `gh pr edit --attach` to place screenshots in the pull request
-description, or `gh pr comment --attach` to place them in a comment; include useful alt text
+`gh pr edit <url> --attach` to place screenshots in the pull request description, or
+`gh pr comment <url> --attach` to place them in a comment; include useful alt text
 for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the
 published description or comment renders the attachments before treating the evidence handoff
 as complete. When a check or screenshot is unavailable, say so and explain why rather than

@@ -17,6 +17,7 @@ import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shippi
 import type { InspectorComment } from "@shared/types.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { CHECK_CONTEXTS, rollUpChecks } from "../github/check-rollup.ts";
+import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "@shared/github-sso.mjs";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -79,8 +80,15 @@ export function wasRefused(res: GhResult<unknown>): boolean {
   return !res.ok && res.outcomeUnknown === false && !res.tooLarge;
 }
 
-function fail<T>(what: string, res: RunResult): GhResult<T> {
-  const detail = (res.stderr || res.stdout || "").trim().slice(0, 300);
+/**
+ * `target` is the `owner/repo` the call addressed, named in an SSO refusal. No remedy is
+ * offered there: the PR URL chose the repository, so the only fix is authorizing the token.
+ */
+function fail<T>(what: string, res: RunResult, target?: string): GhResult<T> {
+  const refusal = classifyGitHubSsoRefusal(res.stderr);
+  const detail = refusal
+    ? ssoRefusalMessage({ target: target ?? "the pull request's repository", refusal })
+    : (res.stderr || res.stdout || "").trim().slice(0, 300);
   return {
     ok: false,
     error: `${what} failed (exit ${res.code}): ${detail}`,
@@ -224,60 +232,8 @@ export function parsePrUrl(
   };
 }
 
-export interface GitHubRepositoryIdentity {
-  owner: string;
-  repo: string;
-}
-
-/** Read a GitHub repository identity from one configured git remote URL. */
-export function parseGitHubRemoteUrl(url: string): GitHubRepositoryIdentity | null {
-  const value = url.trim();
-  const scp = /^(?:[^@\s]+@)?github\.com:([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(value);
-  if (scp) return { owner: scp[1]!, repo: scp[2]! };
-
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return null;
-  }
-  if (parsed.hostname.toLowerCase() !== "github.com") return null;
-  if (!["git:", "http:", "https:", "ssh:"].includes(parsed.protocol)) return null;
-  const parts = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/");
-  if (parts.length !== 2) return null;
-  const owner = parts[0]!;
-  const repo = parts[1]!.replace(/\.git$/i, "");
-  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
-  return { owner, repo };
-}
-
-/**
- * The GitHub repositories this checkout's git config names.
- *
- * Every configured fetch remote is considered rather than assuming one named `origin`:
- * forks cloned with `--origin upstream` and checkouts with a separate fork remote are both
- * ordinary. An unreadable config, a repository with no remotes, and non-GitHub remotes all
- * answer with an empty set, which makes the adoption caller abstain.
- */
-export async function configuredGitHubRepositories(
-  repoRoot: string,
-): Promise<GitHubRepositoryIdentity[]> {
-  const result = await run("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
-    cwd: repoRoot,
-  });
-  if (result.outcomeUnknown || result.code !== 0) return [];
-
-  const repositories = new Map<string, GitHubRepositoryIdentity>();
-  for (const line of result.stdout.split("\n")) {
-    const separator = line.search(/\s/);
-    if (separator < 0) continue;
-    const identity = parseGitHubRemoteUrl(line.slice(separator).trim());
-    if (!identity) continue;
-    const key = `${identity.owner}/${identity.repo}`.toLowerCase();
-    repositories.set(key, identity);
-  }
-  return [...repositories.values()];
-}
+// Moved to the shared resolver module; re-exported so this file's importers keep working.
+export { parseGitHubRemoteUrl, type GitHubRepositoryIdentity } from "@shared/github-repository.mjs";
 
 export interface PrSnapshot {
   state: "OPEN" | "CLOSED" | "MERGED";
@@ -487,7 +443,7 @@ export async function fetchPr(
     ],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 },
   );
-  if (res.code !== 0 || res.overflowed) return fail("gh api graphql", res);
+  if (res.code !== 0 || res.overflowed) return fail("gh api graphql", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -664,7 +620,7 @@ export async function fetchPrRefs(
     ["api", "graphql", "-f", `query=${PR_REFS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api graphql (pull request refs)", res);
+  if (res.code !== 0) return fail("gh api graphql (pull request refs)", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -712,7 +668,7 @@ export async function isAncestor(
     ["api", `repos/${owner}/${repo}/compare/${ancestor}...${head}`, "--jq", ".status"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api (compare)", res);
+  if (res.code !== 0) return fail("gh api (compare)", res, `${owner}/${repo}`);
   const status = res.stdout.trim();
   if (status === "ahead" || status === "identical") return { ok: true, value: true };
   if (status === "behind" || status === "diverged") return { ok: true, value: false };
@@ -745,7 +701,7 @@ export async function compareCommits(
     ["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", '.status + " " + (.behind_by | tostring)'],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api (compare)", res);
+  if (res.code !== 0) return fail("gh api (compare)", res, `${owner}/${repo}`);
   const [status = "", count = ""] = res.stdout.trim().split(/\s+/);
   const behindBy = /^\d+$/.test(count) ? Number(count) : null;
   if (status === "ahead" || status === "identical") return { ok: true, value: { contains: true, behindBy: behindBy ?? 0 } };
@@ -770,7 +726,7 @@ export async function mergeBase(
     ["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", ".merge_base_commit.sha"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api (compare merge base)", res);
+  if (res.code !== 0) return fail("gh api (compare merge base)", res, `${owner}/${repo}`);
   const sha = res.stdout.trim();
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
     return { ok: false, error: `compare reported no merge base ("${sha.slice(0, 40)}")` };
@@ -795,7 +751,7 @@ export async function retargetPr(
     ["api", "--method", "PATCH", `repos/${owner}/${repo}/pulls/${number}`, "--input", "-"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: JSON.stringify({ base }) },
   );
-  if (res.code !== 0) return fail("gh api (retarget pull request)", res);
+  if (res.code !== 0) return fail("gh api (retarget pull request)", res, `${owner}/${repo}`);
   return { ok: true };
 }
 
@@ -929,7 +885,7 @@ export async function fetchReviewPage(
     ],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api graphql (reviews)", res);
+  if (res.code !== 0) return fail("gh api graphql (reviews)", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -966,7 +922,7 @@ export async function fetchThreadPage(
     ],
     { cwd: cwd ?? undefined, timeoutMs: Math.min(timeoutMs, GH_TIMEOUT_MS), maxBuffer: 8 * 1024 * 1024 },
   );
-  if (res.code !== 0 || res.overflowed) return fail("gh api graphql (review threads)", res);
+  if (res.code !== 0 || res.overflowed) return fail("gh api graphql (review threads)", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -989,7 +945,7 @@ export async function fetchIssueCommentPage(
     "api", "graphql", "-f", `query=${ISSUE_COMMENT_PAGE_QUERY}`, "-F", `owner=${owner}`,
     "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`,
   ], { cwd: cwd ?? undefined, timeoutMs: Math.min(timeoutMs, GH_TIMEOUT_MS), maxBuffer: 8 * 1024 * 1024 });
-  if (res.code !== 0 || res.overflowed) return fail("gh api graphql (issue comments)", res);
+  if (res.code !== 0 || res.overflowed) return fail("gh api graphql (issue comments)", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout);
     if (json.errors?.length) return { ok: false, error: "graphql: could not read issue comments" };
@@ -1321,7 +1277,7 @@ export async function fetchDiff(
       error: `the diff is larger than ${Math.round(MAX_DIFF_BUFFER_BYTES / 1024 / 1024)}MB, which is too large to review`,
     };
   }
-  if (res.code !== 0) return fail("gh api (diff)", res);
+  if (res.code !== 0) return fail("gh api (diff)", res, `${owner}/${repo}`);
   const full = res.stdout;
   // BYTES, not code units: `full.slice(0, maxBytes)` charged one unit for a character
   // costing three or four on the wire, so a diff of CJK, emoji or box-drawing content
@@ -1360,7 +1316,7 @@ export async function postReview(
     ["api", "--method", "POST", `repos/${owner}/${repo}/pulls/${number}/reviews`, "--input", "-"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: payload },
   );
-  if (res.code !== 0) return fail("gh api (create review)", res);
+  if (res.code !== 0) return fail("gh api (create review)", res, `${owner}/${repo}`);
   return { ok: true };
 }
 
@@ -1382,7 +1338,7 @@ export async function fetchHeadSha(
     ["api", `repos/${owner}/${repo}/pulls/${number}`, "--jq", ".head.sha"],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
-  if (res.code !== 0) return fail("gh api (head)", res);
+  if (res.code !== 0) return fail("gh api (head)", res, `${owner}/${repo}`);
   const sha = res.stdout.trim();
   return sha ? { ok: true, value: sha } : { ok: false, error: "gh api (head) returned no sha" };
 }
@@ -1413,7 +1369,7 @@ export async function replyToComment(
     ],
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: JSON.stringify({ body }) },
   );
-  if (res.code !== 0) return fail("gh api (reply)", res);
+  if (res.code !== 0) return fail("gh api (reply)", res, `${owner}/${repo}`);
   return { ok: true };
 }
 
@@ -1491,7 +1447,7 @@ export async function mergePr(
       input: JSON.stringify({ sha, merge_method: method }),
     },
   );
-  if (res.code !== 0) return fail("gh api (merge)", res);
+  if (res.code !== 0) return fail("gh api (merge)", res, `${owner}/${repo}`);
   return { ok: true };
 }
 

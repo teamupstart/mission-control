@@ -116,6 +116,7 @@ import {
 } from "../src/shared/install-receipt-schema.mjs";
 import { readReceipt, receiptPath } from "../src/shared/install-receipt.mjs";
 import { isCommitSha, sourceCommitProblem } from "../src/shared/update-source.mjs";
+import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "../src/shared/github-sso.mjs";
 import {
   archPrerequisiteMessage,
   ghPrerequisiteMessage,
@@ -449,6 +450,18 @@ export function resolveInstallRepo({ originSlug, originHost, fromOrigin = false 
 export function newestStableRelease({ repo = CANONICAL_REPO, run }) {
   const result = run(GH_BIN, GH_ARGS.releaseList(repo));
   if (result.status !== 0) {
+    // The full stderr, before the first-line cut below drops gh's authorize link.
+    const refusal = classifyGitHubSsoRefusal(String(result.stderr ?? ""));
+    if (refusal) {
+      return {
+        tag: null,
+        problem: ssoRefusalMessage({
+          target: repo,
+          refusal,
+          remedy: `Updates come from ${repo}; authorize to check for them.`,
+        }),
+      };
+    }
     const detail = String(result.stderr || result.stdout || "").trim().split("\n")[0];
     return {
       tag: null,

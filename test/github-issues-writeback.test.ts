@@ -8,6 +8,7 @@ import {
   ghIssueCommentArgs,
   writebackCommentBody,
   writebackResultFrom,
+  type GhTarget,
 } from "../src/server/task-sources/github-issues.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 
@@ -25,6 +26,9 @@ import type { RunResult } from "../src/server/util/exec.ts";
 //      answers, and collapsing any pair of them is a real failure mode: a retried
 //      transition undoes a person, and six retries at an already-closed issue end in a
 //      reported failure about an issue that is closed.
+
+/** The repository each read run named: the one the item's own id carries. */
+const TARGET: GhTarget = { repo: "acme/demo", source: "item" };
 
 const cfg = (over: Partial<GithubIssuesConfig> = {}): GithubIssuesConfig => ({
   ...GithubIssuesConfigSchema.parse({}),
@@ -156,7 +160,7 @@ test("the close is addressed the same way the comment is", () => {
 // ---- reading one run ----
 
 test("a clean exit is a success carrying the caller's detail", () => {
-  const r = writebackResultFrom(res({ code: 0 }), "commented");
+  const r = writebackResultFrom(res({ code: 0 }), "commented", TARGET);
   assert.deepEqual(r, { error: null, outcomeUnknown: false, detail: "commented" });
 });
 
@@ -166,6 +170,7 @@ test("a non-zero exit is a retry-safe refusal that names the reason", () => {
   const r = writebackResultFrom(
     res({ code: 1, stderr: "GraphQL: Could not resolve to an Issue (addComment)" }),
     "commented",
+    TARGET,
   );
   assert.equal(r.outcomeUnknown, false);
   assert.equal(r.detail, null);
@@ -176,7 +181,7 @@ test("a non-zero exit is a retry-safe refusal that names the reason", () => {
 // may well have taken the request first, so this is the one answer that must never be
 // retried automatically - see `WritebackResult.outcomeUnknown`.
 test("a killed child is unknown, never a refusal", () => {
-  const r = writebackResultFrom(res({ code: null, outcomeUnknown: true }), "commented");
+  const r = writebackResultFrom(res({ code: null, outcomeUnknown: true }), "commented", TARGET);
   assert.equal(r.outcomeUnknown, true);
   assert.equal(r.detail, null);
   assert.match(r.error!, /may have landed/);
@@ -188,6 +193,7 @@ test("an already-closed issue reads as success, not as a refusal", () => {
   const r = writebackResultFrom(
     res({ code: 1, stderr: "! Issue acme/demo#7 (Fix the parser) is already closed" }),
     "closed as completed",
+    TARGET,
   );
   assert.equal(r.error, null);
   assert.equal(r.outcomeUnknown, false);
@@ -198,7 +204,7 @@ test("an already-closed issue reads as success, not as a refusal", () => {
 // process output off its success path. The same rule applies here.
 test("a refusal's detail is one line and bounded", () => {
   const long = `${"x".repeat(5_000)}\nsecond line`;
-  const r = writebackResultFrom(res({ code: 1, stderr: long }), "commented");
+  const r = writebackResultFrom(res({ code: 1, stderr: long }), "commented", TARGET);
   assert.equal(r.error!.includes("second line"), false);
   assert.ok(r.error!.length < 1_100, "the refusal carried an unbounded blob of output");
 });

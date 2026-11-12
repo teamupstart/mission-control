@@ -960,9 +960,10 @@ test("a projected pipeline pull request is adopted under pipeline provenance and
   daemon,
 }) => {
   const url = "https://github.com/example/pipeline-demo/pull/606";
+  // The configured value, not `get-url`'s: that applies the fixture's `insteadOf` rewrite.
   const fixtureOrigin = execFileSync(
     "git",
-    ["-C", daemon.repo, "remote", "get-url", "origin"],
+    ["-C", daemon.repo, "config", "--get", "remote.origin.url"],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   ).trim();
   execFileSync(

@@ -32,7 +32,7 @@ const { parseGitHubRemoteUrl, parsePrUrl } = await import(
 const { getInspectorConfig, setInspectorConfig } = await import(
   "../src/server/inspector/config.ts"
 );
-const { opensPullRequest } = await import("../src/shared/pr-command.mjs");
+const { opensPullRequest, openPullRequestCommand } = await import("../src/shared/pr-command.mjs");
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
 
@@ -350,6 +350,42 @@ test("everything that merely mentions or prints a PR is not opening one", () => 
     "mygh pr create",
     "review-tool --push",
     "",
+  ]) {
+    assert.equal(opensPullRequest(cmd), false, `should NOT open a PR: ${cmd}`);
+  }
+});
+
+// The REST form, which every Mission Control instruction gives because `gh pr create` reads
+// the repository's parent and an org enforcing SAML SSO refuses that to an unauthorized login.
+test("a REST create that prints only the URL reads as opening a pull request", () => {
+  for (const cmd of [
+    openPullRequestCommand("main"),
+    openPullRequestCommand("release/2.0"),
+    "gh api repos/o/r/pulls -f head=b -f base=main -f title=t --jq .html_url",
+    "gh api /repos/o/r/pulls -F body=@body.md -f head=b -f base=main --jq '.html_url'",
+    'gh api "repos/$repo/pulls" --method POST --input pr.json -q .html_url',
+    "git push && gh api repos/o/r/pulls -f head=b -f base=main --jq=.html_url && echo done",
+    'url=$(gh api repos/o/r/pulls -f head=b -f base=main --jq .html_url)',
+    'gh api repos/o/r/pulls -f title="fix: a; b && c" -f head=b -f base=main --jq .html_url',
+  ]) {
+    assert.equal(opensPullRequest(cmd), true, `should open a PR: ${cmd}`);
+  }
+});
+
+test("a REST call that reads pull requests, or prints more than the URL, is not opening one", () => {
+  for (const cmd of [
+    "gh api repos/o/r/pulls --jq .html_url", // a list: no fields, so GET
+    "gh api repos/o/r/pulls -X GET -f state=open --jq .html_url", // fields as a GET query
+    "gh api repos/o/r/pulls --method=GET -f head=o:b --jq .html_url",
+    // The whole response: the description it echoes may name somebody else's pull request.
+    "gh api repos/o/r/pulls -f head=b -f base=main",
+    "gh api repos/o/r/pulls -f head=b -f base=main --jq '.[0].html_url'",
+    "gh api repos/o/r/pulls/12/comments -f body=x --jq .html_url", // not the create endpoint
+    "gh api repos/o/r/pulls/12 -X PATCH -f title=x --jq .html_url",
+    "gh api repos/o/r/issues -f title=x --jq .html_url",
+    // Flags that belong to a different command on the same line do not count.
+    "gh api repos/o/r/pulls; gh api repos/o/r/issues -f title=x --jq .html_url",
+    "mygh api repos/o/r/pulls -f head=b --jq .html_url",
   ]) {
     assert.equal(opensPullRequest(cmd), false, `should NOT open a PR: ${cmd}`);
   }

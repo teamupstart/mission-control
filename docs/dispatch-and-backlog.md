@@ -293,8 +293,8 @@ Two consequences worth knowing:
   already running. The extra worktrees, and the agent's write access to them, are granted
   when a session launches, and neither harness can widen a running session's write scope.
 
-**Every repository's pull request is tracked separately.** All the urls a `gh pr create`
-prints are read, not just the first, and the branch poller asks `gh` inside each attached
+**Every repository's pull request is tracked separately.** All the urls a pull-request create
+command prints are read, not just the first, and the branch poller asks `gh` inside each attached
 worktree as well as the primary's - so a pull request opened in the second repository is
 adopted for review and counted for completion exactly like the primary's. The card and the
 console show one line per repository, naming that repo's pull request and whether it is open
@@ -1650,13 +1650,71 @@ works in that checkout, the source works.
 
 | Filter | Meaning |
 |---|---|
-| **Repository** | `owner/repo`; blank uses the checkout's own `origin` |
+| **Repository** | `owner/repo`; blank resolves from the checkout, see [Which repository a source names](#which-repository-a-source-names) |
 | **Labels (any of)** | match issues carrying **any** of these. Blank matches all |
 | **Assignee** | anyone / assigned to me / unassigned. One choice, not two switches - "assigned to me *and* unassigned" selects nothing, so it isn't expressible |
 | **Milestone** | restrict to one milestone |
 | **Issues per sweep** | how many `gh` is asked for |
 | **Copy labels** | put the issue's GitHub labels on the task, case intact |
 | **Priority from a label** | map a GitHub label to a [priority](#priority-and-labels), e.g. `P0` → Blocker. The first mapped label the issue carries wins |
+
+#### Which repository a source names
+
+Every `gh` call the source makes names its repository with `--repo`: the sweep, **Check it
+works**, **Create GitHub issue**, and a write-back to an item that carries neither an
+`owner/repo#123` id nor a URL. A filled-in **Repository** is used as written. A blank one is
+resolved again on every one of those calls, in this order:
+
+1. The checkout's gh default, the pin `gh repo set-default` writes, when it names a GitHub
+   remote.
+2. Otherwise the checkout's `origin`, when it is on GitHub.
+3. Otherwise an error naming the checkout and its remotes, which becomes the sweep's, the
+   check's or the create's error. Nothing runs against a repository nobody chose.
+
+`gh`'s own choice is never used. Left to choose, `gh` prefers a remote called `upstream`, so in
+a fork checkout it would sweep the parent repository, and an organization that enforces SAML
+SSO refuses that with "Resource protected by organization SAML enforcement". A blank stored
+value stays blank, so it follows the checkout's remotes and pin with no migration.
+
+A call that SAML SSO refuses anyway says so on the source, in place of gh's raw GraphQL line:
+the repository it named, the refusing organization, gh's authorize link, and "To use your fork
+instead, set Repository on this source or pin `gh repo set-default`." When a gh default pin on
+another remote chose that repository, the message names the pin. When the issue's own id or URL
+named it, as it does for most write-backs and every linked-issue read, neither setting would
+move the call, so the message offers only the authorize link. Every other failure keeps gh's
+first line. See [Resource protected by organization SAML
+enforcement](troubleshooting.md#resource-protected-by-organization-saml-enforcement).
+
+While **Repository** is blank, the editor shows what it resolves to under the field:
+"Resolves to `owner/name` (from origin)", "(from gh default)" when the pin names a different
+repository than `origin`, or the resolver's error. The daemon computes it with the same
+resolver on every read of the panel, so it is what the next sweep will name. A filled-in
+**Repository** shows nothing extra.
+
+#### Mission Control pins gh's default repository to origin
+
+The daemon's own calls name their repository, but an agent's improvised `gh issue view 12`,
+or a bare `gh` in the operator's terminal, still lets `gh` choose, and in a fork checkout that
+is the parent. So Mission Control writes the pin itself, `remote.origin.gh-resolved base`,
+the same entry `gh repo set-default` writes, when all of these hold:
+
+- no remote already carries a `gh-resolved` pin, so an existing pin is never overwritten;
+- the checkout has more than one remote on GitHub;
+- `origin` is one of them.
+
+It checks every repository a task is prepared with, before its session starts, and a task
+source's checkout when the source is saved and on its first sweep. The write goes into the
+clone's shared config, so it covers every worktree of that clone, and the daemon logs it
+once per clone. A failed write is logged and blocks nothing, because the daemon's own calls
+never depend on the pin. The pin names `origin`'s own repository, so the editor's hint still
+reads "(from origin)".
+
+Undo it with `gh repo set-default --unset` in the checkout, or pin another remote with
+`gh repo set-default`. Mission Control also records `mission.ghDefaultPinned` in the clone's
+config, which that command leaves in place, so it never writes the pin back after an undo.
+Remove that key (`git config --unset mission.ghDefaultPinned`) to let it pin again.
+`gh pr create` ignores the pin and always targets a fork's parent, which is why Mission
+Control's own pull request command opens through the REST API with an explicit repository.
 
 Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
 so the agent's first prompt has the actual text rather than a number to go and look up.
@@ -1692,7 +1750,9 @@ of silence.
 
 The one thing that goes **outward**. Open a shelved task in [its own
 editor](#edit-a-shelved-task) and, above the fields, **Create GitHub issue** files it as an
-issue in the repo a configured GitHub source points at. The task **stays in the backlog**;
+issue in the repository a configured GitHub source names ([resolved the same way as its
+sweep](#which-repository-a-source-names) when **Repository** is blank). Only an issue URL on
+exactly that repository counts as created. The task **stays in the backlog**;
 what changes is that it now carries a link to the issue, shown in that same spot - which is
 also where a task that was *swept in* shows the issue it came from.
 

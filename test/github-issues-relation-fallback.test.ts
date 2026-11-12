@@ -31,7 +31,8 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const cfg = GithubIssuesConfigSchema.parse({});
+// Named, because `dir` is no git checkout for a blank Repository to resolve through.
+const cfg = GithubIssuesConfigSchema.parse({ repo: "acme/demo" });
 const ctx: SweepContext = { sourceId: "s", repoRoot: dir, signal: new AbortController().signal };
 const calls = (): string[] => readFileSync(log, "utf8").trim().split("\n");
 const ref = (n: number) => ({ sourceId: "s", externalId: `acme/demo#${n}`, url: `https://github.com/acme/demo/issues/${n}` });

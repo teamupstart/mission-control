@@ -100,7 +100,8 @@ test("a gh on the seam is the binary the GitHub source actually runs", async () 
     id: "src-1",
     kind: "github-issues",
     repoRoot: dir,
-    config: { labelsAny: ["mission"] },
+    // Named, because `dir` is no git checkout for a blank Repository to resolve through.
+    config: { repo: "acme/widgets", labelsAny: ["mission"] },
   });
 
   const before = process.env.MISSION_GH_BIN;

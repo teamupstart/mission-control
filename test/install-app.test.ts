@@ -56,6 +56,7 @@ import {
 import { installDirectoryProblem, userAppsDir } from "../scripts/install-destination.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
+import { GRAPHQL_SSO_STDERR, REST_SSO_STDERR, SSO_AUTHORIZE_URL } from "./helpers/github-sso-stderr.ts";
 
 const FORK = "someone-else/ai-harness";
 
@@ -134,6 +135,18 @@ test("a failed release lookup is a problem, not an empty release list", () => {
     const result = newestStableRelease({ run: () => ({ status: 0, stdout }) });
     assert.equal(result.tag, null, stdout);
     assert.match(String(result.problem), /could not read the release list/, stdout);
+  }
+});
+
+test("an SSO-refused release lookup names the repository and keeps gh's authorize link", () => {
+  for (const stderr of [GRAPHQL_SSO_STDERR, REST_SSO_STDERR]) {
+    assert.deepEqual(newestStableRelease({ run: () => ({ status: 1, stdout: "", stderr }) }), {
+      tag: null,
+      problem:
+        `GitHub refused ${CANONICAL_REPO}: the teamupstart organization requires SAML SSO and ` +
+        `this gh token is not authorized for it. Authorize: ${SSO_AUTHORIZE_URL}. ` +
+        `Updates come from ${CANONICAL_REPO}; authorize to check for them.`,
+    });
   }
 });
 

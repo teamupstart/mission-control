@@ -197,6 +197,10 @@ test("pushing a backlog task creates the issue, links the task, and records it a
     title,
     "--body",
     intent,
+    // The source's blank Repository, resolved from the fixture checkout's origin rather than
+    // left to gh, whose own choice would be a fork's `upstream`.
+    "--repo",
+    "mc-e2e-fixture/demo-repo",
     // One `--label` per label the SOURCE sweeps on, so the issue this files matches the filter
     // that would find it - otherwise the push creates work the source cannot see.
     "--label",
@@ -204,8 +208,7 @@ test("pushing a backlog task creates the issue, links the task, and records it a
     "--label",
     "triage",
   ]);
-  // Run inside the repo, which is the whole of this feature's authentication: `gh` resolves
-  // the repository and the credential from the checkout it is run in.
+  // Run inside the repo, which is where `gh` picks up the operator's credential.
   expect(create.cwd).toBe(daemon.repo);
 
   // (d) The seen row. This is what stops the source's next sweep from filing the issue this

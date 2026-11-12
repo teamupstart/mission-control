@@ -290,6 +290,45 @@ its recorded outcome and cleanup choice. See [session lifecycle](session-lifecyc
 and [when a task's agent goes away](dispatch-and-backlog.md#when-a-tasks-agent-goes-away).
 
 
+## Resource protected by organization SAML enforcement
+
+GitHub refused a call because the repository it named belongs to an organization that enforces
+SAML SSO, and your gh token is not authorized for that organization. Mission Control reports
+this as one sentence instead of gh's raw GraphQL line: the repository it tried, the
+organization that refused, gh's "Authorize" link, and what to change. Following the link
+authorizes the token for that organization, which is your choice and happens outside Mission
+Control. The rest of this entry is for when you did not mean to reach that organization at all.
+
+**Which repository was tried.** Mission Control never lets `gh` choose a repository. Left to
+choose, `gh` prefers a remote called `upstream`, which in a fork checkout is the parent. Every
+call names one, resolved from the checkout: its gh default pin (`remote.<name>.gh-resolved`,
+which `gh repo set-default` writes) when the pin names a GitHub remote, otherwise `origin`. See
+[which repository a source names](dispatch-and-backlog.md#which-repository-a-source-names).
+
+**The pin.** In a checkout with more than one GitHub remote and no pin, Mission Control pins
+gh's default to `origin` itself, so bare `gh` calls from agents and your terminal stop
+reaching the parent too. It never overwrites a pin you set. A pin on another remote therefore
+wins, and the message says so, for example "GitHub refused `owner/name` (this checkout's gh
+default pin, not origin)". Run `git config --get-regexp 'gh-resolved$'` in the checkout to see
+the pin. See [Mission Control pins gh's default repository to
+origin](dispatch-and-backlog.md#mission-control-pins-ghs-default-repository-to-origin).
+
+**What to change, by surface:**
+
+- **A GitHub issues task source**: its sweep, **Check it works**, **Create GitHub issue**,
+  write-back and linked-issue reads. "To use your fork instead, set Repository on this source
+  or pin `gh repo set-default`." A filled-in **Repository** is used as written. A blank one
+  follows the pin, so `gh repo set-default <your fork>` in the checkout moves it. A write-back
+  or linked-issue read whose issue names its own repository, by its `owner/repo#123` id or its
+  URL, goes to that repository whatever Repository or the pin say, so its message offers only
+  the authorize link.
+- **Product reports** from the Feedback form: "Forks: set `MISSION_PRODUCT_ISSUES_REPO`." See
+  [Configuration](configuration.md).
+- **The updater** and `scripts/install-app.mjs`: updates always come from
+  `teamupstart/mission-control`, so the only remedy is authorizing the token.
+- **The GitHub Inspector**: the pull request's URL names its repository, so no remedy is
+  offered beyond authorizing.
+
 ## A desktop binary update is unavailable or fails verification
 
 Use **Check again** to refresh the stable release or exact-main-SHA alpha offer. A release without

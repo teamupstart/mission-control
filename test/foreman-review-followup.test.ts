@@ -785,7 +785,8 @@ test("the payload names the PR and forbids opening a second one", () => {
   const p = buildPayload(onlyPr(mkSession()), { findings: true, ciFailing: true }, [finding()]);
   assert.match(p, /PR #7/);
   assert.match(p, /Do NOT open a new pull request/);
-  assert.match(p, /gh pr checks 7/);
+  // By URL, so `gh` never picks the repository from the remotes - on a fork, the parent.
+  assert.match(p, /gh pr checks https:\/\/github\.com\/owner\/repo\/pull\/7/);
   // A session with one repository is told nothing about repositories.
   assert.doesNotMatch(p, /repositor/);
 });
@@ -1056,9 +1057,9 @@ test("a nudge about one repository's pull request names it, and only forbids a s
   assert.match(payload, /one of several repositories/);
   assert.match(payload, /Do NOT open a new pull request for it/);
   // `gh` runs in the session's own checkout, which is the PRIMARY repo's worktree, so a
-  // sibling's pull request has to be named by repository or the command answers about the
+  // sibling's pull request has to be named by its URL or the command answers about the
   // wrong one.
-  assert.match(payload, /gh pr checks 9 --repo owner\/beta/);
+  assert.match(payload, /gh pr checks https:\/\/github\.com\/owner\/beta\/pull\/9/);
 });
 
 test("two pull requests on one session hold independent marks", () => {

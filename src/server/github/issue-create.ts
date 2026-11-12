@@ -6,16 +6,18 @@ export type GitHubIssueCreateOutcome =
   | { kind: "refused"; detail: string }
   | { kind: "unknown"; reason: "process" | "missing-url" };
 
-/** Accept only the GitHub host and issue path for the repository this invocation targeted. */
+/**
+ * Accept only the GitHub host and issue path for the repository this invocation targeted.
+ * There is no wildcard: a blank or malformed `expectedRepo` accepts nothing, so an issue
+ * `gh` filed on a repository nobody named (a fork's parent) never reads as created here.
+ */
 function createdIssueUrl(stdout: string, expectedRepo: string): string | undefined {
   const parts = expectedRepo.split("/");
-  const target = expectedRepo === ""
-    ? { host: "github.com", owner: undefined, name: undefined }
-    : parts.length === 2 && parts[0] && parts[1]
-      ? { host: "github.com", owner: parts[0], name: parts[1] }
-      : parts.length === 3 && parts[0] && parts[1] && parts[2]
-        ? { host: parts[0], owner: parts[1], name: parts[2] }
-        : null;
+  const target = parts.length === 2 && parts[0] && parts[1]
+    ? { host: "github.com", owner: parts[0], name: parts[1] }
+    : parts.length === 3 && parts[0] && parts[1] && parts[2]
+      ? { host: parts[0], owner: parts[1], name: parts[2] }
+      : null;
   if (!target) return undefined;
 
   return stdout
@@ -34,8 +36,8 @@ function createdIssueUrl(stdout: string, expectedRepo: string): string | undefin
       return (
         candidate.protocol === "https:" &&
         candidate.host.toLowerCase() === target.host.toLowerCase() &&
-        (target.owner === undefined || owner?.toLowerCase() === target.owner.toLowerCase()) &&
-        (target.name === undefined || name?.toLowerCase() === target.name.toLowerCase()) &&
+        owner?.toLowerCase() === target.owner.toLowerCase() &&
+        name?.toLowerCase() === target.name.toLowerCase() &&
         resource === "issues" &&
         /^\d+$/.test(number ?? "") &&
         rest.length === 0 &&

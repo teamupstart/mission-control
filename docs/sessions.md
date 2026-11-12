@@ -26,7 +26,12 @@ PR. Their Git facts are instead read directly from their working directory at la
 restoration and refreshed on the same cadence.
 This keeps the **PR chip** honest without a terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking
-`gh pr list --head <branch>`. Capturing either fact only once would leave live changes invisible.
+`gh pr list --repo <owner/name> --head <branch>`. The repository comes from the shared checkout
+resolver (`checkoutGitHubRepository`): a gh default pin (`remote.<name>.gh-resolved`, which
+`gh repo set-default` writes) when one names a GitHub remote, otherwise `origin` when it is on
+GitHub. A remote is on GitHub when its URL is, either after git's `insteadOf` rewriting (so an
+alias such as `gh:me/fork` counts) or as configured. A checkout with neither reads as a failed lookup that leaves the chip as it was, so `gh`
+never chooses for itself and falls back to a fork's parent. Capturing either fact only once would leave live changes invisible.
 
 ### Sessions started outside Mission Control
 
@@ -598,7 +603,8 @@ looking up, and everything below follows from that or from what Pi itself has.
   state and one turn completion drive the shared queue. `/skill:<name>` invokes a Pi skill.
   Terminal Pi remains ineligible for Work Queue, including sessions reporting extension hooks.
 - **PR attribution requires tool evidence.** A successful, correlated `bash` tool result must
-  follow an observed `gh pr create` command and contain a PR URL for a configured GitHub remote
+  follow an observed pull-request create command (`gh pr create`, or the REST create in
+  [Only our pull requests](inspector-and-shipping.md#only-our-pull-requests)) and contain a PR URL for a configured GitHub remote
   of the checkout. Assistant prose, failed tools and unrelated repositories do not count.
   No configured GitHub remote means no PR provenance is emitted.
 - **Terminal presentation is unavailable.** Notifications and status text produce bounded

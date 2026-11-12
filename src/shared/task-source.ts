@@ -15,6 +15,7 @@ import {
   taskKindAllowsBacklog,
   taskKindBacklogRefusal,
 } from "./task.ts";
+import type { CheckoutRepository } from "./github-repository.mjs";
 
 // A task source is this app's connection to an EXTERNAL work tracker. Inbound, it reads
 // that tracker on a schedule and RETURNS candidate tasks. Outbound, a kind may declare
@@ -475,6 +476,12 @@ export interface TaskSourceImpl<C> extends TaskSourceKindInfo<C> {
     notice: WritebackNotice,
     ctx: WritebackContext,
   ): Promise<WritebackResult>;
+  /**
+   * What this source's own repository field resolves to when it is left blank, for the
+   * editor to show. Null when the config names its repository itself. Optional: a kind
+   * whose config has no such field omits it. Reach it through `sourceRepositories`.
+   */
+  resolveRepository?(config: C, repoRoot: string): Promise<CheckoutRepository | null>;
 }
 
 // ---- github-issues: the first kind's config ----
@@ -488,7 +495,12 @@ export interface TaskSourceImpl<C> extends TaskSourceKindInfo<C> {
  */
 export const GithubIssuesConfigSchema = z
   .object({
-    /** Empty = the repo `gh` resolves from `repoRoot`'s origin. */
+    /**
+     * `owner/name`. Empty = resolved from `repoRoot` on every sweep, preflight, create and
+     * write-back: the checkout's gh default pin (`gh repo set-default`), else its `origin`,
+     * else an error. Never `gh`'s own base-repo choice, which prefers a remote called
+     * `upstream`. A stored blank stays blank, so it follows the checkout.
+     */
     repo: z.string().max(200).default(""),
     /**
      * Match issues carrying ANY of these labels. Empty = no label filter.
@@ -849,8 +861,21 @@ export interface TaskSourcesView {
    * line for the first and nothing for the second.
    */
   writeback: TaskSourceWritebackStatus[];
+  /**
+   * What each source with a blank repository field resolves to, computed by the daemon's
+   * resolver on every read. Read-only: nothing stores it, so it follows the checkout's
+   * remotes and pin. A source that names its repository, or whose kind has no such field,
+   * has no entry.
+   */
+  repositories: TaskSourceRepository[];
   /** The kinds this build offers, so the panel's "add" control is not a hand-kept list. */
   kinds: { kind: TaskSourceKind; label: string; blurb: string }[];
+}
+
+/** What one source's blank repository field resolves to: a repository, or the reason none. */
+export interface TaskSourceRepository {
+  sourceId: string;
+  resolution: CheckoutRepository;
 }
 
 /** What one sweep did, reported back to whoever asked for it. */

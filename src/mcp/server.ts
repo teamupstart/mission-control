@@ -1506,7 +1506,7 @@ async function managedPlanCall(operation: string, input: unknown) {
   } catch (error) { return textResult(`Managed plan ${operation} failed: ${String(error)}`, true); }
 }
 server.registerTool("get_pull_request_policy", {
-  description: "Read the current machine-wide PR creation policy from Settings > Skills. Call immediately before creating each PR, including workflow PR phases. When alwaysDraftPr is true, create with --draft and leave promotion to the human. An unavailable policy is not permission to create a ready PR.",
+  description: "Read the current machine-wide PR creation policy from Settings > Skills. Call immediately before creating each PR, including workflow PR phases. When alwaysDraftPr is true, create the PR as a draft by adding -F draft=true to the pull-request skill's REST create, and leave promotion to the human. An unavailable policy is not permission to create a ready PR.",
   inputSchema: {}, annotations: { readOnlyHint: true },
 }, async () => {
   try {

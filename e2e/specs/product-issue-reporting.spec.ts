@@ -836,6 +836,40 @@ test("missing GitHub auth and a missing label each produce actionable copy", asy
 });
 
 /**
+ * An organization's SAML SSO refusing the token reads as that, not as gh's raw GraphQL line:
+ * the repository tried, the organization that refused, gh's authorize link (which gh prints on
+ * the line after the error), and the setting a fork changes instead.
+ */
+test("a SAML SSO refusal names the organization, keeps the authorize link and the fork setting", async ({
+  dashboard,
+  daemon,
+}) => {
+  const authorize = "https://github.com/orgs/teamupstart/sso?authorization_request=AAM6F5EXAMPLE";
+  script(daemon, {
+    preflight: "repository", issueCreate: "created",
+    preflightError:
+      "GraphQL: Resource protected by organization SAML enforcement. You must grant your OAuth " +
+      "token access to this organization. (repository)\n" +
+      `Authorize in your web browser:  ${authorize}\n`,
+  });
+  await openFromTopbar(dashboard);
+  const alert = form(dashboard).getByRole("alert");
+  await expect(alert).toContainText(
+    "GitHub refused acme/public-issues: the teamupstart organization requires SAML SSO",
+  );
+  await expect(alert).toContainText(`Authorize: ${authorize}.`);
+  await expect(alert).toContainText("Forks: set `MISSION_PRODUCT_ISSUES_REPO`.");
+  await expect(alert).not.toContainText("GraphQL:");
+  await expect(submit(dashboard)).toBeDisabled();
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = join(process.cwd(), "e2e/.artifacts/report-publicly");
+    mkdirSync(dir, { recursive: true });
+    await form(dashboard).screenshot({ path: join(dir, "github-sso-refusal.png") });
+  }
+  expect(productCreates(daemon)).toHaveLength(0);
+});
+
+/**
  * The topbar's own claim: the control survives the ladder.
  *
  * `topbar-one-row.spec.ts` remains the whole-bar geometry authority and is not duplicated

@@ -280,7 +280,10 @@ test("base correction with an unreadable parent changes nothing", async () => {
 test("the PR-opening instruction names the same expected base", async () => {
   const g = gh();
   // The first child, at dispatch: the open parent's branch.
-  assert.match(stackPrInstruction(stackedTask(), undefined) ?? "", /--base feat\/parent/);
+  const launch = stackPrInstruction(stackedTask(), undefined) ?? "";
+  // The REST create on origin's repository, never `gh pr create`, which reads a fork's parent.
+  assert.match(launch, /gh api "repos\/\$repo\/pulls" .*-f base=feat\/parent /);
+  assert.doesNotMatch(launch, /gh pr create/);
   assert.match(stackPrInstruction(stackedTask(), undefined) ?? "", /Stacked on #7/);
   assert.equal(stackPrInstruction(mkTask({ id: "x" }), undefined), null);
   // A replacement child after the current parent closed or merged: the default branch.
@@ -290,7 +293,7 @@ test("the PR-opening instruction names the same expected base", async () => {
     updateInspectorPr(parentKey, { observedState: observed, headRefName: "feat/parent" }, 4_000);
     const text = stackPrInstruction(stackedTask(), "ep1") ?? "";
     assert.match(text, /against the repository's default branch/, observed);
-    assert.doesNotMatch(text, /--base feat\/parent/, observed);
+    assert.doesNotMatch(text, /base=feat\/parent/, observed);
   }
   assert.ok(getInspectorPr(key)?.stack);
 });

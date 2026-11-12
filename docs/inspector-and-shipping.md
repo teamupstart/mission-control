@@ -64,11 +64,17 @@ saved Inspector settings keep the prior defaults: off and Dry run.
 
 This is the whole consent model, so it is worth being precise about. Mission Control
 learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
-`gh pr list --head <branch>` - and neither can tell a PR you opened from one a colleague
+`gh pr list --repo <owner/name> --head <branch>`, on the repository the checkout resolves to
+(its gh default pin, else `origin`; see [sessions](sessions.md)) - and neither can tell a PR you opened from one a colleague
 opened on the same branch. Neither adopts anything.
 
-A PR is adopted for review when the hook saw the agent run **`gh pr create`**. It is matched
-on the command, not the output, because `gh pr view` prints the same URL. A projected external
+A PR is adopted for review when the hook saw the agent run **`gh pr create`**, or the REST
+create Mission Control's instructions give instead: `gh api` POSTing to
+`repos/<owner>/<repo>/pulls` with `--jq .html_url`, so it prints the new PR's URL and nothing
+else. It is matched on the command, not the output, because `gh pr view` prints the same URL.
+The instructions use REST because `gh pr create` always reads the repository's parent, which
+an organization enforcing SAML SSO refuses to a login it has not authorized, so a fork of such
+a repository could not open pull requests at all. A projected external
 pipeline supplies the other proof: the engine writes `pr_url` into that run's own state, and
 Mission Control adopts it with source `pipeline` on first sight only when its owner and
 repository match a GitHub remote configured in the projected checkout. Missing, unreadable,
@@ -569,17 +575,17 @@ A dependency stacks only when all of these hold. Otherwise it waits for merge as
 The dependent is released to **start** (not completed: the edge is still unsatisfied, and
 *Mark done* and *Unblock dependents* are unchanged) once the prerequisite's current episode
 has an open, non-draft pull request in its primary repository and its agent has finished
-the episode: idle, nothing queued. The primary repository is the one `origin` names when
-`origin` is a GitHub remote, otherwise the checkout's only GitHub remote. A pull request in any
-other remote's repository is never stacked on, and a checkout where neither rule names one
-stacks on nothing, because the child's own pull request would open somewhere else and get no
+the episode: idle, nothing queued. The primary repository is the one the checkout's `gh` calls
+target: the repository `gh repo set-default` pinned, otherwise `origin`'s when `origin` is a
+GitHub remote. A pull request in any other remote's repository is never stacked on, and a
+checkout where neither rule names one stacks on nothing, because the child's own pull request would open somewhere else and get no
 stack lineage. The daemon records that readiness on the dependency edge,
 and the backlog card and the Line row read *Stacked on #N*. It clears the readiness when the
 prerequisite starts a new turn, or when the edge stops qualifying, for example when the
 default is switched back to *Wait for merge*. Dispatch reads the parent pull request again
 before it starts: it must still be open, not a draft, on the same branch and episode, and its
 agent still finished. The dispatch then fetches the parent branch at the repository root (from
-`origin`, or from the primary GitHub remote when `origin` is another remote that lacks it) and
+`origin`, or from the pinned GitHub remote when `origin` is another remote that lacks it) and
 pins the worktree to its current head, but only when that commit is exactly the head GitHub
 reports for the parent pull request. A branch name alone proves nothing: a pull request from a
 fork can share its name with an unrelated branch here. If the parent pushes while that check
@@ -598,7 +604,8 @@ reason. A stacked task is always dispatched into a fresh worktree; it is never a
 existing agent.
 
 The task contract and the pull-request packets tell the session to open its pull request
-with `--base` set to the expected base and to start the description with "Stacked on #N".
+against the expected base, with the REST create command that names `origin`'s repository and
+that base, and to start the description with "Stacked on #N".
 The expected base is the current parent's branch while that parent is open, and the default
 branch once it has merged or closed. When the pull request is adopted, the daemon records
 its **stack lineage** on the ledger row: the current parent pull request and the commit the

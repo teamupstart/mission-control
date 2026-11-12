@@ -10,6 +10,7 @@ import { activeStackGitHub } from "./stacking/github.ts";
 import { StackMergeWatch } from "./stacking/merges.ts";
 import { checkDetails } from "./github/check-details.ts";
 import { CHECK_CONTEXTS, rollUpChecks } from "./github/check-rollup.ts";
+import { checkoutGitHubRepository } from "./github/repository.ts";
 
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
 // session's current branch. It is the source of truth behind the chip: it
@@ -100,15 +101,43 @@ async function forEachConcurrent<T>(
 }
 
 /**
- * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
- * resolves the repo from that checkout's `origin`. Prefers a still-open PR, else
- * falls back to a merged one, then a closed one. Returns `null` when
- * the branch has provably no matching PR, or
- * `"error"` when `gh` is missing/unauthenticated/timed out - which the reconciler
- * treats as "unknown, leave the existing chip alone" rather than a reason to clear.
+ * The `gh pr list` arguments for the pull requests whose head is `branch` on `repo`
+ * (`owner/name`). `--repo` is never left out: `gh`'s own choice outside a terminal is a remote
+ * named `upstream` - on a fork, the parent, which an org enforcing SAML SSO refuses.
  */
-async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Promise<PrLookup> {
+export function prListArgs(branch: string, repo: string, search?: string): string[] {
+  return [
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--head",
+    branch,
+    "--state",
+    "all",
+    ...(search === undefined ? [] : ["--search", search]),
+    "--json",
+    "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid",
+    "--limit",
+    // An episode search filters at GitHub, so it can afford a wider page than a branch read.
+    search === undefined ? "20" : "100",
+  ];
+}
+
+/**
+ * Ask `gh` for the pull request whose head is `branch`, on the repository
+ * `checkoutGitHubRepository` resolves for `cwd` (`prListArgs`). Prefers a still-open PR, else
+ * falls back to a merged one, then a closed one. Returns `null` when the branch has provably
+ * no matching PR, or `"error"` when `gh` is missing/unauthenticated/timed out, or the checkout
+ * names no GitHub repository - which the reconciler treats as "unknown, leave the existing
+ * chip alone" rather than a reason to clear.
+ *
+ * With `episode`, every pull request on `branch` inside that work episode's window instead.
+ */
+export async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Promise<PrLookup> {
   if (episode) {
+    const repo = await checkoutGitHubRepository(cwd);
+    if (!repo.ok) return "error";
     // Filter at GitHub before its result limit: a hundred newer uses of a branch must not
     // hide the PR in this episode's window. SHA search also finds late-opened PRs.
     const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -118,9 +147,7 @@ async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Pr
     if (episode.headSha) searches.push(`${episode.headSha} created:>=${from}`);
     const candidates: PrCandidate[] = [];
     for (const search of searches) {
-      const result = await run(ghBin(), ["pr", "list", "--head", branch, "--state", "all",
-        "--search", search, "--json", "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid",
-        "--limit", "100"], { cwd, timeoutMs: 8000 });
+      const result = await run(ghBin(), prListArgs(branch, repo.repo, search), { cwd, timeoutMs: 8000 });
       if (result.code !== 0) return "error";
       try {
         const rows: unknown = JSON.parse(result.stdout || "[]");
@@ -135,26 +162,13 @@ async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Pr
     return candidates.sort((a, b) => Number(b.state === "merged") - Number(a.state === "merged"));
   }
   const [res, head] = await Promise.all([
-    run(
-      ghBin(),
-      [
-        "pr",
-        "list",
-        "--head",
-        branch,
-        "--state",
-        "all",
-        "--json",
-        "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid",
-        "--limit",
-        "20",
-      ],
-      { cwd, timeoutMs: 8000 },
+    checkoutGitHubRepository(cwd).then((repo) =>
+      repo.ok ? run(ghBin(), prListArgs(branch, repo.repo), { cwd, timeoutMs: 8000 }) : null,
     ),
     run("git", ["rev-parse", "HEAD"], { cwd, timeoutMs: 8000 }),
   ]);
   const worktreeHeadSha = head.stdout.trim();
-  if (res.code !== 0 || head.code !== 0 || !worktreeHeadSha) return "error";
+  if (!res || res.code !== 0 || head.code !== 0 || !worktreeHeadSha) return "error";
   try {
     const arr = JSON.parse(res.stdout || "[]") as unknown;
     if (!Array.isArray(arr)) return "error"; // malformed output is an anomaly, not "no PR"

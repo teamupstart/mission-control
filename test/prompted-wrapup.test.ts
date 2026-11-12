@@ -10,6 +10,7 @@ import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompt
 import { VERIFY_FAILURE_CAP, tickTargets } from "../src/server/foreman/queue-machine.ts";
 import type { QueueVerdict } from "../src/server/foreman/queue-machine.ts";
 import { isWrapupPayload, WRAPUP_PR } from "../src/shared/queue.ts";
+import { openPullRequestCommand } from "../src/shared/pr-command.mjs";
 import { PromptedWrapupSchema } from "../src/shared/protocol.ts";
 import type { ReportBucket } from "../src/shared/session.ts";
 import type {
@@ -441,6 +442,10 @@ test("THE LOOP GUARD holds for wrap-up text we no longer send", () => {
     "Please commit this work, push the branch, and open a PR. Then merge the default branch into" +
       " yours and resolve any conflicts, and follow the PR's CI to completion - fix whatever fails" +
       " and push again until every check passes and the PR has no merge conflicts.",
+    "Use git and gh directly: commit this work, push the branch, and open a PR. Then merge the" +
+      " default branch into yours and resolve any conflicts, and follow the PR's CI to completion" +
+      " - fix whatever fails and push again until every check passes and the PR has no merge" +
+      " conflicts.",
   ];
   for (const payload of retired) {
     assert.notEqual(payload, WRAPUP_PR, "reword a fixture only by ADDING to the retired list");
@@ -455,6 +460,17 @@ test("the direct shipping payload is one line", () => {
   // is the long one and therefore the one that will tempt someone.
   //
   assert.ok(!/[\r\n]/.test(WRAPUP_PR));
+});
+
+test("the PR wrap-up opens the PR through the REST command, never gh's repository choice", () => {
+  // `gh pr create` reads the repository's parent, so on a fork of an org that enforces SAML
+  // SSO "open a PR" fails for a token not authorized there. The REST command names origin.
+  assert.ok(WRAPUP_PR.includes(openPullRequestCommand("<default-branch>")));
+  assert.doesNotMatch(WRAPUP_PR, /gh pr create/);
+  assert.match(WRAPUP_PR, /gh pr checks <pr-url>/);
+  // The text is also the composer's editable default. It says the agent fills the
+  // placeholders, so a person sends it as-is and the loop guard still recognises it.
+  assert.match(WRAPUP_PR, /filling in its <placeholders> yourself/);
 });
 
 test("THE RE-ARM: consumption is per completed work cycle, not per intent revision", () => {

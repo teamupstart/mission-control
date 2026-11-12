@@ -189,9 +189,10 @@ test("a live git preflight failure returns to Backlog with its error and retries
   const taskId = await seedBacklogTask(daemon, LIVE_FAILURE_TITLE);
   await useBoardLayout(dashboard, daemon);
 
+  // The configured value, not `get-url`'s: that applies the fixture's `insteadOf` rewrite.
   const originalOrigin = execFileSync(
     "git",
-    ["-C", daemon.repo, "remote", "get-url", "origin"],
+    ["-C", daemon.repo, "config", "--get", "remote.origin.url"],
     { encoding: "utf8" },
   ).trim();
   execFileSync(

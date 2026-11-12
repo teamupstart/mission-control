@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { CONVERSATION_TEXT_MAX_LENGTH } from "../../src/shared/protocol.ts";
+import { WRAPUP_PR } from "../../src/shared/queue.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { argvValue, recordsIn } from "../fixtures/records.ts";
@@ -481,13 +482,23 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   await card.getByRole("tab", { name: "Work queue" }).click();
   const review = card.getByRole("button", { name: "Run No-Mistakes Review" });
   await expect(review).toBeVisible();
-  await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
+  const instruction = card.getByLabel("Direct shipping instruction");
+  await expect(instruction).toBeVisible();
+  // The default instruction names the repository instead of leaving it to gh: "open a PR"
+  // invites `gh pr create`, which on a fork reads the SSO-protected parent. It opens through
+  // the REST command that reads origin, and follows CI by the PR's URL.
+  await expect(instruction).toHaveValue(WRAPUP_PR);
+  await expect(instruction).toHaveValue(/repo=\$\(git remote get-url origin .* && gh api "repos\/\$repo\/pulls"/);
+  await expect(instruction).toHaveValue(/gh pr checks <pr-url> --watch/);
+  await expect(instruction).not.toHaveValue(/gh pr create/);
   await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toBeVisible();
 
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console
     console.log('OBSERVED Ship it panel exposes "Run No-Mistakes Review" beside the direct shipping path');
+    // eslint-disable-next-line no-console
+    console.log(`OBSERVED direct shipping instruction: ${await instruction.inputValue()}`);
     await card.screenshot({
       path: `${EVIDENCE}ship-it-review-control.png`,
     });

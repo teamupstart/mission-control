@@ -267,7 +267,7 @@ test("a handoff on the session's own checkout names no repository and keeps its 
   });
   assert.doesNotMatch(rendered.payload, /Repository:/);
   assert.match(rendered.payload, /get_pull_request_policy immediately before creating each PR/);
-  assert.match(rendered.payload, /gh pr create --draft/);
+  assert.match(rendered.payload, /-F draft=true/);
   assert.match(rendered.payload, /Only the human may promote/);
   assert.match(
     rendered.payload,

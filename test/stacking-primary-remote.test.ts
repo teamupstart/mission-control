@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // A stack parent's branch is fetched from the remote its pull request actually lives on. A
-// checkout whose `origin` is not GitHub (a local mirror) but which has one GitHub remote has
-// that remote as its primary repository, and a parent branch that exists only there must
-// still be fetchable, or every stacked dispatch is refused and retried forever.
+// checkout whose `origin` is not GitHub (a local mirror) has as its primary repository the
+// GitHub remote `gh repo set-default` pinned, the one the checkout resolver names, and a parent
+// branch that exists only there must still be fetchable, or every stacked dispatch is refused
+// and retried forever. Without that pin the resolver names nothing, and nothing stacks.
 //
 // Real git, no network: the GitHub remote's URL is rewritten to a local bare repository with
 // `url.<path>.insteadOf`, so the checkout's config names github.com while the fetch is local.
@@ -24,7 +25,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 let n = 0;
-/** A local mirror `origin` with `main` only, and a GitHub `hub` that also has `feat/parent`. */
+/** A local mirror `origin` with `main` only, and a pinned GitHub `hub` that also has `feat/parent`. */
 function world(): { checkout: string; parentTip: string; mirror: string } {
   n += 1;
   const root = join(home, `w${n}`);
@@ -50,10 +51,18 @@ function world(): { checkout: string; parentTip: string; mirror: string } {
   git(home, "clone", "-q", mirror, checkout);
   git(checkout, "remote", "add", "github", `https://github.com/acme/repo-${n}.git`);
   git(checkout, "config", `url.${hub}.insteadOf`, `https://github.com/acme/repo-${n}.git`);
+  git(checkout, "config", "remote.github.gh-resolved", "base");
   return { checkout, parentTip, mirror };
 }
 
-test("a checkout with a local-mirror origin and one GitHub remote fetches the parent branch from that remote", async () => {
+test("a checkout with a local-mirror origin and an unpinned GitHub remote has no primary repository", async () => {
+  const { checkout } = world();
+  git(checkout, "config", "--unset", "remote.github.gh-resolved");
+  assert.equal(await primaryGitHubRemote(checkout), null, "the checkout resolver refuses, and gh is never left to choose");
+  assert.equal(await primaryGitHubRepository(checkout), null);
+});
+
+test("a checkout with a local-mirror origin and a pinned GitHub remote fetches the parent branch from that remote", async () => {
   const { checkout, parentTip } = world();
   assert.deepEqual(await primaryGitHubRemote(checkout), { remote: "github", identity: { owner: "acme", repo: `repo-${n}` } });
   assert.deepEqual(await primaryGitHubRepository(checkout), { owner: "acme", repo: `repo-${n}` });
@@ -87,7 +96,8 @@ test("a branch on neither remote is refused with both reasons, and an origin tha
   assert.match(!missing.ok ? missing.reason : "", /origin/);
   assert.match(!missing.ok ? missing.reason : "", /github/);
 
-  // When origin itself names GitHub it is the primary, and nothing else is tried.
+  // When origin itself names GitHub and nothing is pinned it is the primary, and nothing else is tried.
+  git(checkout, "config", "--unset", "remote.github.gh-resolved");
   git(checkout, "remote", "set-url", "origin", "https://github.com/acme/origin-repo.git");
   git(checkout, "config", `url.${join(home, `w${n}`, "mirror.git")}.insteadOf`, "https://github.com/acme/origin-repo.git");
   assert.equal((await primaryGitHubRemote(checkout))?.remote, "origin");

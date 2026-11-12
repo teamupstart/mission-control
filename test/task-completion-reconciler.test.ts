@@ -1,6 +1,7 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkSession, mkTask as baseTask } from "./helpers/session-fixture.ts";
@@ -18,6 +19,15 @@ const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { openDb, replaceSessionWorkEpisode, historicalTaskWorkEpisodeBindingsForTask, taskWorkEpisodeForTask } = await import("../src/server/db.ts");
+
+/** A checkout whose origin is on GitHub: `queryPr` asks gh about it with `--repo`, never without. */
+function githubCheckout(name: string): string {
+  const repo = join(home, `checkout-${name}`);
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/example/repo.git"]);
+  return repo;
+}
 
 /** The pull request a task or session edge recorded; the other edge kinds carry none. */
 function prUrlOf(edge: TaskDependency | undefined): string | null {
@@ -1001,7 +1011,7 @@ test("a head poll finishing after completion cannot manufacture retained commit 
 
 test("production discovery searches each episode window and retained SHA before choosing a PR", async () => {
   const f = completedAfterUnobservedEpisode("production-candidates", true);
-  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: home });
+  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: githubCheckout("production-candidates") });
   // A retained commit enables the independent late-opened search in addition to the window.
   const sha = "e".repeat(40);
   openDb().prepare("UPDATE historical_task_work_episode_bindings SET work_head_sha = ? WHERE task_id = ?").run(sha, f.taskId);
@@ -1077,7 +1087,7 @@ for (const boundary of ["completion", "rollover"] as const) {
 for (const failure of ["command-failure", "invalid-json", "non-array"] as const) {
   test(`production episode search preserves bindings and dependency edges on ${failure}`, async () => {
     const f = completedAfterUnobservedEpisode(`search-${failure}`);
-    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: home });
+    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: githubCheckout(`search-${failure}`) });
     await f.tasks.complete(f.taskId, "completed");
     const bindingBefore = taskWorkEpisodeForTask(f.taskId);
     const historyBefore = historicalTaskWorkEpisodeBindingsForTask(f.taskId);
@@ -1264,7 +1274,7 @@ for (const result of ["unknown", "reset"] as const) {
 
 test("production URL lookup distinguishes closed PRs and rediscovers a replacement", async () => {
   const f = completedAfterUnobservedEpisode("production-closed-replacement");
-  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: home });
+  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: githubCheckout("production-closed-replacement") });
   await f.tasks.complete(f.taskId, "completed");
   const oldUrl = "https://github.com/example/repo/pull/1329";
   const newUrl = "https://github.com/example/repo/pull/1330";

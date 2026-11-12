@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import {
   ghProductScriptPath,
   ghWritebackScriptPath,
+  ghIssueListRefusalPath,
   productAuthorizationBinPath,
   productAuthorizationScriptPath,
   writeProductAuthorizationBin,
@@ -248,7 +249,13 @@ export function seedRepo(workspace: string, name: string): string {
   const origin = join(origins, `${name}.git`);
   mkdirSync(origins, { recursive: true });
   execFileSync("git", ["init", "-q", "--bare", origin], { stdio: "pipe" });
-  git("remote", "add", "origin", origin);
+  // `origin` reads as a GitHub repository, because every `gh` call resolves its `--repo` from
+  // it (`checkoutGitHubRepository`) and refuses a checkout that names none; `insteadOf` sends
+  // git's own fetches and pushes to the bare repository. The owner matches no spec's PR URLs,
+  // so no repository-provenance gate starts accepting one.
+  const githubUrl = `https://github.com/mc-e2e-fixture/${name}.git`;
+  git("config", `url.${origin}.insteadOf`, githubUrl);
+  git("remote", "add", "origin", githubUrl);
   git("push", "-qu", "origin", "main");
   execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"], { stdio: "pipe" });
   return realpathSync(repo);
@@ -529,6 +536,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // the same reason: absent content means both verbs succeed, which is what every spec
     // that never turns a source's write-back switch on already expects.
     MC_E2E_GH_WRITEBACK: ghWritebackScriptPath(home),
+    // And the stderr a refused `gh issue list` prints. Absent means every list answers.
+    MC_E2E_GH_ISSUE_LIST_REFUSAL: ghIssueListRefusalPath(home),
     // The public repository product reports would target. Pointed at a fixture owner/name so
     // no run - not even one whose `gh` override somehow failed - names the real tracker. The
     // blast dam is `MISSION_GH_BIN` above; this is the second lock on the same door.

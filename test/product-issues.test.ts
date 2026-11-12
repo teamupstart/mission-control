@@ -56,6 +56,9 @@ const {
   saveImageUpload,
 } = await import("../src/server/uploads.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
+const { GRAPHQL_SSO_STDERR, REST_SSO_STDERR, SSO_AUTHORIZE_URL } = await import(
+  "./helpers/github-sso-stderr.ts"
+);
 import type { SavedUpload } from "../src/server/uploads.ts";
 import type { ProductIssueRunner } from "../src/server/product-issues.ts";
 import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
@@ -320,6 +323,23 @@ test("retry-safe refusals release a request while unknown outcomes block duplica
   assert.equal(unknownCalls, 1, "an uncertain opening cannot launch gh twice");
 });
 
+test("an SSO refusal at create is retry-safe and names the target and authorize link", async () => {
+  const service = new ProductIssueService({
+    target,
+    runner: async () => stubRun({ stdout: "", stderr: GRAPHQL_SSO_STDERR, code: 1 }),
+  });
+  const req = request();
+  service.preview("dashboard", req);
+  assert.deepEqual(await service.submit("dashboard", req), {
+    outcome: "refused",
+    message:
+      "GitHub refused acme/public-issues: the teamupstart organization requires SAML SSO and " +
+      `this gh token is not authorized for it. Authorize: ${SSO_AUTHORIZE_URL}. ` +
+      "Forks: set `MISSION_PRODUCT_ISSUES_REPO`.",
+    retrySafe: true,
+  });
+});
+
 test("a concurrent double submit runs one external writer", async () => {
   let release!: (value: ReturnType<typeof stubRun>) => void;
   const pending = new Promise<ReturnType<typeof stubRun>>((resolve) => {
@@ -420,6 +440,21 @@ test("preflight distinguishes binary, auth, repository, and label failures", asy
       assert.equal(result.ready, false);
       assert.equal(result.problems[0]?.code, code);
       assert.ok(result.problems[0]?.message.includes(results.at(-1)!.stderr));
+    });
+  }
+  for (const [name, results] of [
+    ["repository", [ok, ok, stubRun({ stdout: "", stderr: GRAPHQL_SSO_STDERR, code: 1 })]],
+    ["labels", [ok, ok, ok, stubRun({ stdout: "", stderr: REST_SSO_STDERR, code: 1 })]],
+  ] as const) {
+    await t.test(`an SSO refusal on ${name} names the target, the link and the fork setting`, async () => {
+      const { result } = await preflightWith([...results]);
+      assert.equal(result.problems[0]?.code, name);
+      assert.equal(
+        result.problems[0]?.message,
+        "GitHub refused acme/public-issues: the teamupstart organization requires SAML SSO and " +
+          `this gh token is not authorized for it. Authorize: ${SSO_AUTHORIZE_URL}. ` +
+          "Forks: set `MISSION_PRODUCT_ISSUES_REPO`.",
+      );
     });
   }
   await t.test("authentication preserves the CLI's remediation after its hostname header", async () => {

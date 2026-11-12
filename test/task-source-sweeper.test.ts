@@ -58,7 +58,8 @@ function source(id: string, enabled: boolean): TaskSourceInstance {
     defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,
     writeback: { onPrOpened: false, onCompleted: false, resolve: false },
-    config: {},
+    // Named, because `home` is no git checkout for a blank Repository to resolve through.
+    config: { repo: "acme/demo" },
   };
 }
 

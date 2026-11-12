@@ -708,7 +708,7 @@ test("a Pull Request skill action with session-turn completion receives the crea
     assert.match(h.injected[0]!, /^\/mission-pull-request\n/);
     assert.match(h.injected[0]!, /## Pull request creation policy/);
     assert.match(h.injected[0]!, /get_pull_request_policy/);
-    assert.match(h.injected[0]!, /gh pr create --draft/);
+    assert.match(h.injected[0]!, /-F draft=true/);
     assert.match(h.injected[0]!, /Only the human may promote it/);
   } finally {
     await h.stop();
@@ -737,7 +737,7 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
     t.diagnostic("Boundary: real settings HTTP, real MCP subprocess, real workflow delivery; scripted agent and stateful GitHub CLI fixture. No live GitHub writes or model calls.");
     for (const path of paths) {
       assert.match(path.instructions, /get_pull_request_policy/);
-      assert.match(path.instructions, /gh pr create --draft/);
+      assert.match(path.instructions, /-F draft=true/);
       assert.match(path.instructions, /Only the human may promote it/);
       // The script models an agent following the delivered instructions. It is not a
       // claim that a probabilistic model will obey them. GitHub's fixture is independent:
@@ -748,8 +748,9 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
         const policy = await fixture.readPolicy();
         assert.equal(fixture.reads.length, readsBeforeCreation + 1, "each creation must read the live policy");
         assert.deepEqual(fixture.reads.at(-1), { alwaysDraftPr: enabled });
-        const args = ["pr", "create", "--title", path.name, "--body", "Isolated policy integration"];
-        if (policy.alwaysDraftPr) args.push("--draft");
+        const args = ["api", "repos/fixture/repo/pulls", "-f", "head=feature", "-f", "base=main",
+          "-f", `title=${path.name}`, "-f", "body=Isolated policy integration", "--jq", ".html_url"];
+        if (policy.alwaysDraftPr) args.push("-F", "draft=true");
         const url = await fixture.gh(args);
         const created = JSON.parse(await fixture.gh(["pr", "view", url, "--json", "number,url,isDraft,state"]));
         assert.equal(created.isDraft, enabled, `${path.name}: saved PR state must match the setting`);
@@ -758,8 +759,8 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
           creationCommand: ["gh", ...args], createdPr: created, promotion: "human only; no promotion command issued" }));
       }
     }
-    assert.equal(fixture.commands.filter((args) => args[1] === "create").length, 4);
-    assert.ok(fixture.commands.every((args) => args[1] === "create" || args[1] === "view"));
+    assert.equal(fixture.commands.filter((args) => args[0] === "api").length, 4);
+    assert.ok(fixture.commands.every((args) => args[0] === "api" || args[1] === "view"));
   } finally {
     try {
       await fixture?.setPolicy(false);

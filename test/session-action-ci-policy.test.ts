@@ -52,7 +52,7 @@ test("PR policy reaches frozen actions without changing their authored prompt or
   assert.ok(result.payload.endsWith(legacyPrompt));
   assert.match(result.payload, /get_pull_request_policy immediately before creating each PR/);
   assert.match(result.payload, /alwaysDraftPr is true/);
-  assert.match(result.payload, /gh pr create --draft/);
+  assert.match(result.payload, /-F draft=true/);
   assert.match(result.payload, /Only the human may promote/);
   assert.match(result.payload, /even to trigger CI or finish this workflow/);
   assert.match(result.payload, /If the policy cannot be read, stop/);

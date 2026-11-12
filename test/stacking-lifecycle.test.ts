@@ -665,7 +665,7 @@ test("a child closed while its parent is still open: Reopen on the parent's bran
   assert.ok(stackPromptCandidate(registryOf([session]), session.id, request, "foreman", row(key), FOREMAN_ON).error, "never Foreman's");
   const candidate = stackPromptCandidate(registryOf([session]), session.id, request, "human", row(key), FOREMAN_ON);
   assert.equal(candidate.error, undefined);
-  assert.match((candidate as { payload: string }).payload, /gh pr create --base feat\/parent/);
+  assert.match((candidate as { payload: string }).payload, /-f base=feat\/parent /);
 
   // The reopened pull request inherits the lineage, and its base is the open parent's branch.
   nextNumber += 1;

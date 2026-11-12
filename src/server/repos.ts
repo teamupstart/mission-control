@@ -563,22 +563,47 @@ export async function insideWorkTree(
 }
 
 export async function resolveRepoRoot(p: string): Promise<string | null> {
-  if (!existsSync(p)) return null;
-  const r = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
-  if (r.outcomeUnknown || r.overflowed) return null;
-  const top = r.stdout.trim();
-  if (r.code !== 0 || !top) {
-    const bare = await run("git", ["-C", p, "rev-parse", "--is-bare-repository", "--absolute-git-dir"]);
-    if (bare.code !== 0 || bare.outcomeUnknown || bare.overflowed) return null;
+  const probed = await probeRepoRoot(p);
+  return probed.kind === "repo" ? probed.repoRoot : null;
+}
+
+/**
+ * The limit for each `rev-parse` behind `resolveRepoRoot`. `run`'s 4s default was too tight:
+ * on a loaded machine `POST /api/tasks` lost its `rev-parse` to that default and refused a
+ * real checkout. Matches the local Git limit in `git/remote-default.ts`.
+ */
+export const REPO_ROOT_TIMEOUT_MS = 15_000;
+
+type RepoRootProbe =
+  | { kind: "repo"; repoRoot: string }
+  | { kind: "not-a-repo" }
+  // Git died or overflowed before it answered, so nothing was established about the path.
+  | { kind: "unanswered"; command: string };
+
+async function probeRepoRoot(p: string): Promise<RepoRootProbe> {
+  if (!existsSync(p)) return { kind: "not-a-repo" };
+  const top = ["rev-parse", "--show-toplevel"];
+  const r = await run("git", ["-C", p, ...top], { timeoutMs: REPO_ROOT_TIMEOUT_MS });
+  if (r.outcomeUnknown || r.overflowed) return { kind: "unanswered", command: `git ${top.join(" ")}` };
+  const toplevel = r.stdout.trim();
+  if (r.code !== 0 || !toplevel) {
+    const bareArgs = ["rev-parse", "--is-bare-repository", "--absolute-git-dir"];
+    const bare = await run("git", ["-C", p, ...bareArgs], { timeoutMs: REPO_ROOT_TIMEOUT_MS });
+    if (bare.outcomeUnknown || bare.overflowed) {
+      return { kind: "unanswered", command: `git ${bareArgs.join(" ")}` };
+    }
+    if (bare.code !== 0) return { kind: "not-a-repo" };
     const [kind, dir] = bare.stdout.trim().split("\n");
-    return kind === "true" && dir && isBareRepository(dir) ? realpathSync(dir) : null;
+    return kind === "true" && dir && isBareRepository(dir)
+      ? { kind: "repo", repoRoot: realpathSync(dir) }
+      : { kind: "not-a-repo" };
   }
-  const owner = mainRepoRoot(top);
-  if (owner) return owner;
+  const owner = mainRepoRoot(toplevel);
+  if (owner) return { kind: "repo", repoRoot: owner };
   try {
-    return realpathSync(top);
+    return { kind: "repo", repoRoot: realpathSync(toplevel) };
   } catch {
-    return top;
+    return { kind: "repo", repoRoot: toplevel };
   }
 }
 
@@ -724,8 +749,19 @@ export async function resolveTaskExtraRepoRoots(
 }
 
 export async function resolveTaskRepoRoot(p: string): Promise<TaskRepoRoot> {
-  const repoRoot = await resolveRepoRoot(p);
-  if (!repoRoot) return { ok: false, error: `not a git repository: ${p}` };
+  const probed = await probeRepoRoot(p);
+  // A git that was stopped said nothing about the path. Reporting it as "not a git
+  // repository" would state something false about the operator's checkout.
+  if (probed.kind === "unanswered") {
+    return {
+      ok: false,
+      error:
+        `could not tell whether ${p} is a git repository: \`${probed.command}\` was stopped ` +
+        `before it answered (it is allowed ${REPO_ROOT_TIMEOUT_MS / 1000}s). Try again.`,
+    };
+  }
+  if (probed.kind === "not-a-repo") return { ok: false, error: `not a git repository: ${p}` };
+  const repoRoot = probed.repoRoot;
   // The main checkout is the one `mainRepoRoot` maps to ITSELF. Anything else is a
   // worktree we could not attribute to a repo - see above.
   if (mainRepoRoot(repoRoot) !== repoRoot) {

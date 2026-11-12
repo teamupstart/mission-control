@@ -304,6 +304,26 @@ test("a loser whose cancel fails leaves the run finalizing, and a retry complete
   assert.equal(store.getMember(loser.id)!.status, "eliminated");
 });
 
+test("a loser whose cancel left only its tree tracked is still eliminated, and the run completes", async () => {
+  // TaskManager cancels the loser's Task but cannot release its resources, and answers not-ok.
+  const finalize = new FakeFinalize();
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  gateway.keepTreesOnCancel();
+  const result = await decide(engine, runId, winner.artifactId);
+  assert.equal(result.ok, true);
+
+  assert.equal(store.getRun(runId)!.status, "completed");
+  const losers = store.listMembers(runId).filter((m) => m.id !== winner.memberId);
+  assert.ok(losers.length > 0);
+  for (const loser of losers) {
+    assert.equal(loser.status, "eliminated");
+    const loserTask = store.listAttempts(runId).find((a) => a.memberId === loser.id)!.taskId!;
+    assert.equal(gateway.status(loserTask), "cancelled");
+  }
+});
+
 test("a winner whose session is not safe-idle gets exactly one replacement Task, across a restart", async () => {
   const finalize = new FakeFinalize();
   finalize.safeIdle = false; // force the replacement path

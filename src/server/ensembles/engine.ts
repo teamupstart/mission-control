@@ -250,7 +250,11 @@ export interface EnsembleTaskGateway {
    * stuck launching. It does NOT wait for the agent to come up - the engine observes that durably.
    */
   dispatch(request: MemberDispatchRequest): Promise<void>;
-  /** Cancel a member Task through its owner. Tears the agent down AND reclaims its worktree. */
+  /**
+   * Cancel a member Task through its owner. Tears the agent down AND reclaims its worktree. Rejects
+   * when either did not happen, which can be after the Task is already cancelled (resources the
+   * owner could not release), so the engine reads the Task's status rather than the rejection.
+   */
   cancel(taskId: string): Promise<void>;
   /**
    * Settle a member Task terminally while KEEPING its agent, worktree, branch and home.
@@ -813,11 +817,8 @@ export class EnsembleEngine {
   ): Promise<boolean> {
     const taskStatus = member.taskId ? this.tasks.status(member.taskId) : null;
     if (member.taskId && taskStatus !== null && LIVE_TASK_STATUSES.includes(taskStatus)) {
-      try {
-        await this.tasks.cancel(member.taskId);
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        this.log("warn", { event: "ensemble_member_cancel_failed", runId: member.runId, memberId: member.id, error: detail });
+      const detail = await this.cancelMemberTask(member.taskId, member, "ensemble_member_cancel_failed");
+      if (detail !== null) {
         if (member.status === "pending" || member.status === "launching" || member.status === "active") {
           this.store.setMemberStatus(member.id, [member.status], member.status, { error: detail }, now);
         }
@@ -832,6 +833,29 @@ export class EnsembleEngine {
       this.store.setMemberStatus(member.id, [member.status], terminal, { error: reason }, now);
     }
     return true;
+  }
+
+  /**
+   * Cancel a member's Task through its owner. Null once the Task is no longer live, else why not.
+   *
+   * The Task's status decides, not the owner's answer. A cancel can report failure after it has
+   * already cancelled the Task: an archive that could not be published, a worktree teardown
+   * that threw, or an Engineer commission's cancel warning all answer not-ok with the Task
+   * cancelled and its resources still tracked on it. That agent is stopped, so its member
+   * settles and the resources wait for Reclaim.
+   * Holding the member open instead left a withdrawal refused and a run stuck short of its end.
+   */
+  private async cancelMemberTask(taskId: string, member: EnsembleMember, event: string): Promise<string | null> {
+    let detail: string | null = null;
+    try {
+      await this.tasks.cancel(taskId);
+    } catch (err) {
+      detail = err instanceof Error ? err.message : String(err);
+      this.log("warn", { event, runId: member.runId, memberId: member.id, error: detail });
+    }
+    const after = this.tasks.status(taskId);
+    if (after === null || !LIVE_TASK_STATUSES.includes(after)) return null;
+    return detail ?? `member Task ${taskId} is still live after its cancel`;
   }
 
   /**
@@ -3212,19 +3236,11 @@ export class EnsembleEngine {
       if (member.status === "eliminated" || member.status === "failed" || member.status === "withdrawn") continue;
       const taskStatus = member.taskId ? this.tasks.status(member.taskId) : null;
       if (member.taskId && taskStatus !== null && LIVE_TASK_STATUSES.includes(taskStatus)) {
-        try {
-          await this.tasks.cancel(member.taskId);
-        } catch (err) {
+        if ((await this.cancelMemberTask(member.taskId, member, "ensemble_loser_cancel_failed")) !== null) {
+          // The Task is still live after the cancel - do not eliminate yet, retry on the next pass.
           allSettled = false;
-          this.log("warn", { event: "ensemble_loser_cancel_failed", runId: member.runId, memberId, error: String(err) });
           continue;
         }
-      }
-      const after = member.taskId ? this.tasks.status(member.taskId) : null;
-      if (member.taskId && after !== null && LIVE_TASK_STATUSES.includes(after)) {
-        // The Task is still live after the cancel - do not eliminate yet, retry on the next pass.
-        allSettled = false;
-        continue;
       }
       this.store.setMemberStatus(memberId, ["submitted", "reviewing", "advanced", "launching", "active"], "eliminated", {}, now);
       this.event(member.runId, "member_eliminated", { memberId }, `member_eliminated:${memberId}`);

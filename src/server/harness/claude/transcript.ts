@@ -1,6 +1,5 @@
 import { existsSync, statSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ToolCall, TranscriptAdvisor, TranscriptMessage } from "@shared/types.ts";
 import type { TranscriptSpec } from "../types.ts";
@@ -8,6 +7,7 @@ import { jsonlMessages } from "../../transcript.ts";
 import { readRange } from "../../util/file-tail.ts";
 import { conversationText } from "./scaffolding.ts";
 import { claudePassiveRead } from "./meta.ts";
+import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
 
 // Claude Code's session transcript: where it lives, and what one of its records means.
 //
@@ -19,9 +19,6 @@ import { claudePassiveRead } from "./meta.ts";
 
 const NL = 0x0a; // "\n"
 
-/** Root of Claude's per-project transcript store. */
-const PROJECTS_DIR = join(homedir(), ".claude", "projects");
-
 /**
  * Resolve a session's transcript file.
  *
@@ -29,8 +26,7 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
  * hook - the exact file, no derivation, immune to how Claude encodes project
  * dirs and to compaction/resume/rename. As a fallback for a session whose hook
  * predates transcript reporting, we reconstruct Claude's documented layout:
- * the project dir is the cwd with every `/` and `.` replaced by `-`, and the
- * file is named by the session id.
+ * the project dir is `claudeProjectDir(cwd)`, and the file is named by the session id.
  *
  * Returns null when neither locates a file (no hook yet, or a session with no id or cwd
  * to derive from). It no longer checks the agent: this function is only reachable
@@ -41,14 +37,14 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
  */
 export function resolveTranscriptPath(
   session: Pick<Session, "cwd" | "agentSessionId" | "transcriptPath">,
-  projectsDir: string = PROJECTS_DIR,
+  projectsDir: string = CLAUDE_PROJECTS_DIR,
 ): string | null {
   if (session.transcriptPath && existsSync(session.transcriptPath)) return session.transcriptPath;
   if (!session.agentSessionId || !session.cwd) return null;
-  // Current Claude escapes underscores and spaces too. Retain the older spelling for
-  // conversations written by older installations.
-  for (const encoded of new Set([session.cwd.replace(/[^a-zA-Z0-9-]/g, "-"), session.cwd.replace(/[/.]/g, "-")])) {
-    const derived = join(projectsDir, encoded, `${session.agentSessionId}.jsonl`);
+  // Current Claude escapes underscores and spaces too (`claudeProjectDir`). Retain the older
+  // spelling for conversations written by older installations.
+  for (const dir of new Set([claudeProjectDir(session.cwd, projectsDir), join(projectsDir, session.cwd.replace(/[/.]/g, "-"))])) {
+    const derived = join(dir, `${session.agentSessionId}.jsonl`);
     if (existsSync(derived)) return derived;
   }
   return null;

@@ -5,7 +5,6 @@ import { CompactionCompletion } from "../compaction.ts";
 import { defaultWindowForModel } from "@shared/model.ts";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   PaneOption,
@@ -47,6 +46,7 @@ import type {
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { CLAUDE_PROJECTS_DIR } from "./project-dir.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import { sdkAskChannel } from "../../ask-channel-prompt.ts";
 import { SubagentEmitter } from "../../sdk/subagent-emitter.ts";
@@ -143,9 +143,6 @@ export function claudeSdkRateLimits(
   return { fiveHour, sevenDay, updatedAt: now };
 }
 
-/** Root of Claude's per-project transcript store, mirrored from `transcript.ts`. */
-const PROJECTS_DIR = join(homedir(), ".claude", "projects");
-
 /**
  * The permission modes this driver can ask the SDK for.
  *
@@ -183,7 +180,7 @@ export function sdkPermissionMode(mode: PermissionMode | null): ClaudeSdkPermiss
 export function claudeSdkTranscriptPath(
   cwd: string,
   agentSessionId: string,
-  projectsDir: string = PROJECTS_DIR,
+  projectsDir: string = CLAUDE_PROJECTS_DIR,
 ): string | null {
   return resolveTranscriptPath({ cwd, agentSessionId, transcriptPath: null }, projectsDir);
 }

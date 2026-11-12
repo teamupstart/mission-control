@@ -85,7 +85,7 @@ test("the project-dir munge matches pi's own session-manager encoding", () => {
   // Verified against the real store on the spike machine.
   assert.ok(piProjectDir("/Users/jordanmance").endsWith("--Users-jordanmance--"));
   assert.ok(piProjectDir("/private/tmp").endsWith("--private-tmp--"));
-  // Dots are NOT replaced (only `/ \ :`), unlike Claude's `[/.]` - a worktree keeps its dot.
+  // Dots are NOT replaced (only `/ \ :`), unlike Claude - a worktree keeps its dot.
   assert.ok(
     piProjectDir("/Users/me/.treehouse/ai-harness/9").endsWith("--Users-me-.treehouse-ai-harness-9--"),
   );

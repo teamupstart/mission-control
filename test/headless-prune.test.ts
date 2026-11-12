@@ -36,7 +36,7 @@ test("the headless dir is derived from the REAL path of the cwd our runs spawn i
   // not exist, so the sweep silently removes nothing forever. Verified against a real
   // `claude -p`: it wrote to the `-private-` form.
   const dir = headlessTranscriptDir("/projects");
-  assert.equal(dir, join("/projects", realpathSync(HEADLESS_CWD).replace(/[/.]/g, "-")));
+  assert.equal(dir, join("/projects", realpathSync(HEADLESS_CWD).replace(/[^a-zA-Z0-9]/g, "-")));
   assert.doesNotMatch(dir, /[/.]$/);
 
   // Pin the symlink resolution itself where the platform actually has one, rather than only
@@ -44,7 +44,7 @@ test("the headless dir is derived from the REAL path of the cwd our runs spawn i
   if (realpathSync(HEADLESS_CWD) !== HEADLESS_CWD) {
     assert.notEqual(
       dir,
-      join("/projects", HEADLESS_CWD.replace(/[/.]/g, "-")),
+      join("/projects", HEADLESS_CWD.replace(/[^a-zA-Z0-9]/g, "-")),
       "derived from the unresolved path - this sweep would be a silent no-op",
     );
   }

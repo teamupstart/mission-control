@@ -310,6 +310,8 @@ test.describe("transient Git ref contention", () => {
     await expect.poll(async () => (await taskState(daemon, taskId))?.status ?? null).toBe(
       "running",
     );
+    // Running alone would also be the outcome of a race that never fired.
+    expect(daemon.gitFetchRefRacePending(), "the dispatch's fetch never met the race").toBe(false);
     await captureRefRaceRecovery(dashboard);
   });
 });

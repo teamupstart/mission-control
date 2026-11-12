@@ -912,6 +912,12 @@ export class WorktreeManager {
      * with the warning, as for a Stop. A check attempt passes its run's cancel here.
      */
     signal?: AbortSignal;
+    /**
+     * Asked once, as the claim registers: true stops it as `signal` would. A task dispatch
+     * passes whether its task is cancelled, since a cancel that finished before the claim
+     * registered had no claim for `stopTaskClaims` to find.
+     */
+    abandoned?: () => boolean;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -1008,6 +1014,7 @@ export class WorktreeManager {
       return { outcome: "outcomeUnknown", reason: STOPPING_REASON };
     }
     const unfollow = claimControl ? followSignal(input.signal, claimControl) : () => {};
+    if (claimControl && input.abandoned?.()) claimControl.abort("stopped");
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {

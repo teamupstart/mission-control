@@ -38,6 +38,7 @@ import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 // `cp`-shaped executable driven through the production clone.
 
 const db = openDb();
+const ROOT_SKIP = process.getuid?.() === 0 ? "root bypasses directory permissions" : false;
 
 afterEach(() => {
   db.exec(
@@ -282,7 +283,7 @@ function stagingFixture(prefix: string) {
   return { source, target: clone, staging };
 }
 
-test("an exclusion walk that cannot read a directory abandons the seed instead of passing it", async () => {
+test("an exclusion walk that cannot read a directory abandons the seed instead of passing it", { skip: ROOT_SKIP }, async () => {
   const { source, target, staging } = stagingFixture("mission-seed-exclude-unreadable-");
   let locked = "";
   const result = await stageSeed({
@@ -367,7 +368,7 @@ test("a Stop or the deadline landing during exclusion work ends the seed, not th
   }
 });
 
-test("expansion fails closed when it cannot inspect the tree, and only real absence is no match", async () => {
+test("expansion fails closed when it cannot inspect the tree, and only real absence is no match", { skip: ROOT_SKIP }, async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-seed-expand-unreadable-"));
   mkdirSync(join(root, "pkgs", "a", "node_modules"), { recursive: true });
   mkdirSync(join(root, "locked"));
@@ -386,7 +387,7 @@ test("expansion fails closed when it cannot inspect the tree, and only real abse
   }
 });
 
-test("a source branch that cannot be read abandons the seed before any clone", async () => {
+test("a source branch that cannot be read abandons the seed before any clone", { skip: ROOT_SKIP }, async () => {
   const { source, target, staging } = stagingFixture("mission-seed-source-unreadable-");
   mkdirSync(join(source, "pkgs", "a", "node_modules"), { recursive: true });
   chmodSync(join(source, "pkgs"), 0o000);
@@ -665,6 +666,11 @@ test("the warm lease keeps an occupied source from quarantine, and its owner is 
   assert.equal(card?.owner?.kind, "warm");
   assert.equal(card?.owner?.label, "Seeding another slot's dependencies");
   assert.deepEqual(card?.actions, []);
+  // A Destroy that reaches the source, as a pool-wide one does, is refused at preview, before
+  // execution could reclaim any other owner and then stop at this one.
+  const destroy = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: source.id } });
+  assert.equal(destroy.allowed, false);
+  assert.ok(destroy.blockers.some((blocker) => /dependency seed holds slot 2/.test(blocker)), JSON.stringify(destroy.blockers));
 
   // Something now runs inside the source. Neither another acquisition nor maintenance may
   // quarantine it: it is leased to a live warm owner, not available.
@@ -836,7 +842,7 @@ test("a Stop that lands before an interrupted slot's wipe stops the wipe and kee
   await m.release(result.lease);
 });
 
-test("an interrupted wipe that cannot inspect a seed path removes nothing and stays interrupted", async () => {
+test("an interrupted wipe that cannot inspect a seed path removes nothing and stays interrupted", { skip: ROOT_SKIP }, async () => {
   const fixture = repository("mission-seed-wipe-uninspectable-");
   const claim = claimWith({ paths: ["deps", "more/*/x"], exclude: [] });
   const m = manager(claim, { cloneTree: async () => ({ outcome: "failed", reason: "this disk cannot clone" }) }, 1);
@@ -869,7 +875,7 @@ test("an interrupted wipe that cannot inspect a seed path removes nothing and st
   await m.release(again.lease);
 });
 
-test("a wipe that fails after removing some seed paths keeps the slot interrupted, and the next claim finishes it", async () => {
+test("a wipe that fails after removing some seed paths keeps the slot interrupted, and the next claim finishes it", { skip: ROOT_SKIP }, async () => {
   const fixture = repository("mission-seed-wipe-partial-");
   const claim = claimWith(SEED);
   // No sibling can be cloned from, so every claim here runs its own steps after the wipe.

@@ -1268,7 +1268,11 @@ export class WorkflowManager {
      */
     try {
       if (input.replaceBindingId) {
+        // The replacement archives every active binding for this note, not only the one named.
+        const running = this.store.activeBindingsForNote(noteKey)
+          .flatMap((binding) => this.runningAttemptIdsForBinding(binding.id));
         const replaced = this.store.replaceBindingAndCancel(input.replaceBindingId, insert);
+        if (replaced) this.engine.stopCheckAttempts(running);
         if (!replaced) return {
           ok: false,
           reason: "conflict",
@@ -1507,7 +1511,9 @@ export class WorkflowManager {
   }
 
   archiveBinding(id: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowBinding> {
+    const running = this.runningAttemptIdsForBinding(id);
     const archived = this.store.archiveBindingAndCancel(id, now);
+    if (archived) this.engine.stopCheckAttempts(running);
     if (archived?.cancelledRunId) this.publishRun(archived.cancelledRunId);
     if (archived) this.publishBinding(archived.binding.id);
     return archived
@@ -2654,15 +2660,26 @@ export class WorkflowManager {
     };
   }
 
+  /**
+   * Read before a cancel, which moves every running attempt to `cancelled`. A running check
+   * attempt may be running a dependency claim, or be on its way to one; the engine aborts it,
+   * the claim stops or never starts, and the attempt's result is recorded as audit-only.
+   */
+  private runningAttemptIds(runId: string): string[] {
+    return this.store.listAttemptsForRun(runId)
+      .filter((attempt) => attempt.state === "running")
+      .map((attempt) => attempt.id);
+  }
+
+  private runningAttemptIdsForBinding(bindingId: string): string[] {
+    const active = this.store.activeRunForBinding(bindingId);
+    return active ? this.runningAttemptIds(active.id) : [];
+  }
+
   cancel(runId: string, requestId: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
-    // Read before the cancel, which moves every running attempt to `cancelled`. A running check
-    // attempt may be running a dependency claim, or be on its way to one; the engine aborts it,
-    // the claim stops or never starts, and the attempt's result is recorded as audit-only.
-    const running = this.store.listAttemptsForRun(run.id)
-      .filter((attempt) => attempt.state === "running")
-      .map((attempt) => attempt.id);
+    const running = this.runningAttemptIds(run.id);
     const cancelled = this.store.cancelRun(run.id, `cancelled:${requestId}`, now) ?? run;
     if (running.length > 0) this.engine.stopCheckAttempts(running);
     this.publishRun(run.id);

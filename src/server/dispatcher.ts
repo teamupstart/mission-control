@@ -2213,6 +2213,11 @@ export class Dispatcher {
     return this.registry.getTask(taskId)?.status === "dispatching";
   }
 
+  /** The condition under which task cancel stops this task's claims, asked as one registers. */
+  private taskCancelled(taskId: string): boolean {
+    return this.registry.getTask(taskId)?.status === "cancelled";
+  }
+
   /**
    * Checkpoint between dispatch steps: if a cancel/complete settled the task in
    * flight, tear down whatever this dispatch already created (it may have run
@@ -2267,6 +2272,7 @@ export class Dispatcher {
       bases.primary,
       0,
       this.worktrees,
+      () => this.taskCancelled(taskId),
     );
     const taken: Array<{ repoRoot: string; position: number; wt: ProvisionedWorktree }> = [
       { repoRoot: task.repoRoot, position: 0, wt: primary },
@@ -2293,6 +2299,7 @@ export class Dispatcher {
           bases.extras[index] ?? null,
           index + 1,
           this.worktrees,
+          () => this.taskCancelled(taskId),
         );
         taken.push({ repoRoot: entry.repoRoot, position: index + 1, wt });
         extras.push({
@@ -2640,6 +2647,7 @@ export async function provisionWorktree(
    */
   slot = 0,
   manager?: WorktreeManager,
+  abandoned?: () => boolean,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree", "--is-bare-repository"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -2663,6 +2671,7 @@ export async function provisionWorktree(
       owner: { kind: "task", key: `${taskId}:${slot}` },
       awaitingDomainRecord: true,
       runClaim: true,
+      ...(abandoned ? { abandoned } : {}),
     });
     if (acquired.outcome === "acquired") {
       return {

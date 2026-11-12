@@ -227,7 +227,10 @@ let db: DatabaseSync | undefined;
 //     `github_url`, `legacy_posted`), draft refusals (`post_refusals`, `last_post_error`),
 //     and the adopting session's note key (`inspector_prs.note_key`, nullable, no backfill).
 //     `legacy_posted` is backfilled once, so this one rewrites rows.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 27;
+// 28: dependency claims (`worktree_slots.deps_state`, `deps_fingerprint`, `deps_fingerprint_sha`,
+//     `deps_claimed_at`, `deps_last_error`, and `tasks.claim_warnings`), nullable with no
+//     backfill: no slot was claimed and no task warned before these existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 28;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

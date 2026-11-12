@@ -332,8 +332,8 @@ its own `env` names:
   The locator's login-shell read, the same one that reads `PATH`, captures the named variables
   alongside it. A value that is empty everywhere is missing, and so is one that carries the
   daemon's own token.
-- A credential reaches only the step that names it. Another step, the setup command and a check
-  never receive it by accident.
+- A credential reaches only the step that names it and the setup command, which receives every
+  name the claim lists, as described below. Another step and a check never receive it.
 - Stdin is closed, so a step that stops to ask a question fails at once.
 
 **The setup command's environment changed too.** Setup still runs once, when a slot is created,
@@ -429,7 +429,8 @@ finished. A manual lease's claim has no task card; the same route stops it, and 
 then receives the grant with the warning.
 
 Cancelling a task whose dispatch is waiting on a claim stops that claim too, once the task is
-recorded as cancelled. The stopped claim hands its slot over at once, the dispatch finds the
+recorded as cancelled. A cancel that finished while the dispatch was still on its way to the
+acquisition stops the claim as it registers, before its first step. The stopped claim hands its slot over at once, the dispatch finds the
 task settled, and it tears the tree down exactly as it does for any cancel it notices. A task
 with attached repositories provisions them one at a time, and stops provisioning further
 repositories once the task is no longer dispatching, so no later repository's claim starts in
@@ -766,13 +767,14 @@ its tree without a claim at all.
 never counts against it. A slow install ends under the claim's own `timeoutMinutes`, as a
 dependency failure, never as a timed-out check.
 
-**Cancel.** Cancelling a run stops the claims of its running attempts, in a pool slot or a
-fallback tree alike. That includes an attempt that has not reached its claim yet, for example
+**Cancel.** Cancelling a run, including through archiving or replacing its binding, stops the
+claims of its running attempts, in a pool slot or a fallback tree alike. That includes an attempt that has not reached its claim yet, for example
 one still resolving its commit or resetting its slot: its claim stops before its first step the
 moment it registers, and an attempt cancelled before it reaches its lease takes no worktree at
 all. A stopped claim settles as a failed one: the slot records `failed` and goes back to the
-pool, and the attempt is recorded as cancelled with the run. A check command that already
-spawned is not signalled by a run cancel; its result is recorded as audit-only.
+pool, and the attempt is recorded as cancelled with the run. An attempt cancelled while it waits
+to take its check slot back after its claim returns its tree and spawns nothing. A check command
+that already spawned is not signalled by a run cancel; its result is recorded as audit-only.
 
 #### Historical Treehouse check rows
 

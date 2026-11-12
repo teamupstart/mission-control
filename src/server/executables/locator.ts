@@ -274,6 +274,8 @@ export class ExecutableLocator {
   private readonly negative = new Map<string, { generation: number; at: number }>();
   /** Variable names the login-shell read captures alongside PATH. Only ever grows. */
   private readonly capturedNames = new Set<string>();
+  /** The names the installed snapshot's probe was asked for, which `capturedNames` may outgrow. */
+  private readNames: ReadonlySet<string> = new Set();
   private loginShellValues: Readonly<Record<string, string>> = {};
 
   constructor(deps: ExecutableLocatorDeps = {}) {
@@ -320,9 +322,10 @@ export class ExecutableLocator {
       return await this.forcedRefreshQueued;
     }
     this.inheritedPath ??= this.env.PATH ?? "";
-    const pending = this.probe({ ...this.env, PATH: this.inheritedPath }, [...this.capturedNames])
+    const asked = [...this.capturedNames];
+    const pending = this.probe({ ...this.env, PATH: this.inheritedPath }, asked)
       .catch((): LoginShellResult => ({ path: null, problem: "login shell failed" }))
-      .then((shell) => this.installSnapshot(shell));
+      .then((shell) => this.installSnapshot(shell, asked));
     this.refreshInFlight = pending;
     this.refreshInFlightForced = options.force === true;
     const wasInitialized = this.initialized;
@@ -345,10 +348,12 @@ export class ExecutableLocator {
    * snapshot's ordinary refresh keeps it. A name the shell leaves empty or unset is absent.
    */
   async loginShellVariables(names: readonly string[]): Promise<Record<string, string>> {
-    const missing = names.filter((name) => !this.capturedNames.has(name));
-    for (const name of missing) this.capturedNames.add(name);
-    if (missing.length > 0) await this.refresh({ force: true });
+    for (const name of names) this.capturedNames.add(name);
+    const unread = () => names.some((name) => !this.readNames.has(name));
+    if (unread()) await this.refresh({ force: true });
     else await this.initialize();
+    // A forced probe already in flight joined above was asked before these names were added.
+    if (unread()) await this.refresh({ force: true });
     const values: Record<string, string> = {};
     for (const name of names) {
       const value = this.loginShellValues[name];
@@ -574,10 +579,11 @@ export class ExecutableLocator {
     return this.installSnapshot({ path: null, problem: "login shell not read yet" });
   }
 
-  private installSnapshot(shell: LoginShellResult): ExecutableEnvironmentSnapshot {
+  private installSnapshot(shell: LoginShellResult, asked: readonly string[] = []): ExecutableEnvironmentSnapshot {
     // Replaced with what this read returned, including nothing: a failed read reports every
     // name missing rather than handing on a value it can no longer vouch for.
     this.loginShellValues = { ...shell.variables };
+    this.readNames = new Set(asked);
     const groups: PathEntryGroup[] = [];
     const custom = prefixedEnv(this.env, "EXECUTABLE_PATHS");
     if (custom) {

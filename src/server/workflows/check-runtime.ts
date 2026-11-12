@@ -312,6 +312,17 @@ export class CheckRuntime {
     // Taken again before anything else runs in the tree, so the spawn runs under a check slot,
     // exactly as it did before claims existed.
     if (slotReleased && slot) await slot.reacquire();
+    // The reacquire can wait behind other checks, and a run cancelled meanwhile must not start
+    // a Command whose result nobody will read.
+    if (attempt.signal?.aborted) {
+      await this.settle(attempt.attemptId, "empty");
+      return {
+        kind: "infrastructure",
+        started: false,
+        reason: `the ${request.slot} check was cancelled before its Command started`,
+        ranNothing: true,
+      };
+    }
 
     const parser = request.coderabbit ? new CodeRabbitResultParser(attempt.attemptId, request.coderabbit.severity, changedPaths) : null;
     let capture: ReturnType<WorkflowCommandArtifactService["beginCapture"]> | undefined;

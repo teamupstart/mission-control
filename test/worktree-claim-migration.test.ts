@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-// Seed a database whose slot table predates dependency claims, holding one warm slot, before
-// importing db.ts and letting the production open path migrate it.
+// Seed a schema 27 database whose slot table predates dependency claims, holding one warm slot,
+// before importing db.ts and letting the production open path migrate it.
 const home = process.env.HARNESS_HOME;
 assert.ok(home, "test/setup-state.mjs must provide an isolated HARNESS_HOME");
 mkdirSync(home, { recursive: true });
@@ -35,10 +35,11 @@ legacy.exec(`
   );
   INSERT INTO worktree_slots (id, pool_id, ordinal, path, state, version, created_at, updated_at)
     VALUES ('slot-old', 'pool-old', 1, '/pool/1/repo', 'available', 7, 1, 1);
+  PRAGMA user_version = 27;
 `);
 legacy.close();
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
 const { WorktreeStore } = await import("../src/server/worktrees/store.ts");
 const db = openDb();
 
@@ -59,4 +60,18 @@ test("an existing slot gains empty dependency-claim columns and its next claim r
   );
   // Opening again is a no-op: the migration is idempotent.
   assert.doesNotThrow(() => openDb());
+});
+
+test("a schema 27 database is backed up before the dependency-claim columns are added", () => {
+  const backups = readdirSync(join(home, "backups", "database")).filter((name) => name.startsWith("pre-migration-"));
+  assert.equal(backups.length, 1);
+  const recovery = new DatabaseSync(join(home, "backups", "database", backups[0]!), { readOnly: true });
+  const columns = (recovery.prepare(`PRAGMA table_info(worktree_slots)`).all() as Array<{ name: string }>)
+    .map((column) => column.name);
+  recovery.close();
+  assert.ok(!columns.includes("deps_state"), "the recovery point precedes the claim columns");
+  assert.equal(
+    (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+    CURRENT_DATABASE_SCHEMA_VERSION,
+  );
 });

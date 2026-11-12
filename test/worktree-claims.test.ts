@@ -342,6 +342,31 @@ test("the locator's one login-shell read captures named variables alongside PATH
   assert.equal(locator.snapshot().path.includes("/login/bin"), true, "PATH is still read by the same probe");
 });
 
+test("a name added while a forced probe is in flight is read by the next probe, not left unread", async () => {
+  const asked: Array<readonly string[]> = [];
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const locator = new ExecutableLocator({
+    env: { PATH: "/usr/bin" },
+    probeLoginShell: async (_env, variables) => {
+      asked.push([...variables]);
+      if (asked.length === 1) await firstHeld;
+      return {
+        path: "/login/bin",
+        problem: null,
+        variables: Object.fromEntries(variables.map((name) => [name, `${name}-value`])),
+      };
+    },
+  });
+  const starting = locator.initialize();
+  await waitFor(() => asked.length === 1, "the forced startup probe to begin");
+  const reading = locator.loginShellVariables(["LATE_TOKEN"]);
+  releaseFirst();
+  await starting;
+  assert.deepEqual(await reading, { LATE_TOKEN: "LATE_TOKEN-value" });
+  assert.deepEqual(asked, [[], ["LATE_TOKEN"]]);
+});
+
 test("the real login-shell probe prints each variable between its own markers", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-claim-shell-"));
   const shell = join(root, "shell");

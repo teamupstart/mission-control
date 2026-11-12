@@ -663,6 +663,37 @@ test("a check attempt gives up its slot while claiming and takes one back before
   assert.deepEqual(events, ["spawn"]);
 });
 
+test("a run cancelled while the attempt waits to take its slot back spawns nothing and returns the tree", async () => {
+  const { clone, sha } = repository("mission-check-claim-reacquire-cancel-");
+  const leases = checkLeases(worktrees(LOCK_CLAIM, steps(() => ok).runClaimStep));
+  const cancel = new AbortController();
+  let spawned = false;
+  const runtime = new CheckRuntime(leases, {
+    platform: () => ({ supported: true, note: "" }),
+    resolveCommit: async () => sha,
+    leaseStore: leaseRows,
+    supervise: async () => {
+      spawned = true;
+      return {
+        result: { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 },
+        emptiness: "empty",
+      } as CheckSpawnOutcome;
+    },
+  });
+  const ref: CheckAttemptRef = {
+    ...attempt(),
+    signal: cancel.signal,
+    checkSlot: { release: () => {}, reacquire: async () => { cancel.abort("cancelled"); } },
+  };
+  const result = await runtime.executorFor(ref)({ ...REQUEST, repoRoot: clone, headSha: sha });
+  assert.equal(spawned, false, "the Command spawned for a cancelled run");
+  assert.equal(result.kind, "infrastructure");
+  assert.ok(result.kind === "infrastructure");
+  assert.equal(result.ranNothing, true);
+  assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned", "the leased tree was kept");
+  assert.deepEqual(leases.pinnedPaths(), []);
+});
+
 test("a slow claim ends as a dependency failure, and claim time never counts against the Command", async () => {
   const { clone, sha } = repository("mission-check-claim-slow-");
   const CLAIM_MS = 300;
@@ -948,6 +979,47 @@ test("cancelling a run aborts its check attempts, including one whose claim has 
     assert.equal(engine.stopCheckAttempts(running), 0);
   } finally {
     reachClaim();
+    await engine.stop();
+    await manager.stop();
+  }
+});
+
+test("archiving a binding stops the claims of the run it cancels", async () => {
+  const store = seedRun("archive-claims", ["lint"]);
+  let stopped = false;
+  let claiming = false;
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      retryBaseMs: 1,
+      runnerFor: noRunner,
+      resolveExecution: passingExecution,
+      workflowPolicy: policy,
+      workflowCommand: catalog,
+    },
+    checkScheduler: createCheckScheduler(1),
+    checkDeps: (ref) => ({
+      checkoutSubpath: async () => null,
+      execute: async () => {
+        const signal = ref.signal!;
+        claiming = true;
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        stopped = true;
+        return { kind: "infrastructure", reason: "the dependency claim was stopped", ranNothing: true };
+      },
+    }),
+  });
+  const engine = manager.engine;
+  engine.start();
+  try {
+    engine.activateSubmission("submission-archive-claims");
+    await waitFor(() => claiming, "the gate to be claiming");
+    assert.equal(manager.archiveBinding("binding-archive-claims").ok, true);
+    await waitFor(() => stopped, "the claim to see the archive's cancel");
+    assert.equal(store.getRun("run-archive-claims")?.status, "cancelled");
+  } finally {
     await engine.stop();
     await manager.stop();
   }

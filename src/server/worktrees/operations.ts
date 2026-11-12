@@ -838,6 +838,8 @@ export class WorktreeOperationsService {
         const check = await this.deps.checks.previewOperatorRecovery(owner.key, this.deps.checkRecovery);
         if (!check.allowed) blockers.push(check.reason ?? "Check cleanup is not currently safe.");
         consequences.push("Uses check process-group recovery and the recorded provider before releasing the lease.");
+      } else if (owner.kind === "warm") {
+        blockers.push(`A dependency seed holds slot ${slot.slot.ordinal} and returns it when its copy ends.`);
       } else {
         consequences.push("Returns the exact durable manual lease before any slot removal.");
       }

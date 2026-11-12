@@ -506,8 +506,9 @@ browser between bumps.
 
 A claim runs when something leases a slot, so the first lease after a lockfile change pays for
 the install. **Warm** pays it ahead of time, on idle slots, so the next lease finds a matching
-fingerprint and skips the steps. A pool with a claim offers two triggers in **Settings >
-Worktrees**:
+fingerprint and skips the steps. That saving needs fingerprint paths: a claim without them has
+no fingerprint, so every lease runs its steps again, warmed or not. A pool with a claim offers two
+triggers in **Settings > Worktrees**:
 
 - **Warm** on an available slot's card warms that slot.
 - **Warm idle slots** among a pool's maintenance actions warms every available slot of the pool,

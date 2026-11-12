@@ -142,6 +142,8 @@ test("Warm and Warm idle slots prepare idle slots with a live tail, Cancel, and 
 
   writeFileSync(gate, "0");
   await expect(single).toContainText("finished", { timeout: WARM_SETTLES_MS });
+  // The summary's colour follows what happened to the slots: a warmed slot reads as ready.
+  await expect(single.getByText("finished", { exact: true })).toHaveClass(/wt-chip-ready/);
   await expect(single.getByRole("list", { name: "Warm slot 1 slots" })).toContainText("warmed");
   await expect(single.getByRole("button", { name: "Cancel" })).toHaveCount(0);
   await expect(pool.getByRole("region", { name: "Slot 1 dependencies" })).toContainText("current");
@@ -186,6 +188,8 @@ test("Warm and Warm idle slots prepare idle slots with a live tail, Cancel, and 
 
   await bulk.getByRole("button", { name: "Cancel" }).click();
   await expect(bulk).toContainText("finished", { timeout: WARM_SETTLES_MS });
+  // Nothing was warmed, so the finished summary is not shown as a success.
+  await expect(bulk.getByText("finished", { exact: true })).toHaveClass(/wt-chip-attention/);
   const targets = bulk.getByRole("list", { name: "Warm idle slots slots" }).getByRole("listitem");
   await expect(targets).toHaveCount(2);
   await expect(targets.nth(0)).toContainText("cancelled");

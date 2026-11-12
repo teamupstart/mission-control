@@ -13,6 +13,7 @@ import type {
   WorktreeSlotDependenciesView,
   WorktreeSlotDependencyState,
   WorktreeWarmTargetOutcome,
+  WorktreeWarmTargetView,
 } from "@shared/worktrees.ts";
 import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
@@ -185,8 +186,16 @@ function warmStateChip(operation: WorktreeOperationView): { label: string; tone:
     case "failed":
       return { label: "failed", tone: "danger" };
     case "finished":
-      return { label: "finished", tone: "ready" };
+      return { label: "finished", tone: finishedWarmTone(operation.warm?.targets ?? []) };
   }
+}
+
+/** "Finished" is the operation's state; its colour says whether any slot was actually warmed. */
+function finishedWarmTone(targets: readonly WorktreeWarmTargetView[]): string {
+  const outcomes = new Set(targets.map((target) => target.outcome));
+  if (outcomes.has("failed") || outcomes.has("claimFailed")) return "danger";
+  if (outcomes.has("cancelled")) return "attention";
+  return outcomes.has("warmed") ? "ready" : "neutral";
 }
 
 /**

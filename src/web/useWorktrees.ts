@@ -7,6 +7,7 @@ import type {
   WorktreeOperationView,
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
+import { worktreeOperationPending } from "@shared/worktrees.ts";
 import { trailingRead } from "./lib/trailing-read.ts";
 import {
   cancelWorktreeOperation,
@@ -32,6 +33,28 @@ function mergeConfig(current: WorktreesConfig, patch: WorktreesConfigPatch): Wor
     repositories[key] = next as WorktreesConfig["repositories"][string];
   }
   return { ...current, ...patch, repositories } as WorktreesConfig;
+}
+
+function withoutKey(map: ReadonlyMap<string, string>, key: string): ReadonlyMap<string, string> {
+  if (!map.has(key)) return map;
+  const next = new Map(map);
+  next.delete(key);
+  return next;
+}
+
+/**
+ * A refused Cancel shown on its own Warm while that Warm is still pending. The panel's banner
+ * cannot hold it: every inventory read clears that banner, and a running Warm reads about once
+ * a second.
+ */
+export function withCancelFailures(
+  operations: readonly WorktreeOperationView[],
+  failures: ReadonlyMap<string, string>,
+): WorktreeOperationView[] {
+  return operations.map((operation) => {
+    const failure = failures.get(operation.id);
+    return failure && worktreeOperationPending(operation) && !operation.error ? { ...operation, error: failure } : operation;
+  });
 }
 
 /** A refused save carries the daemon's error text, which for a schema refusal is Zod's issue list. */
@@ -78,6 +101,7 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState<SubmittedOperation[]>([]);
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  const [cancelFailures, setCancelFailures] = useState<ReadonlyMap<string, string>>(new Map());
   const inventoryRef = useRef<WorktreeInventory | null>(null);
   const readSeq = useRef(0);
   const writeChain = useRef(Promise.resolve());
@@ -230,18 +254,22 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
   }, [refresh]);
 
   const cancelOperation = useCallback(async (id: string): Promise<void> => {
+    setCancelFailures((current) => withoutKey(current, id));
     const result = await cancelWorktreeOperation(id);
     // A 404 is a Warm that finished first; the refresh shows how it ended.
-    if (!result.ok && result.status !== 404) setError(`That Warm could not be cancelled: ${result.error}`);
+    if (!result.ok && result.status !== 404) {
+      setCancelFailures((current) => new Map(current).set(id, `That Warm could not be cancelled: ${result.error}`));
+    }
     void refresh();
   }, [refresh]);
 
   const operations = useMemo(() => {
     const observed = inventory?.operations ?? [];
     const known = new Set(observed.map((entry) => entry.id));
-    return [...observed, ...submitted.map((entry) => entry.view).filter((entry) => !known.has(entry.id))]
+    const listed = [...observed, ...submitted.map((entry) => entry.view).filter((entry) => !known.has(entry.id))]
       .filter((entry) => !dismissed.has(entry.id));
-  }, [inventory, submitted, dismissed]);
+    return withCancelFailures(listed, cancelFailures);
+  }, [inventory, submitted, dismissed, cancelFailures]);
 
   return {
     inventory,

@@ -396,14 +396,17 @@ export async function runClaimStep(
     // How many of the reader's waits are outstanding; the pipes flow again once none are.
     let waiting = 0;
     const pipes = () => [child.stdout, child.stderr];
+    // A live view of the step is never part of the step, so its failures are only reported.
+    const listenerFailed = (error: unknown): void => {
+      console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+    };
     const forward = (text: string, stream: ClaimOutputStream): void => {
       if (!text) return;
       let wait: void | Promise<void>;
       try {
         wait = request.onOutput?.(text, stream);
       } catch (error) {
-        // A live view of the step is never part of the step.
-        console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+        listenerFailed(error);
         return;
       }
       if (!wait || settled) return;
@@ -413,7 +416,10 @@ export async function runClaimStep(
         waiting -= 1;
         if (waiting === 0) for (const pipe of pipes()) pipe?.resume();
       };
-      wait.then(resume, resume);
+      wait.then(resume, (error: unknown) => {
+        listenerFailed(error);
+        resume();
+      });
     };
     child.stdout?.on("data", (chunk: Buffer) => {
       ring.push(chunk);
@@ -780,7 +786,24 @@ export function redactClaimValues(
     leadingFragments?: boolean;
   } = {},
 ): string {
+  return applyRedaction(text, redactionSpans(text, secrets, options));
+}
+
+interface RedactionSpan {
+  start: number;
+  end: number;
+  names: string[];
+}
+
+/** Every range of `text` a value covers, overlapping and adjacent occurrences merged, in order. */
+function redactionSpans(
+  text: string,
+  secrets: ReadonlyArray<{ name: string; value: string }>,
+  options: { leadingFragments?: boolean },
+  covered: RedactionSpan | null = null,
+): RedactionSpan[] {
   const spans: Array<{ start: number; end: number; name: string }> = [];
+  if (covered) for (const name of covered.names) spans.push({ start: covered.start, end: covered.end, name });
   for (const { name, value } of secrets) {
     if (value.length === 0) continue;
     // Every complete occurrence, overlapping ones included.
@@ -796,9 +819,8 @@ export function redactClaimValues(
       }
     }
   }
-  if (spans.length === 0) return text;
   spans.sort((a, b) => a.start - b.start || b.end - a.end);
-  const merged: Array<{ start: number; end: number; names: string[] }> = [];
+  const merged: RedactionSpan[] = [];
   for (const span of spans) {
     const last = merged.at(-1);
     if (last && span.start <= last.end) {
@@ -808,11 +830,17 @@ export function redactClaimValues(
       merged.push({ start: span.start, end: span.end, names: [span.name] });
     }
   }
+  return merged;
+}
+
+/** `text` with each span replaced by its marker; a span past the end of `text` is clipped. */
+function applyRedaction(text: string, spans: readonly RedactionSpan[]): string {
   let redacted = "";
   let cursor = 0;
-  for (const span of merged) {
+  for (const span of spans) {
+    if (span.start >= text.length) break;
     redacted += `${text.slice(cursor, span.start)}[${span.names.join(", ")} redacted]`;
-    cursor = span.end;
+    cursor = Math.min(span.end, text.length);
   }
   return redacted + text.slice(cursor);
 }
@@ -823,9 +851,12 @@ const MAX_OPEN_LINE = 4_096;
 /**
  * A step's output, streamed with every value the step received removed, however the pipe cut
  * it. A value can arrive split across two pieces, so the stream holds back the last
- * `longest value - 1` characters it has seen, the most an unfinished value can occupy, and
- * never releases text that ends inside a complete value. What it releases is therefore always
- * whole around every value it contains, and `flush` releases the rest when the step ends.
+ * `longest value - 1` characters it has seen, the most an unfinished value can occupy. A cut
+ * that would split a complete value, or a run of overlapping ones, moves back to the run's
+ * start. A run that already starts the held text cannot move back without holding it forever
+ * (a value such as `00` in a stream of zeroes), so the cut stays, the part before it is
+ * released redacted, and the rest is carried as covered into the next release. Either way no
+ * character of a value is released, and `flush` releases the rest when the step ends.
  *
  * It releases whole lines where it can: a value with no newline cannot span a line end, so
  * every complete line is safe, and a step's stdout and stderr, each with a redactor of its own,
@@ -837,6 +868,8 @@ const MAX_OPEN_LINE = 4_096;
  */
 export class RedactedOutput {
   private pending = "";
+  /** The front of `pending` that a run released at the last cut still covers. */
+  private covered: RedactionSpan | null = null;
   private readonly hold: number;
   private readonly secrets: ReadonlyArray<{ name: string; value: string }>;
   /** No value holds a newline, so no value can span a line end and a whole line is safe. */
@@ -865,30 +898,24 @@ export class RedactedOutput {
     let cut = open > MAX_OPEN_LINE ? Math.max(lineEnd, this.pending.length - this.hold) : lineEnd;
     if (cut <= 0) return undefined;
     // A value that starts before `cut` is complete in `pending` (it is at most `hold + 1`
-    // long), so the only way to split one is to cut through it. Move the cut back to its start
-    // until no complete value straddles it; values may overlap, hence the loop.
-    for (let moved = true; moved && cut > 0;) {
-      moved = false;
-      for (const { value } of this.secrets) {
-        for (let at = this.pending.indexOf(value); at >= 0 && at < cut; at = this.pending.indexOf(value, at + 1)) {
-          if (at + value.length > cut) {
-            cut = at;
-            moved = true;
-          }
-        }
-      }
-    }
-    if (cut <= 0) return undefined;
-    const ready = this.pending.slice(0, cut);
+    // long), so the only way to split one is to cut through its merged span.
+    const spans = redactionSpans(this.pending, this.secrets, { leadingFragments: false }, this.covered);
+    const crossing = spans.find((span) => span.start < cut && span.end > cut);
+    let covered: RedactionSpan | null = null;
+    if (crossing && crossing.start > 0) cut = crossing.start;
+    else if (crossing) covered = { start: 0, end: crossing.end - cut, names: crossing.names };
+    const ready = applyRedaction(this.pending.slice(0, cut), spans);
     this.pending = this.pending.slice(cut);
-    return this.sink(redactClaimValues(ready, this.secrets, { leadingFragments: false }));
+    this.covered = covered;
+    return this.sink(ready);
   }
 
   flush(): void | Promise<void> {
     if (!this.pending) return undefined;
-    const rest = this.pending;
+    const rest = applyRedaction(this.pending, redactionSpans(this.pending, this.secrets, { leadingFragments: false }, this.covered));
     this.pending = "";
-    return this.sink(redactClaimValues(rest, this.secrets, { leadingFragments: false }));
+    this.covered = null;
+    return this.sink(rest);
   }
 }
 

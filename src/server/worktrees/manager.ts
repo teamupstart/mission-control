@@ -1785,6 +1785,10 @@ export class WorktreeManager {
     if (!identity || identity.gitCommonDirectory !== pool.gitCommonDirectory || identity.poolPath !== pool.poolPath) {
       return { outcome: "skipped", reason: "the pool's repository identity can no longer be proven" };
     }
+    // Release refuses a mismatched marker, so checking only there would reset and claim first.
+    if ((await readWorktreePoolMarker(pool.poolPath))?.poolId !== pool.id) {
+      return { outcome: "skipped", reason: "the pool marker is missing or belongs to another pool" };
+    }
     let policy: WorktreePolicy;
     try {
       policy = this.deps.resolvePolicy(identity.gitCommonDirectory);

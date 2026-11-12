@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { RedactedOutput, buildClaimEnvironment, runClaimStep, runClaimSteps } from "../src/server/worktrees/claim.ts";
+import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import { WarmLogFile, WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
@@ -245,6 +246,43 @@ test("Warm targets only idle slots, says what a pool Warm leaves alone, and need
 
 // ---- the happy path ----
 
+test("a queued Warm skips a slot whose pool marker went missing, untouched", async () => {
+  const fixture = repository("mission-warm-marker-");
+  const m = manager({ claim: claimOf(INSTALL) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const before = m.store.slot(slot!.slotId)!;
+  const ops = service(m, logsDirectory());
+  const preview = await ops.preview({ action: "warm", target: { kind: "slot", slotId: slot!.slotId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  rmSync(join(m.store.poolForSlot(slot!.slotId)!.poolPath, WORKTREE_POOL_MARKER));
+  const id = ops.submit(preview.token, []).operation.id;
+  await ops.idle();
+
+  const target = (await operation(ops, id)).warm?.targets[0];
+  assert.equal(target?.outcome, "skipped");
+  assert.match(target?.detail ?? "", /pool marker is missing/);
+  const row = m.store.slot(slot!.slotId)!;
+  assert.equal(row.state, "available");
+  assert.equal(row.version, before.version, "the slot was never reserved");
+  assert.equal(row.currentHeadSha, before.currentHeadSha);
+  assert.equal(runCount(row.path), 0, "no step ran");
+});
+
+test("an inline Warm execute reports what its own targets did, not a blanket success", async () => {
+  const fixture = repository("mission-warm-inline-");
+  const m = manager({ claim: claimOf(INSTALL) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const ops = service(m, logsDirectory());
+  const target = { kind: "slot", slotId: slot!.slotId } as const;
+
+  const warmed = await ops.preview({ action: "warm", target });
+  assert.deepEqual(await ops.execute(warmed.token, []), { ok: true, action: "warm", message: "Warm finished: 1 warmed." });
+
+  const skipped = await ops.preview({ action: "warm", target });
+  rmSync(join(m.store.poolForSlot(slot!.slotId)!.poolPath, WORKTREE_POOL_MARKER));
+  assert.deepEqual(await ops.execute(skipped.token, []), { ok: true, action: "warm", message: "Warm finished: 1 skipped." });
+});
+
 test("Warm holds the slot, resets it to origin's default, claims, returns it, and keeps its log", async () => {
   const fixture = repository("mission-warm-run-");
   const m = manager({ claim: claimOf(INSTALL) });
@@ -297,6 +335,15 @@ test("Warm holds the slot, resets it to origin's default, claims, returns it, an
   assert.equal(existsSync(logPath), false, "a log no operation and no slot names is removed");
   assert.equal(existsSync(join(logs, `${second}.log`)), true);
   assert.equal(await ops.warmLog(first), null);
+
+  // What a Warm is for: the next task lease finds the fingerprint current and runs no step.
+  const leased = await m.acquire({ repositoryPath: fixture.clone, baseSha: moved, owner: { kind: "task", key: "next:0" }, runClaim: true });
+  assert.equal(leased.outcome, "acquired", JSON.stringify(leased));
+  if (leased.outcome === "acquired") {
+    assert.equal(leased.lease.slotId, slot!.slotId);
+    assert.equal(runCount(row.path), 1, "the lease after a Warm pays nothing");
+    assert.equal((await m.release(leased.lease, { ownerAuthorized: true })).outcome, "released");
+  }
 });
 
 test("a slot leased while Warm idle slots is queued is skipped and listed as skipped", async () => {
@@ -848,6 +895,28 @@ test("a claim step's output pauses its pipes while the reader asks it to wait, a
   assert.equal(received, lines * 1024, "every byte arrived once the reader caught up");
 });
 
+test("a rejected output wait is reported like a thrown one, and the step still finishes", async (t) => {
+  const warnings: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warnings.push(String(message));
+  });
+  let calls = 0;
+  const result = await runClaimStep({
+    argv: [process.execPath, "-e", `process.stdout.write("one\\n");setTimeout(()=>process.stdout.write("two\\n"),200);`],
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMs: 60_000,
+    signal: new AbortController().signal,
+    onOutput: () => {
+      calls += 1;
+      return calls === 1 ? Promise.reject(new Error("the log is gone")) : undefined;
+    },
+  });
+  assert.equal(result.outcome, "exited");
+  assert.equal(calls, 2, "the pipes resumed after the rejection");
+  assert.deepEqual(warnings, ["[worktrees] claim output listener failed: the log is gone"]);
+});
+
 test("a full Warm log asks the writer to wait until it drains, and keeps every byte", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mission-warm-log-file-"));
   const log = new WarmLogFile("op", join(dir, "logs", "op.log"), () => "header\n");
@@ -962,6 +1031,29 @@ test("streamed claim output never carries a value, however the pipe splits it", 
   assert.equal(tail, "", "a possible value is held back");
   plain.flush();
   assert.equal(tail, "s3cr3t-val");
+  // A value that overlaps itself, in a run with no newline: the run is released as it grows,
+  // never held whole, and none of it escapes however the pipe splits it.
+  const zeros = [{ name: "Z_TOKEN", value: "00" }];
+  let streamed = "";
+  const run = new RedactedOutput(zeros, (chunk) => {
+    streamed += chunk;
+  });
+  for (let pushed = 0; pushed < 200_000; pushed += 1_000) run.push("0".repeat(1_000));
+  assert.ok(streamed.length > 0, "a run of a value streams before the step ends");
+  run.flush();
+  assert.equal(streamed.replaceAll("[Z_TOKEN redacted]", ""), "", "no zero escapes");
+  const overlapping = [{ name: "AB_TOKEN", value: "abab" }];
+  const long = `${"x".repeat(5_000)}${"ab".repeat(3_000)}a${"y".repeat(5_000)}\n`;
+  for (const size of [1, 3, 997, 4_099]) {
+    let out = "";
+    const stream = new RedactedOutput(overlapping, (chunk) => {
+      out += chunk;
+    });
+    for (let at = 0; at < long.length; at += size) stream.push(long.slice(at, at + size));
+    stream.flush();
+    // The lone "a" after the run begins no complete value, so it is ordinary output.
+    assert.equal(out.replaceAll("[AB_TOKEN redacted]", ""), `${"x".repeat(5_000)}a${"y".repeat(5_000)}\n`, `chunks of ${size}`);
+  }
   // No values: nothing is held.
   let direct = "";
   new RedactedOutput([], (chunk) => {

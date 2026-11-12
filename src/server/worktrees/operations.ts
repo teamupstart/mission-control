@@ -22,6 +22,7 @@ import {
   type WorktreeSlotDependenciesView,
   type WorktreeWarmLogView,
   type WorktreeWarmOperationView,
+  type WorktreeWarmTargetOutcome,
   type WorktreeWarmTargetView,
   isWorktreeOwnerKind,
   worktreeOperationPending,
@@ -1279,9 +1280,12 @@ export class WorktreeOperationsService {
   ): Promise<WorktreeActionExecuteResult> {
     if (this.tokens.get(token)?.preview.request.action === "warm") {
       // A Warm is an operation with a view of its own; inline, it is that operation awaited.
-      this.submit(token, acknowledgements);
+      // Read right after `submit`, the queue ends at this Warm's own link: it settles after the
+      // Warms accepted before it, which run first anyway, and never waits for later ones.
+      const { operation } = this.submit(token, acknowledgements);
       await this.warmQueue;
-      return { ok: true, action: "warm", message: this.successMessage("warm") };
+      const entry = this.operations.get(operation.id);
+      return { ok: true, action: "warm", message: warmResultMessage(entry ? this.viewOf(entry) : operation) };
     }
     const { held, acknowledgementSet } = this.claim(token, acknowledgements);
     return this.perform(held, acknowledgementSet);
@@ -1829,4 +1833,23 @@ export class WorktreeOperationsService {
       case "warm": return "Warm finished.";
     }
   }
+}
+
+const WARM_OUTCOME_ORDER: ReadonlyArray<[WorktreeWarmTargetOutcome, string]> = [
+  ["warmed", "warmed"],
+  ["claimFailed", "claim failed"],
+  ["failed", "failed"],
+  ["cancelled", "cancelled"],
+  ["skipped", "skipped"],
+];
+
+/** What one finished Warm did, counted by its targets' outcomes, never a blanket success. */
+function warmResultMessage(view: WorktreeOperationView): string {
+  if (view.state === "failed") return `Warm failed: ${view.error ?? "the operation stopped"}.`;
+  const outcomes = view.warm?.targets.map((target) => target.outcome) ?? [];
+  const counts = WARM_OUTCOME_ORDER
+    .map(([outcome, label]) => [outcomes.filter((entry) => entry === outcome).length, label] as const)
+    .filter(([count]) => count > 0)
+    .map(([count, label]) => `${count} ${label}`);
+  return counts.length > 0 ? `Warm finished: ${counts.join(", ")}.` : "Warm finished.";
 }

@@ -8,8 +8,9 @@ import { expect, test } from "../fixtures/test.ts";
 // Settings > Worktrees: a running Warm invalidates the inventory about once a second. When each
 // inventory read takes longer than that - a busy daemon, a loaded machine - the panel must still
 // show the Warm move from queued to in progress to finished. Every read is held here for longer
-// than the step's output interval, so a panel that keeps only the newest read never updates.
-// Nothing is dispatched; every agent binary stays faked anyway.
+// than the step's output interval, so a panel that keeps only the newest read never updates. A
+// refused Cancel must also stay on the Warm through those reads instead of being cleared by the
+// next one. Nothing is dispatched; every agent binary stays faked anyway.
 
 const WARM_SETTLES_MS = 60_000;
 const READ_DELAY_MS = 2_500;
@@ -81,9 +82,22 @@ test("a Warm still shows its progress when every inventory read is slower than i
     await expect(single).toContainText("in progress", { timeout: WARM_SETTLES_MS });
     await expect(single.getByLabel("Warm slot 1 output")).toContainText("fetched package 20", { timeout: WARM_SETTLES_MS });
 
+    // A refused Cancel stays on its Warm through the reads that keep arriving while it runs.
+    const refuseCancel = (route: Route) =>
+      route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "the daemon is shutting down" }) });
+    await dashboard.route("**/api/worktrees/operations/*/cancel", refuseCancel);
+    await single.getByRole("button", { name: "Cancel" }).click();
+    const refused = single.getByText("That Warm could not be cancelled: the daemon is shutting down");
+    await expect(refused).toBeVisible();
+    await expect(single.getByLabel("Warm slot 1 output")).toContainText("fetched package 40", { timeout: WARM_SETTLES_MS });
+    await expect(refused).toBeVisible();
+    await expect(single).toContainText("in progress");
+    await dashboard.unroute("**/api/worktrees/operations/*/cancel", refuseCancel);
+
     writeFileSync(gate, "0");
     await expect(single).toContainText("finished", { timeout: WARM_SETTLES_MS });
     await expect(single.getByRole("list", { name: "Warm slot 1 slots" })).toContainText("warmed");
+    await expect(refused).toHaveCount(0);
     await dashboard.unroute("**/api/worktrees", slowRead);
   } finally {
     rmSync(dir, { recursive: true, force: true });

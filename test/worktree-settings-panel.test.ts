@@ -4,8 +4,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
-import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
-import type { WorktreesState } from "../src/web/useWorktrees.ts";
+import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView, WorktreeWarmTargetOutcome } from "../src/shared/worktrees.ts";
+import { withCancelFailures, type WorktreesState } from "../src/web/useWorktrees.ts";
 
 const noop = async () => {};
 
@@ -611,4 +611,44 @@ test("Warm is offered on an idle slot and a pool with a claim, and a Warm shows 
   assert.match(finished, />finished</);
   assert.match(finished, />Dismiss</);
   assert.doesNotMatch(finished, />Cancel</);
+
+  // "Finished" is the state; its colour says whether any slot was warmed.
+  const toneOf = (...outcomes: WorktreeWarmTargetOutcome[]): string | undefined => {
+    const targets = outcomes.map((outcome, at) => ({ ...running.warm!.targets[0]!, slotId: `t${at}`, ordinal: at + 1, outcome }));
+    const markup = render({
+      inventory: { ...inventory, repositories: [claimPool] },
+      operations: [{ ...running, state: "finished", finishedAt: 2, warm: { ...running.warm!, targets } }],
+    });
+    return /class="wt-chip wt-chip-(\w+)">finished</.exec(markup)?.[1];
+  };
+  assert.equal(toneOf("warmed", "skipped"), "ready");
+  assert.equal(toneOf("warmed", "claimFailed"), "danger");
+  assert.equal(toneOf("failed"), "danger");
+  assert.equal(toneOf("warmed", "cancelled"), "attention");
+  assert.equal(toneOf("skipped"), "neutral", "nothing was warmed");
+});
+
+test("a refused Cancel stays on its Warm while that Warm is pending, whatever later reads say", () => {
+  const base: WorktreeOperationView = {
+    id: "op-a",
+    request: { action: "warm", target: { kind: "slot", slotId: "s1" } },
+    state: "running",
+    targets: [],
+    error: null,
+    changed: false,
+    removals: [],
+    completed: [],
+    queuedAt: 1,
+    finishedAt: null,
+    warm: null,
+  };
+  const failures = new Map([["op-a", "That Warm could not be cancelled: daemon busy"]]);
+  const [running] = withCancelFailures([base], failures);
+  assert.equal(running?.error, "That Warm could not be cancelled: daemon busy");
+  const [finished] = withCancelFailures([{ ...base, state: "finished", finishedAt: 2 }], failures);
+  assert.equal(finished?.error, null, "a Warm that ended says how it ended instead");
+  const [own] = withCancelFailures([{ ...base, error: "the daemon's own error" }], failures);
+  assert.equal(own?.error, "the daemon's own error");
+  const [other] = withCancelFailures([{ ...base, id: "op-b" }], failures);
+  assert.equal(other?.error, null);
 });

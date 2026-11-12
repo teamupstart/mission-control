@@ -339,7 +339,8 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### The folded session rail
 
-`e2e/.artifacts/session-rail-fold/` carries six frames. `01` and `02` are the same Console
+`e2e/.artifacts/session-rail-fold/` carries seven frames; `07` is the Board's all-sessions
+drill-in folded, with the back to the board now at the left of the detail head. `01` and `02` are the same Console
 session with the rail open and then folded to its strip, which is the "the conversation takes
 the rail's width" claim: compare the reply box's left edge between them. `03` is a folded strip
 after a session started waiting on you, with the Needs you count drawn and pulsing, and `06` is

@@ -302,7 +302,14 @@ export function ConsoleView(props: SessionViewProps & {
           // Keyed by id so switching sessions remounts: the tab resets to the
           // conversation and the transcript starts clean, instead of showing the
           // previous session's selected tab.
-          <ConsoleDetail key={active.id} view={props} session={active} />
+          <ConsoleDetail
+            key={active.id}
+            view={props}
+            session={active}
+            // A folded rail has no head, so the Board drill-in's way back moves to the detail
+            // head. Undefined in the Console layout, which has no board to go back to.
+            onBack={railFolded ? props.onBackToBoard : undefined}
+          />
         ) : (
           <div className="console-empty">
             <p className="empty-title">No session selected</p>

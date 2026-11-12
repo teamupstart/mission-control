@@ -287,8 +287,15 @@ test("both Board drill-in rails fold to the strip and give the reader the width"
   await expect.poll(() => widthOf(reader)).toBeGreaterThan(openReader + 200);
   await capture(page, "05-board-rail-folded");
 
+  // The strip has no head, so the way back moves to the detail head: one button, not two, and a
+  // mouse click on it leaves the drill-in without unfolding the rail first.
+  const back = page.getByRole("button", { name: "Back to the board" });
+  await expect(back).toHaveCount(1);
+  await expect(page.locator(".cdetail .detail-head").getByRole("button", { name: "Back to the board" }))
+    .toBeVisible();
+  await back.click();
+
   // The overview keeps its own columns: folding the rail never folds a Board column.
-  await page.keyboard.press("Escape");
   await expect(page.locator(".board-col.tone-idle .tile")).toHaveCount(1);
   await expect(page.locator(".board-col.tone-idle")).not.toHaveClass(/\bis-collapsed\b/);
   await expect.poll(() => railFolded(daemon)).toBe(true);
@@ -303,9 +310,17 @@ test("both Board drill-in rails fold to the strip and give the reader the width"
   await expect(allStrip).toBeVisible();
   await expect.poll(() => widthOf(page.getByRole("navigation", { name: "Sessions", exact: true })))
     .toBeLessThanOrEqual(41);
+  // The same move for the Console rail on the Board: the detail head holds the way back.
+  await expect(back).toHaveCount(1);
+  await expect(page.locator(".cdetail .detail-head").getByRole("button", { name: "Back to the board" }))
+    .toBeVisible();
+  await capture(page, "07-board-all-sessions-folded-back");
   await allStrip.click();
   const rail = page.getByRole("navigation", { name: "Sessions", exact: true });
   await expect(rail.locator(".rail-row")).toHaveCount(1);
+  // Unfolded, the rail head has it back and the detail head lets it go: still exactly one.
+  await expect(back).toHaveCount(1);
+  await expect(rail.getByRole("button", { name: "Back to the board" })).toBeVisible();
   // Unfolding here unfolds every rail: the column rail reads the same flag.
   await page.getByRole("button", { name: "Back to the board" }).click();
   await useUi(page, daemon, { boardSidebarAllSessions: false });

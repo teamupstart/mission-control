@@ -695,7 +695,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
             key={selected.id}
             view={props}
             session={selected}
-            onBack={railHidden ? props.onDeselect : undefined}
+            // The rail head's back button is off screen both when no rail is drawn and when
+            // the rail is folded to its strip, so the detail head carries the way back then.
+            onBack={railHidden || railFolded ? props.onDeselect : undefined}
           />
         )}
       </aside>

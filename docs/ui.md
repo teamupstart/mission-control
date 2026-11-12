@@ -785,6 +785,8 @@ again, to unfold.
   sidebar** is on). They are one rail, so they fold together. The Board overview's own
   columns fold separately, with their width control.
 - The fold persists per machine, like the layout itself.
+- On a **Board** drill-in, the strip has no head, so the **‹** back to the board moves to the
+  leading edge of the session's detail head while the rail is folded.
 - <kbd>↑</kbd>/<kbd>↓</kbd> still walk the sessions while it is folded, and
   <kbd>Esc</kbd> or <kbd>⇧</kbd><kbd>Tab</kbd> out of the reader hands the keyboard to the
   strip.

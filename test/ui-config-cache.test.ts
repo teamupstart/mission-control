@@ -59,6 +59,7 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
   assert.equal(config.boardSidebarAllSessions, false);
+  assert.equal(config.conversationRailCollapsed, false);
   // The drawer, floating: residents leave the fleet for an install that never chose.
   assert.equal(config.residentPlacement, "drawer");
   assert.equal(config.residentDrawerPinned, false);
@@ -106,6 +107,8 @@ test("a written cache round-trips", () => {
     // round-tripping this field says anything.
     groupBoardByRepo: false,
     boardSidebarAllSessions: true,
+    // Off its default, so it cannot round-trip by falling back.
+    conversationRailCollapsed: true,
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
@@ -134,6 +137,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
   assert.equal(config.boardSidebarAllSessions, true);
+  assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);

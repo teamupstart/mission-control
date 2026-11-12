@@ -286,6 +286,7 @@ const uiFields = {
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
   boardSidebarAllSessions: "setting",
+  conversationRailCollapsed: "setting",
   residentPlacement: "setting",
   residentDrawerPinned: "setting",
   collapsedBoardColumns: "setting",

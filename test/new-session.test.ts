@@ -142,3 +142,181 @@ test("make session refuses allocation when the daemon is unavailable", async () 
   assert.match(result.stderr, /make up.*make dev.*application/);
   assert.doesNotMatch(result.stderr, /treehouse/);
 });
+
+/**
+ * A daemon whose pool has a claim: the acquire answers 202, and each poll of the request is
+ * answered by the next entry of `polls` (the last one repeats).
+ */
+function claimingDaemon(polls: ReadonlyArray<{ status: number; body: unknown }>) {
+  const requests: Array<{ method: string; path: string; at: number }> = [];
+  let served = 0;
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      requests.push({ method: request.method ?? "", path: request.url ?? "", at: Date.now() });
+      if (request.method === "POST" && request.url === "/api/worktrees/manual/acquire") {
+        response.writeHead(202, { "content-type": "application/json" });
+        response.end(JSON.stringify({ requestId: "request-1", baseSha: "a".repeat(40) }));
+        return;
+      }
+      const answer = polls[Math.min(served, polls.length - 1)]!;
+      served += 1;
+      response.writeHead(answer.status, { "content-type": "application/json" });
+      response.end(JSON.stringify(answer.body));
+    });
+  });
+  return { server, requests };
+}
+
+const PRINT_LEASE = [
+  "--",
+  process.execPath,
+  "-e",
+  "console.log(JSON.stringify({cwd:process.cwd(),lease:process.env.MISSION_WORKTREE_LEASE_ID}))",
+];
+
+test("make session polls a 202 acquire every two seconds, printing the step and elapsed time, until granted", async () => {
+  const worktree = gitRepo("claimed-worktree");
+  const step = { step: 1, stepCount: 2, command: "yarn install --immutable", elapsedMs: 1_000 };
+  const { server, requests } = claimingDaemon([
+    { status: 200, body: { requestId: "request-1", state: "claiming", elapsedMs: 400, step: null } },
+    { status: 200, body: { requestId: "request-1", state: "claiming", elapsedMs: 2_400, step } },
+    {
+      status: 200,
+      body: {
+        requestId: "request-1",
+        state: "granted",
+        elapsedMs: 75_000,
+        lease: { path: worktree, leaseId: "manual-lease-claimed", baseSha: "a".repeat(40) },
+        claimWarning: {
+          step: 2,
+          stepCount: 2,
+          command: "yarn rebuild",
+          reason: "exited with code 1",
+          tail: "building esbuild\nYN0009: build failed\n",
+          truncatedBytes: 0,
+        },
+      },
+    },
+  ]);
+  const port = await listen(server);
+  try {
+    const result = await runScript(PRINT_LEASE, port);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(requests.map((entry) => `${entry.method} ${entry.path}`), [
+      "POST /api/worktrees/manual/acquire",
+      "GET /api/worktrees/manual/requests/request-1",
+      "GET /api/worktrees/manual/requests/request-1",
+      "GET /api/worktrees/manual/requests/request-1",
+    ]);
+    const polls = requests.slice(1).map((entry) => entry.at);
+    for (let i = 1; i < polls.length; i++) {
+      assert.ok(polls[i]! - polls[i - 1]! >= 1_900, `polls two seconds apart, got ${polls[i]! - polls[i - 1]!} ms`);
+    }
+    assert.match(result.stderr, /preparing the worktree · 0:00 elapsed/);
+    assert.match(result.stderr, /installing dependencies: step 1 of 2 \(yarn install --immutable\) · 0:02 elapsed/);
+    assert.match(result.stderr, /the dependency claim failed: step 2 of 2 \(yarn rebuild\) exited with code 1/);
+    assert.match(result.stderr, /^ {3}YN0009: build failed$/m);
+    assert.match(result.stderr, /The worktree is yours anyway/);
+    const environment = JSON.parse(result.stdout.trim().split("\n").at(-1)!) as Record<string, unknown>;
+    assert.equal(environment.cwd, worktree);
+    assert.equal(environment.lease, "manual-lease-claimed");
+  } finally {
+    await close(server);
+  }
+});
+
+test("make session reports a failed 202 acquire with the daemon's reason", async () => {
+  const { server } = claimingDaemon([
+    {
+      status: 200,
+      body: {
+        requestId: "request-1",
+        state: "failed",
+        elapsedMs: 10,
+        outcome: "notAcquired",
+        reason: "native pool capacity 2 is exhausted",
+      },
+    },
+  ]);
+  const port = await listen(server);
+  try {
+    const result = await runScript(PRINT_LEASE, port);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /native pool capacity 2 is exhausted/);
+    assert.equal(result.stdout, "", "nothing was launched");
+  } finally {
+    await close(server);
+  }
+});
+
+test("make session reports a 404 after a 202 as a daemon restart during the claim", async () => {
+  const { server } = claimingDaemon([
+    { status: 200, body: { requestId: "request-1", state: "claiming", elapsedMs: 10, step: null } },
+    { status: 404, body: { error: "manual acquire request was not found" } },
+  ]);
+  const port = await listen(server);
+  try {
+    const result = await runScript(PRINT_LEASE, port);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Mission Control restarted while it was installing this worktree's dependencies/);
+    assert.match(result.stderr, /run make session again/);
+    assert.equal(result.stdout, "", "nothing was launched");
+  } finally {
+    await close(server);
+  }
+});
+
+// Bounded, because the regression this guards against is a poll that never returns.
+test("make session abandons a status poll the daemon accepts but never answers, and polls again", { timeout: 45_000 }, async () => {
+  const worktree = gitRepo("stalled-poll-worktree");
+  const polls: Array<{ at: number; abandoned: boolean }> = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      if (request.method === "POST") {
+        response.writeHead(202, { "content-type": "application/json" });
+        response.end(JSON.stringify({ requestId: "request-1", baseSha: "a".repeat(40) }));
+        return;
+      }
+      const poll = { at: Date.now(), abandoned: false };
+      polls.push(poll);
+      response.on("close", () => { poll.abandoned = !response.writableEnded; });
+      if (polls.length === 1) return; // Accepted, never answered: no headers at all.
+      if (polls.length === 2) {
+        // Headers, then a body that never finishes.
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"requestId":"request-1","state":');
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        requestId: "request-1",
+        state: "granted",
+        elapsedMs: 20_000,
+        lease: { path: worktree, leaseId: "manual-lease-after-stall", baseSha: "a".repeat(40) },
+      }));
+    });
+  });
+  const port = await listen(server);
+  try {
+    const result = await runScript(PRINT_LEASE, port);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(polls.length, 3, "each stalled poll was given up on and the next one sent");
+    assert.deepEqual(polls.map((poll) => poll.abandoned), [true, true, false]);
+    for (const i of [1, 2]) {
+      const gap = polls[i]!.at - polls[i - 1]!.at;
+      // The five-second poll deadline, then the two-second interval: bounded, never left open.
+      assert.ok(gap >= 6_500 && gap < 12_000, `poll ${i + 1} followed a stalled poll after ${gap} ms`);
+    }
+    const environment = JSON.parse(result.stdout.trim().split("\n").at(-1)!) as Record<string, unknown>;
+    assert.equal(environment.lease, "manual-lease-after-stall");
+    // A body cut off by the deadline is no answer at all, never an empty "still preparing" one.
+    assert.doesNotMatch(result.stderr, /preparing the worktree/);
+  } finally {
+    server.closeAllConnections();
+    await close(server);
+  }
+});

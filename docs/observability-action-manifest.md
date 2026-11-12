@@ -39,6 +39,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`previewWorktreeAction`](../src/web/lib/api.ts#L343) | `/api/worktrees/actions/preview` |
 | [`executeWorktreeAction`](../src/web/lib/api.ts#L346) | `/api/worktrees/actions/execute` |
 | [`dismissWorktreeOperation`](../src/web/lib/api.ts#L352) | `/api/worktrees/operations/:id/dismiss` |
+| [`stopWorktreeClaim`](../src/web/lib/api.ts#L376) | `/api/worktrees/:id/claim/stop` |
 | [`openWorktreeTerminal`](../src/web/lib/api.ts#L355) | `/api/worktrees/:id/open` |
 | [`fetchEnvironmentChecks`](../src/web/lib/api.ts#L364) | `/api/environment/checks` |
 | [`fetchSetupChecks`](../src/web/lib/api.ts#L367) | `/api/setup/checks` |

@@ -146,6 +146,12 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
   ],
+  "src/server/worktrees/claim.ts": [
+    { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "operator-authored dependency claim step, resolved through the locator and streamed into a bounded tail in its own process group" },
+  ],
+  "src/server/worktrees/seed.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "seeding's copy-on-write clone through the pinned /bin/cp, whose -c (macOS) must be the platform's own; never a PATH search" },
+  ],
 };
 
 function sourceFiles(directory: string): string[] {

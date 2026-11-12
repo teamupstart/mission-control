@@ -3276,12 +3276,144 @@ export const WORKTREES_CONFIG_LIMITS = {
   maxCommonDirectoryBytes: 4096,
   maxSetupArgs: 32,
   maxSetupArgBytes: 4096,
+  maxClaimSteps: 16,
+  maxClaimStepVariables: 32,
+  maxClaimVariableNameBytes: 128,
+  maxClaimFingerprintPaths: 64,
+  maxClaimFingerprintPathBytes: 1024,
+  defaultClaimTimeoutMinutes: 10,
+  maxClaimTimeoutMinutes: 240,
+  maxClaimSeedPaths: 64,
+  maxClaimSeedExcludes: 64,
 } as const;
 
 const WorktreeSetupArgvSchema = z
   .array(z.string().min(1).max(WORKTREES_CONFIG_LIMITS.maxSetupArgBytes))
   .min(1)
   .max(WORKTREES_CONFIG_LIMITS.maxSetupArgs);
+
+/**
+ * Names a claim step may not ask for. `PATH` is the daemon's executable snapshot, and the
+ * `MISSION_`/`FLEET_`/`HARNESS_` prefixes are the daemon's own configuration, its state-home
+ * override and its admission token among them. A step that needs one of those is asking for the
+ * daemon, not for a dependency install.
+ */
+const RESERVED_CLAIM_VARIABLE = /^(PATH|(MISSION|FLEET|HARNESS)_.*)$/;
+
+const WorktreeClaimVariableNameSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimVariableNameBytes)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "a variable name is letters, digits and underscores")
+  .refine((name) => !RESERVED_CLAIM_VARIABLE.test(name), "PATH and MISSION_/FLEET_/HARNESS_ names are reserved");
+
+/**
+ * One glob matched against Git's repository-relative tree paths (`apps/web/package.json`).
+ * Anything that cannot be such a path is refused rather than silently matching nothing: an
+ * absolute path, a `.` or `..` segment, an empty segment, or a backslash.
+ */
+function repositoryRelativeGlob(glob: string): boolean {
+  return !glob.startsWith("/") &&
+    !glob.includes("\\") &&
+    glob.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+const WorktreeClaimFingerprintPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a fingerprint path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
+/**
+ * One seed path: a repository-relative glob matched level by level in a sibling slot, so each
+ * segment is a literal name or a one-level pattern. `**` is refused, because matching it would
+ * mean walking every installed dependency tree to find the paths to clone.
+ */
+const WorktreeClaimSeedPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  )
+  .refine(
+    (glob) => glob.split("/").every((segment) => !segment.includes("**")),
+    "a seed path cannot use **; name each directory level, with * for one level",
+  )
+  // In any letter case: on a case-insensitive disk `.Git` is the worktree's own `.git`, and a
+  // seed must never replace a checkout's Git administrative pointer.
+  .refine(
+    (glob) => glob.split("/").every((segment) => segment.toLowerCase() !== ".git"),
+    "a seed path cannot name .git",
+  );
+
+/** A path removed from a seed's clone before it is placed. `**` is allowed here. */
+const WorktreeClaimSeedExcludeSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed exclusion is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
+/**
+ * Which ignored dependency trees a cold slot clones copy-on-write from an idle sibling before
+ * its steps run, and what to leave out of the clone.
+ */
+const WorktreeClaimSeedSchema = z
+  .object({
+    paths: z.array(WorktreeClaimSeedPathSchema).min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedPaths),
+    exclude: z.array(WorktreeClaimSeedExcludeSchema).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedExcludes).default([]),
+  })
+  .strict();
+export type WorktreeClaimSeed = z.infer<typeof WorktreeClaimSeedSchema>;
+
+const WorktreeClaimStepSchema = z
+  .object({
+    /** Operator-authored argv, never a shell string. */
+    argv: WorktreeSetupArgvSchema,
+    /** Variable NAMES this step receives on top of the scrubbed check base. Never values. */
+    env: z
+      .array(WorktreeClaimVariableNameSchema)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimStepVariables)
+      .refine((names) => new Set(names).size === names.length, "a step names each variable once")
+      .default([]),
+  })
+  .strict();
+
+/**
+ * The pool's dependency claim: ordered steps run inside a task lease after reset or add and
+ * setup, and before the final proof. Stored beside `setupArgv`, so settings backups capture it
+ * with the rest of the repository override.
+ */
+export const WorktreeClaimSchema = z
+  .object({
+    steps: z.array(WorktreeClaimStepSchema).min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimSteps),
+    /** Covers the whole claim, every step together. */
+    timeoutMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimTimeoutMinutes)
+      .default(WORKTREES_CONFIG_LIMITS.defaultClaimTimeoutMinutes),
+    /** Repository-relative globs whose blob ids decide whether a slot's claim is current. */
+    fingerprintPaths: z
+      .array(WorktreeClaimFingerprintPathSchema)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPaths)
+      .default([]),
+    /**
+     * Seeding. Not a fingerprint input: what a seed copies changes how a cold slot gets its
+     * dependencies, never which dependencies a commit needs.
+     */
+    seed: WorktreeClaimSeedSchema.optional(),
+  })
+  .strict();
+export type WorktreeClaim = z.infer<typeof WorktreeClaimSchema>;
 
 const WorktreeRepositoryConfigSchema = z
   .object({
@@ -3294,6 +3426,8 @@ const WorktreeRepositoryConfigSchema = z
       .optional(),
     /** Operator-authored argv. It is never read from a repository-controlled file. */
     setupArgv: WorktreeSetupArgvSchema.optional(),
+    /** Operator-authored dependency claim. Also never read from the repository. */
+    claim: WorktreeClaimSchema.optional(),
   })
   .strict();
 
@@ -3340,6 +3474,8 @@ const WorktreeRepositoryConfigPatchSchema = z
       .optional(),
     /** Null removes an existing operator-authored setup command. */
     setupArgv: WorktreeSetupArgvSchema.nullable().optional(),
+    /** Replaces the whole claim. Null removes it. */
+    claim: WorktreeClaimSchema.nullable().optional(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, "repository patch must change at least one field");
@@ -3447,6 +3583,15 @@ export const WorktreeActionExecuteSchema = z
 
 export const OpenWorktreeSchema = z
   .object({ backend: z.enum(TERMINAL_BACKEND_IDS) })
+  .strict();
+
+/**
+ * Stop the dependency claim running in a slot. `claimId` is the running claim's own id, as the
+ * slot card and the task card were shown it, so a Stop can never land on a later claim in the
+ * same slot.
+ */
+export const StopWorktreeClaimSchema = z
+  .object({ claimId: z.string().min(1).max(128) })
   .strict();
 
 /**
@@ -4100,6 +4245,7 @@ export const UI_CONFIG_DEFAULTS = {
   groupBoardByRepo: true,
   /** Show every state group in the Board drill-in sidebar. */
   boardSidebarAllSessions: false,
+  conversationRailCollapsed: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
   /**
@@ -4270,6 +4416,7 @@ export const UiConfigSchema = z.object({
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
+  conversationRailCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.conversationRailCollapsed),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *

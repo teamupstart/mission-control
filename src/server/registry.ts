@@ -50,6 +50,7 @@ import type {
   SessionQueueSummary,
   SessionState,
   Task,
+  TaskProvisioning,
   TaskSummary,
   ThinkingLevel,
   WorkItem,
@@ -7108,6 +7109,47 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Where a dispatching task's `provisioning` comes from; null until a dispatcher sets one.
+   */
+  private taskProvisioningSource: ((task: Task) => TaskProvisioning | null) | null = null;
+
+  /**
+   * Name what a dispatching task's `provisioning` is derived from: the worktree manager's
+   * claim registry, as the dispatcher reads it. The registry never imports the manager.
+   */
+  setTaskProvisioningSource(source: (task: Task) => TaskProvisioning | null): void {
+    this.taskProvisioningSource = source;
+  }
+
+  /**
+   * A task with its derived `provisioning` recomputed. Only a dispatching task can be waiting
+   * on a claim, and a task that is not carries no `provisioning` key at all, so every other
+   * task's payload is exactly what it was. A value carried in by spreading an earlier snapshot
+   * is never trusted: it is read again here, on every publish.
+   */
+  private withProvisioning(task: Task): Task {
+    const provisioning = task.status === "dispatching" ? this.taskProvisioningSource?.(task) ?? null : null;
+    if (provisioning) return { ...task, provisioning };
+    if (task.provisioning === undefined) return task;
+    const { provisioning: _dropped, ...rest } = task;
+    return rest;
+  }
+
+  /**
+   * Re-derive and re-send one in-memory task's `provisioning`, when the claim it waits on
+   * starts a step or ends. Silent when nothing a dashboard draws changed. A task outside the
+   * in-memory board is skipped: nothing is drawing it, and it cannot be dispatching.
+   */
+  refreshTaskProvisioning(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const next = this.withProvisioning(current);
+    if (JSON.stringify(next.provisioning ?? null) === JSON.stringify(current.provisioning ?? null)) return;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  /**
    * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
    *
    * Called by the retention service after it moves the ledger, and it re-reads rather than
@@ -7150,9 +7192,10 @@ export class Registry extends EventEmitter {
     // Re-derived on every resident write rather than trusted from the caller. A writer that
     // built its row from a copy taken before Restart ended the run would otherwise broadcast it
     // without the record, and the replaced session would silently lose its Complete offer.
-    const task: Task = written.kind === "resident"
+    const published: Task = written.kind === "resident"
       ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
       : written;
+    const task = this.withProvisioning(published);
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -7418,6 +7461,7 @@ export class Registry extends EventEmitter {
               ? []
               : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
+          ...(t.claimWarnings && t.claimWarnings.length > 0 ? { claimWarnings: t.claimWarnings } : {}),
         }
       : null;
   }

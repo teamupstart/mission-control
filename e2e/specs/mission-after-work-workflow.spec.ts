@@ -344,7 +344,7 @@ for (const [kind, workflowId] of [
 }
 
 /**
- * Settings -> Tasks -> Dispatch defaults reaches the mission editor's kind switch.
+ * Settings -> Tasks After work rows reach the mission editor's kind switch.
  *
  * The rows are set to an operator's choices that differ from every built-in, so an editor that
  * ignored the fetched config and armed the built-ins would fail each assertion. Ship's row is
@@ -363,7 +363,7 @@ async function configureRows(daemon: DaemonHandle): Promise<void> {
   });
 }
 
-/** Resolves once the editor's own read of the Dispatch defaults has landed. */
+/** Resolves once the editor's own read of the After work defaults has landed. */
 function editorConfigRead(page: Page): Promise<unknown> {
   return page.waitForResponse((response) =>
     response.url().endsWith("/api/workflows/config") && response.request().method() === "GET");

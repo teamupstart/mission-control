@@ -450,8 +450,8 @@ affordance off, Archive and Publish are disabled, the settings rail does not tak
 there is a line saying why. **Duplicate** is the way to a version you own - the copy is an
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
-bindable. To have new tasks use your copy, publish it and choose it for each task kind under
-**Settings → Tasks → Dispatch defaults** (see
+bindable. To have new tasks use your copy, publish it and choose it in each task kind's
+**After work** row under **Settings → Tasks** (see
 [Dispatch an agent](dispatch-and-backlog.md), under **After work**).
 
 The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the

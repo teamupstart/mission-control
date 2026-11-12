@@ -349,9 +349,10 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-**Settings → Tasks → Dispatch defaults** holds one row per task kind Mission Control
-launches: ship, bugfix, document, plan, scout and chat. Pipeline has none, because Conductor
-owns what runs after its work. Each row holds one of three answers:
+**Settings → Tasks** has one card per task kind Mission Control launches: ship, bugfix,
+document, plan, scout and chat. Each card's **After work** row picks that kind's Workflow.
+Pipeline has none, because Conductor owns what runs after its work. Each row holds one of three
+answers:
 
 | Row | What a new task of that kind arms |
 | --- | --- |

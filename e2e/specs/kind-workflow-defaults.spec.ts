@@ -15,7 +15,7 @@ async function shoot(target: Locator, name: string): Promise<void> {
 }
 
 /**
- * Settings -> Tasks -> Dispatch defaults: one after-work Workflow per task kind.
+ * Settings -> Tasks: one after-work Workflow per task kind, in that kind's own card.
  *
  * Driven through the browser because the claim spans two surfaces: a row chosen on the
  * Settings page is what the dispatch form preselects when that kind is picked, and what the
@@ -68,7 +68,7 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   await expect(kindRow(dashboard, "scout")).toHaveValue(GENERAL_REVIEW);
   await expect(kindRow(dashboard, "plan")).toHaveValue("__none");
   expect(await selectedLabel(kindRow(dashboard, "ship"))).toBe("Built-in default (No-Mistakes Review (High Rigor))");
-  await shoot(dashboard.locator('[data-anchor="tasks/dispatch-defaults"]'), "01-settings-dispatch-defaults");
+  await shoot(dashboard.locator('[data-anchor="tasks/kinds"]'), "01-settings-dispatch-defaults");
 
   await dashboard.goto(`${daemon.baseURL}/`);
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -137,10 +137,13 @@ test("the rows live under Settings -> Tasks and nowhere under Workflows", async 
   await tasks.click();
   await expect(dashboard).toHaveURL(/#\/settings\/tasks$/);
   await expect(tasks).toHaveAttribute("aria-selected", "true");
-  const card = dashboard.locator('[data-anchor="tasks/dispatch-defaults"]');
-  await expect(card.getByRole("heading", { name: "Dispatch defaults" })).toBeVisible();
+  const cards = dashboard.locator('[data-anchor="tasks/kinds"]');
   await expect(kindRow(dashboard, "ship")).toBeEnabled();
-  await expect(card.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(6);
+  await expect(cards.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(6);
+  for (const kind of ["ship", "scout", "plan", "chat", "bugfix", "document"]) {
+    await expect(dashboard.locator(`[data-anchor="tasks/kind-${kind}"]`)
+      .getByRole("combobox", { name: `Default after-work Workflow for ${kind} tasks`, exact: true })).toHaveCount(1);
+  }
   const head = dashboard.locator(".settings-panel-head");
   await expect(head.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible();
   await expect(head.getByText("This machine", { exact: true })).toBeVisible();
@@ -424,7 +427,7 @@ test("an edit whose kind guess cannot be checked is refused until After work is 
 
   // Scout's real row names a Workflow, so saving the built-in None would be a silent change.
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(dialog.getByText(/Dispatch defaults could not be read/)).toBeVisible();
+  await expect(dialog.getByText(/After work defaults on Settings → Tasks could not be read/)).toBeVisible();
   await expect(dialog).toBeVisible();
   expect(await storedWorkflowId()).toBe(task.workflowId);
 

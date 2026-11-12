@@ -276,7 +276,7 @@ type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
 type ProvisionalWorkflow = { kind: TaskKind; workflowId: string | null };
 
 const UNRESOLVED_KIND_DEFAULT =
-  "Settings → Tasks → Dispatch defaults could not be read, so this kind's After work default is unknown. Choose an After work Workflow, or try again.";
+  "The After work defaults on Settings → Tasks could not be read, so this kind's After work default is unknown. Choose an After work Workflow, or try again.";
 type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
@@ -1663,7 +1663,7 @@ function DispatchModal({
   const provisionalWorkflow = provisionalWorkflowRef ?? ownProvisionalWorkflow;
 
   /**
-   * A kind switch arms that kind's row under Settings -> Tasks -> Dispatch defaults.
+   * A kind switch arms that kind's After work row under Settings -> Tasks.
    *
    * Ship is the kind the stash belongs to: leaving it puts the current choice aside, and
    * returning hands it back, unless the operator chose an after-work Workflow by hand in

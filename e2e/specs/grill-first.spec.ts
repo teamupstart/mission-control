@@ -86,20 +86,33 @@ test("each kind's default is chosen on Settings -> Tasks, all off until then, an
   daemon,
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/tasks`);
-  // Its own card beside Dispatch defaults holds one box per kind; Conductor launches pipeline.
-  await expect(dashboard.locator('[data-anchor="tasks/dispatch-defaults"]')
-    .getByRole("heading", { name: "Dispatch defaults" })).toBeVisible();
-  const card = dashboard.locator('[data-anchor="tasks/grill-first"]');
-  await expect(card.getByRole("heading", { name: "Grill me first" })).toBeVisible();
+  // Each kind's own card holds its After work row and its box; Conductor launches pipeline.
   for (const kind of ["ship", "bugfix", "document", "plan", "scout", "chat"]) {
-    const box = card.getByRole("checkbox", { name: `Grill me first for ${kind} tasks`, exact: true });
+    const kindCard = dashboard.locator(`[data-anchor="tasks/kind-${kind}"]`);
+    await expect(kindCard.getByRole("heading", { name: kind, exact: true })).toBeVisible();
+    await expect(kindCard.getByRole("combobox", { name: `Default after-work Workflow for ${kind} tasks`, exact: true }))
+      .toBeVisible();
+    const box = kindCard.getByRole("checkbox", { name: `Grill me first for ${kind} tasks`, exact: true });
     await expect(box).toBeEnabled();
     await expect(box).not.toBeChecked();
   }
-  await expect(card.getByRole("checkbox")).toHaveCount(6);
+  await expect(dashboard.locator('[data-anchor="tasks/kind-pipeline"]')).toHaveCount(0);
   await expect(kindBox(dashboard, "pipeline")).toHaveCount(0);
+  // Two cards to a row: ship and scout share the first row, at half the grid's width each.
+  const grid = await dashboard.locator('[data-anchor="tasks/kinds"]').boundingBox();
+  const ship = await dashboard.locator('[data-anchor="tasks/kind-ship"]').boundingBox();
+  const scout = await dashboard.locator('[data-anchor="tasks/kind-scout"]').boundingBox();
+  const plan = await dashboard.locator('[data-anchor="tasks/kind-plan"]').boundingBox();
+  if (!grid || !ship || !scout || !plan) throw new Error("the Tasks cards did not lay out");
+  expect(Math.abs(ship.y - scout.y)).toBeLessThan(1);
+  expect(scout.x).toBeGreaterThan(ship.x + ship.width - 1);
+  expect(plan.y).toBeGreaterThan(ship.y + ship.height - 1);
+  expect(Math.abs(ship.width - scout.width)).toBeLessThan(1);
+  expect(ship.width).toBeGreaterThan(grid.width * 0.45);
+  expect(ship.width).toBeLessThan(grid.width * 0.5);
+  const card = dashboard.locator('[data-anchor="tasks/kind-plan"]');
   // What it does is the "i"'s tooltip.
-  const info = card.getByRole("button", { name: "About Grill me first" }).first();
+  const info = card.getByRole("button", { name: "About Grill me first" });
   await expect(info).toHaveAccessibleDescription(TIP);
   await info.hover();
   await expect(dashboard.getByText("Before it starts the work, the agent runs the Library's Grill action", { exact: false }).first())

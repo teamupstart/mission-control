@@ -8934,6 +8934,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       effort: task.effort ?? undefined,
       personaId: task.personaId ?? undefined,
       workflowId: task.workflowId,
+      grillFirst: task.grillFirst ?? false,
       priority: task.priority,
       labels: task.labels,
     });

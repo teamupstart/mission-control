@@ -1161,8 +1161,9 @@ export class CheckLeaseManager {
    * Restore the pins durable rows imply, then resolve each row by whichever question it
    * actually needs answered.
    *
-   * This completes before new checks may start, the same ordering rule that makes embedded
-   * sessions restore before the discovery poller starts.
+   * The pins are live before the first await, and every row is already durable, so its tree
+   * stays its own while this runs. The caller may leave the rest running: releasing a tree can
+   * take minutes.
    */
   async reconcileOnStartup(recovery: CheckGroupRecovery = refusingGroupRecovery): Promise<void> {
     const rows = this.store.listLive();

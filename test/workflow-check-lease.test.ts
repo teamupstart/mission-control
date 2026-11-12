@@ -671,6 +671,38 @@ test("reconciliation restores pins before it resolves anything", async () => {
   await fresh.releaseForAttempt("att-restore");
 });
 
+test("startup reconciliation pins every live tree before the first await while a slow step runs", async () => {
+  const m = mkManager();
+  const path = await acquire(m, "att-slow-startup");
+
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
+  fresh.processes.record("att-slow-startup", 2468, "ticks-2468");
+  // The daemon does not await this pass, so whatever resolving a row takes - here the group
+  // question, in production also the tree's return - runs while new checks can already start.
+  let answer!: (outcome: "empty") => void;
+  const answered = new Promise<"empty">((resolve) => (answer = resolve));
+  let asked!: () => void;
+  const askedOnce = new Promise<void>((resolve) => (asked = resolve));
+  const startup = fresh.reconcileOnStartup(() => {
+    asked();
+    return answered;
+  });
+
+  assert.deepEqual(fresh.pinnedPaths(), [path], "pinned synchronously, before anything is awaited");
+  await askedOnce;
+  assert.equal(store.get("att-slow-startup")?.cleanupState, "held", "the slow step is still running");
+  assert.deepEqual(fresh.pinnedPaths(), [path]);
+
+  answer("empty");
+  await startup;
+
+  assert.equal(store.get("att-slow-startup")?.cleanupState, "returned");
+  assert.deepEqual(fresh.pinnedPaths(), []);
+});
+
 test("reconciliation returns a sentinel-pid row on identity alone", async () => {
   const m = mkManager();
   const path = await acquire(m, "att-sentinel");

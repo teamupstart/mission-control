@@ -1,6 +1,6 @@
 # Default owners for every path; team access is managed separately.
 # When code-owner review is required, approval from any one listed owner is sufficient.
-* @teamupstart/delivery-squad @teamupstart/developer-platform @mancej
+* @teamupstart/delivery-squad @teamupstart/developer-platform @mancej @teamupstart/repo-automation
 
 # Third party dependency checks
 Gemfile                 @teamupstart/infosec

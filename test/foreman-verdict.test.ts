@@ -579,3 +579,21 @@ test("menuBlocksAnswer: nothing is blocked when the menu isn't the answer's surf
   const escalate: Verdict = { purpose: "p", classification: "other", action: "escalate" };
   assert.equal(menuBlocksAnswer(escalate, ctx({ menu: TRAY_MENU })), false, "only an ANSWER can be blocked");
 });
+
+test("extractVerdict reads null optionals as absent instead of dropping the verdict", () => {
+  const got = extractVerdict(JSON.stringify({
+    purpose: "Asks which branch to use",
+    classification: "implementation",
+    action: "answer",
+    answer: { text: "Use main.", submit: null, option: null, form: null },
+    recommendation: null,
+    brief: null,
+    confidence: null,
+  }));
+  assert.ok(got);
+  assert.equal(got.answer?.text, "Use main.");
+  assert.equal(got.answer?.submit, true);
+  assert.equal(got.answer?.option, undefined);
+  assert.equal(got.recommendation, undefined);
+  assert.equal(got.confidence, undefined);
+});

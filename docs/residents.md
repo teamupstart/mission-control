@@ -408,6 +408,12 @@ already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
+When the resident is busy - a turn in progress, a human message waiting, an open request for
+you, or a compaction - Run now queues the iteration instead of refusing. The status reads
+**run queued** and the control becomes **Cancel queued run**. Whatever had priority finishes
+first; the queued iteration then runs once, on the next idle moment, without waiting for the
+cadence. The request is durable across reloads and daemon restarts. Pausing drops it, and Run
+now on a paused, busy resident resumes the loop and queues.
 After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
 and launches the latest revision in a new conversation. The old task and session stay open, and
 Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
@@ -434,8 +440,17 @@ for that conversation.
 Before a wake at or above the context threshold, the daemon asks the harness to compact and
 waits for a measured result below that threshold. Compaction and human turns do not count as
 iterations. Missing or invalid context readings pause before a wake until a fresh measurement
-is available and you resume. An interrupted or unconfirmed compaction also pauses instead of
-sending a loop prompt.
+is available and you resume. A compaction never sends the loop prompt until it is measured
+below the threshold.
+
+A compaction that makes no progress for ten minutes is interrupted, so the harness turn ends
+and the session is idle again instead of working indefinitely. A failed compaction (stalled,
+ended without a measured boundary, or refused by the harness) is retried after 1, 5 and then
+15 minutes; the status names the failure and the next retry. A fourth consecutive failure
+pauses with that reason, and Resume starts a fresh set of retries. A measured compaction resets
+the count. Two failures pause at once: a compaction that could not be interrupted, because the
+session may still be mid-turn, and one that finished above the threshold. A human message that
+arrives during a failing compaction keeps precedence, and the next wake compacts again.
 
 The editor and every live-run surface name the active compaction layers:
 

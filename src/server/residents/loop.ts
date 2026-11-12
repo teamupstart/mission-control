@@ -8,11 +8,17 @@ import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { SdkSupervisor } from "../sdk/supervisor.ts";
 import { adoptResidentLaunch, getResidentRun, listOpenResidentRuns, residentRunForTask } from "./store.ts";
+import { CompactionError } from "../harness/compaction.ts";
 import {
-  ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, completeResidentCompaction, completeResidentGeneration,
-  humanResidentTurn, liveRun, paceResident, pauseResident, pruneResidentLoop, residentClaims,
-  residentGuardrail, releaseResidentReviewPause, resumeResident, settleResidentClaim, type ResidentIteration,
+  ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, clearResidentRunRequest, completeResidentCompaction,
+  completeResidentGeneration, humanResidentTurn, liveRun, paceResident, pauseResident, pruneResidentLoop, recordResidentCompactionFailure,
+  requestResidentRun, residentClaims, residentGuardrail, releaseResidentReviewPause, resumeResident, retryResidentCompaction,
+  settleResidentClaim, type ResidentIteration,
 } from "./loop-store.ts";
+
+const BUSY_BLOCKER = "A human message or active turn has priority.";
+/** Seconds before each retry of a failed compaction. One more failure pauses the resident. */
+export const RESIDENT_COMPACTION_RETRY_DELAYS_S = [60, 300, 900] as const;
 
 interface LoopDeps {
   registry: Pick<Registry, "subscribe" | "getTask" | "getSession" | "upsertResidentRun" | "onTurnDelivered">;
@@ -136,6 +142,8 @@ export class ResidentLoop {
     if (cycle?.completedAt !== null && cycle?.completedAt !== undefined &&
         completeResidentGeneration(id, cycle.generation, cycle.completedAt)) this.publish(id);
     const current = getResidentRun(id)!.run;
+    // Run now pressed while busy: human turns and the turn in progress went first; now it runs.
+    if (current.runRequestedAt !== null) { this.cancelTimer(id); void this.wake(id, "run_now"); return; }
     if (current.nextWakeAt === null || this.timers.has(id)) return;
     const timer = setTimeout(() => {
       this.timers.delete(id);
@@ -175,17 +183,36 @@ export class ResidentLoop {
     this.enqueue(run.id);
     return receipt;
   }
-  async runNow(id: string): Promise<void> {
+  /**
+   * Wake now, or queue the wake behind whatever has priority. A human message, an open
+   * request and the turn in progress all go first; the queued run fires on the next idle
+   * observation, once, and a pause drops it.
+   */
+  async runNow(id: string): Promise<"started" | "queued"> {
     const run = liveRun(id);
     if (this.stopped) throw new ResidentLoopRefusal("The resident loop is restoring or shutting down.");
     const session = this.session(run);
     if (!session) throw new ResidentLoopRefusal("The resident session is unavailable.");
-    if (session.state !== "idle" || session.workCycle?.active || session.pendingTurns.length) {
-      throw new ResidentLoopRefusal("A human message or active turn has priority. Run again when the resident is idle.");
-    }
+    const busy = session.state !== "idle" || !!session.workCycle?.active || session.pendingTurns.length > 0 ||
+      reportBucket(session) === "needs-you" || this.sending.has(id) || run.loopState === "compacting";
     if (run.loopState === "paused") this.resume(id);
+    if (busy) {
+      requestResidentRun(id, this.now());
+      this.publish(id);
+      this.enqueue(id);
+      return "queued";
+    }
     this.cancelTimer(id);
     await this.wake(id, "run_now");
+    // The session can turn busy between the check above and the wake's own; the wake then
+    // keeps the request rather than dropping it, and this answer says so.
+    return getResidentRun(id)?.run.runRequestedAt != null ? "queued" : "started";
+  }
+  /** Drop a queued Run now. Refuses when nothing is queued, so a stale click is visible. */
+  cancelRunNow(id: string): void {
+    liveRun(id);
+    if (!clearResidentRunRequest(id)) throw new ResidentLoopRefusal("No queued run to cancel.");
+    this.publish(id);
   }
   private wake(id: string, trigger: "loop" | "run_now"): Promise<void> {
     if (this.stopped) return Promise.resolve();
@@ -203,19 +230,35 @@ export class ResidentLoop {
     const target = current && this.session(current);
     if (this.stopped || !current || current.endedAt !== null || current.loopState === "paused") return "Resident paused or ended.";
     if (!target || target.id !== session.id || target.agentSessionId !== session.agentSessionId) return "Resident conversation changed.";
-    if (target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return "A human message or active turn has priority.";
+    if (target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return BUSY_BLOCKER;
     return null;
+  }
+  /**
+   * The blocker, if any. A Run now that meets a busy session is queued behind it instead of
+   * being dropped. Only busy blockers queue: observation sees the same busy session and waits,
+   * so the request cannot spin, and a paused, ended or replaced run keeps nothing.
+   */
+  private held(run: ResidentRun, session: Session, trigger: "loop" | "run_now"): string | null {
+    const blocked = this.blocker(run, session);
+    if (blocked === BUSY_BLOCKER && trigger === "run_now") {
+      requestResidentRun(run.id, this.now());
+      this.publish(run.id);
+    }
+    return blocked;
   }
   private async deliver(id: string, trigger: "loop" | "run_now"): Promise<void> {
     let run = liveRun(id);
     if (run.loopState === "paused" || claimedIteration(id)) return;
     let session = this.session(run);
-    if (!session || this.blocker(run, session)) return;
+    if (!session || this.held(run, session, trigger)) return;
     // A restored overdue wake or Run now can precede the next passive poll.
     // Reuse that reader before checking context and spend, then re-read its registry result.
     this.deps.refreshSession(session);
     session = this.session(run);
-    if (!session || this.blocker(run, session)) return;
+    if (!session || this.held(run, session, trigger)) return;
+    // This delivery is the queued Run now. Spend it before anything that awaits, so a failed
+    // compaction's backoff is not overtaken by the same request on the next observation.
+    if (clearResidentRunRequest(id)) this.publish(id);
     const cap = residentGuardrail(run, this.now());
     if (cap) { this.pause(id, cap); return; }
     const contextPct = session.meta?.contextPct;
@@ -225,7 +268,24 @@ export class ResidentLoop {
     if (contextPct >= run.settings.loop.contextThreshold) {
       beginResidentCompaction(id);
       this.publish(id);
-      const compactedPct = await this.deps.sdk.compact(session.id, run.settings.loop.compactionFocus, () => this.blocker(run, session));
+      let compactedPct: number;
+      try {
+        compactedPct = await this.deps.sdk.compact(session.id, run.settings.loop.compactionFocus, () => this.blocker(run, session));
+      } catch (error) {
+        run = liveRun(id);
+        // A delivered human turn moved the loop to working; its completion schedules the next wake.
+        if (run.loopState !== "compacting") return;
+        // `blocker` cannot classify a driver failure: the interrupted `/compact` is itself an
+        // active turn until it unwinds. Only a refusal before sending is a human preemption.
+        const preempted = !(error instanceof CompactionError) && this.blocker(run, session) !== null;
+        const current = this.session(run);
+        if (preempted || this.stopped || !current || current.id !== session.id || current.agentSessionId !== session.agentSessionId) {
+          this.pause(id, "Compaction interrupted by a human message or a conversation change.");
+          return;
+        }
+        this.compactionFailed(id, error);
+        return;
+      }
       run = liveRun(id);
       if (this.blocker(run, session)) {
         if (run.loopState === "compacting") this.pause(id, "Compaction interrupted by a human message or a conversation change.");
@@ -261,6 +321,26 @@ export class ResidentLoop {
       settleResidentClaim(claim, crossed ? "unconfirmed" : "released", this.now());
       if (!crossed) releaseInjection(session.id, text);
     }
+    this.publish(id);
+  }
+  /** Retry a failed compaction on a backoff; pause once the retries are spent. */
+  private compactionFailed(id: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const retryable = !(error instanceof CompactionError) || error.retryable;
+    const failures = recordResidentCompactionFailure(id);
+    const delaySeconds = RESIDENT_COMPACTION_RETRY_DELAYS_S[failures - 1];
+    if (!retryable || delaySeconds === undefined) {
+      const attempts = failures > 1 ? ` Paused after ${failures} compaction attempts.` : "";
+      this.pause(id, `${message}${attempts} Resume to try again.`);
+      return;
+    }
+    const session = this.session(liveRun(id));
+    const idle = !!session && session.state === "idle" && !session.workCycle?.active;
+    const wait = delaySeconds < 60 ? `${delaySeconds}s` : `${Math.round(delaySeconds / 60)}m`;
+    retryResidentCompaction(id, {
+      delaySeconds, at: this.now(), idle, generation: session?.workCycle?.generation ?? null,
+      reason: `${message} Retrying in ${wait} (retry ${failures} of ${RESIDENT_COMPACTION_RETRY_DELAYS_S.length}).`,
+    });
     this.publish(id);
   }
   private findMarker(session: Session, claim: ResidentIteration, run: ResidentRun): number | null {

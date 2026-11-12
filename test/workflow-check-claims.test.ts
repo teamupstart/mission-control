@@ -852,6 +852,7 @@ const policy = () => ({
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
   skipPassedJudges: true,
+  kindWorkflowDefaults: {},
 });
 
 const catalog = (slot: WorkflowCheckSlot): WorkflowCommandView => ({

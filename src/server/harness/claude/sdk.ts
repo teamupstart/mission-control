@@ -456,7 +456,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private readonly compaction = new CompactionCompletion();
   compact = async (focus: string) => {
     if (this.turnActive) throw new Error("Cannot compact a busy session.");
-    const completed = this.compaction.begin();
+    const completed = this.compaction.begin(() => this.interrupt());
     try {
       const accepted = await this.sendIfIdle({ text: `/compact ${focus}`.trim() });
       if (!accepted) this.compaction.fail("The driver refused compaction while busy.");

@@ -475,7 +475,7 @@ class CodexSdkSession implements SdkSessionHandle {
   compact = async (_focus: string) => {
     this.requireLive();
     if (this.activeTurnId !== null) throw new Error("Cannot compact a busy session.");
-    const completed = this.compaction.begin();
+    const completed = this.compaction.begin(() => this.interrupt());
     this.compactContext = null;
     try {
       await this.client.request<ThreadCompactStartResponse>("thread/compact/start", {

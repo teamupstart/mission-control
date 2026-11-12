@@ -63,7 +63,8 @@ export function archiveResidentProfile(id: string, expectedRevision: number): Pr
   });
 }
 
-export function controlResident(id: string, action: "pause" | "resume" | "run-now" | "restart"): Promise<unknown> {
+export type ResidentControlAction = "pause" | "resume" | "run-now" | "cancel-run-now" | "restart";
+export function controlResident(id: string, action: ResidentControlAction): Promise<unknown> {
   return residentRequest(`/api/residents/runs/${encodeURIComponent(id)}/${action}`, { method: "POST" });
 }
 export function fetchResidentSkills(): Promise<ResidentSkillIndex> {

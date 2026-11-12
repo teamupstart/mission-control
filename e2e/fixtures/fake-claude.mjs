@@ -149,6 +149,8 @@ const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2
  * real ordering without slowing every dispatch in the suite.
  */
 const HOLD_FIRST_TURN = process.env.MC_E2E_HOLD_FIRST_TURN === "1";
+/** Opt-in: `/compact` turns stay open until interrupted. See the branch that reads it. */
+const STALL_COMPACT = process.env.MC_E2E_CLAUDE_STALL_COMPACT === "1";
 const SLOW_STOP = "E2E_SLOW_SESSION_STOP";
 const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
@@ -1786,6 +1788,12 @@ rl.on("line", (line) => {
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
+    // A `/compact` that the CLI accepts and then never finishes, the way it hung behind a
+    // dead network. Only an interrupt ends it, which is the recovery under test.
+    if (STALL_COMPACT && prompt.startsWith("/compact")) {
+      openTurn = { prompts: [prompt] };
+      return;
+    }
     if (prompt.includes(RELEASED_TURN)) {
       const turnState = { prompts: [prompt] };
       turnState.timer = setInterval(() => {

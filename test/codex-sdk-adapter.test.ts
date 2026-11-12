@@ -19,6 +19,7 @@ import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
+import { CompactionError } from "../src/server/harness/compaction.ts";
 
 // What is at stake: this adapter is the only thing standing between `codex app-server` and
 // every surface in the app, and three of its decisions are the difference between an
@@ -231,6 +232,22 @@ test("resident compaction uses thread/compact/start and measured contextCompacti
   const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/codex-manual.json", import.meta.url), "utf8")) as Array<{ method: string; params: Record<string, unknown> }>;
   for (const frame of fixture) server.notify(frame.method, { ...frame.params, threadId: THREAD.id });
   assert.deepEqual(await operation, { contextTokens: 14385, contextWindow: 258400 });
+  await handle.stop(); await drained;
+});
+
+test("a stalled resident compaction interrupts the Codex compaction turn and reports a retryable stall", async (t) => {
+  // Read when the driver is built, so set before launch and restore after.
+  process.env.MISSION_RESIDENT_COMPACTION_STALL_MS = "30";
+  t.after(() => { delete process.env.MISSION_RESIDENT_COMPACTION_STALL_MS; });
+  const server = new FakeServer(defaultReplies({ "thread/compact/start": {} }));
+  const { handle, drained } = await launch(server, { prompt: "" });
+  const operation = handle.compact!("focus");
+  await settle();
+  // The server opens the compaction turn and then never completes it.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "stalled-compact", status: "inProgress" } });
+  await assert.rejects(operation, (error: unknown) => error instanceof CompactionError && error.retryable &&
+    error.message === "Compaction made no progress for 1 second and was interrupted.");
+  assert.deepEqual(server.calls("turn/interrupt").map(call => call.params), [{ threadId: THREAD.id, turnId: "stalled-compact" }]);
   await handle.stop(); await drained;
 });
 

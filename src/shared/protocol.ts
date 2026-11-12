@@ -4227,6 +4227,8 @@ export const UI_CONFIG_DEFAULTS = {
   conversationRailCollapsed: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /** The session rail starts open, as every build before the fold drew it. */
+  sessionRailFolded: false,
   /**
    * Empty, both of them: the bar ships the way its predecessor drew it - every item present
    * and every control at full size, with the measured ladder still shedding labels when the
@@ -4408,6 +4410,17 @@ export const UiConfigSchema = z.object({
    * failing the whole config. An unknown id simply matches no column.
    */
   collapsedBoardColumns: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([]),
+  /**
+   * Whether the session rail beside an open session's detail is folded down to a strip, so
+   * the conversation and terminal take the width it held.
+   *
+   * One flag for every rail the dashboard draws there - the Console's, and the Board drill-in's
+   * in both of its shapes - because they are one surface: the Board's focused column BECOMES
+   * that rail, and a fold that held on one side of the morph and not the other would read as
+   * the rail reopening by itself. Saved, like `collapsedBoardColumns`: how wide someone wants
+   * their reader is a way of working, not a gesture. See `src/web/lib/session-rail.ts`.
+   */
+  sessionRailFolded: z.boolean().default(UI_CONFIG_DEFAULTS.sessionRailFolded),
   /**
    * The topbar's optional items the operator has hidden - the session counts, search, the cost
    * estimate, product feedback, and alerts and away mode.

@@ -203,6 +203,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     collapsedBoardColumns: Array.isArray(raw?.collapsedBoardColumns)
       ? raw.collapsedBoardColumns.filter((id): id is string => typeof id === "string")
       : [],
+    // Only a stored `true` folds, as `residentDrawerPinned` reads: anything else is the open
+    // rail every earlier build drew.
+    sessionRailFolded: raw?.sessionRailFolded === true,
     // Fresh arrays, for the reason above: the Top bar panel builds its next patch from what
     // it reads here, and a miss means the shipped bar - nothing hidden, nothing minimized.
     hiddenTopbarItems: Array.isArray(raw?.hiddenTopbarItems)

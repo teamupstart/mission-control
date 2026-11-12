@@ -28123,7 +28123,31 @@ span.line-run-prov {
 .board-all-sessions > .console {
   min-width: 0;
 }
+/* The rail folded to its strip: the same 40px a folded Board column takes, and every other
+   pixel goes to the detail - the conversation, its terminal and the composer all widen with it,
+   because each sizes itself to `.console-detail`. */
+.console[data-rail="folded"] {
+  grid-template-columns: var(--board-col-collapsed) 1fr;
+}
+/* A head that stays put over rows that scroll: the fold control (and, drilled in from the
+   Board, the way back) is never scrolled out of reach. */
 .console-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  /* The containing block for every absolutely positioned descendant, above all Tooltip's 1px
+     `.tt-desc` - the head's controls carry one too. See `.console-rail-rows`. */
+  position: relative;
+  border-right: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.console-rail-head {
+  flex: none;
+}
+.console-rail-rows {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   /* The containing block for every absolutely positioned row descendant, above all
      Tooltip's 1px `.tt-desc`. Unpositioned, those resolved to the nearest positioned
@@ -28132,8 +28156,84 @@ span.line-run-prov {
      Board computes its vertical overflow to `auto`, so that drew a second, useless
      scrollbar beside the session detail (#1393). */
   position: relative;
-  border-right: 1px solid var(--border-soft);
-  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+/* The fold control, at the right of whichever head the rail has. Drawn like the head's back
+   button so the two read as one pair of controls. */
+.session-rail-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* A count already holds the auto margin in a Board rail head, so the fold sits after it. */
+.board-col-n ~ .session-rail-fold {
+  margin-left: 2px;
+}
+.session-rail-fold:hover {
+  color: var(--fg);
+  background: var(--panel);
+  border-color: var(--border);
+}
+.session-rail-fold:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* The folded rail: one button, the whole strip, in a folded Board column's register - a glyph
+   that says which way it opens, a count per state group in that group's colour, and the
+   rail's name set vertically. */
+.session-rail-strip {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 0;
+  padding: 11px 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.session-rail-strip:hover {
+  background: color-mix(in oklab, var(--neutral) 7%, transparent);
+}
+.session-rail-strip:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -3px;
+}
+.session-rail-strip-glyph {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+}
+.session-rail-strip:hover .session-rail-strip-glyph {
+  color: var(--fg);
+}
+.session-rail-strip .session-rail-strip-n {
+  margin-left: 0;
+  padding: 1px 6px;
+  color: var(--tone-color, var(--dim));
+  border-color: color-mix(in oklab, var(--tone-color, var(--border)) 45%, var(--border));
+  background: color-mix(in oklab, var(--tone-color, var(--panel)) 12%, var(--panel));
+}
+@media (prefers-reduced-motion: no-preference) {
+  .session-rail-strip-n.is-pulsing {
+    animation: board-strip-pulse 0.9s ease-out 2;
+  }
 }
 .rail-group {
   position: sticky;
@@ -30065,6 +30165,14 @@ span.line-run-prov {
   .board-detail > .cdetail {
     width: calc(100cqw - var(--board-rail-width));
   }
+}
+/* The drill-in rail folded to its strip (`UiConfig.sessionRailFolded`): the rail track and the
+   reader's width both read the strip's 40px instead of the rail's. After the container query
+   above and more specific than its rule, so a narrow Board folds to the strip too rather than
+   holding the rail's 200px floor open. */
+.board[data-rail="folded"] .board-col,
+.board[data-rail="folded"] .board-detail {
+  --board-rail-width: var(--board-col-collapsed);
 }
 /* The open session's column had no card, so no rail is drawn (BoardView's `railHidden`): the
    reader takes the whole Board instead of the Board less a rail that is not there. After the
@@ -33314,7 +33422,10 @@ span.line-run-prov {
 /* Below this the console's rail and the board's columns stop being a layout and start
    being a squeeze. Both collapse to one column rather than pretending. */
 @media (max-width: 760px) {
-  .console {
+  /* The folded Console too: its 40px strip track is more specific than `.console` and would
+     otherwise survive here, leaving the detail in a 40px column beside a hidden rail. */
+  .console,
+  .console[data-rail="folded"] {
     grid-template-columns: 1fr;
   }
   .console-rail {

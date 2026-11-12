@@ -78,6 +78,7 @@ import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
 import { useRichText } from "../lib/rich-text.ts";
+import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
 import { Markdown } from "./Markdown.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import { agentAccentStyle } from "./session-bits.tsx";
@@ -471,6 +472,8 @@ export function TranscriptPanel({
    * they close it, not be silently returned to Activity.
    */
   const [railTab, setRailTab] = useState<ActivityTab>("activity");
+  /** A per-machine preference rather than local state, so one fold holds for every session. */
+  const railCollapsed = useUiConfig().conversationRailCollapsed;
   /**
    * The turn the "Yours" rail last jumped to.
    *
@@ -1322,6 +1325,8 @@ export function TranscriptPanel({
             }}
             selectedTurnId={jump?.id ?? null}
             onSelectTurn={(id) => setJump((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))}
+            collapsed={railCollapsed}
+            onCollapsed={(next) => void updateUiConfig({ conversationRailCollapsed: next })}
           />
         )}
       </div>

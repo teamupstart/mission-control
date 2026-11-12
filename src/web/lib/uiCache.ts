@@ -197,6 +197,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     // `??` for the same reason: a stored value is the operator's choice of which state groups
     // the Board drill-in sidebar lists, and `||` would read a stored `false` as absent.
     boardSidebarAllSessions: raw?.boardSidebarAllSessions ?? UI_CONFIG_DEFAULTS.boardSidebarAllSessions,
+    conversationRailCollapsed: raw?.conversationRailCollapsed === true,
     // A fresh array, like `trustStaged`: the column-width store builds its next patch from
     // what it reads here.
     collapsedBoardColumns: Array.isArray(raw?.collapsedBoardColumns)

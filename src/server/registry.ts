@@ -848,6 +848,9 @@ function bucketedAge(ms: number | null): number | null {
   return ms === null ? null : Math.floor(ms / 10_000);
 }
 
+/** Subscribers the Registry carries before Node reports a possible listener leak. */
+const REGISTRY_SUBSCRIBER_LIMIT = 100;
+
 /**
  * In-memory source of truth for live sessions and pending reviews. Emits a
  * `ServerEvent` on every change; the SSE layer forwards those to browsers.
@@ -1273,6 +1276,10 @@ export class Registry extends EventEmitter {
 
   constructor() {
     super();
+    // A fan-out bus by design: about a dozen services subscribe at boot and every open
+    // dashboard tab adds one through SSE. Node's default of ten warned on every boot; this
+    // bound still warns on a subscriber that leaks per request.
+    this.setMaxListeners(REGISTRY_SUBSCRIBER_LIMIT);
     this.latestRateLimits = loadClaudeRateLimits();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);

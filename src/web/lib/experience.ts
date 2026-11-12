@@ -5,6 +5,15 @@ import { matchPrimaryAction } from "@shared/telemetry-sources/primary-actions.ts
 import { matchWorkflowAction } from "@shared/workflow-actions.ts";
 
 const LIMIT = 32;
+/**
+ * How long one ingress attempt may take before it counts as a failed attempt.
+ *
+ * A timed-out attempt is one of the three a record gets, so this must outlast a slow answer
+ * rather than a fast one: through the development server's proxy on a loaded machine an
+ * ingress POST took 5.7s, and at two seconds three of them in a row discarded the record.
+ * A retry carries the same operation id, so waiting longer never risks a duplicate.
+ */
+export const INGRESS_ATTEMPT_TIMEOUT_MS = 10_000;
 type Item = { operation: AppOperation; record: TelemetryIngressRecord; attempts: number };
 const pending: Item[] = [];
 let flushing = false;
@@ -26,7 +35,7 @@ export async function flushExperience(): Promise<void> {
       try {
         const response = await fetch("/api/telemetry/ingress", { method: "POST",
           headers: { "content-type": "application/json", ...item.operation.headers },
-          body: JSON.stringify({ records: [item.record] }), signal: AbortSignal.timeout(2000) });
+          body: JSON.stringify({ records: [item.record] }), signal: AbortSignal.timeout(INGRESS_ATTEMPT_TIMEOUT_MS) });
         if (response.status >= 500) break;
         if (pending[0] === item) pending.shift(); // A refusal is terminal and does not fail the UI.
       } catch { break; }

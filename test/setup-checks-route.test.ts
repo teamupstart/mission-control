@@ -262,3 +262,72 @@ test("runtime descriptor and Setup snapshot describe the serving process", async
   assert.deepEqual(snapshot.runtime,setup.runtime());
   assert.equal(typeof snapshot.snapshotToken,"string");
 });
+
+test("overlapping reads share one probe round, and each still gets its own token", async () => {
+  const store = bannerStore();
+  const setupDeps = deps("Finish setup.", null, store);
+  let rounds = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setupDeps.refreshPath = async () => {
+    rounds += 1;
+    await gate;
+  };
+  const app = appFor(setupDeps);
+
+  // A dashboard load and the reload right behind it: the second read arrives while the first
+  // round is still probing the machine.
+  const first = app.request("/api/setup/checks", { headers: LOOPBACK });
+  const second = app.request("/api/setup/checks", { headers: LOOPBACK });
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const snapshots = await Promise.all([first, second].map(async (response) => (await response).json() as Promise<{
+    snapshotToken: string;
+    banner: { attentionRowIds: unknown[] };
+  }>));
+  assert.equal(rounds, 1);
+  assert.notEqual(snapshots[0]!.snapshotToken, snapshots[1]!.snapshotToken);
+
+  for (const snapshot of snapshots) {
+    const response = await app.request("/api/setup/checks", {
+      method: "PUT",
+      headers: { ...LOOPBACK, "content-type": "application/json" },
+      body: JSON.stringify({ snapshotToken: snapshot.snapshotToken, acknowledged: snapshot.banner.attentionRowIds }),
+    });
+    assert.equal(response.status, 200);
+  }
+
+  // Uncached: a read that starts after the shared round settled probes the machine again.
+  await app.request("/api/setup/checks", { headers: LOOPBACK });
+  assert.equal(rounds, 2);
+});
+
+test("a shared round that fails fails every joined read, and the next read probes afresh", async (t) => {
+  // Hono's default error handler logs the thrown error before answering 500.
+  t.mock.method(console, "error", () => {});
+  const setupDeps = deps("Finish setup.", null);
+  let rounds = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setupDeps.refreshPath = async () => {
+    rounds += 1;
+    if (rounds === 1) {
+      await gate;
+      throw new Error("login shell did not answer");
+    }
+  };
+  const app = appFor(setupDeps);
+
+  const first = app.request("/api/setup/checks", { headers: LOOPBACK });
+  const second = app.request("/api/setup/checks", { headers: LOOPBACK });
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.deepEqual((await Promise.all([first, second])).map((response) => response.status), [500, 500]);
+  assert.equal(rounds, 1);
+
+  // A failed round is not left behind for later reads to join.
+  const retry = await app.request("/api/setup/checks", { headers: LOOPBACK });
+  assert.equal(retry.status, 200);
+  assert.equal(typeof (await retry.json() as { snapshotToken: unknown }).snapshotToken, "string");
+  assert.equal(rounds, 2);
+});

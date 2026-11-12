@@ -1072,6 +1072,37 @@ test("a value split across two stdout writes is redacted even when stderr lands 
   assert.ok(!streamed.includes(value.slice(half)), "nor the second");
 });
 
+test("a listener that rejects on the header, the flushes and the failure summary is only reported", async (t) => {
+  const warnings: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warnings.push(String(message));
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const outcome = await runClaimSteps({
+      claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["install"] }], fingerprintPaths: [] }),
+      cwd: process.cwd(),
+      signal: new AbortController().signal,
+      environment: async () => ({ env: {}, received: [], missing: [] }),
+      runStep: async (request) => {
+        await request.onOutput?.("no newline, so only the flush releases it", "stdout");
+        return { outcome: "exited", code: 3, signal: null, tail: "", truncatedBytes: 0 };
+      },
+      now: Date.now,
+      onOutput: () => Promise.reject(new Error("the view went away")),
+    });
+    assert.equal(outcome.ok, false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, [], "no rejection escapes to the process");
+    assert.ok(warnings.length >= 3, `header, flush and summary are each reported: ${warnings.length}`);
+    assert.ok(warnings.every((warning) => warning === "[worktrees] claim output listener failed: the view went away"));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("streamed claim output never carries a value, however the pipe splits it", () => {
   const secrets = [{ name: "A_TOKEN", value: "s3cr3t-value-123" }, { name: "B_TOKEN", value: "other-secret" }];
   const text = "start s3cr3t-value-123 middle other-secret end s3cr3t-value-123\n";

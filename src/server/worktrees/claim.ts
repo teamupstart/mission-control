@@ -537,13 +537,20 @@ export async function runClaimSteps(input: {
    */
   onOutput?: (text: string) => void | Promise<void>;
 }): Promise<ClaimStepsOutcome> {
+  const failed = (error: unknown): void => {
+    console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+  };
+  // The header, the final flushes and the failure summary drop what this returns, so a
+  // rejection is handled here; the handled promise still carries backpressure.
   const say = (text: string): void | Promise<void> => {
+    let wait: void | Promise<void>;
     try {
-      return input.onOutput?.(text);
+      wait = input.onOutput?.(text);
     } catch (error) {
-      console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+      failed(error);
       return undefined;
     }
+    return wait ? wait.catch(failed) : undefined;
   };
   const outcome = await runClaimStepsInner(input, input.onOutput ? say : null);
   if (input.onOutput && !outcome.ok) {

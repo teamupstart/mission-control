@@ -681,7 +681,9 @@ edit** is the way to a copy you own. The one exception is **Grill**, which
 [Grill me first](dispatch-and-backlog.md#grill-me-first) sends ahead of a task's work by id: its
 instruction is edited in place and saved as this machine's text (tagged **edited**), and **Reset
 to built-in** in its `⋯` menu restores the shipped one. Its name, description, required skill and
-completion stay as shipped, and the edit is not part of a settings backup.
+completion stay as shipped, and the edit is not part of a settings backup. Grill is not offered as
+a Workflow stage, and a draft that names it is refused at Publish: its instruction is written to
+run before a task's work, so bound after the work it would have the agent start that work over.
 
 The authored Markdown behind the built-ins is in this repository under [`actions/`](../actions/) -
 Mission Control session actions, not GitHub Actions - one document per action, beside the

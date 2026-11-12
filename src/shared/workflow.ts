@@ -1484,10 +1484,20 @@ export function sessionActionsForDisplay<
  * honest "nothing is addable yet" rather than a silent fallback to everything.
  */
 export function addableSessionActions<
-  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName">,
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName" | "editable">,
 >(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
   return sessionActionsForDisplay(actions)
-    .filter((action) => action.archivedAt === null && available.has(action.completion.kind));
+    .filter((action) =>
+      action.archivedAt === null && available.has(action.completion.kind) && sessionActionIsStage(action));
+}
+
+/**
+ * Whether a Workflow stage may run this action. An editable built-in (Grill) is written to
+ * run ahead of a task through its own feature, and bound after the work it would tell the
+ * agent to start that finished task over.
+ */
+export function sessionActionIsStage(action: Pick<SessionAction, "editable">): boolean {
+  return action.editable !== true;
 }
 
 /**
@@ -2308,6 +2318,7 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
   "unsupported_effort",
+  "session_action_not_a_stage",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 

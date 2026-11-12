@@ -18,6 +18,7 @@ import {
   WORKFLOW_LIMITS,
   WORKFLOW_MISSING_PR_ACTIONS,
   personaEffortLevels,
+  sessionActionIsStage,
 } from "./workflow.ts";
 
 export interface WorkflowGraphValidationInput {
@@ -33,7 +34,7 @@ export interface WorkflowGraphValidationInput {
    * down. Without it the validator would have to assume, and assuming available is how a
    * version naming an unrunnable adapter gets published.
    */
-  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt" | "completion">[];
+  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt" | "completion" | "editable">[];
   completionPolicy?: WorkflowCompletionPolicy;
   /**
    * Which completion adapters the CALLER's build can execute. Defaults to this build's answer.
@@ -391,6 +392,13 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
       }
       if (action.archivedAt !== null) {
         diagnostics.push(diagnostic("archived_session_action", "Archived session actions cannot be published in a new version.", { nodeId: node.id }));
+      }
+      if (!sessionActionIsStage(action)) {
+        diagnostics.push(diagnostic(
+          "session_action_not_a_stage",
+          "Grill runs ahead of a task through Grill me first, so it cannot be a Workflow stage.",
+          { nodeId: node.id },
+        ));
       }
       const capability = capabilities[action.completion.kind];
       if (capability && !capability.available) {

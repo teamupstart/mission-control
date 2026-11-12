@@ -335,9 +335,10 @@ test("an authored action becomes a pipeline stage, publishes, and freezes its in
   // rather than as a bare option so a Persona that happened to share the name could not satisfy
   // it, and exhaustively so every shipped built-in whose adapter this build can prove - Pull
   // Request, and Retro since `repo_commit` shipped - has to be accounted for rather than
-  // silently tolerated. Grill shipped for Grill me first.
+  // silently tolerated. Grill is in the catalog but never offered: it runs ahead of a task
+  // through Grill me first, and as a stage after the work it would restart a finished task.
   await expect(picker.locator('optgroup[label="Session actions"] option'))
-    .toHaveText(["Grill", "Pull Request", "Retro", "Tidy the workspace"]);
+    .toHaveText(["Pull Request", "Retro", "Tidy the workspace"]);
   await picker.selectOption({ label: "Tidy the workspace" });
 
   // It lands as a singleton stage that names itself and says what happens after it.

@@ -210,3 +210,30 @@ test("legacy observation changes invalidate once and unexpected outages stay exp
     (error: unknown) => error instanceof Error && /legacy worktree inventory unavailable/.test(error.message),
   );
 });
+
+test("Stop reaches a running claim through the claim registry, by slot and claim id only", async () => {
+  const control = manager.claims.register("slot-claiming", { kind: "task", key: "task-stop-route:0" }, 0)!;
+  const claimId = manager.claims.get("slot-claiming")!.id;
+  const stop = (slotId: string, body: unknown) => app.request(`/api/worktrees/${slotId}/claim/stop`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify(body),
+  });
+  try {
+    assert.equal((await stop("slot-claiming", {})).status, 400, "the claim id is required");
+    assert.equal((await stop("slot-claiming", { claimId, extra: true })).status, 400, "the body is strict");
+    const stale = await stop("slot-claiming", { claimId: "another-claim" });
+    assert.equal(stale.status, 404);
+    assert.deepEqual(await stale.json(), { error: "that dependency claim is no longer running" });
+    assert.equal((await stop("another-slot", { claimId })).status, 404);
+    assert.equal(control.signal.aborted, false, "no refused Stop touched the claim");
+
+    const stopped = await stop("slot-claiming", { claimId });
+    assert.equal(stopped.status, 200);
+    assert.deepEqual(await stopped.json(), { ok: true });
+    assert.equal(control.signal.aborted, true);
+  } finally {
+    manager.claims.unregister("slot-claiming", control);
+  }
+  assert.equal((await stop("slot-claiming", { claimId })).status, 404, "a finished claim cannot be stopped");
+});

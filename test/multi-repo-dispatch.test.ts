@@ -435,6 +435,8 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
     // See `TaskManager.withCleanupReservation`.
     cleanupReservations: new Set<string>(),
     stopEmbeddedAgentBeforeReclaim: async () => {},
+    // Cancel stops any dependency claim the task's dispatch is waiting on; this one has none.
+    worktrees: new WorktreeManager(),
   });
 
   const outcome = await manager.cancel("cancel-multi");

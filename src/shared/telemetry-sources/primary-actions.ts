@@ -182,6 +182,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/worktrees/actions/execute", "worktree.execute", "settings"],
   ["POST", "/api/worktrees/operations/:id/dismiss", "worktree.dismiss", "settings"],
   ["POST", "/api/worktrees/:slotId/open", "worktree.open", "settings"],
+  ["POST", "/api/worktrees/:slotId/claim/stop", "worktree.claim_stop", "settings"],
   ["POST", "/api/tours/:tourId/dispatch", "help.tour_dispatch", "help"],
   ["POST", "/api/tours/:tourId/preview", "help.tour_preview", "help"],
   ["POST", "/api/tours/:tourId/seed-run", "help.tour_seed_run", "help"],

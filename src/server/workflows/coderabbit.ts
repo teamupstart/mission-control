@@ -171,8 +171,10 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     failureStage = "execution";
     const execution = await deps.execute({ slot: "coderabbit", command, repoRoot: input.repoRoot, workingSubpath: "", headSha: comparison.head,
       timeoutMs: comparison.timeoutMs, coderabbit: comparison, env: ready.env });
-    started = execution.kind !== "unavailable" && (execution.kind !== "infrastructure" || execution.started !== false);
-    if (execution.kind === "unavailable") return block(execution.note);
+    started = execution.kind !== "unavailable" && execution.kind !== "decided"
+      && (execution.kind !== "infrastructure" || execution.started !== false);
+    // A review takes its tree without a dependency claim, so it is never decided by one.
+    if (execution.kind === "unavailable" || execution.kind === "decided") return block(execution.note);
     if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
     failureStage = "result";
     const review = execution.review;

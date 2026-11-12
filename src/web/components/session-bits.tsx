@@ -6,6 +6,7 @@ import type {
   SessionCost,
   SessionMeta,
   Task,
+  TaskClaimWarning,
   TaskPriority,
   TaskRepoPrSummary,
 } from "@shared/types.ts";
@@ -2044,6 +2045,45 @@ export function PrStateIcon({ state }: { state: PrState }): React.JSX.Element {
         d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"
       />
     </svg>
+  );
+}
+
+/**
+ * The dependency claims that failed in a task's worktrees when it was leased them. The trees
+ * were handed over anyway and the agent was told; this is the operator's copy of the same note,
+ * so a build that fails on dependencies is not a mystery on the card.
+ *
+ * Each failure is one disclosure: the summary says which repository and which step, and opening
+ * it shows the command and the output tail. Renders nothing when no claim failed.
+ */
+export function TaskClaimWarnings({
+  warnings,
+}: {
+  warnings: readonly TaskClaimWarning[] | undefined;
+}): React.JSX.Element | null {
+  if (!warnings || warnings.length === 0) return null;
+  return (
+    <div className="task-claim-warnings" role="group" aria-label="Dependency install warnings">
+      {warnings.map((warning) => (
+        <details key={`${warning.repoRoot}:${warning.step}`} className="task-claim-warning">
+          <Tooltip label={`Show the failing command and its output in ${warning.repoRoot}`}>
+            <summary>
+              Dependency install failed in {repoLeaf(warning.repoRoot)}: step {warning.step} of{" "}
+              {warning.stepCount} {warning.reason}.
+            </summary>
+          </Tooltip>
+          <code className="task-claim-command" aria-label={`Failed command: ${warning.command}`}>{warning.command}</code>
+          {warning.tail ? (
+            <pre className="task-claim-tail" aria-label="Dependency install output tail" tabIndex={0}>
+              {warning.truncatedBytes > 0 ? `(${warning.truncatedBytes} earlier bytes dropped)\n` : ""}
+              {warning.tail.replace(/\n+$/, "")}
+            </pre>
+          ) : (
+            <p className="task-claim-note">The step printed nothing.</p>
+          )}
+        </details>
+      ))}
+    </div>
   );
 }
 

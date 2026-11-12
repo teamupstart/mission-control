@@ -5292,6 +5292,11 @@ export class TaskManager {
         () => this.cancelReserved(id, t),
       );
     } finally {
+      // A dispatch waiting on a dependency claim would otherwise wait the claim out, up to its
+      // whole timeout, before it noticed this cancel. Stopped only once the task IS cancelled:
+      // the stopped claim hands its slot over at once, and the dispatch must then find the
+      // task settled and tear the tree down, never launch into it.
+      if (this.registry.getTask(id)?.status === "cancelled") this.worktrees.stopTaskClaims(id);
       if (engineerReservation) {
         this.registry.finishPipelineEngineerReservationCancellation(
           id,

@@ -227,7 +227,10 @@ let db: DatabaseSync | undefined;
 //     `github_url`, `legacy_posted`), draft refusals (`post_refusals`, `last_post_error`),
 //     and the adopting session's note key (`inspector_prs.note_key`, nullable, no backfill).
 //     `legacy_posted` is backfilled once, so this one rewrites rows.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 27;
+// 28: dependency claims (`worktree_slots.deps_state`, `deps_fingerprint`, `deps_fingerprint_sha`,
+//     `deps_claimed_at`, `deps_last_error`, and `tasks.claim_warnings`), nullable with no
+//     backfill: no slot was claimed and no task warned before these existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 28;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -477,6 +480,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       launch_failure TEXT,
       -- A Report bug session: the failed task it was started to report. NULL on every other.
       launch_report_for TEXT,
+      -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
+      -- when they were leased. NULL when none failed, which is nearly every task.
+      claim_warnings TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -970,6 +976,14 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       last_used_at              INTEGER,
       quarantine_reason         TEXT,
       last_error                TEXT,
+      -- Dependency claim state. NULL is "never claimed". The vocabulary is append-only
+      -- (WORKTREE_DEPS_STATES). A claim writes its intent and clears the fingerprint in one
+      -- write before any step runs, so a crash never leaves a fingerprint to trust.
+      deps_state                TEXT,
+      deps_fingerprint          TEXT,
+      deps_fingerprint_sha      TEXT,
+      deps_claimed_at           INTEGER,
+      deps_last_error           TEXT,
       created_at                INTEGER NOT NULL,
       updated_at                INTEGER NOT NULL
     );
@@ -3479,6 +3493,13 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
   addColumn(d, "task_session_closures", "retired_at", "INTEGER");
   migrateWorktreeOrdinalHighWater(d);
+  // Dependency claims. Null on every existing slot, which is exact: no slot was ever claimed
+  // before these columns existed, so each one's next claim runs every step.
+  addColumn(d, "worktree_slots", "deps_state", "TEXT");
+  addColumn(d, "worktree_slots", "deps_fingerprint", "TEXT");
+  addColumn(d, "worktree_slots", "deps_fingerprint_sha", "TEXT");
+  addColumn(d, "worktree_slots", "deps_claimed_at", "INTEGER");
+  addColumn(d, "worktree_slots", "deps_last_error", "TEXT");
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
   // puts several elements on one line, that cannot distinguish a paragraph from its inline
@@ -3883,6 +3904,9 @@ function migrate(d: DatabaseSync): void {
   // every historical row used Automatic, and preserving that answer keeps its existing
   // multi-backend liveness and cleanup policy intact.
   addColumn(d, "tasks", "home_backend", "TEXT");
+  // The dependency claims that failed in a task's worktrees, as the task card shows them.
+  // Nullable with no backfill: no task leased a claimed slot before this column existed.
+  addColumn(d, "tasks", "claim_warnings", "TEXT");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -5848,6 +5872,7 @@ interface TaskRow {
   terminal_resource_id: string | null;
   terminal_launch: string | null;
   session_id: string | null;
+  claim_warnings?: string | null;
   schedule_id: string | null;
   schedule_occurrence_id: string | null;
   scheduled_for: number | null;
@@ -6005,6 +6030,36 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
 }
 
 const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
+
+/**
+ * The stored form of `Task.claimWarnings`. A tail is at most the claim's 4,000-byte ring and a
+ * command is rendered to 512 bytes plus its suffix; these caps sit above both, so they refuse
+ * only a row no build of this feature wrote.
+ */
+const TaskClaimWarningsSchema = z.array(z.object({
+  repoRoot: z.string().max(4_096),
+  step: z.number().int().min(1),
+  stepCount: z.number().int().min(1),
+  command: z.string().max(1_024),
+  reason: z.string().max(8_192),
+  tail: z.string().max(16_384),
+  truncatedBytes: z.number().int().min(0),
+}).strict()).max(64);
+
+/**
+ * `tasks.claim_warnings` read back, as the key `rowToTask` spreads: absent when there is
+ * nothing to say, so a task no claim failed for reads exactly as it did before the column.
+ * An unreadable blob is no warnings, because one bad row must not take out `listTasks`.
+ */
+function readTaskClaimWarnings(raw: string | null): Pick<Task, "claimWarnings"> {
+  if (!raw) return {};
+  try {
+    const parsed = TaskClaimWarningsSchema.safeParse(JSON.parse(raw));
+    return parsed.success && parsed.data.length > 0 ? { claimWarnings: parsed.data } : {};
+  } catch {
+    return {};
+  }
+}
 
 function parseTerminalLaunch(raw: string | null): Task["terminalLaunch"] {
   if (!raw) return null;
@@ -6296,6 +6351,7 @@ function rowToTask(
     launchReportFor: r.launch_report_for,
     automaticCleanup,
     residentRestart,
+    ...readTaskClaimWarnings(r.claim_warnings ?? null),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -6354,9 +6410,9 @@ export function upsertTask(t: Task): string[] {
          base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error, launch_failure, launch_report_for,
+         status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -6388,7 +6444,7 @@ export function upsertTask(t: Task): string[] {
          scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, launch_failure=excluded.launch_failure,
-         launch_report_for=excluded.launch_report_for,
+         launch_report_for=excluded.launch_report_for, claim_warnings=excluded.claim_warnings,
          updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
@@ -6420,6 +6476,7 @@ export function upsertTask(t: Task): string[] {
       t.status, t.outcome, t.outcomeUrl, t.error,
       t.launchFailure ? JSON.stringify(t.launchFailure) : null,
       t.launchReportFor ?? null,
+      t.claimWarnings && t.claimWarnings.length > 0 ? JSON.stringify(t.claimWarnings) : null,
       t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,

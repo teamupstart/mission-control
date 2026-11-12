@@ -1420,6 +1420,15 @@ sent. It shares its column with find - while find is open its results own the sp
 ([below](#find-in-a-conversation)), and closing find gives the rail back on the tab you
 left it on.
 
+To give its width back to the transcript, press **»** in the rail's header. The rail folds to
+a thin strip on the right edge that still names the tab that is up and its count; click
+anywhere on the strip to open it again. The fold is the same in the chat and terminal
+renderings - in the terminal one the key legend under the rail moves beside **Send** while it
+is folded - and it is remembered per machine, so it holds across sessions and restarts. Find
+still opens its results in a full column while the rail is folded. On a narrow conversation,
+where the rail is already a single row (below), there is nothing to fold and the control is
+not shown.
+
 #### Activity
 
 Not to be confused with the row above, which is a different feature with a different

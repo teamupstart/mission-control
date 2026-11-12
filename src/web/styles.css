@@ -9328,19 +9328,19 @@ mark.find-hit.is-current {
   outline: 2px solid var(--find);
   outline-offset: -2px;
 }
-.activity-count {
+/* The head's right-hand cluster holds the right edge as one unit, so the count, the narrow
+   caret and the wide fold never have to agree among themselves on which is last. */
+.activity-head-end {
   margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.activity-count {
   font: 500 11.5px/1 var(--mono);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-/* Whichever of the two ends up last holds the head's right edge: the count when there is
-   one, the caret when the tab is empty and the count is not drawn at all. */
-.activity-toggle {
-  margin-left: auto;
-}
-.activity-count + .activity-toggle {
-  margin-left: 0;
 }
 /* The narrow layout's disclosure. Hidden here at rail widths - the list simply shows -
    and added to the head by the container query below. */
@@ -9370,6 +9370,68 @@ mark.find-hit.is-current {
   flex: none;
   font-size: 9px;
   color: var(--dim);
+}
+.activity-collapse {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font: 600 12px/1 var(--sans);
+  color: var(--dim);
+  cursor: pointer;
+}
+.activity-collapse:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.activity-collapse:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
+}
+/* Shown only by the wide `@container` block below, when the fold is on. */
+.activity-strip {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.activity-strip:hover {
+  background: var(--panel-2);
+  color: var(--fg);
+}
+.activity-strip:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
+  border-radius: 10px;
+}
+.activity-strip-caret {
+  font: 600 12px/1 var(--sans);
+}
+.activity-strip-label {
+  writing-mode: vertical-rl;
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.activity-strip-count {
+  font: 500 10.5px/1 var(--mono);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 /* Its own overflow region, independent of the log's: the two scroll separately, and
    `overscroll-behavior` keeps a rail that has reached its end from scrolling the page
@@ -9575,6 +9637,9 @@ mark.find-hit.is-current {
   .find-split .activity-rail .activity-toggle {
     display: flex;
   }
+  .find-split .activity-rail .activity-collapse {
+    display: none;
+  }
   .find-split .activity-rail[data-open="false"] .activity-body {
     display: none;
   }
@@ -9583,6 +9648,39 @@ mark.find-hit.is-current {
      section was not asked for - the transcript keeps the larger share. */
   .find-split .activity-rail[data-open="true"] {
     max-height: 33%;
+  }
+}
+
+/* The wide fold. Scoped to the containers the narrow block above does NOT match, so the
+   two can never both apply: narrow, the rail is a disclosure row whatever this preference
+   says; wide, the preference folds the 244px column to a 30px strip and the log takes the
+   rest. Find replaces this rail outright while open, so a fold never hides find's results. */
+@container (width > 560px) {
+  .activity-rail[data-collapsed="true"] {
+    width: 30px;
+  }
+  .activity-rail[data-collapsed="true"] > :not(.activity-strip) {
+    display: none;
+  }
+  .activity-rail[data-collapsed="true"] > .activity-strip {
+    display: flex;
+  }
+  /* The terminal legend is pinned to the rail's 244px column so Send shares the rail's
+     edge. Folded, that column is 30px, which no legend fits. Sat beside Send at its own
+     width instead, it is wider than the column it left (one line of it is ~340px), so
+     folding would have NARROWED the box - the opposite of what a fold is for. It takes its
+     own line under Send instead: the box and Send get the whole row, and the legend, which
+     wrapped to two lines in its column, reads as one. Keyed on the rail being mounted AND
+     folded: while find owns the column the rail is unmounted and the legend keeps its 244px
+     under find's rail. */
+  .transcript[data-view="terminal"]:has(.activity-rail[data-collapsed="true"]) .compose-row {
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+  .transcript[data-view="terminal"]:has(.activity-rail[data-collapsed="true"]) .pty-sendkey {
+    flex: 1 0 100%;
+    width: auto;
+    text-align: right;
   }
 }
 
@@ -10122,6 +10220,7 @@ mark.find-hit.is-current {
   background: color-mix(in oklab, var(--panel) 60%, var(--bg-2));
 }
 .transcript[data-view="terminal"] .activity-rail .activity-tab,
+.transcript[data-view="terminal"] .activity-rail .activity-strip-label,
 .transcript[data-view="terminal"] .activity-rail .activity-tool {
   font-family: var(--mono);
 }

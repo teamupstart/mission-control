@@ -43,6 +43,10 @@ import { Tooltip } from "./Tooltip.tsx";
  * the breakpoint the section collapses to one disclosure row (`data-open` carries the
  * state for the stylesheet) and opens on request. At wide widths the toggle is hidden
  * and the list simply shows; the collapse costs a reader nothing they did not choose.
+ *
+ * Wide containers get a separate fold (`data-collapsed`) to a thin edge strip. Below the
+ * breakpoint the stylesheet ignores it: the rail is already one row there, and the narrow
+ * disclosure is the control that matters.
  */
 
 /** Which tab the rail is showing. Held by `TranscriptPanel` so find cannot reset it. */
@@ -56,6 +60,8 @@ export function ConversationActivity({
   onTab,
   selectedTurnId,
   onSelectTurn,
+  collapsed,
+  onCollapsed,
 }: {
   messages: TranscriptMessage[];
   /** Narrow-container disclosure state. Wide layouts show the list regardless. */
@@ -66,6 +72,9 @@ export function ConversationActivity({
   /** The turn the log is currently marking, so the rail can show which row owns it. */
   selectedTurnId: string | null;
   onSelectTurn: (id: string) => void;
+  /** Wide-layout fold to the edge strip. Narrow layouts ignore it. */
+  collapsed: boolean;
+  onCollapsed: (collapsed: boolean) => void;
 }): React.JSX.Element {
   const listId = useId();
   const activityTabId = useId();
@@ -131,7 +140,23 @@ export function ConversationActivity({
     const offset = restOffset(el);
     // Sub-pixel differences are not a scroll anyone asked for.
     if (Math.abs(offset) >= 1) el.scrollTop += offset;
-  }, [rows.length, yours.length, injected.length, open, tab, yoursTab]);
+  }, [rows.length, yours.length, injected.length, open, tab, yoursTab, collapsed]);
+
+  // Folding swaps which of the two fold controls is drawn, so the one just pressed vanishes
+  // from under the keyboard. Hand focus to its counterpart - but only after a press from
+  // HERE, so a fold arriving from another surface (or the first paint) never steals focus.
+  const stripRef = useRef<HTMLButtonElement>(null);
+  const collapseRef = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  useLayoutEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    (collapsed ? stripRef : collapseRef).current?.focus();
+  }, [collapsed]);
+  function fold(next: boolean): void {
+    refocus.current = true;
+    onCollapsed(next);
+  }
 
   /** One message row. A button, because clicking it moves the log. */
   function messageRow(row: (typeof yours)[number], last = false): React.JSX.Element {
@@ -168,8 +193,27 @@ export function ConversationActivity({
       // worse. Which list is up is the tablist's job to say, and it does.
       aria-label="Conversation rail"
       data-open={open ? "true" : "false"}
+      data-collapsed={collapsed ? "true" : "false"}
       data-tab={tab}
     >
+      {/* Rendered at every width and shown only by the stylesheet: React cannot see the
+          container's width. */}
+      <Tooltip label={`Expand the rail (${yoursTab ? "your messages" : "observed tool calls"})`}>
+        <button
+          type="button"
+          ref={stripRef}
+          className="activity-strip"
+          aria-label="Expand conversation rail"
+          aria-expanded={false}
+          onClick={() => fold(false)}
+        >
+          <span className="activity-strip-caret" aria-hidden>
+            «
+          </span>
+          <span className="activity-strip-label">{yoursTab ? "Yours" : "Activity"}</span>
+          {count > 0 && <span className="activity-strip-count">{count}</span>}
+        </button>
+      </Tooltip>
       <div className="activity-head">
         <div className="activity-tabs" role="tablist" aria-label="Rail view">
           <Tooltip label="Tool calls observed in this conversation">
@@ -199,6 +243,7 @@ export function ConversationActivity({
             </button>
           </Tooltip>
         </div>
+        <div className="activity-head-end">
         {count > 0 && <span className="activity-count">{count}</span>}
         {/* The narrow layout's disclosure, and a member of the head rather than a row of
             its own. Rendered at every width and shown by the container query alone,
@@ -234,6 +279,19 @@ export function ConversationActivity({
             </span>
           </button>
         </Tooltip>
+        <Tooltip label="Collapse the rail to an edge strip">
+          <button
+            type="button"
+            ref={collapseRef}
+            className="activity-collapse"
+            aria-label="Collapse conversation rail"
+            aria-expanded={true}
+            onClick={() => fold(true)}
+          >
+            <span aria-hidden>»</span>
+          </button>
+        </Tooltip>
+        </div>
       </div>
       <div
         className="activity-body"

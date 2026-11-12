@@ -4078,6 +4078,7 @@ export const UI_CONFIG_DEFAULTS = {
   groupBoardByRepo: true,
   /** Show every state group in the Board drill-in sidebar. */
   boardSidebarAllSessions: false,
+  conversationRailCollapsed: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
   /**
@@ -4248,6 +4249,7 @@ export const UiConfigSchema = z.object({
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
+  conversationRailCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.conversationRailCollapsed),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *

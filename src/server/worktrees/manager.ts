@@ -1757,8 +1757,10 @@ export class WorktreeManager {
    * The claim runs in the leased state, so a crash leaves the slot leased to a `warm` owner with
    * its write-ahead, and startup returns it through the ordinary return path as `interrupted`.
    *
-   * Only a slot that is available and idle by acquisition's own screening is touched. Anything
-   * else, including one that was leased after the Warm was queued, is skipped untouched.
+   * Only a slot that is available and idle by acquisition's own screening is warmed. One that is
+   * no longer available, including one leased after the Warm was queued, is skipped untouched.
+   * One that is available but fails that screening, an untracked file or a stray process in it,
+   * is quarantined by the screening exactly as acquisition would, and skipped.
    *
    * `signal` is Cancel. Before the slot is held it skips the slot; while the claim runs it stops
    * the step's process group (during a seed the slot records `interrupted`, during a step

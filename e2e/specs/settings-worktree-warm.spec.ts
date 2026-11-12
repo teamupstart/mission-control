@@ -120,6 +120,9 @@ test("Warm and Warm idle slots prepare idle slots with a live tail, Cancel, and 
     "Holds each slot under a warm lease, fetches origin, resets the slot to origin's default branch",
   );
   await expect(dialog).toContainText("Cancel stops the running step's process group and returns the slot to the pool.");
+  await expect(dialog).toContainText(
+    "one that fails the idle check, such as one holding an untracked file, is quarantined, as a lease would quarantine it, and skipped.",
+  );
   await expect(dialog.getByRole("button", { name: "Execute" })).toBeEnabled();
   await expectContentClearsBorder(dialog);
   await shoot(dashboard, dialog, "01-warm-slot-preview");

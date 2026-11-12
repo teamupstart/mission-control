@@ -1183,6 +1183,7 @@ export class WorktreeOperationsService {
     if (target.kind === "pool" && affected.length === 0) blockers.push("No slot in this pool is idle to warm.");
     consequences.push(
       "Holds each slot under a warm lease, fetches origin, resets the slot to origin's default branch, then seeds it from an idle sibling or runs the pool's claim under its usual rules, and returns it as available.",
+      "Each slot is checked again when its turn comes, as acquisition checks it: one no longer available is skipped untouched, and one that fails the idle check, such as one holding an untracked file, is quarantined, as a lease would quarantine it, and skipped.",
     );
     if (target.kind === "pool") {
       consequences.push("Slots are warmed one at a time, so a later slot can seed from one warmed before it. A slot leased before its turn comes is skipped and listed as skipped.");
@@ -1423,8 +1424,9 @@ export class WorktreeOperationsService {
 
   /**
    * Run one Warm's targets in order. Each is decided when its turn comes: a slot that is no
-   * longer idle then is skipped, untouched. The operation stays listed as `finished` so its
-   * results and log can be read, until it is dismissed.
+   * longer idle then is skipped, and one acquisition's screening would quarantine is quarantined
+   * first (`WorktreeManager.warmSlot`). The operation stays listed as `finished` so its results
+   * and log can be read, until it is dismissed.
    */
   private async runWarm(entry: HeldOperation): Promise<void> {
     const warm = entry.warm!;

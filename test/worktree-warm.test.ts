@@ -268,6 +268,25 @@ test("a queued Warm skips a slot whose pool marker went missing, untouched", asy
   assert.equal(runCount(row.path), 0, "no step ran");
 });
 
+test("a slot dirtied after the preview is quarantined at its turn, as at acquisition, and skipped", async () => {
+  const fixture = repository("mission-warm-dirtied-");
+  const m = manager({ claim: claimOf(INSTALL) });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const ops = service(m, logsDirectory());
+  const preview = await ops.preview({ action: "warm", target: { kind: "slot", slotId: slot!.slotId } });
+  assert.match(preview.consequences.join(" "), /one that fails the idle check, such as one holding an untracked file, is quarantined/);
+  writeFileSync(join(m.store.slot(slot!.slotId)!.path, "left-by-the-operator.txt"), "not ignored\n");
+  const id = ops.submit(preview.token, []).operation.id;
+  await ops.idle();
+
+  const target = (await operation(ops, id)).warm?.targets[0];
+  assert.equal(target?.outcome, "skipped");
+  assert.match(target?.detail ?? "", /the slot was quarantined/);
+  const row = m.store.slot(slot!.slotId)!;
+  assert.equal(row.state, "quarantined");
+  assert.equal(runCount(row.path), 0, "no step ran");
+});
+
 test("a pool Warm seeds a later slot from one it already warmed", async () => {
   const fixture = repository("mission-warm-pool-seed-");
   const m = manager({ claim: claimOf(INSTALL, SEED) });

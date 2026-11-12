@@ -528,9 +528,11 @@ acknowledgement.
 
 For each slot, in order, a Warm:
 
-1. checks the slot again. A slot that is no longer available and idle by acquisition's own
-   screening, for example one a task leased after the Warm was queued, is **skipped**, untouched,
-   and listed as skipped in the Warm's report;
+1. checks the slot again, with acquisition's own screening. A slot that is no longer available,
+   for example one a task leased after the Warm was queued, is **skipped**, untouched. A slot that
+   is still available but fails the idle check, for example one holding an untracked file, is
+   **quarantined**, exactly as a lease would quarantine it, and skipped. Either way it is listed as
+   skipped in the Warm's report, with the reason;
 2. holds it under a `warm` lease owned by `warm:<operationId>`, through the ordinary reservation
    and `finalizeLease`, so nothing else can lease, reset or quarantine it, and the claim's own
    processes never count as occupancy of an available slot;

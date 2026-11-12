@@ -890,6 +890,32 @@ test("setup runs on the scrubbed base with the union of the pool's claim names",
   await m.release(held.lease, { ownerAuthorized: true });
 });
 
+test("a failed setup's reason is redacted of the claim values it received before it is stored", async () => {
+  const fixture = repository("mission-claim-setup-redact-");
+  const claim = claimOf({ steps: [{ argv: ["true"], env: ["ALPHA_TOKEN"] }] });
+  const m = new WorktreeManager(db, {
+    occupancy: emptyOccupancy,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: ["setup"], claim }),
+    claimEnvironment: async (names) =>
+      buildClaimEnvironment({ names, daemonEnv: DAEMON_ENV, daemonToken: DAEMON_TOKEN, loginShell: {} }),
+    runSetup: async (_argv, _cwd, env) => ({
+      ok: false,
+      reason: `fetch https://registry.example/?token=${env.ALPHA_TOKEN} refused`,
+      outcomeUnknown: false,
+    }),
+    runClaimStep: async () => ({ outcome: "exited", code: 0, signal: null, tail: "", truncatedBytes: 0 }),
+  });
+  const result = await m.acquire({ repositoryPath: fixture.clone, baseSha: fixture.sha, owner: { kind: "manual", key: "setup-redact" } });
+  assert.equal(result.outcome, "outcomeUnknown");
+  assert.ok(result.outcome === "outcomeUnknown");
+  assert.doesNotMatch(result.reason, /alpha-value/);
+  assert.match(result.reason, /\[ALPHA_TOKEN redacted\]/);
+  const slot = onlySlot(m);
+  for (const stored of [slot.quarantineReason, slot.lastError]) {
+    assert.doesNotMatch(stored ?? "", /alpha-value/, "the credential was stored on the slot");
+  }
+});
+
 // ---- crash recovery, maintenance and shutdown ----
 
 /** A claim that succeeds once and then hangs at the chosen point, as a crash would leave it. */

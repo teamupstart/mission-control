@@ -24,6 +24,7 @@ import {
   describeClaimFailure,
   encodeClaimFailure,
   readTreeBlobs,
+  redactClaimValues,
   runClaimStep,
   runClaimSteps,
   type ClaimEnvironment,
@@ -1042,6 +1043,8 @@ export class WorktreeManager {
           // lists. A setup command that relied on an unlisted credential from the daemon's
           // environment no longer receives it.
           const setupEnvironment = await this.deps.claimEnvironment(claimVariableNames(policy.claim));
+          const received = setupEnvironment.received
+            .map((name) => ({ name, value: String(setupEnvironment.env[name] ?? "") }));
           let setup: SetupResult;
           try {
             setup = await this.deps.runSetup(policy.setupArgv, reservation.path, setupEnvironment.env);
@@ -1049,8 +1052,11 @@ export class WorktreeManager {
             cleanupAgentSubprocessEnv(setupEnvironment.env);
           }
           if (!setup.ok || setup.outcomeUnknown) {
-            const reason = setup.reason ??
-              (setup.outcomeUnknown ? "setup outcome could not be proven" : "setup failed");
+            // Setup receives every claim variable, so its failure text is redacted like a step's
+            // before it is stored as the quarantine reason and shown by the inventory.
+            const reason = setup.reason !== null
+              ? redactClaimValues(setup.reason, received)
+              : setup.outcomeUnknown ? "setup outcome could not be proven" : "setup failed";
             this.quarantine(
               reservation,
               setup.outcomeUnknown

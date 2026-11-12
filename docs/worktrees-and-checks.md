@@ -340,7 +340,9 @@ its own `env` names:
 for every lease kind, with its 120-second limit. It now runs on the same scrubbed base, plus the
 union of every name the pool's claim lists. A setup command that relied on a credential-shaped
 variable from the daemon's environment, such as `NPM_TOKEN`, no longer receives it. List the name
-on a claim step to give it back.
+on a claim step to give it back. A failed setup's reason has every value it received replaced with
+`[NAME redacted]` before it is stored as the slot's quarantine reason and reported by the
+inventory, as a claim step's tail is.
 
 **Output, timeout and failure.**
 

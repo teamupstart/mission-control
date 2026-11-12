@@ -11,6 +11,7 @@ import {
 import { defaultClaudeSdkDeps, sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
+import { askChannelRedirect } from "../src/server/ask-channel-prompt.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkInterruptReceipt,
@@ -230,6 +231,34 @@ test("standing instructions APPEND to the Claude Code preset, and are omitted wh
   const without = fakeDeps();
   await claudeSdkSpec(without.deps).launch(launchOpts());
   assert.equal("systemPrompt" in (await without.started).options, false);
+});
+
+test("a task's SDK session asks through request_input, never the built-in AskUserQuestion", async () => {
+  const mcp = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+
+  // With Mission MCP registered: the built-in is removed, `request_input` is pre-approved,
+  // and the redirect leads one append that also carries the standing instructions.
+  const withMcp = fakeDeps();
+  await claudeSdkSpec(withMcp.deps).launch(
+    launchOpts({ mcp, standingInstructions: "Never run E2E locally." }),
+  );
+  const options = (await withMcp.started).options;
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
+  assert.deepEqual(options.allowedTools, ["mcp__mission-control__request_input"]);
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append: `${askChannelRedirect("mission-control")}\n\nNever run E2E locally.`,
+  });
+
+  // Without it, nothing is taken away: an agent with no way to ask is worse than one that
+  // keeps the built-in, so the whole channel is off rather than half of it.
+  const withoutMcp = fakeDeps();
+  await claudeSdkSpec(withoutMcp.deps).launch(launchOpts());
+  const bare = (await withoutMcp.started).options;
+  assert.equal("disallowedTools" in bare, false);
+  assert.equal("allowedTools" in bare, false);
+  assert.equal("systemPrompt" in bare, false);
 });
 
 test("the launch pins the binary, seeds turn one, and binds on init", async () => {

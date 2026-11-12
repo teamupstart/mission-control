@@ -16,10 +16,10 @@ import { titleLine } from "@shared/title.ts";
  * carrying the questions, the options and what was picked, which `ReviewAnswerCard` draws
  * back into the log in the human's voice.
  *
- * A session on the SDK runtime keeps the built-in, deliberately - the ask arrives through
- * `canUseTool` as a driver request, which IS the dashboard's own control, so the MCP
- * stand-in would be approximating something we already have natively (`claude/sdk.ts`).
- * But answering one only resolves the callback the agent is blocked on. No review row is
+ * A session on the SDK runtime loses the built-in too whenever its launch registers Mission
+ * MCP (`sdkAskChannel`). Only one launched without that server keeps it, and then the ask
+ * arrives through `canUseTool` as a driver request (`claude/sdk.ts`). Answering one only
+ * resolves the callback the agent is blocked on. No review row is
  * written, and the transcript cannot cover for it: the answer lands in the JSONL as a user
  * turn that is purely a `tool_result`, which every harness parser drops as machine noise
  * (`claude/transcript.ts`). So the log read: a grey `AskUserQuestion` chip, a silence, then

@@ -185,6 +185,13 @@ export interface ClaudeSdkQueryOptions {
     excludeDynamicSections?: boolean;
   };
   resume?: string;
+  /**
+   * Tool rules the CLI auto-approves (`--allowedTools`). Adds approval, never narrows the
+   * toolset. Present only with the ask channel, so `request_input` raises no permission ask.
+   */
+  allowedTools?: string[];
+  /** Tools removed from the session (`--disallowedTools`). Present only with the ask channel. */
+  disallowedTools?: string[];
   mcpServers?: Record<string, unknown>;
   /**
    * Only `mcpServers` - no user, local, project or plugin MCP configuration. Set for a resident

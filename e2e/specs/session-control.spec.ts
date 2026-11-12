@@ -197,21 +197,27 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await dashboard.reload();
       await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
 
-      // Exercise the native SDK question channel, through the same built MCP tool.
+      // A delegated message makes the target ask, and a dispatched task asks through its own
+      // `request_input` - a review bound to the target - which the controller answers with a
+      // structured choice, through the same built MCP tool.
       expect((await act({ action: "message", text: "ask me which linter to use" })).isError).toBe(false);
-      let requestId: string | undefined;
+      let asked: { id: string; decisions?: Array<{ id: string; options: Array<{ id: string; label: string }> }> } | undefined;
       await expect.poll(async () => {
-        const all: Session[] = await api(daemon, "/api/sessions");
-        requestId = all.find((s) => s.id === target.id)?.paneDialog?.requestId;
-        return !!requestId;
-      }).toBe(true);
-      expect((await act({ action: "submit_options", form: { requestId, answers: [
-        { question: "Which linter?", labels: ["biome"] },
-        { question: "Which checks should run?", labels: ["types", "tests"] },
-      ] } })).isError).toBe(false);
+        const reviews: Array<typeof asked & { sessionId: string | null; status: string }> = await api(daemon, "/api/reviews");
+        asked = reviews.find((r) => r.sessionId === target.id && r.status === "pending");
+        return !!asked;
+      }, { timeout: 30_000 }).toBe(true);
+      const decision = asked!.decisions![0]!;
+      const biome = decision.options.find((o) => o.label === "biome")!;
+      expect((await act({ action: "resolve_review", reviewId: asked!.id, resolution: {
+        action: "answer", response: "biome", selections: [{ decisionId: decision.id, selected: [biome.id] }],
+      } })).isError).toBe(false);
       await expect(dashboard.getByText(`session ${controller.id} answered`, { exact: true }).first()).toBeVisible();
+      // The blocked tool call returns the controller's choice to the target agent.
+      await expect(dashboard.getByText(`request_input answered: Delegated response from session ${controller.id}: biome`, { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(dashboard.getByLabel("Chosen: biome").first()).toBeVisible();
 
-      // The review channel carries both free-text and structured decisions separately from native asks.
+      // The review channel also carries a free-text answer to a review the target did not ask itself.
       const tokenHeaders = { "content-type": "application/json", "x-harness-token": (await import("node:fs")).readFileSync(join(daemon.home, "token"), "utf8").trim() };
       const reviewResponse = await fetch(`${daemon.baseURL}/mcp/reviews`, { method: "POST", headers: tokenHeaders,
         body: JSON.stringify({ env: {}, sessionId: target.id, cwd: target.cwd, kind: "input", title: "Delegated review", body: "Which direction?" }) });

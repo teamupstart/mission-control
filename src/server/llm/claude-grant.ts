@@ -30,9 +30,10 @@ export const CLAUDE_SANDBOX: LlmSandboxSpec = {
  * constants, so the item that migrates it is provably a no-op rather than hopefully one.
  */
 export function claudeGrantSettings(grant: LlmToolGrant): string {
-  return JSON.stringify({
-    permissions: {
-      deny: grant.denyPaths.flatMap((p) => grant.tools.map((t) => `${t}(${p})`)),
-    },
-  });
+  return JSON.stringify({ permissions: { deny: claudeGrantDenyRules(grant) } });
+}
+
+/** The grant's deny rules alone, for a transport that merges them into wider settings. */
+export function claudeGrantDenyRules(grant: LlmToolGrant): string[] {
+  return grant.denyPaths.flatMap((p) => grant.tools.map((t) => `${t}(${p})`));
 }

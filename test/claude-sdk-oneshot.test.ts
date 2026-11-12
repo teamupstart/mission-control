@@ -23,6 +23,7 @@ import { HEADLESS_CWD } from "../src/server/claude-cli.ts";
 import { headlessTranscriptDir } from "../src/server/goal/prune.ts";
 import { CLAUDE_GRANTABLE_TOOLS, claudeSpendReport } from "../src/server/llm/claude.ts";
 import {
+  claudeOneShotSettings,
   killLiveClaudeSdkRuns,
   runClaudeSdkOneShot,
 } from "../src/server/llm/claude-sdk.ts";
@@ -131,7 +132,6 @@ test("one fresh query has tools off, deterministic settings, and no context opti
   assert.equal(fake.calls(), 1, "one app-owned call must construct exactly one query");
   assert.equal(captured.prompt, "summarise this session");
   assert.deepEqual(captured.options.tools, []);
-  assert.equal(Object.hasOwn(captured.options, "settings"), false);
   assert.deepEqual(captured.options.settingSources, []);
   assert.equal(captured.options.maxTurns, 1);
   assert.equal(captured.options.maxBudgetUsd, 2.5);
@@ -151,6 +151,40 @@ test("one fresh query has tools off, deterministic settings, and no context opti
   }
 });
 
+// The whole options object, not a field at a time: a field ADDED here is exactly how a
+// capability arrives unnoticed, so equality is the assertion that can see one. The claude.ai
+// account connectors (Gmail send, Drive share, Calendar delete) reached every one-shot
+// through fields that were absent, not through a field that was wrong.
+function withoutRuntimeFields(options: ClaudeSdkOneShotQueryOptions): Record<string, unknown> {
+  const { abortController, stderr, env, ...rest } = options;
+  assert.ok(abortController instanceof AbortController);
+  assert.equal(typeof stderr, "function");
+  assert.deepEqual(env, { PATH: "/usr/bin", MISSION_HEADLESS: "1" });
+  return rest;
+}
+
+test("a tool-less one-shot passes exactly these SDK options, with MCP and connectors shut", async () => {
+  let captured!: CapturedQuery;
+  const fake = fakeDeps([SPEND_FRAME], (value) => {
+    captured = value;
+  });
+  await runClaudeSdkOneShot("summarise this session", { model: "claude-haiku-4-5" }, fake.deps);
+
+  assert.deepEqual(withoutRuntimeFields(captured.options), {
+    tools: [],
+    settings: JSON.stringify({
+      disableClaudeAiConnectors: true,
+      permissions: { deny: ["mcp__*"] },
+    }),
+    settingSources: [],
+    strictMcpConfig: true,
+    maxTurns: 1,
+    cwd: realpathSync(HEADLESS_CWD),
+    pathToClaudeCodeExecutable: "/fake/bin/claude",
+    model: "claude-haiku-4-5",
+  });
+});
+
 test("a caller's effort reaches the SDK query as its effort option", async () => {
   let captured!: CapturedQuery;
   const fake = fakeDeps([SPEND_FRAME], (value) => {
@@ -158,6 +192,33 @@ test("a caller's effort reaches the SDK query as its effort option", async () =>
   });
   await runClaudeSdkOneShot("review", { model: "claude-opus-5-5", effort: "max" }, fake.deps);
   assert.equal(captured.options.effort, "max");
+});
+
+test("a granted one-shot merges its path denials with the MCP and connector shutdown", async () => {
+  const cwd = mkdtempSync(join(root, "exact-grant-worktree-"));
+  let captured!: CapturedQuery;
+  const fake = fakeDeps([{ ...SPEND_FRAME, structured_output: { answer: "ship it" } }], (value) => {
+    captured = value;
+  });
+  await runClaudeSdkOneShot("review this diff", {
+    schema: SCHEMA,
+    grant: { tools: [...CLAUDE_GRANTABLE_TOOLS], cwd, denyPaths: DENY_PATHS },
+  }, fake.deps);
+
+  const inspectorDeny = (JSON.parse(DENY_SETTINGS) as { permissions: { deny: string[] } })
+    .permissions.deny;
+  assert.deepEqual(withoutRuntimeFields(captured.options), {
+    tools: REVIEW_TOOLS.split(","),
+    settings: JSON.stringify({
+      disableClaudeAiConnectors: true,
+      permissions: { deny: [...inspectorDeny, "mcp__*"] },
+    }),
+    settingSources: [],
+    strictMcpConfig: true,
+    cwd: realpathSync(cwd),
+    pathToClaudeCodeExecutable: "/fake/bin/claude",
+    outputFormat: { type: "json_schema", schema: SCHEMA },
+  });
 });
 
 test("an empty image list keeps the exact text-only SDK prompt shape", async () => {
@@ -368,7 +429,10 @@ test("a validated grant reaches the SDK with the Inspector's exact tools, cwd, a
   assert.equal(result.text, JSON.stringify({ answer: "ship it" }));
   assert.deepEqual(options.tools, REVIEW_TOOLS.split(","));
   assert.equal(options.cwd, realpathSync(cwd));
-  assert.equal(options.settings, DENY_SETTINGS);
+  assert.equal(
+    options.settings,
+    claudeOneShotSettings({ tools: [...CLAUDE_GRANTABLE_TOOLS], cwd, denyPaths: DENY_PATHS }),
+  );
   assert.deepEqual(options.settingSources, []);
   assert.deepEqual(options.outputFormat, { type: "json_schema", schema: SCHEMA });
   assert.equal(
@@ -416,7 +480,7 @@ test("a denied-path result is a failed SDK run, never model text", async () => {
   );
 });
 
-test("the vendor SDK binds inline deny settings with empty setting sources at the subprocess boundary", async () => {
+test("the vendor SDK binds inline deny settings, strict MCP, and empty setting sources at the subprocess boundary", async () => {
   const cwd = mkdtempSync(join(root, "vendor-boundary-worktree-"));
   const fakeBin = join(root, "vendor-boundary-claude");
   writeFileSync(fakeBin, `#!/usr/bin/env node
@@ -432,6 +496,8 @@ process.stdin.on("data", () => {
   const bound = value("--tools") === "Read,Grep,Glob"
     && value("--settings") === process.env.MC_EXPECTED_DENY_SETTINGS
     && value("--setting-sources") === ""
+    && process.argv.includes("--strict-mcp-config")
+    && !process.argv.includes("--mcp-config")
     && process.cwd() === process.env.MC_EXPECTED_GRANT_CWD;
   const frame = bound
     ? {
@@ -460,7 +526,11 @@ process.stdin.on("data", () => {
     cwd: process.env.MC_EXPECTED_GRANT_CWD,
   };
   process.env.MISSION_CLAUDE_BIN = fakeBin;
-  process.env.MC_EXPECTED_DENY_SETTINGS = DENY_SETTINGS;
+  process.env.MC_EXPECTED_DENY_SETTINGS = claudeOneShotSettings({
+    tools: [...CLAUDE_GRANTABLE_TOOLS],
+    cwd,
+    denyPaths: DENY_PATHS,
+  });
   process.env.MC_EXPECTED_GRANT_CWD = realpathSync(cwd);
   try {
     // This call uses defaultClaudeSdkOneShotDeps: the real vendor `query()` serializes the

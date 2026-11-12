@@ -151,6 +151,7 @@ const {
   claudeSpendReport,
   configureClaudeRunnerTransport,
 } = await import("../src/server/llm/claude.ts");
+const { claudeOneShotSettings } = await import("../src/server/llm/claude-sdk.ts");
 const { codexRunner } = await import("../src/server/llm/codex.ts");
 const { setLlmSpendSink } = await import("../src/server/llm/spend.ts");
 type LlmSpendReport = import("../src/shared/llm-spend.ts").LlmSpendReport;
@@ -309,7 +310,8 @@ test("the Claude runner routes an sdk transport choice through the SDK one-shot"
     assert.equal(text, "the sdk model text");
     assert.equal(fake.calls(), 1, "the configured SDK transport did not construct a query");
     assert.deepEqual(fake.options()?.tools, []);
-    assert.equal(Object.hasOwn(fake.options() ?? {}, "settings"), false);
+    assert.equal(fake.options()?.settings, claudeOneShotSettings(null));
+    assert.equal(fake.options()?.strictMcpConfig, true);
     assert.equal(existsSync(RUN_ARGS), false, "the SDK route also spawned the print binary");
   } finally {
     restore();
@@ -331,7 +333,15 @@ test("a grant follows the configured SDK transport with the Inspector's exact sa
     assert.equal(existsSync(RUN_ARGS), false, "the granted SDK call also spawned print");
     assert.deepEqual(fake.options()?.tools, REVIEW_TOOLS.split(","));
     assert.equal(fake.options()?.cwd, realpathSync(dir));
-    assert.equal(fake.options()?.settings, DENY_SETTINGS);
+    // The Inspector's exact deny rules, merged with the connector and MCP shutdown.
+    assert.deepEqual(JSON.parse(fake.options()?.settings ?? "null"), {
+      disableClaudeAiConnectors: true,
+      permissions: {
+        deny: [...(JSON.parse(DENY_SETTINGS) as { permissions: { deny: string[] } })
+          .permissions.deny, "mcp__*"],
+      },
+    });
+    assert.equal(fake.options()?.strictMcpConfig, true);
     assert.deepEqual(fake.options()?.settingSources, []);
     assert.equal(Object.hasOwn(fake.options() ?? {}, "maxTurns"), false);
   } finally {

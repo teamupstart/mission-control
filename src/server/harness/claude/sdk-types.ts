@@ -233,9 +233,14 @@ export interface ClaudeSdkOneShotQueryOptions {
   env: Record<string, string | undefined>;
   abortController: AbortController;
   tools: string[];
-  /** Inline flag settings, used only when a validated grant carries deny rules. */
+  /**
+   * Inline flag settings. Optional only for the no-turn model-catalog probe, which shares
+   * this shape; every one-shot sends connector and MCP denials plus any grant's path rules.
+   */
   settings?: string;
   settingSources: ("user" | "project" | "local")[];
+  /** Admit only `mcpServers`; a one-shot passes none, so no MCP server loads. */
+  strictMcpConfig?: boolean;
   /**
    * Optional because a granted review takes as many turns as its tool results need, so it
    * sends no cap at all. The capped runs are not all worth the same number: a schema run

@@ -4058,21 +4058,26 @@ export class TaskManager {
     patch: UpdateTask,
     options: { backlogOnly?: boolean } = {},
   ): Promise<Ok & { task?: Task }> {
-    const prepared = await this.prepareUpdate(id, patch);
-    if (!prepared.ok) return prepared;
-    // Preparation can await titling, tool availability or the plan-storage lock, and a
-    // dispatch that lands meanwhile would be undone by writing the prepared row. MCP edits
-    // must also still name a shelved row, including annotation-only edits.
-    const current = this.registry.getTask(id);
-    if (!current) return { ok: false, error: "no such task" };
-    if (options.backlogOnly && current.status !== "backlog") {
-      return { ok: false, error: `task is ${current.status}, not in the backlog` };
+    // Preparation can await tool availability or the plan-storage lock after reading its base
+    // row, and writing the prepared row would undo anything written meanwhile, a dispatch
+    // included. A dashboard edit prepares once more from the newer row, which re-runs every
+    // check; an MCP edit is refused outright and must also still name a shelved row.
+    for (let attempt = 0; ; attempt++) {
+      const prepared = await this.prepareUpdate(id, patch);
+      if (!prepared.ok) return prepared;
+      const current = this.registry.getTask(id);
+      if (!current) return { ok: false, error: "no such task" };
+      if (options.backlogOnly && current.status !== "backlog") {
+        return { ok: false, error: `task is ${current.status}, not in the backlog` };
+      }
+      if (current === prepared.base) {
+        this.registry.upsertTask(prepared.task);
+        return { ok: true, task: prepared.task };
+      }
+      if (options.backlogOnly || attempt > 0) {
+        return { ok: false, error: "task changed while preparing the update; retry" };
+      }
     }
-    if (current !== prepared.base) {
-      return { ok: false, error: "task changed while preparing the update; retry" };
-    }
-    this.registry.upsertTask(prepared.task);
-    return { ok: true, task: prepared.task };
   }
 
   /**

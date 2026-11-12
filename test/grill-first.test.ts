@@ -178,7 +178,7 @@ test("creation pins each kind's default, a dispatch overrides it, and an edit wr
   assert.equal(getTask(shipDefault.id)?.grillFirst, false);
 });
 
-test("a dashboard pin edit that waited on the tools probe never writes back over a newer row", async () => {
+test("a dashboard pin edit that waited on the tools probe is applied to the newer row, never over it", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   applySkillsConfig({ grillFirstKinds: [] });
@@ -187,14 +187,31 @@ test("a dashboard pin edit that waited on the tools probe never writes back over
   });
   // Both prepare from the same row; only the pin edit awaits the tools probe before writing.
   const saving = tasks.update(task.id, { title: "Saved meanwhile" });
-  const stale = tasks.update(task.id, { grillFirst: true });
+  const pinning = tasks.update(task.id, { grillFirst: true });
   const saved = await saving;
   assert.equal(saved.ok, true, saved.error);
-  const result = await stale;
+  const pinned = await pinning;
+  assert.equal(pinned.ok, true, pinned.error);
+  assert.equal(registry.getTask(task.id), pinned.task);
+  assert.equal(getTask(task.id)?.title, "Saved meanwhile", "the other edit survives");
+  assert.equal(getTask(task.id)?.grillFirst, true);
+});
+
+test("a dashboard edit never undoes a dispatch that landed while it was being prepared", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  applySkillsConfig({ grillFirstKinds: [] });
+  const task = tasks.create({
+    repoRoot: "/repos/demo", intent: "do it", title: "Race", kind: "ship", agent: "claude", backlog: true,
+  });
+  const pinning = tasks.update(task.id, { grillFirst: true });
+  // Lands after the edit read its row, while it waits on the tools probe.
+  await Promise.resolve();
+  registry.upsertTask({ ...registry.getTask(task.id)!, status: "running" });
+  const result = await pinning;
   assert.equal(result.ok, false);
-  assert.equal(result.error, "task changed while preparing the update; retry");
-  assert.equal(registry.getTask(task.id), saved.task);
-  assert.equal(getTask(task.id)?.title, "Saved meanwhile");
+  assert.match(result.error!, /not in the backlog/);
+  assert.equal(getTask(task.id)?.status, "running");
   assert.equal(getTask(task.id)?.grillFirst, false);
 });
 

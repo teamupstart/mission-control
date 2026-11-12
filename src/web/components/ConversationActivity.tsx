@@ -153,7 +153,11 @@ export function ConversationActivity({
     refocus.current = false;
     (collapsed ? stripRef : collapseRef).current?.focus();
   }, [collapsed]);
+  // Armed only for a press that changes the value. `updateUiConfig` commits optimistically,
+  // so that press flips `collapsed` in the same click and the effect above disarms it; a
+  // press that changes nothing would never reach the effect and must not leave it armed.
   function fold(next: boolean): void {
+    if (next === collapsed) return;
     refocus.current = true;
     onCollapsed(next);
   }

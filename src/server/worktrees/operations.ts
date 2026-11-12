@@ -1286,7 +1286,11 @@ export class WorktreeOperationsService {
       const { operation } = this.submit(token, acknowledgements);
       await this.warmQueue;
       const entry = this.operations.get(operation.id);
-      return { ok: true, action: "warm", message: warmResultMessage(entry ? this.viewOf(entry) : operation) };
+      const message = warmResultMessage(entry ? this.viewOf(entry) : operation);
+      // The caller holds the result, so nobody would dismiss the report and it would keep one
+      // of the listed slots for good. Its log stays reachable through the slot row.
+      this.dismiss(operation.id);
+      return { ok: true, action: "warm", message };
     }
     const { held, acknowledgementSet } = this.claim(token, acknowledgements);
     return this.perform(held, acknowledgementSet);

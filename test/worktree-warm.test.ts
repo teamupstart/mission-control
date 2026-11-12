@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { WorktreeClaimSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
 import type { WorktreeOperationView } from "../src/shared/worktrees.ts";
@@ -334,11 +334,20 @@ test("an inline Warm execute reports what its own targets did, not a blanket suc
   const fixture = repository("mission-warm-inline-");
   const m = manager({ claim: claimOf(INSTALL) });
   const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
-  const ops = service(m, logsDirectory());
+  const ops = service(m, logsDirectory(), { maxOperations: 1 });
   const target = { kind: "slot", slotId: slot!.slotId } as const;
 
   const warmed = await ops.preview({ action: "warm", target });
   assert.deepEqual(await ops.execute(warmed.token, []), { ok: true, action: "warm", message: "Warm finished: 1 warmed." });
+  // The caller holds the result, so no report is left behind to fill the listed slots.
+  assert.deepEqual((await ops.inventory()).operations, []);
+  const logPath = m.store.slot(slot!.slotId)!.depsLogPath;
+  assert.ok(logPath, "the slot row names the Warm's log");
+  const logId = basename(logPath!, ".log");
+  assert.ok(await logText(ops, logId), "the log stays reachable through the slot row");
+  // With room for one listed operation, a second inline Warm still runs.
+  const again = await ops.preview({ action: "warm", target });
+  assert.equal((await ops.execute(again.token, [])).ok, true);
 
   const skipped = await ops.preview({ action: "warm", target });
   rmSync(join(m.store.poolForSlot(slot!.slotId)!.poolPath, WORKTREE_POOL_MARKER));
@@ -1082,12 +1091,13 @@ test("a listener that rejects on the header, the flushes and the failure summary
   process.on("unhandledRejection", onUnhandled);
   try {
     const outcome = await runClaimSteps({
-      claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["install"] }], fingerprintPaths: [] }),
+      claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["install"], env: ["A_TOKEN"] }], fingerprintPaths: [] }),
       cwd: process.cwd(),
       signal: new AbortController().signal,
-      environment: async () => ({ env: {}, received: [], missing: [] }),
+      // A received value makes the redactor hold an unterminated line, so only its flush sends it.
+      environment: async () => ({ env: { A_TOKEN: "s3cr3t-value" }, received: ["A_TOKEN"], missing: [] }),
       runStep: async (request) => {
-        await request.onOutput?.("no newline, so only the flush releases it", "stdout");
+        assert.equal(await request.onOutput?.("no newline, so only the flush releases it", "stdout"), undefined);
         return { outcome: "exited", code: 3, signal: null, tail: "", truncatedBytes: 0 };
       },
       now: Date.now,
@@ -1096,7 +1106,7 @@ test("a listener that rejects on the header, the flushes and the failure summary
     assert.equal(outcome.ok, false);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(unhandled, [], "no rejection escapes to the process");
-    assert.ok(warnings.length >= 3, `header, flush and summary are each reported: ${warnings.length}`);
+    assert.equal(warnings.length, 3, "the header, the stdout flush and the summary are each reported");
     assert.ok(warnings.every((warning) => warning === "[worktrees] claim output listener failed: the view went away"));
   } finally {
     process.off("unhandledRejection", onUnhandled);

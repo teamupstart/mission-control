@@ -20,6 +20,7 @@ import {
 import { repoColor } from "../../lib/repo-color.ts";
 import { hiddenSessionIds, toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
+import { useSessionRailFolded } from "../../lib/session-rail.ts";
 import {
   collapsedColumnSessionIds,
   columnWidthOf,
@@ -49,8 +50,10 @@ import {
   EnsembleClusterHead,
   EnsembleRailGroup,
   FleetSectionHead,
+  FoldedSessionRail,
   PipelineClusterHead,
   RepoGroupHead,
+  SessionRailFoldButton,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { useTourTargetRef } from "../../tour/target-context.tsx";
@@ -226,6 +229,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // fleet filter hides - so no rail is drawn. The detail takes the board, and its head
   // carries the way back the rail head would have.
   const railHidden = focusedTone != null && modes.get(focusedTone) === "hidden";
+  // The one rail fold the Console reads too. It only draws while drilled in: the overview's
+  // columns are Board columns, folded with their own width control, not the rail.
+  const [railFolded, setRailFolded] = useSessionRailFolded();
+  const railShape = railHidden ? "none" : focusedTone != null && railFolded ? "folded" : undefined;
 
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
   // beside it are the SAME element with the same props - the frame is a wrapper, never a
@@ -378,7 +385,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       ref={boardTourRef}
       className="board"
       data-focus={focusedTone ?? "none"}
-      data-rail={railHidden ? "none" : undefined}
+      data-rail={railShape}
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
       {backlogMode !== "hidden" && <BacklogColumn
@@ -432,6 +439,20 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   count={count}
                   announce={g.tone === "attention"}
                   onRestore={() => setColumnWidth(g.tone, "normal")}
+                />
+              </section>
+            );
+          }
+          // The drill-in rail folded to its strip: the same strip the Console's rail folds to,
+          // counting only this column, since this column is all the rail lists. Kept as the
+          // `is-rail` section so the morph and the reader's width rules still see a rail.
+          if (isRail && railFolded) {
+            return (
+              <section key={g.tone} className={`board-col tone-${g.tone} is-rail is-folded`}>
+                <FoldedSessionRail
+                  label={g.label}
+                  groups={[{ tone: g.tone, label: g.label, count }]}
+                  onUnfold={() => setRailFolded(false)}
                 />
               </section>
             );
@@ -519,6 +540,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     </Tooltip>
                   </>
                 )}
+                {/* The rail's own fold, where the width control would be: drilled in, the
+                    column stops being a Board column and becomes the session rail. */}
+                {isRail && <SessionRailFoldButton onFold={() => setRailFolded(true)} />}
               </header>
               <div className="board-col-body">
                 {/* Keep the placeholder at the top of Working, and use the rail shape while

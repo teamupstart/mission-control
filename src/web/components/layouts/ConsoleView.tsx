@@ -15,6 +15,7 @@ import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { repoColor } from "../../lib/repo-color.ts";
 import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
+import { useSessionRailFolded } from "../../lib/session-rail.ts";
 import { PendingList } from "../PendingDispatch.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
@@ -23,6 +24,8 @@ import {
   blockedMembersIn,
   EnsembleRailGroup,
   FleetSectionHead,
+  FoldedSessionRail,
+  SessionRailFoldButton,
   PipelineClusterHead,
   RepoGroupHead,
 } from "../session-bits.tsx";
@@ -80,12 +83,20 @@ export function ConsoleView(props: SessionViewProps & {
   const groups = order.groups.filter(
     (g) => g.sessions.length > 0 || (g.tone === "working" && starters > 0),
   );
+  // One total per group, read by both rail states - the open rail's group head and the folded
+  // strip's pill - so the two can never disagree about what a group holds. A placeholder is a
+  // visible row and counts in Working; it is not a free or held agent, which is why the split
+  // count below reads `sessions` instead.
+  const groupTotal = (g: (typeof groups)[number]): number =>
+    g.sessions.length + (g.tone === "working" ? starters : 0);
   const repoTotals = repoSessionTotals(order);
   // Which repository groups are folded, from the store `App` and the board read too. Shared
   // rather than per-layout: the board's focused column BECOMES this rail on drill-in, so two
   // fold states meant one repository could be open on one side of the morph and folded on the
   // other - and `App` needs the same set to keep the arrow keys off folded rows.
   const repoCollapsed = useRepoCollapsed();
+  // The one rail fold, from the store the Board's drill-in and App's shortcut read too.
+  const [railFolded, setRailFolded] = useSessionRailFolded();
 
   // The zone only reads on screen once a session is open beside the rail; with an empty
   // pane there is no reader to hand focus to, so it always presents as the rail.
@@ -171,95 +182,114 @@ export function ConsoleView(props: SessionViewProps & {
     );
 
   return (
-    <div className="console" data-zone={zone}>
+    <div className="console" data-zone={zone} data-rail={railFolded ? "folded" : undefined}>
       <nav
-        className="console-rail"
+        className={`console-rail${railFolded ? " is-folded" : ""}`}
         aria-label="Sessions"
         onFocusCapture={() => props.onConsoleZoneChange("rail")}
       >
-        {props.onBackToBoard && (
-          <header className="board-col-head">
-            <Tooltip label="Back to the board (Esc)">
-              <button className="board-back" aria-label="Back to the board" onClick={props.onBackToBoard}>
-                ‹
-              </button>
-            </Tooltip>
-            <h2>All sessions</h2>
-          </header>
-        )}
-        {groups.map((g) => (
-          <div key={g.tone}>
-            <div className={`rail-group tone-${g.tone}`}>
-              {g.label}
-              {/* The same split the board head draws, in the rail's register: "idle 5" over
-                  three held agents reads as five free ones, and the rail is the surface a
-                  dispatch glance actually scans. One number when the group is one kind of
-                  thing, two when it is not; the free side drops at zero exactly as the
-                  board's pill and `fleetRows`' free rule do. */}
-              {/* A placeholder is a visible row and counts in unsplit Working. It is not a
-                  free or held agent because the session does not exist yet. */}
-              {g.heldFrom === null ? (
-                <span className="rail-group-n">
-                  {g.sessions.length + (g.tone === "working" ? starters : 0)}
-                </span>
-              ) : (
-                <span className="rail-group-n rail-group-split">
-                  {g.heldFrom > 0 && (
-                    <Tooltip label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}>
-                      <span className="n-free">{g.heldFrom} free</span>
-                    </Tooltip>
-                  )}
-                  <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
-                    <span className="n-held">{g.sessions.length - g.heldFrom} held</span>
-                  </Tooltip>
-                </span>
+        {railFolded ? (
+          <FoldedSessionRail
+            label="All sessions"
+            groups={groups.map((g) => ({
+              tone: g.tone,
+              label: g.label,
+              count: groupTotal(g),
+            }))}
+            onUnfold={() => setRailFolded(false)}
+          />
+        ) : (
+          <>
+            {/* The head stays put while the rows scroll under it, so the fold control - and on
+                the Board drill-in the way back - is never scrolled out of reach. */}
+            <header className="board-col-head console-rail-head">
+              {props.onBackToBoard && (
+                <Tooltip label="Back to the board (Esc)">
+                  <button className="board-back" aria-label="Back to the board" onClick={props.onBackToBoard}>
+                    ‹
+                  </button>
+                </Tooltip>
               )}
-            </div>
-            {/* Not interactive and not part of session navigation: arrow keys continue to
-                walk only real session ids while the placeholder occupies the right place. */}
-            {g.tone === "working" && <PendingList tasks={pending} variant="rail" />}
-            {g.tone === "working" && <FailedLaunchList groups={failed} variant="rail" />}
-            {/* Sibling members of one run sit under a header row of their own, inside the
-                tone section they belong to. The header is NOT a session row: rail navigation
-                walks session ids, so an arrow key steps over it (`layoutNav.ts`). */}
-            {/* The same free/held rule the board draws. `orderSessions` sorts held sessions
-                last within `idle` for every layout, so without this the rail would reorder
-                with nothing on screen saying why. */}
-            {fleetRows(g).map((row) =>
-              row.kind === "section" ? (
-                <FleetSectionHead
-                  key={`section-${row.section}`}
-                  kind={row.section}
-                  count={row.count}
-                />
-              ) : row.kind === "repo" ? (
-                // A repository group, one level above the run frames inside it. `row.key`
-                // rather than the root, for the reason the cluster below gives: a repository is
-                // grouped once per tone section and once per side of the free/held boundary.
-                <div
-                  className="rail-cluster rail-repo"
-                  style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
-                  key={row.key}
-                >
-                  <RepoGroupHead
-                    repoRoot={row.repoRoot}
-                    here={row.blocks.reduce(
-                      (n, b) => n + (b.kind === "session" ? 1 : b.sessions.length),
-                      0,
+              <h2>All sessions</h2>
+              <SessionRailFoldButton onFold={() => setRailFolded(true)} />
+            </header>
+            <div className="console-rail-rows">
+              {groups.map((g) => (
+                <div key={g.tone}>
+                  <div className={`rail-group tone-${g.tone}`}>
+                    {g.label}
+                    {/* The same split the board head draws, in the rail's register: "idle 5" over
+                        three held agents reads as five free ones, and the rail is the surface a
+                        dispatch glance actually scans. One number when the group is one kind of
+                        thing, two when it is not; the free side drops at zero exactly as the
+                        board's pill and `fleetRows`' free rule do. */}
+                    {/* A placeholder is a visible row and counts in unsplit Working. It is not a
+                        free or held agent because the session does not exist yet. */}
+                    {g.heldFrom === null ? (
+                      <span className="rail-group-n">
+                        {groupTotal(g)}
+                      </span>
+                    ) : (
+                      <span className="rail-group-n rail-group-split">
+                        {g.heldFrom > 0 && (
+                          <Tooltip label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}>
+                            <span className="n-free">{g.heldFrom} free</span>
+                          </Tooltip>
+                        )}
+                        <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                          <span className="n-held">{g.sessions.length - g.heldFrom} held</span>
+                        </Tooltip>
+                      </span>
                     )}
-                    total={repoTotals.get(row.repoRoot) ?? 0}
-                    variant="rail"
-                    expanded={!repoCollapsed.has(row.key)}
-                    onToggle={() => toggleRepoCollapsed(row.key)}
-                  />
-                  {!repoCollapsed.has(row.key) && row.blocks.map(renderBlock)}
+                  </div>
+                  {/* Not interactive and not part of session navigation: arrow keys continue to
+                      walk only real session ids while the placeholder occupies the right place. */}
+                  {g.tone === "working" && <PendingList tasks={pending} variant="rail" />}
+                  {g.tone === "working" && <FailedLaunchList groups={failed} variant="rail" />}
+                  {/* Sibling members of one run sit under a header row of their own, inside the
+                      tone section they belong to. The header is NOT a session row: rail navigation
+                      walks session ids, so an arrow key steps over it (`layoutNav.ts`). */}
+                  {/* The same free/held rule the board draws. `orderSessions` sorts held sessions
+                      last within `idle` for every layout, so without this the rail would reorder
+                      with nothing on screen saying why. */}
+                  {fleetRows(g).map((row) =>
+                    row.kind === "section" ? (
+                      <FleetSectionHead
+                        key={`section-${row.section}`}
+                        kind={row.section}
+                        count={row.count}
+                      />
+                    ) : row.kind === "repo" ? (
+                      // A repository group, one level above the run frames inside it. `row.key`
+                      // rather than the root, for the reason the cluster below gives: a repository is
+                      // grouped once per tone section and once per side of the free/held boundary.
+                      <div
+                        className="rail-cluster rail-repo"
+                        style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
+                        key={row.key}
+                      >
+                        <RepoGroupHead
+                          repoRoot={row.repoRoot}
+                          here={row.blocks.reduce(
+                            (n, b) => n + (b.kind === "session" ? 1 : b.sessions.length),
+                            0,
+                          )}
+                          total={repoTotals.get(row.repoRoot) ?? 0}
+                          variant="rail"
+                          expanded={!repoCollapsed.has(row.key)}
+                          onToggle={() => toggleRepoCollapsed(row.key)}
+                        />
+                        {!repoCollapsed.has(row.key) && row.blocks.map(renderBlock)}
+                      </div>
+                    ) : (
+                      renderBlock(row)
+                    ),
+                  )}
                 </div>
-              ) : (
-                renderBlock(row)
-              ),
-            )}
-          </div>
-        ))}
+              ))}
+            </div>
+          </>
+        )}
       </nav>
 
       <section

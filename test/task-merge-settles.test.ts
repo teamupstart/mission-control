@@ -176,6 +176,108 @@ test("an agent prompted long after its merge still owns a running task", () => {
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
 
+// ---- a background task reporting in is not new work -------------------------------------
+
+const NOTIFICATION =
+  "<task-notification>\n<task-id>bg-watch</task-id>\n<status>completed</status>\n"
+  + "<summary>Background command \"gh pr checks --watch\" completed (exit code 0)</summary>\n"
+  + "</task-notification>";
+
+function hook(
+  f: ReturnType<typeof fleet>,
+  event: "UserPromptSubmit" | "Stop",
+  ts: number,
+  prompt?: string,
+): void {
+  f.registry.applyHook({
+    agent: "claude",
+    event,
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    ...(prompt === undefined ? {} : { prompt }),
+    ts,
+  });
+}
+
+function observeMerge(
+  f: ReturnType<typeof fleet>,
+  episode: { episodeId: string; startedAt: number },
+  mergedAt: number,
+): void {
+  f.registry.reconcilePrs(
+    new Map([[f.id, prMatch({
+      state: "merged",
+      mergedAt,
+      agentSessionId: `${f.id}-episode`,
+      episodeId: episode.episodeId,
+      createdAt: episode.startedAt,
+    })]]),
+    new Set(),
+  );
+}
+
+test("a watcher's notification after the merge, before the poller sees it, still lands the task", () => {
+  // The PR merges, `gh pr checks --watch` exits, and Claude Code reports that as a
+  // `<task-notification>` prompt a second or two before the poller observes the merge.
+  // Nobody asked for anything, so the episode that carries the PR must not roll over.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-notify-first", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, NOTIFICATION);
+  hook(f, "Stop", mergedAt + 2_000);
+  observeMerge(f, episode, mergedAt);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  const binding = f.registry.workEpisodeForTask(f.taskId)!;
+  assert.equal(binding.episodeId, episode.episodeId);
+  assert.equal(binding.prUrl, PR);
+});
+
+test("a notification after an idle merge already landed the task leaves it on that episode", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-notify-after");
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, NOTIFICATION);
+  hook(f, "Stop", mergedAt + 2_000);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  assert.equal(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+});
+
+test("a notification with typed prose after a merge is still new work", () => {
+  // The human typed alongside the notification, so this is an ask and the rollover rule
+  // applies exactly as it does to any other prompt after a merge.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-notify-prose", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, `${NOTIFICATION}\nnow do the follow-up`);
+  assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+test("a prompt event with no prompt text after a merge is still new work", () => {
+  // Absent text is not evidence of machinery: only a prompt whose every word is Claude
+  // Code's scaffolding is.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-prompt-missing", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  hook(f, "UserPromptSubmit", mergedAt + 1_500);
+  assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
 // ---- the agent that ships and then just sits there ---------------------------------------
 
 test("an agent already idle when the merge is observed lands its task there and then", () => {

@@ -573,7 +573,7 @@ test("task creation inherits the dispatch default while explicit None opts out",
   setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: "w-dispatch-default",
+    kindWorkflowDefaults: { ship: "w-dispatch-default" },
   });
   const registry = new Registry();
   const workflows = new WorkflowManager(registry, new PersonaManager(registry).store);
@@ -624,7 +624,7 @@ test("task creation inherits the dispatch default while explicit None opts out",
   );
   assert.equal(registry.getTask(inheritedTask.id)?.status, "backlog");
 
-  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: { ship: null } });
   setForemanConfig({ enabled: false });
 });
 
@@ -812,7 +812,7 @@ test("the Ship it review route starts the built-in workflow and never replaces a
     ],
   };
   seedRuntimeVersion("manual-review-conflict", graph);
-  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: { ship: null } });
 
   const registry = new Registry();
   registry.applyDiscovery([

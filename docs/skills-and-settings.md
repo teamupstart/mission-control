@@ -316,7 +316,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Tasks**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -496,14 +496,17 @@ could not: the preference is now in ⌘K by name, flippable from a search result
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
 
 **Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
-with when nothing names its own choice, as one section per kind - ship, bugfix, document, plan,
-scout and chat - holding every setting this page keeps for it. **Grill me first** is whether a
-new task of that kind interviews you before it starts (see
+with when nothing names its own choice. Its **Dispatch defaults** card is the per-kind
+after-work Workflow rows (see [Dispatch an agent](dispatch-and-backlog.md), under **After
+work**). They replace the single **Dispatch default** that **Settings → Workflows** used to
+hold, because they describe a task kind rather than the Workflow subsystem's policy. Its
+**Grill me first** card has one row per kind (ship, bugfix, document, plan, scout and chat):
+whether a new task of that kind interviews you before it starts (see
 [Grill me first](dispatch-and-backlog.md#grill-me-first)), off for every kind until chosen, with
-what it does on the `i` beside it. It is daemon-backed, so it reaches tasks from the API, task
-sources and recurring missions as well as the dispatch form, and it is pinned on each task when
-it is filed. The page warns when a kind grills first while the Grill skill is off, because such
-a task is refused at dispatch.
+what it does on the `i` beside it. Both are daemon-backed, so they reach tasks from the API,
+task sources and recurring missions as well as the dispatch form, and Grill me first is pinned
+on each task when it is filed. The page warns when a kind grills first while the Grill skill is
+off, because such a task is refused at dispatch.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the

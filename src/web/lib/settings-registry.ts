@@ -170,7 +170,7 @@ export const SETTINGS_CATEGORIES = [
     // a task source or a recurring mission as well as from this dashboard.
     group: "sessions",
     scope: "machine",
-    keywords: ["task kind", "per kind", "dispatch default", "grill me first", "default"],
+    keywords: ["task kind", "per kind", "dispatch default", "after work", "workflow", "grill me first", "default"],
   },
   {
     id: "worktrees",

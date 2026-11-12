@@ -86,18 +86,20 @@ test("each kind's default is chosen on Settings -> Tasks, all off until then, an
   daemon,
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/tasks`);
-  // Each kind's own section holds its box; Conductor launches pipeline, so it has none.
+  // Its own card beside Dispatch defaults holds one box per kind; Conductor launches pipeline.
+  await expect(dashboard.locator('[data-anchor="tasks/dispatch-defaults"]')
+    .getByRole("heading", { name: "Dispatch defaults" })).toBeVisible();
+  const card = dashboard.locator('[data-anchor="tasks/grill-first"]');
+  await expect(card.getByRole("heading", { name: "Grill me first" })).toBeVisible();
   for (const kind of ["ship", "bugfix", "document", "plan", "scout", "chat"]) {
-    const box = dashboard.locator(`[data-anchor="tasks/kind-${kind}"]`)
-      .getByRole("checkbox", { name: `Grill me first for ${kind} tasks`, exact: true });
+    const box = card.getByRole("checkbox", { name: `Grill me first for ${kind} tasks`, exact: true });
     await expect(box).toBeEnabled();
     await expect(box).not.toBeChecked();
   }
-  await expect(dashboard.locator('[data-anchor="tasks/kind-pipeline"]')).toHaveCount(0);
+  await expect(card.getByRole("checkbox")).toHaveCount(6);
   await expect(kindBox(dashboard, "pipeline")).toHaveCount(0);
-  const card = dashboard.locator('[data-anchor="tasks/kind-plan"]');
   // What it does is the "i"'s tooltip.
-  const info = card.getByRole("button", { name: "About Grill me first" });
+  const info = card.getByRole("button", { name: "About Grill me first" }).first();
   await expect(info).toHaveAccessibleDescription(TIP);
   await info.hover();
   await expect(dashboard.getByText("Before it starts the work, the agent runs the Library's Grill action", { exact: false }).first())

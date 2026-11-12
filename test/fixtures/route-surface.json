@@ -137,7 +137,7 @@
   "GET /api/workflows/:id/versions": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflows/:id/versions/:version": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflows/:id/versions/:version/export": "503 {\"error\":\"Workflow manager unavailable\"}",
-  "GET /api/workflows/config": "200 {\"checkCommands\":[],\"checksEnabled\":true,\"defaultWorkflowId\":\"builtin-workflow:no-mistakes-review\",\"liveEnabled\":true,\"repoAllowlist\":[],\"retention\":{\"completedRunDays\":180,\"maxCompletedRuns\":1000,\"rawEvidenceDays\":30},\"skipPassedJudges\":true}",
+  "GET /api/workflows/config": "200 {\"checkCommands\":[],\"checksEnabled\":true,\"kindWorkflowDefaults\":{},\"liveEnabled\":true,\"repoAllowlist\":[],\"retention\":{\"completedRunDays\":180,\"maxCompletedRuns\":1000,\"rawEvidenceDays\":30},\"skipPassedJudges\":true}",
   "GET /api/workflows/status": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflows/test-evidence-audit": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/worktrees": "503 {\"error\":\"worktree operations unavailable\"}",
@@ -395,6 +395,6 @@
   "PUT /api/ui/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"path\\\": [],\\n    \\\"message\\\": \\\"empty config update\\\"\\n  }\\n]\"}",
   "PUT /api/workflow-commands/:slot": "503 {\"error\":\"Command catalog unavailable\"}",
   "PUT /api/workflows/:id/round-limit": "503 {\"error\":\"Workflow manager unavailable\"}",
-  "PUT /api/workflows/config": "409 {\"error\":\"The dispatch default must be an active published workflow\"}",
+  "PUT /api/workflows/config": "200 {\"checkCommands\":[],\"checksEnabled\":true,\"kindWorkflowDefaults\":{},\"liveEnabled\":true,\"repoAllowlist\":[],\"retention\":{\"completedRunDays\":180,\"maxCompletedRuns\":1000,\"rawEvidenceDays\":30},\"skipPassedJudges\":true}",
   "PUT /api/worktrees/config": "503 {\"error\":\"worktree operations unavailable\"}"
 }

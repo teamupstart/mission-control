@@ -11101,36 +11101,6 @@ span.task-outcome:hover {
 .dispatch-crew-hint {
   font-size: 11.5px;
 }
-/* Settings -> Tasks: one section per task kind, laid out as a grid of cards, each a short
-   list of that kind's settings with the name in a fixed column and its control beside it. */
-.task-kind-sections {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 12px;
-}
-.task-kind-settings {
-  display: grid;
-  gap: 10px;
-}
-.task-kind-setting {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-}
-.task-kind-setting-name {
-  font-size: 12px;
-  color: var(--muted);
-}
-.task-kind-setting-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.task-kind-setting .settings-hint {
-  margin: 0;
-}
-
 /* InfoTip: the "i" whose tooltip explains the control beside it. */
 button.info-tip {
   display: inline-flex;
@@ -23430,13 +23400,18 @@ select.foreman-model-input {
 .wf-judge-passes input {
   accent-color: var(--working);
 }
+.wf-default-rows {
+  display: grid;
+  gap: 6px;
+}
 .wf-default-row {
   display: flex;
   align-items: center;
   gap: 9px;
 }
-.wf-default-flow {
+.wf-default-kind {
   flex: none;
+  width: 56px;
   color: color-mix(in oklab, var(--working) 72%, var(--muted));
   font: 10px var(--mono);
   letter-spacing: 0.02em;

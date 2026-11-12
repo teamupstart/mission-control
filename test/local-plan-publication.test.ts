@@ -28,6 +28,7 @@ const { planAuthority } = await import("../src/server/plans/authority.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
 const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery, taskPlanDependencyRequirements } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const managers: InstanceType<typeof WorkflowManager>[] = [];
 afterEach(async () => { for (const m of managers.splice(0)) await m.stop(); });
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
@@ -735,6 +736,40 @@ test("per-task plan storage overrides pin policy, follow compatible defaults, an
   const invalid = await f.post("/api/tasks", { repoRoot: f.repo, title: "Not a plan", intent: "Ship code", kind: "ship", backlog: true, planStorage: "local" });
   assert.equal(invalid.status, 409);
   applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
+});
+
+test("a None plan row does not turn a stored None into Local Plan Validation on a storage edit", async (t) => {
+  const f = await fixture();
+  applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
+  setWorkflowPolicy({ kindWorkflowDefaults: { plan: null } });
+  t.after(() => { setWorkflowPolicy({}); });
+  const response = await f.post("/api/tasks", { repoRoot: f.repo, title: "Plan with no review", intent: "Plan it", kind: "plan", backlog: true, workflowId: null });
+  assert.equal(response.status, 200, await response.clone().text());
+  const task = await response.json() as ReturnType<typeof mkTask>;
+  assert.equal(task.workflowId, null);
+  const moved = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(moved.ok, true, moved.error);
+  assert.equal(moved.task?.planPolicy?.storage, "local");
+  assert.equal(moved.task?.workflowId, null);
+});
+
+test("a plan filed on an older row is refused, not silently re-armed, when moved to local storage", async (t) => {
+  const f = await fixture();
+  applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
+  setWorkflowPolicy({ kindWorkflowDefaults: { plan: PLAN_VALIDATION_WORKFLOW_ID } });
+  t.after(() => { setWorkflowPolicy({}); });
+  const response = await f.post("/api/tasks", { repoRoot: f.repo, title: "Plan on the old row", intent: "Plan it", kind: "plan", backlog: true });
+  assert.equal(response.status, 200, await response.clone().text());
+  const task = await response.json() as ReturnType<typeof mkTask>;
+  assert.equal(task.workflowId, PLAN_VALIDATION_WORKFLOW_ID);
+  setWorkflowPolicy({ kindWorkflowDefaults: { plan: null } });
+  // The task does not record that its Workflow came from a row, so it stays an explicit
+  // choice: one that cannot review a local plan is refused rather than swapped out.
+  const moved = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(moved.ok, false);
+  assert.match(moved.error!, /Select Local Plan Validation/);
+  assert.equal(f.tasks.get(task.id)?.planPolicy?.storage ?? "repository", "repository");
+  assert.equal(f.tasks.get(task.id)?.workflowId, PLAN_VALIDATION_WORKFLOW_ID);
 });
 
 for (const committed of [false, true]) test(`legacy plan artifacts lock storage without managed records (committed: ${committed})`, async () => {

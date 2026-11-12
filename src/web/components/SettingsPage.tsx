@@ -616,7 +616,14 @@ export function SettingsPage({
       case "harnesses":
         return <HarnessesPanel state={harnesses} setup={setup.view} />;
       case "tasks":
-        return <TaskSettingsPanel skills={skills} />;
+        return (
+          <TaskSettingsPanel
+            state={workflowSettings}
+            workflows={workflowSummaries}
+            foremanEnabled={foreman.config?.enabled ?? false}
+            skills={skills}
+          />
+        );
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} />;
       case "repositories":
@@ -654,7 +661,6 @@ export function SettingsPage({
           <WorkflowSettingsPanel
             state={workflowSettings}
             workflows={workflowSummaries}
-            foremanEnabled={foreman.config?.enabled ?? false}
             onNavigate={navigateWithAnchor}
             onOpenRuns={onOpenRuns}
           />

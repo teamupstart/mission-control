@@ -285,7 +285,7 @@ test("a configured dispatch default cannot be archived or deleted", async () => 
       body: JSON.stringify({
         liveEnabled: false,
         repoAllowlist: [],
-        defaultWorkflowId: valid.workflow.id,
+        kindWorkflowDefaults: { ship: valid.workflow.id, bugfix: valid.workflow.id },
       }),
     })).status,
     200,
@@ -296,7 +296,9 @@ test("a configured dispatch default cannot be archived or deleted", async () => 
     body: JSON.stringify({ expectedDraftRevision: 1 }),
   });
   assert.equal(archived.status, 409);
-  assert.match((await archived.json() as { error: string }).error, /another dispatch default/);
+  const archiveError = (await archived.json() as { error: string }).error;
+  assert.match(archiveError, /another dispatch default/);
+  assert.match(archiveError, /default for ship, bugfix\./, "the refusal names every kind using it");
 
   const deleted = await request(`/api/workflows/${valid.workflow.id}/delete`, {
     method: "POST",
@@ -305,13 +307,36 @@ test("a configured dispatch default cannot be archived or deleted", async () => 
   assert.equal(deleted.status, 409);
   assert.match((await deleted.json() as { error: string }).error, /another dispatch default/);
 
+  const unknownRow = await request("/api/workflows/config", {
+    method: "PUT",
+    body: JSON.stringify({ repoAllowlist: [], kindWorkflowDefaults: { plan: "workflow-missing" } }),
+  });
+  assert.equal(unknownRow.status, 409);
+  assert.match((await unknownRow.json() as { error: string }).error, /The plan dispatch default must be/);
+
+  // The deprecated alias is checked like the Ship row it sets, and lands there.
+  const unknownLegacy = await request("/api/workflows/config", {
+    method: "PUT",
+    body: JSON.stringify({ repoAllowlist: [], defaultWorkflowId: "workflow-missing" }),
+  });
+  assert.equal(unknownLegacy.status, 409);
+  assert.match((await unknownLegacy.json() as { error: string }).error, /The ship dispatch default must be/);
+  const legacy = await request("/api/workflows/config", {
+    method: "PUT",
+    body: JSON.stringify({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: valid.workflow.id }),
+  });
+  assert.equal(legacy.status, 200);
+  const legacyBody = await legacy.json() as Record<string, unknown>;
+  assert.deepEqual(legacyBody.kindWorkflowDefaults, { ship: valid.workflow.id });
+  assert.equal("defaultWorkflowId" in legacyBody, false, "the response names only the map");
+
   assert.equal(
     (await request("/api/workflows/config", {
       method: "PUT",
       body: JSON.stringify({
         liveEnabled: false,
         repoAllowlist: [],
-        defaultWorkflowId: null,
+        kindWorkflowDefaults: { ship: null },
       }),
     })).status,
     200,

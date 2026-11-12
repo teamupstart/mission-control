@@ -141,6 +141,7 @@ import {
   verifyMissionMcpToolsForRunningSession,
 } from "./mission-mcp.ts";
 import { isPlanTask } from "./plans/prompt.ts";
+import { PLAN_DECISIONS_TOOL } from "./plans/tools.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { grillAction, grillFirstDispatchBlock, grillFirstForSession } from "./grill-first.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
@@ -4059,17 +4060,16 @@ export class TaskManager {
   ): Promise<Ok & { task?: Task }> {
     const prepared = await this.prepareUpdate(id, patch);
     if (!prepared.ok) return prepared;
-    // Preparation can await titling or tool availability. MCP edits must still name the
-    // same shelved row at the write boundary, including annotation-only edits.
-    if (options.backlogOnly) {
-      const current = this.registry.getTask(id);
-      if (!current) return { ok: false, error: "no such task" };
-      if (current.status !== "backlog") {
-        return { ok: false, error: `task is ${current.status}, not in the backlog` };
-      }
-      if (current !== prepared.base) {
-        return { ok: false, error: "task changed while preparing the update; retry" };
-      }
+    // Preparation can await titling, tool availability or the plan-storage lock, and a
+    // dispatch that lands meanwhile would be undone by writing the prepared row. MCP edits
+    // must also still name a shelved row, including annotation-only edits.
+    const current = this.registry.getTask(id);
+    if (!current) return { ok: false, error: "no such task" };
+    if (options.backlogOnly && current.status !== "backlog") {
+      return { ok: false, error: `task is ${current.status}, not in the backlog` };
+    }
+    if (current !== prepared.base) {
+      return { ok: false, error: "task changed while preparing the update; retry" };
     }
     this.registry.upsertTask(prepared.task);
     return { ok: true, task: prepared.task };
@@ -4854,7 +4854,8 @@ export class TaskManager {
     // agent's own submission failure is the backstop for the remaining case, and it happens
     // with the checkout intact rather than after it was reset.
     const workflowEvidence = this.workflowEvidenceEnabledForTask(t);
-    const requiresSubmissionTool = t.kind === "scout" || workflowEvidence || !!t.planInputs?.length;
+    const grillsFirst = taskGrillsFirst(t);
+    const requiresSubmissionTool = t.kind === "scout" || workflowEvidence || !!t.planInputs?.length || grillsFirst;
     const mcpDescriptor = requiresSubmissionTool
       ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)(s.cwd ?? undefined)
       : null;
@@ -4865,6 +4866,9 @@ export class TaskManager {
           ? "this is a scout, and Mission Control's MCP server is not built on this machine, so "
             + "the agent could not submit the report the task needs to finish"
           : t.planInputs?.length ? "This task has pinned plan inputs, but Mission Control's MCP reader is not built on this machine"
+          : grillsFirst && !workflowEvidence
+            ? "this task starts with Grill me first, but Mission Control's MCP server is not built on this "
+              + "machine, so the agent could not ask its questions"
           : "this workflow accepts image evidence, but Mission Control's MCP server is not built on this machine",
         scope: "task",
       };
@@ -4898,6 +4902,7 @@ export class TaskManager {
             ...(t.kind === "scout" ? [SUBMIT_SCOUT_ARTIFACTS_TOOL] : []),
             ...(t.planInputs?.length ? ["read_plan" as const] : []),
             ...(workflowEvidence ? [SUBMIT_WORKFLOW_EVIDENCE_TOOL] : []),
+            ...(grillsFirst ? [PLAN_DECISIONS_TOOL] : []),
           ],
           s.startedAt,
           mcpDescriptor,
@@ -4913,7 +4918,9 @@ export class TaskManager {
           error: t.kind === "scout"
             ? `this is a scout${workflowEvidence ? " with a workflow that accepts evidence" : ""}, `
               + `and ${published.reason}, so the agent could not hand over what the task needs to finish`
-            : `this workflow accepts image evidence, and ${published.reason}`,
+            : grillsFirst && !workflowEvidence
+              ? `this task starts with Grill me first, and ${published.reason}`
+              : `this workflow accepts image evidence, and ${published.reason}`,
           scope: "task",
         };
       }
@@ -4961,7 +4968,7 @@ export class TaskManager {
       return { ok: false, error: planSkills.message, scope: "task" };
     }
     // Grill me first's skill, against this session's watermark like the planning skills above.
-    const grillFirst = taskGrillsFirst(t)
+    const grillFirst = grillsFirst
       ? grillFirstForSession(s, grillAction((id) => this.registry.getSessionAction(id)))
       : null;
     if (grillFirst && !grillFirst.ok) {

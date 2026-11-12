@@ -178,6 +178,26 @@ test("creation pins each kind's default, a dispatch overrides it, and an edit wr
   assert.equal(getTask(shipDefault.id)?.grillFirst, false);
 });
 
+test("a dashboard pin edit that waited on the tools probe never writes back over a newer row", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  applySkillsConfig({ grillFirstKinds: [] });
+  const task = tasks.create({
+    repoRoot: "/repos/demo", intent: "do it", title: "Race", kind: "ship", agent: "claude", backlog: true,
+  });
+  // Both prepare from the same row; only the pin edit awaits the tools probe before writing.
+  const saving = tasks.update(task.id, { title: "Saved meanwhile" });
+  const stale = tasks.update(task.id, { grillFirst: true });
+  const saved = await saving;
+  assert.equal(saved.ok, true, saved.error);
+  const result = await stale;
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "task changed while preparing the update; retry");
+  assert.equal(registry.getTask(task.id), saved.task);
+  assert.equal(getTask(task.id)?.title, "Saved meanwhile");
+  assert.equal(getTask(task.id)?.grillFirst, false);
+});
+
 test("the Grill action is edited in place and reset, and delivery reads what is saved", () => {
   const registry = new Registry();
   const actions = new SessionActionManager(registry);

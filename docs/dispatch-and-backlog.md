@@ -225,6 +225,8 @@ part of its request. When it is off, a task is delivered exactly as it always wa
   [Grill skill](skills-and-settings.md) must be switched on as well, or the dispatch is refused on
   the form naming it, and a launch that reaches the daemon anyway fails rather than starting an
   interview the agent cannot load. A grill-first task of any kind is granted
+  `request_plan_decisions`. Handing one to an agent that is already running is refused before
+  its checkout is reset when Mission Control's MCP server is not built, or does not publish
   `request_plan_decisions`.
 
 ## Attaching more than one repository

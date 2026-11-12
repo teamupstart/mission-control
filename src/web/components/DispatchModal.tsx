@@ -3155,7 +3155,7 @@ function DispatchModal({
                 : kindBehavior.constraint}
           </span>
           {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
-          {isGrillFirstTaskKind(draft.kind) && (
+          {!tourDemo && isGrillFirstTaskKind(draft.kind) && (
             <GrillFirstField
               choice={draft.grillFirst}
               fallback={grillFirstKinds ? grillFirstKinds.includes(draft.kind) : grillFirstKinds}

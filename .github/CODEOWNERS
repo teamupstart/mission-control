@@ -15,3 +15,6 @@ poetry.lock             @teamupstart/infosec
 versions.properties     @teamupstart/infosec
 package-lock.json       @teamupstart/infosec
 **/.yarn/cache/**       @teamupstart/infosec
+
+# Infosec for CODEOWNERS file changes
+CODEOWNERS              @teamupstart/infosec

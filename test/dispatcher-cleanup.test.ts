@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -8,6 +9,12 @@ import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-cleanup-"));
 process.env.HARNESS_HOME = home;
+// A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
+// Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`
+// before `npm run build`) the launch is refused. What it publishes is answered by
+// `MISSION_TEST_MCP_DEPS`.
+process.env.MISSION_MCP_SERVER = join(home, "mission-mcp-stand-in.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 // A binary that exists, so bin resolution cannot be what fails below. The dispatch under
 // test never reaches a spawn.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
@@ -107,7 +114,7 @@ test("cancellation before discovery retains the identity captured by terminal la
   }, {
     resolveRuntime: () => "terminal",
     resolveBases: async () => ({ primary: base, extras: [] }),
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     spawn: async () => {
       registry.upsertTask({ ...registry.getTask(id)!, status: "cancelled" });
       return captured;

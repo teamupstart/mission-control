@@ -26,7 +26,13 @@ process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";
 // No MCP bundle: with the ask channel off, only standing instructions can put
 // `--append-system-prompt` on a Claude command line, so the argv is a clean measurement.
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
+/** The Mission Control MCP server every Claude and Codex launch is now handed. */
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
 
 const { DispatchSchema, UpdateTaskSchema, McpTaskConfigurationSchema, McpUpdateTaskSchema } = await import(
   "../src/shared/protocol.ts"
@@ -40,6 +46,7 @@ const { TASK_PERSONA_HEADING, pipelineHostStanding, resolveTaskPersona, taskPers
 );
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
+const { askChannelPrompt } = await import("../src/server/ask-channel.ts");
 const { TaskManager, TaskPersonaError } = await import("../src/server/tasks.ts");
 const { openDb, getTask } = await import("../src/server/db.ts");
 const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
@@ -332,7 +339,8 @@ async function terminalDispatch(options: {
   let sessionId = "";
   await new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     persona: options.library ?? lookup,
     spawn: async (_label, _short, cwd, _bin, args) => {
       argv = [...(args ?? [])];
@@ -376,14 +384,18 @@ test("a Claude terminal launch carries the Persona once, on its system-prompt ap
   const repo = seedRepo("claude-terminal");
   const baseline = await terminalDispatch({ agent: "claude", repo, taskId: "persona-none", personaId: null });
   assert.equal(baseline.task.status, "running", baseline.task.error ?? "");
-  assert.equal(baseline.argv?.includes("--append-system-prompt"), false, "no Persona, no flag");
+  // No Persona: the one append is the ask redirect every Claude launch carries.
+  assert.equal(baseline.argv?.filter((a) => a === "--append-system-prompt").length, 1);
+  assert.equal(baseline.argv![baseline.argv!.indexOf("--append-system-prompt") + 1], askChannelPrompt, "no Persona, only the redirect");
   assert.equal(baseline.registry.standingInstructionsFor(baseline.sessionId), null);
   release(baseline.registry, "persona-none");
 
   const run = await terminalDispatch({ agent: "claude", repo, taskId: "persona-claude", personaId: REVIEWER.id });
   assert.equal(run.task.status, "running", run.task.error ?? "");
-  // The ONLY argv difference is the delivery, and turn one is untouched: exactly once.
-  assert.deepEqual(run.argv, [...baseline.argv!, "--append-system-prompt", SECTION]);
+  // The ONLY argv difference is the delivery, joined to the one append after the redirect,
+  // and turn one is untouched: exactly once.
+  const at = baseline.argv!.indexOf("--append-system-prompt") + 1;
+  assert.deepEqual(run.argv, baseline.argv!.map((arg, i) => (i === at ? `${askChannelPrompt}\n\n${SECTION}` : arg)));
   assert.equal(run.prompt?.includes(GUIDANCE), false);
   // Recorded, so a resume replays the Persona the launch sent.
   assert.deepEqual(
@@ -437,7 +449,8 @@ test("an Agent SDK launch hands the Persona to the supervisor as its standing in
   await new Dispatcher(registry, async () => {}, {
     supervisor,
     persona: lookup,
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     inject: async () => {
       throw new Error("an embedded dispatch must never type at a pane");
     },

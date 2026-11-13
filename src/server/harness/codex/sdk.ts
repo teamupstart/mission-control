@@ -11,6 +11,7 @@ import type {
 } from "@shared/types.ts";
 import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
 import type { StandingInstructionsMechanism } from "@shared/standing-instructions.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
@@ -116,10 +117,12 @@ const FINAL_ANSWER_COMPLETION_GRACE_MS = 250;
  * configured value before adding this text below.
  */
 const MISSION_CONTROL_REVIEW_INSTRUCTION =
-  "Whenever the operator chooses among discrete options, call the Mission Control " +
-  "request_input MCP tool. Pass the choices through the tool's options field and wait for " +
-  "the structured response before continuing. Never end a turn by asking for a numbered " +
-  "or prose reply when the MCP tool is available. If you are waiting on someone or " +
+  "Whenever you need a decision, a clarification or a choice from the operator, call the " +
+  "Mission Control request_input MCP tool. Pass discrete choices through the tool's options " +
+  "field and wait for the structured response before continuing. Never end a turn by asking for a numbered " +
+  "or prose reply when the MCP tool is available. " +
+  DECISION_CONTEXT_RULE +
+  " If you are waiting on someone or " +
   "something other than the operator, call the Mission Control report_blocker MCP tool " +
   "instead; for a decision the operator can make, call request_input. Ask your question " +
   "where its owner will see it first (for example Commonroom), then report the blocker " +
@@ -799,9 +802,26 @@ class CodexSdkSession implements SdkSessionHandle {
     this.publishThreadStatus(thread.thread.status);
   }
 
-  /** Turn one, queued as a real turn so `activeTurnId` is set before anything else runs. */
+  /**
+   * Turn one, queued as a real turn so `activeTurnId` is set before anything else runs.
+   *
+   * Through the same decision `send` makes, because a RESUME can bind a thread whose turn is
+   * still running (`bind`), and `turn/start` on a running thread is accepted and never runs
+   * (see `activeTurnId`) - a fallback seeded that way would be lost while launch reported
+   * success. Steering the live turn is acknowledged before this resolves, so what was seeded
+   * has reached the agent by the time launch returns. A fresh launch has no active turn and
+   * starts one, as it always did.
+   */
   async seed(prompt: string): Promise<void> {
-    await this.startTurn(this.requireThread(), [{ type: "text", text: prompt, text_elements: [] }]);
+    const threadId = this.requireThread();
+    const input: UserInput[] = [{ type: "text", text: prompt, text_elements: [] }];
+    const active = this.activeTurnId;
+    if (active) {
+      const params: TurnSteerParams = { threadId, input, expectedTurnId: active };
+      await this.client.request<TurnSteerResponse>("turn/steer", params);
+      return;
+    }
+    await this.startTurn(threadId, input);
   }
 
   /**
@@ -1607,6 +1627,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // Whether the operator's standing instructions ended up riding turn one instead of
         // this channel. False for as long as the channel is still expected to work.
         let standingFellBackToPrompt = false;
+        // The same for Mission Control's decision routing: every decision a task asks goes
+        // through `request_input`, so an instruction this channel could not carry rides turn
+        // one instead of being dropped.
+        let routingFellBackToPrompt = false;
         if (opts.mcp || standing) {
           const wanted = [
             opts.mcp ? "Mission Control review routing" : null,
@@ -1624,14 +1648,14 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           // block out of turn one, so a bare warning here delivers the instructions NOWHERE.
           // The fallback is the same prompt prefix the two channel-less pairs use, composed
           // by the caller so the block still lands below the repository manifest and above
-          // the request. Mission Control's review routing has no such fallback and needs
-          // none: it names an MCP tool, so an unsent instruction only omits a suggestion.
+          // the request. Mission Control's decision routing takes the same fallback, leading
+          // turn one: a session that has `request_input` but was never told to ask its
+          // decisions there could ask them as prose, outside it.
           const unusable = (why: string, detail?: unknown): void => {
             const fallback = standing && opts.standingInstructionsPrompt;
-            const outcome = fallback
-              ? "standing instructions were delivered in turn one instead"
-              : `${wanted} was not added`;
+            const outcome = `${wanted} ${fallback || opts.mcp ? "was delivered in turn one instead" : "was not added"}`;
             if (fallback) standingFellBackToPrompt = true;
+            if (opts.mcp) routingFellBackToPrompt = true;
             if (detail === undefined) console.warn(`[sdk] codex ${why}; ${outcome}`);
             else console.warn(`[sdk] codex ${why}; ${outcome}:`, detail);
           };
@@ -1707,11 +1731,16 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // whole of what a resume owes - the intent is already in the conversation being
         // reopened. `standingFellBackToPrompt` is only ever true when that string is
         // non-empty, so this never seeds a turn nobody composed.
-        if (standingFellBackToPrompt) {
-          await session.seed(opts.standingInstructionsPrompt);
-        } else if (opts.prompt) {
-          await session.seed(opts.prompt);
-        }
+        //
+        // The decision routing, when this channel could not carry it, FOLLOWS whichever turn one
+        // that is - never leads it, because a turn one can open with a skill invocation (a
+        // Pipeline Engineer's `$engineer ...`) that has to stay its first token. On a resume with
+        // nothing else to send it is turn one by itself, for the same reason the standing block is.
+        const turnOne = standingFellBackToPrompt ? opts.standingInstructionsPrompt : opts.prompt;
+        const seeded = [turnOne, routingFellBackToPrompt ? MISSION_CONTROL_REVIEW_INSTRUCTION : null]
+          .filter((part): part is string => !!part)
+          .join("\n\n");
+        if (seeded) await session.seed(seeded);
         if (unexpectedServer) {
           throw new Error(`this resident's Codex session started the MCP server ${unexpectedServer}, which is not in its snapshot`);
         }

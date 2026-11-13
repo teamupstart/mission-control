@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { NO_MISSION_MCP_ENV, type DaemonHandle } from "../fixtures/daemon.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { dialogMarker } from "../../src/server/foreman/pending.ts";
 
 /**
@@ -19,8 +19,8 @@ import { dialogMarker } from "../../src/server/foreman/pending.ts";
  * Both channels a session asks through are driven here, because the note was stranded on each
  * for a different reason and only one of them looked stale:
  *
- *  - The DRIVER form, which is what an SDK session's own `AskUserQuestion` raises (a task
- *    keeps that built-in only on a launch with no Mission MCP server). Its marker
+ *  - The DRIVER form, which is what a Codex SDK session's own `request_user_input` raises
+ *    (a dispatched Claude task asks every decision through MCP instead). Its marker
  *    is a `dialog:` digest. Its recommendation is revealed from the form and highlights the
  *    actual option it names, but only the form can send the answer.
  *  - The MCP review. Its marker names the review, so the dashboard did degrade it to "already
@@ -31,8 +31,8 @@ import { dialogMarker } from "../../src/server/foreman/pending.ts";
  * had approved and a plan-decisions they had answered hours earlier, and a third whose
  * `dialog:` marker was finally cleared by hand three minutes after the question it was about.
  *
- * Everything is real except the model: a real dispatched SDK session, a real `can_use_tool`
- * request over the vendored SDK, a real review over the real `POST /mcp/reviews` channel, a
+ * Everything is real except the model: a real dispatched Codex SDK session, a real
+ * `item/tool/requestUserInput` request over the real app-server protocol, a real review over the real `POST /mcp/reviews` channel, a
  * real note written through `PUT /api/sessions/:id/note`, real clicks on the real forms, and
  * the note read back out of the SSE stream the Console detail renders from.
  *
@@ -43,7 +43,7 @@ import { dialogMarker } from "../../src/server/foreman/pending.ts";
  */
 
 const TASK = "pick the toolchain";
-/** The prompt `fake-claude.mjs` answers by raising an `AskUserQuestion` and blocking. */
+/** The prompt `fake-codex.mjs` answers by raising a `request_user_input` and blocking. */
 const ASK_TURN = "ask me which linter to use";
 
 const SUGGESTION = "Choose biome - it is already in the toolchain.";
@@ -51,11 +51,10 @@ const SUGGESTION = "Choose biome - it is already in the toolchain.";
 const STALE_HINT = /already been resolved/;
 
 /**
- * The driver form below is the native `AskUserQuestion` form, which a dispatched task raises
- * only when it launched with no Mission MCP server to ask through instead. The review-channel
- * test posts its review over HTTP and needs no bundle either.
+ * The driver form below is the native form a Codex session's `request_user_input` raises, so
+ * every test here dispatches Codex. Codex's tool has no multi-select, so both questions take
+ * one answer. The review-channel test posts its review over HTTP.
  */
-test.use({ daemonEnv: NO_MISSION_MCP_ENV });
 
 const EVIDENCE = artifactsDir("foreman-note-retires-on-your-answer");
 
@@ -90,6 +89,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   // keystroke; without this the next fill lands on a covered control.
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
   await dialog
     .locator("select")
     .filter({ hasText: "finish without a Workflow" })
@@ -254,7 +254,7 @@ test("answering the agent's own question retires the note pinned on it", async (
   // recommended: the note is retired because the question is closed, not because the operator
   // happened to agree with the suggestion.
   await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("radio", { name: /tests/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(form).toBeHidden({ timeout: 15_000 });
 
@@ -291,7 +291,7 @@ test("a drafted reply also yields to the canonical form", async ({ dashboard, da
   await expect(card.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
 
   await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("radio", { name: /tests/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(form).toBeHidden({ timeout: 15_000 });
 
@@ -301,8 +301,8 @@ test("a drafted reply also yields to the canonical form", async ({ dashboard, da
 });
 
 test("answering the review channel's question retires it too", async ({ dashboard, daemon }) => {
-  // The other channel. A terminal-dispatched session has `AskUserQuestion` taken away and asks
-  // over MCP instead, and the note for one of those carries a `review:<id>` marker.
+  // The other channel. A dispatched Claude task asks over MCP instead of through a driver
+  // form, and the note for one of those carries a `review:<id>` marker.
   await dispatch(dashboard, daemon);
   const live = await session(daemon);
 
@@ -424,7 +424,7 @@ test("a note about a DIFFERENT ask is still yours to decide", async ({ dashboard
   await expect(note).toContainText(other);
 
   await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("radio", { name: /tests/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(form).toBeHidden({ timeout: 15_000 });
 

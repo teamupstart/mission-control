@@ -161,14 +161,39 @@ test("an agent folded before the live set drops it is not revived by that late l
   assert.deepEqual(states(s), { a: "running", b: "running" });
 });
 
-test("a resumed agent's start lifts the guard even while a late live set still lists it", () => {
-  let s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
-  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", status: "completed", summary: "" }), 2);
+test("only a start for a later run lifts the guard while a late live set still lists the agent", () => {
+  let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })]);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "" }), 2);
   s = foldClaudeSubagents(s);
   assert.equal(s.retired.has("a"), true);
-  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 3);
+  // A start without a run id proves nothing about a new run: it stays folded.
+  assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 3), s);
+  // A start for a later run is a resume.
+  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r2" }), 4);
   assert.equal(s.retired.has("a"), false);
   assert.deepEqual(states(s), { a: "running" });
+});
+
+test("a repeated start without a run id does not revive an agent that just finished", () => {
+  // The live set still names `a` after its notification, until the next frame drops it.
+  let s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", status: "completed", summary: "" }), 2);
+  assert.equal(s.live.has("a"), true);
+  assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 3), s);
+  assert.deepEqual(states(s), { a: "completed" });
+});
+
+test("an agent the live set marked ambient stays hidden when its start omits the flag", () => {
+  // The set classifies `h` before its start, which then arrives without `ambient`.
+  let s = run([level(agent("a"), agent("h", { ambient: true })), started("a", { is_backgrounded: true })]);
+  s = observeClaudeSubagentFrame(s, started("h", { is_backgrounded: true }), 2);
+  assert.deepEqual(states(s), { a: "running" });
+  assert.equal(subagentCounts(claudeSubagentSummary(s)).running, 1);
+  // Its later progress and end change nothing visible either.
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "h", status: "completed", summary: "" }), 3);
+  s = foldClaudeSubagents(s);
+  assert.deepEqual(states(s), { a: "running" });
+  assert.equal(claudeSubagentSummary(s)!.finishedFolded, 0, "housekeeping is never counted as finished");
 });
 
 test("an agent pushed past the cap is not revived by a late live set either", () => {

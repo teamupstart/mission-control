@@ -850,3 +850,46 @@ test("removing a stalled directory recovers at once: a walk of other directories
   }
 });
 
+test("an unparseable timeout or cache setting falls back to its default instead of firing at once", async (t) => {
+  const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const saved = {
+    timeout: process.env.MISSION_REPOS_SCAN_TIMEOUT_MS,
+    cache: process.env.MISSION_REPOS_CACHE_MS,
+  };
+  // Every read of the root takes 50 ms: longer than the ~1 ms a NaN or 0 timer waits.
+  const realReaddir = fsPromises.readdir;
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (String(args[0]) === root) await new Promise((resolve) => setTimeout(resolve, 50));
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  const warned: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warned.push(String(message));
+  });
+  try {
+    setRepoIndexConfig({ directories: [{ path: root }] });
+    for (const bad of ["60s", "", "   ", "-5", "0", "NaN"]) {
+      rmSync(SNAPSHOT, { force: true });
+      process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = bad;
+      process.env.MISSION_REPOS_CACHE_MS = bad === "0" ? "abc" : bad;
+      const repos = await restartedRepos(`bad-env-${bad.trim() || "blank"}`);
+      // The walk is not abandoned as a stalled mount...
+      const first = await repos.listReposScan({ rescan: true });
+      assert.deepEqual(first.repos, [join(root, "alpha")], `timeout ${JSON.stringify(bad)} must not abandon the walk`);
+      // ...and the cache still caches: an ordinary read inside the default TTL is the same scan.
+      assert.equal((await repos.listReposScan()).scannedAt, first.scannedAt, `cache ${JSON.stringify(bad)} must not turn caching off`);
+    }
+    assert.equal(warned.filter((line) => line.includes("was abandoned")).length, 0, "no walk was mistaken for a stalled mount");
+  } finally {
+    for (const [name, value] of [["MISSION_REPOS_SCAN_TIMEOUT_MS", saved.timeout], ["MISSION_REPOS_CACHE_MS", saved.cache]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(SNAPSHOT, { force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+

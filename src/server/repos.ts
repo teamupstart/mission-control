@@ -15,10 +15,24 @@ import { indexedDirectories } from "./repo-index-config.ts";
  */
 
 /**
+ * A millisecond setting from the environment, or `fallback` when it is unset, blank, not a
+ * finite number, negative, or zero where zero means nothing. `Number("60s")` is NaN and
+ * `Number("")` is 0, and either one passed to `setTimeout` fires at once - which would abandon
+ * every walk as a stalled mount, or quietly turn the cache off.
+ */
+function durationMs(name: string, fallback: number, { allowZero }: { allowZero: boolean }): number {
+  const raw = envVar(name);
+  if (raw === undefined || !raw.trim()) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || (value === 0 && !allowZero)) return fallback;
+  return value;
+}
+
+/**
  * How old a scan may be before a read starts a rescan behind it. An ordinary read never
  * WAITS on age (see `listRepos`); only a `fresh` or `rescan` read does.
  */
-const CACHE_TTL_MS = Number(envVar("REPOS_CACHE_MS") ?? 30_000);
+const CACHE_TTL_MS = durationMs("REPOS_CACHE_MS", 30_000, { allowZero: true });
 /**
  * How long one walk may run before the queue stops waiting on it. Walks are serialized, so a
  * `readdir` that never returns - a stalled network mount, a wedged FUSE directory under an
@@ -27,7 +41,7 @@ const CACHE_TTL_MS = Number(envVar("REPOS_CACHE_MS") ?? 30_000);
  * whatever it finds later is discarded, and the next walk starts. Ordinary reads with a scan
  * in hand never wait on a walk, so they keep answering throughout.
  */
-const SCAN_TIMEOUT_MS = Number(envVar("REPOS_SCAN_TIMEOUT_MS") ?? 60_000);
+const SCAN_TIMEOUT_MS = durationMs("REPOS_SCAN_TIMEOUT_MS", 60_000, { allowZero: false });
 /** Where the last completed scan survives a daemon restart. */
 const SNAPSHOT_PATH = join(STATE_DIR, "repo-index-cache.json");
 // 2: the identity became roots AND depth. 3: the wall-clock start rides beside the ordering

@@ -142,3 +142,22 @@ test("the printed body never repeats the heading, and never loses a clipped ques
     "a clipped question keeps its full text above the context",
   );
 });
+
+test("the daemon's review schema accepts the longest body request_input can file", async () => {
+  // `request_input` joins the question and up to DECISION_CONTEXT_MAX_CHARS of context into one
+  // review body. If the daemon ever capped `body` below that, a long ask would be refused with a
+  // transport error after the agent built it - so the largest body the tool can produce is
+  // parsed by the daemon's own schema here.
+  const { CreateReviewSchema } = await import("../src/shared/protocol.ts");
+  const question = "q".repeat(500);
+  const body = inputReviewBody(question, "c".repeat(DECISION_CONTEXT_MAX_CHARS));
+  const parsed = CreateReviewSchema.safeParse({
+    env: {},
+    kind: "input",
+    title: titleLine(question),
+    body,
+    decisions: [{ id: "q", question, options: [{ id: "o0", label: "yes" }, { id: "o1", label: "no" }] }],
+  });
+  assert.ok(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues));
+  assert.equal(parsed.success && parsed.data.body, body, "and keeps it whole");
+});

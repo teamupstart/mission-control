@@ -37,6 +37,7 @@ test("an upgraded database preserves Phase 1 runs and gains loop tables with the
   const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'resident_%'`)
     .all() as Array<{ name: string }>).map((row) => row.name).sort();
   assert.deepEqual(tables, [
+    "resident_instruction_proposals",
     "resident_iterations",
     "resident_mcp_secrets",
     "resident_pacing_calls",

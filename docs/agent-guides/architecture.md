@@ -78,6 +78,15 @@ dropping the layer. Fresh launches and legacy rows without a saved limit still r
 session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
 its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.
 
+`get_resident_instructions` and `propose_resident_instruction_changes` attribute the caller the
+same way. A proposal is validated against the current profile and Persona text, stored in
+`resident_instruction_proposals` keyed by the `request_input` review the daemon opens for it
+(`requestInputReview` in `src/shared/request-input.ts`, the tool's own builder),
+and applied by `ResidentInstructionChanges.resolution` (`src/server/residents/instruction-changes.ts`)
+inside the transaction `/api/reviews/:id/resolve` writes the human's answer in. Revisions are
+announced only after that commit. A resident's retro is a packet `runRetro` types into the
+resident's own session (`src/server/residents/retro-packet.ts`), with no skill gate.
+
 ## Executable environment and subprocesses
 
 Every process that can own or launch daemon work initializes `ExecutableLocator`: the direct

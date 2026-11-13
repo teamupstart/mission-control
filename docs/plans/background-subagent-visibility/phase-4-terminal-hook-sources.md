@@ -38,3 +38,5 @@ Merged with the spec green. No contract changes.
 ## Audit record
 
 The agent_id guard moved to Phase 1. launchTurnId stays null. Edits HookIngestSchema while Phase 3 edits UiConfig in the same file, in separate regions.
+
+Conversation coverage is deferred to Phase 2. Phase 4 delivers terminal sessions' `Session.subagents`, which the board renders and Phase 2's tray will read. This branch is stacked on Phase 1 only and has no conversation renderer, so a review request to assert a terminal sub-agent in the conversation could not be met without building Phase 2's tray here. The operator chose to defer that assertion, and [phase-2-conversation-tray.md](phase-2-conversation-tray.md) now asks its spec to cover a terminal session.

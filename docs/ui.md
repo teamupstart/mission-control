@@ -941,12 +941,18 @@ available:
   the list would hold more than twelve agents, the oldest finished ones fold into that count
   straight away to make room, without waiting for your turn. A parent that is idle, or waiting on you,
   while agents still run reads **idle · 2 agents still running** on its activity line, so it
-  is not mistaken for finished. Only background agents appear: a foreground agent blocks the
-  turn, so the card already reads as working, and Claude's ambient housekeeping tasks never
-  count. A value the source did not report is left out rather than drawn as zero. A session
-  with no background agents draws nothing extra. Like the attention flags these rows are not
-  on the Session display checklist. Today this covers sessions on the Claude Agent SDK
-  runtime, which includes dispatched tasks and residents; see
+  is not mistaken for finished. For Claude, only background agents appear: a foreground agent
+  blocks the turn, so the card already reads as working, and Claude's ambient housekeeping tasks
+  never count. A Codex terminal session shows every child from its `SubagentStart` to its
+  `SubagentStop`, because every Codex child runs asynchronously and its hooks do not report
+  whether the parent is waiting on one; while the parent waits, its own card reads as working.
+  A value the source did not report is left out rather than drawn as zero. A session with no
+  background agents draws nothing extra. Like the attention flags these rows are not
+  on the Session display checklist. This covers sessions on the Claude Agent SDK runtime,
+  which includes dispatched tasks and residents, and Claude and Codex terminal sessions. A
+  terminal session's rows come from its hooks, which carry no tool or token counters and no
+  last tool, so they give the type, description where Claude sent one, state and elapsed time;
+  see
   [Background sub-agents](sessions.md#background-sub-agents).
 - **A blocked session is red.** A session waiting on someone other than you records a
   [blocker](sessions.md#blocked-sessions), and its card takes the danger tone on its spine

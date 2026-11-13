@@ -690,6 +690,22 @@ export const ENVIRONMENT_ROW_METADATA: Record<
       note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings instead.",
     },
   },
+  // `optional`, unlike the dead-path row above it. These hooks still work: every installed event
+  // reports, and the session's state is right. What is missing is an event added since they were
+  // installed, which costs detail (a terminal session's background sub-agents) rather than the
+  // card. That is worth a row with a fix, not the setup banner. Same remedy, because the same
+  // installer writes the whole current list.
+  "mission-hook-events": {
+    family: "extensions",
+    requirement: "optional",
+    enables: "Until the hooks are reinstalled, terminal Claude sessions do not report the events they lack, such as a background sub-agent starting.",
+    remedy: {
+      kind: "command",
+      purpose: "install",
+      argv: ["npm", "run", "install-hooks"],
+      note: "Re-install the hooks so they cover every event this build listens for, from a durable clone rather than a pooled worktree. If you installed from the desktop app, press Install Claude integrations in Settings instead.",
+    },
+  },
 };
 
 /** The required capability row derived from terminal target composition. */

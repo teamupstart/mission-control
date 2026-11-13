@@ -31,6 +31,7 @@ Entry: Phase 1 merged. In: BackgroundAgentsTray, its mount, launchTurnId for Cla
 - Electron: a transcript-scroll case with the tray keeps the composer in the pane and the log scrolling.
 - e2e/specs/conversation-background-agents.spec.ts: tray rows; Jump to launch scrolls the launch turn into view; the tray also shows for a resident launched as in residents-launch.spec.ts.
 - npm run typecheck, lint, focused tests, build, test:e2e.
+- Terminal sessions (added by Phase 4): once Phase 4 has merged, the tray spec also covers a hook-reported terminal sub-agent. `e2e/specs/board-terminal-background-agents.spec.ts` already drives a real tmux Claude session through hook posts; extend it, or reuse its pane and hook helpers, to open that session's conversation and assert the agent's row in the tray. Phase 4 deferred this assertion to here because its branch has no conversation renderer.
 
 ## Exit and handoff
 

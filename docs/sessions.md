@@ -778,7 +778,7 @@ Expected output:
 
 ```
 Wired Mission Control hooks into /Users/you/.claude/settings.json
-  events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd
+  events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd, SubagentStart
   script: /Users/you/workspace/ai-harness/hooks/harness-hook.mjs
 ```
 
@@ -858,7 +858,7 @@ repo):
       ]}
     ]
     // ...one group per event: SessionStart, UserPromptSubmit, PostToolUse,
-    //    Notification, SubagentStop, PreCompact, SessionEnd
+    //    Notification, SubagentStop, PreCompact, SessionEnd, SubagentStart
   }
 }
 ```
@@ -1041,15 +1041,16 @@ picker. When the pane cannot be written the chip stays read-only.
 
 ### Background sub-agents
 
-A session can launch sub-agents: Claude through its Agent tool. One launched in the
-background keeps running after the parent's turn ends, so the parent can read as idle while
+A session can launch sub-agents: Claude through its Agent tool, Codex through its
+collaboration tools. One launched in the background keeps running after the parent's turn ends, so the parent can read as idle while
 agents are still reading, editing and spending tokens under it. The board shows them beneath
 the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), and the
 parent's activity line reads **idle · N agents still running**.
 
-Each driver reduces its own sub-agent signal into one bounded summary on the session,
-`Session.subagents`, and sends it to the daemon whole as an `SdkEvent` of kind `subagents`.
-`Registry.setSubagents` is its only writer and it rides the existing `session_upsert`.
+Each source reduces its own sub-agent signal into one bounded summary on the session,
+`Session.subagents`. An SDK driver sends it to the daemon whole as an `SdkEvent` of kind
+`subagents`; a terminal session's comes from its hooks (below). `Registry.setSubagents` is its
+only writer and it rides the existing `session_upsert`.
 It is live state, rebuilt from the agent's stream: nothing is written to SQLite, a session
 registered again starts without it, and a Claude process that is replaced starts from an empty
 set. The summary lists at most twelve agents, running first and then the newest finished;
@@ -1091,7 +1092,29 @@ send, not on a turn the agent starts for itself, because a finished agent's noti
 start one. A change to who is running or how one ended reaches the board at once; a change
 that moves only counters is sent at most once every five seconds per session.
 
-A sub-agent's own activity cannot restart its parent. The two channels it arrives on are
+Claude and Codex terminal sessions have no driver, so their sub-agents are read from their
+hooks, and only for the terminal runtime: an SDK session's hooks fire too, and are ignored
+because its driver already owns the summary. Which events count, end or list an agent is
+documented once, in
+[Background sub-agents from terminal hooks](harnesses-and-terminals.md#background-sub-agents-from-terminal-hooks).
+What a session shows as a result:
+
+- A terminal row carries the agent's type, the launch description when Claude sent one, its
+  state and elapsed time. Hooks carry no tool or token counters and no last tool, so those are
+  left out, and `launchTurnId` stays null.
+- Finished agents fold on the operator's next prompt, and the list starts again when the agent
+  process starts or resumes.
+- The state lives in memory, so a daemon restart forgets it, and a discovery sweep carries the
+  summary forward because discovery itself cannot see sub-agents. What comes back after a
+  restart differs by harness. A Claude session's next `Stop` lists the in-flight background
+  tasks, so its still-running agents reappear then. Codex hooks carry no such list: a child that
+  started before the restart is not shown again, and only children started afterwards appear.
+
+Claude hooks installed before `SubagentStart` was added do not run for it until they are
+installed again. Settings > Setup shows a **Claude Code hook events** row naming the missing
+event and the installer command; see [setup.md](setup.md#run-mission-control).
+
+A Claude sub-agent's own activity cannot restart its parent. The two channels it arrives on are
 handled separately:
 
 - **The SDK stream.** A frame carrying `parent_tool_use_id` belongs to a sub-agent. While the
@@ -1103,6 +1126,11 @@ handled separately:
   as `HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
   cycle as they were, in the moment and in the hook reading that later discovery sweeps replay.
   SDK sessions run the machine's installed hooks too, so this matters for both runtimes.
+
+For Codex terminal hooks the guard is narrower. The Codex bridge forwards `agent_id` only on `SubagentStart`
+and `SubagentStop`, so a Codex child starting or stopping never re-arms an idle parent. Any other
+hook Codex raises for a child carries no forwarded id, and reaches the parent as it did before
+sub-agents were tracked.
 
 ### Open a terminal, or the agent's own CLI, on a session
 

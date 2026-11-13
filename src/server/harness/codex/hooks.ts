@@ -1,4 +1,5 @@
 import type { HookIngest } from "@shared/protocol.ts";
+import type { HookSubagentSignal } from "../hook-subagents.ts";
 import type { HookReading, HookSpec, WorkCycleSignal } from "../types.ts";
 
 export const CODEX_HOOK_EVENTS = [
@@ -56,6 +57,34 @@ function workCycleSignal(evt: HookIngest): WorkCycleSignal | null {
 const codexPromptText = (evt: HookIngest): string | null =>
   evt.event === "UserPromptSubmit" && evt.prompt?.trim() ? evt.prompt.trim() : null;
 
+/**
+ * Codex's sub-agents, from its own lifecycle events.
+ *
+ * Every Codex child runs asynchronously, and the only thing that makes one "foreground" is a
+ * `wait` the parent is blocked in - which no hook reports. So every child counts from its
+ * `SubagentStart` to its `SubagentStop`; while the parent is itself working on the wait, its
+ * own state already says so, and once it is idle the line says what is still running.
+ *
+ * Only an event the bridge stamped with `agentId` names a child (`hooks/codex-hook.mjs` forwards
+ * it on these two events alone). The bridge never stamps a prompt, so every `UserPromptSubmit`
+ * folds finished children; the `agentId` check there only matters if a bridge ever does. A
+ * process start or resume begins again.
+ */
+function subagentSignals(evt: HookIngest): HookSubagentSignal[] {
+  switch (evt.event) {
+    case "SubagentStart":
+      return evt.agentId ? [{ kind: "launched", id: evt.agentId, type: evt.agentType ?? null, description: null }] : [];
+    case "SubagentStop":
+      return evt.agentId ? [{ kind: "ended", id: evt.agentId, type: evt.agentType ?? null }] : [];
+    case "UserPromptSubmit":
+      return evt.agentId ? [] : [{ kind: "fold" }];
+    case "SessionStart":
+      return evt.source === "startup" || evt.source === "resume" ? [{ kind: "reset" }] : [];
+    default:
+      return [];
+  }
+}
+
 export const codexHooks: HookSpec = {
   scope: "launch",
   events: CODEX_HOOK_EVENTS,
@@ -64,4 +93,5 @@ export const codexHooks: HookSpec = {
   workCycleSignal,
   promptText: codexPromptText,
   submittedPromptText: codexPromptText,
+  subagentSignals,
 };

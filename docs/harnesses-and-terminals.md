@@ -81,6 +81,45 @@ real paste verb delivers them correctly and appends a carriage return that no pa
 suppresses. The adapter reports that the paste submitted and prompt delivery skips its own
 Enter, which is why the paste result carries the fact rather than the caller assuming it.
 
+## Background sub-agents from terminal hooks
+
+A terminal session has no driver to read its background sub-agents from, so its hooks are the
+source. Each harness's `HookSpec.subagentSignals` translates its own events into neutral signals
+(started, launched, ended, the in-flight set, fold, reset), and
+[`hook-subagents.ts`](../src/server/harness/hook-subagents.ts) reduces them into the same
+`Session.subagents` summary an SDK driver produces. The registry applies them only to the
+terminal runtime; an SDK session's driver owns its summary and its hooks' sub-agent signals are
+ignored.
+
+- **Claude.** `SubagentStart` names an agent's type and when it started, but cannot say whether
+  it is in the background, so it is remembered and not counted. The Agent tool's `PostToolUse`
+  with status `async_launched` counts it, with the short description the model gave the launch.
+  `SubagentStop` ends it. `Stop` and `SubagentStop` also carry `background_tasks`, the session's
+  whole in-flight set: a sub-agent entry no hook announced is added, and a counted agent missing
+  from it was stopped. Shells, monitors and workflows in that list are not agents. The bridge
+  forwards these as bounded `agentType`, `agentTool` and `backgroundTasks` fields, and never the
+  agent's prompt. It forwards at most 50 in-flight tasks; when it has to cut the list it also
+  sends `backgroundTasksTruncated`, and the daemon reads that list as a partial set that adds the
+  agents it names and stops none it omits. `SubagentStart` is in the installed event list; hooks
+  installed before it was added lack it until reinstalled, and Settings > Setup says so.
+- **Codex.** Every child runs asynchronously, and no hook reports the `wait` that would make one
+  foreground, so every child counts from its `SubagentStart` to its `SubagentStop`. The Codex
+  bridge forwards `agent_id` and `agent_type` on those two events only. Its hooks are
+  launch-scoped, so a new dispatch always carries both events.
+- **Pi** has no sub-agent signal and never shows the indicator.
+
+Both Claude and Codex fold finished agents on a `UserPromptSubmit`, and start again on a
+`SessionStart` with source `startup` or `resume`. For Claude, a prompt raised inside a sub-agent
+carries `agent_id` and does not fold. The Codex bridge forwards `agent_id` only on
+`SubagentStart` and `SubagentStop`, so every Codex `UserPromptSubmit` folds. Hooks are separate processes that can land out
+of order: an ended agent is remembered so a late launch or a late in-flight list cannot revive
+it, an in-flight list only stops agents counted before it was taken, and a real `SubagentStop`
+overrides a stop that was only inferred.
+
+Hooks carry an agent's type, state and timing, and for Claude its launch description, but no tool
+or token counters and no last tool, so a terminal row omits those. See
+[Background sub-agents](sessions.md#background-sub-agents) for what a session shows.
+
 ## Managed terminal resumes
 
 `harness/resume.ts` prepares native resume arguments through `resumeArgvFor`, then uses the

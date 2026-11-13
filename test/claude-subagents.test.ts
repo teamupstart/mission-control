@@ -343,6 +343,33 @@ test("runs are told apart by identity, not by how their ids sort", () => {
   assert.deepEqual(t.tasks.get("b")!.pastRuns, ["zz-old"], "the folded run is remembered as past");
 });
 
+test("a task remembers every run it has had, so a very late frame stays late", () => {
+  // Twenty runs of one task, each ending and resuming while the live set names it.
+  const runs = Array.from({ length: 20 }, (_, i) => `run-${String(i).padStart(2, "0")}`);
+  let s = run([level(agent("a", { run_id: runs[0] })), started("a", { is_backgrounded: true, run_id: runs[0] })]);
+  for (const [i, r] of runs.slice(1).entries()) {
+    s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: runs[i], status: "completed", summary: "" }), 10 + i);
+    s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: r }), 11 + i);
+  }
+  assert.equal(s.tasks.get("a")!.runId, runs[19]);
+  assert.equal(s.tasks.get("a")!.pastRuns.length, 19);
+  // The very first run's start, arriving now, is still recognised as late.
+  assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: runs[0] }), 100), s);
+  assert.deepEqual(states(s), { a: "running" });
+});
+
+test("foreground agents the live set never names leave nothing behind", () => {
+  let s = run([level(agent("bg")), started("bg", { is_backgrounded: true })]);
+  for (let i = 0; i < 50; i += 1) {
+    s = observeClaudeSubagentFrame(s, started(`fg${i}`, { is_backgrounded: false }), 10 + i);
+    s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: `fg${i}`, status: "completed", summary: "" }), 10 + i);
+  }
+  assert.equal(s.retired.size, 0, "no guard for agents the live set does not name");
+  assert.deepEqual([...s.tasks.keys()], ["bg"]);
+  // And a late start for one of them still cannot count it: the live set does not name it.
+  assert.equal(observeClaudeSubagentFrame(s, started("fg3", { is_backgrounded: true }), 100).tasks.get("fg3")?.shown ?? false, false);
+});
+
 test("a repeated start for the run that already ended does not revive it", () => {
   let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })]);
   s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "" }), 2);

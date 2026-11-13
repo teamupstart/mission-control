@@ -258,6 +258,10 @@ export class ResidentLoop {
     if (!session || this.held(run, session, trigger)) return;
     // This delivery is the queued Run now. Spend it before anything that awaits, so a failed
     // compaction's backoff is not overtaken by the same request on the next observation.
+    // A human turn that takes over during an await below gets priority, not the request: it
+    // is put back, so the run still follows that turn. Pausing paths drop it, as a pause does.
+    const queuedAt = getResidentRun(id)?.run.runRequestedAt ?? null;
+    const restore = () => { if (queuedAt !== null) { requestResidentRun(id, queuedAt); this.publish(id); } };
     if (clearResidentRunRequest(id)) this.publish(id);
     const cap = residentGuardrail(run, this.now());
     if (cap) { this.pause(id, cap); return; }
@@ -274,7 +278,7 @@ export class ResidentLoop {
       } catch (error) {
         run = liveRun(id);
         // A delivered human turn moved the loop to working; its completion schedules the next wake.
-        if (run.loopState !== "compacting") return;
+        if (run.loopState !== "compacting") { if (run.loopState === "working") restore(); return; }
         // `blocker` cannot classify a driver failure: the interrupted `/compact` is itself an
         // active turn until it unwinds. Only a refusal before sending is a human preemption.
         const preempted = !(error instanceof CompactionError) && this.blocker(run, session) !== null;
@@ -289,6 +293,7 @@ export class ResidentLoop {
       run = liveRun(id);
       if (this.blocker(run, session)) {
         if (run.loopState === "compacting") this.pause(id, "Compaction interrupted by a human message or a conversation change.");
+        else if (run.loopState === "working") restore();
         return;
       }
       const current = this.session(run)!;
@@ -297,7 +302,8 @@ export class ResidentLoop {
       }
       completeResidentCompaction(id, current.workCycle?.generation ?? null);
     }
-    if (this.blocker(run, session)) return;
+    const blockedAfterCompaction = this.blocker(run, session);
+    if (blockedAfterCompaction) { if (blockedAfterCompaction === BUSY_BLOCKER) restore(); return; }
     // Compaction spends tokens too. Recheck the window after every awaited operation.
     const afterCompaction = residentGuardrail(liveRun(id), this.now());
     if (afterCompaction) { this.pause(id, afterCompaction); return; }

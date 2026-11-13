@@ -457,10 +457,12 @@ class ClaudeSdkSession implements SdkSessionHandle {
   compact = async (focus: string) => {
     if (this.turnActive) throw new Error("Cannot compact a busy session.");
     const completed = this.compaction.begin(() => this.interrupt());
-    try {
-      const accepted = await this.sendIfIdle({ text: `/compact ${focus}`.trim() });
-      if (!accepted) this.compaction.fail("The driver refused compaction while busy.");
-    } catch (error) { this.compaction.fail(String(error)); }
+    // Not awaited, for the same reason as Codex: acceptance that never settles must not keep
+    // the stall bound's rejection from the caller.
+    void this.sendIfIdle({ text: `/compact ${focus}`.trim() }).then(
+      (accepted) => { if (!accepted) this.compaction.fail("The driver refused compaction while busy."); },
+      (error: unknown) => this.compaction.fail(String(error)),
+    );
     return completed;
   };
 

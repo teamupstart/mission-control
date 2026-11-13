@@ -475,13 +475,14 @@ class CodexSdkSession implements SdkSessionHandle {
   compact = async (_focus: string) => {
     this.requireLive();
     if (this.activeTurnId !== null) throw new Error("Cannot compact a busy session.");
+    const threadId = this.requireThread();
     const completed = this.compaction.begin(() => this.interrupt());
     this.compactContext = null;
-    try {
-      await this.client.request<ThreadCompactStartResponse>("thread/compact/start", {
-        threadId: this.requireThread(),
-      } satisfies ThreadCompactStartParams);
-    } catch (error) { this.compaction.fail(String(error)); }
+    // Not awaited: a start request that never answers must still let the stall bound reject
+    // the operation the caller is waiting on, rather than hang the caller before it gets it.
+    void this.client.request<ThreadCompactStartResponse>("thread/compact/start", {
+      threadId,
+    } satisfies ThreadCompactStartParams).catch((error: unknown) => this.compaction.fail(String(error)));
     return completed;
   };
 

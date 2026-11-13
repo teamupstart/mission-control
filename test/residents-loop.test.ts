@@ -543,6 +543,27 @@ for (const idleWhileDown of [false, true]) test(`a queued Run now survives a dae
   assert.equal(f.calls.length, 1, "neither the next completion nor another restart repeats it");
 });
 
+for (const outcome of ["measured", "failed"] as const) test(`a queued Run now outlives a human turn that preempts its ${outcome} compaction`, async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.human(); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  f.patch({ meta: meta({ contextPct: 80 }) });
+  // The queued run starts compacting, and a human message lands during it.
+  f.setCompact(async () => {
+    f.calls.push("compact"); f.human();
+    if (outcome === "failed") throw new CompactionError(STALLED);
+    return 5;
+  });
+  f.complete(); await flush();
+  assert.deepEqual(f.calls, ["compact"], "the human turn goes first");
+  assert.notEqual(f.run().runRequestedAt, null, "the request is put back, not spent");
+  assert.equal(f.run().loopState, "working");
+  f.setCompact(async () => { f.calls.push("compact"); return 5; });
+  f.complete(); await flush();
+  assert.match(f.calls.at(-1)!, /mission-resident:run:2/, "the queued run follows the human turn");
+  assert.equal(f.run().runRequestedAt, null);
+});
+
 test("Run now waits behind an open request for the operator", async () => {
   const f = fixture(); const loop = f.loop(); await flush();
   f.patch({ pendingReviews: 1 }); await flush();

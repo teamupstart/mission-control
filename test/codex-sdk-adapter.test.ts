@@ -45,6 +45,7 @@ import { CompactionError } from "../src/server/harness/compaction.ts";
  * the things under test - a fake that echoed ids from a different source would hide a
  * mismatch rather than catch it.
  */
+const NO_REPLY = Symbol("no reply");
 class FakeServer implements AppServerTransport {
   readonly sent: Array<Record<string, unknown>> = [];
   pid = 4242;
@@ -66,6 +67,7 @@ class FakeServer implements AppServerTransport {
       return;
     }
     const result = typeof reply === "function" ? (reply as (p: unknown) => unknown)(msg.params) : reply;
+    if (result === NO_REPLY) return; // a request the server accepts and never answers
     this.push({ id: msg.id, result });
   }
 
@@ -248,6 +250,18 @@ test("a stalled resident compaction interrupts the Codex compaction turn and rep
   await assert.rejects(operation, (error: unknown) => error instanceof CompactionError && error.retryable &&
     error.message === "Compaction made no progress for 1 second and was interrupted.");
   assert.deepEqual(server.calls("turn/interrupt").map(call => call.params), [{ threadId: THREAD.id, turnId: "stalled-compact" }]);
+  await handle.stop(); await drained;
+});
+
+test("a compaction start request the server never answers still reaches the caller as a stall", async (t) => {
+  process.env.MISSION_RESIDENT_COMPACTION_STALL_MS = "30";
+  t.after(() => { delete process.env.MISSION_RESIDENT_COMPACTION_STALL_MS; });
+  const server = new FakeServer(defaultReplies({ "thread/compact/start": () => NO_REPLY }));
+  const { handle, drained } = await launch(server, { prompt: "" });
+  // Awaiting `compact` itself: before the fix it never returned, so this test would hang.
+  await assert.rejects(handle.compact!("focus"), (error: unknown) => error instanceof CompactionError && error.retryable &&
+    error.message === "Compaction made no progress for 1 second and was interrupted.");
+  assert.equal(server.calls("thread/compact/start").length, 1);
   await handle.stop(); await drained;
 });
 

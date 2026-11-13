@@ -2469,8 +2469,11 @@ redirect leads the one `systemPrompt.append`, ahead of any standing instructions
 launch on either runtime that cannot be given the Mission Control MCP server is refused, and
 lands in **Did not start** with a message saying so (usually the MCP bundle is not built -
 run `npm run build`), rather than started with the built-in or with no way to ask at all; see
-[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). The answer lands in the
-session's conversation as the same gold entry.
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Restoring an SDK session after
+a restart applies the same check, but a refused restore costs a conversation, so only a bundle
+verified not to publish `request_input` fails the session. A bundle that is not built yet, or a
+handshake that did not complete, leaves it `suspended` for the next restore instead. The answer
+lands in the session's conversation as the same gold entry.
 
 A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
 appends one developer instruction: whenever it needs a decision, a clarification or a choice
@@ -2480,7 +2483,8 @@ presenting the choices only as prose and ending the turn. Mission Control reads 
 first and preserves it ahead of this appendix. A Codex launch without the MCP server is
 refused, like a Claude one. If that effective instruction cannot be read safely, the
 developer instruction is left as the operator configured it and the decision instruction
-leads turn one instead - the same fallback standing instructions take - so the session is
+rides turn one instead, after whatever turn one already says (so a turn one that opens with a
+skill invocation such as `$engineer` keeps it first) - the fallback standing instructions also take - so the session is
 still told to ask its decisions through `request_input`.
 
 For the terminal runtime, four flags go on together or not at all

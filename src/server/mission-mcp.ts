@@ -738,7 +738,17 @@ async function publishedTools(descriptor: MissionMcpDescriptor): Promise<Publish
 }
 
 /** Whether the bundle a launch is about to register can actually serve what that launch declares. */
-export type MissionMcpToolCheck = { ok: true } | { ok: false; reason: string };
+/**
+ * `cause` separates a VERDICT from a non-answer. `missing-tools` means the bundle was asked and
+ * answered without the tool - only a rebuild changes that. `unbuilt` (no bundle where one is
+ * expected) and `unreachable` (no handshake completed) say nothing about what a working bundle
+ * publishes, and can clear on their own: a rebuild in progress, a slow start under load.
+ * Optional so a stand-in that only answers `ok` and `reason` still type-checks; a caller that
+ * acts on the difference treats an absent cause as no verdict.
+ */
+export type MissionMcpToolCheck =
+  | { ok: true }
+  | { ok: false; reason: string; cause?: "unbuilt" | "unreachable" | "missing-tools" };
 
 /**
  * Assert that every tool a launch DECLARES is one the resolved bundle actually publishes.
@@ -779,6 +789,7 @@ export async function verifyMissionMcpTools(
     if (!descriptor) {
       return {
         ok: false,
+        cause: "unbuilt",
         reason: `Mission Control's MCP server is not built at ${mcpServerPath()} - run: npm run build`,
       };
     }
@@ -786,6 +797,7 @@ export async function verifyMissionMcpTools(
     if (!published.ok) {
       return {
         ok: false,
+        cause: "unreachable",
         reason:
           `Mission Control's MCP server at ${descriptor.args[0]} could not be interrogated: ` +
           `${published.reason}. Rebuild it with: npm run build`,
@@ -795,6 +807,7 @@ export async function verifyMissionMcpTools(
     if (missing.length === 0) return { ok: true };
     return {
       ok: false,
+      cause: "missing-tools",
       reason:
         `Mission Control's MCP server at ${descriptor.args[0]} does not publish ` +
         `${missing.join(", ")} (it publishes ${[...published.tools].sort().join(", ") || "nothing"}). ` +

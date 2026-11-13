@@ -801,9 +801,26 @@ class CodexSdkSession implements SdkSessionHandle {
     this.publishThreadStatus(thread.thread.status);
   }
 
-  /** Turn one, queued as a real turn so `activeTurnId` is set before anything else runs. */
+  /**
+   * Turn one, queued as a real turn so `activeTurnId` is set before anything else runs.
+   *
+   * Through the same decision `send` makes, because a RESUME can bind a thread whose turn is
+   * still running (`bind`), and `turn/start` on a running thread is accepted and never runs
+   * (see `activeTurnId`) - a fallback seeded that way would be lost while launch reported
+   * success. Steering the live turn is acknowledged before this resolves, so what was seeded
+   * has reached the agent by the time launch returns. A fresh launch has no active turn and
+   * starts one, as it always did.
+   */
   async seed(prompt: string): Promise<void> {
-    await this.startTurn(this.requireThread(), [{ type: "text", text: prompt, text_elements: [] }]);
+    const threadId = this.requireThread();
+    const input: UserInput[] = [{ type: "text", text: prompt, text_elements: [] }];
+    const active = this.activeTurnId;
+    if (active) {
+      const params: TurnSteerParams = { threadId, input, expectedTurnId: active };
+      await this.client.request<TurnSteerResponse>("turn/steer", params);
+      return;
+    }
+    await this.startTurn(threadId, input);
   }
 
   /**
@@ -1714,11 +1731,12 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // reopened. `standingFellBackToPrompt` is only ever true when that string is
         // non-empty, so this never seeds a turn nobody composed.
         //
-        // The decision routing, when this channel could not carry it, leads whichever turn one
-        // that is - and on a resume with nothing else to send it is turn one by itself, for the
-        // same reason the standing block is.
+        // The decision routing, when this channel could not carry it, FOLLOWS whichever turn one
+        // that is - never leads it, because a turn one can open with a skill invocation (a
+        // Pipeline Engineer's `$engineer ...`) that has to stay its first token. On a resume with
+        // nothing else to send it is turn one by itself, for the same reason the standing block is.
         const turnOne = standingFellBackToPrompt ? opts.standingInstructionsPrompt : opts.prompt;
-        const seeded = [routingFellBackToPrompt ? MISSION_CONTROL_REVIEW_INSTRUCTION : null, turnOne]
+        const seeded = [turnOne, routingFellBackToPrompt ? MISSION_CONTROL_REVIEW_INSTRUCTION : null]
           .filter((part): part is string => !!part)
           .join("\n\n");
         if (seeded) await session.seed(seeded);

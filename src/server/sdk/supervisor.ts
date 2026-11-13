@@ -167,6 +167,12 @@ function standingInstructionsForResume(noteKey: string): string {
  * harness's own session file, and the only thing that knows the two belong together is the
  * row this class keeps.
  */
+/**
+ * A resume that could not be confirmed safe NOW, for a reason that can clear by itself. Restore
+ * leaves such a row `suspended` for the next restore instead of failing it.
+ */
+class ResumeDeferred extends Error {}
+
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
@@ -356,7 +362,14 @@ export class SdkSupervisor {
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
           });
-          if (!this.shuttingDown) this.registerAndEvict(row, why);
+          if (err instanceof ResumeDeferred) {
+            // Not a verdict on this session: keep it live for the next restore, which is the
+            // same treatment a row shutdown interrupted gets, rather than lose the conversation.
+            setSdkSessionStatus(row.id, "suspended");
+            console.warn(`[sdk] left ${row.id} suspended for the next restore: ${why}`);
+          } else if (!this.shuttingDown) {
+            this.registerAndEvict(row, why);
+          }
         } finally {
           // Success has already emitted `session_upsert`; failure has already registered and
           // begun ordinary eviction. The browser suppresses overlap by id as a second guard.
@@ -1359,26 +1372,30 @@ export class SdkSupervisor {
     }
     // Every decision a resumed session asks goes through `request_input`, exactly as at
     // dispatch (`withDecisionAskTool`): a harness that carries Mission tools through an MCP
-    // client resumes only with a registration whose bundle actually publishes it, and is
-    // otherwise refused with the reason rather than started able to ask only outside it.
+    // client resumes only with a registration whose bundle actually publishes it.
+    //
+    // Unlike a refused dispatch, a refused resume costs a conversation, so only a VERDICT is
+    // terminal: a bundle that answered the handshake without the tool. Everything short of
+    // that - no server resolved, a bundle not built (yet), a handshake that threw or never
+    // completed - says nothing about the bundle a rebuild or a calmer boot will find, so the
+    // row is DEFERRED: left `suspended` for the next restore rather than failed and evicted.
     if (capabilitiesFor(row.agent).missionTools?.mechanism === "mcp-client") {
+      const ask = "this session asks its decisions through Mission Control's request_input tool, but";
       if (!mcp) {
         cleanupDisposableAgentStateHome(stateHome);
-        throw new Error(
-          "this session asks its decisions through Mission Control's request_input tool, but its " +
-            "MCP server could not be resolved for the resume - rebuild with: npm run build",
-        );
+        throw new ResumeDeferred(`${ask} its MCP server could not be resolved for the resume - rebuild with: npm run build`);
       }
       let published: Awaited<ReturnType<typeof verifyMissionMcpTools>>;
       try {
         published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(["request_input"], mcp);
       } catch (error) {
         cleanupDisposableAgentStateHome(stateHome);
-        throw error;
+        throw new ResumeDeferred(`${ask} its MCP server could not be checked: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (!published.ok) {
         cleanupDisposableAgentStateHome(stateHome);
-        throw new Error(`this session asks its decisions through request_input, but ${published.reason}`);
+        if (published.cause === "missing-tools") throw new Error(`${ask} ${published.reason}`);
+        throw new ResumeDeferred(`${ask} ${published.reason}`);
       }
     }
     if (task?.kind === "pipeline") {

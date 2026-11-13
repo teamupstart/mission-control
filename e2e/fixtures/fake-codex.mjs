@@ -845,10 +845,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       // The layered read a resident launch verifies its MCP set against. Answered the way the
       // real server does: the launch flags' servers, and the user layer from `CODEX_HOME`'s
       // `config.toml` - which for a resident is its generated overlay. Only the server NAMES are
-      // read, from the quoted table headers the overlay writes. A plain read stays `{}`, as it
-      // always has.
+      // read, from the quoted table headers the overlay writes. A plain read answers the way a
+      // real app-server with no configured developer instructions does - a config carrying
+      // `developer_instructions: null` - so the launch's developer-instruction channel is
+      // usable. An empty `{}` reads as an UNUSABLE channel, which would push every launch's
+      // decision routing into turn one and change prompts the fake matches exactly.
       if (!params?.includeLayers) {
-        respond(id, {});
+        respond(id, { config: { developer_instructions: null }, origins: {} });
         return;
       }
       const file = process.env.CODEX_HOME ? join(process.env.CODEX_HOME, "config.toml") : null;

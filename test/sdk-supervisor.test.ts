@@ -1879,74 +1879,18 @@ test("a failed managed Pipeline restore revokes its launch capability", async ()
   }
 });
 
-test("restore refuses a session that cannot reach request_input, and says which way it failed", async (t) => {
-  // Every decision a resumed session asks goes through `request_input`. Two different
-  // failures, each its own refusal: no Mission server could be resolved for the resume, and
-  // a server whose bundle does not publish the tool. Neither may launch the driver - a
-  // session started without the tool would ask its decisions some other way.
-  const cases = [
-    {
-      mode: "no-server",
-      deps: { missionMcpDescriptor: async () => null },
-      reason: /request_input tool, but its MCP server could not be resolved for the resume - rebuild with: npm run build/,
-    },
-    {
-      mode: "stale-bundle",
-      deps: {
-        missionMcpDescriptor: async () => ({ serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} }),
-        verifyMissionMcpTools: async (tools: readonly string[]) => {
-          assert.deepEqual(tools, ["request_input"], "the resume asks for exactly the decision tool");
-          return { ok: false as const, reason: "the built bundle does not publish request_input" };
-        },
-      },
-      reason: /asks its decisions through request_input, but the built bundle does not publish request_input/,
-    },
-  ];
-  for (const { mode, deps, reason } of cases) {
-    const id = `sdk:resume-decisions-${mode}`;
-    upsertSdkSession({
-      id,
-      agent: "claude",
-      agentSessionId: `agent-decisions-${mode}`,
-      cwd: `/repo/resume-decisions-${mode}`,
-      taskId: null,
-      model: null,
-      effort: null,
-      permissionMode: null,
-      status: "running",
-      turnInProgress: false,
-    });
-    const logged: string[] = [];
-    const error = t.mock.method(console, "error", (...args: unknown[]) => {
-      logged.push(args.map(String).join(" "));
-    });
-    const fake = withFakeDriver(async () => assert.fail("the driver must not launch"));
-    const registry = new Registry();
-    try {
-      await new SdkSupervisor(registry, deps).restore();
-    } finally {
-      fake.restore();
-      error.mock.restore();
-    }
-    assert.equal(fake.calls.length, 0, `${mode}: no session was launched`);
-    assert.equal(getSdkSession(id)?.status, "failed", mode);
-    assert.equal(registry.getSession(id)?.state, "exited", mode);
-    const refusal = logged.find((line) => line.includes(`could not resume ${id}`));
-    assert.ok(refusal, `${mode}: the refusal is reported`);
-    assert.match(refusal!, reason, mode);
-  }
-});
-
-test("restore refuses a session whose request_input check throws, and removes its state home", async (t) => {
-  // The third way the decision-tool check can fail: the handshake itself throws. The resume
-  // must still be refused with that error, launch nothing, and leave no disposable state home
-  // behind for a session that never started.
-  const id = "sdk:resume-decisions-throws";
+/** One Claude row to resume, and what the restore made of it. */
+async function restoreDecisionRow(
+  t: import("node:test").TestContext,
+  mode: string,
+  deps: ConstructorParameters<typeof SdkSupervisor>[1],
+) {
+  const id = `sdk:resume-decisions-${mode}`;
   upsertSdkSession({
     id,
     agent: "claude",
-    agentSessionId: "agent-decisions-throws",
-    cwd: "/repo/resume-decisions-throws",
+    agentSessionId: `agent-decisions-${mode}`,
+    cwd: `/repo/resume-decisions-${mode}`,
     taskId: null,
     model: null,
     effort: null,
@@ -1956,34 +1900,131 @@ test("restore refuses a session whose request_input check throws, and removes it
   });
   let stateHome: string | undefined;
   const logged: string[] = [];
-  const error = t.mock.method(console, "error", (...args: unknown[]) => {
-    logged.push(args.map(String).join(" "));
-  });
+  const log = (...args: unknown[]) => logged.push(args.map(String).join(" "));
+  const error = t.mock.method(console, "error", log);
+  const warn = t.mock.method(console, "warn", log);
   const fake = withFakeDriver(async () => assert.fail("the driver must not launch"));
   const registry = new Registry();
+  const descriptor = deps?.missionMcpDescriptor;
   try {
     await new SdkSupervisor(registry, {
-      missionMcpDescriptor: async (_cwd?: string, home?: string) => {
+      ...deps,
+      missionMcpDescriptor: async (cwd?: string, home?: string) => {
         stateHome = home;
-        return { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
-      },
-      verifyMissionMcpTools: async (tools: readonly string[]) => {
-        assert.deepEqual(tools, ["request_input"]);
-        throw new Error("the MCP handshake crashed");
+        return descriptor ? descriptor(cwd, home) : null;
       },
     }).restore();
   } finally {
     fake.restore();
     error.mock.restore();
+    warn.mock.restore();
   }
-  assert.equal(fake.calls.length, 0, "no session was launched");
+  assert.equal(fake.calls.length, 0, `${mode}: no session was launched`);
+  assert.ok(stateHome, `${mode}: the resume minted a state home for the check`);
+  assert.equal(existsSync(stateHome!), false, `${mode}: and removed it`);
+  return { id, registry, logged };
+}
+
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
+
+test("restore FAILS a session only when its bundle is verified not to publish request_input", async (t) => {
+  // A verdict: the bundle answered the handshake without the tool, which only a rebuild
+  // changes. Starting the session would leave it able to ask its decisions only outside
+  // request_input, so it is refused, failed and evicted with the reason.
+  const { id, registry, logged } = await restoreDecisionRow(t, "missing-tool", {
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async (tools: readonly string[]) => {
+      assert.deepEqual(tools, ["request_input"], "the resume asks for exactly the decision tool");
+      return { ok: false as const, cause: "missing-tools" as const, reason: "the built bundle does not publish request_input" };
+    },
+  });
   assert.equal(getSdkSession(id)?.status, "failed");
   assert.equal(registry.getSession(id)?.state, "exited");
   const refusal = logged.find((line) => line.includes(`could not resume ${id}`));
   assert.ok(refusal, "the refusal is reported");
-  assert.match(refusal!, /the MCP handshake crashed/, "with the verifier's own error");
-  assert.ok(stateHome, "the resume minted a state home for the check");
-  assert.equal(existsSync(stateHome!), false, "and removed it");
+  assert.match(refusal!, /asks its decisions through Mission Control's request_input tool, but the built bundle does not publish request_input/);
+});
+
+test("restore DEFERS a session whose request_input could not be confirmed, keeping it for the next restore", async (t) => {
+  // Not a verdict on the session, so not terminal: a bundle mid-rebuild, a handshake that
+  // timed out under a loaded boot, or no server resolved yet. Failing the row would lose a
+  // conversation a later restore could resume, so it stays live (`suspended`), unregistered,
+  // and the reason is reported.
+  const cases: { mode: string; deps: ConstructorParameters<typeof SdkSupervisor>[1]; reason: RegExp }[] = [
+    { mode: "no-server", deps: {}, reason: /its MCP server could not be resolved for the resume - rebuild with: npm run build/ },
+    {
+      mode: "unbuilt",
+      deps: {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unbuilt" as const, reason: "the MCP server is not built" }),
+      },
+      reason: /the MCP server is not built/,
+    },
+    {
+      mode: "unreachable",
+      deps: {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+      },
+      reason: /the handshake timed out/,
+    },
+    {
+      mode: "throws",
+      deps: {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => {
+          throw new Error("the MCP handshake crashed");
+        },
+      },
+      reason: /its MCP server could not be checked: the MCP handshake crashed/,
+    },
+  ];
+  for (const { mode, deps, reason } of cases) {
+    const { id, registry, logged } = await restoreDecisionRow(t, mode, deps);
+    assert.equal(getSdkSession(id)?.status, "suspended", `${mode}: kept live for the next restore`);
+    assert.equal(registry.getSession(id), undefined, `${mode}: not registered, so not evicted`);
+    const deferred = logged.find((line) => line.includes(`left ${id} suspended for the next restore`));
+    assert.ok(deferred, `${mode}: the deferral is reported`);
+    assert.match(deferred!, reason, mode);
+  }
+});
+
+test("a deferred session is resumed by the next restore once its decision tool is confirmed", async () => {
+  const id = "sdk:resume-decisions-deferred-then-ok";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-deferred-then-ok",
+    cwd: "/repo/resume-decisions-deferred-then-ok",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const first = withFakeDriver(async () => assert.fail("the first restore must not launch"));
+  try {
+    await new SdkSupervisor(new Registry(), {
+      missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+      verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+    }).restore();
+  } finally {
+    first.restore();
+  }
+  assert.equal(getSdkSession(id)?.status, "suspended");
+
+  const handle = fakeHandle();
+  const second = withFakeDriver(async () => handle);
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
+  try {
+    await supervisor.restore();
+    const relaunch = second.calls.find((call) => call.resume === "agent-decisions-deferred-then-ok");
+    assert.ok(relaunch, "the next restore resumed the same conversation");
+  } finally {
+    second.restore();
+    await supervisor.stopAll();
+  }
 });
 
 test("restore refuses a managed Pipeline host without a current adoption tool", async () => {

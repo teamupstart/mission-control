@@ -25,6 +25,12 @@ import { mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-launch-presentation-"));
 process.env.MISSION_HOME = home;
+// A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
+// Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`
+// before `npm run build`) the launch is refused. What it publishes is answered by
+// `MISSION_TEST_MCP_DEPS`.
+process.env.MISSION_MCP_SERVER = join(home, "mission-mcp-stand-in.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 process.env.HERDR_BIN = join(home, "missing-herdr");
 // Binaries that exist, so bin resolution can never be what fails a launch here. The
 // terminal home itself is faked through the dispatcher's `spawn` seam - a test that reached
@@ -721,7 +727,7 @@ async function terminalDispatch(options: {
   let atSpawn: { fingerprint: string; displayText: string | null } | null = null;
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     spawn: async (_label, _short, cwd) => {
       worktree = cwd;
       // Asked at the instant the process is launched. For Pi this is the assertion that

@@ -369,7 +369,18 @@ interface LaunchIndex {
   launches: Map<string, string>;
   /** The index's identity: a file replaced under the same path starts a new one. */
   ino: number;
+  /** The file's modification time when last read, so an untouched file costs no check. */
+  mtimeMs: number;
+  /**
+   * The last bytes indexed (up to `LAUNCH_TAIL_BYTES`, ending at `size`). A file truncated and
+   * rewritten in place keeps its inode and can come back as long as before, so neither tells
+   * a rewrite from an append; these bytes do, since an append leaves them where they were.
+   */
+  tail: Buffer;
 }
+
+/** Bytes kept from the end of what was indexed, to recognise the same file on the next read. */
+const LAUNCH_TAIL_BYTES = 512;
 
 /** Files whose launch index is kept. Past this the least recently used is dropped. */
 const LAUNCH_INDEX_FILES = 32;
@@ -383,7 +394,7 @@ const launchScans = new Map<string, Promise<LaunchIndex | null>>();
  * that found anything new to read) and bytes read. Kept so the efficiency the lookup claims -
  * appended bytes only, one scan per file at a time - is something a test can measure.
  */
-const launchScanCost = { scans: 0, bytes: 0 };
+const launchScanCost = { scans: 0, bytes: 0, checked: 0 };
 
 /** The agent-id needle a launch line always carries, checked before any JSON is parsed. */
 const AGENT_ID_KEY = Buffer.from("agentId");
@@ -394,8 +405,10 @@ const AGENT_ID_KEY = Buffer.from("agentId");
  *
  * Asynchronous by construction: the file is read in `chunkBytes` steps, each one awaited, so
  * a first lookup on a long resident's transcript never holds the daemon's event loop for the
- * whole file, and two lookups on one file share one scan. A file that shrank or was replaced
- * (a cleared or rotated transcript) is indexed again from its start.
+ * whole file, and two lookups on one file share one scan. A file that shrank, was replaced
+ * (a new inode), or was rewritten in place (its last indexed bytes changed) is indexed again
+ * from its start. That last check reads `LAUNCH_TAIL_BYTES` at most, and only when the file
+ * changed since it was indexed.
  */
 async function indexLaunches(path: string, chunkBytes: number): Promise<LaunchIndex | null> {
   let info: Awaited<ReturnType<typeof stat>>;
@@ -405,17 +418,34 @@ async function indexLaunches(path: string, chunkBytes: number): Promise<LaunchIn
     return null;
   }
   const known = launchIndexes.get(path);
-  const index: LaunchIndex =
-    known && known.ino === info.ino && known.size <= info.size
-      ? known
-      : { size: 0, launches: new Map(), ino: info.ino };
-  if (index.size < info.size) {
-    launchScanCost.scans += 1;
-    let handle: Awaited<ReturnType<typeof open>>;
+  const untouched = known && known.ino === info.ino && known.size === info.size && known.mtimeMs === info.mtimeMs;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let index: LaunchIndex | undefined = untouched ? known : undefined;
+  if (!index) {
     try {
       handle = await open(path, "r");
     } catch {
       return null;
+    }
+    // The same file, unless its last indexed bytes now say otherwise.
+    if (known && known.ino === info.ino && known.size <= info.size && known.tail.length > 0) {
+      const now = Buffer.alloc(known.tail.length);
+      const { bytesRead } = await handle.read(now, 0, now.length, known.size - known.tail.length);
+      launchScanCost.checked += bytesRead;
+      if (bytesRead === now.length && now.equals(known.tail)) index = known;
+    } else if (known && known.ino === info.ino && known.size === 0) {
+      index = known;
+    }
+    index ??= { size: 0, launches: new Map(), ino: info.ino, mtimeMs: 0, tail: Buffer.alloc(0) };
+  }
+  if (index.size < info.size) {
+    launchScanCost.scans += 1;
+    if (!handle) {
+      try {
+        handle = await open(path, "r");
+      } catch {
+        return null;
+      }
     }
     try {
       let pos = index.size;
@@ -443,12 +473,21 @@ async function indexLaunches(path: string, chunkBytes: number): Promise<LaunchIn
         }
         carry = joined.subarray(lineStart);
         // Only complete lines are indexed; the next read resumes at the unfinished one.
-        index.size = pos - carry.length;
+        const indexedEnd = pos - carry.length;
+        if (indexedEnd > index.size) {
+          const done = joined.subarray(0, lineStart);
+          index.tail = Buffer.concat([index.tail, done]).subarray(-LAUNCH_TAIL_BYTES);
+          index.tail = Buffer.from(index.tail);
+        }
+        index.size = indexedEnd;
       }
     } finally {
       await handle.close();
+      handle = null;
     }
   }
+  if (handle) await handle.close();
+  index.mtimeMs = info.mtimeMs;
   launchIndexes.delete(path);
   launchIndexes.set(path, index);
   while (launchIndexes.size > LAUNCH_INDEX_FILES) {
@@ -490,10 +529,14 @@ export function resetLaunchIndexes(): void {
   launchScans.clear();
   launchScanCost.scans = 0;
   launchScanCost.bytes = 0;
+  launchScanCost.checked = 0;
 }
 
-/** Scans started and bytes read by the launch index since the last reset. For tests. */
-export function launchScanCostSoFar(): { scans: number; bytes: number } {
+/**
+ * Scans started and bytes read by the launch index since the last reset, and separately the
+ * bytes read to check that a changed file is still the one indexed. For tests.
+ */
+export function launchScanCostSoFar(): { scans: number; bytes: number; checked: number } {
   return { ...launchScanCost };
 }
 

@@ -4,6 +4,8 @@ import type { PrChecks, PrState } from "@shared/types.ts";
 import { unref } from "./util/timers.ts";
 import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
 import { run } from "./util/exec.ts";
+import { activeStackGitHub } from "./stacking/github.ts";
+import { StackMergeWatch } from "./stacking/merges.ts";
 
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
 // session's current branch. It is the source of truth behind the chip: it
@@ -25,6 +27,16 @@ import { run } from "./util/exec.ts";
 // still complete - through ONE cadence, because they overlap constantly (the task you are
 // waiting on is usually also a task) and two would poll the same URL twice at two
 // backoffs.
+//
+// A stacked pull request's merge counts only once it reached the default branch. Every merge
+// this poller hands the Registry passes through one gate first (`StackMergeWatch.holds`): a
+// stacked child merged into its parent's branch reads here exactly like a merge whose instant
+// `gh` did not report - not a merge yet - so it marks no work episode merged, completes no task
+// and satisfies no dependency edge. Ordinary pull requests are untouched and cost no extra read.
+// A parent's merge also retargets its open stacked children at once (`retargetChildren`).
+
+/** The stacked-merge state that must outlive one tick: settled verdicts and retargets done. */
+const defaultStackMergeWatch = new StackMergeWatch();
 
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
@@ -289,7 +301,14 @@ export async function pollAndReconcilePrs(
   lookupHead: (dir: string, branch?: string) => Promise<string | null> = queryHead,
   /** Seam for the telemetry harvest, so a focused test can drive it without a real store. */
   telemetryTargets: (() => string[]) | null = null,
+  stackMerges: StackMergeWatch = defaultStackMergeWatch,
 ): Promise<void> {
+  const stackGitHub = activeStackGitHub();
+  /** True when a merge must not complete anything yet: see the header. */
+  const holdsMerge = (url: string, cwd: string | null, taskId: string | null): Promise<boolean> =>
+    stackMerges.holds(url, cwd, taskId, registry, stackGitHub);
+  /** Every merge observed this tick, landed or not: a parent's merge retargets its children. */
+  const sawMerged = new Set<string>();
   const targets = registry.prPollTargets();
   const workHeadTargets = registry.dependencyWorkHeadTargets();
   // The SECONDARY repositories of every live multi-repo task, each with its own worktree and
@@ -373,6 +392,13 @@ export async function pollAndReconcilePrs(
     const r = preferredPr(results.get(t.cwd) ?? null);
     if (r === "error") skip.add(t.id);
     else if (r) {
+      if (r.state === "merged") sawMerged.add(r.url);
+      // A stacked pull request merged off the default branch says nothing about this session
+      // yet, like a `gh` that failed: its chip and episode are left exactly as they were.
+      if (r.state === "merged" && await holdsMerge(r.url, t.cwd, registry.taskForSession(t.id, t.cwd)?.id ?? null)) {
+        skip.add(t.id);
+        continue;
+      }
       found.set(t.id, {
         ...r,
         branch: t.branch as string,
@@ -398,6 +424,8 @@ export async function pollAndReconcilePrs(
     [...found.values(), ...repoFound.values()].map((match) => [match.url, match]),
   );
   const mergedUrls = new Map<string, number>();
+  /** Merged, but held by the stacked-merge gate: nothing records them as a merge. */
+  const heldUrls = new Set<string>();
   const closedUrls = new Set<string>();
   const dueUrls = urlState.due(linkedUrls, now);
   for (const url of linkedUrls) {
@@ -413,7 +441,11 @@ export async function pollAndReconcilePrs(
     PR_URL_CONCURRENCY,
     async (url) => {
       const result = await lookupUrl(url);
-      urlState.record(url, result, now);
+      const merged = result !== "error" && result?.state === "merged" && result.mergedAt !== null;
+      // A held merge keeps its URL on the ordinary backoff rather than being dropped as landed.
+      const held = merged && await holdsMerge(url, null, null);
+      if (held) heldUrls.add(url);
+      urlState.record(url, held ? { state: "open", mergedAt: null } : result, now);
       if (result !== "error" && result?.state === "closed") closedUrls.add(url);
       if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
         mergedUrls.set(url, result.mergedAt);
@@ -430,7 +462,7 @@ export async function pollAndReconcilePrs(
   // carries BOTH reasons is in this set, so its operational reconciliation runs exactly as
   // it did before, under its own eligibility and selection-time rules.
   const operationalMerges = new Map(
-    [...mergedUrls].filter(([url]) => operationalUrls.has(url)),
+    [...mergedUrls].filter(([url]) => operationalUrls.has(url) && !heldUrls.has(url)),
   );
   registry.reconcilePrMerges(operationalMerges);
   registry.reconcileClosedDependencyPrs(new Set([...closedUrls].filter(url => operationalUrls.has(url))));
@@ -450,10 +482,17 @@ export async function pollAndReconcilePrs(
     });
     if (!result || result === "error") return;
     for (const match of Array.isArray(result) ? result : [result]) {
-      for (const target of group) registry.reconcileCompletedDependencyPr(target, {
-        ...match, branch: target.binding.branch!, episodeId: target.binding.episodeId,
-        agentSessionId: target.binding.agentSessionId,
-      });
+      if (match.state === "merged") sawMerged.add(match.url);
+      for (const target of group) {
+        // The completed task's merge evidence passes the same gate: a stacked pull request
+        // merged off the default branch is recorded as no merge (`reconcileCompletedDependencyPr`
+        // refuses a merge without an instant).
+        const held = match.state === "merged" && await holdsMerge(match.url, first.cwd, target.taskId);
+        registry.reconcileCompletedDependencyPr(target, {
+          ...match, mergedAt: held ? null : match.mergedAt, branch: target.binding.branch!,
+          episodeId: target.binding.episodeId, agentSessionId: target.binding.agentSessionId,
+        });
+      }
     }
   });
   // And the observation-only half, which has authority over nothing. It emits the verified
@@ -461,7 +500,13 @@ export async function pollAndReconcilePrs(
   // pull request was first associated rather than whatever the task is bound to today.
   // Delivery is resolved against each observation's current task/session/repository binding.
   // A URL can remain operational for another task or a dependency after this author lost it.
-  recordTelemetryPrMerges(mergedUrls, undefined, now);
+  // A held merge delivered nothing to the default branch, so it is not a delivery either.
+  recordTelemetryPrMerges(new Map([...mergedUrls].filter(([url]) => !heldUrls.has(url))), undefined, now);
+  // Last, so nothing above waits on it: a parent this tick saw merge has its open stacked
+  // children pointed at the default branch now, instead of on the next Inspector tick.
+  for (const url of mergedUrls.keys()) sawMerged.add(url);
+  for (const match of repoFound.values()) if (match.state === "merged") sawMerged.add(match.url);
+  await stackMerges.retargetChildren(sawMerged, stackGitHub, now);
 }
 
 /**

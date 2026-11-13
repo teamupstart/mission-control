@@ -684,14 +684,23 @@ that advanced and then merged or closed never gets a catch-up prompt:
 
 | State | When | What happens |
 |---|---|---|
-| Released | the release check passed for the child's current head | nothing: an ordinary pull request against the default branch, merged by the ordinary gates |
-| Broken | the parent closed without merging, the parent task was cancelled, failed or rescheduled back into the backlog while its pull request was open, or GitHub closed the child | held, with a named reason and the actions below |
+| Released | the release check passed for the child's current head, or the child merged into the default branch | nothing: an ordinary pull request against the default branch, merged by the ordinary gates |
+| Merge unconfirmed | the child merged, but GitHub has not reported both the branch it merged into and the default branch | nothing completes; the child is read again every sweep until both are known |
+| Broken | the parent closed without merging, the parent task was cancelled, failed or rescheduled back into the backlog while its pull request was open, GitHub closed the child, or the child merged into a branch other than the default branch (its parent's, or any other) | held, with a named reason and the actions below |
 | Parent merged, needs retarget | the parent merged and the child's base is not yet the default branch | the base is retargeted on this tick |
 | Restack needed | the parent merged, the child is on the default branch, and the release check has not passed for its head (including a head moved by an unrelated push) | the **restack** prompt |
 | Parent moved | the parent is open and its head is not in the child's history | the **catch-up** prompt |
 | Current | none of the above | nothing |
 
-**Base reconciliation.** Every tick compares the child's base with the branch it belongs on
+**Base reconciliation.** It also runs the moment the parent's merge is seen. The pull-request
+poller (every 20 seconds) observes merges sooner than the Inspector tick (every 90 seconds),
+and this repository keeps merged branches, so GitHub does not retarget a child when its parent
+merges. When the poller records a merged pull request, every open stacked child whose current
+parent it is is retargeted right then, through the same single-flight base edit the adoption
+correction uses. That happens once per child and parent. A refused or unreadable attempt is
+left to the tick, which retries it and shows *Retarget failed:* as below.
+
+Every tick compares the child's base with the branch it belongs on
 (the parent's branch while it is open, the default branch once it merged or closed) and
 retargets it through GitHub's API when they differ. It is skipped when they already match,
 which covers GitHub's own retarget after an auto-deleted branch. A refused retarget is tried
@@ -699,15 +708,23 @@ again on the next tick, and until it succeeds the merge queue reads *Retarget fa
 GitHub's reason. The base-aware review record forces a re-review after a retarget, and
 `stack-hold` keeps the child held until the restack is verified.
 
-**Prompts.** Two prompts go to the child's session, both through Foreman's review follow-up,
+**Prompts.** Three prompts go to the child's session, all through Foreman's review follow-up,
 the same path and rules as the CodeRabbit follow-up:
 
 - *catch up*: merge the parent branch in, resolve conflicts, run focused checks, push;
-- *restack*: merge `origin/<default branch>` in, resolve conflicts, run focused checks, push.
+- *restack*: merge `origin/<default branch>` in, resolve conflicts, run focused checks, push;
+- *recover*: for a child merged into its parent's branch after that parent had already merged
+  (see [a merge into the parent's branch](#a-merge-into-the-parents-branch)). Branch from
+  `origin/<default branch>`, bring over the changes the stray merge introduced (the diff
+  between its merge commit and that commit's first parent, applied with
+  `git diff --binary <commit>^1 <commit> | git apply --3way`, which works for a merge commit and
+  for a squash commit alike), resolve conflicts, run focused checks, and open a new pull request
+  against the default branch.
 
-Both say never to force-push or rebase. Each is claimed before it is typed, keyed to the pull
-request, the prompt kind and the tip that made it necessary (the parent's head for a catch-up,
-the parent's merge commit for a restack), never to the child's head. An unrelated push to the
+All say never to force-push or rebase, and the recovery also says never to rewrite either merged
+branch. Each is claimed before it is typed, keyed to the pull request, the prompt kind and the
+tip that made it necessary (the parent's head for a catch-up, the parent's merge commit for a
+restack, the child's own merge commit for a recovery), never to the child's head. An unrelated push to the
 child therefore sends nothing new, while the parent pushing again, or a different parent
 merging after a replacement, re-arms it. A restart, a push or a setting toggle never re-arms a
 claim. Foreman types one only into the child's single live owning session, while it is idle with
@@ -743,6 +760,9 @@ lifecycle as its detail, which never becomes a gate value:
 | *Stack broken: this pull request was closed while #A is still open* | the child was closed (by hand, say) while its parent is open | **Reopen on #A's branch** |
 | *Stack broken: #A's task was cancelled* (or *failed*) | the parent task stopped while its pull request is open | **Reschedule #A's task** |
 | *Stack broken: #A's task was rescheduled* | the parent task is back in the backlog and has not started again | **Start #A's task** |
+| *Merged - checking on GitHub whether it reached main* | the child merged, and the branch it merged into or the default branch is not known yet (counted with **waiting**) | none; read again every sweep |
+| *Stack broken: merged into `<branch>`, not main* | the child merged into a branch that is neither the default branch nor its parent's (its base was changed by hand, say) | none: the parent-branch recovery does not describe it |
+| *Stack broken: merged into #A's branch, not main* | the child merged into its parent's branch, not the default branch. Followed by the recovery prompt's status when one is needed: *- Recovery needed: Foreman is off*, *- Recovery needed: Foreman can't send it - <reason>*, *- Recovery needed: no session*, *- Recovery prompt delivery uncertain*, *- recovery prompt on its way*, or *- recovering* once it is delivered | **Send recovery prompt** when Foreman will not send it or its delivery is uncertain; nothing when #A was still open when the child merged |
 
 The child's board tile shows the same label and buttons. The manual sends use the same inject
 route and guards as Foreman, minus Foreman's own switches: the session must still be idle with
@@ -801,6 +821,51 @@ for a second replacement pull request - until that state changes.
 A stacked child is running while its parent's pull request is open, so it is never in the
 backlog; the stopped parent is named on the child's own tile and merge-queue row. Flipping an edge to *After merge*, or the Shipping default to *Wait for merge*, after
 the child started changes nothing for it.
+
+#### A merge into the parent's branch
+
+Mission Control's own merge never merges a child whose base is not the default branch
+(`stacked-base`, `stack-hold`). A person merging on GitHub bypasses that. If the parent has just
+merged and the child has not been retargeted yet, the child merges into a branch that is
+finished with, and none of its code reaches the default branch.
+
+The merge is not the task's outcome. The poller reads a stacked pull request's base and the
+repository's default branch whenever it sees one merged, and a merge whose base is not the default
+branch, or cannot be read yet, is treated like a merge GitHub reported with no merge time: not a
+merge. It does not mark the work episode merged, complete the task, upgrade a cancelled or
+failed one, or satisfy any dependency edge, so the task's dependents stay blocked. The session's
+pull-request chip keeps its last state. Ordinary pull requests, secondary repositories and the
+multi-repo quorum are unchanged, and only a merge into the default branch settles anything, as
+in [When a task's pull request merges](#when-a-tasks-pull-request-merges).
+
+The Inspector tick records the merge on the row, with its merge commit and when each pull request
+merged, and the stack reads *Stack broken: merged into #A's branch, not main*. A merge into some
+third branch reads *Stack broken: merged into `<branch>`, not main* instead and is offered no
+recovery. Until GitHub has reported both the branch a child merged into and the default branch,
+the stack reads *Merged - checking on GitHub whether it reached main*, never Released, and the
+closed child is read again every sweep until it can tell. The recovery prompt is offered only when
+the child merged after #A had already merged, judged by the two merge times GitHub reports (with
+either time unknown, nothing is offered). A child that merged while #A was still open is offered
+no prompt, because #A's own later merge may have carried its changes to the default branch.
+Mission Control does not check that it did: the task stays open, and whether its work reached the
+default branch is for the operator to confirm before marking it done by hand. A child that merged
+after #A had already merged gets the
+**recovery** prompt above, delivered like a catch-up or restack: Foreman types it into the one
+idle owning session, the merge queue offers **Send recovery prompt** when Foreman cannot, and with
+no live session it waits for **Resume**. It is claimed once per pull request and merge commit. If
+the session's card no longer shows the merged pull request (after a restart, say), Foreman's
+follow-up cannot see it, and the row says so and offers the manual send.
+
+The session then leaves the merged branch for a new one. That would ordinarily end its claim on
+the task. Leaving a branch whose stacked pull request merged into its parent's branch instead
+rolls the task onto a new work episode with the session, as after any merge. The pull request it
+opens there is the task's, and the task completes, releasing its dependents, when that pull
+request merges into the default branch. Once that pull request is adopted, the stray row reads
+*Replaced by #N*.
+
+Turning on GitHub's *Automatically delete head branches* closes the window at its source, because
+GitHub then retargets a child itself when its parent's branch is deleted. That is a repository
+setting for the operator to decide, and Mission Control does not change it.
 
 **When a stack lands by itself.** With YOLO mode on, a two-pull-request stack lands bottom-up
 with no human step except conflicts - the parent merges, the child is retargeted, restacked,
@@ -894,7 +959,9 @@ had already been written off:
 | `backlog` | untouched: a rescheduled task is being re-run, so its previous attempt's merge is not this run's result |
 
 Only a **merged** pull request does this. One that was closed without merging changes
-nothing, and neither does one still open. An upgrade records the merged outcome, releases
+nothing, and neither does one still open. A stacked pull request also has to have merged into
+the repository's default branch: one merged into its parent's branch is
+[not a merge here](#a-merge-into-the-parents-branch). An upgrade records the merged outcome, releases
 dependents, and starts final completion cleanup for task-owned worktrees. Required archives
 are saved before those worktrees are reset and returned.
 

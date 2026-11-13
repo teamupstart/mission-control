@@ -644,7 +644,14 @@ The prompts go through Foreman; when it cannot send one, the merge queue says wh
 send it by hand. If the task's session is gone the prompt waits for **Resume**, which gives it an
 owner again. If the prerequisite's pull
 request closes without merging, or its task is cancelled or rescheduled, the stacked pull
-request is held as *Stack broken* with an action that fixes it. Flipping the dependency to
+request is held as *Stack broken* with an action that fixes it. If someone merges the stacked
+pull request on GitHub into its prerequisite's branch instead of the default branch, nothing is
+completed: the task stays open and its own dependents stay blocked. When that merge came after the
+prerequisite's pull request had already merged, the session is asked to carry the work onto the
+default branch in a new pull request, whose merge completes it. When the prerequisite was still
+open, no prompt is sent, and the operator confirms whether the work reached the default branch. See
+[a merge into the parent's branch](inspector-and-shipping.md#a-merge-into-the-parents-branch).
+Flipping the dependency to
 *After merge* after the task started changes nothing for it.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps

@@ -49,6 +49,15 @@ import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import { sdkAskChannel } from "../../ask-channel-prompt.ts";
+import { SubagentEmitter } from "../../sdk/subagent-emitter.ts";
+import {
+  claudeSubagentSummary,
+  emptyClaudeSubagents,
+  foldClaudeSubagents,
+  isClaudeSubagentFrame,
+  observeClaudeSubagentFrame,
+  type ClaudeSubagentState,
+} from "./subagents.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
 //
@@ -411,6 +420,14 @@ class ClaudeSdkSession implements SdkSessionHandle {
   /** Serialize the experimental control so a slow older reading cannot land after a newer one. */
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
+  /**
+   * This CLI process's background sub-agents, and the coalescing door their summary leaves
+   * through. Per process: the CLI's live task set starts empty whenever it (re)starts.
+   */
+  private subagents: ClaudeSubagentState = emptyClaudeSubagents();
+  private readonly subagentEvents = new SubagentEmitter((subagents) =>
+    this.out.emit({ kind: "subagents", subagents }),
+  );
 
   /**
    * Closes the turn an `authentication_failed` frame opened when no `result` follows it.
@@ -534,6 +551,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
     this.turns = new TurnStream();
     this.authenticationFailed = false;
     this.turnActive = false;
+    // The replacement process starts with no live tasks; the stale one's agents died with it.
+    this.setSubagents(emptyClaudeSubagents());
     // Resuming the same conversation retains its cumulative counters and baseline.
     try {
       const fresh = await this.relaunch(this.turns, this.agentSessionId, this.modelOverride);
@@ -560,6 +579,15 @@ class ClaudeSdkSession implements SdkSessionHandle {
     // for the first assistant frame is what keeps the card honest during the seconds a
     // model spends thinking before it emits anything. `turn_done` is the other end.
     this.out.emit({ kind: "state", state: "working", activity: null });
+    // The operator's turn, specifically: a finished agent's own notification can start a
+    // parent turn by itself, and folding there would hide a result nobody has seen yet.
+    this.setSubagents(foldClaudeSubagents(this.subagents));
+  }
+
+  private setSubagents(next: ClaudeSubagentState): void {
+    if (next === this.subagents) return;
+    this.subagents = next;
+    this.subagentEvents.update(claudeSubagentSummary(next));
   }
 
   async interrupt(): Promise<void> {
@@ -1014,6 +1042,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   private finish(reason: string): void {
     this.disarmAuthenticationStall();
+    this.subagentEvents.dispose();
     this.compaction.fail(reason);
     if (this.stopped && this.query === null) return;
     this.stopped = true;
@@ -1034,6 +1063,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private consume(message: ClaudeSdkMessage): void {
+    if (isClaudeSubagentFrame(message)) {
+      this.setSubagents(observeClaudeSubagentFrame(this.subagents, message, Date.now()));
+    }
     if (message.type === "system" && message.subtype === "compact_boundary") {
       const metadata = message.compact_metadata as { post_tokens?: number } | undefined;
       this.compaction.observe(metadata?.post_tokens ?? null, defaultWindowForModel(this.modelId));
@@ -1074,6 +1106,15 @@ class ClaudeSdkSession implements SdkSessionHandle {
     if (typeof message.session_id === "string") this.bind(message.session_id);
     if (initialized) this.refreshRateLimits();
     if (message.type === "assistant") {
+      // A sub-agent's own frame. A background agent keeps talking after the parent's turn
+      // has ended, and reading its frames as the parent's would flip an idle card back to
+      // working with no turn to close it. While the parent's turn runs they still describe
+      // what the session is doing, so they update the line without arming anything.
+      if (message.parent_tool_use_id) {
+        if (!this.turnActive) return;
+        this.out.emit({ kind: "state", state: "working", activity: assistantActivity(message) });
+        return;
+      }
       // Proof a turn is running, and the reason `turnActive` cannot get stuck on the wrong
       // value: a turn the CLI started for itself - a resumed stream, or a follow-up it chose
       // to dequeue after a `result` we had already read as the end of the work - re-arms the

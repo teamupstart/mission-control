@@ -928,6 +928,26 @@ available:
   is two cells sharing one line. The choice is per browser and stored through the daemon, so
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
+- **Background sub-agents hang beneath their card.** A session that launched sub-agents in
+  the background keeps them on the board after its own turn ends: small rows hang under the
+  card on a spine, outside its border, so the card itself keeps its height and its click. A
+  header line, **▾ 3 sub-agents · 2 running**, folds the group. Each row gives the agent's
+  type, its description, how long it has run, how many tools it has used and the last one.
+  Past three agents the rest collapse behind **+N more**. A session's list holds at most twelve
+  agents; when all twelve are still running, more may be, so the counts read **12+** rather
+  than claim a number smaller than what is running. A finished agent stays listed,
+  dimmed and marked **done**, **failed** or **stopped**, until you send the session its next
+  turn, which folds it into an **N finished** count. The one exception is a full list: when
+  the list would hold more than twelve agents, the oldest finished ones fold into that count
+  straight away to make room, without waiting for your turn. A parent that is idle, or waiting on you,
+  while agents still run reads **idle · 2 agents still running** on its activity line, so it
+  is not mistaken for finished. Only background agents appear: a foreground agent blocks the
+  turn, so the card already reads as working, and Claude's ambient housekeeping tasks never
+  count. A value the source did not report is left out rather than drawn as zero. A session
+  with no background agents draws nothing extra. Like the attention flags these rows are not
+  on the Session display checklist. Today this covers sessions on the Claude Agent SDK
+  runtime, which includes dispatched tasks and residents; see
+  [Background sub-agents](sessions.md#background-sub-agents).
 - **A blocked session is red.** A session waiting on someone other than you records a
   [blocker](sessions.md#blocked-sessions), and its card takes the danger tone on its spine
   and border with a **Blocked · 3h** flag among the attention flags. Like the **held** tag,

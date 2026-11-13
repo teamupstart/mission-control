@@ -2072,3 +2072,49 @@ test("resident durable memory uses flag settings and the same directory on resum
     await handle.stop();
   }
 });
+
+test("background sub-agents become one coalesced summary, and their frames never re-arm the parent", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagents"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-subagents", ...body });
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "launching" }] } });
+  query.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "a", task_type: "local_agent", subagent_type: "Explore", description: "Map call sites" },
+    { task_id: "sh", task_type: "local_bash", description: "watch" },
+  ] }));
+  query.emit(sys("task_started", { task_id: "a", task_type: "local_agent", subagent_type: "Explore",
+    description: "Map call sites", is_backgrounded: true, tool_use_id: "toolu_a" }));
+  // Counter-only, inside the interval: held rather than sent.
+  query.emit(sys("task_progress", { task_id: "a", description: "Map call sites", last_tool_name: "Grep",
+    usage: { total_tokens: 10, tool_uses: 2, duration_ms: 1 } }));
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagents" });
+  const turn = await collect(handle.events, (e) => e.kind === "turn_done");
+  const summaries = turn.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.equal(summaries.length, 2, "the level, then task_started's launch id; progress is held");
+  assert.deepEqual(summaries[1]?.agents.map((a) => [a.id, a.type, a.state, a.launchTurnId, a.toolUses]), [
+    ["a", "Explore", "running", "toolu_a", null],
+  ]);
+
+  // After the turn: a sub-agent's own frame, then its end.
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: "toolu_a",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  query.emit(sys("task_notification", { task_id: "a", status: "completed", summary: "found 4",
+    usage: { total_tokens: 20, tool_uses: 3, duration_ms: 1 } }));
+  const after = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(after.map((e) => e.kind), ["subagents"], "the sub-agent frame did not flip the parent to working");
+  const done = after[0]!.kind === "subagents" ? after[0]!.subagents : null;
+  assert.deepEqual(done?.agents.map((a) => [a.state, a.toolUses, a.summary]), [["completed", 3, "found 4"]]);
+
+  // The operator's next turn folds the finished agent; nothing runs, so nothing is left.
+  await handle.send({ text: "next" });
+  const next = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(next.map((e) => e.kind), ["state", "subagents"]);
+  assert.equal(next[1]!.kind === "subagents" && next[1]!.subagents, null);
+  await handle.stop();
+});

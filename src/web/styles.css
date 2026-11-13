@@ -32788,6 +32788,161 @@ span.line-run-prov {
   }
 }
 
+/* ---- board tile: background sub-agents ----
+   Hangs beneath the tile, outside its border, on a spine: the tile keeps its own height and
+   click target, and these rows read as belonging to the card above rather than as cards of
+   their own. Drawn only when the session has background agents. State hues are the board's
+   own - running is `--working`, done `--idle`, failed `--danger`, stopped `--exited` - so no
+   new colour has to be learned. */
+.subagent-tree {
+  /* Pulled up into the column gap so the spine reads as leaving the tile. */
+  margin: -4px 0 0 14px;
+  padding-left: 10px;
+  border-left: 1px solid color-mix(in oklab, var(--working) 35%, var(--border-soft));
+  font-size: 11px;
+  color: var(--muted);
+  flex: none;
+}
+/* Inside a repository or run frame the tile is inset, so the spine follows it. */
+.board-repo > .subagent-tree,
+.board-cluster > .subagent-tree {
+  margin-left: 21px;
+  margin-right: 7px;
+}
+.subagent-tree .st-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.subagent-tree .st-head:hover {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+}
+/* The repository head's own caret, placed before the words rather than pushed to the end. */
+.subagent-tree .st-head .brh-chevron {
+  order: -1;
+  margin-left: 0;
+}
+.subagent-tree .st-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.subagent-tree .st-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 7px;
+  background: color-mix(in oklab, var(--panel) 80%, transparent);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+}
+/* The branch from the spine to each row. */
+.subagent-tree .st-row::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 11px;
+  width: 10px;
+  border-top: 1px solid color-mix(in oklab, var(--working) 35%, var(--border-soft));
+}
+.subagent-tree .st-pip {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.subagent-tree .st-row.is-completed .st-pip {
+  background: var(--idle);
+}
+.subagent-tree .st-row.is-failed .st-pip {
+  background: var(--danger);
+}
+.subagent-tree .st-row.is-stopped .st-pip {
+  background: var(--exited);
+}
+/* Finished agents stay listed until the next turn, dimmed so the running ones lead. */
+.subagent-tree .st-row.is-completed,
+.subagent-tree .st-row.is-failed,
+.subagent-tree .st-row.is-stopped {
+  opacity: 0.55;
+}
+.subagent-tree .st-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.subagent-tree .st-title {
+  display: flex;
+  gap: 0;
+  min-width: 0;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.subagent-tree .st-type {
+  flex: none;
+  font-weight: 600;
+}
+.subagent-tree .st-sep {
+  flex: none;
+  white-space: pre;
+}
+.subagent-tree .st-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent-tree .st-end {
+  flex: none;
+  margin-left: auto;
+  padding-left: 6px;
+  color: var(--muted);
+}
+.subagent-tree .st-detail {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent-tree .st-more-row,
+.subagent-tree .st-folded {
+  padding: 2px 7px;
+  background: none;
+  border-style: dashed;
+}
+.subagent-tree .st-more {
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.subagent-tree .st-more:hover {
+  color: var(--fg);
+}
+.subagent-tree .st-folded {
+  color: var(--dim);
+}
+
 /* ---- board tile: the pipeline phase meter ----
    How far an engine-driven run has got, as five segments. See
    `src/web/pipelines/PipelinePhaseMeter.tsx` for what each part claims; this block is only

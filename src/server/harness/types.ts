@@ -1145,6 +1145,12 @@ export type SdkEvent =
    * decorates the card, which is the scalar this used to carry.
    */
   | { kind: "pr_created"; urls: string[] }
+  /**
+   * The session's background sub-agents, whole: replace semantics, null when there is
+   * nothing to show. Live state only - a driver re-sends it rather than the registry
+   * persisting it, and a driver whose process is replaced starts again from null.
+   */
+  | { kind: "subagents"; subagents: import("@shared/types.ts").SubagentSummary | null }
   | { kind: "exited"; reason: string; resumable: boolean };
 
 /**

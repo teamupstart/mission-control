@@ -1039,6 +1039,43 @@ readings beside it are consequences of running under it. Before
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
 
+### Background sub-agents
+
+A session can launch sub-agents: Claude through its Agent tool. One launched in the
+background keeps running after the parent's turn ends, so the parent can read as idle while
+agents are still reading, editing and spending tokens under it. The board shows them beneath
+the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), and the
+parent's activity line reads **idle · N agents still running**.
+
+Each driver reduces its own sub-agent signal into one bounded summary on the session,
+`Session.subagents`, and sends it to the daemon whole as an `SdkEvent` of kind `subagents`.
+`Registry.setSubagents` is its only writer and it rides the existing `session_upsert`.
+It is live state, rebuilt from the agent's stream: nothing is written to SQLite, a session
+registered again starts without it, and a Claude process that is replaced starts from an empty
+set. The summary lists at most twelve agents, running first and then the newest finished;
+older finished ones fold into a count. Because running agents come first, a list with any
+finished agent in it holds every running one. Only a list of twelve running agents can be cut
+short, and `subagentCounts` reports that as `atLeast`, so every surface writes the count as
+**12+** instead of understating it.
+
+For a Claude Agent SDK session the source is the CLI's task stream. `background_tasks_changed`
+is the full live set and decides who is running; an agent that leaves it without reporting an
+end is shown as stopped. `task_started`, `task_progress`, `task_updated` and
+`task_notification` add the type, description, tool and token counts, last tool, summary and
+how it ended. Only `local_agent` tasks count: shells, MCP tasks, monitors, workflows, a
+backgrounded main session and anything flagged `ambient` are left out. A foreground agent
+counts only once it is moved to the background. Finished agents fold on the next turn you
+send, not on a turn the agent starts for itself, because a finished agent's notification can
+start one. A change to who is running or how one ended reaches the board at once; a change
+that moves only counters is sent at most once every five seconds per session.
+
+A sub-agent's own activity never moves its parent. On the SDK stream a frame carrying
+`parent_tool_use_id` is the sub-agent's, and it cannot re-open a finished turn. A hook that
+Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it as
+`HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
+cycle as they were. SDK sessions run the machine's installed hooks too, so this matters for
+both runtimes.
+
 ### Open a terminal, or the agent's own CLI, on a session
 
 Above every conversation sits the worktree that session is working in, and two buttons.

@@ -7,6 +7,7 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
+import { subagentActivityLine } from "@shared/subagents.ts";
 import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
 import { ariaKeyshortcuts, formatChord } from "../../lib/keybindings.ts";
@@ -152,7 +153,9 @@ export function SessionTile({
   // it is pressed.
   const runtimeState = useSessionRuntimeDisplay(session);
   const st = pipelineSessionDisplay(session, pipelineCommission, pipelineRun, runtimeState);
-  const ticker = liveActivity(session);
+  // An idle or waiting parent whose background agents are still at work says so, so a card
+  // whose own turn is over is not read as finished.
+  const ticker = liveActivity(session) ?? subagentActivityLine(session);
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.

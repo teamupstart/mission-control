@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Keycap } from "../Keycap.tsx";
 import { reviewShortcutTarget } from "../../lib/review-shortcut.ts";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
@@ -41,6 +41,7 @@ import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { ResidentVisitorCard } from "../../residents/ResidentVisitorCard.tsx";
 import { SessionTile } from "./SessionTile.tsx";
+import { SubagentTree } from "./SubagentTree.tsx";
 import {
   ensembleSummaryFor,
   pipelineCommissionForSession,
@@ -273,7 +274,18 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     />;
   };
 
-  const tile = (s: Session): React.JSX.Element => {
+  /**
+   * One session's place in a column: its card, and beneath it the background sub-agents it
+   * launched. Always the same keyed fragment, whether or not agents are showing, so an agent
+   * starting never remounts the card above it (which would drop its open disclosures).
+   */
+  const tile = (s: Session): React.JSX.Element => (
+    <Fragment key={s.id}>
+      {card(s)}
+      <SubagentTree session={s} />
+    </Fragment>
+  );
+  const card = (s: Session): React.JSX.Element => {
     const asVisitor = visitor(s, "tile");
     if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);

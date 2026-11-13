@@ -113,4 +113,36 @@ test("a daemon that is down neither blocks the prompt nor fails the hook", async
   assert.equal(run.code, 0);
 });
 
+test("a hook a sub-agent raised forwards its agent_id, and the parent's own hook does not invent one", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => { raw += chunk; });
+    req.on("end", () => {
+      bodies.push(JSON.parse(raw) as Record<string, unknown>);
+      res.writeHead(204);
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const send = (payload: Record<string, unknown>) => new Promise<void>((resolve) => {
+    const child = execFile(
+      process.execPath,
+      [HOOK, "PreToolUse"],
+      { env: { ...process.env, MISSION_PORT: String(port), MISSION_HOME: home, MISSION_HEADLESS: "" } },
+      () => resolve(),
+    );
+    child.stdin?.end(JSON.stringify(payload));
+  });
+  try {
+    await send({ session_id: "agent-1", cwd: "/repo", tool_name: "Grep", agent_id: "sub-7", agent_type: "Explore" });
+    await send({ session_id: "agent-1", cwd: "/repo", tool_name: "Grep" });
+  } finally {
+    server.close();
+  }
+  assert.equal(bodies[0]?.agentId, "sub-7");
+  assert.equal("agentId" in (bodies[1] ?? {}), false);
+});
+
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));

@@ -1097,15 +1097,38 @@ export function noteRepoIndexIdentity(identity: string): void {
  * never shows a regression either.
  */
 export async function fetchRepos(options: { rescan?: boolean } = {}): Promise<string[]> {
-  const held = (): string[] => lastRepos?.repos ?? [];
+  return (await fetchReposAnswer(options)).repos;
+}
+
+/**
+ * How one repository read ended, for a caller that must tell an empty index from no answer.
+ *
+ * - `answered`: the daemon answered for the current index; `repos` is the newest list held.
+ * - `held`: the read failed, and `repos` is the list the window already had.
+ * - `failed`: the read failed and the window holds no list; `repos` is [] and means nothing.
+ * - `dropped`: the indexed directories changed while it was out (or its answer named another
+ *   index), so it says nothing about the current one. A picker that hears `onCachedReposDropped`
+ *   has already asked again; this answer is not for it.
+ */
+export type RepoReadOutcome = "answered" | "held" | "failed" | "dropped";
+
+/** `fetchRepos`, with how the read ended. Never throws. */
+export async function fetchReposAnswer(
+  options: { rescan?: boolean } = {},
+): Promise<{ repos: string[]; outcome: RepoReadOutcome }> {
   // Captured before the request: one sent before the directories changed answers for the
   // directories that were, and is dropped rather than cached or returned.
   const generation = repoCacheGeneration;
+  const held = (): string[] => lastRepos?.repos ?? [];
+  const failure = (): { repos: string[]; outcome: RepoReadOutcome } =>
+    generation !== repoCacheGeneration
+      ? { repos: held(), outcome: "dropped" }
+      : { repos: held(), outcome: lastRepos ? "held" : "failed" };
   try {
     const res = await actionFetch(options.rescan ? "/api/repos?rescan=1" : "/api/repos");
-    if (!res.ok || generation !== repoCacheGeneration) return held();
+    if (!res.ok || generation !== repoCacheGeneration) return failure();
     const data = (await res.json()) as unknown;
-    if (!Array.isArray(data) || generation !== repoCacheGeneration) return held();
+    if (!Array.isArray(data) || generation !== repoCacheGeneration) return failure();
     // The daemon stamps each scan uniquely and increasingly, so only a strictly later stamp
     // is a newer scan. A daemon too old to stamp is taken in arrival order, as before.
     const header = res.headers.get(REPOS_SCANNED_AT_HEADER);
@@ -1115,14 +1138,16 @@ export async function fetchRepos(options: { rescan?: boolean } = {}): Promise<st
     // An answer for an index other than the one announced is not this window's to show:
     // either the directories changed after it was asked, or the announcement of a newer
     // index has not landed yet - which then forgets, and an open picker asks again.
-    if (announcedIdentity !== null && identity !== null && identity !== announcedIdentity) return held();
+    if (announcedIdentity !== null && identity !== null && identity !== announcedIdentity) {
+      return { repos: held(), outcome: "dropped" };
+    }
     // A list for a different index is never compared by stamp: it replaces the old one.
     if (!lastRepos || lastRepos.identity !== identity || scannedAt === 0 || scannedAt > lastRepos.scannedAt) {
       lastRepos = { repos: data as string[], scannedAt, identity };
     }
-    return held();
+    return { repos: held(), outcome: "answered" };
   } catch {
-    return held();
+    return failure();
   }
 }
 

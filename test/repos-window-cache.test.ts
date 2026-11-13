@@ -295,3 +295,30 @@ test("the window that saves takes its new index before its own announcement arri
   api.noteRepoIndexIdentity("index-b");
   assert.deepEqual(api.cachedRepos(), ["/new/beta"]);
 });
+
+test("each read reports how it ended, so a picker can tell an empty index from no answer", async () => {
+  const api = await freshApi();
+  let releaseOld!: () => void;
+  const oldHeld = new Promise<void>((resolve) => {
+    releaseOld = resolve;
+  });
+  scriptFetch([
+    serverError,
+    list(["/w/alpha"], 100, "index-a"),
+    serverError,
+    async () => {
+      await oldHeld;
+      return list(["/w/alpha"], 200, "index-a")();
+    },
+  ]);
+  // Nothing held and no answer: `failed`, whose [] means nothing.
+  assert.deepEqual(await api.fetchReposAnswer(), { repos: [], outcome: "failed" });
+  assert.deepEqual(await api.fetchReposAnswer(), { repos: ["/w/alpha"], outcome: "answered" });
+  // A failure with a list held answers with that list.
+  assert.deepEqual(await api.fetchReposAnswer(), { repos: ["/w/alpha"], outcome: "held" });
+  // A read out when the list is dropped is `dropped`, never an empty answer for the new index.
+  const stale = api.fetchReposAnswer({ rescan: true });
+  api.forgetCachedRepos();
+  releaseOld();
+  assert.deepEqual(await stale, { repos: [], outcome: "dropped" });
+});

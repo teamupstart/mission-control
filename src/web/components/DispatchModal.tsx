@@ -55,7 +55,7 @@ import {
   fetchEnvironmentChecks,
   fetchHarnessesConfig,
   fetchPipelineRepos,
-  fetchRepos,
+  fetchReposAnswer,
   fetchSkills,
   fetchTaskSources,
   onCachedReposDropped,
@@ -1312,6 +1312,9 @@ function DispatchModal({
   // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
   const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
   const [reposLoading, setReposLoading] = useState(() => cachedRepos() === null);
+  // Every read of this load failed and the window holds no list: no answer, which is not the
+  // same as an index with no repositories in it.
+  const [reposUnavailable, setReposUnavailable] = useState(false);
   const [pipelineRepos, setPipelineRepos] = useState<Set<string>>(new Set());
   const [pipelineLaunchRuntime, setPipelineLaunchRuntime] =
     useState<PipelineLaunchRuntime | null>(null);
@@ -2370,22 +2373,42 @@ function DispatchModal({
   // When the window drops its list while this form is open - another window saved the
   // indexed directories, or settings were restored - the picker lets go of it at once rather
   // than keep offering a repository from a directory no longer indexed, and asks again.
+  //
+  // Only the latest load's reads are shown. One still out when the list was dropped resolves
+  // for the directories that were; applying it would clear "indexing workspace…" and print
+  // "0 repos found" over a load that has not answered yet.
   useEffect(() => {
     let alive = true;
-    const show = (list: string[]): void => {
-      if (!alive) return;
-      setRepos(list);
-      setReposLoading(false);
-    };
+    let currentLoad = 0;
     const load = (): void => {
-      void fetchRepos().then(show);
-      void fetchRepos({ rescan: true }).then(show);
+      const thisLoad = ++currentLoad;
+      let unanswered = 2;
+      const take = ({ repos: list, outcome }: Awaited<ReturnType<typeof fetchReposAnswer>>): void => {
+        if (!alive || thisLoad !== currentLoad) return;
+        unanswered -= 1;
+        // A newer load is already out (the drop listener started it).
+        if (outcome === "dropped") return;
+        if (outcome === "answered" || outcome === "held") {
+          setRepos(list);
+          setReposLoading(false);
+          setReposUnavailable(false);
+          return;
+        }
+        // Failed with nothing held: say so once both reads have, rather than "0 repos".
+        if (unanswered === 0) {
+          setReposLoading(false);
+          setReposUnavailable(true);
+        }
+      };
+      void fetchReposAnswer().then(take);
+      void fetchReposAnswer({ rescan: true }).then(take);
     };
     load();
     const stopListening = onCachedReposDropped(() => {
       if (!alive) return;
       setRepos([]);
       setReposLoading(true);
+      setReposUnavailable(false);
       load();
     });
     void fetchSkills().then((skills) => {
@@ -2770,7 +2793,9 @@ function DispatchModal({
           <span className="field-hint">
             {reposLoading
               ? "indexing workspace…"
-              : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
+              : reposUnavailable
+                ? "workspace index unavailable - type a path"
+                : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
           </span>
         )}
       </span>

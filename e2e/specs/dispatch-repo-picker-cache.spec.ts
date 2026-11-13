@@ -88,6 +88,25 @@ test("a reopened Dispatch form lists repos even when no repo read answers", asyn
   }
 });
 
+test("a window whose repo reads all fail says the index is unavailable, not that it is empty", async ({
+  dashboard,
+}) => {
+  // A fresh window holds no list, and the daemon cannot answer either read.
+  await dashboard.route(
+    (url) => url.pathname === "/api/repos",
+    (route) => route.fulfill({ status: 500, contentType: "application/json", body: "{}" }),
+  );
+  try {
+    const dialog = await openDispatch(dashboard);
+    await expect(dialog.getByText("workspace index unavailable - type a path")).toBeVisible();
+    await expect(dialog.getByText(/repos? found - type to filter/)).toHaveCount(0);
+    await expect(dialog.getByText("indexing workspace…")).toHaveCount(0);
+    await shoot(dashboard, "reads-failed-index-unavailable");
+  } finally {
+    await dashboard.unrouteAll({ behavior: "ignoreErrors" });
+  }
+});
+
 async function closeDispatch(page: Page, dialog: Locator): Promise<void> {
   // Escape closes the portaled repo list first when it is open, then the dialog.
   await expect(async () => {
@@ -304,5 +323,56 @@ test.describe("with the indexed directories editable in Settings", () => {
     expect(index.directories, "the restore really removed the indexed directory").toHaveLength(0);
 
     await expectListForgottenWhileReadsHeld(dashboard, "settings-restore-removed-directories");
+  });
+
+  test("a read left over from before a directory change never prints 0 repos over the next load", async ({
+    dashboard,
+    daemon,
+  }) => {
+    // The first load's rescan stays out; once the directories change, every read is held.
+    const held: Route[] = [];
+    let holdAll = false;
+    await dashboard.route(
+      (url) => url.pathname === "/api/repos",
+      (route) => {
+        const rescan = new URL(route.request().url()).searchParams.get("rescan") === "1";
+        if (holdAll || rescan) {
+          held.push(route);
+          return;
+        }
+        void route.continue();
+      },
+    );
+    try {
+      const dialog = await openDispatch(dashboard);
+      await expectPickerListsSeededRepos(dashboard, dialog);
+      await expect.poll(() => held.length).toBe(1);
+      const stale = held.shift()!;
+
+      // Saved elsewhere: a second, empty directory beside the workspace, so the index changes
+      // while the same two repositories stay in it.
+      holdAll = true;
+      const extra = join(daemon.home, "extra-root");
+      mkdirSync(extra, { recursive: true });
+      await saveDirectoriesElsewhere(daemon, [daemon.workspace, extra]);
+      await expect(dialog.getByText("indexing workspace…")).toBeVisible();
+      await expect.poll(() => held.length).toBe(2);
+
+      // The read from before the change now ends. It answers for nothing current: the form
+      // keeps waiting for the new load instead of printing an empty index.
+      const failed = dashboard.waitForEvent("requestfailed", (request) => request === stale.request());
+      await stale.abort();
+      await failed;
+      await dashboard.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await expect(dialog.getByText("indexing workspace…")).toBeVisible();
+      await expect(dialog.getByText("0 repos found - type to filter")).toHaveCount(0);
+      await shoot(dashboard, "stale-read-keeps-indexing");
+
+      holdAll = false;
+      for (const route of held.splice(0)) await route.continue();
+      await expect(dialog.getByText("2 repos found - type to filter")).toBeVisible();
+    } finally {
+      await dashboard.unrouteAll({ behavior: "ignoreErrors" });
+    }
   });
 });

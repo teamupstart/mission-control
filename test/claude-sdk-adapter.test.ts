@@ -2118,3 +2118,60 @@ test("background sub-agents become one coalesced summary, and their frames never
   assert.equal(next[1]!.kind === "subagents" && next[1]!.subagents, null);
   await handle.stop();
 });
+
+test("task frames the stale process sends while its replacement launches do not survive the relaunch", async (t) => {
+  // The first process ignores its closed input; the relaunch is held open until the test says.
+  const starts: Harnessed[] = [];
+  let requested!: () => void;
+  const relaunchRequested = new Promise<void>((resolve) => { requested = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    authFailureTurnGraceMs: 20,
+    authRecoveryDrainMs: 20,
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        if (launchIndex !== 0) query.end();
+      })();
+      if (launchIndex === 1) {
+        requested();
+        await released;
+      }
+      return query;
+    },
+  };
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.return = () => new Promise<never>(() => {});
+  stale.emit(INIT("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const sending = handle.sendIfIdle({ text: "continue after login" });
+  await relaunchRequested;
+  // The stale process is still the attached query while the replacement launches.
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-auth-subagents", ...body });
+  stale.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore", description: "from the replaced process" },
+  ] }));
+  stale.emit(sys("task_started", { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore",
+    description: "from the replaced process", is_backgrounded: true }));
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal(await sending, "started");
+
+  const events = await collect(handle.events, (e) => e.kind === "state" && e.state === "working");
+  const summaries = events.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.ok(summaries.length > 0, "the stale frames did reach the driver before the relaunch landed");
+  assert.equal(summaries.at(-1), null, "the replacement process starts with no sub-agents");
+});

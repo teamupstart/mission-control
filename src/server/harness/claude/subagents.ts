@@ -328,10 +328,12 @@ export function observeClaudeSubagentFrame(
     }
   }
 
-  // A foreground agent that ended without ever counting has nothing left to say.
+  // An ended agent nobody sees - a foreground one that never counted, or an ambient one - has
+  // nothing left to say. Ambient entries are never drawn, capped or counted in a fold, so
+  // keeping them until the next turn would only let them pile up.
   const forgotten: Tracked[] = [];
   for (const [id, t] of tasks) {
-    if (!t.shown && t.entry.state !== "running") {
+    if (!visible(t) && t.entry.state !== "running") {
       tasks.delete(id);
       forgotten.push(t);
     }

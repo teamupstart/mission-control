@@ -551,8 +551,6 @@ class ClaudeSdkSession implements SdkSessionHandle {
     this.turns = new TurnStream();
     this.authenticationFailed = false;
     this.turnActive = false;
-    // The replacement process starts with no live tasks; the stale one's agents died with it.
-    this.setSubagents(emptyClaudeSubagents());
     // Resuming the same conversation retains its cumulative counters and baseline.
     try {
       const fresh = await this.relaunch(this.turns, this.agentSessionId, this.modelOverride);
@@ -560,6 +558,11 @@ class ClaudeSdkSession implements SdkSessionHandle {
         await fresh.return(undefined);
         throw new Error("this session's driver has stopped");
       }
+      // The replacement process starts with no live tasks; the stale one's agents died with it.
+      // Reset only now, in the same synchronous step as `attach`: until then the stale process
+      // is still the attached query and its pump keeps feeding task frames, which would refill
+      // a summary cleared any earlier.
+      this.setSubagents(emptyClaudeSubagents());
       this.attach(fresh);
     } catch (error) {
       this.finish(error instanceof Error ? error.message : String(error));

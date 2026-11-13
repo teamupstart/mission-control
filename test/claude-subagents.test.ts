@@ -314,6 +314,19 @@ test("a live set naming a later run of a folded agent brings it back before its 
   assert.equal(s.retired.has("a"), false);
 });
 
+test("an ambient agent that ends is dropped at once rather than held until the next turn", () => {
+  let s = run([level(agent("a"), agent("b")), started("a", { is_backgrounded: true }), started("b", { is_backgrounded: true })]);
+  // `a` turns out to be housekeeping, then ends; `b` is real work and keeps running.
+  s = observeClaudeSubagentFrame(s, level(agent("a", { ambient: true }), agent("b")), 2);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", status: "completed", summary: "" }), 3);
+  assert.equal(s.tasks.has("a"), false, "no hidden finished entry is left to accumulate");
+  assert.deepEqual(states(s), { b: "running" });
+  assert.equal(claudeSubagentSummary(s)!.finishedFolded, 0, "an ambient agent is never counted as finished");
+  // And its id stays guarded while the live set still names it.
+  s = observeClaudeSubagentFrame(s, level(agent("a"), agent("b")), 4);
+  assert.deepEqual(states(s), { b: "running" });
+});
+
 test("a no-op frame returns the same state object", () => {
   const s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
   assert.equal(observeClaudeSubagentFrame(s, sys("task_progress", { task_id: "unknown", usage: {} }), 1), s);

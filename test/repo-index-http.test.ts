@@ -50,9 +50,11 @@ const { invalidateReposCache } = await import("../src/server/repos.ts");
 
 let repoIndexAnnouncements = 0;
 let lastAnnouncedIdentity = "";
+let announcementFails = false;
 const app = buildApp({
   registry: {
     emitRepoIndexChanged: (identity: string) => {
+      if (announcementFails) throw new Error("event stream unavailable");
       repoIndexAnnouncements += 1;
       lastAnnouncedIdentity = identity;
     },
@@ -398,3 +400,24 @@ test("the repo list on a stalled mount with no scan held is a 503 naming why, no
     syncBuiltinESMExports();
   }
 });
+
+test("a save whose change announcement fails is still a saved 200, and the failure is logged", async (t) => {
+  const workspace = join(operatorHome, "announce-fails");
+  mkdirSync(workspace, { recursive: true });
+  const warned: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warned.push(String(message));
+  });
+  announcementFails = true;
+  try {
+    const res = await putDirectories([workspace]);
+    assert.equal(res.status, 200, "the write is persisted, so the caller must not be told it failed");
+    assert.deepEqual((await getView()).directories.map((row) => row.path), [workspace], "and it really is saved");
+    assert.ok(
+      warned.some((line) => /\[repos\] saved the repository index but could not announce it to open windows: event stream unavailable/.test(line)),
+    );
+  } finally {
+    announcementFails = false;
+  }
+});
+

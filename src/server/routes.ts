@@ -487,6 +487,7 @@ import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import {
   REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
   REPOS_SCANNED_AT_HEADER,
   RepoIndexConfigPatchSchema,
 } from "@shared/repo-index.ts";
@@ -1686,6 +1687,32 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * operator's fix is to remove the stalled directory in Settings, which still opens. Any other
  * error is not this and is rethrown.
  */
+/**
+ * Tell every window the indexed directories changed, after a save that already succeeded.
+ *
+ * Never throws: the write is persisted, and a failure here must not be reported to the caller
+ * as a failed save. If the new identity cannot be computed, windows are told it is unknown -
+ * which still makes them drop their lists, the point of the event - and the cause is logged.
+ */
+function announceRepoIndexChanged(registry: Registry): void {
+  let identity: string;
+  try {
+    identity = repoIndexIdentity();
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not compute its identity; telling windows it is unknown: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    identity = REPO_INDEX_IDENTITY_UNKNOWN;
+  }
+  try {
+    registry.emitRepoIndexChanged(identity);
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not announce it to open windows: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function scanUnavailableAnswer(c: Context, error: unknown): Response {
   if (!isScanUnavailable(error)) throw error;
   return c.json({ error: `workspace scan unavailable: ${error.message}` }, 503);
@@ -4302,14 +4329,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     try {
       setRepoIndexConfig(parsed.data);
-      registry.emitRepoIndexChanged(repoIndexIdentity());
-      return c.json(await repoIndexView());
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {
         return c.json({ error: error.message }, 400);
       }
       throw error;
     }
+    // The save is persisted from here on, so nothing below may answer as if it failed - a
+    // client told "rejected" would keep showing the directories it just replaced.
+    announceRepoIndexChanged(registry);
+    return c.json(await repoIndexView());
   });
   app.post("/api/repo-index/rescan", async (c) => {
     invalidateReposCache();
@@ -8765,18 +8794,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     let result: Awaited<ReturnType<typeof executeSetupInstall>>;
     try {
       result = await executeSetupInstall(parsed.data, {
-      catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
-      homeDir: setupInstallDeps?.homeDir ?? homedir(),
-      // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
-      // the catalog rather than offering it.
-      listRepoRoots: setupInstallDeps?.listRepoRoots ?? (() => listRepos({ fresh: true })),
-      listProviderInstallers:
-        setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
-      prepareProviderInstaller:
-        setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
-      resolveExecutable:
-        setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
-      launchTerminal: terminalLauncher,
+        catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+        homeDir: setupInstallDeps?.homeDir ?? homedir(),
+        // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
+        // the catalog rather than offering it.
+        listRepoRoots: setupInstallDeps?.listRepoRoots ?? (() => listRepos({ fresh: true })),
+        listProviderInstallers:
+          setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
+        prepareProviderInstaller:
+          setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+        resolveExecutable:
+          setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
+        launchTerminal: terminalLauncher,
       });
     } catch (error) {
       return scanUnavailableAnswer(c, error);

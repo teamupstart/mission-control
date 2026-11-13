@@ -88,7 +88,7 @@ test("startup preserves a referenced active lease even when it is dirty and occu
   assert.equal(manager.store.slot(lease.slotId)?.currentHeadSha, repository.sha);
 });
 
-test("startup quarantines stale leases, interrupted provisioning, and unknown occupancy", async () => {
+test("startup quarantines stale leases and interrupted provisioning but defers unknown occupancy", async () => {
   const staleRepo = repo("mission-reconcile-stale-");
   const stale = harness();
   const staleLease = acquired(
@@ -135,8 +135,8 @@ test("startup quarantines stale leases, interrupted provisioning, and unknown oc
   );
   occupancy.set(unknownLease.path, { status: "unknown", reason: "lsof timed out" });
   await unknown.reconcile();
-  assert.equal(unknown.store.slot(unknownLease.slotId)?.state, "quarantined");
-  assert.match(unknown.store.slot(unknownLease.slotId)?.lastError ?? "", /lsof timed out/);
+  assert.equal(unknown.store.slot(unknownLease.slotId)?.state, "leased");
+  assert.match(unknown.store.pool(unknownLease.poolId)?.reconciliationError ?? "", /lsof timed out/);
 });
 
 test("startup completes only a returning intent whose reset result is positively proven", async () => {
@@ -530,6 +530,8 @@ test("reconciliation recovers a process-failure quarantine before safe prune", a
     owner: { kind: "task", key: "recovery" },
   }));
   assert.equal((await manager.release(lease)).outcome, "released");
+  // A quarantine persisted by the older daemon must still recover after an upgrade.
+  manager.store.quarantine(lease.slotId, "slot process occupancy is unknown", "cwd listing omitted a ps-listed PID", Date.now());
   occupancy.set(lease.path, { status: "unknown", reason: "cwd listing omitted a ps-listed PID" });
   await manager.reconcile();
   const before = manager.store.slot(lease.slotId)!;
@@ -725,4 +727,70 @@ test("quarantine recovery proves the inspected commit even when HEAD changes awa
   assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
   assert.match(manager.store.pool(lease.poolId)?.reconciliationError ?? "", /not merged/);
   assert.equal(gitIn(lease.path, "rev-parse", "HEAD"), unmerged);
+});
+
+test("transient occupancy failures preserve free slots and live leases without authorizing acquisition", async () => {
+  const repository = repo("mission-reconcile-transient-");
+  const occupancy = new Map<string, WorktreeOccupancy>();
+  const referenced = new Set<string>();
+  const manager = harness({ occupancy, referenced });
+  const first = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "free" } }));
+  const live = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "live" } }));
+  referenced.add(live.leaseId);
+  assert.equal((await manager.release(first)).outcome, "released");
+  const versions = manager.store.slots().map((slot) => slot.version);
+  for (const lease of [first, live]) occupancy.set(lease.path, { status: "unknown", reason: "lsof timed out" });
+  await manager.reconcile();
+  assert.equal(manager.store.slot(first.slotId)?.state, "available");
+  assert.equal(manager.store.slot(live.slotId)?.state, "leased");
+  assert.match(manager.store.pool(first.poolId)?.reconciliationError ?? "", /lsof timed out/);
+  const refused = await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "next" } });
+  assert.equal(refused.outcome, "outcomeUnknown");
+  assert.deepEqual(manager.store.slots().map((slot) => slot.version), versions);
+  occupancy.clear();
+  await manager.reconcile();
+  const next = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "next" } }));
+  assert.equal(next.slotId, first.slotId);
+});
+
+
+test("quarantine, recovery and release log bounded detail for the exact pool and slot once per transition", async (t) => {
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "info", (message: string) => {
+    if (message.startsWith("[worktrees] {")) records.push(JSON.parse(message.slice("[worktrees] ".length)));
+  });
+  const repository = repo("mission-reconcile-logging-");
+  const git = new NativeWorktreeGit();
+  const inspect = git.inspect.bind(git);
+  const diagnostic = "inspection failed: " + "x".repeat(8192);
+  let failInspection = false;
+  t.mock.method(git, "inspect", async (path: string) => failInspection
+    ? { ok: false as const, reason: diagnostic, outcomeUnknown: true }
+    : inspect(path));
+  const manager = harness({ git });
+  const lease = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "log" } }));
+  await manager.release(lease);
+  failInspection = true;
+  await manager.reconcile();
+  await manager.reconcile();
+  failInspection = false;
+  await manager.reconcile();
+  assert.deepEqual(records.map((record) => record.event), ["released", "quarantined", "quarantine_recovered"]);
+  assert.equal(records[0]?.reason, "return reset positively verified");
+  assert.equal(records[0]?.detail, null, "a successful release must not carry a stale diagnostic");
+  assert.equal(records[1]?.reason, "slot Git state is unknown");
+  assert.equal(records[1]?.detail, diagnostic.slice(0, 2048), "quarantine carries the bounded inspection failure");
+  assert.equal(Buffer.byteLength(String(records[1]?.detail), "utf8"), 2048);
+  assert.equal(records[2]?.reason, "all recovery safety checks passed");
+  assert.equal(records[2]?.detail, "slot Git state is unknown", "recovery names the hold it cleared, not the old failure tail");
+  for (const record of records) {
+    assert.equal(record.poolId, lease.poolId);
+    assert.equal(record.slotOrdinal, 1);
+    assert.equal(typeof record.reason, "string");
+  }
 });

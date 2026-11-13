@@ -79,7 +79,7 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
       throw error; // Unclassified failures may have committed. Never certify rollback.
     }
   });
-  for (const action of ["pause", "resume", "run-now", "restart"] as const) {
+  for (const action of ["pause", "resume", "run-now", "cancel-run-now", "restart"] as const) {
     app.post(`/api/residents/runs/:id/${action}`, async (c) => {
       const id = c.req.param("id");
       try {
@@ -121,7 +121,8 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
         liveRun(id);
         if (action === "pause") deps.loop.pause(id);
         else if (action === "resume") deps.loop.resume(id);
-        else await deps.loop.runNow(id);
+        else if (action === "cancel-run-now") deps.loop.cancelRunNow(id);
+        else return c.json({ ok: true, outcome: await deps.loop.runNow(id) });
         return c.json({ ok: true });
       } catch (error) {
         if (error instanceof ResidentLoopRefusal) return c.json({ error: error.message }, 409);

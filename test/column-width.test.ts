@@ -96,14 +96,14 @@ test("a collapsed tone column hides exactly its own sessions from navigation", (
     mkSession({ id: "w2", state: "working" }),
     mkSession({ id: "i1", state: "idle", activity: null }),
   ];
-  const groups = orderSessions(fleet, new Set(), false).groups;
-  assert.equal(collapsedColumnSessionIds(groups, new Set()).size, 0);
+  const columns = orderSessions(fleet, new Set(), false).columns;
+  assert.equal(collapsedColumnSessionIds(columns, new Set()).size, 0);
   assert.deepEqual(
-    [...collapsedColumnSessionIds(groups, new Set(["working"]))].sort(),
+    [...collapsedColumnSessionIds(columns, new Set(["working"]))].sort(),
     ["w1", "w2"],
   );
   // A collapsed Backlog holds tasks, which the arrow keys never walked.
-  assert.equal(collapsedColumnSessionIds(groups, new Set(["backlog"])).size, 0);
+  assert.equal(collapsedColumnSessionIds(columns, new Set(["backlog"])).size, 0);
 });
 
 test("collapsing is saved to UiConfig; expanding is not", async () => {

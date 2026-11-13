@@ -38,7 +38,9 @@ reap any remaining utilities before the update helper handles verified survivors
 The daemon stops workflow checks before slower
 session drains. The workflow engine's abort signal also follows a check through lease
 acquisition to its spawn gate, preventing late branch execution during shutdown. Detached
-check shims tear down their own group on loss of the private owner pipe; the daemon remains
+check shims tear down their own group on loss of the private owner pipe. Orderly shutdown also
+closes that pipe, so an unreadable identity or refused group signal
+does not leave the engine waiting for the command's full timeout. The daemon remains
 the only writer of interruption outcomes and lease recovery.
 
 The detached update helper outlives the desktop and drains verified owned processes before

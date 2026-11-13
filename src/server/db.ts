@@ -3511,6 +3511,10 @@ function migrate(d: DatabaseSync): void {
   // which keeps the native MCP behaviour it launched with; set (even for an empty set) on
   // every run since, which starts exactly its snapshot.
   addColumn(d, "resident_runs", "mcp_snapshot_at", "INTEGER");
+  // Run now pressed while the resident was busy: fires once on the next idle observation.
+  addColumn(d, "resident_runs", "run_requested_at", "INTEGER");
+  // Consecutive failed compactions before a wake; reset by a measured success or Resume.
+  addColumn(d, "resident_runs", "compaction_failures", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");

@@ -3888,6 +3888,20 @@ export const ResidentPlacementSchema = z.enum(RESIDENT_PLACEMENTS);
 export type ResidentPlacement = (typeof RESIDENT_PLACEMENTS)[number];
 
 /**
+ * Where the Board draws idle blocked sessions: sessions with a durable blocker that are idle or
+ * unconfirmed. `needs-you` gives them a lane under Needs you, `idle` a red frame at the top of
+ * Idle, and `column` a Blocked column of their own between Needs you and Working. One ordering
+ * (`src/web/lib/fleet-order.ts`) produces the blocked group; this only decides where it is drawn,
+ * so the Console rail, the arrow keys and the ⌘-numbers follow it without a second order.
+ *
+ * Later builds may append choices. The stored field reads an unknown one as the default, so a
+ * downgrade still opens, while the patch schema refuses one.
+ */
+export const BLOCKED_PLACEMENTS = ["needs-you", "idle", "column"] as const;
+export const BlockedPlacementSchema = z.enum(BLOCKED_PLACEMENTS);
+export type BlockedPlacement = (typeof BLOCKED_PLACEMENTS)[number];
+
+/**
  * How one session's Conversation is DRAWN - the same rows, read two ways.
  *
  * `chat` is the shipped log: role bylines, bubbles, tool chips. `terminal` is the Native
@@ -4135,6 +4149,10 @@ export const UI_CONFIG_DEFAULTS = {
   residentPlacement: "drawer",
   /** The drawer floats over the page until someone pins it as a column. */
   residentDrawerPinned: false,
+  /** A lane under Needs you, the placement confirmed in review of the blocker plan. */
+  blockedPlacement: "needs-you",
+  /** The At the top of Idle frame starts open: a blocked session is never folded away unasked. */
+  blockedFrameCollapsed: false,
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
@@ -4251,6 +4269,15 @@ export const UiConfigSchema = z.object({
   residentPlacement: ResidentPlacementSchema.default(UI_CONFIG_DEFAULTS.residentPlacement),
   /** Whether the Residents drawer is pinned as a column beside the fleet. Per machine. */
   residentDrawerPinned: z.boolean().default(UI_CONFIG_DEFAULTS.residentDrawerPinned),
+  /**
+   * Where idle blocked sessions are drawn on the Board and in the Console rail. Permissive on
+   * read, like `skin`: a placement a newer build added reads as the default after a downgrade
+   * rather than failing the whole config. The patch schema below is strict.
+   */
+  blockedPlacement: BlockedPlacementSchema
+    .default(UI_CONFIG_DEFAULTS.blockedPlacement)
+    .catch(UI_CONFIG_DEFAULTS.blockedPlacement),
+  blockedFrameCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.blockedFrameCollapsed),
   /**
    * Which rendering the Conversation opens in. A per-session override lives in the browser
    * only and never reaches here - see `src/web/lib/conversation-view.ts` for why that one is
@@ -4480,6 +4507,9 @@ export const UiConfigPatchSchema = z.preprocess(
     // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
     // `{ skin: "nope" }` into a successful write of Default.
     skin: SkinIdSchema.optional(),
+    // Strict for the same reason: a `.partial()` of the stored `.catch` would store the default
+    // for a placement this build does not know.
+    blockedPlacement: BlockedPlacementSchema.optional(),
   }).refine(
     (o) => Object.keys(o).length > 0,
     { message: "empty config update" },
@@ -6823,6 +6853,18 @@ const WorkflowContextSnapshotInputSchema = z.object({
     coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    publication: z.object({
+      version: z.literal(1),
+      treeOid: CommitOidSchema,
+      unpublishedPaths: z.array(z.string().max(4_096)).max(500),
+      artifactProblems: z.array(z.string().max(2_000)).max(100).default([]),
+      pathsTruncated: z.boolean(),
+      localArtifacts: z.array(z.object({
+        path: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.displayNameChars),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
+      })).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount),
+    }).optional(),
     reviewCommit: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),

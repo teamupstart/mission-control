@@ -975,3 +975,65 @@ test("bulk selection stops at 128 slots and says so", async ({ dashboard, daemon
   await shoot(dashboard, "24-bulk-preview-all-selected-gone");
   await preview.getByRole("button", { name: "Cancel" }).click();
 });
+
+
+test("Reconcile recovers a safe quarantine for prune and preserves dirty work", async ({ dashboard, daemon }) => {
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["recoverable quarantine", "dirty quarantine"]) {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    leases.push(await response.json());
+  }
+  for (const lease of leases) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    });
+    expect(returned.ok()).toBe(true);
+    // Seed the historical failure; live process inspection itself is not reproduced here.
+    withDaemonDb(daemon, (db) => {
+      expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined',
+        version = version + 1, quarantine_reason = 'slot process occupancy is unknown',
+        last_error = 'process-list timeout' WHERE last_released_lease_id = ? AND state = 'available'`
+      ).run(lease.leaseId).changes)).toBe(1);
+    });
+  }
+  const [safe, dirty] = leases as [typeof leases[number], typeof leases[number]];
+  writeFileSync(join(dirty.path, "unfinished.txt"), "keep this work\n");
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const safeRow = pool.locator(".wt-slot", { hasText: safe.path });
+  const dirtyRow = pool.locator(".wt-slot", { hasText: dirty.path });
+  await expect(safeRow.getByText("quarantined", { exact: true })).toBeVisible();
+  await pool.getByRole("button", { name: "Preview safe prune" }).click();
+  const prune = dashboard.getByRole("dialog", { name: "prune worktree preview" });
+  await expect(prune.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await expectContentClearsBorder(prune);
+  await prune.getByRole("button", { name: "Cancel" }).click();
+
+  await pool.getByRole("button", { name: "Reconcile", exact: true }).click();
+  const reconcile = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+  await expectContentClearsBorder(reconcile);
+  await reconcile.getByRole("button", { name: "Execute" }).click();
+  await expect(reconcile).toHaveCount(0);
+  await expect(safeRow.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(dirtyRow.getByText("quarantined", { exact: true })).toBeVisible();
+  expect(existsSync(safe.path)).toBe(true);
+  await shoot(dashboard, "15-quarantine-recovered-dirty-preserved");
+
+  const response = dashboard.waitForResponse((result) => result.url().endsWith("/api/worktrees/actions/preview"));
+  await pool.getByRole("button", { name: "Preview safe prune" }).click();
+  const preview = await (await response).json() as WorktreeActionPreview;
+  expect(preview.affected.map((item) => item.path)).toEqual([safe.path]);
+  expect(preview.requiredAcknowledgements).toEqual([]);
+  await expect(prune.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await shoot(dashboard, "16-recovered-safe-prune-preview");
+  await prune.getByRole("button", { name: "Execute" }).click();
+  await expect(safeRow).toHaveCount(0, { timeout: EXECUTES_MS });
+  expect(existsSync(safe.path)).toBe(false);
+  expect(existsSync(join(dirty.path, "unfinished.txt"))).toBe(true);
+  await expect(dirtyRow.getByText("quarantined", { exact: true })).toBeVisible();
+});

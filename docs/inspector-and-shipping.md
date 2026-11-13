@@ -633,15 +633,28 @@ commit, the pull request neither merges nor reuses the review on that sweep. Thi
 pull request with stack lineage or a known base other than the default branch.
 Workflow Personas and the CodeRabbit merge base use the same base for a stacked task: the
 pull request's current base, read from GitHub for each review rather than taken from the last
-poll (a pull request adopted moments ago has not been polled yet), or the parent branch before
-a pull request exists. Because the parent keeps moving after dispatch, every review diff first
+poll (a pull request adopted moments ago has not been polled yet). Before a child pull request
+exists, each capture reads the parent's current state: its head branch while open, or the
+repository's current default branch once merged or closed. A parent squash merge with branch
+deletion therefore does not strand capture or its resubmit probe, even before the dependency
+watcher records satisfaction. The dispatch-time stack fields remain as lineage provenance.
+When no parent PR URL has been recorded yet, capture uses the recorded parent branch and
+still refreshes and verifies its remote tip. A recorded PR that cannot be read remains an
+error rather than taking this branch-only path.
+If the selected base branch is confirmed absent by a successful remote listing, capture
+instead fetches and verifies the current default branch, including while the parent still
+appears open or an adopted child PR still names the deleted base. Network failures, denied
+access, timeouts and unverifiable defaults remain errors; they do not establish deletion.
+Capture does not restack the child's work; after a squash merge, the session still needs to
+merge the default branch in to remove the parent's changes from the review diff.
+Because the base keeps moving after dispatch, every review diff first
 fetches that branch at the repository root and checks the fetched commit against what origin
 advertises. The child's head is read from the repository root too (`git worktree list`), the
 merge base the diff starts from is computed there from explicit commit ids, and the diff is
 read from the repository root as well, naming the child's checkout explicitly (`--git-dir`,
 `--work-tree`) and staging its working tree into a temporary index and object directory, so
-the child's own index is never written. Either half can fail, and neither falls back to
-another base or to an ordinary diff:
+the child's own index is never written. Apart from the confirmed-deletion recovery above,
+either half can fail without falling back to another base or to an ordinary diff:
 
 - **Resolving the base** (reading the pull request's current base, fetching and verifying the
   branch, reading the child's head, computing the merge base) fails with *stacked base could

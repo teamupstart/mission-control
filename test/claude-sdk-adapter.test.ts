@@ -23,6 +23,7 @@ import type {
   ClaudeSdkUserMessage,
 } from "../src/server/harness/claude/sdk-types.ts";
 import type { SdkEvent } from "../src/server/harness/types.ts";
+import { CompactionError } from "../src/server/harness/compaction.ts";
 
 // What is at stake: this adapter is the only thing standing between the vendor's message
 // stream and every surface in the app. If a permission callback is projected wrongly, a
@@ -199,6 +200,23 @@ test("resident compaction waits for the observed native boundary and result", as
   const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/claude-manual.json", import.meta.url), "utf8")) as ClaudeSdkMessage[];
   for (const frame of fixture) query.emit(frame);
   assert.deepEqual(await operation, { contextTokens: 494, contextWindow: 1_000_000 });
+  await handle.stop();
+});
+
+test("a stalled resident compaction interrupts the CLI's /compact turn instead of leaving it open", async (t) => {
+  // Read when the driver is built, so set before launch and restore after.
+  process.env.MISSION_RESIDENT_COMPACTION_STALL_MS = "30";
+  t.after(() => { delete process.env.MISSION_RESIDENT_COMPACTION_STALL_MS; });
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query, turns } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  // The CLI accepts `/compact` and then never answers, as it did behind a dead network.
+  await assert.rejects(handle.compact!(""), (error: unknown) => error instanceof CompactionError && error.retryable &&
+    /no progress for 1 second and was interrupted/.test(error.message));
+  assert.equal(turns[0]?.message.content, "/compact");
+  assert.deepEqual(query.control.filter(c => c === "interrupt"), ["interrupt"]);
   await handle.stop();
 });
 

@@ -1,6 +1,6 @@
 import { useMemo, useSyncExternalStore } from "react";
 import type { Session } from "@shared/types.ts";
-import type { Tone } from "./format.ts";
+import type { FleetColumnId } from "./fleet-order.ts";
 import { updateUiConfig, uiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
@@ -17,8 +17,7 @@ import { updateUiConfig, uiConfig, useUiConfig } from "./uiConfig.ts";
  * walk arrays `App` builds. The same reason `repo-collapse.ts` is a store.
  */
 
-/** A Board column: the Backlog, or one of the session tones. */
-export type BoardColumnId = "backlog" | Tone;
+export type BoardColumnId = "backlog" | FleetColumnId;
 export type ColumnWidth = "collapsed" | "normal" | "wide";
 
 export interface ColumnWidths {
@@ -47,18 +46,19 @@ export function withColumnWidth(state: ColumnWidths, id: string, width: ColumnWi
 
 /**
  * The sessions a collapsed column is hiding, so navigation can step over them the way it steps
- * over a folded repository frame. Only tone columns hold sessions; a collapsed Backlog hides
- * tasks, which the arrow keys never walked.
+ * over a folded repository frame. Only session columns hold sessions (`FleetColumn`, whose
+ * `sessions` include a Blocked lane or frame it draws); a collapsed Backlog hides tasks, which
+ * the arrow keys never walked.
  */
 export function collapsedColumnSessionIds(
-  groups: readonly { tone: string; sessions: readonly Session[] }[],
+  columns: readonly { id: string; sessions: readonly Session[] }[],
   collapsed: ReadonlySet<string>,
 ): ReadonlySet<string> {
   if (collapsed.size === 0) return EMPTY;
   const hidden = new Set<string>();
-  for (const group of groups) {
-    if (!collapsed.has(group.tone)) continue;
-    for (const session of group.sessions) hidden.add(session.id);
+  for (const column of columns) {
+    if (!collapsed.has(column.id)) continue;
+    for (const session of column.sessions) hidden.add(session.id);
   }
   return hidden;
 }

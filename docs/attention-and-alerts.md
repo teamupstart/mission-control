@@ -109,7 +109,7 @@ looking away. Nothing about this panel changed.
 
 So you don't have to watch the fleet, the dashboard can **alert you when a session
 needs you**. The daemon already streams every attention event over SSE; the browser
-turns those into a **desktop (Chrome) notification + a short sound** the moment a
+turns those into a **desktop notification + a short sound** in the browser or Electron the moment a
 session goes to `needs-input`, a session stops on an
 [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard) (which needs no hooks, and says
 how many options it's offering), a review lands, or a
@@ -249,6 +249,49 @@ notifications** (with **Enable desktop alerts** above them when the browser has 
 granted permission yet - that click also unlocks the chime) and **Sound**. **Away
 mode** sits below them in its own card, because it is not a third channel: it is
 daemon state that survives closing the tab.
+
+Desktop notifications default to **off**; enable them here even in the macOS app.
+The desktop shell's [permission request handler](../src/main/index.ts) is configured to
+accept `notifications`. An isolated temporary-profile probe on 2026-11-12 (America/New_York),
+using that handler with Electron 43.8.4 on macOS 26.6.2 (25G83), arm64, observed
+`Notification.permission === "granted"` before and after `Notification.requestPermission()`.
+The exact retained probe result is `txt_899557ceac6566cb79d2e57e6533bdb8`
+(`notifications-repair-environment`), in Mission Control workflow run
+`474363db-7d3f-474d-a815-18f559d35dc0`, submission
+`0df21d34-b0e7-4f5d-97a6-e3527c0f89d6` (No-Mistakes Review, issue #1444).
+That probe verifies the renderer permission gate only; it did not send a notification.
+Separately, on 2026-11-12 the operator enabled notifications in the running 2.1.0 macOS app,
+then a fresh `request_input` produced a native banner. The exact capture in that same
+submission is `img_ef4931c8a0b164e656c59e05dad4bddf` (`notifications-native-banner`,
+2026-11-12 20:21 America/New_York); `notifications-native-steps` records the manual trigger
+sequence. It shows the earlier **needs review / to review** copy, so it confirms delivery on
+that installation, not the revised wording below or delivery on every macOS configuration.
+
+The revised wording was captured in **Notification Center** on 2026-11-12 at 20:49
+America/New_York, using the signed 2.1.0 shell with this checkout's updated renderer loaded
+through its development URL. In the same workflow run, evidence registration generation 4
+contains image item `notifications-native-revised-center`
+(`native-request-input-revised.png`) and trigger record `notifications-revised-native-steps`
+(`revised-native-trigger-steps.txt`). The image shows **MacOS Notifications needs your answer**
+and the actual question preview. The operator did not see a transient banner on either
+attached display; the capture establishes Notification Center delivery, not transient banner
+appearance. The cause of that difference was not established.
+
+Permission does not enable the delivery preference or override macOS.
+In **System Settings > Notifications > Mission
+Control**, allow notifications and choose a banner or alert style. Check Focus settings
+if banners are still suppressed. Browser users must also grant their site's notification
+permission. Sound and desktop notifications are independent switches.
+
+An agent's `request_input` uses the review channel. A growing pending-question/review
+count alerts even when an older question is still unanswered; a retry of the same pending
+question does not. The notification names the session or task, says **needs your answer** for an
+input question, and previews the newest pending question (up to 240 characters). Other
+reviews show their title rather than their raw diff or plan. Reconnect summaries retain
+that question or review detail. Opening the dashboard adopts existing questions silently. Reconnecting
+an already-open dashboard coalesces missed attention into one catch-up notification.
+The desktop window can be hidden, but quitting the app stops dashboard notification
+delivery. The daemon alone does not send desktop notifications.
 
 Turning **Sound** off keeps desktop notifications visible but silent, including the
 catch-up notification after a disconnect. With Sound on, Mission Control plays its

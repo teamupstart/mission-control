@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -214,6 +215,43 @@ test("the idle column separates the agents you can dispatch to from the ones a r
   await expect(tiles.nth(0).locator(".tile-held")).toHaveCount(0);
 
   await shoot(dashboard, "idle-column-split");
+});
+
+test("At the top of Idle counts the blocked frame in a split idle header", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The split head counts the Idle group's own free and held agents. With the Blocked frame drawn
+  // at the top of Idle, its cards sit in the same column, so the head has to count them too or a
+  // held agent beside them makes the frame vanish from the column's numbers.
+  await dispatchIdleAgent(dashboard, daemon, "stay free beside the frame");
+  const held = await dispatchIdleAgent(dashboard, daemon, "get held beside the frame");
+  const blocked = await dispatchIdleAgent(dashboard, daemon, "get blocked into the frame");
+  await openRunOn(daemon, held, "frame");
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const reported = await fetch(`${daemon.baseURL}/mcp/blocker`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      env: {},
+      sessionId: blocked,
+      kind: "dependency",
+      reason: "waiting on the platform migration",
+      waitingOn: "the platform team",
+      resumeWhen: "The migration merges",
+    }),
+  });
+  expect(reported.status, await reported.clone().text()).toBe(200);
+
+  await api(daemon, "/api/ui/config", { blockedPlacement: "idle" }, "PUT");
+  await useBoardLayout(dashboard, daemon);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  const frame = idle.getByRole("group", { name: "Blocked" });
+  await expect(frame.locator(".tile.is-blocked")).toHaveCount(1);
+  await expect(idle.locator(".fleet-section-held")).toBeVisible();
+  await expect(idle.locator(".board-col-head .board-col-n")).toHaveText(["1 blocked", "1 free", "1 held"]);
+
+  await shoot(dashboard, "idle-split-with-blocked-frame");
 });
 
 test("a held tile refuses the backlog drop a free tile still offers", async ({

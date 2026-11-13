@@ -14,7 +14,7 @@ import {
 } from "@shared/away-buffer.ts";
 import type { AwayBuffer } from "@shared/away-buffer.ts";
 import { getAwayConfig, stallThresholds } from "./config.ts";
-import type { Session, Task } from "@shared/types.ts";
+import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun } from "@shared/pipeline.ts";
@@ -37,6 +37,7 @@ export interface AwaySource {
   snapshot(): {
     sessions: Session[];
     tasks: Task[];
+    reviews?: ReviewItem[];
     workflowRunSummaries?: WorkflowRunSummary[];
     ensembleSummaries?: EnsembleSummary[];
     pipelineCommissions?: PipelineCommission[];
@@ -160,6 +161,7 @@ export function startAwayWatcher(
       const scope: AlertScope = {
         sessions: snap.sessions,
         tasks: snap.tasks,
+        reviews: snap.reviews,
         stalls,
         workflowRuns,
         ...(deps.workflowRepeatOffenders

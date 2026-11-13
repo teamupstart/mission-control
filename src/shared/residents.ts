@@ -339,6 +339,8 @@ export interface ResidentLoopStatus {
   consumedGeneration: number | null;
   pauseReason: string | null;
   wakeReason: string | null;
+  /** When Run now was pressed while the resident was busy; it runs once the session is idle. */
+  runRequestedAt: number | null;
 }
 
 export const RESIDENT_PROFILE_SECTIONS = {
@@ -579,7 +581,7 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
     compaction: HARNESS_CAPABILITIES[run.settings.execution.agent].residentCompaction!,
     loopState: run.loopState, iteration: run.iteration, lastSeq: run.lastSeq,
     nextWakeAt: run.nextWakeAt, consumedGeneration: run.consumedGeneration,
-    pauseReason: run.pauseReason, wakeReason: run.wakeReason,
+    pauseReason: run.pauseReason, wakeReason: run.wakeReason, runRequestedAt: run.runRequestedAt,
     settings: residentRunSummarySettings(run.settings),
     createdAt: run.createdAt,
   };

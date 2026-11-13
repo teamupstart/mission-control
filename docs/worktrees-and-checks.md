@@ -105,6 +105,41 @@ leaves occupancy unknown. A read that fails twice records both attempts, for exa
 timed out after 15 s, and after 30 s on retry". A command killed at its timeout is named as a
 timeout, and one killed by another signal names that signal, so neither reads as "exit 1".
 
+**Quarantine** takes a slot out of rotation, and records why, as which kind of fact, and when.
+The kind is a persisted, append-only category that decides whether the slot can come back on its
+own; the reason text is only for people and is never read to decide anything:
+
+- **observation**: an observer did not answer - the process listing, a Git read, the
+  registration list, or a domain-ownership lookup. Nothing is known to be wrong with the slot,
+  so Reconcile returns it to available once it proves the slot idle again.
+- **state**: a positively observed fact makes the slot unsafe to hand out - dirty or untracked
+  work, an occupant, a wrong path or common directory, a moved HEAD, a missing or unsafe
+  registration, a pool marker that is absent, malformed or names another pool, or lease
+  identity that is stale or incomplete. A marker read that does not answer is none of these:
+  it defers the pass and quarantines nothing.
+- **transition**: an allocator or setup mutation failed or its outcome could not be proven - a
+  reset, a creation, the setup command, a dependency-claim record, a lease commit, a return, a
+  removal, or an intent startup found interrupted.
+
+State and transition quarantines stay until an operator acts on them, however healthy the slot
+later looks. `quarantined_at` is written only by the transition into quarantine and cleared by
+every transition out; observations never rewrite it, and a slot already quarantined is never
+quarantined again with a new reason, category or time.
+
+Acquisition quarantines only for positively bad facts: dirty or untracked work, an occupant, a
+wrong path or common directory, an unsafe registration, or lease identity an available slot must
+not carry. It screens every available slot, and a probe that does not answer for one of them
+makes only that slot ineligible for this acquire. When no observed idle slot remains, the acquire
+defers rather than adding a slot beside the unobserved ones or falling back to a disposable
+worktree. If the occupancy recheck taken just after a slot was reserved does not answer, the
+reservation is undone and the slot is available again exactly as it was screened, with its
+release history; a process that did enter it is still quarantined.
+
+Quarantines recorded before categories existed were classified once, when the database was
+upgraded: a quarantine whose recorded reason was one only an unanswered observer produced became
+an observation, and every other one has no category and is never recovered automatically. Neither
+kind has a recorded time.
+
 `make session` is a loopback client for that daemon-owned inventory:
 
 ```sh
@@ -507,6 +542,11 @@ this order:
   again. It runs on the scrubbed environment described under
   [Dependency claims](#dependency-claims). Each slot carries its exact manager path, observed HEAD,
   relationship to the remote default, cleanliness, process count, disk estimate, and owner.
+  A quarantined slot also shows its quarantine reason, how long ago it entered quarantine (hover
+  for the exact time, or "Quarantine time not recorded" for one quarantined before the time was
+  kept), and either **Reconcile returns it once re-proven** for an observation quarantine or
+  **Needs operator action** for any other. The time is the moment of the transition, so a slot
+  observed many times since still shows when it was quarantined.
   **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.
@@ -569,18 +609,27 @@ The operations have deliberately narrow meanings:
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
-  only states whose result is positively proven. An unknown process scan leaves slot states and
-  lease versions intact and records a pool diagnostic; it authorizes no recovery or return.
-  Acquisition also defers without fallback when idle-slot occupancy cannot be observed. A quarantined
-  slot returns to available only when its pool identity, marker, exact path, Git registration,
-  repository, cleanliness, merge into the observed remote default, and empty process occupancy
-  are proven again. It must carry no active lease identity, and any last-released lease must be
-  complete and no longer referenced by its owner. Startup and maintenance use the same recovery.
-  Recovery clears the old quarantine diagnostic without resetting or deleting files, preserves
-  release history, and leaves active, dirty, unmerged, missing, or unverifiable slots protected.
-  After **Reconcile**, use **Preview safe prune** to review recovered slots; removal still checks
-  safety again at execution. A new blocker appears in the pool's reconciliation diagnostic while
-  the slot retains its original quarantine reason until recovery succeeds.
+  only states whose result is positively proven. An unknown process scan, an unreadable Git
+  registration list, or a pool marker whose read did not answer (an I/O error or a denied open)
+  leaves slot states and lease versions intact and records a pool diagnostic; it authorizes no
+  recovery or return, and acquisition, return and removal each refuse a pool whose marker they
+  cannot verify. A marker that is positively absent, malformed, or names another pool is a
+  **state** fact instead, and quarantines every slot in the pool. Acquisition also defers without fallback when idle-slot
+  occupancy cannot be observed. Only an **observation** quarantine is recoverable. Such a slot
+  returns to available only when its pool identity, marker, exact path, safe Git registration,
+  common directory, cleanliness, detached HEAD at exactly the commit the allocator last recorded
+  for it, merge into the observed remote default, and empty process occupancy are proven again.
+  It must carry no active lease identity, and any last-released lease must be complete and no
+  longer referenced by its owner. The recovery is one compare-and-swap on the slot version that
+  itself refuses any other category, an active lease, or a moved HEAD. Startup and maintenance
+  use the same recovery. Recovery clears the old quarantine diagnostic and its time without
+  resetting or deleting files, preserves release history, and leaves active, dirty, moved,
+  attached, unmerged, missing, or unverifiable slots protected. A **state** or **transition**
+  quarantine, and an uncategorized legacy one, is never recovered: Destroy it, or Return it
+  through its owner. After **Reconcile**, use **Preview safe prune** to review recovered slots;
+  removal still checks safety again at execution. A new blocker appears in the pool's
+  reconciliation diagnostic while the slot retains its original quarantine reason, category and
+  time until recovery succeeds.
 - **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
   a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
   every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly

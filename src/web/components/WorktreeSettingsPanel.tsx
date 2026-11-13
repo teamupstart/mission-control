@@ -12,6 +12,7 @@ import type {
 import { worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import { relativeTime } from "../lib/format.ts";
 import { openWorktreeTerminal } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
@@ -198,6 +199,35 @@ function CapacityLegend({ geometry }: { geometry: CapacityGeometry }): React.JSX
   );
 }
 
+/**
+ * Why a slot is quarantined, when it entered, and whether Reconcile can bring it back. The time
+ * is the moment of the transition, never of a later observation, so an operator can tell a
+ * quarantine from this morning's process-listing outage apart from one that is days old.
+ */
+function QuarantineDetail({ slot, reason }: { slot: NativeWorktreeSlotView; reason: string }): React.JSX.Element {
+  const at = slot.quarantinedAt;
+  return (
+    <div className="wt-quarantine">
+      <p className="wt-diagnostic">{reason}</p>
+      <p className="wt-quarantine-meta">
+        {at !== null
+          ? (
+            <span>
+              Quarantined{" "}
+              <Tooltip label={new Date(at).toLocaleString()}>
+                <time dateTime={new Date(at).toISOString()}>{relativeTime(at)}</time>
+              </Tooltip>
+            </span>
+          )
+          : <span>Quarantine time not recorded</span>}
+        {slot.quarantineRecoverable !== null && (
+          <span>{slot.quarantineRecoverable ? "Reconcile returns it once re-proven" : "Needs operator action"}</span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function SlotCard({
   slot,
   pending,
@@ -279,9 +309,9 @@ function SlotCard({
       </dl>
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
       {slot.processes.reason && <p className="wt-diagnostic">{slot.processes.reason}</p>}
-      {(slot.quarantineReason || slot.diagnostic) && (
-        <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic}</p>
-      )}
+      {slot.quarantineReason
+        ? <QuarantineDetail slot={slot} reason={slot.quarantineReason} />
+        : slot.diagnostic && <p className="wt-diagnostic">{slot.diagnostic}</p>}
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact worktree path"}>
           <button className="btn btn-ghost" type="button" onClick={() => void copy.copy(slot.path)}>

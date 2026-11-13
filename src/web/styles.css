@@ -1149,6 +1149,18 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 
 .wt-diagnostic { color: var(--wt-attention); }
 
+/* Always stacked, so every quarantined card reads the same whether or not the pair would fit. */
+.wt-quarantine-meta {
+  color: var(--dim);
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 2px 0 0;
+}
+
+.wt-quarantine-meta time { color: var(--muted); }
+
 /* ---- Treehouse ---- */
 .wt-legacy-totals {
   display: flex;

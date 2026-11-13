@@ -634,6 +634,7 @@ test("an exact active lease can be released after a transient observation quaran
   const held = lease(await acquire(m, clone, sha, "task-quarantined"));
   const quarantined = m.store.quarantine(
     held.slotId,
+    "observation",
     "slot process occupancy is unknown",
     "cwd listing failed: exit 1",
     Date.now(),

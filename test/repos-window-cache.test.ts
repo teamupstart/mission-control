@@ -344,3 +344,30 @@ test("an unknown index from the daemon drops the held list, and the next real an
     stop();
   }
 });
+
+test("an answer naming a newer index than the window heard of replaces its list and tells the picker", async () => {
+  const api = await freshApi();
+  api.noteRepoIndexIdentity("index-a");
+  scriptFetch([
+    list(["/old/alpha"], 100, "index-a"),
+    // The directories changed while this window's event stream was down: it never heard
+    // `repo_index_changed`, and the daemon now answers for index B.
+    list(["/new/beta"], 200, "index-b"),
+    list(["/new/beta", "/new/gamma"], 300, "index-b"),
+  ]);
+  assert.deepEqual(await api.fetchRepos(), ["/old/alpha"]);
+  let drops = 0;
+  const stop = api.onCachedReposDropped(() => {
+    drops += 1;
+  });
+  try {
+    assert.deepEqual(await api.fetchReposAnswer({ rescan: true }), { repos: ["/new/beta"], outcome: "answered" });
+    assert.deepEqual(api.cachedRepos(), ["/new/beta"], "no repository from the removed directory is offered");
+    assert.equal(drops, 1, "an open picker lets go of the old list and asks again");
+    // Index B is now the one this window knows: its next answers are taken as usual.
+    assert.deepEqual(await api.fetchReposAnswer(), { repos: ["/new/beta", "/new/gamma"], outcome: "answered" });
+  } finally {
+    stop();
+  }
+});
+

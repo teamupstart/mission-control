@@ -24,9 +24,13 @@ export async function resolveTaskRepositorySelector(selector: string): Promise<
 > {
   if (isAbsolute(selector)) return { ok: true, path: selector };
 
-  // `fresh`: a short name is resolved once, at filing time, so it must see a checkout cloned
-  // since the last scan rather than refuse it from the stale list the picker may show.
-  const matches = (await listRepos({ fresh: true })).filter((repo) => basename(repo) === selector);
+  // A short name is resolved once, at filing time. The cached list answers the common case
+  // without a walk; a name it does not know may be a checkout cloned since that scan, which
+  // only a walk started now can see (`fresh` would still answer from inside the TTL), so a
+  // miss asks once more with `rescan` before refusing the name.
+  const named = (repos: string[]): string[] => repos.filter((repo) => basename(repo) === selector);
+  let matches = named(await listRepos({ fresh: true }));
+  if (matches.length === 0) matches = named(await listRepos({ rescan: true }));
   const candidates = new Set<string>();
   for (const match of matches) {
     const resolved = await resolveTaskRepoRoot(match);

@@ -1126,6 +1126,8 @@ export async function fetchReposAnswer(
   // Captured before the request: one sent before the directories changed answers for the
   // directories that were, and is dropped rather than cached or returned.
   const generation = repoCacheGeneration;
+  // What this window had heard when it asked - see the identity check below.
+  const announcedAtSend = announcedIdentity;
   const held = (): string[] => lastRepos?.repos ?? [];
   const failure = (): { repos: string[]; outcome: RepoReadOutcome } =>
     generation !== repoCacheGeneration
@@ -1142,11 +1144,19 @@ export async function fetchReposAnswer(
     const stamp = header === null ? Number.NaN : Number(header);
     const scannedAt = Number.isFinite(stamp) ? stamp : 0;
     const identity = res.headers.get(REPO_INDEX_IDENTITY_HEADER);
-    // An answer for an index other than the one announced is not this window's to show:
-    // either the directories changed after it was asked, or the announcement of a newer
-    // index has not landed yet - which then forgets, and an open picker asks again.
+    // An answer for an index other than the one announced. Which of the two is newer is
+    // decided by whether an announcement landed while this read was out:
+    //  - one did (including the very first): the answer may predate it, so it is dropped -
+    //    the announcement already made the window forget, and an open picker asked again.
+    //  - none did: the daemon answered after everything this window has heard, so the index
+    //    moved on while it was not listening (a dropped event stream). The answer is the
+    //    news: the old list goes, an open picker is told, and this list is the new one.
     if (announcedIdentity !== null && identity !== null && identity !== announcedIdentity) {
-      return { repos: held(), outcome: "dropped" };
+      if (announcedIdentity !== announcedAtSend) return { repos: held(), outcome: "dropped" };
+      forgetCachedRepos();
+      announcedIdentity = identity;
+      lastRepos = { repos: data as string[], scannedAt, identity };
+      return { repos: held(), outcome: "answered" };
     }
     // A list for a different index is never compared by stamp: it replaces the old one.
     if (!lastRepos || lastRepos.identity !== identity || scannedAt === 0 || scannedAt > lastRepos.scannedAt) {

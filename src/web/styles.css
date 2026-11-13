@@ -4087,6 +4087,10 @@ body {
    nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
 .is-desktop .launch-pop,
 .is-desktop .session-toolbar-menu,
+/* The background sub-agents popover a board card's chip opens. It is fixed to the viewport
+   and opens ABOVE a chip in the lower half of the window, clamped to the top - which is the
+   bar. An eaten click would leave it unable to take focus or be dismissed by a press inside. */
+.is-desktop .subagent-popover,
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */

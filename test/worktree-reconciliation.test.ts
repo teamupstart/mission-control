@@ -643,3 +643,55 @@ for (const blocker of [
     if (blocker !== "missing path") assert.equal(existsSync(lease.path), true);
   });
 }
+
+for (const change of ["HEAD", "dirty work", "unknown inspection", "thrown inspection", "repository", "path"] as const) {
+  test(`quarantine recovery rejects late ${change} changes after merge proof`, async () => {
+    const repository = repo("mission-reconcile-final-proof-");
+    const git = new NativeWorktreeGit();
+    const manager = harness({ git });
+    const lease = acquired(await manager.acquire({
+      repositoryPath: repository.clone, baseSha: repository.sha,
+      owner: { kind: "task", key: "final-proof" },
+    }));
+    assert.equal((await manager.release(lease)).outcome, "released");
+    const slot = manager.store.slot(lease.slotId)!;
+    manager.store.quarantine(slot.id, "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+    const quarantined = manager.store.slot(slot.id)!;
+    const mergedInto = git.mergedInto.bind(git);
+    git.mergedInto = async (...args) => {
+      const result = await mergedInto(...args);
+      assert.deepEqual(result, { ok: true, value: true }, "the original HEAD passes the merge proof");
+      switch (change) {
+        case "HEAD": gitIn(lease.path, "commit", "--allow-empty", "-qm", "late unmerged commit"); break;
+        case "dirty work": writeFileSync(`${lease.path}/late.txt`, "preserve this work\n"); break;
+        case "unknown inspection":
+          git.inspect = async () => ({ ok: false, reason: "final inspection timed out", outcomeUnknown: true }); break;
+        case "thrown inspection": git.inspect = async () => { throw new Error("final inspection unavailable"); }; break;
+        case "repository":
+        case "path": {
+          const inspect = git.inspect.bind(git);
+          git.inspect = async (path) => {
+            const observed = await inspect(path);
+            if (!observed.ok) return observed;
+            return { ok: true, value: { ...observed.value, ...(change === "repository"
+              ? { commonDirectory: "/foreign/.git" }
+              : { path: repository.clone }) } };
+          };
+          break;
+        }
+      }
+      return result;
+    };
+
+    await manager.reconcile();
+    const after = manager.store.slot(slot.id)!;
+    assert.equal(after.state, "quarantined");
+    assert.equal(after.version, quarantined.version);
+    assert.equal(after.quarantineReason, quarantined.quarantineReason);
+    assert.equal(after.lastError, quarantined.lastError);
+    assert.ok(manager.store.pool(lease.poolId)?.reconciliationError, "the final proof failure is reported");
+    assert.equal(existsSync(lease.path), true);
+    if (change === "HEAD") assert.notEqual(gitIn(lease.path, "rev-parse", "HEAD"), repository.sha);
+    if (change === "dirty work") assert.equal(existsSync(`${lease.path}/late.txt`), true);
+  });
+}

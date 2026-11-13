@@ -2230,6 +2230,29 @@ export class WorktreeManager {
             reject(blocker);
             continue;
           }
+          // External Git writes do not advance the slot version. Re-read after the merge
+          // and occupancy proofs so a changed HEAD or newly dirty tree cannot recover on
+          // the earlier inspection. A later pass can prove the new state from scratch.
+          let finalInspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+          try {
+            finalInspection = await this.deps.git.inspect(slot.path);
+          } catch (error) {
+            reject("slot Git state is unknown at recovery", String(error));
+            continue;
+          }
+          if (!finalInspection.ok) {
+            reject("slot Git state is unknown at recovery", finalInspection.reason);
+            continue;
+          }
+          if (
+            finalInspection.value.path !== slot.path ||
+            finalInspection.value.commonDirectory !== pool.gitCommonDirectory ||
+            finalInspection.value.head !== inspection.value.head ||
+            finalInspection.value.dirty
+          ) {
+            reject("slot Git state changed after the merge proof");
+            continue;
+          }
           if (this.store.recoverQuarantined(slot.id, slot.version, inspection.value.head, now)) {
             this.publish();
           } else {

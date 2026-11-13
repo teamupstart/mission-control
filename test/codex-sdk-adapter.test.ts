@@ -2250,6 +2250,35 @@ test("Codex refuses to fold on a rejected send or a busy sendIfIdle", async () =
   await handle.stop(); await drained;
 });
 
+for (const delivery of ["send", "sendIfIdle"] as const) {
+  test(`Codex ${delivery} preserves completed children when an idle turn/start is rejected`, async (t) => {
+    const replies: Record<string, unknown> = defaultReplies();
+    const server = new FakeServer(replies);
+    const { handle, events, drained } = await launch(server);
+    t.after(async () => { await handle.stop(); await drained; });
+    server.notify("item/completed", collabFrame("spawn", ["done", "running"]));
+    server.notify("item/completed", collabFrame("done", ["done"], {
+      tool: "wait", agentsStates: { done: { status: "completed", message: "child result" } },
+    }));
+    server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1", status: "completed" } });
+    await settle();
+    const before = latestSubagents(events)!;
+    assert.equal(before.agents.find((agent) => agent.id === "done")?.state, "completed");
+    assert.equal(before.finishedFolded, 0);
+
+    // Reject the next start after launch succeeded and the parent returned to idle.
+    replies["turn/start"] = undefined;
+    await assert.rejects(handle[delivery]({ text: "refused" }), /no fake reply for turn\/start/);
+    await settle();
+    assert.equal(server.calls("turn/start").length, 2, "the idle send reached turn/start");
+    assert.equal(server.calls("turn/steer").length, 0);
+    const after = latestSubagents(events)!;
+    assert.equal(after.agents.find((agent) => agent.id === "done")?.summary, "child result");
+    assert.equal(after.finishedFolded, 0, "a rejected start cannot fold a completed child");
+    assert.deepEqual(after, before);
+  });
+}
+
 test("Codex bounds retained child identities and outstanding waits independently of the wire cap", () => {
   const children = new CodexSubagents();
   for (let i = 0; i < 514; i++) {

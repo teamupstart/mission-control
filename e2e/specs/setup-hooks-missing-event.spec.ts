@@ -28,7 +28,7 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
-  await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
+  await (target ?? page).screenshot({ path: join(EVIDENCE, `${name}.png`) });
   // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/setup-hooks-missing-event/${name}.png`);
 }

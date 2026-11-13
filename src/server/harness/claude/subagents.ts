@@ -349,18 +349,28 @@ export function observeClaudeSubagentFrame(
         const id = str(t?.task_id);
         if (!t || !id || !isAgentTask(t.task_type, t.subagent_type)) continue;
         const entryRun = str(t.run_id);
+        const wasRetired = retired.get(id);
+        const known = tasks.get(id);
+        // The memory this entry is judged against: the tracked entry, its retired guard, or - for
+        // a task neither holds any more - the runs it had before.
+        const history = known ?? wasRetired ?? remembered(runHistory, id);
+        // An entry about an older run than the one tracked is late: it neither updates nor stops
+        // anything, and it must not change which run the set is taken to list either - a valid
+        // start for the current run would otherwise be refused against the stale one.
+        if (earlierRun(entryRun, history)) {
+          listed.set(id, history.runId ?? state.live.get(id) ?? null);
+          continue;
+        }
         listed.set(id, entryRun);
         // Whether this entry says the run is housekeeping. Absent says nothing: the run keeps the
         // classification it already has, which lives on its tracked entry beside its run memory.
         const flagged = t.ambient === true;
         // Already ended and no longer tracked: this level is late, not a new start - unless it
         // names a later run, which is the agent resumed (a run joins the set before its start).
-        const wasRetired = retired.get(id);
         if (wasRetired) {
           if (!newRun(entryRun, wasRetired, state.live.has(id))) continue;
           unretire(id);
         }
-        const known = tasks.get(id);
         // A late level that still lists an agent which already reported its end does not
         // revive it: a finishing task leaves the set after its notification.
         const rejoined = known !== undefined && known.entry.state !== "running" &&
@@ -370,10 +380,6 @@ export function observeClaudeSubagentFrame(
           if (flagged && !known.ambient && !laterRun(entryRun, known)) put(id, { ...known, ambient: true });
           continue;
         }
-        // A level about an older run than the one tracked (or, for a task no longer tracked,
-        // one it had before) is late; it neither updates nor stops.
-        const history = known ?? wasRetired ?? remembered(runHistory, id);
-        if (earlierRun(entryRun, history)) continue;
         // A later run starts clean, even if the run it replaces is still tracked as running.
         const prior = rejoined ? undefined : continuing(known, entryRun);
         const base = prior?.entry ?? freshEntry(id, now);

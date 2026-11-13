@@ -445,6 +445,21 @@ test("run history survives the gap even when the live set names the task without
   assert.equal(subagentActivityLine({ state: "idle", subagents: claudeSubagentSummary(s)! }), "idle · 1 agent still running");
 });
 
+test("a late live set naming an older run keeps the current run's membership", () => {
+  // r1 runs, then the set names r2: a fresh row for r2.
+  let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })], emptyClaudeSubagents(), 100);
+  s = observeClaudeSubagentFrame(s, level(agent("a", { run_id: "r2" })), 200);
+  assert.equal(s.live.get("a"), "r2");
+  // A late frame still naming r1 changes neither the row nor which run the set is taken to list.
+  s = observeClaudeSubagentFrame(s, level(agent("a", { run_id: "r1" })), 300);
+  assert.equal(s.live.get("a"), "r2");
+  assert.deepEqual(states(s), { a: "running" });
+  // So r2's own start is still accepted and fills in its launch.
+  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r2" }), 400);
+  const entry = claudeSubagentSummary(s)!.agents[0]!;
+  assert.deepEqual([entry.state, entry.startedAt, entry.launchTurnId], ["running", 200, "toolu_a"]);
+});
+
 test("a repeated start for the run that already ended does not revive it", () => {
   let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })]);
   s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "" }), 2);

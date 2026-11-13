@@ -44,8 +44,11 @@ export function sessionSearchFields(session: Session): string[] {
     workspaceRoot,
     session.workspace?.branch,
     session.gitBranch,
-    // The foot's branch cell when there is no branch to print. Its other fallback, the name
-    // source ("sdk", "tmux"), is already spelled by `subtitle` and the "Agent SDK" chip above.
+    // The foot's branch cell prints "no repository" in place of the branch whenever the task
+    // has no repository - branch or not - under exactly this condition (`SessionTile`'s
+    // `.tile-branch`). `taskHasRepository({})` is true, so a session with no task never gets
+    // it. The cell's other fallback, the name source ("sdk", "tmux"), is already spelled by
+    // `subtitle` and the "Agent SDK" chip above.
     taskHasRepository(session.task ?? {}) ? null : "no repository",
     // Runtime row: model, advisor, effort, permission mode.
     session.meta?.model,

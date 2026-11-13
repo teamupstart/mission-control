@@ -114,6 +114,12 @@ test("a session with no repository matches the foot's \"no repository\" text", (
 
   assert.equal(matchesSessionFilter(without, "no repository"), true);
   assert.equal(matchesSessionFilter(withRepo, "no repository"), false, "only the fallback prints it");
+  // The foot prints "no repository" instead of the branch whenever the task has none, so a
+  // branch does not change the answer; and a session with no task never prints it.
+  const withBranch = mkSession({ name: "Resident", gitBranch: "feat/x", task });
+  assert.equal(matchesSessionFilter(withBranch, "no repository"), true, "a branch does not replace the text");
+  const noTask = mkSession({ name: "Loose", gitBranch: null, task: null });
+  assert.equal(matchesSessionFilter(noTask, "no repository"), false, "no task, no fallback text");
 });
 
 test("the checkout path, an unpriced token chip and the started-time fallback are searchable", () => {

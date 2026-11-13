@@ -1136,11 +1136,11 @@ available:
   path), branch, model, reasoning effort, permission mode, context meter, cost, last-seen time,
   task kind, blocker and pull request; for a backlog task, its title, intent, labels,
   repositories, agent, kind, priority, model, effort, status, autopilot switch and
-  "autopilot will skip this" line, and added time. Every word of the query must appear, each in any
-  field, so `codex mission-control` finds Codex cards in that repository. The one thing not
-  searched is the live activity line ("running Bash") - what the session is doing this
-  second rather than what the card is about. A fact is searched even while its card item is
-  hidden in **Settings → Display**. So `ghostty` finds the
+  "autopilot will skip this" line, and added time. A fact is searched even while its card
+  item is hidden in **Settings → Display**. The one thing not searched is the live activity
+  line ("running Bash") - what the session is doing this second rather than what the card is
+  about. Every word of the query must appear, each in any field, so `codex mission-control`
+  finds Codex cards in that repository. Because the backlog is searched too, `ghostty` finds the
   queued *P5: Ghostty terminal emulator adapter* whether or not any live session matches, and
   the board stays on screen to show it. Console draws no tasks, so there a query
   matching only backlog items correctly reads as "nothing matches".

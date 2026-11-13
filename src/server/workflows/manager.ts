@@ -4670,21 +4670,24 @@ export class WorkflowManager {
     // refuses both missing deliverables and unexpected committed artifacts.
     // A missing repositoryRoot already returns through !submittedHead above, including
     // shipping continuations. Keeping the root condition here also narrows its type.
-    if (fullContext?.success && fullContext.data.evidence.publication && repositoryRoot) {
+    const shippingOnlyContinuation = submission.refinementReason === "session_action"
+      && submission.continuationNodeId !== null
+      && sessionActionContinuationReachesOnlyEnd(version.graph, submission.continuationNodeId);
+    if (fullContext?.success && repositoryRoot
+      && (fullContext.data.evidence.publication || shippingOnlyContinuation)) {
       const publishedTree = await (this.options.resolveCommitTree ?? resolveCommitTree)(
         repositoryRoot, submittedHead,
       ).catch(() => null);
       // A shipping-only continuation has captured the author's packaging result, not a
-      // new semantic review. Keep the parent's accepted content as a second obligation.
-      const parent = submission.refinementReason === "session_action"
-        && submission.parentSubmissionId && submission.continuationNodeId
-        && sessionActionContinuationReachesOnlyEnd(version.graph, submission.continuationNodeId)
+      // new semantic review. Keep the parent's accepted content as a second obligation,
+      // including children captured before publication proofs existed.
+      const parent = shippingOnlyContinuation && submission.parentSubmissionId
         ? this.store.getSubmission(submission.parentSubmissionId) : null;
       const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
       const acceptedTree = accepted?.success
         ? workflowPublicationTree(accepted.data.evidence) : null;
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
-        || (parent !== null && publishedTree !== acceptedTree)) {
+        || (shippingOnlyContinuation && publishedTree !== acceptedTree)) {
         this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
           "waiting_for_session", "inspector_working_tree_not_pushed", null, null, now);
         return;

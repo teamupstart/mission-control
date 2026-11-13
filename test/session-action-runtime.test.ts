@@ -1892,14 +1892,18 @@ test("the PR comparison uses reviewed publication content while retaining the lo
 });
 
 
-for (const { parentProof, changed, number } of [
-  { parentProof: "publication", changed: false, number: 71 },
-  { parentProof: "publication", changed: true, number: 72 },
-  { parentProof: "legacy", changed: false, number: 73 },
-  { parentProof: "legacy", changed: true, number: 74 },
-  { parentProof: "missing", changed: false, number: 75 },
+for (const { parentProof, childProof, changed, number } of [
+  { parentProof: "publication", childProof: "publication", changed: false, number: 71 },
+  { parentProof: "publication", childProof: "publication", changed: true, number: 72 },
+  { parentProof: "legacy", childProof: "publication", changed: false, number: 73 },
+  { parentProof: "legacy", childProof: "publication", changed: true, number: 74 },
+  { parentProof: "missing", childProof: "publication", changed: false, number: 75 },
+  { parentProof: "legacy", childProof: "legacy", changed: false, number: 76 },
+  { parentProof: "legacy", childProof: "legacy", changed: true, number: 77 },
+  { parentProof: "missing", childProof: "legacy", changed: false, number: 78 },
+  { parentProof: "legacy", childProof: "missing", changed: false, number: 79 },
 ]) {
-  test(`Inspector holds a shipping continuation to its parent's accepted tree: ${parentProof}, changed=${changed}`, async () => {
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: parent=${parentProof}, child=${childProof}, changed=${changed}`, async () => {
     const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
     const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
     setInspectorConfig({ enabled: true });
@@ -1907,7 +1911,7 @@ for (const { parentProof, changed, number } of [
       pullRequest: true, localReport: parentProof === "publication", inspector: true,
       omitContentTree: parentProof === "missing",
     };
-    const h = await harness(`publication-inspector-${parentProof}-${changed}`, options);
+    const h = await harness(`publication-inspector-${parentProof}-${childProof}-${changed}`, options);
     try {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
@@ -1915,9 +1919,10 @@ for (const { parentProof, changed, number } of [
       const parentEvidence = WorkflowContextSnapshotSchema.parse(parent.context).evidence;
       assert.equal(parentEvidence.publication !== undefined, parentProof === "publication");
       assert.equal(parentEvidence.contentTreeOid != null, parentProof !== "missing");
-      // An upgrade captures the shipping child with publication proof but leaves its parent immutable.
-      options.localReport = true;
-      options.omitContentTree = false;
+      // Some children were already captured before the upgrade; others get publication proof.
+      // Both must honor the immutable parent review, even when the packaging result is clean.
+      options.localReport = childProof === "publication";
+      options.omitContentTree = childProof === "missing";
       if (changed) h.contentTree.oid = h.full("omitted-required-file");
       h.head.sha = "packaged";
       h.runActionTurn();
@@ -1926,6 +1931,11 @@ for (const { parentProof, changed, number } of [
       h.adoptPr({ atHead: h.head.sha, key, url, number });
       await h.manager.sweepSessionActions(SETTLED());
       await waitFor(() => h.store.getRun(runId)?.gateState != null, "the Inspector gate never started");
+      const child = h.store.latestSubmission(runId)!;
+      assert.equal(child.parentSubmissionId, parent.id);
+      const childEvidence = WorkflowContextSnapshotSchema.parse(child.context).evidence;
+      assert.equal(childEvidence.publication !== undefined, childProof === "publication");
+      assert.equal(childEvidence.contentTreeOid != null, childProof !== "missing");
       const now = Date.now();
       const head = h.full(h.head.sha);
       adoptInspectorPr({
@@ -1939,7 +1949,7 @@ for (const { parentProof, changed, number } of [
       updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: head, lastAttemptSha: head,
         reviewPosture: "live", round: 1, lastReviewedAt: now }, now);
       h.registry.inspectionUpdated(key, head, "OPEN", now);
-      const mustWait = changed || parentProof === "missing";
+      const mustWait = changed || parentProof === "missing" || childProof === "missing";
       await waitFor(() => ["waiting_for_session", "completed"].includes(h.store.getRun(runId)?.status ?? ""),
         "the Inspector gate never decided the publication proof");
       assert.equal(h.store.getRun(runId)?.status, mustWait ? "waiting_for_session" : "completed",

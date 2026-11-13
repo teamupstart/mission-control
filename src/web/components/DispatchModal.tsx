@@ -94,7 +94,6 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { InfoTip } from "./InfoTip.tsx";
 import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
 import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaField.tsx";
@@ -439,51 +438,83 @@ export function defaultEffortOptionLabel(
 const AGENT_FIELD_TIP =
   "Which harness this task is dispatched to - switching resets the model and effort overrides";
 /**
- * Grill me first: this dispatch's override of its kind's default on Settings -> Tasks. What it
- * does is said once, on the "i" beside it, so the crew row stays one line.
+ * Grill me first: this dispatch's override of its kind's default on Settings -> Tasks, as a
+ * toggle chip in a bar under the Task box - where the request is written, which is when its
+ * author knows whether it is clear enough to start on. What it does is the chip's tooltip; the
+ * bar's trailing text says where the value came from.
  *
- * An untouched box sends nothing and the daemon pins the kind's default, so the box only claims
- * an answer once it knows that default: indeterminate, and disabled, while it loads;
- * indeterminate but choosable when it could not be read. It never shows an "off" it would not
- * send.
+ * An untouched chip sends nothing and the daemon pins the kind's default, so the chip only
+ * claims an answer once it knows that default: `aria-pressed="mixed"`, and disabled, while it
+ * loads; mixed but choosable when it could not be read. It never shows an "off" it would not
+ * send. Outside the Task `<label>` on purpose: inside it, the chip's text would become part of
+ * the text box's accessible name.
  */
-function GrillFirstField({
+function GrillFirstBar({
+  kind,
   choice,
   fallback,
+  editing,
   className,
   onChange,
 }: {
+  kind: TaskKind;
   /** The choice made on this form, or undefined to follow the default. */
   choice: boolean | undefined;
   /** The kind's default: undefined while loading, null when it could not be read. */
   fallback: boolean | null | undefined;
+  /** The backlog editor, whose value is the task's own pin rather than a default to reset to. */
+  editing: boolean;
   className: string;
-  onChange: (grillFirst: boolean) => void;
+  onChange: (grillFirst: boolean | undefined) => void;
 }): React.JSX.Element {
+  const label = TASK_KIND_INFO[kind].label;
   const value = choice ?? fallback;
   const known = typeof value === "boolean";
+  const overridden = choice !== undefined && typeof fallback === "boolean" && choice !== fallback;
   const tip = value === undefined
     ? `${GRILL_FIRST_TIP} Reading this kind's default from Settings → Tasks…`
     : value === null
-      ? `${GRILL_FIRST_TIP} This kind's default could not be read, so an untouched box follows it; tick or clear it to choose for this task.`
+      ? `${GRILL_FIRST_TIP} This kind's default could not be read, so an untouched chip follows it; click it to choose for this task.`
       : GRILL_FIRST_TIP;
+  // Where the value came from. A choice reads as this task's own unless it merely repeats a
+  // default the form can see; the editor's value is always the task's pin.
+  const status = value === undefined
+    ? `Reading the ${label} default…`
+    : choice === undefined
+      ? fallback === null ? `${label} default unknown` : `Follows the ${label} default`
+      : editing || fallback !== choice
+        ? `${choice ? "On" : "Off"} for this task`
+        : `Same as the ${label} default`;
   return (
-    <div className={`dispatch-grill-first${className}`}>
-      <label className="dispatch-grill-first-control">
-        <Tooltip label="Interview me before this task starts its work">
-          <input
-            type="checkbox"
-            checked={value === true}
-            disabled={value === undefined}
-            ref={(el) => {
-              if (el) el.indeterminate = !known;
-            }}
-            onChange={(e) => onChange(e.target.checked)}
-          />
-        </Tooltip>
-        <span className="field-label">Grill me first</span>
-      </label>
-      <InfoTip about="Grill me first" text={tip} />
+    <div className={`dispatch-composer-bar${className}`}>
+      <Tooltip label={tip}>
+        <button
+          type="button"
+          className="grill-chip dispatch-grill-chip"
+          aria-pressed={known ? value : "mixed"}
+          disabled={value === undefined}
+          onClick={() => onChange(!(value === true))}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden focusable="false">
+            <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" />
+            <path d="M6.6 5.6a1.4 1.4 0 1 1 1.9 1.3c-.4.2-.5.4-.5.8" />
+            <circle cx="8" cy="9.1" r=".3" />
+          </svg>
+          Grill me first
+          {overridden && <span className="grill-chip-dot" aria-hidden />}
+        </button>
+      </Tooltip>
+      <span className="dispatch-composer-status">
+        {status}
+        {overridden && !editing && (
+          <>
+            {" · "}
+            <button type="button" className="link-btn" onClick={() => onChange(undefined)}>
+              Reset
+            </button>
+          </>
+        )}
+      </span>
     </div>
   );
 }
@@ -3079,6 +3110,16 @@ function DispatchModal({
         )}
 
         {taskField}
+        {!ensembleMode && !tourDemo && isGrillFirstTaskKind(draft.kind) && (
+          <GrillFirstBar
+            kind={draft.kind}
+            choice={draft.grillFirst}
+            fallback={grillFirstKinds ? grillFirstKinds.includes(draft.kind) : grillFirstKinds}
+            editing={editing !== null}
+            className={guidedDim}
+            onChange={(grillFirst) => update({ grillFirst })}
+          />
+        )}
 
         {!ensembleMode && (
         <>
@@ -3258,14 +3299,6 @@ function DispatchModal({
                 : kindBehavior.constraint}
           </span>
           {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
-          {!tourDemo && isGrillFirstTaskKind(draft.kind) && (
-            <GrillFirstField
-              choice={draft.grillFirst}
-              fallback={grillFirstKinds ? grillFirstKinds.includes(draft.kind) : grillFirstKinds}
-              className={guidedDim}
-              onChange={(grillFirst) => update({ grillFirst })}
-            />
-          )}
           {kindUnavailable && (
             <span className={`dispatch-workflow-warning${guidedDim}`}>
               This kind is available only when conductor is enabled for the selected repository.

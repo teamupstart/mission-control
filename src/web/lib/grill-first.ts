@@ -1,6 +1,6 @@
 /**
- * What Grill me first does, as the "i" beside each of its checkboxes says it: the dispatch
- * form's override and every row of its default on Settings -> Tasks read the same sentence.
+ * What Grill me first does, in one sentence: the dispatch form's chip carries it as its tooltip,
+ * and the "i" in the Settings -> Tasks Grill me first card reads the same text.
  */
 export const GRILL_FIRST_TIP =
   "Before it starts the work, the agent runs the Library's Grill action: it interviews you in "

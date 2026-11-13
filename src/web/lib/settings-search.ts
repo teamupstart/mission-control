@@ -475,7 +475,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     label: "Grill me first per task kind",
     description: "Which kinds of task start by interviewing you in rounds of decision forms.",
     category: "tasks",
-    anchor: "tasks/kinds",
+    anchor: "tasks/grill-first",
     keywords: ["grill", "interview", "questions", "decisions", "before starting", "task kind", "per kind"],
     kind: "jump",
     backup: backupDomains("skills"),

@@ -60,17 +60,25 @@ function renderGrill(state: SkillsState): string {
   return render(DEFAULT_WORKFLOW_CONFIG, { skills: state });
 }
 
-/** One kind's card, as drawn: from its anchor to the next card. */
+/** One kind's After work row, as drawn: from its anchor to the next kind's row. */
 function section(html: string, kind: string): string {
   const start = html.indexOf(`data-anchor="tasks/kind-${kind}"`);
+  if (start === -1) return "";
+  const next = html.indexOf('data-anchor="tasks/kind-', start + 1);
+  return html.slice(start, next === -1 ? undefined : next);
+}
+
+/** One card, by its anchor, up to the next card. */
+function card(html: string, anchor: string): string {
+  const start = html.indexOf(`data-anchor="${anchor}"`);
   if (start === -1) return "";
   const next = html.indexOf('<section class="sc-card"', start);
   return html.slice(start, next === -1 ? undefined : next);
 }
 
-/** The checkbox for one kind's default, as drawn. */
-function kindBox(html: string, kind: string): string {
-  return html.match(new RegExp(`<input type="checkbox"[^>]*aria-label="Grill me first for ${kind} tasks"[^>]*/>`))?.[0] ?? "";
+/** The toggle chip for one kind's default, as drawn. */
+function kindChip(html: string, kind: string): string {
+  return html.match(new RegExp(`<button[^>]*aria-label="Grill me first for ${kind} tasks"[^>]*>`))?.[0] ?? "";
 }
 
 test("the Tasks panel offers one dispatch default per task kind", () => {
@@ -80,10 +88,11 @@ test("the Tasks panel offers one dispatch default per task kind", () => {
   );
   assert.match(html, /data-anchor="tasks\/kinds"/);
   for (const kind of ["ship", "bugfix", "document", "plan", "scout", "chat"]) {
-    const card = section(html, kind);
-    assert.ok(card, `a card for ${kind}`);
-    assert.match(card, new RegExp(`<h3 class="sc-card-title">${kind}</h3>`));
-    assert.match(card, new RegExp(`aria-label="Default after-work Workflow for ${kind} tasks"`), `${kind}'s row is in ${kind}'s card`);
+    const row = section(html, kind);
+    assert.ok(row, `a row for ${kind}`);
+    assert.match(row, new RegExp(`<span class="task-kind-setting-name" aria-hidden="true">${kind}</span>`));
+    assert.match(row, new RegExp(`aria-label="Default after-work Workflow for ${kind} tasks"`), `${kind}'s select is on ${kind}'s row`);
+    assert.ok(card(html, "tasks/kinds").includes(`data-anchor="tasks/kind-${kind}"`), `${kind}'s row is in the After work card`);
   }
   assert.equal(section(html, "pipeline"), "");
   assert.doesNotMatch(html, /for pipeline tasks/, "Conductor owns what runs after a pipeline");
@@ -109,23 +118,27 @@ test("a default that arms a Workflow while Foreman is off says so", () => {
   assert.match(html, /Foreman is off/);
 });
 
-test("each kind's card holds its Grill me first default, off, with an info tip", () => {
+test("Grill me first's defaults are one card of kind chips, all off, with an info tip", () => {
   const html = renderGrill(skills({}));
+  const grill = card(html, "tasks/grill-first");
+  assert.match(grill, /<h3 class="sc-card-title">Grill me first<\/h3>/);
+  assert.match(grill, /<button type="button" class="info-tip" aria-label="About Grill me first"[^>]*>i<\/button>/);
+  assert.match(grill, /role="group" aria-label="Kinds that start with Grill me first"/);
   for (const kind of ["ship", "bugfix", "document", "plan", "scout", "chat"]) {
-    const card = section(html, kind);
-    const box = kindBox(card, kind);
-    assert.ok(box, `${kind}'s box is in ${kind}'s card`);
-    assert.doesNotMatch(box, /checked/, `${kind} starts off`);
-    assert.match(card, /<button type="button" class="info-tip" aria-label="About Grill me first"[^>]*>i<\/button>/);
+    const chip = kindChip(grill, kind);
+    assert.ok(chip, `${kind}'s chip is in the Grill me first card`);
+    assert.match(chip, /aria-pressed="false"/, `${kind} starts off`);
+    assert.doesNotMatch(chip, /disabled/);
+    assert.equal(kindChip(section(html, kind), kind), "", `${kind}'s After work row holds no chip`);
   }
-  assert.equal(kindBox(html, "pipeline"), "", "Conductor owns a pipeline's launch");
+  assert.equal(kindChip(html, "pipeline"), "", "Conductor owns a pipeline's launch");
   assert.match(html, /runs the Library&#x27;s Grill action/);
   assert.doesNotMatch(html, /Can&#x27;t reach the daemon/);
 
   const chosen = renderGrill(skills({ grillFirstKinds: ["plan", "bugfix"] }));
-  assert.match(kindBox(chosen, "plan"), /checked=""/);
-  assert.match(kindBox(chosen, "bugfix"), /checked=""/);
-  assert.doesNotMatch(kindBox(chosen, "ship"), /checked/);
+  assert.match(kindChip(chosen, "plan"), /aria-pressed="true"/);
+  assert.match(kindChip(chosen, "bugfix"), /aria-pressed="true"/);
+  assert.match(kindChip(chosen, "ship"), /aria-pressed="false"/);
   assert.doesNotMatch(chosen, /The grill skill is off/);
 });
 
@@ -140,8 +153,8 @@ test("a Grill me first default whose skill is off says the dispatch would be ref
   assert.doesNotMatch(renderGrill({ ...grillOff, view: { ...grillOff.view!, grillFirstKinds: [] } }), /The grill skill is off/);
 });
 
-test("before the Skills config answers, the Grill me first boxes are drawn disabled", () => {
+test("before the Skills config answers, the Grill me first chips are drawn disabled", () => {
   const html = renderGrill(skills(null));
   assert.match(html, /Can&#x27;t reach the daemon/);
-  assert.match(kindBox(html, "plan"), /disabled=""/);
+  assert.match(kindChip(html, "plan"), /disabled=""/);
 });

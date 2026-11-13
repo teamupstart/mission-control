@@ -209,11 +209,14 @@ anything the task delivers: a plan's review and phased follow-up still come afte
 interview is done the task carries on exactly as it would have, with the settled decisions as
 part of its request. When it is off, a task is delivered exactly as it always was.
 
-- **Where it is set.** Each kind's default is the **Grill me first** checkbox in that kind's
-  section on **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
-  checkbox for every kind that offers it, so one task can differ from its kind's default, and
-  the backlog editor can change it while the task is shelved. What it does is the tooltip on the
-  `i` beside it.
+- **Where it is set.** Each kind's default is its chip in the **Grill me first** card on
+  **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
+  chip in the bar under the **Task** box for every kind that offers it, so one task can differ
+  from its kind's default, and the backlog editor can change it while the task is shelved. The
+  text opposite the chip says where its value came from: **Follows the ship default**, or
+  **Off for this task** with a dot on the chip and a **Reset** that returns it to the default.
+  In the backlog editor it reads as the task's own pin, with no Reset. What it does is the
+  chip's tooltip.
 - **Pinned when filed.** The choice is stored on the task when it is created, so changing a
   default later moves no existing task. A task filed by a task source, a recurring mission or
   MCP `create_task` takes its kind's default. Switching a shelved task between two kinds that
@@ -350,8 +353,8 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-**Settings → Tasks** has one card per task kind Mission Control launches: ship, bugfix,
-document, plan, scout and chat. Each card's **After work** row picks that kind's Workflow.
+**Settings → Tasks** has an **After work** card with one row per task kind Mission Control
+launches: ship, bugfix, document, plan, scout and chat. Each row picks that kind's Workflow.
 Pipeline has none, because Conductor owns what runs after its work. Each row holds one of three
 answers:
 

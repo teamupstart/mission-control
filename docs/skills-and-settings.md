@@ -503,15 +503,15 @@ could not: the preference is now in ⌘K by name, flippable from a search result
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
 
 **Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
-with when nothing names its own choice, as one card per kind (ship, bugfix, document, plan,
-scout and chat), two to a row. Each card holds every setting this page keeps for that kind.
-**After work** is the kind's after-work Workflow (see
+with when nothing names its own choice, for each kind it launches (ship, bugfix, document, plan,
+scout and chat), as one card per setting. **Grill me first** is a row of kind chips, and
+**After work** is one row per kind. **After work** is the kind's after-work Workflow (see
 [Dispatch an agent](dispatch-and-backlog.md), under **After work**). These rows replace the
 single **Dispatch default** that **Settings → Workflows** used to hold, because they describe a
 task kind rather than the Workflow subsystem's policy. **Grill me first** is whether a new task
 of that kind interviews you before it starts (see
 [Grill me first](dispatch-and-backlog.md#grill-me-first)), off for every kind until chosen, with
-what it does on the `i` beside it. Both are daemon-backed, so they reach tasks from the API,
+what it does on the `i` in its card's head. Both are daemon-backed, so they reach tasks from the API,
 task sources and recurring missions as well as the dispatch form, and Grill me first is pinned
 on each task when it is filed. The page warns when a kind grills first while the Grill skill is
 off, because such a task is refused at dispatch.

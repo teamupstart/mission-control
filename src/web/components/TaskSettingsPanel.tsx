@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { WorkflowConfig, WorkflowSummary } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import type { SkillsState } from "../useSkills.ts";
@@ -21,8 +21,8 @@ import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 const BUILTIN_OPTION = "__builtin";
 const NONE_OPTION = "__none";
 
-// Settings that shape what each kind of task is dispatched with, as one card per kind holding
-// every setting this page keeps for it.
+// Settings that shape what each kind of task is dispatched with, as one card per setting:
+// Grill me first's defaults as a row of kind chips, and After work as one row per kind.
 //
 // The After work rows replace the single Dispatch default Settings › Workflows used to hold.
 // They live here because they are a property of the task kind, not of the Workflow subsystem's
@@ -75,8 +75,8 @@ export function TaskSettingsPanel({
     const unavailable = typeof chosen === "string"
       && !publishedWorkflows.some((workflow) => workflow.id === chosen);
     return (
-      <div className="task-kind-setting">
-        <span className="task-kind-setting-name" aria-hidden>After work</span>
+      <div className="task-kind-setting" data-anchor={`tasks/kind-${kind}`} role="group" aria-label={`${label} after work`}>
+        <span className="task-kind-setting-name" aria-hidden>{label}</span>
         <Tooltip label={`Workflow preselected for every new ${label} task`}>
           <select
             className="field-input wf-default-select"
@@ -109,31 +109,31 @@ export function TaskSettingsPanel({
     );
   }
 
-  function grillFirst(kind: HarnessLaunchedTaskKind, label: string): React.JSX.Element | null {
+  /** One kind's Grill me first default, as a toggle chip in the row of kinds. */
+  function grillChip(kind: HarnessLaunchedTaskKind, label: string): React.JSX.Element | null {
     if (!isGrillFirstTaskKind(kind)) return null;
+    const on = grillFirstKinds.includes(kind);
     return (
-      <div className="task-kind-setting">
-        <span className="task-kind-setting-name" aria-hidden>Grill me first</span>
-        <span className="task-kind-setting-control">
-          <Tooltip label={`Start every new ${label} task with Grill me first`}>
-            <input
-              type="checkbox"
-              checked={grillFirstKinds.includes(kind)}
-              disabled={!skills || !view}
-              aria-label={`Grill me first for ${label} tasks`}
-              onChange={(event) => {
-                if (!skills) return;
-                void skills.update({
-                  grillFirstKinds: event.target.checked
-                    ? GRILL_FIRST_TASK_KINDS.filter((k) => k === kind || grillFirstKinds.includes(k))
-                    : grillFirstKinds.filter((k) => k !== kind),
-                });
-              }}
-            />
-          </Tooltip>
-          <InfoTip about="Grill me first" text={GRILL_FIRST_TIP} />
-        </span>
-      </div>
+      <Tooltip key={kind} label={`Start every new ${label} task with Grill me first`}>
+        <button
+          type="button"
+          className="grill-chip"
+          aria-pressed={on}
+          disabled={!skills || !view}
+          aria-label={`Grill me first for ${label} tasks`}
+          onClick={() => {
+            if (!skills) return;
+            void skills.update({
+              grillFirstKinds: on
+                ? grillFirstKinds.filter((k) => k !== kind)
+                : GRILL_FIRST_TASK_KINDS.filter((k) => k === kind || grillFirstKinds.includes(k)),
+            });
+          }}
+        >
+          {on && <span className="grill-chip-mark" aria-hidden>✓</span>}
+          {label}
+        </button>
+      </Tooltip>
     );
   }
 
@@ -175,18 +175,26 @@ export function TaskSettingsPanel({
         </p>
       )}
 
-      <div className="task-kind-cards" data-anchor="tasks/kinds">
-        {HARNESS_LAUNCHED_TASK_KINDS.map((kind) => {
-          const label = TASK_KIND_INFO[kind].label;
-          return (
-            <ConsoleCard key={kind} title={label} anchor={`tasks/kind-${kind}`}>
-              <div className="task-kind-settings" role="group" aria-label={`${label} task settings`}>
-                {afterWork(kind, label)}
-                {grillFirst(kind, label)}
-              </div>
-            </ConsoleCard>
-          );
-        })}
+      <div className="task-kind-cards">
+        <ConsoleCard
+          title="Grill me first"
+          anchor="tasks/grill-first"
+          action={<InfoTip about="Grill me first" text={GRILL_FIRST_TIP} />}
+        >
+          <p className="settings-hint grill-chips-hint">
+            The agent interviews you before it starts. On for new tasks of these kinds:
+          </p>
+          <div className="grill-chips" role="group" aria-label="Kinds that start with Grill me first">
+            {HARNESS_LAUNCHED_TASK_KINDS.map((kind) => grillChip(kind, TASK_KIND_INFO[kind].label))}
+          </div>
+        </ConsoleCard>
+        <ConsoleCard title="After work" anchor="tasks/kinds">
+          <div className="task-kind-settings">
+            {HARNESS_LAUNCHED_TASK_KINDS.map((kind) => (
+              <Fragment key={kind}>{afterWork(kind, TASK_KIND_INFO[kind].label)}</Fragment>
+            ))}
+          </div>
+        </ConsoleCard>
       </div>
 
       {error && <p className="settings-error" role="alert">{error}</p>}

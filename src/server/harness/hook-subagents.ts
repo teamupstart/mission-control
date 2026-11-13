@@ -314,11 +314,13 @@ class Draft {
       case "fold": {
         let folded = 0;
         for (const [id, known] of this.agents) {
-          if (known.entry.state === "running") continue;
+          // Only what had finished by this prompt. An agent that ended after it - its stop simply
+          // landed first - stays listed as done until the prompt after that.
+          if (known.entry.state === "running" || (known.entry.endedAt ?? at) > at) continue;
           this.agents.delete(id);
           folded += 1;
         }
-        const stillRunning = this.agents.size > 0;
+        const stillRunning = [...this.agents.values()].some((t) => t.entry.state === "running");
         const finishedFolded = stillRunning ? this.finishedFolded + folded : 0;
         if (folded > 0 || finishedFolded !== this.finishedFolded) this.changed = true;
         this.finishedFolded = finishedFolded;

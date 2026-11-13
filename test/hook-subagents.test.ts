@@ -207,6 +207,23 @@ test("a stop stamped before the operator's next prompt folds at once when it lan
   assert.deepEqual(hookSubagentSummary(state)!.agents.map((x) => `${x.id}:${x.state}`).sort(), ["c:completed", "d:running"]);
 });
 
+test("a prompt that lands late folds only agents that had finished by its own stamp", () => {
+  // `a` stopped at 200 and `b` at 400; the prompt stamped 300 is ingested after both stops.
+  let state = run([
+    [launched("a"), 100], [launched("b"), 110], [launched("c"), 120],
+    [{ kind: "ended", id: "a", type: null }, 200],
+    [{ kind: "ended", id: "b", type: null }, 400],
+  ]);
+  state = reduceHookSubagents(state, [{ kind: "fold" }], 300);
+  const summary = hookSubagentSummary(state)!;
+  assert.deepEqual(summary.agents.map((x) => `${x.id}:${x.state}`).sort(), ["b:completed", "c:running"]);
+  assert.equal(summary.finishedFolded, 1, "only `a` folded");
+  // The next prompt, stamped after `b` ended, folds it.
+  state = reduceHookSubagents(state, [{ kind: "fold" }], 500);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((x) => x.id), ["c"]);
+  assert.equal(hookSubagentSummary(state)!.finishedFolded, 2);
+});
+
 test("the list is capped: running first, the oldest finished fold", () => {
   const steps: [Signal, number][] = [];
   for (let i = 0; i < SUBAGENT_LIMIT + 3; i++) steps.push([launched(`f${i}`), i]);

@@ -1173,6 +1173,15 @@ through App's `detailSession` lookup (passed as `SessionViewProps.detailSession`
 added to a fleet list. The dock and the Residents drawer share one launch state,
 `src/web/residents/useResidentLaunches.ts`.
 
+Blocked placement has one owner too. `orderSessions` (`src/web/lib/fleet-order.ts`) takes idle
+and unconfirmed sessions with `hasBlocker` out of their tone groups into `FleetOrder.blocked`,
+before the pinned, held, repository and run partitions, and lays the result out as
+`FleetOrder.columns` for the `blockedPlacement` UI preference. App's `boardColumns`, the
+⌘-numbers, `BoardView` and `ConsoleView` (through `fleetRailSections`) all read those columns, and
+all three call sites pass the same stored placement. A new placement is an entry in
+`BLOCKED_PLACEMENTS` and a case in `fleetColumns`; it never adds a second ordering. A column id
+that is not a tone (`"blocked"`) is a `FleetColumnId`, never a `Tone`.
+
 Compose surfaces:
 
 | Surface | Draft kind | Images |

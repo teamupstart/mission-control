@@ -2123,7 +2123,9 @@ a blocked session's review, menu or form, which can only respond to the question
 
 On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
 flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
-[Board card items](ui.md). For now a blocked idle session stays in the Idle column.
+[Board card items](ui.md). An idle blocked session is drawn where **Settings → Display → Blocked
+sessions** says: a lane under Needs you (the default), a red frame at the top of Idle, or a
+Blocked column of its own. See [Layout](ui.md#layout-console-or-board-in-settings).
 The Conversation tab opens with a red band: one row with the kind, the reason, how long it has
 stood and two buttons. **Flag reply** marks a likely answer (with an optional note and link)
 without clearing anything or messaging the session, and **Clear blocker** ends the hold. Click

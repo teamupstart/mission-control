@@ -2152,6 +2152,7 @@ test("Codex source endings map honestly, repeated completions stay folded, and r
   assert.deepEqual(Object.fromEntries(latestSubagents(events)!.agents.map((a) => [a.id, a.state])), {
     done: "completed", failed: "failed", interrupted: "stopped", closed: "stopped", missing: "running",
   });
+  assert.equal(latestSubagents(events)!.agents.find((a) => a.id === "done")!.summary, "done result");
   const oldStart = latestSubagents(events)!.agents.find((a) => a.id === "done")!.startedAt;
   await handle.sendIfIdle({ text: "continue" });
   await settle();
@@ -2163,6 +2164,14 @@ test("Codex source endings map honestly, repeated completions stay folded, and r
   await settle();
   assert.ok(latestSubagents(events)!.agents.find((a) => a.id === "done")!.startedAt > oldStart);
   assert.equal(latestSubagents(events)!.agents.find((a) => a.id === "done")!.endedAt, null);
+  const resumed = latestSubagents(events)!;
+  assert.deepEqual({
+    summary: resumed.agents.find((a) => a.id === "done")!.summary,
+    finishedFolded: resumed.finishedFolded,
+  }, { summary: null, finishedFolded: 3 }, "a resumed child no longer contributes its previous result or finished count");
+  server.notify("item/completed", collabFrame("resume-again", ["done"], { tool: "resumeAgent", agentsStates: { done: { status: "running", message: null } } }));
+  await settle();
+  assert.equal(latestSubagents(events)?.finishedFolded, 3, "repeated running status must not decrement again");
   await handle.stop(); await drained;
 });
 
@@ -2275,4 +2284,26 @@ test("Codex preserves a completion arriving during a send acknowledgement for th
   assert.equal(latestSubagents(events)?.agents[0]?.state, "completed");
   assert.equal(latestSubagents(events)?.finishedFolded, 0);
   await handle.stop(); await drained;
+});
+
+test("a resumed Codex identity whose folded count was cleared cannot subtract another child's finish", () => {
+  const children = new CodexSubagents();
+  const report = (id: string, status: string, message: string | null = null) => {
+    children.observe("item/completed", collabFrame(`report-${id}`, [id], {
+      tool: "resumeAgent", agentsStates: { [id]: { status, message } },
+    }), () => true, 1);
+  };
+  report("old", "completed", "old result");
+  children.fold(children.finishedIds());
+  assert.equal(children.summary(), null, "folding the last finished child clears the count");
+  report("running", "running");
+  report("recent", "completed", "recent result");
+  children.fold(children.finishedIds());
+  assert.equal(children.summary()?.finishedFolded, 1);
+  report("old", "running");
+  assert.equal(children.summary()?.finishedFolded, 1, "only the recent child's finish is still counted");
+  assert.equal(children.summary()?.agents.find((a) => a.id === "old")?.summary, null);
+  report("recent", "running", "new run detail");
+  assert.equal(children.summary()?.finishedFolded, 0);
+  assert.equal(children.summary()?.agents.find((a) => a.id === "recent")?.summary, "new run detail");
 });

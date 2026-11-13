@@ -4,7 +4,12 @@ import type { CollabAgentStatus, ItemStartedNotification, ThreadStartedNotificat
 
 /** Bound both live bookkeeping and folded identities retained against repeated frames. */
 const TRACKED_LIMIT = 512;
-type Tracked = { entry: SubagentEntry; folded: boolean };
+type Tracked = {
+  entry: SubagentEntry;
+  folded: boolean;
+  /** A folded identity stays hidden even after its aggregate count has been cleared. */
+  counted: boolean;
+};
 type Wait = { threadId: string; turnId: string; children: string[] };
 
 function cap<T>(map: Map<string, T>): void {
@@ -91,9 +96,11 @@ export class CodexSubagents {
       toolUses: null, tokens: null, lastTool: null, summary: null, launchTurnId: null,
     };
     const restarting = prior && prior.state !== "running" && patch.state === "running";
+    if (restarting && known?.counted) this.finishedFolded--;
     this.agents.set(id, {
       entry: {
         ...entry,
+        ...(restarting ? { summary: null } : {}),
         ...patch,
         type: patch.type ?? entry.type,
         description: patch.description ?? entry.description,
@@ -101,6 +108,7 @@ export class CodexSubagents {
         endedAt: patch.state === "running" ? null : patch.state ? (entry.endedAt ?? now) : entry.endedAt,
       },
       folded: restarting ? false : (known?.folded ?? false),
+      counted: restarting ? false : (known?.counted ?? false),
     });
     cap(this.agents);
   }
@@ -115,9 +123,13 @@ export class CodexSubagents {
       const t = this.agents.get(id);
       if (!t || t.folded || t.entry.state === "running") continue;
       t.folded = true;
+      t.counted = true;
       this.finishedFolded++;
     }
-    if (![...this.agents.values()].some((t) => t.entry.state === "running")) this.finishedFolded = 0;
+    if (![...this.agents.values()].some((t) => t.entry.state === "running")) {
+      this.finishedFolded = 0;
+      for (const t of this.agents.values()) t.counted = false;
+    }
   }
 
   summary(): SubagentSummary | null {
@@ -131,6 +143,7 @@ export class CodexSubagents {
     for (const t of visible.slice(SUBAGENT_LIMIT)) {
       if (t.entry.state !== "running") {
         t.folded = true;
+        t.counted = true;
         this.finishedFolded++;
       }
     }

@@ -631,6 +631,7 @@ import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
   listRepos,
+  isScanUnavailable,
   listReposScan,
   repoIndexIdentity,
   resolveRepoPath,
@@ -1678,6 +1679,18 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * Named only. See `resolveRouteDeps` for why the 27-argument positional form was removed
  * rather than kept for compatibility.
  */
+/**
+ * The answer for a route that needed a workspace scan and could not get one: the walk timed
+ * out or is refused over one still stuck (a stalled mount), and no earlier scan of these
+ * directories is held to answer from. 503 with the reason, rather than a bare 500 - the
+ * operator's fix is to remove the stalled directory in Settings, which still opens. Any other
+ * error is not this and is rethrown.
+ */
+function scanUnavailableAnswer(c: Context, error: unknown): Response {
+  if (!isScanUnavailable(error)) throw error;
+  return c.json({ error: `workspace scan unavailable: ${error.message}` }, 503);
+}
+
 export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // JavaScript would discard these in silence. The count is named because it is what locates
   // the mistake for the caller.
@@ -4265,10 +4278,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // request instead. The header orders scans, so a browser holding two answers keeps the
   // newer one rather than whichever arrived last.
   app.get("/api/repos", async (c) => {
-    const { repos, scannedAt, identity } = await listReposScan({ rescan: c.req.query("rescan") === "1" });
-    c.header(REPOS_SCANNED_AT_HEADER, String(scannedAt));
-    c.header(REPO_INDEX_IDENTITY_HEADER, identity);
-    return c.json(repos);
+    try {
+      const { repos, scannedAt, identity } = await listReposScan({ rescan: c.req.query("rescan") === "1" });
+      c.header(REPOS_SCANNED_AT_HEADER, String(scannedAt));
+      c.header(REPO_INDEX_IDENTITY_HEADER, identity);
+      return c.json(repos);
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
   });
 
   // The machine-local source of those workspace roots. The environment remains the
@@ -8048,7 +8065,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!isPipelineProviderId(provider)) {
       return c.json({ error: "no such pipeline provider" }, 400);
     }
-    return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    try {
+      return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
   });
 
   /**
@@ -8064,7 +8085,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const body = parsed.data;
     // `fresh`: the launch re-verifies the checkout against the catalog, and must not accept one
     // from a scan that predates a removal. The candidate list above is a picker and stays instant.
-    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos({ fresh: true }));
+    let catalog: string[];
+    try {
+      catalog = await listRepos({ fresh: true });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, catalog);
     if (!launch.ok) {
       const answer: PipelineInstallerLaunchResult = {
         ok: false,
@@ -8735,7 +8762,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
-    const result = await executeSetupInstall(parsed.data, {
+    let result: Awaited<ReturnType<typeof executeSetupInstall>>;
+    try {
+      result = await executeSetupInstall(parsed.data, {
       catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
       homeDir: setupInstallDeps?.homeDir ?? homedir(),
       // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
@@ -8748,7 +8777,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       resolveExecutable:
         setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
       launchTerminal: terminalLauncher,
-    });
+      });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
     return c.json(result.body, result.status as ContentfulStatusCode);
   });
 

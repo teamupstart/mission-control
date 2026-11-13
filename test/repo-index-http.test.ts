@@ -361,3 +361,40 @@ test("a stalled mount with no scan held leaves the Repositories view open, with 
     syncBuiltinESMExports();
   }
 });
+
+test("the repo list on a stalled mount with no scan held is a 503 naming why, not a bare 500", async (t) => {
+  // Its own directory set: a scan of the shared "workspace" may already be held by an earlier
+  // case, and then the route would rightly answer from it.
+  const workspace = join(operatorHome, "never-scanned");
+  mkdirSync(workspace, { recursive: true });
+  makeRepo(join(workspace, "alpha"));
+  const fsPromises = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const realReaddir = fsPromises.readdir;
+  let recover!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    recover = resolve;
+  });
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (String(args[0]) === realpathSync(workspace)) await recovered;
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  t.mock.method(console, "warn", () => {});
+  try {
+    // Saved straight to config: no scan of the new directories is held anywhere.
+    const { setRepoIndexConfig } = await import("../src/server/repo-index.ts");
+    setRepoIndexConfig({ directories: [{ path: workspace }] });
+    const timedOut = await app.request("/api/repos", { headers: HEADERS });
+    assert.equal(timedOut.status, 503);
+    assert.match((await timedOut.json() as { error: string }).error, /^workspace scan unavailable: .*did not finish within 3 s/);
+    // Refused over the stuck walk: the same answer, at once.
+    const refused = await app.request("/api/repos?rescan=1", { headers: HEADERS });
+    assert.equal(refused.status, 503);
+    assert.match((await refused.json() as { error: string }).error, /^workspace scan unavailable: .*still stuck/);
+  } finally {
+    recover();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});

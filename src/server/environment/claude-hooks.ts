@@ -4,7 +4,7 @@ import { parse, type ParseError } from "jsonc-parser";
 
 import { ENVIRONMENT_CHECK_INFO } from "@shared/environment-checks.ts";
 
-import { missionHookScriptPath } from "../harness/claude/hooks.ts";
+import { claudeHooks, missionHookScriptPath } from "../harness/claude/hooks.ts";
 import type {
   EnvironmentCheckImpl,
   EnvironmentCheckResult,
@@ -144,42 +144,56 @@ function missingSentence(script: string, events: number): string {
   return `Claude Code runs ${shortPath(script)} for ${plural(events, "hook event")} on this machine, and that file is not there.`;
 }
 
+/**
+ * The operator's Claude settings, parsed - or null whenever this file cannot honestly support
+ * a finding about our hooks. Shared by both checks below, which read the same file and must
+ * stay silent for the same reasons.
+ */
+async function readSettings(
+  deps: EnvironmentDeps,
+): Promise<{ settingsPath: string; settings: unknown; truncated: boolean } | null> {
+  const settingsPath = join(deps.homeDir, ...SETTINGS_FILE);
+  const read = await deps.readText(settingsPath);
+  // No settings file is the ordinary state of a machine that never ran the installer, and
+  // one that exists and cannot be read is a fault Claude Code itself reports far more
+  // loudly than a note in a dispatch dialog would. Neither is a missing script, which is
+  // the only thing these checks claim to know about, so both are silence rather than a
+  // warning this check has not earned.
+  if (!read.ok) return null;
+
+  // jsonc-parser is fault-tolerant by contract: it returns a best-effort value AND fills
+  // `errors`, so passing `[]` and ignoring it means reading a reconstruction of a file that
+  // was never validated. That matters here beyond tidiness. A settings file that does not
+  // parse is one Claude Code cannot apply either, so a hook path salvaged from the wreckage
+  // names a bridge that is not running - and this check would be accusing the operator of a
+  // dead path when their real problem is broken JSON.
+  //
+  // Truncation is the one exception, and has to be, or a settings file larger than the read
+  // bound could never be checked at all: an unterminated tail always parses with errors, and
+  // those errors are OURS - we cut the file - not the operator's. Findings from a partial
+  // read stay sound because each one needs a complete quoted absolute path ending in a known
+  // script name, which truncation can remove but cannot fabricate.
+  const errors: ParseError[] = [];
+  const settings = parse(read.text, errors, { allowTrailingComma: true });
+  // `truncated` alone is too blunt an exemption: it says the tail was cut, not that every
+  // error came FROM the cut. A 70 KB settings file with a stray brace on line 3 is both
+  // truncated and genuinely malformed, and tolerating its errors wholesale would report a
+  // dead hook in a file Claude Code cannot apply - the exact accusation this guard exists
+  // to prevent. So an error is forgiven only when it reaches the retained text's end,
+  // which is where our own cut lands; anything earlier is the operator's.
+  const fromOurCut = (error: ParseError): boolean =>
+    read.truncated && error.offset + error.length >= read.text.length;
+  if (errors.some((error) => !fromOurCut(error))) return null;
+  return { settingsPath, settings, truncated: read.truncated };
+}
+
 export const claudeHookScriptCheck: EnvironmentCheckImpl = {
   ...ENVIRONMENT_CHECK_INFO["mission-hook-script"],
 
   async check(deps: EnvironmentDeps): Promise<EnvironmentCheckResult> {
-    const settingsPath = join(deps.homeDir, ...SETTINGS_FILE);
-    const read = await deps.readText(settingsPath);
-    // No settings file is the ordinary state of a machine that never ran the installer, and
-    // one that exists and cannot be read is a fault Claude Code itself reports far more
-    // loudly than a note in a dispatch dialog would. Neither is a missing script, which is
-    // the only thing this check claims to know about, so both are silence rather than a
-    // warning this check has not earned.
-    if (!read.ok) return { warning: null, detail: null };
-
-    // jsonc-parser is fault-tolerant by contract: it returns a best-effort value AND fills
-    // `errors`, so passing `[]` and ignoring it means reading a reconstruction of a file that
-    // was never validated. That matters here beyond tidiness. A settings file that does not
-    // parse is one Claude Code cannot apply either, so a hook path salvaged from the wreckage
-    // names a bridge that is not running - and this check would be accusing the operator of a
-    // dead path when their real problem is broken JSON.
-    //
-    // Truncation is the one exception, and has to be, or a settings file larger than the read
-    // bound could never be checked at all: an unterminated tail always parses with errors, and
-    // those errors are OURS - we cut the file - not the operator's. Findings from a partial
-    // read stay sound because each one needs a complete quoted absolute path ending in a known
-    // script name, which truncation can remove but cannot fabricate.
-    const errors: ParseError[] = [];
-    const settings = parse(read.text, errors, { allowTrailingComma: true });
-    // `truncated` alone is too blunt an exemption: it says the tail was cut, not that every
-    // error came FROM the cut. A 70 KB settings file with a stray brace on line 3 is both
-    // truncated and genuinely malformed, and tolerating its errors wholesale would report a
-    // dead hook in a file Claude Code cannot apply - the exact accusation this guard exists
-    // to prevent. So an error is forgiven only when it reaches the retained text's end,
-    // which is where our own cut lands; anything earlier is the operator's.
-    const fromOurCut = (error: ParseError): boolean =>
-      read.truncated && error.offset + error.length >= read.text.length;
-    if (errors.some((error) => !fromOurCut(error))) return { warning: null, detail: null };
+    const read = await readSettings(deps);
+    if (read === null) return { warning: null, detail: null };
+    const { settingsPath, settings } = read;
 
     const missing: { script: string; events: number }[] = [];
     for (const [script, events] of scriptsInUse(settings)) {
@@ -197,6 +211,56 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
         `${sentences.join(" ")} Every one of those events fails with MODULE_NOT_FOUND, prints its stack into the session transcript, and reports nothing back, so terminal sessions on this machine show no state. ` +
         `The path was baked in by an installer and does not follow a checkout that moved: re-run \`${REPAIR_COMMAND}\` from a Mission Control checkout that still exists, or press ${REPAIR_BUTTON} in the desktop app.`,
       detail: `${settingsPath} names ${missing.map(({ script }) => shortPath(script)).join(", ")}`,
+    };
+  },
+};
+
+/**
+ * Do the hooks we installed cover every event this build listens for?
+ *
+ * The installers write the event list they knew at the time and never re-run themselves, so a
+ * machine that installed before an event was added (`SubagentStart`, for background sub-agents)
+ * keeps running a bridge that is alive and silent on it. Nothing fails and nothing is printed;
+ * terminal Claude sessions simply report less than the dashboard can show. The repair is the
+ * same installer the dead-path check names, which writes today's whole list.
+ *
+ * Only scripts that still exist count. A dead path is `claudeHookScriptCheck`'s finding, and
+ * every event it lists already reports nothing, so a second note about the same bridge would
+ * name a smaller problem inside a bigger one. The events are pooled across live scripts: one
+ * event wired through either install reaches the daemon.
+ *
+ * Silent on a machine that never installed the hooks, exactly like its neighbour.
+ */
+export const claudeHookEventsCheck: EnvironmentCheckImpl = {
+  ...ENVIRONMENT_CHECK_INFO["mission-hook-events"],
+
+  async check(deps: EnvironmentDeps): Promise<EnvironmentCheckResult> {
+    const read = await readSettings(deps);
+    // A truncated read is enough to find a dead path, never a missing event: the cut can drop
+    // the very entries that would have shown the event installed.
+    if (read === null || read.truncated) return { warning: null, detail: null };
+    const { settingsPath, settings } = read;
+
+    const wired = new Set<string>();
+    const live: string[] = [];
+    for (const [script, events] of scriptsInUse(settings)) {
+      const probe = await deps.readText(script);
+      if (!probe.ok && probe.missing) continue;
+      live.push(script);
+      for (const event of events) wired.add(event);
+    }
+    if (live.length === 0) return { warning: null, detail: null };
+    const missing = claudeHooks.events.filter((event) => !wired.has(event));
+    if (missing.length === 0) return { warning: null, detail: null };
+
+    const names = missing.join(", ");
+    const them = missing.length === 1 ? "it" : "them";
+    return {
+      warning:
+        `The Claude Code hooks Mission Control installed on this machine do not run for ${names}, which this build listens for, so terminal Claude sessions never report ${them}` +
+        `${missing.includes("SubagentStart") ? ", and their background sub-agents show less than they could" : ""}. ` +
+        `The installer wrote the events it knew at the time: re-run \`${REPAIR_COMMAND}\` from a Mission Control checkout, or press ${REPAIR_BUTTON} in the desktop app, to install the current list.`,
+      detail: `${settingsPath} wires ${plural(wired.size, "event")} to ${live.map(shortPath).join(", ")}; missing ${names}`,
     };
   },
 };

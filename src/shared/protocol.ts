@@ -7,6 +7,7 @@ import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { HOOK_BACKGROUND_TASKS_MAX, HOOK_SUBAGENT_TEXT_MAX } from "./hook-subagents.mjs";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
@@ -249,6 +250,27 @@ const EnvSchema = z
   })
   .prefault({});
 
+/** One bounded sub-agent text field from a hook bridge (`hook-subagents.mjs` clips to the same bound). */
+const HookSubagentText = z.string().min(1).max(HOOK_SUBAGENT_TEXT_MAX);
+
+/** The Agent tool call a Claude `PostToolUse` reports. See `agentToolDescriptor`. */
+const HookAgentToolSchema = z.object({
+  agentId: HookSubagentText.optional(),
+  /** Claude's `tool_response.status`; `async_launched` is a background agent. */
+  status: HookSubagentText.optional(),
+  subagentType: HookSubagentText.optional(),
+  description: HookSubagentText.optional(),
+});
+
+/** One entry of Claude's in-flight `background_tasks`. See `backgroundTaskList`. */
+const HookBackgroundTaskSchema = z.object({
+  id: HookSubagentText,
+  /** Claude's friendly label: `subagent`, `shell`, `monitor`, `workflow`, … */
+  type: HookSubagentText.optional(),
+  description: HookSubagentText.optional(),
+  agentType: HookSubagentText.optional(),
+});
+
 /**
  * Payload a Claude Code hook posts to the daemon. The hook script forwards the
  * raw event JSON plus the terminal env it captured (pane ids), which the daemon
@@ -314,6 +336,25 @@ export const HookIngestSchema = z.object({
   //
   // Optional so a hook installed before this field existed keeps ingesting unchanged.
   agentId: z.string().min(1).max(200).optional(),
+  // What a TERMINAL session's background sub-agents are read from (`harness/hook-subagents.ts`).
+  // An SDK session's driver owns its sub-agents and the daemon ignores these for it.
+  //
+  // Each one CATCHES to absent rather than failing the parse. They ride on events that also
+  // move the parent - `Stop` carries `backgroundTasks` - so a malformed descriptor must cost the
+  // sub-agent row, never the parent's own state.
+  //
+  // The sub-agent's type, on the events a sub-agent raises (`SubagentStart`, `SubagentStop`).
+  agentType: HookSubagentText.optional().catch(undefined),
+  // The Agent tool call a `PostToolUse` reports: which agent it launched and whether it went to
+  // the background.
+  agentTool: HookAgentToolSchema.optional().catch(undefined),
+  // The session's in-flight background work as `Stop` and `SubagentStop` list it. Present and
+  // empty means nothing is running; absent means this event does not say.
+  backgroundTasks: z.array(HookBackgroundTaskSchema).max(HOOK_BACKGROUND_TASKS_MAX).optional().catch(undefined),
+  // True when the bridge cut `backgroundTasks` at its bound. The list is then NOT the whole
+  // in-flight set - an agent past the cut is still running - so it may add agents but never stop
+  // one by omission.
+  backgroundTasksTruncated: z.literal(true).optional().catch(undefined),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;

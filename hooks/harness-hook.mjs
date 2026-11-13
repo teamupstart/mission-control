@@ -18,6 +18,12 @@
 
 import { captureTerminalEnv } from "../src/shared/harness-runtime.mjs";
 import { postHookEvent, readStdin } from "../src/shared/hook-bridge.mjs";
+import {
+  agentToolDescriptor,
+  backgroundTaskList,
+  backgroundTasksTruncated,
+  hookText,
+} from "../src/shared/hook-subagents.mjs";
 import { opensPullRequest, pullRequestUrlsIn } from "../src/shared/pr-command.mjs";
 
 /**
@@ -100,6 +106,14 @@ function toIngest(payload, event) {
     // Present only on a hook a sub-agent's own work raised. The daemon keeps such a hook
     // from moving the parent's state, so a background agent cannot re-arm an idle card.
     agentId: typeof payload.agent_id === "string" && payload.agent_id ? payload.agent_id : undefined,
+    // The rest is what a terminal session's background sub-agents are read from, each bounded
+    // in `hook-subagents.mjs`: the sub-agent's type (on `SubagentStart` / `SubagentStop`), the
+    // Agent tool call that launched one (`async_launched` means it went to the background), and
+    // the in-flight background work `Stop` and `SubagentStop` list.
+    agentType: hookText(payload.agent_type),
+    agentTool: agentToolDescriptor(payload, event),
+    backgroundTasks: backgroundTaskList(payload),
+    backgroundTasksTruncated: backgroundTasksTruncated(payload),
   };
 }
 

@@ -38,3 +38,5 @@ Merged with the spec green. No contract changes.
 ## Audit record
 
 The agent_id guard moved to Phase 1. launchTurnId stays null. Edits HookIngestSchema while Phase 3 edits UiConfig in the same file, in separate regions.
+
+Conversation coverage was first deferred to Phase 2, because this branch had no conversation renderer when it was reviewed. Phase 2's tray has since merged and reads `Session.subagents` with no runtime branch, so `e2e/specs/board-terminal-background-agents.spec.ts` now also opens the terminal session's conversation and asserts the hook-reported agent in the Background agents tray, with no new UI.

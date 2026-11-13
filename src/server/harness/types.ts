@@ -1,4 +1,5 @@
 import type { HookIngest } from "@shared/protocol.ts";
+import type { HookSubagentSignal } from "./hook-subagents.ts";
 import type {
   AdvisorChoice,
   AgentType,
@@ -481,6 +482,16 @@ export interface HookSpec {
    * name it does not own.
    */
   submittedPromptText(evt: HookIngest): string | null;
+  /**
+   * What this event says about a TERMINAL session's background sub-agents, in the neutral
+   * signals `hook-subagents.ts` reduces - or `[]` for the many events that say nothing.
+   *
+   * The harness's answer for the same reason `toState` is: which event starts, launches, ends
+   * or lists an agent, and which counts as the operator's next turn, is its vocabulary. The
+   * registry applies these only to a terminal-runtime session; an SDK session's driver owns its
+   * own sub-agents.
+   */
+  subagentSignals(evt: HookIngest): HookSubagentSignal[];
 }
 
 /**

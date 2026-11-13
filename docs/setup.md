@@ -245,6 +245,14 @@ path when one appears, and
 [troubleshooting.md](troubleshooting.md#every-claude-turn-prints-a-hook-error-with-module_not_found)
 covers the repair.
 
+The installer writes the events it knows at the time and never runs again on its own. When a
+later build listens for an event your installed hooks do not cover, such as `SubagentStart`
+for a terminal session's background sub-agents, Settings -> Setup shows an optional
+**Claude Code hook events** row, and the dispatch form a note, naming the missing events.
+Nothing fails in the meantime; those sessions report less. Re-run `npm run install-hooks`
+from a durable clone, or press **Install Claude integrations** in the desktop app, to install
+the current list.
+
 ## Verify the checkout
 
 ```sh

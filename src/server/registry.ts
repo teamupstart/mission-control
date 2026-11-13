@@ -141,6 +141,12 @@ import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
 import { hooksFor } from "./harness/index.ts";
+import {
+  emptyHookSubagents,
+  hookSubagentSummary,
+  reduceHookSubagents,
+  type HookSubagentState,
+} from "./harness/hook-subagents.ts";
 import type { HookSpec } from "./harness/types.ts";
 // Who typed a given user turn, reserved at delivery by every non-human sender. Read here so
 // a packet this daemon typed is never captured as the human's Goal - see
@@ -841,6 +847,13 @@ export class Registry extends EventEmitter {
    * fact is the adoption row the announcement produces.
    */
   private announcedPrs = new Map<string, Set<string>>();
+  /**
+   * Each TERMINAL session's background sub-agents as its hooks have reported them, by session
+   * id. In memory only, like the summary it feeds: a daemon restart forgets it. A Claude
+   * session's next `Stop` lists the in-flight set and brings its running agents back; Codex hooks
+   * carry no such list, so a Codex child started before the restart is not shown again.
+   */
+  private hookSubagents = new Map<string, HookSubagentState>();
   /**
    * Last observed head of each multi-repo worktree the completion quorum asks about, by
    * path. A `null` value is "we looked and could not answer"; a MISSING key is "nothing has
@@ -2679,6 +2692,10 @@ export class Registry extends EventEmitter {
       // Re-stamped below, once cwd has settled.
       pipeline: this.pipelineLinkFor(d.cwd),
       retro: prev?.retro,
+      // Carried, because discovery cannot see sub-agents: only this session's hooks report them
+      // (`applyHookSubagents`), and a sweep that dropped the field would blank the sub-cards
+      // between one hook and the next.
+      ...(prev?.subagents ? { subagents: prev.subagents } : {}),
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
@@ -3556,6 +3573,10 @@ export class Registry extends EventEmitter {
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, fromSubagent ? { activity, state, agentId: evt.agentId } : { activity, state });
       if (!sessionEqual(target, next) || next.lastActivity !== target.lastActivity) this.emitSession(next);
+      // After the emit above, so the summary is written through `setSubagents` - the field's
+      // only writer - onto the projection that is now current, rather than onto `next` and then
+      // overwritten by it.
+      this.applyHookSubagents(next, spec, evt, ts);
       // Last, deliberately. `upsertGoal` re-denormalizes and emits through
       // `syncSessionsForGoal`, so running it before the emit above would leave that emit
       // shipping the pre-goal object and the card would show the change only on the next
@@ -3584,6 +3605,22 @@ export class Registry extends EventEmitter {
       else completeWorkCycle(evt.sessionId, ts, now);
     }
     this.pruneOverlays(now);
+  }
+
+  /**
+   * A terminal session's background sub-agents, from this hook. An SDK session's sub-agents
+   * belong to its driver (`SdkEvent` kind `subagents`), so its hooks' sub-agent signals - the
+   * machine-wide bridge fires for it too - are ignored rather than allowed to race the driver.
+   */
+  private applyHookSubagents(session: Session, spec: HookSpec, evt: HookIngest, ts: number): void {
+    if (session.runtime !== "terminal") return;
+    const signals = spec.subagentSignals(evt);
+    if (signals.length === 0) return;
+    const prior = this.hookSubagents.get(session.id) ?? emptyHookSubagents();
+    const next = reduceHookSubagents(prior, signals, ts);
+    if (next === prior) return;
+    this.hookSubagents.set(session.id, next);
+    this.setSubagents(session.id, hookSubagentSummary(next));
   }
 
   /**
@@ -6775,6 +6812,7 @@ export class Registry extends EventEmitter {
       if (key.startsWith(repoPrTargetKey(id, ""))) this.livePrs.delete(key);
     }
     this.announcedPrs.delete(id);
+    this.hookSubagents.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);
     this.permissionModeFreshnessGuards.delete(id);

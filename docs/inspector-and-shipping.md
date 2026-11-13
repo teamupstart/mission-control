@@ -848,7 +848,8 @@ recovery. Until GitHub has reported both the branch a child merged into and the 
 the stack reads *Merged - checking on GitHub whether it reached main*, never Released, and the
 closed child is read again every sweep until it can tell. The recovery prompt is offered only when
 the child merged after #A had already merged, judged by the two merge times GitHub reports (with
-either time unknown, nothing is offered). A child that merged while #A was still open is offered
+either time or the child's merge commit unknown, nothing is offered yet, and the merged child is
+read again every sweep until GitHub reports them). A child that merged while #A was still open is offered
 no prompt, because #A's own later merge may have carried its changes to the default branch.
 Mission Control does not check that it did: the task stays open, and whether its work reached the
 default branch is for the operator to confirm before marking it done by hand. A child that merged

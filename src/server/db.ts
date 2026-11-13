@@ -15014,8 +15014,9 @@ function stackAtomically<T>(fn: () => T): T {
  * would starve the oldest rows, since observing a row makes it recent again.
  *
  * Also a child that merged while its parent could not be read, or whose base or default branch
- * GitHub did not report: whether its merge reached the default branch, or went into a finished
- * parent's branch and needs the recovery prompt, is unresolved until those are read again.
+ * GitHub did not report, or that merged into its finished parent's branch without a merge commit
+ * or merge times yet: whether its merge reached the default branch, or needs the recovery
+ * prompt, is unresolved until those are read again.
  */
 export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[] {
   const rows = openDb()
@@ -15027,6 +15028,13 @@ export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[
                   json_extract(stack_state, '$.parentUnreadSince') IS NOT NULL
                   OR json_extract(stack_state, '$.baseRefName') IS NULL
                   OR json_extract(stack_state, '$.defaultBranch') IS NULL
+                  -- Merged into its finished parent's branch, with a fact the recovery prompt
+                  -- needs still unreported (\`strayMergeUndecided\`).
+                  OR (json_extract(stack_state, '$.parentState') = 'MERGED'
+                    AND json_extract(stack_state, '$.baseRefName') = json_extract(stack_state, '$.parentHeadRefName')
+                    AND (json_extract(stack_state, '$.childMergeCommitSha') IS NULL
+                      OR json_extract(stack_state, '$.childMergedAt') IS NULL
+                      OR json_extract(stack_state, '$.parentMergedAt') IS NULL))
                 END) = 1)
           AND key > ?
         ORDER BY key ASC LIMIT ?`,

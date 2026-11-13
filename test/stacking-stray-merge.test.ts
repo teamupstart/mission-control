@@ -334,3 +334,34 @@ test("a merged child whose base was not reported is read again until it is, then
   await observeClosedStackChildren(counting, ctx, () => "/repo", 50_000);
   assert.deepEqual(reads, []);
 });
+
+test("a stray merge first seen without its merge commit or merge times is read again until the recovery can be decided", async () => {
+  // GitHub reported the merge into #1416's branch but not yet the merge commit or its time.
+  const key = await strayChild(PARENT_MERGED_AT, { mergeCommitSha: null, mergedAt: null });
+  let standing = stackStandingFor(db.getInspectorPr(key)!, [owner()], FOREMAN_ON)!;
+  assert.equal(standing.brokenReason, "merged-into-parent");
+  assert.equal(standing.prompt, null, "a recovery was offered without its merge commit");
+
+  // The first sweep still gets no merge time for the parent: the recovery stays undecided.
+  const parentRefs = (mergedAt: number | null): PrRefs => ({ state: "MERGED", isDraft: false, headSha: PARENT_HEAD,
+    headRefName: "feat/phase-1", baseRefName: "main", defaultBranch: "main", mergeCommitSha: PARENT_MERGE, mergedAt });
+  const childRefs: PrRefs = { state: "MERGED", isDraft: false, headSha: CHILD_HEAD, headRefName: "feat/phase-2",
+    baseRefName: "feat/phase-1", defaultBranch: "main", mergeCommitSha: STRAY, mergedAt: CHILD_MERGED_AT };
+  const reads: string[] = [];
+  const counted = (g: Gh): StackGitHub => ({ ...seam(g), prRefs: async (cwd, url) => (reads.push(url), seam(g).prRefs(cwd, url)) });
+  await observeClosedStackChildren(counted({ refs: new Map([[PARENT, parentRefs(null)], [CHILD, childRefs]]) }), ctx, () => "/repo", 40_000);
+  assert.ok(reads.includes(CHILD), "the undecided stray merge was not read again");
+  assert.equal(stackStandingFor(db.getInspectorPr(key)!, [owner()], FOREMAN_ON)!.prompt, null);
+
+  // Once GitHub reports everything, the recovery is offered, keyed to the merge commit.
+  reads.length = 0;
+  await observeClosedStackChildren(counted({ refs: new Map([[PARENT, parentRefs(PARENT_MERGED_AT)], [CHILD, childRefs]]) }), ctx, () => "/repo", 50_000);
+  assert.ok(reads.includes(CHILD));
+  standing = stackStandingFor(db.getInspectorPr(key)!, [owner()], FOREMAN_ON)!;
+  assert.deepEqual(standing.prompt, { kind: "recover-merge", tip: STRAY, status: "pending" });
+
+  // Decided: the sweep stops reading it.
+  reads.length = 0;
+  await observeClosedStackChildren(counted({ refs: new Map([[PARENT, parentRefs(PARENT_MERGED_AT)], [CHILD, childRefs]]) }), ctx, () => "/repo", 60_000);
+  assert.deepEqual(reads, []);
+});

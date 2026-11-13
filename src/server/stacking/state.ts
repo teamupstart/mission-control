@@ -1,6 +1,7 @@
 import type { InspectorPr, Task } from "@shared/types.ts";
 import {
   expectedStackBase,
+  strayMergeUndecided,
   stackPrNumber,
   type Ancestry,
   type StackObservation,
@@ -248,8 +249,10 @@ export async function observeClosedStackChildren(
     // Closed by the ledger's own reading, or by the last observation: either is enough, so a row
     // retired on a tick whose observation still said OPEN is not lost. A merged child is read
     // again only while something that decides its landing is unread: its parent (which decides
-    // whether it needs a recovery), or the branch it merged into and the default branch.
-    const mergedUnread = o?.childState === "MERGED" && (Boolean(o.parentUnreadSince) || !o.baseRefName || !o.defaultBranch);
+    // whether it needs a recovery), the branch it merged into and the default branch, or - for a
+    // merge into a finished parent's branch - the merge commit and times the recovery needs.
+    const mergedUnread = o?.childState === "MERGED"
+      && (Boolean(o.parentUnreadSince) || !o.baseRefName || !o.defaultBranch || strayMergeUndecided(o));
     if (row.observedState !== "CLOSED" && o?.childState !== "CLOSED" && !mergedUnread) continue;
     // A confirmed MERGED parent is terminal for a closed child: the offered action (Reopen
     // against main) cannot change, so reading it again buys nothing and spends the shared gh

@@ -531,6 +531,17 @@ export function strayMergeAfterParent(o: StackObservation): boolean {
 }
 
 /**
+ * The child merged into its parent's branch and the parent has merged, but GitHub has not yet
+ * reported a fact the recovery needs: the child's merge commit (the prompt's key and the diff it
+ * names) or either merge time (whether the parent merged first). Until all three are known the
+ * recovery can be neither offered nor ruled out, so the merged child is read again.
+ */
+export function strayMergeUndecided(o: StackObservation): boolean {
+  return mergedIntoParentBranch(o) && o.parentState === "MERGED"
+    && (!o.childMergeCommitSha || typeof o.childMergedAt !== "number" || typeof o.parentMergedAt !== "number");
+}
+
+/**
  * The prompts Foreman types into a child's session: the two that bring a held child up to date,
  * and the recovery for a child merged into its finished parent's branch.
  */

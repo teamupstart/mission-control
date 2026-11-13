@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import type { Session, Task } from "@shared/types.ts";
+import { expectedStackBase } from "@shared/stacking.ts";
 import { latestStackedPr } from "../db.ts";
 import { parsePrUrl } from "../inspector/github.ts";
 import { run } from "../util/exec.ts";
@@ -85,8 +86,10 @@ async function worktreeHead(
  *
  * The base is the adopted pull request's CURRENT base, read from GitHub for this review, when
  * one exists - the branch the pull request will actually be reviewed and merged against - and
- * the parent branch the task was cut on before a pull request exists. The parent keeps moving while the child is
- * reviewed (review repairs push to it), so the branch is fetched at the repository root on
+ * the expected base from the parent's current state before a pull request exists. A merged
+ * or closed parent selects the default branch, even if its head branch has been deleted.
+ * A confirmed missing base also selects the current default, regardless of parent state.
+ * The base keeps moving while the child is reviewed, so it is fetched at the repository root on
  * every call and its tip checked against what origin advertises.
  *
  * Every git command here runs at the repository root with explicit commit ids: the fetch
@@ -114,9 +117,9 @@ export async function resolveStackDiffBase(
   // The pull request's base AS IT STANDS NOW, read from GitHub for this review. The ledger's
   // `base_ref_name` is only what the last Inspector poll saw, and a child adopted moments ago
   // has none yet: falling back to the dispatch-time branch then would judge the diff against a
-  // base the pull request may never have had, or no longer has. Before a pull request exists,
-  // the branch the task was cut on is the base by definition.
-  let branch = task.stackBaseBranch;
+  // base the pull request may never have had, or no longer has.
+  let branch: string;
+  let defaultBranch: string | null;
   if (row) {
     const current = await github.prRefs(task.repoRoot, row.url);
     if (!current.ok || !current.value?.baseRefName) {
@@ -125,8 +128,34 @@ export async function resolveStackDiffBase(
       );
     }
     branch = current.value.baseRefName;
+    defaultBranch = current.value.defaultBranch || null;
+  } else if (!task.stackPrUrl) {
+    // A branch-only stack has no PR state to consult yet. Preserve its recorded base,
+    // subject to the same fresh remote verification below as every other selected branch.
+    branch = task.stackBaseBranch;
+    defaultBranch = null;
+  } else {
+    // Dispatch facts are provenance, not a live base. Use the same rule as PR base
+    // correction, including when the parent merged before the dependency watcher caught up.
+    const parent = await github.prRefs(task.repoRoot, task.stackPrUrl);
+    const expected = parent.ok && parent.value
+      ? expectedStackBase(parent.value, parent.value.defaultBranch || null)
+      : null;
+    if (!expected) {
+      throw new StackDiffBaseError(
+        `stacked base could not be refreshed: could not resolve the base from parent ${task.stackPrUrl}: ${parent.error ?? "GitHub reported no parent state or base"}`,
+      );
+    }
+    branch = expected;
+    defaultBranch = parent.value?.defaultBranch || null;
   }
-  const tip = await github.branchSha(task.repoRoot, branch);
+  let tip = await github.branchSha(task.repoRoot, branch);
+  // A positively absent base cannot be refreshed by resubmission. Recover against the
+  // current default, but still require its verified tip. Other fetch failures stay errors.
+  if (!tip.ok && tip.code === "branch_missing" && defaultBranch && branch !== defaultBranch) {
+    branch = defaultBranch;
+    tip = await github.branchSha(task.repoRoot, branch);
+  }
   if (!tip.ok) {
     throw new StackDiffBaseError(`stacked base could not be refreshed: ${branch}: ${tip.reason}`);
   }

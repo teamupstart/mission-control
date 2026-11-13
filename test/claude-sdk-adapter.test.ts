@@ -2175,3 +2175,28 @@ test("task frames the stale process sends while its replacement launches do not 
   assert.ok(summaries.length > 0, "the stale frames did reach the driver before the relaunch landed");
   assert.equal(summaries.at(-1), null, "the replacement process starts with no sub-agents");
 });
+
+test("a sub-agent's frame during the parent's turn updates its activity without opening another turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagent-active"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  // The parent's own turn is running (the launch seeded it); a foreground sub-agent reports.
+  query.emit({ type: "assistant", session_id: "agent-subagent-active", parent_tool_use_id: "toolu_sub",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  // Bounded, so a frame that never reports fails here instead of hanging the suite.
+  const during = await Promise.race([
+    collect(handle.events, (e) => e.kind === "state"),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the sub-agent frame reported no activity")), 2_000)),
+  ]);
+  assert.deepEqual(during.at(-1), { kind: "state", state: "working", activity: "Grep" });
+
+  // One result closes the one turn: the sub-agent frame opened nothing of its own.
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagent-active" });
+  const closed = await collect(handle.events, (e) => e.kind === "turn_done");
+  assert.equal(closed.filter((e) => e.kind === "turn_done").length, 1);
+  assert.equal(await handle.sendIfIdle({ text: "next" }), "started", "the session is idle once its turn ends");
+  await handle.stop();
+});

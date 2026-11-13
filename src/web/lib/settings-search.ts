@@ -280,6 +280,12 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "nested",
       "agent chip",
       "popover",
+      // The conversation half the same picker switches: the tray above the reply box, or the
+      // rail's Agents tab. Listed HERE, on the entry named for the section that holds the
+      // picker, rather than on Conversation header - a result labelled for another section
+      // reads as a different control even though both jump to the same panel.
+      "agents tab",
+      "tray",
     ],
     kind: "jump",
     backup: backupDomains("ui"),
@@ -352,12 +358,6 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "task kind",
       "kind",
       "badge",
-      // The same Background sub-agents picker, by the conversation half it switches: the tray
-      // above the reply box, or the rail's Agents tab.
-      "sub-agents",
-      "background agents",
-      "agents tab",
-      "tray",
     ],
     kind: "jump",
     backup: backupDomains("ui"),

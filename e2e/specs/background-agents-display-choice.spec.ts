@@ -403,3 +403,22 @@ test("a resident visitor card carries the chip under Chip and popover, and its s
     "the sub-cards hang directly beneath the visitor card",
   ).toBe(true);
 });
+
+test("searching for the Agents tab lands on the Board card entry that holds the picker", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.keyboard.press("Meta+k");
+  const palette = dashboard.getByRole("dialog", { name: "Search everything" });
+  await expect(palette).toBeVisible();
+  await palette.getByRole("combobox", { name: "Search everything" }).fill("agents tab");
+  // One settings result, labelled for the section the picker is in - not Conversation header,
+  // which jumps to the same panel but reads as a different control.
+  const boardCard = palette.getByRole("option", { name: /^Board card\b/ });
+  await expect(boardCard).toHaveCount(1);
+  await expect(palette.getByRole("option", { name: /^Conversation header\b/ })).toHaveCount(0);
+  await shoot(dashboard, palette, "07-search-agents-tab");
+  await boardCard.click();
+  // The jump brings the panel that holds the picker on screen.
+  const panel = dashboard.locator('[data-anchor="display/board-card"]');
+  await expect(panel).toBeInViewport();
+  await expect(panel.getByRole("radiogroup", { name: "Board card: Background sub-agents" })).toBeVisible();
+});

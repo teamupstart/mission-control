@@ -234,19 +234,21 @@ test("the preview fixture carries the plan's sample agents", () => {
   assert.deepEqual(subagents.agents.map((a) => a.state), ["running", "running", "completed"]);
 });
 
-test("searching Settings for sub-agents finds the panel from both of its surfaces", () => {
-  for (const id of ["board-card", "conversation-header"]) {
-    const control = SETTINGS_CONTROLS.find((c) => c.id === id);
-    assert.ok(control, `no ${id} entry`);
-    assert.equal(control.anchor, "display/board-card");
-    assert.ok(control.keywords.includes("sub-agents"), `${id} is not found by "sub-agents"`);
-    assert.ok(control.keywords.includes("background agents"), `${id} is not found by "background agents"`);
+test("searching Settings for sub-agents lands on the Board card entry, which holds the picker", () => {
+  const card = SETTINGS_CONTROLS.find((c) => c.id === "board-card");
+  assert.ok(card, "no board-card entry");
+  assert.equal(card.anchor, "display/board-card");
+  for (const term of ["sub-agents", "background agents", "agent chip", "popover", "nested", "agents tab", "tray"]) {
+    assert.ok(card.keywords.includes(term), `the Board card entry is not found by "${term}"`);
   }
-  const card = SETTINGS_CONTROLS.find((c) => c.id === "board-card")!;
-  for (const term of ["agent chip", "popover", "nested"]) assert.ok(card.keywords.includes(term), term);
+  // Not on Conversation header: a result labelled for another section reads as a different
+  // control, even though both entries jump to the same panel.
   const header = SETTINGS_CONTROLS.find((c) => c.id === "conversation-header")!;
-  for (const term of ["agents tab", "tray"]) assert.ok(header.keywords.includes(term), term);
+  for (const term of ["sub-agents", "background agents", "agents tab", "tray"]) {
+    assert.ok(!header.keywords.includes(term), `Conversation header also answers "${term}"`);
+  }
 });
+
 
 // ---- the board card ----
 

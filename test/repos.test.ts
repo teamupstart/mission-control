@@ -372,6 +372,53 @@ test("a zero TTL turns the cache off, so an ordinary read waits for a current wa
   }
 });
 
+test("an unchanged index rescans by age alone: never inside the TTL, behind the stale answer after it", async () => {
+  const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const previous = process.env.MISSION_REPOS_CACHE_MS;
+  const TTL_MS = 1_000;
+  try {
+    rmSync(SNAPSHOT, { force: true });
+    setRepoIndexConfig({ directories: [{ path: root }] });
+    // The TTL is read when the module loads, so a fresh instance sees the override.
+    process.env.MISSION_REPOS_CACHE_MS = String(TTL_MS);
+    const repos = await restartedRepos("ttl-age");
+    const primed = await repos.listReposScan();
+    assert.deepEqual(primed.repos, [join(root, "alpha")]);
+
+    // Cloned after the scan. Nothing is invalidated: only the scan's age can bring it in.
+    makeRepo(join(root, "beta"));
+
+    // Inside the TTL: the cached scan answers, and no walk starts behind it - a read a moment
+    // later is still the same scan, by stamp, not just by content.
+    assert.deepEqual(await repos.listRepos(), [join(root, "alpha")]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const inside = await repos.listReposScan();
+    assert.deepEqual(inside.repos, [join(root, "alpha")]);
+    assert.equal(inside.scannedAt, primed.scannedAt, "no rescan started inside the TTL");
+
+    // Past the TTL: the first read still answers at once with the stale scan...
+    await new Promise((resolve) => setTimeout(resolve, TTL_MS));
+    const expired = await repos.listReposScan();
+    assert.deepEqual(expired.repos, [join(root, "alpha")], "the expired read does not wait for a walk");
+    assert.equal(expired.scannedAt, primed.scannedAt);
+
+    // ...and the walk it started behind itself lands with the new checkout.
+    const deadline = Date.now() + 5_000;
+    let refreshed = await repos.listReposScan();
+    while (refreshed.scannedAt === primed.scannedAt && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      refreshed = await repos.listReposScan();
+    }
+    assert.ok(refreshed.scannedAt > primed.scannedAt, "a background rescan ran because of age alone");
+    assert.deepEqual(refreshed.repos, [join(root, "alpha"), join(root, "beta")]);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_REPOS_CACHE_MS;
+    else process.env.MISSION_REPOS_CACHE_MS = previous;
+    rmSync(SNAPSHOT, { force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a rescan read sees a checkout cloned inside the TTL, where an ordinary read does not", async () => {
   const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
   try {

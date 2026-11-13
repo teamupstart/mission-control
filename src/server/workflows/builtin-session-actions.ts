@@ -4,7 +4,7 @@ import {
   sessionActionNameFromMarkdown,
 } from "@shared/workflow.ts";
 import type { SessionAction, SessionActionCompletion } from "@shared/workflow.ts";
-import { PULL_REQUEST_SKILL, RETRO_SKILL } from "@shared/skills.ts";
+import { GRILL_SKILL, PULL_REQUEST_SKILL, RETRO_SKILL } from "@shared/skills.ts";
 import { BUILTIN_SESSION_ACTION_SOURCES } from "./builtin-session-actions.generated.ts";
 
 /**
@@ -52,7 +52,21 @@ const BUILTIN_SESSION_ACTION_CONTRACTS: Record<
     requiredSkillId: RETRO_SKILL,
     completion: { kind: "repo_commit" },
   },
+  // Grill me first sends it ahead of a task's own contract, so the turn it ends is the task's.
+  grill: {
+    requiredSkillId: GRILL_SKILL,
+    completion: { kind: "session_turn" },
+  },
 };
+
+/**
+ * The built-ins an operator edits in place rather than duplicates. Only Grill: Grill me first
+ * delivers it by id, so a duplicate would be an action nothing runs. The edit replaces the
+ * instruction alone; the name, the required skill and the completion stay the shipped
+ * contract. Pull Request and Retro stay read-only, so what a workflow stage or the Retro button
+ * sends is still exactly what shipped.
+ */
+export const EDITABLE_BUILTIN_SESSION_ACTION_IDS: ReadonlySet<string> = new Set([builtinSessionActionId("grill")]);
 
 function builtinSessionAction(source: { slug: string; promptMarkdown: string }): SessionAction {
   const name = sessionActionNameFromMarkdown(source.promptMarkdown, source.slug);
@@ -75,6 +89,7 @@ function builtinSessionAction(source: { slug: string; promptMarkdown: string }):
     createdAt: 0,
     updatedAt: 0,
     builtin: true,
+    ...(EDITABLE_BUILTIN_SESSION_ACTION_IDS.has(builtinSessionActionId(source.slug)) ? { editable: true } : {}),
   };
 }
 
@@ -92,3 +107,6 @@ export const PULL_REQUEST_SESSION_ACTION_ID = builtinSessionActionId("pull-reque
  * that 404s at runtime rather than a build that fails.
  */
 export const RETRO_SESSION_ACTION_ID = builtinSessionActionId("retro");
+
+/** The shipped Grill action, which Grill me first delivers ahead of a task's own contract. */
+export const GRILL_SESSION_ACTION_ID = builtinSessionActionId("grill");

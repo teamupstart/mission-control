@@ -620,6 +620,7 @@ export function SettingsPage({
             state={workflowSettings}
             workflows={workflowSummaries}
             foremanEnabled={foreman.config?.enabled ?? false}
+            skills={skills}
           />
         );
       case "worktrees":

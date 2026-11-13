@@ -82,6 +82,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/session-actions", "library.action_create", "library"],
   ["PATCH", "/api/session-actions/:id", "library.action_edit", "library"],
   ["DELETE", "/api/session-actions/:id", "library.action_archive", "library"],
+  ["POST", "/api/session-actions/:id/reset", "library.action_reset", "library"],
   ["POST", "/api/workflows/:id/validate", "library.workflow_validate", "library"],
   ["POST", "/api/workflow-bindings/:id/evidence/coverage", "runs.coverage_register", "runs"],
   ["DELETE", "/api/workflow-bindings/:id/evidence/coverage/:clientCriterionId", "runs.coverage_remove", "runs"],

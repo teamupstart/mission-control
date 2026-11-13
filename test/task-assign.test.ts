@@ -1226,6 +1226,68 @@ test("an assignment verifies every submission tool the task needs", async () => 
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
+test("a grill-first task is refused before the reset when the MCP bundle cannot be launched", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-nomcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => null,
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /Grill me first/);
+  assert.match(res.error ?? "", /MCP server is not built/);
+  assert.equal(reset, false, "nothing may be done to an agent that cannot run the interview");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), "feature/mine");
+});
+
+test("a grill-first task is refused before the reset when the bundle lacks request_plan_decisions", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-stale-mcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+  let asked: readonly string[] = [];
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "node",
+      args: ["server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpToolsForRunningSession: async (required) => {
+      asked = required;
+      return {
+        ok: false as const,
+        reason:
+          "Mission Control's MCP server at /dist/mcp/server.mjs does not publish "
+          + "request_plan_decisions. Run: npm run build",
+      };
+    },
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.deepEqual([...asked], ["request_plan_decisions"]);
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /starts with Grill me first, and .*request_plan_decisions/);
+  assert.equal(reset, false, "nothing may be done to an agent that cannot run the interview");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
 test("assigned scout and ship prompts keep intent first and receive the shared authorization", async () => {
   for (const kind of ["scout", "ship"] as const) {
     const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-${kind}-contract-`);

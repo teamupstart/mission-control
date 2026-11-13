@@ -2033,6 +2033,11 @@ export class Registry extends EventEmitter {
     this.sessionActions = new Map(actions.map((action) => [action.id, action]));
   }
 
+  /** One SessionAction as the catalog holds it now: an edited built-in carries its edit. */
+  getSessionAction(id: string): SessionAction | undefined {
+    return this.sessionActions.get(id);
+  }
+
   /**
    * Archive comes through HERE and not through `removeSessionAction`. An archived action is
    * still addressable - drafts and published versions name its id, and history reports it -

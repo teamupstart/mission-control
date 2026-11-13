@@ -156,6 +156,16 @@ backlog while the skills are off and dispatch cleanly once they are on. A pointe
 that is not installed points at nothing, and an agent left to improvise a plan looks exactly
 like one that followed a procedure.
 
+The **Grill** row carries the interview that any task dispatched with
+[Grill me first](dispatch-and-backlog.md#grill-me-first) runs through the Library's Grill
+session action before its work. It maps the work as a design tree and asks every question whose
+prerequisites are settled as one `request_plan_decisions` form per round, each question with its
+recommended option first and a free-text Other. Facts go to the agent and its subagents; only
+decisions go to you. It always asks at least one round, stops the session when a round is
+dismissed, and ends when nothing is left to ask. It adapts Matt Pocock's `grilling` skill (MIT,
+credited in the skill and in `NOTICE`) and is bundled here, so it does not depend on the
+mattpocock-skills plugin. The procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
+
 The **HTML Report** row applies to the other half of the work - the sessions that are
 asked to find something out rather than to change something. An investigation, scout, audit or
 research answer is written as one self-contained page at `docs/reports/<slug>/report.html` and
@@ -486,12 +496,18 @@ could not: the preference is now in ⌘K by name, flippable from a search result
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
 
 **Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
-with when nothing names its own choice. Its **Dispatch defaults** card is the per-kind
-after-work Workflow rows (see [Dispatch an agent](dispatch-and-backlog.md), under **After
-work**). They replace the single **Dispatch default** that **Settings → Workflows** used to
-hold, because they describe a task kind rather than the Workflow subsystem's policy. They are
-daemon-backed, so they reach tasks from the API, task sources and recurring missions as well as
-the dispatch form.
+with when nothing names its own choice, as one card per kind (ship, bugfix, document, plan,
+scout and chat), two to a row. Each card holds every setting this page keeps for that kind.
+**After work** is the kind's after-work Workflow (see
+[Dispatch an agent](dispatch-and-backlog.md), under **After work**). These rows replace the
+single **Dispatch default** that **Settings → Workflows** used to hold, because they describe a
+task kind rather than the Workflow subsystem's policy. **Grill me first** is whether a new task
+of that kind interviews you before it starts (see
+[Grill me first](dispatch-and-backlog.md#grill-me-first)), off for every kind until chosen, with
+what it does on the `i` beside it. Both are daemon-backed, so they reach tasks from the API,
+task sources and recurring missions as well as the dispatch form, and Grill me first is pinned
+on each task when it is filed. The page warns when a kind grills first while the Grill skill is
+off, because such a task is refused at dispatch.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the

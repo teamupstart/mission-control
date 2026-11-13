@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>117</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>120</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -551,7 +551,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Sessions, reviews, and operator state</strong><span>19 tables</span></summary>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>20 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
                 <div class="table-row"><code>session_events</code><p>An append-only session event log. Hook ingestion writes most of it. The daemon also records each delegated session-control action (<code>session_control_action</code>, with the controller, target, action and HTTP status) and every blocker change (<code>session_blocker_set</code>, <code>session_blocker_updated</code>, <code>session_blocker_reply_flagged</code>, <code>session_blocker_cleared</code>), which names its <code>actor</code>. It also proves whether precise hooks have ever been observed for a session.</p></div>
@@ -572,6 +572,7 @@ LIMIT 20;
                 <div class="table-row"><code>app_config</code><p>Generic JSON-encoded application settings stored as key and value text.</p></div>
                 <div class="table-row"><code>personas</code><p>Reusable, revisioned model-review definitions with exact operator-authored Markdown guidance and optional provider/model choices.</p></div>
                 <div class="table-row"><code>session_actions</code><p>Reusable workflow instructions with exact Markdown prompts, required skill capabilities, and server-owned completion proof kinds.</p></div>
+                <div class="table-row"><code>builtin_session_action_overrides</code><p>The operator's instruction for an editable built-in session action, today only Grill, keyed by action id and overlaid on the shipped text by the workflow store. A NULL instruction is a reset to the shipped text; the row stays so its revision only moves forward. Not read by any settings backup domain.</p></div>
               </div>
             </details>
 

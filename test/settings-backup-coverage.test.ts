@@ -164,6 +164,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     defaultSkillEnabled: "setting",
     commitPlanHtml: "setting",
     planStorage: "setting",
+    grillFirstKinds: "setting",
     skills: "setting",
     generation: "derived",
     generationAt: "derived",
@@ -194,6 +195,7 @@ test("mixed config snapshots include settings and exclude derived or operational
     alwaysDraftPr: true,
     commitPlanHtml: true,
     planStorage: "local",
+    grillFirstKinds: ["plan"],
     skills: { retro: true },
     generation: 42,
     generationAt: 1234,
@@ -204,6 +206,7 @@ test("mixed config snapshots include settings and exclude derived or operational
     alwaysDraftPr: true,
     commitPlanHtml: true,
     planStorage: "local",
+    grillFirstKinds: ["plan"],
     skills: { retro: true },
   });
 

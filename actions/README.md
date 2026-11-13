@@ -30,6 +30,14 @@ rather than prose, so they live in a table keyed by slug in
 frontmatter would otherwise ship an action that never sends or completes under the wrong
 proof.
 
+## Editable built-ins
+
+`grill.md` is the one built-in an operator edits in place, because Grill me first sends it by
+id rather than through a stage somebody chose. `EDITABLE_BUILTIN_SESSION_ACTION_IDS` in
+`src/server/workflows/builtin-session-actions.ts` names it; an operator's text is stored in
+`builtin_session_action_overrides` and overlaid on this document's, and resetting it puts this
+document's text back.
+
 ## Filenames are durable ids
 
 A filename slug is the durable half of its `builtin:<slug>` id, and published workflow

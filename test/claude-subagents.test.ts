@@ -370,6 +370,25 @@ test("foreground agents the live set never names leave nothing behind", () => {
   assert.equal(observeClaudeSubagentFrame(s, started("fg3", { is_backgrounded: true }), 100).tasks.get("fg3")?.shown ?? false, false);
 });
 
+test("after a restart reported without a run id, late frames from the named runs before it stay late", () => {
+  let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })], emptyClaudeSubagents(), 100);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "" }), 200);
+  s = observeClaudeSubagentFrame(s, level(), 300);
+  // It rejoins the set with no run id: a new run, whose own id is unknown.
+  s = observeClaudeSubagentFrame(s, level(agent("a")), 400);
+  assert.deepEqual([s.tasks.get("a")!.runId, s.tasks.get("a")!.pastRuns], [null, ["r1"]]);
+  assert.deepEqual(states(s), { a: "running" });
+  // A late r1 notification, progress or start cannot touch the new run.
+  for (const late of [
+    sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "late" }),
+    sys("task_progress", { task_id: "a", run_id: "r1", usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } }),
+    started("a", { is_backgrounded: true, run_id: "r1" }),
+  ]) {
+    assert.equal(observeClaudeSubagentFrame(s, late, 500), s);
+  }
+  assert.equal(subagentActivityLine({ state: "idle", subagents: claudeSubagentSummary(s)! }), "idle · 1 agent still running");
+});
+
 test("a repeated start for the run that already ended does not revive it", () => {
   let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })]);
   s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "" }), 2);

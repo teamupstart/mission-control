@@ -144,14 +144,17 @@ function newRun(incoming: string | null, known: RunMemory, wasLive: boolean): bo
 
 /** Whether `incoming` names the run `known` describes, or one already seen before it. */
 function sameOrEarlierRun(incoming: string | null, known: RunMemory): boolean {
-  return incoming !== null && known.runId !== null &&
-    (incoming === known.runId || known.pastRuns.includes(incoming));
+  return incoming !== null && (incoming === known.runId || known.pastRuns.includes(incoming));
 }
 
-/** Whether `incoming` names a run seen before the current one: a late frame from an old run. */
+/**
+ * Whether `incoming` names a run seen before the current one: a late frame from an old run.
+ * Read from the history even when the current run carries no id - a restart the live set
+ * reported without one - because the runs before it still did, and their late frames must not
+ * end it.
+ */
 function earlierRun(incoming: string | null, known: RunMemory): boolean {
-  return incoming !== null && known.runId !== null && incoming !== known.runId &&
-    known.pastRuns.includes(incoming);
+  return incoming !== null && incoming !== known.runId && known.pastRuns.includes(incoming);
 }
 
 const SUBTYPES = new Set([

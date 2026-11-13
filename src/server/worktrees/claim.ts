@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { matchesGlob } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { WorktreeClaim } from "@shared/protocol.ts";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import type { WorktreeClaimVariableSource, WorktreeClaimVariableView } from "@shared/worktrees.ts";
@@ -278,7 +279,23 @@ export interface ClaimStepRequest {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   signal: AbortSignal;
+  /**
+   * Told each piece of the step's output as it arrives, decoded on character boundaries, for a
+   * view that follows a step live (a Warm's tail and log). The step's bounded tail is kept
+   * either way. Unredacted: `runClaimSteps` removes claim variable values before passing it on.
+   *
+   * Returning a promise is backpressure: both pipes are paused until it settles, so a step that
+   * prints faster than its reader keeps up blocks on its own pipe instead of the daemon
+   * buffering its output. The step's time limit keeps running meanwhile.
+   *
+   * `stream` names the pipe each piece came from. The two pipes interleave arbitrarily, so a
+   * reader that must see each stream's text contiguously, as redaction does, keeps them apart.
+   */
+  onOutput?: (text: string, stream: ClaimOutputStream) => void | Promise<void>;
 }
+
+/** Which of a step's pipes a piece of its output came from. */
+export type ClaimOutputStream = "stdout" | "stderr";
 
 export type ClaimStepResult =
   | { outcome: "exited"; code: number | null; signal: string | null; tail: string; truncatedBytes: number }
@@ -373,12 +390,53 @@ export async function runClaimStep(
       finish({ outcome: "spawnFailed", reason: error instanceof Error ? error.message : String(error) });
       return;
     }
-    child.stdout?.on("data", (chunk: Buffer) => ring.push(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => ring.push(chunk));
+    // One decoder per stream, so a character split across two chunks of one stream is never
+    // joined with bytes from the other.
+    const decoders = request.onOutput ? [new StringDecoder("utf8"), new StringDecoder("utf8")] as const : null;
+    // How many of the reader's waits are outstanding; the pipes flow again once none are.
+    let waiting = 0;
+    const pipes = () => [child.stdout, child.stderr];
+    // A live view of the step is never part of the step, so its failures are only reported.
+    const listenerFailed = (error: unknown): void => {
+      console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+    };
+    const forward = (text: string, stream: ClaimOutputStream): void => {
+      if (!text) return;
+      let wait: void | Promise<void>;
+      try {
+        wait = request.onOutput?.(text, stream);
+      } catch (error) {
+        listenerFailed(error);
+        return;
+      }
+      if (!wait || settled) return;
+      waiting += 1;
+      if (waiting === 1) for (const pipe of pipes()) pipe?.pause();
+      const resume = (): void => {
+        waiting -= 1;
+        if (waiting === 0) for (const pipe of pipes()) pipe?.resume();
+      };
+      wait.then(resume, (error: unknown) => {
+        listenerFailed(error);
+        resume();
+      });
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      ring.push(chunk);
+      if (decoders) forward(decoders[0].write(chunk), "stdout");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      ring.push(chunk);
+      if (decoders) forward(decoders[1].write(chunk), "stderr");
+    });
     child.once("error", (error) => {
       if (child.pid === undefined) finish({ outcome: "spawnFailed", reason: error.message });
     });
     child.once("close", (code, signal) => {
+      if (decoders) {
+        forward(decoders[0].end(), "stdout");
+        forward(decoders[1].end(), "stderr");
+      }
       const { text, truncatedBytes } = tail();
       finish(ending
         ? { outcome: ending, tail: text, truncatedBytes }
@@ -472,7 +530,40 @@ export async function runClaimSteps(input: {
   deadline?: number;
   /** Told as each step begins, before its environment is built, so a view can say which runs. */
   onStep?: (step: RunningClaimStep) => void;
+  /**
+   * Told each step's command as it begins, then its output as it arrives, with every value the
+   * step received already removed, then how it ended. For a view that follows the claim live.
+   * A promise it returns for a step's output is backpressure, as for `ClaimStepRequest`.
+   */
+  onOutput?: (text: string) => void | Promise<void>;
 }): Promise<ClaimStepsOutcome> {
+  const failed = (error: unknown): void => {
+    console.warn(`[worktrees] claim output listener failed: ${error instanceof Error ? error.message : String(error)}`);
+  };
+  // The header, the final flushes and the failure summary drop what this returns, so a
+  // rejection is handled here; the handled promise still carries backpressure.
+  const say = (text: string): void | Promise<void> => {
+    let wait: void | Promise<void>;
+    try {
+      wait = input.onOutput?.(text);
+    } catch (error) {
+      failed(error);
+      return undefined;
+    }
+    return wait ? wait.catch(failed) : undefined;
+  };
+  const outcome = await runClaimStepsInner(input, input.onOutput ? say : null);
+  if (input.onOutput && !outcome.ok) {
+    const { warning } = outcome;
+    say(`\nStep ${warning.step} of ${warning.stepCount} ${warning.reason}.\n`);
+  }
+  return outcome;
+}
+
+async function runClaimStepsInner(
+  input: Parameters<typeof runClaimSteps>[0],
+  say: ((text: string) => void | Promise<void>) | null,
+): Promise<ClaimStepsOutcome> {
   const limitMs = input.claim.timeoutMinutes * 60_000;
   const deadline = input.deadline ?? input.now() + limitMs;
   const stepCount = input.claim.steps.length;
@@ -514,6 +605,15 @@ export async function runClaimSteps(input: {
       cleanupAgentSubprocessEnv(built.env);
       return fail(timedOut);
     }
+    // The command is the operator's own argv, never a value; what the step prints goes through
+    // the same redaction as its stored tail before anything outside the step sees it.
+    say?.(`${index > 0 ? "\n" : ""}$ ${renderClaimArgv(step.argv)}\n`);
+    // One redactor per pipe, both feeding the same view. The pipes interleave arbitrarily, so a
+    // value one stream splits across two writes can have the other stream's output land between
+    // its halves; only a stream's own text, kept contiguous, still shows the whole value.
+    const live = say
+      ? { stdout: new RedactedOutput(secrets, say), stderr: new RedactedOutput(secrets, say) }
+      : null;
     let result: ClaimStepResult;
     try {
       result = await input.runStep({
@@ -522,10 +622,13 @@ export async function runClaimSteps(input: {
         env: built.env,
         timeoutMs: remaining,
         signal: input.signal,
+        ...(live ? { onOutput: (text: string, stream: ClaimOutputStream) => live[stream].push(text) } : {}),
       });
     } catch (error) {
       result = { outcome: "spawnFailed", reason: error instanceof Error ? error.message : String(error) };
     } finally {
+      live?.stdout.flush();
+      live?.stderr.flush();
       cleanupAgentSubprocessEnv(built.env);
     }
     const missing = built.missing.length > 0 ? ` (no value for ${built.missing.join(", ")})` : "";
@@ -682,14 +785,39 @@ const MIN_REDACTED_FRAGMENT = 4;
 export function redactClaimValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>,
+  options: {
+    /**
+     * Whether the text may start partway through a value, as a tail the ring cut does. Output
+     * streamed from its first byte never does, so `RedactedOutput` turns this off.
+     */
+    leadingFragments?: boolean;
+  } = {},
 ): string {
+  return applyRedaction(text, redactionSpans(text, secrets, options));
+}
+
+interface RedactionSpan {
+  start: number;
+  end: number;
+  names: string[];
+}
+
+/** Every range of `text` a value covers, overlapping and adjacent occurrences merged, in order. */
+function redactionSpans(
+  text: string,
+  secrets: ReadonlyArray<{ name: string; value: string }>,
+  options: { leadingFragments?: boolean },
+  covered: RedactionSpan | null = null,
+): RedactionSpan[] {
   const spans: Array<{ start: number; end: number; name: string }> = [];
+  if (covered) for (const name of covered.names) spans.push({ start: covered.start, end: covered.end, name });
   for (const { name, value } of secrets) {
     if (value.length === 0) continue;
     // Every complete occurrence, overlapping ones included.
     for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
       spans.push({ start: at, end: at + value.length, name });
     }
+    if (options.leadingFragments === false) continue;
     // The longest leading piece of the text that ends this value, as the ring's cut leaves it.
     for (let length = value.length - 1; length >= MIN_REDACTED_FRAGMENT; length -= 1) {
       if (text.startsWith(value.slice(-length))) {
@@ -698,9 +826,8 @@ export function redactClaimValues(
       }
     }
   }
-  if (spans.length === 0) return text;
   spans.sort((a, b) => a.start - b.start || b.end - a.end);
-  const merged: Array<{ start: number; end: number; names: string[] }> = [];
+  const merged: RedactionSpan[] = [];
   for (const span of spans) {
     const last = merged.at(-1);
     if (last && span.start <= last.end) {
@@ -710,13 +837,93 @@ export function redactClaimValues(
       merged.push({ start: span.start, end: span.end, names: [span.name] });
     }
   }
+  return merged;
+}
+
+/** `text` with each span replaced by its marker; a span past the end of `text` is clipped. */
+function applyRedaction(text: string, spans: readonly RedactionSpan[]): string {
   let redacted = "";
   let cursor = 0;
-  for (const span of merged) {
+  for (const span of spans) {
+    if (span.start >= text.length) break;
     redacted += `${text.slice(cursor, span.start)}[${span.names.join(", ")} redacted]`;
-    cursor = span.end;
+    cursor = Math.min(span.end, text.length);
   }
   return redacted + text.slice(cursor);
+}
+
+/** How long an unterminated line may grow in a redactor before it streams anyway. */
+const MAX_OPEN_LINE = 4_096;
+
+/**
+ * A step's output, streamed with every value the step received removed, however the pipe cut
+ * it. A value can arrive split across two pieces, so the stream holds back the last
+ * `longest value - 1` characters it has seen, the most an unfinished value can occupy. A cut
+ * that would split a complete value, or a run of overlapping ones, moves back to the run's
+ * start. A run that already starts the held text cannot move back without holding it forever
+ * (a value such as `00` in a stream of zeroes), so the cut stays, the part before it is
+ * released redacted, and the rest is carried as covered into the next release. Either way no
+ * character of a value is released, and `flush` releases the rest when the step ends.
+ *
+ * It releases whole lines where it can: a value with no newline cannot span a line end, so
+ * every complete line is safe, and a step's stdout and stderr, each with a redactor of its own,
+ * then interleave at line boundaries. A line still open past `MAX_OPEN_LINE` characters streams
+ * at the value-safe cut instead. The live view therefore lags the step by at most one line.
+ *
+ * One redactor reads one stream. Two streams' text concatenated can put one stream's output
+ * between the halves of a value the other split, and then neither half matches.
+ */
+export class RedactedOutput {
+  private pending = "";
+  /** The front of `pending` that a run released at the last cut still covers. */
+  private covered: RedactionSpan | null = null;
+  private readonly hold: number;
+  private readonly secrets: ReadonlyArray<{ name: string; value: string }>;
+  /** No value holds a newline, so no value can span a line end and a whole line is safe. */
+  private readonly lineSafe: boolean;
+
+  /** `sink` may return a promise as backpressure; `push` and `flush` hand it back. */
+  constructor(
+    secrets: ReadonlyArray<{ name: string; value: string }>,
+    private readonly sink: (text: string) => void | Promise<void>,
+  ) {
+    this.secrets = secrets.filter((secret) => secret.value.length > 0);
+    this.hold = Math.max(0, ...this.secrets.map((secret) => secret.value.length - 1));
+    this.lineSafe = this.secrets.every((secret) => !/[\r\n]/.test(secret.value));
+  }
+
+  push(text: string): void | Promise<void> {
+    if (this.secrets.length === 0) {
+      return text ? this.sink(text) : undefined;
+    }
+    this.pending += text;
+    // Whole lines first: a step's two pipes each have a redactor, and releasing complete lines
+    // keeps their interleaving at line boundaries instead of mid-word. A line still open past
+    // MAX_OPEN_LINE characters streams anyway, up to the value-safe cut.
+    const lineEnd = this.lineSafe ? this.pending.lastIndexOf("\n") + 1 : 0;
+    const open = this.pending.length - lineEnd;
+    let cut = open > MAX_OPEN_LINE ? Math.max(lineEnd, this.pending.length - this.hold) : lineEnd;
+    if (cut <= 0) return undefined;
+    // A value that starts before `cut` is complete in `pending` (it is at most `hold + 1`
+    // long), so the only way to split one is to cut through its merged span.
+    const spans = redactionSpans(this.pending, this.secrets, { leadingFragments: false }, this.covered);
+    const crossing = spans.find((span) => span.start < cut && span.end > cut);
+    let covered: RedactionSpan | null = null;
+    if (crossing && crossing.start > 0) cut = crossing.start;
+    else if (crossing) covered = { start: 0, end: crossing.end - cut, names: crossing.names };
+    const ready = applyRedaction(this.pending.slice(0, cut), spans);
+    this.pending = this.pending.slice(cut);
+    this.covered = covered;
+    return this.sink(ready);
+  }
+
+  flush(): void | Promise<void> {
+    if (!this.pending) return undefined;
+    const rest = applyRedaction(this.pending, redactionSpans(this.pending, this.secrets, { leadingFragments: false }, this.covered));
+    this.pending = "";
+    this.covered = null;
+    return this.sink(rest);
+  }
 }
 
 /** A backtick run longer than any in `text`, at least `minimum` long, so `text` cannot close it. */

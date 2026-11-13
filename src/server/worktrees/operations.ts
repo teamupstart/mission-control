@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
+import { lstat, open, readdir, rm } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { basename, dirname, join } from "node:path";
 import type { WorktreesConfig, WorktreesConfigPatch } from "@shared/protocol.ts";
 import {
   WORKTREE_INVENTORY_LIMITS,
@@ -17,9 +20,18 @@ import {
   type WorktreeRepositoryView,
   type WorktreeRiskKey,
   type WorktreeSlotDependenciesView,
+  type WorktreeWarmLogView,
+  type WorktreeWarmOperationView,
+  type WorktreeWarmTargetOutcome,
+  type WorktreeWarmTargetView,
   isWorktreeOwnerKind,
+  worktreeOperationPending,
 } from "@shared/worktrees.ts";
+import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
+import { WORKTREE_WARM_LOGS_DIR } from "../config.ts";
 import { run } from "../util/exec.ts";
+import { unref } from "../util/timers.ts";
+import { TailRing } from "../workflows/check-spawn.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
 import type {
   CheckGroupRecovery,
@@ -44,8 +56,10 @@ import {
 } from "./git.ts";
 import {
   WorktreeManager,
+  observedIdleRefusal,
   type NativePoolStatus,
   type NativeSlotStatus,
+  type WarmSlotResult,
 } from "./manager.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import {
@@ -55,6 +69,12 @@ import {
 } from "./occupancy.ts";
 
 const TOKEN_TTL_MS = 2 * 60_000;
+
+/** The most often a running Warm's output tail bumps the worktrees revision. */
+const WARM_TAIL_INTERVAL_MS = 1_000;
+/** An operation id as it may name a log file. */
+const WARM_LOG_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const WARM_LOG_NAME = /^([A-Za-z0-9_-]{1,128})\.log$/;
 
 export class WorktreeOperationError extends Error {
   constructor(
@@ -111,6 +131,10 @@ export interface WorktreeOperationsDeps {
    * Further submissions are refused; nothing listed is ever dropped to make room.
    */
   maxOperations: number;
+  /** Where each Warm writes its full log. */
+  warmLogsDirectory: string;
+  /** The most often a running Warm's output may bump the worktrees revision. */
+  warmTailIntervalMs: number;
 }
 
 interface Observation {
@@ -130,6 +154,101 @@ interface HeldOperation {
   view: WorktreeOperationView;
   held: HeldPreview;
   acknowledgements: Set<WorktreeRiskKey>;
+  /** Only for a Warm. */
+  warm: WarmRun | null;
+}
+
+/** A Warm operation's live state. Its log and tail are what the operation view shows. */
+interface WarmRun {
+  controller: AbortController;
+  /** The same bound and ring as a check's tail. */
+  ring: TailRing;
+  targets: WorktreeWarmTargetView[];
+  log: WarmLogFile;
+  cancelRequested: boolean;
+  /** The pending tail bump, if one is scheduled. */
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** The most a Warm log keeps of what was recorded before it opened. */
+const MAX_EARLY_LOG_BYTES = 64 * 1024;
+
+/**
+ * One Warm's full log, opened the first time a Warm holds a slot, so a Warm that skipped every
+ * target writes nothing. Appended in order; a write that fails is reported once and the Warm
+ * carries on, because the log is a record of the Warm, never a part of it.
+ *
+ * The log is complete, so it is never cut, and a disk slower than the step is never absorbed
+ * in memory either: once the stream's buffer is full, `write` returns a promise that settles on
+ * `drain`, and the claim pauses the step's pipes until it does.
+ */
+export class WarmLogFile {
+  private stream: WriteStream | null = null;
+  private broken = false;
+  /**
+   * What the Warm recorded before it first held a slot, such as an earlier target skipped
+   * because it was leased meanwhile. Written right after the header when the log opens, so the
+   * log still says what happened to every slot; dropped with the operation if it never opens.
+   * Only the Warm's own one-line results arrive before a slot is held, so the bound is generous.
+   */
+  private early: string[] = [];
+  private earlyBytes = 0;
+
+  constructor(readonly id: string, readonly path: string, private readonly header: () => string) {}
+
+  get opened(): boolean {
+    return this.stream !== null;
+  }
+
+  open(): void {
+    if (this.stream || this.broken) return;
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const stream = createWriteStream(this.path, { flags: "a", mode: 0o600 });
+    stream.on("error", (error) => {
+      if (this.broken) return;
+      this.broken = true;
+      console.warn(`[worktrees] Warm log ${this.path} could not be written: ${error.message}`);
+    });
+    this.stream = stream;
+    this.stream.write(this.header() + this.early.join(""));
+    this.early = [];
+    this.earlyBytes = 0;
+  }
+
+  write(text: string): void | Promise<void> {
+    const stream = this.stream;
+    if (this.broken || !text) return undefined;
+    if (!stream) {
+      const bytes = Buffer.byteLength(text, "utf8");
+      if (this.earlyBytes + bytes <= MAX_EARLY_LOG_BYTES) {
+        this.early.push(text);
+        this.earlyBytes += bytes;
+      }
+      return undefined;
+    }
+    if (stream.write(text)) return undefined;
+    return new Promise<void>((resolve) => {
+      const done = (): void => {
+        stream.off("drain", done);
+        stream.off("error", done);
+        stream.off("close", done);
+        resolve();
+      };
+      stream.once("drain", done);
+      // A broken or closed log never holds the step: the record stops, the Warm does not.
+      stream.once("error", done);
+      stream.once("close", done);
+    });
+  }
+
+  close(): Promise<void> {
+    const stream = this.stream;
+    if (!stream) return Promise.resolve();
+    return new Promise((resolve) => {
+      stream.end(() => resolve());
+      stream.once("error", () => resolve());
+    });
+  }
 }
 
 interface NativeTarget {
@@ -170,6 +289,7 @@ function taskIdentity(key: string): { id: string; position: number } | null {
 function ownerView(
   status: NativeSlotStatus,
   task: WorktreeTaskOwner,
+  isWarmOperation: (key: string) => boolean = () => false,
 ): WorktreeOwnerView | null {
   const kind = status.slot.activeOwnerKind;
   const key = status.slot.activeOwnerKey;
@@ -185,7 +305,7 @@ function ownerView(
     label: kind === "check"
       ? `Check ${key}`
       : kind === "warm"
-        ? "Seeding another slot's dependencies"
+        ? isWarmOperation(key) ? "Warming this slot ahead of time" : "Seeding another slot's dependencies"
         : `Manual lease ${key.slice(0, 8)}`,
   };
 }
@@ -300,6 +420,13 @@ export class WorktreeOperationsService {
   private nextObservation: Promise<Observation> | null = null;
   private readonly operations = new Map<string, HeldOperation>();
   private queue: Promise<void> = Promise.resolve();
+  /**
+   * Warms run one after another on their own queue. A Warm can run for as long as its claim's
+   * limit, and a cleanup queued behind it would wait all that time for nothing: the two never
+   * share a target, because each one's targets are pending to the other. One after another, a
+   * pool's later slots can seed from the ones warmed before them.
+   */
+  private warmQueue: Promise<void> = Promise.resolve();
 
   constructor(
     readonly manager: WorktreeManager,
@@ -320,6 +447,8 @@ export class WorktreeOperationsService {
       },
       maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
       claimVariablePresence,
+      warmLogsDirectory: WORKTREE_WARM_LOGS_DIR,
+      warmTailIntervalMs: WARM_TAIL_INTERVAL_MS,
       ...deps,
     };
   }
@@ -401,13 +530,13 @@ export class WorktreeOperationsService {
       const slots = pool.slots
         .slice(0, WORKTREE_INVENTORY_LIMITS.slotsPerRepository)
         .map((entry) => {
-          const owner = ownerView(entry, this.deps.tasks);
+          const owner = ownerView(entry, this.deps.tasks, (key) => this.operations.has(key));
           const processes = entry.occupancy.status === "known"
             ? { state: "known" as const, count: entry.occupancy.occupants.length, reason: describeWorktreeOccupants(entry.occupancy.occupants) }
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
-          const actions: Array<"return" | "destroy"> = [];
+          const actions: Array<"return" | "destroy" | "warm"> = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
           if (entry.slot.state === "leased") {
@@ -415,6 +544,11 @@ export class WorktreeOperationsService {
           }
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
             actions.push("destroy");
+          }
+          // Warm prepares an idle slot ahead of time: one acquisition's own rule calls idle, in a
+          // pool whose claim it would run. The preview applies the same rule.
+          if (pool.policy.enabled && pool.policy.claim && pool.identityValid && pool.markerValid && !observedIdleRefusal(entry)) {
+            actions.push("warm");
           }
           return {
             id: entry.slot.id,
@@ -449,6 +583,7 @@ export class WorktreeOperationsService {
               defaultSha: pool.observedDefaultSha,
               defaultFingerprint: pool.defaultFingerprint,
             }),
+            warmLog: this.warmLogView(entry.slot.depsLogPath),
           };
         });
       const counts = {
@@ -910,6 +1045,10 @@ export class WorktreeOperationsService {
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
+    if (request.action === "warm") {
+      return this.buildWarmPreview(request, observed, affected, risks, blockers, consequences);
+    }
+
     const poolId = request.action === "prune" || request.action === "reconcile"
       ? request.poolId
       : request.action === "destroy" && request.target.kind === "pool"
@@ -984,6 +1123,77 @@ export class WorktreeOperationsService {
       .map((slot) => ({ pool, slot }));
     if (initialTargets.length === 0) blockers.push("The fixed pool target contains no slots to destroy.");
     return this.buildSlotTargets(request, observed, initialTargets, affected, risks, blockers, consequences);
+  }
+
+  /**
+   * Warm one available slot, or every available slot of a pool. Only an idle slot is a target:
+   * available, exactly owned, process-free, clean, and not already covered by another queued
+   * operation. A slot Warm names directly that is anything else blocks the preview; a pool Warm
+   * leaves such slots out and says how many. Nothing here is destructive, so nothing needs an
+   * acknowledgement, and execute binds no fingerprint: whatever changed meanwhile is decided
+   * per slot when its turn comes, and a slot that is no longer idle then is skipped.
+   */
+  private buildWarmPreview(
+    request: Extract<WorktreeActionRequest, { action: "warm" }>,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Omit<WorktreeActionPreview, "token" | "expiresAt"> {
+    const target = request.target;
+    const pool = target.kind === "pool"
+      ? observed.native.find((entry) => entry.pool.id === target.poolId)
+      : observed.native.find((entry) => entry.slots.some((slot) => slot.slot.id === target.slotId));
+    if (!pool) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+    if (!pool.policy.claim) blockers.push("This pool has no dependency claim configured, so there is nothing to warm.");
+    if (!pool.policy.enabled) blockers.push("Native worktrees are disabled for this repository.");
+    if (!pool.identityValid || !pool.markerValid) {
+      blockers.push("The pool's repository identity or marker cannot be proven.");
+    }
+    const candidates = target.kind === "pool"
+      ? pool.slots
+      : pool.slots.filter((slot) => slot.slot.id === target.slotId);
+    const leftOut: string[] = [];
+    for (const slot of candidates) {
+      // Acquisition's own idle rule, read from this observation. The slot is held to the same
+      // rule again, freshly, when its turn comes.
+      const refusal = observedIdleRefusal(slot);
+      const why = refusal?.kind === "notAvailable"
+        ? `Slot ${slot.slot.ordinal} is ${slot.slot.state}. Warm never touches a slot that is leased, quarantined or changing.`
+        : refusal
+          ? `Slot ${slot.slot.ordinal} is not idle: ${refusal.reason}.`
+          : observed.pending.has(slot.slot.path)
+            ? `Slot ${slot.slot.ordinal} already has an operation queued.`
+            : null;
+      if (why) {
+        if (target.kind === "slot") blockers.push(why);
+        else leftOut.push(why);
+        continue;
+      }
+      affected.push({
+        provider: "mission",
+        id: slot.slot.id,
+        path: slot.slot.path,
+        owner: null,
+        version: slot.slot.version,
+        safetyRevision: digest({ state: slot.slot.state, version: slot.slot.version, head: slot.observedHead }),
+        diskBytes: null,
+      });
+    }
+    if (target.kind === "pool" && affected.length === 0) blockers.push("No slot in this pool is idle to warm.");
+    consequences.push(
+      "Holds each slot under a warm lease, fetches origin, resets the slot to origin's default branch, then seeds it from an idle sibling or runs the pool's claim under its usual rules, and returns it as available.",
+      "Each slot is checked again when its turn comes, as acquisition checks it: one no longer available is skipped untouched, and one that fails the idle check, such as one holding an untracked file, is quarantined, as a lease would quarantine it, and skipped.",
+    );
+    if (target.kind === "pool") {
+      consequences.push("Slots are warmed one at a time, so a later slot can seed from one warmed before it. A slot leased before its turn comes is skipped and listed as skipped.");
+      if (leftOut.length > 0) {
+        consequences.push(`${leftOut.length} ${leftOut.length === 1 ? "slot is" : "slots are"} left alone: ${leftOut.join(" ")}`);
+      }
+    }
+    consequences.push("Cancel stops the running step's process group and returns the slot to the pool.");
+    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
   /** Return or destroy a fixed set of native slots, widened to every resource their tasks own. */
@@ -1070,6 +1280,19 @@ export class WorktreeOperationsService {
     token: string,
     acknowledgements: readonly WorktreeRiskKey[],
   ): Promise<WorktreeActionExecuteResult> {
+    if (this.tokens.get(token)?.preview.request.action === "warm") {
+      // A Warm is an operation with a view of its own; inline, it is that operation awaited.
+      // Read right after `submit`, the queue ends at this Warm's own link: it settles after the
+      // Warms accepted before it, which run first anyway, and never waits for later ones.
+      const { operation } = this.submit(token, acknowledgements);
+      await this.warmQueue;
+      const entry = this.operations.get(operation.id);
+      const message = warmResultMessage(entry ? this.viewOf(entry) : operation);
+      // The caller holds the result, so nobody would dismiss the report and it would keep one
+      // of the listed slots for good. Its log stays reachable through the slot row.
+      this.dismiss(operation.id);
+      return { ok: true, action: "warm", message };
+    }
     const { held, acknowledgementSet } = this.claim(token, acknowledgements);
     return this.perform(held, acknowledgementSet);
   }
@@ -1091,13 +1314,19 @@ export class WorktreeOperationsService {
       // there is room. Nothing listed is dropped to make it: accepted work runs to the end,
       // and a failure report - possibly the only record of a partial removal - leaves only
       // through Dismiss or an accepted retry.
-      const failed = [...this.operations.values()].filter((entry) => entry.view.state === "failed").length;
-      const queued = this.operations.size - failed;
+      // A finished Warm is a report too: it stays listed, with its results and log, until it
+      // is dismissed.
+      const listed = [...this.operations.values()];
+      const failed = listed.filter((entry) => entry.view.state === "failed").length;
+      const finished = listed.filter((entry) => entry.view.state === "finished").length;
+      const queued = this.operations.size - failed - finished;
       throw new WorktreeOperationError(
         503,
-        failed > 0
-          ? `${this.operations.size} cleanups are listed (${failed} failed, ${queued} queued); dismiss a failed report or wait for queued cleanups to finish, then execute again`
-          : `${queued} cleanups are already queued; execute again when some have finished`,
+        finished > 0
+          ? `${this.operations.size} operations are listed (${failed} failed, ${finished} finished Warms, ${queued} queued); dismiss a report or wait for queued operations to finish, then execute again`
+          : failed > 0
+            ? `${this.operations.size} cleanups are listed (${failed} failed, ${queued} queued); dismiss a failed report or wait for queued cleanups to finish, then execute again`
+            : `${queued} cleanups are already queued; execute again when some have finished`,
         "unavailable",
       );
     }
@@ -1120,27 +1349,268 @@ export class WorktreeOperationsService {
       completed: [],
       queuedAt: this.deps.now(),
       finishedAt: null,
+      warm: null,
     };
-    const entry: HeldOperation = { view, held, acknowledgements: acknowledgementSet };
+    const warm = held.preview.request.action === "warm" ? this.warmRun(view, held.preview) : null;
+    const entry: HeldOperation = { view, held, acknowledgements: acknowledgementSet, warm };
     this.operations.set(view.id, entry);
     // A throwing publisher must not wedge every later operation behind a rejected link.
-    this.queue = this.queue.then(() => this.runQueued(entry)).catch(() => {});
+    if (warm) this.warmQueue = this.warmQueue.then(() => this.runWarm(entry)).catch(() => {});
+    else this.queue = this.queue.then(() => this.runQueued(entry)).catch(() => {});
     this.deps.notifyChanged();
-    return { ok: true, operation: { ...view } };
+    return { ok: true, operation: this.viewOf(entry) };
   }
 
   /** Settles when every operation accepted so far has finished, whatever its outcome. */
   idle(): Promise<void> {
-    return this.queue;
+    return Promise.all([this.queue, this.warmQueue]).then(() => {});
   }
 
-  /** Forget a failed operation the operator has read. Queued and running work cannot be dismissed. */
+  /**
+   * Forget a failed operation, or a finished Warm, the operator has read. Queued and running
+   * work cannot be dismissed. A Warm's log stays while a slot row still names it.
+   */
   dismiss(id: string): boolean {
     const entry = this.operations.get(id);
-    if (!entry || entry.view.state !== "failed") return false;
+    if (!entry || worktreeOperationPending(entry.view)) return false;
     this.operations.delete(id);
     this.deps.notifyChanged();
+    if (entry.warm) void this.sweepWarmLogs();
     return true;
+  }
+
+  /**
+   * Cancel a queued or running Warm. A queued one finishes at once with every target cancelled.
+   * A running one has its claim stopped, which kills the running step's process group; the
+   * slot it holds is returned to the pool, with `deps_state` following the Stop rule, and the
+   * targets after it are not reached. False for anything else.
+   */
+  cancel(id: string): boolean {
+    const entry = this.operations.get(id);
+    const warm = entry?.warm;
+    if (!entry || !warm || !worktreeOperationPending(entry.view)) return false;
+    if (!warm.cancelRequested) {
+      warm.cancelRequested = true;
+      warm.controller.abort("cancelled");
+      if (entry.view.state === "queued") {
+        for (const target of warm.targets) {
+          target.outcome = "cancelled";
+          target.detail = "cancelled before the Warm started";
+        }
+        entry.view.state = "finished";
+        entry.view.finishedAt = this.deps.now();
+      }
+    }
+    this.deps.notifyChanged();
+    return true;
+  }
+
+  private warmRun(view: WorktreeOperationView, preview: WorktreeActionPreview): WarmRun {
+    const slots = new Map(this.manager.store.slots().map((slot) => [slot.id, slot]));
+    const request = preview.request;
+    return {
+      controller: new AbortController(),
+      ring: new TailRing(WORKFLOW_EXECUTION_LIMITS.checkOutput),
+      targets: preview.affected.map((target) => ({
+        slotId: target.id,
+        ordinal: slots.get(target.id)?.ordinal ?? 0,
+        path: target.path,
+        outcome: "pending",
+        detail: null,
+      })),
+      log: new WarmLogFile(view.id, this.warmLogPath(view.id), () =>
+        `Warm ${view.id}, accepted ${new Date(view.queuedAt).toISOString()}\n` +
+        `${request.action === "warm" && request.target.kind === "pool" ? "Warm idle slots" : "Warm"}: ` +
+        `${preview.affected.map((target) => target.path).join(", ")}\n`),
+      cancelRequested: false,
+      timer: null,
+    };
+  }
+
+  /**
+   * Run one Warm's targets in order. Each is decided when its turn comes: a slot that is no
+   * longer idle then is skipped, and one acquisition's screening would quarantine is quarantined
+   * first (`WorktreeManager.warmSlot`). The operation stays listed as `finished` so its results
+   * and log can be read, until it is dismissed.
+   */
+  private async runWarm(entry: HeldOperation): Promise<void> {
+    const warm = entry.warm!;
+    if (entry.view.state !== "queued") return;
+    entry.view.state = "running";
+    try {
+      // Inside the try: a throwing publisher must still reach the cleanup below.
+      this.deps.notifyChanged();
+      for (const target of warm.targets) {
+        if (warm.controller.signal.aborted) {
+          target.outcome = "cancelled";
+          target.detail = "cancelled before its turn";
+          this.warmOutput(entry, `Slot ${target.ordinal}: cancelled. ${target.detail}\n`);
+          continue;
+        }
+        target.outcome = "running";
+        this.deps.notifyChanged();
+        let result: WarmSlotResult;
+        try {
+          result = await this.manager.warmSlot({
+            slotId: target.slotId,
+            operationId: entry.view.id,
+            signal: warm.controller.signal,
+            output: (text) => this.warmOutput(entry, text),
+            log: { path: warm.log.path, open: () => warm.log.open() },
+          });
+        } catch (error) {
+          console.error("[worktrees] Warm failed:", error);
+          result = { outcome: "failed", reason: compact(error instanceof Error ? error.message : String(error)) ?? "Warm failed" };
+        }
+        switch (result.outcome) {
+          case "warmed":
+            target.outcome = "warmed";
+            target.detail = result.stepsSkipped ? "Its dependencies already matched; no step ran." : null;
+            break;
+          case "claimFailed":
+            target.outcome = "claimFailed";
+            target.detail = `Step ${result.warning.step} of ${result.warning.stepCount} ${result.warning.reason}.`;
+            break;
+          default:
+            target.outcome = result.outcome;
+            target.detail = compact(result.reason);
+        }
+        this.warmOutput(entry, `Slot ${target.ordinal}: ${target.outcome}${target.detail ? `. ${target.detail}` : ""}\n`);
+      }
+      entry.view.state = "finished";
+    } catch (error) {
+      entry.view.state = "failed";
+      entry.view.error = compact(error instanceof Error ? error.message : String(error)) ?? "Warm failed";
+      console.error("[worktrees] Warm operation failed:", error);
+    } finally {
+      entry.view.finishedAt = this.deps.now();
+      if (warm.timer) clearTimeout(warm.timer);
+      warm.timer = null;
+      await warm.log.close();
+      this.deps.notifyChanged();
+      // A Warm replaces each slot's previous log, which no row names any more.
+      await this.sweepWarmLogs();
+    }
+  }
+
+  /**
+   * A Warm's output, already redacted: into its tail and its log. The dashboard learns of it
+   * through the content-free worktrees bump, at most once per `warmTailIntervalMs`.
+   */
+  private warmOutput(entry: HeldOperation, text: string): void | Promise<void> {
+    const warm = entry.warm;
+    if (!warm || !text) return undefined;
+    warm.ring.push(Buffer.from(text, "utf8"));
+    const backpressure = warm.log.write(text);
+    if (!warm.timer) {
+      warm.timer = unref(setTimeout(() => {
+        warm.timer = null;
+        this.deps.notifyChanged();
+      }, this.deps.warmTailIntervalMs));
+    }
+    return backpressure;
+  }
+
+  private warmLogPath(id: string): string {
+    return join(this.deps.warmLogsDirectory, `${id}.log`);
+  }
+
+  /** A slot row's log path as the slot card links it, or null for a path this service did not name. */
+  private warmLogView(path: string | null): WorktreeWarmLogView | null {
+    if (!path || dirname(path) !== this.deps.warmLogsDirectory) return null;
+    const match = WARM_LOG_NAME.exec(basename(path));
+    return match ? { id: match[1]!, path } : null;
+  }
+
+  /**
+   * Remove every Warm log that no listed operation and no slot row names. Startup runs it once
+   * no operation can exist, so only the logs slot rows name survive a restart; each finished
+   * Warm and each dismissal runs it again for the logs they left behind.
+   */
+  async sweepWarmLogs(): Promise<void> {
+    let names: string[];
+    try {
+      names = await readdir(this.deps.warmLogsDirectory);
+    } catch {
+      return;
+    }
+    let referenced: Set<string>;
+    try {
+      referenced = this.manager.store.depsLogPaths();
+    } catch (error) {
+      console.warn(`[worktrees] Warm logs were kept: slot rows could not be read: ${compact(String(error))}`);
+      return;
+    }
+    for (const name of names) {
+      const match = WARM_LOG_NAME.exec(name);
+      if (!match || this.operations.has(match[1]!)) continue;
+      const path = this.warmLogPath(match[1]!);
+      if (referenced.has(path)) continue;
+      try {
+        if (!(await lstat(path)).isFile()) continue;
+        await rm(path, { force: true });
+      } catch (error) {
+        console.warn(`[worktrees] Warm log ${path} could not be removed: ${compact(String(error))}`);
+      }
+    }
+  }
+
+  /**
+   * A Warm log, for the operation view's and the slot card's link. Only a log a listed
+   * operation or a slot row names is served; null for anything else.
+   *
+   * A log is complete and unbounded, so it is never read into memory: the caller gets a stream
+   * of exactly the `size` bytes the file held when it was opened. A running Warm keeps
+   * appending, and a fixed length keeps the response's length true.
+   */
+  async warmLog(id: string): Promise<{ id: string; path: string; size: number; stream: Readable } | null> {
+    if (!WARM_LOG_ID.test(id)) return null;
+    const path = this.warmLogPath(id);
+    if (!this.operations.has(id) && !this.manager.store.depsLogPaths().has(path)) return null;
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(path, "r");
+    } catch {
+      return null;
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        await handle.close();
+        return null;
+      }
+      if (stat.size === 0) {
+        await handle.close();
+        return { id, path, size: 0, stream: Readable.from([]) };
+      }
+      // Closes the handle when it ends, errors, or is destroyed by a client that went away.
+      return { id, path, size: stat.size, stream: handle.createReadStream({ start: 0, end: stat.size - 1 }) };
+    } catch {
+      await handle.close().catch(() => {});
+      return null;
+    }
+  }
+
+  private viewOf(entry: HeldOperation): WorktreeOperationView {
+    const { view, warm } = entry;
+    let warmView: WorktreeWarmOperationView | null = null;
+    if (warm) {
+      const tail = warm.ring.read();
+      warmView = {
+        targets: warm.targets.map((target) => ({ ...target })),
+        tail: tail.text,
+        truncatedBytes: tail.truncatedBytes,
+        log: warm.log.opened ? { id: warm.log.id, path: warm.log.path } : null,
+        cancelRequested: warm.cancelRequested,
+      };
+    }
+    return {
+      ...view,
+      targets: view.targets.map((target) => ({ ...target })),
+      removals: view.removals.map((target) => ({ ...target })),
+      completed: view.completed.map((target) => ({ ...target })),
+      warm: warmView,
+    };
   }
 
   private async runQueued(entry: HeldOperation): Promise<void> {
@@ -1161,23 +1631,21 @@ export class WorktreeOperationsService {
       }
     } finally {
       this.deps.notifyChanged();
+      // A destroy or prune can remove the last slot row that names a Warm log, after its Warm
+      // was already dismissed. Whatever the outcome, partial removals included, the log goes now.
+      await this.sweepWarmLogs();
     }
   }
 
   /** Every path a queued or running operation covers, optionally without one operation's own. */
   private pendingPaths(excludeOperation: string | null): Set<string> {
     return new Set([...this.operations.values()]
-      .filter((entry) => entry.view.state !== "failed" && entry.view.id !== excludeOperation)
+      .filter((entry) => worktreeOperationPending(entry.view) && entry.view.id !== excludeOperation)
       .flatMap((entry) => entry.view.targets.map((target) => target.path)));
   }
 
   private operationViews(): WorktreeOperationView[] {
-    return [...this.operations.values()].map(({ view }) => ({
-      ...view,
-      targets: view.targets.map((target) => ({ ...target })),
-      removals: view.removals.map((target) => ({ ...target })),
-      completed: view.completed.map((target) => ({ ...target })),
-    }));
+    return [...this.operations.values()].map((entry) => this.viewOf(entry));
   }
 
 
@@ -1370,6 +1838,26 @@ export class WorktreeOperationsService {
       case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
       case "destroy": return "Fixed worktree target destroyed.";
       case "legacyReturn": return "Exact legacy lease returned through its domain owner.";
+      case "warm": return "Warm finished.";
     }
   }
+}
+
+const WARM_OUTCOME_ORDER: ReadonlyArray<[WorktreeWarmTargetOutcome, string]> = [
+  ["warmed", "warmed"],
+  ["claimFailed", "claim failed"],
+  ["failed", "failed"],
+  ["cancelled", "cancelled"],
+  ["skipped", "skipped"],
+];
+
+/** What one finished Warm did, counted by its targets' outcomes, never a blanket success. */
+function warmResultMessage(view: WorktreeOperationView): string {
+  if (view.state === "failed") return `Warm failed: ${view.error ?? "the operation stopped"}.`;
+  const outcomes = view.warm?.targets.map((target) => target.outcome) ?? [];
+  const counts = WARM_OUTCOME_ORDER
+    .map(([outcome, label]) => [outcomes.filter((entry) => entry === outcome).length, label] as const)
+    .filter(([count]) => count > 0)
+    .map(([count, label]) => `${count} ${label}`);
+  return counts.length > 0 ? `Warm finished: ${counts.join(", ")}.` : "Warm finished.";
 }

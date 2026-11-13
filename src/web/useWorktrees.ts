@@ -7,7 +7,10 @@ import type {
   WorktreeOperationView,
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
+import { worktreeOperationPending } from "@shared/worktrees.ts";
+import { trailingRead } from "./lib/trailing-read.ts";
 import {
+  cancelWorktreeOperation,
   dismissWorktreeOperation,
   executeWorktreeAction,
   fetchWorktrees,
@@ -26,10 +29,36 @@ function mergeConfig(current: WorktreesConfig, patch: WorktreesConfigPatch): Wor
     }
     const next = Object.assign({}, repositories[key], value);
     if (value.setupArgv === null) delete next.setupArgv;
+    if (value.claim === null) delete next.claim;
     repositories[key] = next as WorktreesConfig["repositories"][string];
   }
   return { ...current, ...patch, repositories } as WorktreesConfig;
 }
+
+function withoutKey(map: ReadonlyMap<string, string>, key: string): ReadonlyMap<string, string> {
+  if (!map.has(key)) return map;
+  const next = new Map(map);
+  next.delete(key);
+  return next;
+}
+
+/**
+ * A refused Cancel shown on its own Warm while that Warm is still pending. The panel's banner
+ * cannot hold it: every inventory read clears that banner, and a running Warm reads about once
+ * a second.
+ */
+export function withCancelFailures(
+  operations: readonly WorktreeOperationView[],
+  failures: ReadonlyMap<string, string>,
+): WorktreeOperationView[] {
+  return operations.map((operation) => {
+    const failure = failures.get(operation.id);
+    return failure && worktreeOperationPending(operation) && !operation.error ? { ...operation, error: failure } : operation;
+  });
+}
+
+/** A refused save carries the daemon's error text, which for a schema refusal is Zod's issue list. */
+export type WorktreesConfigUpdate = { ok: true } | { ok: false; error: string };
 
 export interface WorktreesState {
   inventory: WorktreeInventory | null;
@@ -39,14 +68,20 @@ export interface WorktreesState {
   previewError: string | null;
   previewChanged: boolean;
   busy: boolean;
-  /** Background cleanups: queued, running, or failed and not yet dismissed. */
+  /** Background operations: queued, running, or a failed or finished report not yet dismissed. */
   operations: WorktreeOperationView[];
   refresh: () => Promise<void>;
-  updateConfig: (patch: WorktreesConfigPatch) => Promise<void>;
+  /**
+   * Save a policy patch. A refusal is reported in the panel's banner unless `inline` is set,
+   * for a caller that shows the error beside the fields it belongs to instead.
+   */
+  updateConfig: (patch: WorktreesConfigPatch, options?: { inline?: boolean }) => Promise<WorktreesConfigUpdate>;
   requestPreview: (request: WorktreeActionRequest) => Promise<void>;
   executePreview: (acks: WorktreeRiskKey[]) => Promise<boolean>;
   discardPreview: () => void;
   dismissOperation: (id: string) => Promise<void>;
+  /** Cancel a queued or running Warm. */
+  cancelOperation: (id: string) => Promise<void>;
 }
 
 /** An accepted Execute, shown until an inventory read that began after it lands. */
@@ -66,6 +101,7 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState<SubmittedOperation[]>([]);
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  const [cancelFailures, setCancelFailures] = useState<ReadonlyMap<string, string>>(new Map());
   const inventoryRef = useRef<WorktreeInventory | null>(null);
   const readSeq = useRef(0);
   const writeChain = useRef(Promise.resolve());
@@ -75,8 +111,7 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     setInventoryState(next);
   }, []);
 
-  const refresh = useCallback(async (): Promise<void> => {
-    if (!enabled) return;
+  const read = useCallback(async (): Promise<void> => {
     const seq = ++readSeq.current;
     const controller = new AbortController();
     setLoading(true);
@@ -101,7 +136,13 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     setInventory(next);
     setError(null);
     setSubmitted((current) => current.filter((entry) => entry.readSeq >= seq));
-  }, [enabled, setInventory]);
+  }, [setInventory]);
+
+  // A running Warm invalidates about once a second, so a read slower than that must still land.
+  const serialRead = useMemo(() => trailingRead(read), [read]);
+  const refresh = useCallback(async (): Promise<void> => {
+    if (enabled) await serialRead();
+  }, [enabled, serialRead]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -115,26 +156,43 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
   // operator had moved on to would make queueing the next one impossible. The preview is
   // not trusted anyway: Execute rebuilds it from fresh state and refuses if it moved.
 
-  const updateConfig = useCallback(async (patch: WorktreesConfigPatch): Promise<void> => {
+  const updateConfig = useCallback(async (
+    patch: WorktreesConfigPatch,
+    options: { inline?: boolean } = {},
+  ): Promise<WorktreesConfigUpdate> => {
     const before = inventoryRef.current;
-    if (!before) return;
+    if (!before) return { ok: false, error: "Worktree inventory is not loaded yet." };
     const optimistic = { ...before, config: mergeConfig(before.config, patch) };
     setInventory(optimistic);
     setPreview(null);
     setPreviewError(null);
     setPreviewChanged(false);
-    const operation = writeChain.current.then(async () => {
-      const result = await updateWorktreesConfig(patch);
-      if (!result.ok) {
+    // Never rejects: every outcome, a thrown request included, comes back as a
+    // `WorktreesConfigUpdate`, so a caller holding a pending state always gets to clear it.
+    const operation = writeChain.current.then(async (): Promise<WorktreesConfigUpdate> => {
+      const refused = (error: string): WorktreesConfigUpdate => {
         if (inventoryRef.current === optimistic) setInventory(before);
-        setError(`That policy change did not stick: ${result.error}`);
-        return;
+        if (!options.inline) setError(`That policy change did not stick: ${error}`);
+        return { ok: false, error };
+      };
+      let result: Awaited<ReturnType<typeof updateWorktreesConfig>>;
+      try {
+        result = await updateWorktreesConfig(patch);
+      } catch (error) {
+        return refused(error instanceof Error ? error.message : String(error));
       }
+      if (!result.ok) return refused(result.error);
       setError(null);
-      await refresh();
+      try {
+        await refresh();
+      } catch {
+        // The change was saved. A refresh that throws is an inventory read problem, and the
+        // next worktrees_changed bump or the backstop reads it again.
+      }
+      return { ok: true };
     });
-    writeChain.current = operation.catch(() => {});
-    await operation;
+    writeChain.current = operation.then(() => {}, () => {});
+    return await operation;
   }, [refresh, setInventory]);
 
   const requestPreview = useCallback(async (request: WorktreeActionRequest): Promise<void> => {
@@ -195,12 +253,23 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     void refresh();
   }, [refresh]);
 
+  const cancelOperation = useCallback(async (id: string): Promise<void> => {
+    setCancelFailures((current) => withoutKey(current, id));
+    const result = await cancelWorktreeOperation(id);
+    // A 404 is a Warm that finished first; the refresh shows how it ended.
+    if (!result.ok && result.status !== 404) {
+      setCancelFailures((current) => new Map(current).set(id, `That Warm could not be cancelled: ${result.error}`));
+    }
+    void refresh();
+  }, [refresh]);
+
   const operations = useMemo(() => {
     const observed = inventory?.operations ?? [];
     const known = new Set(observed.map((entry) => entry.id));
-    return [...observed, ...submitted.map((entry) => entry.view).filter((entry) => !known.has(entry.id))]
+    const listed = [...observed, ...submitted.map((entry) => entry.view).filter((entry) => !known.has(entry.id))]
       .filter((entry) => !dismissed.has(entry.id));
-  }, [inventory, submitted, dismissed]);
+    return withCancelFailures(listed, cancelFailures);
+  }, [inventory, submitted, dismissed, cancelFailures]);
 
   return {
     inventory,
@@ -217,5 +286,6 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     executePreview,
     discardPreview,
     dismissOperation,
+    cancelOperation,
   };
 }

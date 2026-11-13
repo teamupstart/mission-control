@@ -2,14 +2,13 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 // A dispatch that waits on a pool's dependency claim. Its task card says "Installing
-// dependencies" with the running step and elapsed time, and offers Stop. Stop kills the claim
-// and hands the slot over as a failed claim, so the dispatch continues and the session's task
-// band carries the warning.
+// dependencies" with the running step and elapsed time, and both the task card and the slot
+// card in Settings › Worktrees offer Stop. Stop kills the claim and hands the slot over as a
+// failed claim, so the dispatch continues and the session's task band carries the warning.
 //
 // The claim really runs: its one step is a Node program that prints a line and then waits
 // forever, so only a Stop ends it. Every agent binary stays faked.
@@ -124,23 +123,24 @@ test("the task card shows Installing dependencies with Stop, and Stop lets the d
   await expect(warnings.getByLabel(/^Failed command: /)).toContainText(`${process.execPath} -e`);
   await shoot(dashboard, warnings, "02-session-claim-warning");
 
-  // And the slot keeps its own record of the same Stop, in the worktree inventory.
-  const inventory = await (await fetch(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
-  const slots = inventory.repositories.find((repository) => repository.name === "demo-repo")?.slots ?? [];
-  const failed = slots.flatMap((slot) => slot.dependencies?.state === "failed" ? [slot.dependencies] : []);
-  expect(failed).toHaveLength(1);
-  expect(failed[0]!.failure.reason).toMatch(/was stopped/);
-  expect(failed[0]!.failure.tail).toContain("resolving fixture packages");
+  // And the slot keeps its own record of the same Stop.
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const deps = pool.getByRole("region", { name: /^Slot \d+ dependencies$/ }).filter({ hasText: "failed" });
+  await expect(deps).toContainText("Step 1 of 1 was stopped.");
+  await expect(pool.getByRole("button", { name: /^Stop slot \d+ dependency claim$/ })).toHaveCount(0);
 });
 
-test("the Board's placeholder tile offers the same Stop, and the dispatch continues", async ({
+test("the slot card's Stop ends the claim a dispatch is waiting on, and the dispatch continues", async ({
   dashboard,
   daemon,
 }) => {
   test.setTimeout(180_000);
   await configureClaim(daemon);
   await useLayout(dashboard, daemon, "board");
-  const title = "Wait on the tile claim";
+  const title = "Wait on the slot claim";
   const id = await dispatch(dashboard, daemon, title);
 
   // The Board's placeholder tile says the same as the rail row, with its own Stop.
@@ -150,13 +150,32 @@ test("the Board's placeholder tile offers the same Stop, and the dispatch contin
     .filter({ hasText: title });
   await expect(tile).toContainText("Installing dependencies", { timeout: DISPATCH_SETTLES_MS });
   await expect(tile).toContainText("Step 1 of 1");
-  const stop = tile.getByRole("button", { name: `Stop installing dependencies for ${title}` });
-  await expect(stop).toBeEnabled();
+  await expect(tile.getByRole("button", { name: `Stop installing dependencies for ${title}` })).toBeEnabled();
   await shoot(dashboard, tile, "00-board-tile-installing");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  await expect(disclosure).toBeVisible({ timeout: DISPATCH_SETTLES_MS });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const installing = pool.getByRole("region", { name: /^Slot \d+ dependencies$/ }).filter({ hasText: "installing" });
+  await expect(installing).toHaveCount(1, { timeout: DISPATCH_SETTLES_MS });
+  await expect(installing).toContainText("Step 1 of 1 · ");
+  const ordinal = Number(/Slot (\d+) dependencies/.exec((await installing.getAttribute("aria-label")) ?? "")?.[1]);
+  const stop = installing.getByRole("button", { name: `Stop slot ${ordinal} dependency claim` });
+  await expect(stop).toBeEnabled();
+  await shoot(dashboard, pool.getByRole("article", { name: `Slot ${ordinal}` }), "03-slot-card-installing");
 
   await stop.click();
 
+  const deps = pool.getByRole("region", { name: `Slot ${ordinal} dependencies` });
+  await expect(deps).toContainText("failed", { timeout: DISPATCH_SETTLES_MS });
+  await expect(deps).toContainText("Step 1 of 1 was stopped.");
+  await expect(deps.getByLabel(`Slot ${ordinal} dependency output tail`)).toContainText("resolving fixture packages");
+  await expect(deps).toContainText("The next lease runs the claim again.");
+  await expect(stop).toHaveCount(0);
+  await shoot(dashboard, pool.getByRole("article", { name: `Slot ${ordinal}` }), "04-slot-card-stopped");
   // The slot was handed over rather than quarantined, and the task launched into it.
+  await expect(pool.getByRole("article", { name: `Slot ${ordinal}` })).toContainText("leased");
   await expect.poll(() => taskStatus(daemon, id), { timeout: DISPATCH_SETTLES_MS }).toBe("running");
-  await expect(tile).toBeHidden();
 });

@@ -266,7 +266,8 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   through the same reservation, `finalizeLease` and release paths as any lease. Nothing can
   lease, reset or quarantine it meanwhile: a process in a leased slot does not quarantine it, and
   another acquisition never sees it as available. Settings shows the owner as **warm**, "Seeding
-  another slot's dependencies", with no Return or Destroy, and never as a task. The owner is
+  another slot's dependencies" (or, for a slot a Warm holds, "Warming this slot ahead of time";
+  see [Warm](#warm)), with no Return or Destroy, and never as a task. The owner is
   referenced exactly while its seed runs in this daemon. Nothing about it is stored anywhere
   else, so at startup every `warm` owner is definitely not referenced. The source goes back to
   the pool through the ordinary owner-authorized return as soon as its clone is staged, before
@@ -348,8 +349,8 @@ inventory, as a claim step's tail is.
 
 - Each step's stdout and stderr stream into one 4,000-byte tail, the same bound checks use.
   Output size never fails a claim.
-- A step may print the variables it was given. Before a failure is stored, reported by the
-  worktree inventory or written into the agent's note, every value the step received is replaced in its tail and
+- A step may print the variables it was given. Before a failure is stored, shown in Settings
+  or written into the agent's note, every value the step received is replaced in its tail and
   reason with `[NAME redacted]`. The tail keeps only the end of the output, so a tail that
   starts partway through a value has that leading piece redacted too, when it is at least four
   characters long. Every match is found in the original output before anything is replaced, so
@@ -358,11 +359,11 @@ inventory, as a claim step's tail is.
   is not recognized.
 - The slot row records a failure as a versioned JSON record: the step, the step count, the
   command (cut to 512 bytes), the reason, the tail and how many bytes the tail dropped.
-  The worktree inventory reports those fields directly. A failure an earlier build stored as
-  plain text reports only its first line, the command and the reason. Its output is never sent
-  to the browser, because it was stored before redaction existed and may hold a value that
-  cannot be recognized now, for example one since rotated. The inventory marks the output as
-  withheld, and the slot's next claim replaces the record.
+  Settings reads those fields directly. A failure an earlier build stored as plain text shows
+  only its first line, the command and the reason. Its output is never sent to the browser,
+  because it was stored before redaction existed and may hold a value that cannot be
+  recognized now, for example one since rotated. The card says the output is withheld, and the
+  slot's next claim replaces the record.
 - A timeout sends SIGTERM to the step's process group, then SIGKILL after five seconds, and
   counts as a failed claim.
 - A failure is a non-zero exit, a timeout, or a step that cannot start. The remaining steps do
@@ -403,6 +404,15 @@ whatever an older configuration's seed left behind.
   the ordinary return path: the occupancy check, the reset to origin's default, and the clean,
   detached proof. It becomes available with its fingerprint intact. A source the return cannot
   prove, for example one a process is still inside, is quarantined.
+- **A Warm's target** that a crash left leased to its `warm:<operationId>` owner is returned the
+  same way. Its claim ran with the slot leased rather than provisioning, so startup finds the
+  lease with a `claiming` or `seeding` write-ahead, records `deps_state = interrupted`, and the
+  ordinary return makes it available. Its next claim removes the seed paths and starts cold.
+  A target the return cannot prove, such as one an orphaned step is still running in, is
+  quarantined. No Warm survives a restart: its operation lived only in daemon memory, so startup
+  finds every `warm` owner definitely unreferenced, never unknown.
+- **Warm logs** under `logs/worktree-warm/` that no slot row names are removed once startup has
+  reconciled the pools. A slot row keeps naming its most recent Warm's log, so that log survives.
 - **Seed staging** under `<pool directory>/.seed-staging/` that no live seed owns is removed by
   every reconciliation, first, before any check that can fail the whole pool. A pool whose
   identity or marker cannot be proven still loses its leftover staging, because removing it
@@ -419,16 +429,16 @@ the next pass retries it. Shutdown kills every running claim's process group bef
 else stops, and grants no claimed lease from then on. The slot is left `provisioning` with
 `deps_state = claiming`, and the next startup recovers it as above.
 
-**Stop and task cancel.** A running claim can be stopped from the task card of the dispatch
-waiting on it, which sends `POST /api/worktrees/:slotId/claim/stop` with the running claim's own
-id, so a Stop can never land on a later claim in the same slot. The
+**Stop and task cancel.** A running claim can be stopped from its slot card in Settings and from
+the task card of the dispatch waiting on it. Both send `POST /api/worktrees/:slotId/claim/stop`
+with the running claim's own id, so a Stop can never land on a later claim in the same slot. The
 manager finds the claim through its claim registry, sends SIGTERM to the step's process group
 (SIGKILL after five seconds), and fails the claim with the reason "was stopped". The slot is
 handed over as for any failed claim: the lease is granted with the warning, `deps_state`
 becomes `failed`, and the next claim reruns the steps in place. The dispatch then continues and
 launches its agent with the warning note. A route answer of 404 means that claim had already
-finished. A manual lease's claim has no task card; the same route stops it, and `make session`
-then receives the grant with the warning.
+finished. A manual lease's claim has only the slot card's Stop, and `make session` then receives
+the grant with the warning.
 
 Cancelling a task whose dispatch is waiting on a claim stops that claim too, once the task is
 recorded as cancelled. A cancel that finished while the dispatch was still on its way to the
@@ -454,28 +464,132 @@ as `claimWarnings` (the `tasks.claim_warnings` column, cleared by the next dispa
 session's task band shows it as **Dependency install failed in `<repository>`**, with the step,
 its reason, the command and the output tail.
 
-**What the inventory reports.** `GET /api/worktrees` reports each pool's claim and, for each
-claim variable name, only whether a step would receive a value and from where: the daemon's
-environment, or the login shell. This is the same rule a step's environment uses, so the two
-cannot disagree, and the value itself never leaves the daemon.
+**Editing a claim and watching it.** Open a pool's disclosure in **Settings > Worktrees** to
+edit its claim under **Dependency claim, run on every task lease**:
 
-Each slot of a pool with a claim reports one dependency state:
+- Each step's command is entered one argument per line, so an argument keeps its spaces. Blank
+  lines are dropped, because the schema refuses an empty argument anyway. Variable names are
+  separated by spaces, commas or newlines, which no name can contain.
+- **Save claim** sends the whole claim through `PUT /api/worktrees/config`. The daemon's schema
+  is the only validator. A refusal is placed beside the field it names: a variable name under
+  its step, a glob under the fingerprint paths or the seed field that holds it, a timeout under
+  the timeout. Nothing is saved while any field is refused. **Remove claim** sends
+  `"claim": null`.
+- **Seed paths** and **Seed exclusions** take one glob per line. Leaving both blank saves a claim
+  that never seeds. Exclusions with no seed paths are refused beside the seed paths, rather than
+  dropped.
+- Each saved variable name shows **present** or **missing**, and where a present one was found:
+  in the daemon's environment, or in the login shell. This is the same rule a step's
+  environment uses, so the two cannot disagree. The value itself never leaves the daemon. A
+  name typed since the last save says "save to check", because only saved names are looked up.
+
+Each slot card of a pool with a claim shows the slot's dependency state:
 
 | State | Meaning |
 |---|---|
 | never installed | No claim has run in this slot. Its next task or check lease runs every step. |
 | current | The last claim succeeded, and its fingerprint matches the claim's fingerprint at the fetched default branch. Also shown when no default can be read, or when the claim lists no fingerprint paths, since neither is evidence of staleness. |
 | stale | The last claim succeeded, but the fetched default branch's fingerprint differs from the slot's. The next lease runs the claim again. |
-| installing | A claim is running in the slot right now, with its claim id, its step, its command and its start time. |
-| failed | The last claim failed, timed out or was stopped, with the failing step, its reason, its command and the output tail, claim variable values redacted. |
+| installing | A claim is running in the slot right now, with its step, its command, the elapsed time and **Stop**. |
+| failed | The last claim failed, timed out or was stopped. The card shows the failing step, its reason, its command and the output tail, with claim variable values redacted. |
 | interrupted | A restart, or a stop or timeout during a seed, cut off the slot's last claim. Its next claim removes the seed paths and starts cold. |
 
-It also names the commit the slot's fingerprint was taken at. **Stale is judged against the
-last fetched `origin/<default>` ref**, the same cached ref the slot's "Default" relation uses.
+The card also names the commit the slot's fingerprint was taken at. **Stale is judged against
+the last fetched `origin/<default>` ref**, the same cached ref the card's "Default" relation uses.
 Building the inventory never fetches. The default branch's fingerprint is read once per default
 commit and claim with `git ls-tree` in the main checkout, and reused until either changes. A claim
 publishes the ordinary `worktrees_changed` revision bump as it starts, as each step starts, and as
-it settles, so a dashboard reading the inventory follows the claim as it runs.
+it settles. That bump is how the card moves between states, and the elapsed time counts up in the
+browser between bumps.
+
+#### Warm
+
+A claim runs when something leases a slot, so the first lease after a lockfile change pays for
+the install. **Warm** pays it ahead of time, on idle slots, so the next lease finds a matching
+fingerprint and skips the steps. That saving needs fingerprint paths: a claim without them has
+no fingerprint, so every lease runs its steps again, warmed or not. A pool with a claim offers two
+triggers in **Settings > Worktrees**:
+
+- **Warm** on an available slot's card warms that slot.
+- **Warm idle slots** among a pool's maintenance actions warms every available slot of the pool,
+  one at a time, so a later slot can seed from one warmed before it.
+
+Both are ordinary worktree actions (`"action": "warm"`, with a `slot` or `pool` target) and go
+through the same preview and execute as Return and Destroy. The preview lists the slots it will
+warm. Idle means exactly what it means to acquisition: the preview, the slot card's **Warm**
+button and the check each slot gets when its turn comes all apply acquisition's one idle rule
+(`idleSlotRefusal`), the preview to its last observation and the turn to a fresh screening. A
+slot that is leased, quarantined, mid-transition, occupied, not proven clean, still referenced by
+its last owner, or already covered by a queued operation is never a target: named directly it
+blocks the preview with the rule's own reason, and in a pool Warm it is left out and counted in
+the preview. A pool with no claim, or with native
+worktrees disabled, has nothing to warm. Nothing in a Warm discards work, so it asks for no
+acknowledgement.
+
+For each slot, in order, a Warm:
+
+1. checks the slot again, with acquisition's own screening. A slot that is no longer available,
+   for example one a task leased after the Warm was queued, is **skipped**, untouched. A slot that
+   is still available but fails the idle check, for example one holding an untracked file, is
+   **quarantined**, exactly as a lease would quarantine it, and skipped. Either way it is listed as
+   skipped in the Warm's report, with the reason;
+2. holds it under a `warm` lease owned by `warm:<operationId>`, through the ordinary reservation
+   and `finalizeLease`, so nothing else can lease, reset or quarantine it, and the claim's own
+   processes never count as occupancy of an available slot;
+3. fetches origin and resets the slot to its current default branch;
+4. runs the pool's claim under its usual rules: a matching fingerprint skips the steps, a cold
+   slot (or a stale one an idle sibling matches exactly) is seeded copy-on-write, and the steps
+   run otherwise;
+5. proves the tree exactly as an acquired slot is proved before its grant, and quarantines it if
+   a step modified a tracked file or attached a branch;
+6. returns it through the ordinary owner-authorized return: the occupancy check, a fresh fetch,
+   the reset to origin's default, and the clean, detached proof.
+
+A failed claim is recorded on the slot as any failed claim is, and the slot is still returned.
+Warms run one after another on a queue of their own, so a long install never holds up a
+Destroy or Return queued behind it. Each one's targets are pending to every other operation, so
+the two never share a slot.
+
+**Watching a Warm.** The operations list above the pools shows each Warm with its slots and what
+became of each one (waiting, warming, warmed, claim failed, skipped, cancelled or failed), and,
+while it runs, a live output tail: the last 4,000 bytes of the claim's output, with every claim
+variable value removed. The value is removed even when the pipe splits it across two writes, and
+even when the step's other pipe writes between the two halves: stdout and stderr are redacted
+separately, each holding back what could still be the start of a value, and each releases whole
+lines, so the two interleave at line boundaries. The
+tail reaches the dashboard through the ordinary `worktrees_changed` bump, at most once a second
+while output arrives. A finished Warm stays listed, with its report and its log, until you
+dismiss it, and counts toward the 64 operations that may be listed at once.
+
+**Cancel** on a queued Warm finishes it at once, with every slot cancelled and none touched. On a
+running Warm it stops the claim, which sends SIGTERM to the running step's process group and
+SIGKILL after five seconds. The slot it holds is returned to the pool as available through the
+ordinary return, whose reset discards whatever the stopped step had changed, tracked files
+included: only that Warm's own step ran there since the slot was held idle and clean. The return
+still proves the reset tree clean and detached, and quarantines the slot if it cannot. (A claim
+that changes a tracked file and finishes on its own, uncancelled, still fails the proof and is
+quarantined, exactly as at acquisition.) Its
+`deps_state` follows the Stop rule: `failed` when the Cancel landed during a step, so the next
+claim reruns the steps in place, and `interrupted` when it landed during a seed, so the next claim
+removes the seed paths and starts cold. Slots the Warm had not reached are listed as cancelled.
+The slot card's **Stop** stops the same claim, but the Warm then carries on with its next slot.
+
+**The full log.** Each Warm writes everything it did and every line of claim output, redacted,
+to `logs/worktree-warm/<operationId>.log` under the daemon's state directory, created the first
+time the Warm holds a slot. What happened to a slot before that, such as one skipped because it
+was leased meanwhile, is written right after the log's header, and every slot a Cancel kept the
+Warm from reaching is logged as cancelled. A Warm that never holds a slot writes no log. The log is never cut, and the daemon never holds it in memory: when
+the disk falls behind a step that prints faster than it can be written, the step's output pipes
+are paused until the log drains, so the step blocks on its own pipe while its time limit keeps
+running. The operation links it, and each slot it held records the path as
+its `deps_log_path`, so the slot card keeps a **Last Warm log** link after the Warm is dismissed
+and after a restart. Both links download through `GET /api/worktrees/warm-logs/<operationId>`,
+which serves only a log a listed operation or a slot row names, streamed from the file in bounded
+chunks with the length the log had when the download began. A log that neither names is
+removed when a Warm finishes, when one is dismissed, after every cleanup operation (a Destroy
+or Prune can remove the last slot row naming a log), and once at startup. A slot's earlier log
+therefore goes as soon as a later Warm replaces its link and the operation that wrote it is
+dismissed, and a slot's last log goes with the slot.
 
 ### Settings > Worktrees
 
@@ -501,13 +615,15 @@ this order:
   spelled **over the maximum** in words. An over-capacity pool offers its right-size preview on
   that row.
 
-  Opening a pool's disclosure shows its effective override, an optional setup argv, the maintenance
-  actions, and the bounded slot detail. The argv is operator-authored, stored as separate arguments,
-  and runs only when Mission Control creates a new slot. It never runs when a warm slot is leased
-  again. It runs on the scrubbed environment described under
-  [Dependency claims](#dependency-claims). Each slot carries its exact manager path, observed HEAD,
-  relationship to the remote default, cleanliness, process count, disk estimate, and owner.
-  **Copy path** stays in the browser.
+  Opening a pool's disclosure shows its effective override, an optional setup argv, the pool's
+  dependency claim editor (see "Editing a claim and watching it" under
+  [Dependency claims](#dependency-claims)), the maintenance actions, and the bounded slot detail.
+  The argv is operator-authored, stored as separate arguments, and runs only when Mission Control
+  creates a new slot. It never runs when a warm slot is leased again. It runs on the scrubbed
+  environment described under [Dependency claims](#dependency-claims). Each slot carries its
+  exact manager path, observed HEAD, relationship to the remote default, cleanliness, process
+  count, disk estimate, and owner, and in a pool with a claim, its dependency state. **Copy path**
+  stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.
 
@@ -537,7 +653,8 @@ the ones the preview asked for. The dialog then closes, and the rest of the work
 ordered queue: it observes the lease, task or check owner, processes, Git state, and slot version
 again, then mutates. You can keep previewing and executing while earlier cleanups finish. Queued
 and running cleanups are listed above the pools, and each affected slot shows the pending action
-and offers no second one. A preview that names a slot which already has a cleanup queued is
+and offers no second one. A Warm is listed there too, with its own live view, and runs on a queue
+of its own (see [Warm](#warm)). A preview that names a slot which already has a cleanup queued is
 blocked for that slot, and Safe prune leaves such a slot to its own cleanup, so no dialog offers
 an Execute that could only be refused. At most 64 operations may be listed at once, counting queued and running
 cleanups and failure reports you have not dismissed. Beyond that, Execute says so and leaves the
@@ -596,6 +713,10 @@ The operations have deliberately narrow meanings:
   state.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
+- **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets
+  it to origin's default branch, seeds or claims it under the pool's claim, and returns it. It is
+  offered on an available slot's card and, as **Warm idle slots**, among a pool's maintenance
+  actions. It never touches a leased or quarantined slot. See [Warm](#warm).
 
 Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
 checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,

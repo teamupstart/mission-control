@@ -3543,6 +3543,15 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
   z
     .object({ action: z.literal("legacyReturn"), owner: WorktreeOwnerTargetSchema })
     .strict(),
+  z
+    .object({
+      action: z.literal("warm"),
+      target: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("slot"), slotId: WorktreeStableIdSchema }).strict(),
+        z.object({ kind: z.literal("pool"), poolId: WorktreeStableIdSchema }).strict(),
+      ]),
+    })
+    .strict(),
 ]);
 
 export const WorktreeActionExecuteSchema = z

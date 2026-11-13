@@ -26,6 +26,8 @@ export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
 export const WORKTREE_POOLS_DIR = join(STATE_DIR, "worktree-pools");
 /** Disposable isolated worktrees used when native allocation positively declines a check. */
 export const CHECK_WORKTREES_DIR = join(STATE_DIR, "check-worktrees");
+/** Each Warm's full log, `<operationId>.log`, kept while an operation or a slot row names it. */
+export const WORKTREE_WARM_LOGS_DIR = join(STATE_DIR, "logs", "worktree-warm");
 /** Owner-only logical settings snapshots, beneath the daemon's one configured state home. */
 export const SETTINGS_BACKUPS_DIR = join(STATE_DIR, "backups", "settings");
 /** Owner-only, SQLite-consistent full-database recovery points. */

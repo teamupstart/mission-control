@@ -986,6 +986,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       deps_fingerprint_sha      TEXT,
       deps_claimed_at           INTEGER,
       deps_last_error           TEXT,
+      -- The full log of the most recent Warm that held this slot, under the state directory.
+      deps_log_path             TEXT,
       created_at                INTEGER NOT NULL,
       updated_at                INTEGER NOT NULL
     );
@@ -3527,6 +3529,9 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "worktree_slots", "deps_fingerprint_sha", "TEXT");
   addColumn(d, "worktree_slots", "deps_claimed_at", "INTEGER");
   addColumn(d, "worktree_slots", "deps_last_error", "TEXT");
+  // The most recent Warm's log. Null on every existing slot, which is exact: no Warm ran before
+  // this column existed.
+  addColumn(d, "worktree_slots", "deps_log_path", "TEXT");
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
   // puts several elements on one line, that cannot distinguish a paragraph from its inline

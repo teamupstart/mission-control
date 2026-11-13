@@ -369,6 +369,13 @@ export const executeWorktreeAction = (token: string, acknowledgements: WorktreeR
 export const dismissWorktreeOperation = (id: string) =>
   worktreeRequest<Record<string, never>>(`/api/worktrees/operations/${encodeURIComponent(id)}/dismiss`, "POST", {});
 
+/** Cancel a queued or running Warm. A 404 means it had already finished. */
+export const cancelWorktreeOperation = (id: string) =>
+  worktreeRequest<Record<string, never>>(`/api/worktrees/operations/${encodeURIComponent(id)}/cancel`, "POST", {});
+
+/** Where a Warm's full log downloads from. */
+export const worktreeWarmLogUrl = (id: string) => `/api/worktrees/warm-logs/${encodeURIComponent(id)}`;
+
 /**
  * Stop the dependency claim running in a slot. The claim fails and its lease is granted with
  * the warning, so a dispatch waiting on it continues. The result reaches every card through the

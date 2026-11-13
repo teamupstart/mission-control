@@ -10,7 +10,7 @@ import type {
   WorkflowCommandView,
   WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { DEFAULT_WORKFLOW_POLICY, emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
 import { openDb } from "../src/server/db.ts";
 import { CHECK_WORKTREES_DIR } from "../src/server/config.ts";
@@ -846,6 +846,7 @@ const passingExecution = (snapshot: { runner: LlmRunnerId | null; model: string 
 });
 
 const policy = () => ({
+  ...DEFAULT_WORKFLOW_POLICY,
   liveEnabled: false,
   repoAllowlist: ["/repo"],
   defaultWorkflowId: null,

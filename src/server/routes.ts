@@ -2068,7 +2068,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
     return worktreeOperations.dismiss(c.req.param("id"))
       ? c.json({ ok: true })
-      : c.json({ error: "no failed worktree operation has that id" }, 404);
+      : c.json({ error: "no failed or finished worktree operation has that id" }, 404);
+  });
+
+  // Cancel a queued or running Warm. The running step's process group is killed and the slot
+  // it holds goes back to the pool; the outcome reaches the dashboard through the inventory's
+  // operations and worktrees_changed. 404 when no queued or running Warm has that id.
+  app.post("/api/worktrees/operations/:id/cancel", (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    return worktreeOperations.cancel(c.req.param("id"))
+      ? c.json({ ok: true })
+      : c.json({ error: "no queued or running Warm has that id" }, 404);
+  });
+
+  // A Warm's full log, from its operation view or from the card of the slot it last warmed.
+  // Served only while a listed operation or a slot row names it, as plain text, streamed from
+  // the file: a log is unbounded, so it is never held in memory whole.
+  app.get("/api/worktrees/warm-logs/:id", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const log = await worktreeOperations.warmLog(c.req.param("id"));
+    if (!log) return c.json({ error: "no Warm log has that id" }, 404);
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    c.header("Content-Length", String(log.size));
+    c.header("Content-Disposition", `attachment; filename="worktree-warm-${log.id}.log"`);
+    c.header("Cache-Control", "no-store");
+    return c.body(Readable.toWeb(log.stream) as ReadableStream<Uint8Array>);
   });
 
   // Stop a running dependency claim, from its slot card or from the task card of the dispatch

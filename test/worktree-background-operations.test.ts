@@ -418,6 +418,7 @@ test("the retry request narrows bulk destroys, drops finished single slots, and 
     changed: false,
     queuedAt: 1,
     finishedAt: 2,
+    warm: null,
   };
   const bulk = { action: "destroy" as const, target: { kind: "slots" as const, slotIds: ["a", "b", "c"] } };
   assert.deepEqual(worktreeRetryRequest({ ...base, request: bulk, completed: [] }), bulk);

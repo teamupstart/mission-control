@@ -79,6 +79,12 @@ export interface HookSubagentState {
    * that would add an agent it left out is stale. Bounded by the bridge's in-flight bound.
    */
   readonly lastLive: { readonly at: number; readonly ids: ReadonlySet<string> } | null;
+  /**
+   * When the newest process start or resume was stamped. Hooks are separate processes, so the
+   * previous process's last `Stop` or launch can land after the new process's `SessionStart`;
+   * any signal stamped before this belongs to a process that is gone and is ignored.
+   */
+  readonly resetAt: number | null;
 }
 
 /**
@@ -95,6 +101,7 @@ const EMPTY: HookSubagentState = {
   ended: new Set(),
   finishedFolded: 0,
   lastLive: null,
+  resetAt: null,
 };
 
 export function emptyHookSubagents(): HookSubagentState {
@@ -138,6 +145,7 @@ class Draft {
   ended: Set<string>;
   finishedFolded: number;
   lastLive: HookSubagentState["lastLive"];
+  resetAt: number | null;
   changed = false;
 
   constructor(state: HookSubagentState) {
@@ -146,6 +154,7 @@ class Draft {
     this.ended = new Set(state.ended);
     this.finishedFolded = state.finishedFolded;
     this.lastLive = state.lastLive;
+    this.resetAt = state.resetAt;
   }
 
   /** Whether a newer complete live set already said `id` was not in flight at `at`. */
@@ -171,6 +180,9 @@ class Draft {
   }
 
   apply(signal: HookSubagentSignal, at: number): void {
+    // Stamped before the newest process start: it describes a process that no longer exists,
+    // and must not add, end or fold anything under the new one. An older reset is ignored too.
+    if (this.resetAt !== null && at < this.resetAt) return;
     switch (signal.kind) {
       case "started": {
         if (this.ended.has(signal.id)) return;
@@ -298,6 +310,10 @@ class Draft {
           this.lastLive = null;
           this.changed = true;
         }
+        if (this.resetAt !== at) {
+          this.resetAt = at;
+          this.changed = true;
+        }
         return;
       }
     }
@@ -328,6 +344,7 @@ class Draft {
       ended: this.ended,
       finishedFolded: this.finishedFolded,
       lastLive: this.lastLive,
+      resetAt: this.resetAt,
     };
   }
 }

@@ -148,6 +148,31 @@ test("a reset forgets everything, including what had ended", () => {
   assert.equal(hookSubagentSummary(state)!.agents[0]?.id, "b");
 });
 
+test("a hook from the previous process, landing after the new process starts, is ignored", () => {
+  // The new process starts at 1000; the old process's last hooks were stamped before it.
+  let state = run([[launched("old-a"), 500], [{ kind: "reset" }, 1_000]]);
+  assert.equal(hookSubagentSummary(state), null);
+  const stale: [Signal, number][] = [
+    [{ kind: "live", agents: [{ id: "old-a", type: "Explore", description: null }, { id: "old-b", type: null, description: null }] }, 900],
+    [launched("old-c"), 950],
+    [{ kind: "started", id: "old-d", type: "Plan" }, 960],
+  ];
+  for (const [signal, at] of stale) state = reduceHookSubagents(state, [signal], at);
+  assert.equal(hookSubagentSummary(state), null, "nothing from the previous process comes back");
+  assert.equal(state.started.size, 0);
+
+  // The new process's own agents count; an old end or fold cannot touch them.
+  state = reduceHookSubagents(state, [launched("new-a")], 1_100);
+  state = reduceHookSubagents(state, [{ kind: "ended", id: "new-a", type: null }], 990);
+  state = reduceHookSubagents(state, [{ kind: "fold" }], 995);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => [a.id, a.state]), [["new-a", "running"]]);
+  // A reset older than the newest one is itself stale.
+  state = reduceHookSubagents(state, [{ kind: "reset" }], 800);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["new-a"]);
+  // A signal stamped at the reset's own instant belongs to the new process.
+  assert.equal(hookSubagentSummary(run([[{ kind: "reset" }, 1_000], [launched("same-ms"), 1_000]]))!.agents[0]?.id, "same-ms");
+});
+
 test("the list is capped: running first, the oldest finished fold", () => {
   const steps: [Signal, number][] = [];
   for (let i = 0; i < SUBAGENT_LIMIT + 3; i++) steps.push([launched(`f${i}`), i]);

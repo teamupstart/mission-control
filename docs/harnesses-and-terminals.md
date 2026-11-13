@@ -116,7 +116,9 @@ of order: an ended agent is remembered so a late launch or a late in-flight list
 it, an in-flight list only stops agents counted before it was taken, and a real `SubagentStop`
 overrides a stop that was only inferred. The newest complete in-flight list is also remembered,
 so a delayed launch or an older list cannot add an agent that list left out, and a
-`SubagentStart` that lands after its launch still moves the agent's start time earlier.
+`SubagentStart` that lands after its launch still moves the agent's start time earlier. A
+signal stamped before the newest process start or resume belongs to the previous process and is
+ignored, so a late `Stop` or launch from it cannot bring its agents back.
 
 Hooks carry an agent's type, state and timing, and for Claude its launch description, but no tool
 or token counters and no last tool, so a terminal row omits those. See

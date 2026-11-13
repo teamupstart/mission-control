@@ -947,7 +947,8 @@ available:
   with no background agents draws nothing extra. Like the attention flags these rows are not
   on the Session display checklist. Today this covers sessions on the Claude Agent SDK
   runtime, which includes dispatched tasks and residents; see
-  [Background sub-agents](sessions.md#background-sub-agents).
+  [Background sub-agents](sessions.md#background-sub-agents). The open conversation lists the
+  same agents in its [Background agents tray](#background-agents-in-a-conversation).
 - **A blocked session is red.** A session waiting on someone other than you records a
   [blocker](sessions.md#blocked-sessions), and its card takes the danger tone on its spine
   and border with a **Blocked · 3h** flag among the attention flags. Like the **held** tag,
@@ -1244,6 +1245,40 @@ strip in Console and Board. Both renderings are the same panel over the
 same transcript, so find, the Observed activity rail, scroll-back, attachments and the
 reply box behave identically in either. See
 [Reading a conversation as a terminal](sessions.md#reading-a-conversation-as-a-terminal).
+
+## Background agents in a conversation
+
+A session that launched sub-agents in the background docks a **Background agents** tray
+above its reply box. It sits between the conversation and the box, outside both, so it stays
+in view whatever the rail beside the log is showing and wherever the log is scrolled. It is
+the conversation half of the sub-agents that
+[hang beneath the board card](#layout-console-or-board-in-settings), and it reads the same
+summary, so the two never disagree.
+
+The header, **⑂ Background agents · 2 running · 1 done**, folds the list. Each row gives the
+agent's state, type and description, how long it has run, how many tools it has used and the
+last one. A finished agent stays listed, dimmed, until you send the session its next turn,
+which folds it into an **N finished** line. A value the source did not report is left out
+rather than drawn as zero. The list scrolls on its own past a few rows, so a full list of
+twelve costs the log a band rather than the pane. Residents get the tray too: a resident is
+an ordinary Agent SDK session in the same conversation panel.
+
+**Jump to launch** on a row scrolls the log to the turn that launched that agent and flashes
+it, the same way a row in the **Yours** rail does. The launch is found by the id of the tool
+call that made it. Claude Code writes each tool call as its own transcript record, so a launch
+is usually one of several calls folded into one **executed** row; the jump lands on that row.
+When the launch is older than the loaded part of the conversation, the tray loads older
+messages until it finds the turn. If it reaches the start of the transcript without finding
+it, the link reads **Launch not in transcript** and its tooltip says why. Every agent has the
+link, and it only ever lands on a launch it can identify. When the source did not name the
+launching call, the dashboard asks the daemon which **Agent** call the transcript records as
+launching this agent: Claude Code writes the agent's id into that call's result when the agent
+goes to the background. That result is written a moment after the agent appears, so a click in
+that gap reads **Launch not in transcript**; click again once it is written and the link lands,
+including in a conversation that was open while the agent launched. A description is never used: agents can share one, and a finished agent folded out
+of the tray leaves its call behind, so a description could land on another agent's launch. An agent no call in the transcript is
+recorded as launching reads **Launch not in transcript**. A search reads as far back as the
+transcript goes; it stops early only if loading older messages fails or stops moving back through the file.
 
 ## Skins
 

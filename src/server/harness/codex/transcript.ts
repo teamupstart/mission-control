@@ -403,4 +403,7 @@ export const codexTranscript: TranscriptSpec = {
     for (const b of bindings.values()) if (b.path) held.add(b.path);
     retainRolloutMeta(held);
   },
+  // Codex's sub-agent launches are joined to their agents by the app-server stream (Phase 5),
+  // not by anything this file records.
+  subagentLaunch: null,
 };

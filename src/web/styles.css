@@ -8466,7 +8466,8 @@ kbd {
   }
 }
 .turn.is-flashed,
-.pty-entry.is-flashed {
+.pty-entry.is-flashed,
+.pty-toolrun.is-flashed {
   outline: 2px solid transparent;
   outline-offset: 3px;
   border-radius: 9px;
@@ -8477,7 +8478,8 @@ kbd {
    a static ring that the class coming off removes. */
 @media (prefers-reduced-motion: reduce) {
   .turn.is-flashed,
-  .pty-entry.is-flashed {
+  .pty-entry.is-flashed,
+  .pty-toolrun.is-flashed {
     animation: none;
     outline-color: color-mix(in oklab, var(--find) 85%, transparent);
   }
@@ -32945,6 +32947,179 @@ span.line-run-prov {
 }
 .subagent-tree .st-folded {
   color: var(--dim);
+}
+
+/* ---- conversation: the Background agents tray ----
+   Docked between the log and the reply box, as a sibling of both, so it stays in view
+   whatever the rail shows and wherever the log is scrolled. `flex: none` like the composer:
+   the log is the one region that yields height. The list is capped and scrolls on its own,
+   so twelve agents cost the log a few rows rather than the pane. State hues are the board
+   tree's - running `--working`, done `--idle`, failed `--danger`, stopped `--exited`. */
+.bg-tray {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid color-mix(in oklab, var(--working) 55%, var(--border-soft));
+  border-radius: 9px;
+}
+.bg-tray-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  text-align: left;
+}
+.bg-tray-head:hover {
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+}
+.bg-tray-head .brh-chevron {
+  order: -1;
+  margin-left: 0;
+  flex: none;
+}
+.bg-tray-glyph {
+  flex: none;
+  color: var(--working);
+}
+.bg-tray-headline {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bg-tray-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 112px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.bg-tray-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 4px;
+  border-radius: 6px;
+}
+.bg-tray-pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.bg-tray-row.is-completed .bg-tray-pip {
+  background: var(--idle);
+}
+.bg-tray-row.is-failed .bg-tray-pip {
+  background: var(--danger);
+}
+.bg-tray-row.is-stopped .bg-tray-pip {
+  background: var(--exited);
+}
+/* Finished agents stay listed until the next turn, dimmed so the running ones lead. */
+.bg-tray-row.is-completed,
+.bg-tray-row.is-failed,
+.bg-tray-row.is-stopped {
+  opacity: 0.55;
+}
+.bg-tray-title {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.bg-tray-type {
+  flex: none;
+  font-weight: 600;
+}
+.bg-tray-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bg-tray-detail {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.bg-tray-jump {
+  padding: 1px 6px;
+  font: inherit;
+  color: var(--working);
+  white-space: nowrap;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.bg-tray-jump:hover {
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.bg-tray-jump.is-searching {
+  color: var(--muted);
+  cursor: progress;
+}
+/* A search that ended without a turn: the link stays (it says why), but no longer reads as live. */
+.bg-tray-jump.is-missing,
+.bg-tray-jump.is-error {
+  color: var(--muted);
+}
+.bg-tray-folded {
+  display: block;
+  color: var(--dim);
+  padding-left: 18px;
+}
+/* The terminal rendering: a band of the frame rather than a card inside it, set in the
+   frame's monospace like everything else between the title bar and the status line. */
+.pty-frame > .bg-tray {
+  margin: 0 10px;
+  font-family: var(--mono);
+  border-radius: 0;
+  border-width: 1px 0 0;
+  border-left: 0;
+  background: var(--panel);
+}
+/* A narrow conversation stacks each row's detail and link under its title, so the
+   description keeps the width it needs to be read at all. */
+@container (max-width: 560px) {
+  .bg-tray-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    row-gap: 0;
+  }
+  .bg-tray-detail {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .bg-tray-jump {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+  .bg-tray-list {
+    max-height: 96px;
+  }
 }
 
 /* ---- board tile: the pipeline phase meter ----

@@ -482,7 +482,11 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
+import {
+  REPO_INDEX_IDENTITY_HEADER,
+  REPOS_SCANNED_AT_HEADER,
+  RepoIndexConfigPatchSchema,
+} from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
@@ -624,6 +628,8 @@ import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
   listRepos,
+  listReposScan,
+  repoIndexIdentity,
   resolveRepoPath,
   resolveRepoRoot,
   resolveTaskExtraRepoRoots,
@@ -4216,8 +4222,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
   });
-  // Git repos under the workspace roots - the pickable bases for a new dispatch.
-  app.get("/api/repos", async (c) => c.json(await listRepos()));
+  // Git repos under the workspace roots - the pickable bases for a new dispatch. Answers
+  // from the last scan and rescans behind it; `?rescan=1` waits for a scan started after the
+  // request instead. The header orders scans, so a browser holding two answers keeps the
+  // newer one rather than whichever arrived last.
+  app.get("/api/repos", async (c) => {
+    const { repos, scannedAt, identity } = await listReposScan({ rescan: c.req.query("rescan") === "1" });
+    c.header(REPOS_SCANNED_AT_HEADER, String(scannedAt));
+    c.header(REPO_INDEX_IDENTITY_HEADER, identity);
+    return c.json(repos);
+  });
 
   // The machine-local source of those workspace roots. The environment remains the
   // launch-time authority; when present, the view says so and the saved list is read-only.
@@ -4233,6 +4247,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     try {
       setRepoIndexConfig(parsed.data);
+      registry.emitRepoIndexChanged(repoIndexIdentity());
       return c.json(await repoIndexView());
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {

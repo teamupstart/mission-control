@@ -143,7 +143,8 @@ export async function repoIndexView(): Promise<RepoIndexView> {
   const config = getRepoIndexConfig();
   const override = repositoryIndexEnvironmentOverride();
   const effectivePaths = override ? environmentDirectories() : config.directories.map((row) => row.path);
-  const repos = await listRepos();
+  // Fresh: this view is read right after a config write or Rescan now, and must show it.
+  const repos = await listRepos({ fresh: true });
   const directories = await Promise.all(
     effectivePaths.map((path) => directoryView(path, repos, override === null)),
   );

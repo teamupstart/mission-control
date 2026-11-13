@@ -9,6 +9,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { streamRegistryEvents } = await import("../src/server/sse.ts");
+const { repoIndexIdentity } = await import("../src/server/repos.ts");
 type RestoringSession = import("../src/shared/types.ts").RestoringSession;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
 
@@ -94,4 +95,28 @@ test("a remove during snapshot write cannot leave the snapshotted row visible", 
   if (snapshot?.type === "snapshot") assert.deepEqual(snapshot.restoringSessions, [row]);
   assert.deepEqual(delivered.at(-1), { type: "restoring_session_remove", id: row.id });
   assert.equal(registry.listenerCount("event"), 0, "repeated abort cleanup remains exact");
+});
+
+test("the snapshot names the current repository index, so a reconnecting window can check its list", async () => {
+  const registry = new Registry();
+  const delivered: ServerEvent[] = [];
+  let aborted = false;
+  let abort: (() => void) | null = null;
+  await streamRegistryEvents(registry, {
+    get aborted() {
+      return aborted;
+    },
+    onAbort(callback) {
+      abort = callback;
+    },
+    async writeSSE(message) {
+      delivered.push(parse(message.data));
+      aborted = true;
+      abort?.();
+    },
+  });
+  const snapshot = delivered[0];
+  assert.equal(snapshot?.type, "snapshot");
+  assert.equal(snapshot.type === "snapshot" ? snapshot.repoIndexIdentity : undefined, repoIndexIdentity());
+  assert.match(repoIndexIdentity(), /^[0-9a-f]{16}$/);
 });

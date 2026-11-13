@@ -40,6 +40,7 @@ import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
+import { forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -358,6 +359,7 @@ export function useEventStream(): MissionState {
           if (msg.changed) setLatestSessionTransfer(msg.changed);
           break;
         case "snapshot":
+          if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
@@ -681,6 +683,13 @@ export function useEventStream(): MissionState {
         case "storage_config_changed":
           setStorageConfigRevision((n) => n + 1);
           break;
+        // Not counted: nothing re-reads on it. A repository list answering for any other index
+        // is dropped (an open picker re-asks), and the next Dispatch open asks again. The
+        // snapshot carries the same identity, so a window that was disconnected for this frame
+        // still catches up on reconnect - without dropping a list that is still right.
+        case "repo_index_changed":
+          noteRepoIndexIdentity(msg.identity);
+          break;
         // Counted: the frame carries no rows, and the hook holding them re-reads the route.
         case "attention_dismissals_changed":
           setAttentionDismissalsRevision((n) => n + 1);
@@ -692,6 +701,8 @@ export function useEventStream(): MissionState {
           setArchivesRevision((n) => n + 1);
           break;
         case "settings_restored":
+          // A restore can replace the indexed directories along with everything else.
+          forgetCachedRepos();
           latestSettingsRestoreRequestIdRef.current = msg.requestId;
           if (observeSettingsRestored(msg) === "external") setSettingsRestoreNotice(msg);
           break;

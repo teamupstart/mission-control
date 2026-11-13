@@ -45,8 +45,15 @@ const { openDb } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { invalidateReposCache } = await import("../src/server/repos.ts");
 
+let repoIndexAnnouncements = 0;
+let lastAnnouncedIdentity = "";
 const app = buildApp({
-  registry: {} as Registry,
+  registry: {
+    emitRepoIndexChanged: (identity: string) => {
+      repoIndexAnnouncements += 1;
+      lastAnnouncedIdentity = identity;
+    },
+  } as unknown as Registry,
   reviews: {} as ReviewManager,
   tasks: {} as TaskManager,
   queues: {} as QueueManager,
@@ -241,6 +248,27 @@ test("a saved missing directory is reported unsafe if it later resolves at or ab
     isDefault: false,
   });
   assert.equal(view.repoCount, 0);
+});
+
+test("a saved directory list is announced to every window; a refused one and a Rescan are not", async () => {
+  const workspace = join(operatorHome, "workspace");
+  mkdirSync(workspace, { recursive: true });
+  const before = repoIndexAnnouncements;
+  assert.equal((await putDirectories([workspace])).status, 200);
+  assert.equal(repoIndexAnnouncements, before + 1, "other windows must forget their repository lists");
+  const repos = await app.request("/api/repos", { headers: HEADERS });
+  assert.equal(repos.status, 200);
+  assert.equal(
+    repos.headers.get("x-repo-index-identity"),
+    lastAnnouncedIdentity,
+    "the announcement names the identity the next repository answer carries",
+  );
+  assert.match(lastAnnouncedIdentity, /^[0-9a-f]{16}$/);
+
+  assert.equal((await putDirectories(["relative/path"])).status, 400);
+  const rescan = await app.request("/api/repo-index/rescan", { method: "POST", headers: HEADERS });
+  assert.equal(rescan.status, 200);
+  assert.equal(repoIndexAnnouncements, before + 1, "nothing changed, so no window is told to forget");
 });
 
 test("a config write and Rescan now both invalidate the repository cache", async () => {

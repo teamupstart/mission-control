@@ -463,6 +463,21 @@ listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~
 override. Select the repo to base the task on rather than typing a path. Type to filter;
 arrow/enter to pick.
 
+The picker never waits on a rescan it does not need. The daemon answers from its last scan of
+the same directories to the same depth - kept in `repo-index-cache.json` in the state directory,
+so it survives a restart - and walks the disk again behind that answer once the scan is older
+than `MISSION_REPOS_CACHE_MS` (30 seconds by default). Walks never overlap: readers share the
+walk in progress, and every Dispatch open that arrives during one shares a single walk queued
+behind it. The form opens on the newest list this window has received, and on every open it also
+asks for a scan that starts after the request. When that answer arrives it replaces the list, so a checkout you
+cloned a moment ago is offered without waiting out the cache. Lists are ordered by when their
+scan started, not by when they arrived, so a slow answer from an older scan never puts a
+repository back or takes one away. Saving a change to the indexed directories, or
+restoring settings, makes every open window forget its list - including a Dispatch form already
+on screen, and a window that was disconnected at the time, which catches up when it reconnects -
+so no picker offers a repository from a directory you just removed. The field reads **indexing workspace…** only when the window holds
+no list and no scan has answered yet.
+
 The Settings panel is also where the index is maintained. Any directory can be removed, including
 a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
 leaving operator-added rows alone. Each row reports a missing, non-directory, unreadable, or unsafe

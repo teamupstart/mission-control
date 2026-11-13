@@ -1,7 +1,8 @@
-import { existsSync, realpathSync } from "node:fs";
-import { readdir, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { envVar } from "./config.ts";
+import { STATE_DIR, envVar } from "./config.ts";
 import { run } from "./util/exec.ts";
 import { bareRepositoryStatus, isBareRepository, mainRepoRoot } from "./util/git.ts";
 import { indexedDirectories } from "./repo-index-config.ts";
@@ -13,8 +14,16 @@ import { indexedDirectories } from "./repo-index-config.ts";
  * checkouts and hand back their top-level paths.
  */
 
-/** Cache the scan briefly so the endpoint stays cheap under the UI's polling. */
+/**
+ * How old a scan may be before a read starts a rescan behind it. An ordinary read never
+ * WAITS on age (see `listRepos`); only a `fresh` or `rescan` read does.
+ */
 const CACHE_TTL_MS = Number(envVar("REPOS_CACHE_MS") ?? 30_000);
+/** Where the last completed scan survives a daemon restart. */
+const SNAPSHOT_PATH = join(STATE_DIR, "repo-index-cache.json");
+// 2: the identity became roots AND depth. 3: the wall-clock start rides beside the ordering
+// stamp. An older file is ignored, never misread.
+const SNAPSHOT_VERSION = 3;
 /** Scan all nesting levels unless the operator explicitly limits traversal. */
 function maximumDepth(): number {
   const value = envVar("REPOS_MAX_DEPTH");
@@ -25,7 +34,55 @@ function maximumDepth(): number {
 /** Directories that never contain a repo we'd want and would only slow the walk. */
 const SKIP = new Set(["node_modules", "dist", "build", "target", "vendor", ".next", "coverage"]);
 
-let cache: { at: number; repos: string[] } | null = null;
+/**
+ * The last completed scan.
+ *
+ * `key` names what it walked - the exact roots AND the depth limit - because a scan of other
+ * roots, or of the same roots to another depth, does not answer the question at all.
+ * `generation` is the invalidation count when the scan STARTED, so a scan already running
+ * when the config changed or the operator pressed Rescan is never mistaken for the answer to
+ * that request. `at` orders scans, from `nextScanStamp`: unique and increasing, so it tells
+ * two apart even when they start within one millisecond. `startedAt` is the wall clock when
+ * it started, unadjusted - what the TTL measures and what Settings reports as "scanned at",
+ * neither of which should drift by the nudges that keep `at` unique.
+ */
+interface Snapshot {
+  at: number;
+  startedAt: number;
+  key: string;
+  generation: number;
+  repos: string[];
+}
+
+let cache: Snapshot | null = null;
+let generation = 0;
+let snapshotLoaded = false;
+/** The last stamp handed out. Never repeats and never goes backwards within a process. */
+let lastStamp = 0;
+/**
+ * The one walk on disk right now, if any. Walks never overlap: under load each `readdir`
+ * already queues behind the rest of the daemon's I/O, and two walks of the same tree at
+ * once would only double that for an answer one of them could give.
+ */
+let walking: { slot: string; at: number; scan: Promise<Snapshot> } | null = null;
+/**
+ * The walk queued behind it, per (generation, key). Not started, so it is stamped after
+ * every request that joins it - which is what lets any number of rescans share it.
+ */
+const queued = new Map<string, Promise<Snapshot>>();
+/** Settles when the last walk handed out has finished; the next one starts after it. */
+let walksDone: Promise<unknown> = Promise.resolve();
+
+/**
+ * The start time of a new scan: wall-clock milliseconds, nudged forward by one when the clock
+ * has not moved past the previous stamp. Strictly increasing, so "started later" is never a
+ * tie - on the daemon and in the browser, which orders answers by this same value.
+ */
+function nextScanStamp(): number {
+  const now = Date.now();
+  lastStamp = now > lastStamp ? now : lastStamp + 1;
+  return lastStamp;
+}
 
 /**
  * Roots to scan for repos. Settings > Repositories owns the saved list, while
@@ -35,14 +92,150 @@ export function workspaceRoots(): string[] {
   return indexedDirectories();
 }
 
-/** Drop the short-lived scan cache after the root list changes or an operator requests it. */
+/**
+ * Mark the current scan stale after the root list changes or an operator requests it.
+ *
+ * Stale, not discarded: an ordinary read (the dispatch form) keeps answering from it while
+ * the rescan runs, and a `fresh` read (Settings) waits for a scan started after this call.
+ */
 export function invalidateReposCache(): void {
-  cache = null;
+  generation += 1;
 }
 
 /** Timestamp of the scan currently backing `listRepos`, for the Settings freshness readout. */
 export function reposCacheScannedAt(): number | null {
-  return cache?.at ?? null;
+  return cache?.startedAt ?? null;
+}
+
+/** What a scan walks: the roots and the effective depth limit (Infinity spelled out). */
+function scanKeyFor(roots: readonly string[]): string {
+  return JSON.stringify({ roots, maxDepth: String(maximumDepth()) });
+}
+
+function identityOf(key: string): string {
+  return createHash("sha256").update(key).digest("hex").slice(0, 16);
+}
+
+/**
+ * A short, stable name for what the index walks right now - the effective roots and depth.
+ *
+ * Stable across restarts while nothing changes, and different the moment a directory is
+ * added or removed, the depth limit moves, or a settings restore replaces either. A browser
+ * keeps a repository list only while the list's identity matches this one, which is how a
+ * window that missed the change while disconnected still drops a list for directories that
+ * are no longer indexed - and keeps one that is still right.
+ */
+export function repoIndexIdentity(): string {
+  return identityOf(scanKeyFor(workspaceRoots()));
+}
+
+/**
+ * Seed memory from the scan the previous daemon left, once per process. It is served as
+ * stale whatever its age, so the first dispatch after a restart answers at once and the
+ * walk runs behind it rather than in front of the operator.
+ */
+function loadPersistedSnapshot(): void {
+  if (snapshotLoaded) return;
+  snapshotLoaded = true;
+  if (cache) return;
+  try {
+    const parsed = JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")) as Record<string, unknown>;
+    if (
+      parsed.version === SNAPSHOT_VERSION
+      && typeof parsed.at === "number"
+      && typeof parsed.startedAt === "number"
+      && typeof parsed.key === "string"
+      && Array.isArray(parsed.repos)
+      && parsed.repos.every((repo) => typeof repo === "string")
+    ) {
+      // Older than every invalidation this process has seen, so always refreshed behind.
+      cache = {
+        at: parsed.at,
+        startedAt: parsed.startedAt,
+        key: parsed.key,
+        generation: -1,
+        repos: parsed.repos as string[],
+      };
+      // Every scan this process starts is stamped after the one it inherited.
+      lastStamp = Math.max(lastStamp, parsed.at);
+    }
+  } catch {
+    // Missing or unreadable: the first read scans, as it did before there was a snapshot.
+  }
+}
+
+let persisting: Promise<void> = Promise.resolve();
+
+/** Queue a write of `snapshot`, one at a time, so two writes never share the temp file. */
+function persistSnapshot(snapshot: Snapshot): void {
+  persisting = persisting.then(() => writeSnapshot(snapshot));
+}
+
+async function writeSnapshot(snapshot: Snapshot): Promise<void> {
+  // A later scan already replaced this one in memory; its own queued write follows.
+  if (cache !== snapshot) return;
+  const temporary = `${SNAPSHOT_PATH}.${process.pid}.tmp`;
+  const body = {
+    version: SNAPSHOT_VERSION,
+    at: snapshot.at,
+    startedAt: snapshot.startedAt,
+    key: snapshot.key,
+    repos: snapshot.repos,
+  };
+  try {
+    await writeFile(temporary, `${JSON.stringify(body)}\n`, { mode: 0o600 });
+    // A rename, so a starting daemon never reads half a file.
+    await rename(temporary, SNAPSHOT_PATH);
+  } catch {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Start, or join, a scan of `roots` for the current generation.
+ *
+ * At most one walk runs at a time and at most one waits behind it per (generation, key), so
+ * however many readers ask while a walk is running, they cost at most one more walk.
+ *
+ * Without `after`, the running walk answers when it is of this generation and key, and
+ * otherwise the queued one does. With `after`, only a walk stamped later than `after`
+ * answers: the running one started before the request and may already have passed a
+ * directory a checkout was just cloned into, so the request joins - or becomes - the walk
+ * queued behind it, which is stamped when it starts and so after the request.
+ */
+function refresh(roots: string[], after?: number): Promise<Snapshot> {
+  const key = scanKeyFor(roots);
+  const startedGeneration = generation;
+  const slot = `${startedGeneration}|${key}`;
+  if (walking?.slot === slot && (after === undefined || walking.at > after)) return walking.scan;
+  const waiting = queued.get(slot);
+  if (waiting) return waiting;
+  const previous = walksDone;
+  // Assigned before the body below first runs: it waits on `previous` before reading it.
+  let scan!: Promise<Snapshot>;
+  scan = (async () => {
+    await previous;
+    // Leaving the queue: a request from here on finds this walk running, stamped below.
+    queued.delete(slot);
+    const startedAt = Date.now();
+    const at = nextScanStamp();
+    walking = { slot, at, scan };
+    try {
+      const repos = await scanRepos(roots);
+      const snapshot: Snapshot = { at, startedAt, key, generation: startedGeneration, repos };
+      // A scan that started earlier never overwrites a later one, whichever finishes first.
+      if (!cache || cache.at < at) {
+        cache = snapshot;
+        persistSnapshot(snapshot);
+      }
+      return snapshot;
+    } finally {
+      if (walking?.scan === scan) walking = null;
+    }
+  })();
+  queued.set(slot, scan);
+  walksDone = scan.catch(() => {});
+  return scan;
 }
 
 /**
@@ -63,13 +256,20 @@ async function scan(root: string, out: Set<string>, maxDepth: number): Promise<v
     } catch {
       continue;
     }
-    const bare = bareRepositoryStatus(dir);
-    if (bare === null) continue;
-    if (bare) {
-      out.add(dir);
-      continue;
+    // Decide from the listing already in hand. Bare metadata is a HEAD beside objects/ and
+    // refs/, so a directory missing any of the three cannot be one and costs no further
+    // syscall. The walk used to stat `HEAD` synchronously in EVERY directory it visited, on
+    // the daemon's event loop.
+    const names = new Set(entries.map((e) => e.name));
+    if (names.has("HEAD") && names.has("objects") && names.has("refs")) {
+      const bare = bareRepositoryStatus(dir);
+      if (bare === null) continue;
+      if (bare) {
+        out.add(dir);
+        continue;
+      }
     }
-    if (entries.some((e) => e.name === ".git")) {
+    if (names.has(".git")) {
       const metadata = join(dir, ".git");
       const metadataBare = bareRepositoryStatus(metadata);
       if (metadataBare !== null) out.add(metadataBare ? metadata : dir);
@@ -103,15 +303,62 @@ export async function scanRepos(roots: string[]): Promise<string[]> {
 }
 
 /**
- * All git repos under the workspace roots, deduped and sorted. Cached for
- * `CACHE_TTL_MS` so repeated dispatch-modal opens do not rescan the disk.
+ * All git repos under the workspace roots, deduped and sorted.
+ *
+ * An ordinary read answers from the last scan of these roots whatever its age, and starts a
+ * rescan behind the answer when that scan is older than `CACHE_TTL_MS` or was invalidated.
+ * It waits only when no scan of these roots exists at all - and then every concurrent
+ * reader waits on the same walk. The dispatch form reads this way: under load every
+ * `readdir` queues on the libuv pool the rest of the daemon shares, and a slow walk must
+ * never leave the Repo picker empty while the answer from thirty seconds ago is in hand.
+ *
+ * `fresh` is for a reader that must reflect a change made through Mission Control - Settings
+ * after a config write or Rescan now. It waits for a scan within the TTL that postdates the
+ * latest invalidation, sharing one already running for that generation.
+ *
+ * `rescan` is for a reader that must reflect a change made on DISK - the Dispatch form, so a
+ * checkout cloned a moment ago is offered. It waits for a scan that started after this call,
+ * whatever the TTL, because no earlier scan can vouch for a directory it may already have
+ * walked past.
  */
-export async function listRepos(): Promise<string[]> {
-  const now = Date.now();
-  if (cache && now - cache.at < CACHE_TTL_MS) return cache.repos;
-  const repos = await scanRepos(workspaceRoots());
-  cache = { at: now, repos };
-  return repos;
+export async function listRepos(options: ListReposOptions = {}): Promise<string[]> {
+  return (await listReposScan(options)).repos;
+}
+
+export interface ListReposOptions {
+  /** Wait for a scan within the TTL that postdates the latest invalidation. */
+  fresh?: boolean;
+  /** Wait for a scan that started after this call. */
+  rescan?: boolean;
+}
+
+/**
+ * `listRepos`, together with the stamp of the scan that answered it (`nextScanStamp`). The
+ * HTTP route sends it so a browser holding two answers keeps the newer one, whichever
+ * arrived last.
+ */
+export async function listReposScan(
+  options: ListReposOptions = {},
+): Promise<{ repos: string[]; scannedAt: number; identity: string }> {
+  loadPersistedSnapshot();
+  const roots = workspaceRoots();
+  const answer = (snapshot: Snapshot) => ({
+    repos: snapshot.repos,
+    scannedAt: snapshot.at,
+    identity: identityOf(snapshot.key),
+  });
+  // Every stamp handed out so far belongs to a scan that started before this call.
+  if (options.rescan) return answer(await refresh(roots, lastStamp));
+  const current = cache?.key === scanKeyFor(roots) ? cache : null;
+  if (current && current.generation === generation && Date.now() - current.startedAt < CACHE_TTL_MS) {
+    return answer(current);
+  }
+  // A TTL of zero turns caching off: every read is answered by a current walk.
+  if (current && !options.fresh && CACHE_TTL_MS > 0) {
+    void refresh(roots).catch(() => {});
+    return answer(current);
+  }
+  return answer(await refresh(roots));
 }
 
 /**

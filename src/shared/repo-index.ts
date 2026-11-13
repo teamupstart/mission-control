@@ -11,6 +11,20 @@ export const DEFAULT_INDEXED_DIRECTORIES = [
 
 export const MAX_INDEXED_DIRECTORIES = 16;
 
+/**
+ * Response header on `GET /api/repos`: the stamp of the scan that produced the list - when
+ * it started, in epoch milliseconds, made strictly increasing so no two scans share one. A
+ * client holding two answers keeps the one with the later stamp.
+ */
+export const REPOS_SCANNED_AT_HEADER = "x-repos-scanned-at";
+
+/**
+ * Response header on `GET /api/repos`: the identity of the index the list answers for (the
+ * effective directories and depth). The same value rides the SSE snapshot and
+ * `repo_index_changed`, so a window can tell whether a list it holds still applies.
+ */
+export const REPO_INDEX_IDENTITY_HEADER = "x-repo-index-identity";
+
 export const IndexedDirectorySchema = z.object({
   path: z.string().trim().min(1, "Directory paths cannot be empty."),
 });

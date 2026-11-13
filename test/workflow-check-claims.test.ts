@@ -848,7 +848,7 @@ const passingExecution = (snapshot: { runner: LlmRunnerId | null; model: string 
 const policy = () => ({
   liveEnabled: false,
   repoAllowlist: ["/repo"],
-  defaultWorkflowId: null,
+  kindWorkflowDefaults: {},
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
   skipPassedJudges: true,

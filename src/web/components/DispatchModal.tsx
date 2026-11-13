@@ -49,12 +49,14 @@ import {
 } from "@shared/task-source.ts";
 import {
   api,
+  cachedRepos,
   fetchEnvironmentChecks,
   fetchHarnessesConfig,
   fetchPipelineRepos,
   fetchRepos,
   fetchSkills,
   fetchTaskSources,
+  onCachedReposDropped,
   type DispatchResult,
 } from "../lib/api.ts";
 import {
@@ -1218,8 +1220,10 @@ function DispatchModal({
   const availableTaskKinds: readonly TaskKind[] =
     mode.kind === "single" || mode.kind === "tour" ? DISPATCH_TASK_KINDS : BACKLOG_TASK_KINDS;
   const backlogCompatible = taskKindAllowsBacklog(draft.kind);
-  const [repos, setRepos] = useState<string[]>([]);
-  const [reposLoading, setReposLoading] = useState(true);
+  // Opens on the last list this window received, so a rescan behind the daemon never leaves
+  // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
+  const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
+  const [reposLoading, setReposLoading] = useState(() => cachedRepos() === null);
   const [pipelineRepos, setPipelineRepos] = useState<Set<string>>(new Set());
   const [pipelineLaunchRuntime, setPipelineLaunchRuntime] =
     useState<PipelineLaunchRuntime | null>(null);
@@ -2264,14 +2268,32 @@ function DispatchModal({
     };
   }, [harnessesRevision]);
 
-  // Index the workspace's repos so the base can be searched/picked.
-  // Re-fetched on every open so a freshly-cloned repo shows up without a full app reload.
+  // Index the workspace's repos so the base can be searched/picked. Two reads on every open:
+  // the daemon's last scan, which answers at once, and a current one, which waits for a walk
+  // that may be slow under load. Each answers with the newest list the window holds - ordered
+  // by scan, not arrival - so a freshly cloned repo still shows up without a full app reload,
+  // a late older answer never replaces it, and the picker is never empty while a rescan runs.
+  //
+  // When the window drops its list while this form is open - another window saved the
+  // indexed directories, or settings were restored - the picker lets go of it at once rather
+  // than keep offering a repository from a directory no longer indexed, and asks again.
   useEffect(() => {
     let alive = true;
-    void fetchRepos().then((list) => {
+    const show = (list: string[]): void => {
       if (!alive) return;
       setRepos(list);
       setReposLoading(false);
+    };
+    const load = (): void => {
+      void fetchRepos().then(show);
+      void fetchRepos({ rescan: true }).then(show);
+    };
+    load();
+    const stopListening = onCachedReposDropped(() => {
+      if (!alive) return;
+      setRepos([]);
+      setReposLoading(true);
+      load();
     });
     void fetchSkills().then((skills) => { if (alive) setPlanStorage(skills?.planStorage ?? "repository"); });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
@@ -2295,6 +2317,7 @@ function DispatchModal({
     });
     return () => {
       alive = false;
+      stopListening();
     };
   }, []);
 

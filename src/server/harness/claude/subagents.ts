@@ -29,7 +29,10 @@ interface Tracked {
   /** Registered in the background, or moved there later. */
   background: boolean;
   ambient: boolean;
-  /** Has counted as a background agent; stays listed until the next turn folds it. */
+  /**
+   * Has counted as a background agent. Once ended it stays listed until the next turn folds
+   * it, or until the cap folds it sooner to make room (see `bounded`).
+   */
   shown: boolean;
   /** The run this entry describes, when the CLI names runs. A resumed task gets a new one. */
   runId: string | null;

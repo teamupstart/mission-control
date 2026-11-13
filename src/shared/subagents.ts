@@ -14,7 +14,10 @@ export const SUBAGENT_LIMIT = 12;
 export interface SubagentCounts {
   /** Listed agents still running. */
   running: number;
-  /** Listed agents that have ended, still shown dimmed until the next turn. */
+  /**
+   * Listed agents that have ended, shown dimmed until the next turn folds them, or until a
+   * full list folds the oldest to make room.
+   */
   finished: number;
   /** Agents already folded into the "N finished" count by an earlier turn. */
   folded: number;

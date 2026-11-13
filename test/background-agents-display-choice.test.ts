@@ -354,6 +354,31 @@ test("an Agents tab whose agents have all folded says how many finished, not Age
   assert.equal(subagentChipLabel({ subagents: folded }), "2 finished");
 });
 
+test("the Agents tab marks a failed agent and a stopped agent by label and state", () => {
+  const ended: SubagentSummary = {
+    agents: [
+      agent({ id: "f1", description: "Rewrite the ledger cursor", state: "failed", startedAt: 0, endedAt: 30_000, lastTool: "Bash" }),
+      agent({ id: "s1", description: "Sweep the billing fixtures", state: "stopped", startedAt: 0, endedAt: 12_000 }),
+    ],
+    finishedFolded: 0,
+  };
+  const html = rail({ subagents: ended, tab: "agents" });
+  const rowOf = (description: string): string => {
+    const at = html.indexOf(`<span class="agents-desc">${description}</span>`);
+    assert.ok(at >= 0, `no row for ${description}`);
+    const start = html.lastIndexOf("<li ", at);
+    return html.slice(start, html.indexOf("</li>", at));
+  };
+  const failed = rowOf("Rewrite the ledger cursor");
+  assert.match(failed, /^<li class="agents-row is-failed">/);
+  assert.ok(failed.includes('<span class="agents-end">failed · </span>30s · Bash'), failed);
+  const stopped = rowOf("Sweep the billing fixtures");
+  assert.match(stopped, /^<li class="agents-row is-stopped">/);
+  assert.ok(stopped.includes('<span class="agents-end">stopped · </span>12s'), stopped);
+  // Neither is drawn as running or as done.
+  assert.ok(!html.includes("agents-row is-running") && !html.includes(">done · <"));
+});
+
 test("a held Agents tab with no agents to list reads Activity", () => {
   const html = rail({ tab: "agents" });
   assert.match(html, /data-tab="activity"/);

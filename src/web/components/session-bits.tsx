@@ -26,6 +26,7 @@ import {
   type Tone,
 } from "../lib/format.ts";
 import { ariaKeyshortcuts, formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { costChipText, RUNTIME_LABEL, subtitle } from "../lib/session-text.ts";
 import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
 import { useSessionRuntimeDisplay } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
@@ -64,32 +65,6 @@ import { PIPELINE_GROUP_LABELS } from "../pipelines/pipeline-run-model.ts";
  * `test/session-leaf-parity.test.ts` pins each drawing to its shared leaves;
  * `test/pr-chip-parity.test.ts` pins the PR decision across all four.
  */
-
-/**
- * Where this session was found, phrased for the small grey subtitle.
- *
- * The pane id rides along only for a MULTIPLEXER, and that asymmetry is about the axis
- * rather than about tmux: a multiplexer names a SESSION that may hold many panes, so which
- * pane this card is only answerable by saying it, while an emulator names the tab itself
- * and has nothing left to disambiguate. Both shipped backends read exactly as they always
- * did; a third one inherits whichever rule its axis already states.
- */
-export function subtitle(session: Session): string {
-  if (session.runtime === "sdk") return RUNTIME_LABEL;
-  const namer = session.terminals.find((h) => h.backend === session.nameSource);
-  if (namer?.kind === "multiplexer") return `${namer.backend} · ${namer.paneId}`;
-  return session.nameSource;
-}
-
-/**
- * What an embedded session is called where a pane string would go.
- *
- * "Agent SDK" rather than the `sdk` the `NameSource` spells, because this line answers
- * "where is this session?" for a human, and the honest answer is that there is nowhere to
- * go and look - it runs inside Mission Control. Named once and shared by all four
- * surfaces, so the three mark vocabularies say the same word.
- */
-export const RUNTIME_LABEL = "Agent SDK";
 
 const RUNTIME_TITLE =
   "This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.";
@@ -2000,18 +1975,16 @@ function AdvisorChip({ modelId }: { modelId: string }): React.JSX.Element {
  * would claim evidence the ledger does not carry.
  */
 export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
-  if (!cost) return null;
+  const text = costChipText(cost);
+  if (!cost || text === null) return null;
   const tokensIn = cost.input + cost.cacheRead + cost.cacheWrite;
   if (cost.costUsd === null) {
-    const total = tokensIn + cost.output;
-    if (total <= 0) return null;
     return (
       <Tooltip label={`${compactTokens(tokensIn)} in / ${compactTokens(cost.output)} out${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning)` : ""}. Standard API pricing unavailable${cost.pricingModels.length ? ` for ${cost.pricingModels.join(", ")}` : " because no exact model was recorded"}.`}>
-        <span className="rt-pill cost-chip">{compactTokens(total)} tok</span>
+        <span className="rt-pill cost-chip">{text}</span>
       </Tooltip>
     );
   }
-  if (cost.costUsd <= 0) return null;
   const tone = costTone(cost.costUsd);
   const missionEstimated = cost.basis === "api-equivalent";
   const models = cost.pricingModels.length ? cost.pricingModels.join(", ") : "unknown model";
@@ -2028,7 +2001,7 @@ export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Elem
             `${compactTokens(cost.output)} out.\nCalculated by Claude Code; not subscription-plan spend or an invoice.`
       }
     >
-      <span className={`rt-pill cost-chip cost-${tone}`}>≈{fmtUsd(cost.costUsd)}</span>
+      <span className={`rt-pill cost-chip cost-${tone}`}>{text}</span>
     </Tooltip>
   );
 }

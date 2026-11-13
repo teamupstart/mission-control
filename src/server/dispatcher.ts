@@ -1123,6 +1123,17 @@ export class Dispatcher {
       // Read off `cur` before any branch below tears its resources down, so the record names
       // the phase this attempt actually reached.
       const launchFailure = this.launchFailureFor(cur);
+      // This catch also returns resource-free failures to Backlog. Record them before that
+      // early return: the task card alone cannot correlate a failed attempt with daemon load.
+      console.error(`[dispatch] ${JSON.stringify({
+        event: "dispatch_failed",
+        timestamp: new Date(launchFailure.at).toISOString(),
+        taskId,
+        phase: launchFailure.phase,
+        repoRoot: err instanceof DispatchBaseError ? err.repoRoot : cur.repoRoot,
+        error: message,
+        ...(err instanceof DispatchBaseError ? { git: err.git } : {}),
+      })}`);
       // The same resource proof startup reconciliation uses, restricted to the base-freeze
       // and all-or-nothing worktree phase. A fetch or provisioning failure can leave no
       // hidden agent or checkout, so put backlog-capable work back where the operator is
@@ -2491,6 +2502,25 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
   );
 }
 
+interface DispatchGitResult {
+  command: string[];
+  elapsedMs: number;
+  timeoutMs: number | null;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  outcomeUnknown: boolean;
+  overflowed: boolean;
+}
+
+/** Carry process facts through the error boundary without changing the task's error text. */
+class DispatchBaseError extends Error {
+  constructor(message: string, readonly repoRoot: string, readonly git: DispatchGitResult | null) {
+    super(message);
+    this.name = "DispatchBaseError";
+  }
+}
+
 /**
  * Where an ordinary, unpinned task starts: a freshly fetched remote-default commit.
  *
@@ -2509,12 +2539,32 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
  * nobody can reconstruct afterwards. So only a `git remote` listing that SUCCEEDED and did
  * not name `origin` may take the local-HEAD path - a probe that timed out cannot.
  */
-export async function resolveDispatchBase(repoRoot: string): Promise<string> {
-  const origin = await originConfigured(repoRoot);
+export async function resolveDispatchBase(repoRoot: string, execute: typeof run = run): Promise<string> {
+  let lastCommand: DispatchGitResult | null = null;
+  const measured: typeof run = async (bin, args, opts) => {
+    const started = performance.now();
+    const result = await execute(bin, args, opts);
+    lastCommand = {
+      command: [bin, ...args],
+      elapsedMs: Math.round(performance.now() - started),
+      timeoutMs: result.timeoutMs ?? opts?.timeoutMs ?? null,
+      // `run` uses a synthetic code 1 for killed children and spawn refusals. It is not
+      // an exit status Git reported, so retain the signal/uncertainty instead.
+      exitCode: result.outcomeUnknown || result.signal || result.overflowed || result.childPid === null
+        ? null : result.code,
+      signal: result.signal ?? null,
+      timedOut: result.timedOut ?? false,
+      outcomeUnknown: result.outcomeUnknown,
+      overflowed: result.overflowed,
+    };
+    return result;
+  };
+  const origin = await originConfigured(repoRoot, measured);
   if (!origin.ok) {
-    throw new Error(
+    throw new DispatchBaseError(
       `could not determine whether ${repoRoot} has an origin remote: ${origin.reason} - ` +
         "nothing was provisioned, so this can be retried",
+      repoRoot, lastCommand,
     );
   }
   // A local-only repository is ordinary - a scratch checkout, a fixture, a repo whose
@@ -2529,11 +2579,12 @@ export async function resolveDispatchBase(repoRoot: string): Promise<string> {
     }
     return head;
   }
-  const fresh = await freshRemoteDefaultSha(repoRoot);
+  const fresh = await freshRemoteDefaultSha(repoRoot, measured);
   if (!fresh.ok) {
-    throw new Error(
+    throw new DispatchBaseError(
       `could not freeze ${repoRoot}'s remote default branch: ${fresh.reason} - ` +
         "nothing was provisioned, so this can be retried",
+      repoRoot, lastCommand,
     );
   }
   return fresh.value;

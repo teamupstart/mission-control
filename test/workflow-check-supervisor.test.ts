@@ -20,6 +20,7 @@ import {
 } from "../src/server/workflows/check-supervisor.ts";
 import {
   checkGroupAnswers,
+  killLiveCheckGroups,
   liveCheckGroupCount,
   terminateCheckGroup,
 } from "../src/server/workflows/check-group.ts";
@@ -756,6 +757,52 @@ test("a group that could NOT be proven empty stays watched for the exit hook", a
   const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: identity }));
   assert.equal(await recovery("attempt-unproven"), "empty");
   assert.equal(liveCheckGroupCount(), 0, "proving it empty is what releases the tracking");
+});
+
+test("shutdown closes the owned pipe when the group signal cannot be delivered", async (t) => {
+  const { registry, records, cleared } = recordingRegistry();
+  const started = join(workspace(), "started");
+  const outcome = runSupervisedCheck({
+    attemptId: "shutdown-signal-refused",
+    command: [NODE, "-e", `require('node:fs').writeFileSync(${JSON.stringify(started)}, 'ready'); setTimeout(() => {}, 60000)`],
+    leasePath: workspace(),
+    workingSubpath: "",
+    timeoutMs: 60_000,
+  }, { registry, teardown: { graceMs: 100, confirmMs: 1000, pollMs: 20 } });
+  let groupPid: number | undefined;
+  const kill = process.kill.bind(process);
+  try {
+    for (let i = 0; i < 750 && !existsSync(started); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(existsSync(started), "the command must be running before shutdown");
+    groupPid = records[0]!.pid;
+    const ownedGroupPid = groupPid;
+    const signalMock = t.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === -ownedGroupPid && signal && signal !== 0) {
+        // No parent-issued signal may do the cleanup. The pipe can make the shim exit
+        // before the identity re-read, in which case there need not be a signal attempt.
+        throw Object.assign(new Error("simulated group signal refusal"), { code: "EPERM" });
+      }
+      return kill(pid, signal);
+    });
+    const before = Date.now();
+    killLiveCheckGroups();
+    const result = await outcome;
+    const elapsed = Date.now() - before;
+    signalMock.mock.restore();
+    assert.ok(elapsed < 15_000, `shutdown waited ${elapsed}ms for the 60s command`);
+    assert.equal(result.result.kind, "infrastructure");
+    if (result.result.kind === "infrastructure") assert.match(result.result.reason, /shutting down/);
+    assert.equal(result.emptiness, "empty");
+    assert.equal(checkGroupAnswers(groupPid), false, "the shim must terminate its own group");
+    assert.deepEqual(cleared, ["shutdown-signal-refused"]);
+  } finally {
+    t.mock.restoreAll();
+    groupPid ??= records[0]?.pid;
+    if (groupPid !== undefined) await waitForGroupGone(groupPid);
+    await outcome;
+  }
 });
 
 test("a surviving descendant whose LEADER is gone is never signalled", async () => {

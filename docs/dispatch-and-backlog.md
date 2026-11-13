@@ -824,6 +824,18 @@ launch refusals outside that resource phase also remain failed, and once any lau
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
 
+Live dispatch failures also write a single-line `dispatch_failed` JSON record to the daemon
+log, prefixed with `[dispatch]`. It includes an ISO timestamp, task ID, dispatch phase,
+repository path, and error text. A remote-default base-freeze failure includes the last Git
+command as an argv array, measured elapsed milliseconds, timeout budget, exit code or signal,
+and timeout, unknown-outcome, and output-overflow flags. A killed child has a null exit code
+rather than the executor's synthetic exit 1. If an attached repository fails, the record names
+that repository. These local diagnostics do not require telemetry to be enabled.
+
+The fetch budget remains 30 seconds. Timeouts, signals, and ordinary remote refusals are not
+automatically retried; only the existing bounded retry for a remote-tracking ref update race
+applies. A failed base freeze still provisions nothing and can be retried manually.
+
 ### Search and filter the backlog
 
 The Board's Backlog column and the Line's **Backlog** drawer both carry a search button and a

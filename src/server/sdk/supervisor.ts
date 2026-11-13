@@ -65,6 +65,8 @@ import {
   setSdkSessionModel,
   setSdkSessionPermissionMode,
   setSdkSessionStatus,
+  noteSdkSessionResumeDeferred,
+  clearSdkSessionResumeDeferrals,
   setSdkSessionTurnInProgress,
   upsertSdkSession,
   type SdkSessionRow,
@@ -172,6 +174,13 @@ function standingInstructionsForResume(noteKey: string): string {
  * leaves such a row `suspended` for the next restore instead of failing it.
  */
 class ResumeDeferred extends Error {}
+
+/**
+ * How many consecutive restores may defer a row before it is refused like any other failure.
+ * Enough to ride out a rebuild or a loaded boot; few enough that a bundle that never builds
+ * is reported within a handful of restarts rather than retried, unseen, for ever.
+ */
+export const MAX_RESUME_DEFERRALS = 3;
 
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
@@ -331,6 +340,7 @@ export class SdkSupervisor {
         const restoreStartedAt = Date.now();
         try {
           await this.resume(row);
+          clearSdkSessionResumeDeferrals(row.id);
           observeSessionRestore({
             sessionId: row.id,
             taskId: row.taskId,
@@ -348,8 +358,13 @@ export class SdkSupervisor {
             turnInProgress: row.turnInProgress,
           });
         } catch (err) {
-          const why = err instanceof Error ? err.message : String(err);
-          console.error(`[sdk] could not resume ${row.id}: ${why}`);
+          const reason = err instanceof Error ? err.message : String(err);
+          // Counted first, so the log and the eviction both say whether this was a deferral
+          // and, past the bound, how long it waited.
+          const deferrals = err instanceof ResumeDeferred ? noteSdkSessionResumeDeferred(row.id) : 0;
+          const deferred = err instanceof ResumeDeferred && deferrals < MAX_RESUME_DEFERRALS;
+          const why = err instanceof ResumeDeferred && !deferred ? `${reason} (after ${deferrals} restores)` : reason;
+          if (!deferred) console.error(`[sdk] could not resume ${row.id}: ${why}`);
           observeSessionRestore({
             sessionId: row.id,
             taskId: row.taskId,
@@ -362,12 +377,17 @@ export class SdkSupervisor {
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
           });
-          if (err instanceof ResumeDeferred) {
+          if (deferred) {
             // Not a verdict on this session: keep it live for the next restore, which is the
             // same treatment a row shutdown interrupted gets, rather than lose the conversation.
             setSdkSessionStatus(row.id, "suspended");
-            console.warn(`[sdk] left ${row.id} suspended for the next restore: ${why}`);
+            console.warn(
+              `[sdk] left ${row.id} suspended for the next restore (${deferrals} of ${MAX_RESUME_DEFERRALS}): ${why}`,
+            );
           } else if (!this.shuttingDown) {
+            // A deferral that has not cleared in `MAX_RESUME_DEFERRALS` restores is no longer
+            // transient. It takes the ordinary refusal from here: a card, an eviction that says
+            // why, and the task settled visibly - never a silent retry on every restart.
             this.registerAndEvict(row, why);
           }
         } finally {

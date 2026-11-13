@@ -2472,7 +2472,10 @@ run `npm run build`), rather than started with the built-in or with no way to as
 [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Restoring an SDK session after
 a restart applies the same check, but a refused restore costs a conversation, so only a bundle
 verified not to publish `request_input` fails the session. A bundle that is not built yet, or a
-handshake that did not complete, leaves it `suspended` for the next restore instead. The answer
+handshake that did not complete, leaves it `suspended` for the next restore instead - for at
+most three restores in a row. A deferral that has not cleared by then is refused the ordinary
+way: the card appears, says why it could not be resumed, and its task settles. A resume that
+goes through starts the count over. The answer
 lands in the session's conversation as the same gold entry.
 
 A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also

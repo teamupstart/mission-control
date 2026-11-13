@@ -26,7 +26,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb, workCycleFor, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure, getTask } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
+const { MAX_RESUME_DEFERRALS, RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
 );
 const { CAPACITY_CONTINUATION_PROMPT, CAPACITY_RETRY_MAX_ATTEMPTS, capacityRetryPlan } = await import(
@@ -1987,6 +1987,115 @@ test("restore DEFERS a session whose request_input could not be confirmed, keepi
     assert.ok(deferred, `${mode}: the deferral is reported`);
     assert.match(deferred!, reason, mode);
   }
+});
+
+test("a deferral that never clears is refused visibly after a bounded number of restores", async (t) => {
+  // A bundle that is never built would otherwise defer the row on every restart, with no card
+  // and no reason anywhere but a log. Past the bound it takes the ordinary refusal: the row is
+  // failed, a card is registered and evicted with the reason, and the task can settle.
+  const id = "sdk:resume-decisions-bounded";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-bounded",
+    cwd: "/repo/resume-decisions-bounded",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const deps = {
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unbuilt" as const, reason: "the MCP server is not built" }),
+  };
+  const logged: string[] = [];
+  const log = (...args: unknown[]) => logged.push(args.map(String).join(" "));
+  const error = t.mock.method(console, "error", log);
+  const warn = t.mock.method(console, "warn", log);
+  const fake = withFakeDriver(async () => assert.fail("the driver must not launch"));
+  let last = new Registry();
+  try {
+    for (let restore = 1; restore <= MAX_RESUME_DEFERRALS; restore++) {
+      last = new Registry();
+      await new SdkSupervisor(last, deps).restore();
+      if (restore < MAX_RESUME_DEFERRALS) {
+        assert.equal(getSdkSession(id)?.status, "suspended", `restore ${restore} defers`);
+        assert.equal(last.getSession(id), undefined, `restore ${restore} registers nothing`);
+      }
+    }
+  } finally {
+    fake.restore();
+    error.mock.restore();
+    warn.mock.restore();
+  }
+  assert.equal(fake.calls.length, 0, "nothing was ever launched");
+  assert.equal(getSdkSession(id)?.status, "failed", "the bounded restore is refused, not deferred again");
+  assert.equal(last.getSession(id)?.state, "exited", "with a card, evicted the ordinary way");
+  assert.ok(logged.some((line) => line.includes(`left ${id} suspended for the next restore (1 of ${MAX_RESUME_DEFERRALS})`)));
+  const refusal = logged.find((line) => line.includes(`could not resume ${id}`) && line.includes(`after ${MAX_RESUME_DEFERRALS} restores`));
+  assert.ok(refusal, "the refusal says why, and how long it waited");
+  assert.match(refusal!, /the MCP server is not built/);
+});
+
+test("a resume that goes through starts the count of deferrals over", async () => {
+  const id = "sdk:resume-decisions-reset";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-reset",
+    cwd: "/repo/resume-decisions-reset",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const defer = {
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+  };
+  const refused = withFakeDriver(async () => assert.fail("a deferred restore must not launch"));
+  try {
+    for (let restore = 1; restore < MAX_RESUME_DEFERRALS; restore++) await new SdkSupervisor(new Registry(), defer).restore();
+  } finally {
+    refused.restore();
+  }
+  assert.equal(getSdkSession(id)?.status, "suspended", "one deferral short of the bound");
+
+  const handle = fakeHandle();
+  const launched = withFakeDriver(async () => handle);
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
+  try {
+    await supervisor.restore();
+    assert.ok(launched.calls.some((call) => call.resume === "agent-decisions-reset"), "the confirmed restore resumes it");
+  } finally {
+    launched.restore();
+    await supervisor.stopAll();
+  }
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-reset",
+    cwd: "/repo/resume-decisions-reset",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+
+  // A fresh run of trouble gets the full bound again, not the remainder of the last one.
+  const again = withFakeDriver(async () => assert.fail("a deferred restore must not launch"));
+  try {
+    await new SdkSupervisor(new Registry(), defer).restore();
+  } finally {
+    again.restore();
+  }
+  assert.equal(getSdkSession(id)?.status, "suspended", "deferred, not refused: the count started over");
 });
 
 test("a deferred session is resumed by the next restore once its decision tool is confirmed", async () => {

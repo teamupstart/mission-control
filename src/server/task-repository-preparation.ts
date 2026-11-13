@@ -24,7 +24,9 @@ export async function resolveTaskRepositorySelector(selector: string): Promise<
 > {
   if (isAbsolute(selector)) return { ok: true, path: selector };
 
-  const matches = (await listRepos()).filter((repo) => basename(repo) === selector);
+  // `fresh`: a short name is resolved once, at filing time, so it must see a checkout cloned
+  // since the last scan rather than refuse it from the stale list the picker may show.
+  const matches = (await listRepos({ fresh: true })).filter((repo) => basename(repo) === selector);
   const candidates = new Set<string>();
   for (const match of matches) {
     const resolved = await resolveTaskRepoRoot(match);

@@ -8062,7 +8062,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, PipelineInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
     const body = parsed.data;
-    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos());
+    // `fresh`: the launch re-verifies the checkout against the catalog, and must not accept one
+    // from a scan that predates a removal. The candidate list above is a picker and stays instant.
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos({ fresh: true }));
     if (!launch.ok) {
       const answer: PipelineInstallerLaunchResult = {
         ok: false,

@@ -1091,12 +1091,18 @@ send, not on a turn the agent starts for itself, because a finished agent's noti
 start one. A change to who is running or how one ended reaches the board at once; a change
 that moves only counters is sent at most once every five seconds per session.
 
-A sub-agent's own activity never moves its parent. On the SDK stream a frame carrying
-`parent_tool_use_id` is the sub-agent's, and it cannot re-open a finished turn. A hook that
-Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it as
-`HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
-cycle as they were. SDK sessions run the machine's installed hooks too, so this matters for
-both runtimes.
+A sub-agent's own activity cannot restart its parent. The two channels it arrives on are
+handled separately:
+
+- **The SDK stream.** A frame carrying `parent_tool_use_id` belongs to a sub-agent. While the
+  parent's own turn is running, it updates the parent's activity line, since the session is
+  working on that sub-agent's behalf, but it never opens a turn of its own. Once the parent's
+  turn has ended, such a frame is dropped, so it cannot re-open a finished turn or flip an idle
+  parent back to working.
+- **Hooks.** A hook Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it
+  as `HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
+  cycle as they were, in the moment and in the hook reading that later discovery sweeps replay.
+  SDK sessions run the machine's installed hooks too, so this matters for both runtimes.
 
 ### Open a terminal, or the agent's own CLI, on a session
 

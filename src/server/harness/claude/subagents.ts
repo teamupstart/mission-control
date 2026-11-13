@@ -325,7 +325,9 @@ export function observeClaudeSubagentFrame(
             description: base.description ?? str(t.description),
           },
           background: true,
-          ambient: false,
+          // An entry that omits `ambient` says nothing about it. The same run keeps whatever its
+          // start already said - a housekeeping task stays hidden - while a new run starts fresh.
+          ambient: prior?.ambient ?? false,
           shown: true,
           ...advance(known ?? wasRetired ?? NO_RUNS, entryRun, !prior),
         });

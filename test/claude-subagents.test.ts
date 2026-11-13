@@ -461,6 +461,18 @@ test("without run ids, an ended agent the live set re-lists after dropping it is
   assert.deepEqual([entry.state, entry.startedAt, entry.endedAt, entry.toolUses], ["running", 500, null, null]);
 });
 
+test("an agent its start marked ambient stays hidden when the live set omits the flag", () => {
+  let s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
+  // The start says `h` is housekeeping; the live set then names it without the field.
+  s = observeClaudeSubagentFrame(s, started("h", { is_backgrounded: true, ambient: true, run_id: "r1" }), 2);
+  s = observeClaudeSubagentFrame(s, level(agent("a"), agent("h", { run_id: "r1" })), 3);
+  assert.deepEqual(states(s), { a: "running" });
+  assert.equal(subagentActivityLine({ state: "idle", subagents: claudeSubagentSummary(s)! }), "idle · 1 agent still running");
+  // A genuinely new run of that id starts with a fresh classification.
+  s = observeClaudeSubagentFrame(s, level(agent("a"), agent("h", { run_id: "r2" })), 4);
+  assert.deepEqual(states(s), { a: "running", h: "running" });
+});
+
 test("a no-op frame returns the same state object", () => {
   const s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
   assert.equal(observeClaudeSubagentFrame(s, sys("task_progress", { task_id: "unknown", usage: {} }), 1), s);

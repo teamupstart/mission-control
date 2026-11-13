@@ -5055,6 +5055,13 @@ const LEGACY_OBSERVATION_QUARANTINE_PREFIXES = [
  * NULL, which is never recovered automatically. Recovery still re-proves every fact, so a
  * classified slot that is in fact dirty, occupied, moved or leased stays quarantined.
  */
+//
+// Category is not the whole of recoverability. The "slot occupancy became unknown before ..."
+// rows this classifies as observations usually still hold the reservation an older build never
+// undid, and recovery never releases a lease, so they can never come back on their own. Any
+// consumer asking "will Reconcile recover this slot?" must use `quarantineAutoRecoverable`
+// (category AND no active lease, the same rule `recoverQuarantined` enforces), never
+// `quarantineRecoverable` on the category alone.
 function backfillWorktreeQuarantineCategory(d: DatabaseSync): void {
   const exact = LEGACY_OBSERVATION_QUARANTINE_REASONS.map(() => "?").join(", ");
   // `substr` rather than LIKE: a reason may contain `%` or `_`, and this must be exact.

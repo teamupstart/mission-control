@@ -78,8 +78,10 @@ export const RECOVERABLE_QUARANTINE_CATEGORIES = WORKTREE_QUARANTINE_CATEGORIES
   .filter((category) => QUARANTINE_RECOVERABLE[category]);
 
 /**
- * Whether a stored category may be recovered automatically. Read as a string, so NULL, and a
- * value a newer build wrote, both fail closed.
+ * Whether a stored category is one recovery may act on - a necessary condition only. A slot
+ * that still holds a lease is never recovered whatever its category, so a caller asking whether
+ * a slot will come back uses `quarantineAutoRecoverable`. Read as a string, so NULL and a value
+ * a newer build wrote both fail closed.
  */
 export function quarantineRecoverable(category: string | null): boolean {
   return (RECOVERABLE_QUARANTINE_CATEGORIES as readonly string[]).includes(category ?? "");

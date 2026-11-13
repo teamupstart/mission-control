@@ -1256,6 +1256,10 @@ test("Settings shows when each slot was quarantined and which ones Reconcile can
   // An uncategorized legacy quarantine is never recovered, and Reconcile records no time for it.
   await expect(legacyRow.getByText("quarantined", { exact: true })).toBeVisible();
   await expect(legacyRow.getByText("Quarantine time not recorded", { exact: true })).toBeVisible();
+  // The pool's Reconcile diagnostic says why the two that stayed were left alone.
+  await expect(pool.getByText(/a state quarantine needs operator action; Reconcile does not recover it/)).toBeVisible();
+  await expect(pool.getByText(/an uncategorized legacy quarantine needs operator action; Reconcile does not recover it/))
+    .toBeVisible();
   await dashboard.getByRole("heading", { name: "Worktrees", exact: true }).click();
   await dirtyRow.scrollIntoViewIfNeeded();
   await shoot(dashboard, "26-transient-recovered-dirty-kept", true);

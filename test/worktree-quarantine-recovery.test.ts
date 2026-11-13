@@ -239,6 +239,10 @@ for (const category of ["state", "transition", null] as const) {
     assert.equal(after.quarantineCategory, category);
     assert.equal(after.quarantinedAt, 4_000);
     assert.equal(after.quarantineReason, quarantined.quarantineReason);
+    // A Reconcile that changed nothing says why, naming the category.
+    assert.equal(manager.store.pool(slot.poolId)?.reconciliationError,
+      `slot ${slot.ordinal}: ${category === null ? "an uncategorized legacy quarantine" : `a ${category} quarantine`} ` +
+      "needs operator action; Reconcile does not recover it");
   });
 }
 

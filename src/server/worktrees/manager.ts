@@ -2247,7 +2247,13 @@ export class WorktreeManager {
           // Recovery re-proves every boundary from scratch and never releases a domain lease,
           // resets files, or trusts the old reason or the inventory projection. Nothing here
           // rewrites the row: the slot keeps the reason, category and time it entered with.
-          if (!quarantineRecoverable(slot.quarantineCategory)) continue;
+          if (!quarantineRecoverable(slot.quarantineCategory)) {
+            // Left exactly as it is, but named, so a Reconcile that changed nothing says why.
+            errors.push(`slot ${slot.ordinal}: ${slot.quarantineCategory === null
+              ? "an uncategorized legacy quarantine"
+              : `a ${bounded(slot.quarantineCategory)} quarantine`} needs operator action; Reconcile does not recover it`);
+            continue;
+          }
           // Already quarantined, so a failed proof only reports itself, exactly as `reject`
           // would for this slot, and changes nothing.
           const blocked = (reason: string) => {

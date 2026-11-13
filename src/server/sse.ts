@@ -5,14 +5,23 @@ import type { Registry } from "./registry.ts";
 import { unref } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
+import { REPO_INDEX_IDENTITY_UNKNOWN } from "@shared/repo-index.ts";
 import { repoIndexIdentity } from "./repos.ts";
 
-/** The index identity for a snapshot, or nothing when the config cannot be read right now. */
-function snapshotRepoIndexIdentity(): { repoIndexIdentity?: string } {
+/**
+ * The index identity for a snapshot. When the config cannot be read, the sentinel - never an
+ * absent field: a window that missed `repo_index_changed` while disconnected learns of it only
+ * here, and an omitted identity would let it keep a list for directories no longer indexed.
+ */
+function snapshotRepoIndexIdentity(): { repoIndexIdentity: string } {
   try {
     return { repoIndexIdentity: repoIndexIdentity() };
-  } catch {
-    return {};
+  } catch (error) {
+    console.warn(
+      `[repos] could not read the repository index for the event snapshot; windows will drop ` +
+        `their repository lists: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return { repoIndexIdentity: REPO_INDEX_IDENTITY_UNKNOWN };
   }
 }
 

@@ -3596,8 +3596,9 @@ export type ServerEvent =
   | {
       type: "snapshot";
       /**
-       * The current index identity (`repoIndexIdentity`). Added by the stream, not the
-       * registry, and absent when it could not be read. A window reconnecting after it missed
+       * The current index identity (`repoIndexIdentity`), or `REPO_INDEX_IDENTITY_UNKNOWN`
+       * when the daemon could not read it. Added by the stream, not the registry; optional
+       * only so the registry's own snapshot type, which never carries it, still fits. A window reconnecting after it missed
        * a `repo_index_changed` compares its repository list against this and drops it on a
        * mismatch - and keeps it on a match, which is the common reconnect under load.
        */

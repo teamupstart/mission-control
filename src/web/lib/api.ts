@@ -189,6 +189,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
   REPOS_SCANNED_AT_HEADER,
   type RepoIndexConfigPatch,
   type RepoIndexView,
@@ -1076,6 +1077,12 @@ export function forgetCachedRepos(): void {
  * that missed a directory change while disconnected still lets go of a stale list.
  */
 export function noteRepoIndexIdentity(identity: string): void {
+  if (identity === REPO_INDEX_IDENTITY_UNKNOWN) {
+    // The daemon cannot vouch for any index right now: let go of what is held, and take the
+    // next real answer rather than refuse it against an identity that is not one.
+    if (lastRepos !== null || announcedIdentity !== null) forgetCachedRepos();
+    return;
+  }
   const superseded = announcedIdentity !== null && announcedIdentity !== identity;
   const stale = lastRepos !== null && lastRepos.identity !== identity;
   // A changed index forgets even when no list is held yet: that is what drops a first load

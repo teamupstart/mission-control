@@ -322,3 +322,25 @@ test("each read reports how it ended, so a picker can tell an empty index from n
   releaseOld();
   assert.deepEqual(await stale, { repos: [], outcome: "dropped" });
 });
+
+test("an unknown index from the daemon drops the held list, and the next real answer is taken", async () => {
+  const api = await freshApi();
+  const { REPO_INDEX_IDENTITY_UNKNOWN } = await import("../src/shared/repo-index.ts");
+  scriptFetch([list(["/w/alpha"], 100, "index-a"), list(["/w/beta"], 200, "index-b")]);
+  api.noteRepoIndexIdentity("index-a");
+  await api.fetchRepos();
+  let drops = 0;
+  const stop = api.onCachedReposDropped(() => {
+    drops += 1;
+  });
+  try {
+    // A reconnect snapshot sent while the daemon could not read its config.
+    api.noteRepoIndexIdentity(REPO_INDEX_IDENTITY_UNKNOWN);
+    assert.equal(api.cachedRepos(), null, "a list the daemon cannot vouch for is not offered");
+    assert.equal(drops, 1, "an open picker asks again");
+    // The sentinel is not an identity to hold answers against: the next one is taken.
+    assert.deepEqual(await api.fetchReposAnswer(), { repos: ["/w/beta"], outcome: "answered" });
+  } finally {
+    stop();
+  }
+});

@@ -543,3 +543,46 @@ test("the index identity holds while nothing changes and moves with the roots or
     rmSync(second, { recursive: true, force: true });
   }
 });
+
+test("a walk that never finishes is abandoned at its deadline, and the next walk still runs", async (t) => {
+  const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const previous = process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
+  // A `readdir` of the root that never returns while the mount is "stalled".
+  const realReaddir = fsPromises.readdir;
+  let stalled = true;
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (stalled && String(args[0]) === root) return await new Promise<never>(() => {});
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  const warned: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warned.push(String(message));
+  });
+  try {
+    rmSync(SNAPSHOT, { force: true });
+    setRepoIndexConfig({ directories: [{ path: root }] });
+    process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = "200";
+    const repos = await restartedRepos("hung-walk");
+
+    // No scan anywhere, so this read waits on the walk - and is told it timed out.
+    await assert.rejects(repos.listRepos({ rescan: true }), (error: Error) => {
+      assert.equal(error.name, "ReposScanTimeoutError");
+      assert.match(error.message, /did not finish within 0 s and was abandoned/);
+      return true;
+    });
+    assert.ok(warned.some((line) => /\[repos\] workspace scan of .* was abandoned/.test(line)), "and it is logged");
+
+    // The mount recovers. The stuck walk is still pending, yet the next read is not queued
+    // behind it: it walks, and answers.
+    stalled = false;
+    assert.deepEqual(await repos.listRepos({ rescan: true }), [join(root, "alpha")]);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
+    else process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = previous;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(SNAPSHOT, { force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});

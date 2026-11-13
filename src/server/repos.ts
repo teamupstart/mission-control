@@ -19,6 +19,15 @@ import { indexedDirectories } from "./repo-index-config.ts";
  * WAITS on age (see `listRepos`); only a `fresh` or `rescan` read does.
  */
 const CACHE_TTL_MS = Number(envVar("REPOS_CACHE_MS") ?? 30_000);
+/**
+ * How long one walk may run before the queue stops waiting on it. Walks are serialized, so a
+ * `readdir` that never returns - a stalled network mount, a wedged FUSE directory under an
+ * indexed root - would otherwise hold every later rescan, fresh read and first read until the
+ * daemon restarts. Past this bound the walk is abandoned: its readers are told it timed out,
+ * whatever it finds later is discarded, and the next walk starts. Ordinary reads with a scan
+ * in hand never wait on a walk, so they keep answering throughout.
+ */
+const SCAN_TIMEOUT_MS = Number(envVar("REPOS_SCAN_TIMEOUT_MS") ?? 60_000);
 /** Where the last completed scan survives a daemon restart. */
 const SNAPSHOT_PATH = join(STATE_DIR, "repo-index-cache.json");
 // 2: the identity became roots AND depth. 3: the wall-clock start rides beside the ordering
@@ -220,8 +229,15 @@ function refresh(roots: string[], after?: number): Promise<Snapshot> {
     const startedAt = Date.now();
     const at = nextScanStamp();
     walking = { slot, at, scan };
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      const repos = await scanRepos(roots);
+      const repos = await Promise.race([
+        scanRepos(roots),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => reject(new ReposScanTimeoutError(roots, SCAN_TIMEOUT_MS)), SCAN_TIMEOUT_MS);
+          deadline.unref?.();
+        }),
+      ]);
       const snapshot: Snapshot = { at, startedAt, key, generation: startedGeneration, repos };
       // A scan that started earlier never overwrites a later one, whichever finishes first.
       if (!cache || cache.at < at) {
@@ -229,13 +245,29 @@ function refresh(roots: string[], after?: number): Promise<Snapshot> {
         persistSnapshot(snapshot);
       }
       return snapshot;
+    } catch (error) {
+      if (error instanceof ReposScanTimeoutError) console.warn(`[repos] ${error.message}`);
+      throw error;
     } finally {
+      clearTimeout(deadline);
       if (walking?.scan === scan) walking = null;
     }
   })();
   queued.set(slot, scan);
   walksDone = scan.catch(() => {});
   return scan;
+}
+
+/** A walk that ran past `SCAN_TIMEOUT_MS` and was abandoned so the queue could move on. */
+export class ReposScanTimeoutError extends Error {
+  constructor(roots: readonly string[], timeoutMs: number) {
+    super(
+      `workspace scan of ${roots.join(", ") || "no directories"} did not finish within ` +
+        `${Math.round(timeoutMs / 1000)} s and was abandoned; a directory under an indexed root ` +
+        `may be on a stalled mount`,
+    );
+    this.name = "ReposScanTimeoutError";
+  }
 }
 
 /**

@@ -25,6 +25,14 @@ export const REPOS_SCANNED_AT_HEADER = "x-repos-scanned-at";
  */
 export const REPO_INDEX_IDENTITY_HEADER = "x-repo-index-identity";
 
+/**
+ * Sent in place of an identity when the daemon could not read its index config. A window
+ * treats it as "whatever you hold may be stale": it drops its list rather than keep offering
+ * one the daemon cannot vouch for, and takes the next real answer. Not a hash, so it never
+ * equals a real identity.
+ */
+export const REPO_INDEX_IDENTITY_UNKNOWN = "unknown";
+
 export const IndexedDirectorySchema = z.object({
   path: z.string().trim().min(1, "Directory paths cannot be empty."),
 });

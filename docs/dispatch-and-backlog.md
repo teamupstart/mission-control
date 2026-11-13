@@ -509,7 +509,7 @@ arrow/enter to pick.
 The picker never waits on a rescan it does not need. The daemon answers from its last scan of
 the same directories to the same depth - kept in `repo-index-cache.json` in the state directory,
 so it survives a restart - and walks the disk again behind that answer once the scan is older
-than `MISSION_REPOS_CACHE_MS` (30 seconds by default). Walks never overlap: readers share the
+than `MISSION_REPOS_CACHE_MS` (30 seconds by default). Walks of the same directories never overlap: readers share the
 walk in progress, and every Dispatch open that arrives during one shares a single walk queued
 behind it. The form opens on the newest list this window has received, and on every open it also
 asks for a scan that starts after the request. When that answer arrives it replaces the list, so a checkout you

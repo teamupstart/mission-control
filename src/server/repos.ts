@@ -81,18 +81,22 @@ let lastStamp = 0;
 const stuckWalks = new Map<string, Promise<void>>();
 
 /**
- * The one walk on disk right now, if any. Walks never overlap: under load each `readdir`
- * already queues behind the rest of the daemon's I/O, and two walks of the same tree at
- * once would only double that for an answer one of them could give.
+ * The walk on disk right now for each scan key (roots + depth). Walks of one key never
+ * overlap: under load each `readdir` already queues behind the rest of the daemon's I/O, and
+ * two walks of the same tree at once would only double that for an answer one of them could
+ * give. Walks of DIFFERENT keys do not wait on each other: a new key means the operator just
+ * changed the indexed directories - typically to remove one that is stalling - and making that
+ * walk queue behind the stalled one would hold the recovery for the whole deadline. Distinct
+ * keys only appear through config writes, so this cannot fan out with request rate.
  */
-let walking: { slot: string; at: number; scan: Promise<Snapshot> } | null = null;
+const walking = new Map<string, { slot: string; at: number; scan: Promise<Snapshot> }>();
 /**
  * The walk queued behind it, per (generation, key). Not started, so it is stamped after
  * every request that joins it - which is what lets any number of rescans share it.
  */
 const queued = new Map<string, Promise<Snapshot>>();
-/** Settles when the last walk handed out has finished; the next one starts after it. */
-let walksDone: Promise<unknown> = Promise.resolve();
+/** Per key: settles when the last walk handed out has finished; the next one starts after it. */
+const walksDone = new Map<string, Promise<void>>();
 
 /**
  * The start time of a new scan: wall-clock milliseconds, nudged forward by one when the clock
@@ -250,8 +254,8 @@ async function writeSnapshot(snapshot: Snapshot): Promise<void> {
 /**
  * Start, or join, a scan of `roots` for the current generation.
  *
- * At most one walk runs at a time and at most one waits behind it per (generation, key), so
- * however many readers ask while a walk is running, they cost at most one more walk.
+ * At most one walk of a key runs at a time and at most one waits behind it per (generation,
+ * key), so however many readers ask while a walk is running, they cost at most one more walk.
  *
  * Without `after`, the running walk answers when it is of this generation and key, and
  * otherwise the queued one does. With `after`, only a walk stamped later than `after`
@@ -263,10 +267,11 @@ function refresh(roots: string[], after?: number): Promise<Snapshot> {
   const key = scanKeyFor(roots);
   const startedGeneration = generation;
   const slot = `${startedGeneration}|${key}`;
-  if (walking?.slot === slot && (after === undefined || walking.at > after)) return walking.scan;
+  const running = walking.get(key);
+  if (running?.slot === slot && (after === undefined || running.at > after)) return running.scan;
   const waiting = queued.get(slot);
   if (waiting) return waiting;
-  const previous = walksDone;
+  const previous = walksDone.get(key) ?? Promise.resolve();
   // Assigned before the body below first runs: it waits on `previous` before reading it.
   let scan!: Promise<Snapshot>;
   scan = (async () => {
@@ -278,7 +283,7 @@ function refresh(roots: string[], after?: number): Promise<Snapshot> {
     if (stuckWalks.has(key)) throw new ReposScanStuckError(roots);
     const startedAt = Date.now();
     const at = nextScanStamp();
-    walking = { slot, at, scan };
+    walking.set(key, { slot, at, scan });
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const walk = scanRepos(roots);
     try {
@@ -308,11 +313,14 @@ function refresh(roots: string[], after?: number): Promise<Snapshot> {
       throw error;
     } finally {
       clearTimeout(deadline);
-      if (walking?.scan === scan) walking = null;
+      if (walking.get(key)?.scan === scan) walking.delete(key);
     }
   })();
   queued.set(slot, scan);
-  walksDone = scan.catch(() => {});
+  const done: Promise<void> = scan.then(() => undefined, () => undefined).then(() => {
+    if (walksDone.get(key) === done) walksDone.delete(key);
+  });
+  walksDone.set(key, done);
   return scan;
 }
 

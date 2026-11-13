@@ -791,3 +791,62 @@ test("with a scan held, a fresh or rescan read on a stalled mount answers from i
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("removing a stalled directory recovers at once: a walk of other directories never queues behind it", async (t) => {
+  const stalledRoot = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const healthy = makeWorkspace((r) => makeRepo(join(r, "beta")));
+  const previous = process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
+  const realReaddir = fsPromises.readdir;
+  let recover!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    recover = resolve;
+  });
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (String(args[0]) === stalledRoot) await recovered;
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  t.mock.method(console, "warn", () => {});
+  try {
+    rmSync(SNAPSHOT, { force: true });
+    setRepoIndexConfig({ directories: [{ path: stalledRoot }] });
+    // A deadline far beyond the assertion below: recovery must not depend on it firing.
+    process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = "30000";
+    const repos = await restartedRepos("per-key-queue");
+    // The walk of the stalled directory starts and does not return.
+    const stuck = repos.listRepos({ rescan: true });
+    stuck.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The operator removes it in Settings: the walk of what remains answers at once.
+    setRepoIndexConfig({ directories: [{ path: healthy }] });
+    const started = Date.now();
+    assert.deepEqual(await repos.listRepos({ fresh: true }), [join(healthy, "beta")]);
+    assert.ok(Date.now() - started < 2_000, `answered in ${Date.now() - started} ms, not after the stalled walk's deadline`);
+
+    // A second walk of the same stalled directories still waits its turn rather than overlap.
+    setRepoIndexConfig({ directories: [{ path: stalledRoot }] });
+    let second = false;
+    const queuedBehind = repos.listRepos({ rescan: true }).then(() => {
+      second = true;
+    }, () => {
+      second = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(second, false, "same directories: queued behind the walk still on disk");
+    recover();
+    await stuck.catch(() => {});
+    await queuedBehind;
+    assert.equal(second, true);
+  } finally {
+    recover();
+    if (previous === undefined) delete process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
+    else process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = previous;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(SNAPSHOT, { force: true });
+    rmSync(stalledRoot, { recursive: true, force: true });
+    rmSync(healthy, { recursive: true, force: true });
+  }
+});
+

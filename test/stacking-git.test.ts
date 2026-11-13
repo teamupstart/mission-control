@@ -4,7 +4,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { mkTask } from "./helpers/session-fixture.ts";
+import { mkSession, mkTask } from "./helpers/session-fixture.ts";
+import type { PrRefs } from "../src/server/inspector/github.ts";
+import type { WorkflowBinding } from "../src/shared/workflow.ts";
 
 // Stacked pull requests against real git: the one-branch refresh at the repository root, the
 // stacked review diff after the parent moved, and the merge-based restack after a squash.
@@ -53,6 +55,79 @@ function fixture(): { origin: string; author: string; checkout: string } {
   return { origin, author, checkout };
 }
 
+function parentGitHub(over: Partial<PrRefs> = {}) {
+  return {
+    ...defaultStackGitHub,
+    prRefs: async () => ({ ok: true, value: {
+      state: "OPEN" as const, isDraft: false, headSha: "a".repeat(40),
+      headRefName: "feat/parent", baseRefName: "main", defaultBranch: "main", mergeCommitSha: null,
+      ...over,
+    } }),
+  };
+}
+
+for (const parentState of ["MERGED", "OPEN"] as const) {
+  test(`workflow capture and resubmit probe recover with parent state ${parentState} and deleted branch`, async (t) => {
+    const { author, checkout } = fixture();
+    const cutAt = git(checkout, "rev-parse", "origin/feat/parent");
+    const worktree = join(dirname(checkout), "child-capture");
+    git(checkout, "worktree", "add", "-q", "-b", "feat/child-capture", worktree, cutAt);
+    commit(worktree, "child.txt", "child\n", "child work");
+    git(author, "checkout", "-q", "main");
+    if (parentState === "MERGED") {
+      git(author, "merge", "-q", "--squash", "feat/parent");
+      git(author, "commit", "-q", "-m", "Parent (#7)");
+      git(author, "push", "-q", "origin", "main");
+    }
+    git(author, "push", "-q", "origin", "--delete", "feat/parent");
+    const squash = git(author, "rev-parse", "main");
+    const task = mkTask({
+      id: "child-capture", status: "running", repoRoot: checkout, stackParentTaskId: "parent",
+      stackBaseBranch: "feat/parent", stackBaseSha: cutAt, stackPrUrl: "https://github.com/acme/repo/pull/7",
+      dependencies: [{ type: "task", taskId: "parent", title: "Parent", episodeId: "parent-episode", sessionId: null,
+        agentSessionId: null, branch: "feat/parent", prUrl: "https://github.com/acme/repo/pull/7",
+        selectedAt: 1, satisfiedAt: parentState === "MERGED" ? 2 : null, mode: "stack", stackReadyAt: 1,
+        stackBaseBranch: "feat/parent", stackBaseSha: cutAt, stackPrUrl: "https://github.com/acme/repo/pull/7" }],
+    });
+    const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
+    const { readWorkflowContextRaw, readWorkflowEvidenceProbe, probeMatchesEvidence, captureBoundaryChanged } =
+      await import("../src/server/workflows/context.ts");
+    const registry = new Registry();
+    const session = mkSession({ id: "capture-session", cwd: worktree, repoRoot: checkout, gitBranch: "feat/child-capture" });
+    t.mock.method(registry, "getSession", () => session);
+    t.mock.method(registry, "taskForSession", () => task);
+    t.mock.method(registry, "workEpisodeForSession", () => null);
+    t.mock.method(defaultStackGitHub, "prRefs", async (cwd: string, url: string) => {
+      assert.equal(cwd, checkout);
+      assert.equal(url, task.stackPrUrl);
+      return { ok: true, value: { state: parentState, isDraft: false, headSha: cutAt,
+        headRefName: "feat/parent", baseRefName: "main", defaultBranch: "main", mergeCommitSha: parentState === "MERGED" ? squash : null } };
+    });
+    const binding = { id: "capture-binding", sessionId: session.id, noteKey: noteKeyFor(session), repoRoot: checkout, sessionCwd: worktree } as WorkflowBinding;
+    const before = git(worktree, "rev-parse", "HEAD");
+    // Even before restacking, capture must succeed without changing the child's branch.
+    const captured = await readWorkflowContextRaw(registry, binding);
+    assert.match(captured.raw.evidence.diff, /child\.txt/);
+    assert.equal(git(worktree, "rev-parse", "HEAD"), before);
+    assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), false);
+    assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding), captured.context.evidence), true);
+    const base = await resolveStackDiffBase(registry, session, checkout);
+    assert.equal(base?.branch, "main");
+    assert.equal(base?.sha, squash);
+    // The session merges the new base. A merged parent's work then leaves the diff;
+    // an unmerged parent's work must remain visible when reviewing against default.
+    git(worktree, "merge", "-q", "--no-edit", "origin/main");
+    writeFileSync(join(worktree, "draft.txt"), "uncommitted child work\n");
+    const restacked = await readWorkflowContextRaw(registry, binding);
+    assert.match(restacked.raw.evidence.diff, /child\.txt/);
+    assert.match(restacked.raw.evidence.diff, /draft\.txt/);
+    if (parentState === "MERGED") assert.doesNotMatch(restacked.raw.evidence.diff, /parent\.txt/);
+    else assert.match(restacked.raw.evidence.diff, /parent\.txt/, "unmerged parent work remains visible against default");
+    assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding), restacked.context.evidence), true);
+    assert.equal(task.stackBaseSha, cutAt, "dispatch provenance is retained for lineage and release checks");
+  });
+}
+
 test("freshRemoteBranchSha fetches one branch and returns the tip origin advertises", async () => {
   const { author, checkout } = fixture();
   const tip = git(author, "rev-parse", "feat/parent");
@@ -63,11 +138,42 @@ test("freshRemoteBranchSha fetches one branch and returns the tip origin adverti
   assert.equal(git(checkout, "rev-parse", "--abbrev-ref", "HEAD"), "main");
 });
 
+test("before a child PR exists, capture follows the current parent state and refuses unknown bases", async () => {
+  const { author, checkout } = fixture();
+  const cutAt = git(checkout, "rev-parse", "origin/feat/parent");
+  const worktree = join(dirname(checkout), "child-state");
+  git(checkout, "worktree", "add", "-q", "-b", "feat/child-state", worktree, cutAt);
+  git(author, "push", "-q", "origin", "main:refs/heads/release/next", "feat/parent:refs/heads/feat/renamed");
+  const task = mkTask({
+    id: "child-state", status: "running", repoRoot: checkout, stackParentTaskId: "parent",
+    stackBaseBranch: "feat/parent", stackBaseSha: cutAt, stackPrUrl: "https://github.com/acme/repo/pull/7",
+  });
+  const registry = { taskForSession: () => task, workEpisodeForSession: () => null };
+  const session = { id: "state-session", cwd: worktree };
+  // No satisfied edge is required: a fresh parent observation beats the watcher, and a
+  // retained parent branch must not keep a finished parent as the review base either.
+  for (const state of ["OPEN", "MERGED", "CLOSED"] as const) {
+    const base = await resolveStackDiffBase(registry, session, checkout,
+      parentGitHub({ state, headRefName: "feat/renamed", defaultBranch: "release/next" }));
+    assert.equal(base?.branch, state === "OPEN" ? "feat/renamed" : "release/next");
+  }
+  await assert.rejects(resolveStackDiffBase(registry, session, checkout, {
+    ...parentGitHub(), prRefs: async () => ({ ok: false, error: "HTTP 502 (fake)" }),
+  }), /could not resolve the base from parent.*HTTP 502/);
+  await assert.rejects(resolveStackDiffBase(registry, session, checkout,
+    parentGitHub({ state: "MERGED", defaultBranch: "" })), StackDiffBaseError);
+  await assert.rejects(resolveStackDiffBase(registry, session, checkout,
+    parentGitHub({ headRefName: "" })), StackDiffBaseError);
+  await assert.rejects(resolveStackDiffBase(registry, session, checkout,
+    parentGitHub({ state: "MERGED", defaultBranch: "missing-default" })), /stacked base could not be refreshed: missing-default/);
+});
+
 test("freshRemoteBranchSha refuses a deleted branch, a bad name, and a disagreement", async () => {
   const { author, checkout } = fixture();
   git(author, "push", "-q", "origin", "--delete", "feat/parent");
   const gone = await freshRemoteBranchSha(checkout, "feat/parent");
   assert.equal(gone.ok, false);
+  assert.equal(!gone.ok && gone.code, "branch_missing");
   assert.equal((await freshRemoteBranchSha(checkout, "--upload-pack=evil")).ok, false);
   assert.equal((await freshRemoteBranchSha(checkout, "a..b")).ok, false);
 
@@ -80,6 +186,27 @@ test("freshRemoteBranchSha refuses a deleted branch, a bad name, and a disagreem
   const moved = await freshRemoteBranchSha("/repo", "feat/x", fake as never);
   assert.equal(moved.ok, false);
   assert.match(!moved.ok ? moved.reason : "", /moved during the observation/);
+});
+
+test("branch deletion is classified only from a successful empty remote advertisement", async () => {
+  const success = { code: 0, stdout: "", stderr: "", outcomeUnknown: false, overflowed: false };
+  const fetchFailure = { ...success, code: 1, stderr: "fetch failed" };
+  for (const [label, fetch, listed, missing] of [
+    ["deleted", fetchFailure, success, true],
+    ["deleted after fetch", success, success, true],
+    ["authentication failure", fetchFailure, { ...success, code: 128, stderr: "permission denied" }, false],
+    ["listing timed out", fetchFailure, { ...success, outcomeUnknown: true }, false],
+    ["listing overflowed", fetchFailure, { ...success, overflowed: true }, false],
+    ["fetch timed out", { ...fetchFailure, outcomeUnknown: true }, success, false],
+    ["fetch overflowed", { ...fetchFailure, overflowed: true }, success, false],
+    ["branch exists", fetchFailure, { ...success, stdout: `${"a".repeat(40)}\trefs/heads/feat/x\n` }, false],
+    ["malformed listing", fetchFailure, { ...success, stdout: "unreadable" }, false],
+  ] as const) {
+    const result = await freshRemoteBranchSha("/repo", "feat/x", async (_cmd, args) =>
+      args[2] === "fetch" ? fetch : listed);
+    assert.equal(result.ok, false, label);
+    assert.equal(!result.ok && result.code === "branch_missing", missing, label);
+  }
 });
 
 test("a stacked review diff refreshes a parent that moved after the child was cut", async () => {
@@ -116,7 +243,7 @@ test("a stacked review diff refreshes a parent that moved after the child was cu
       return { ok: false, stdout: "" };
     }
   };
-  const base = await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, undefined, worktree, recordingGit);
+  const base = await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, parentGitHub(), worktree, recordingGit);
   assert.deepEqual(base, { branch: "feat/parent", sha: repaired, mergeBase: cutAt, repoRoot: checkout, head: childHead, headBranch: "feat/child" });
   // The boundary the review held this phase to: the child's HEAD is read from the repository
   // root (`worktree list`) and the merge base computed there from explicit commit ids. No
@@ -139,19 +266,18 @@ test("a stacked review diff refreshes a parent that moved after the child was cu
   assert.equal(await resolveStackDiffBase({ ...registry, taskForSession: () => mkTask({ id: "plain" }) }, { id: "s1", cwd: worktree }, null), null);
   // A checkout that is not one of this repository's worktrees fails visibly.
   await assert.rejects(
-    resolveStackDiffBase(registry, { id: "s1", cwd: author }, null, undefined, author),
+    resolveStackDiffBase(registry, { id: "s1", cwd: author }, null, parentGitHub(), author),
     (error: unknown) => error instanceof StackDiffBaseError && /is not a worktree of/.test(String(error)),
   );
 
-  // The remote branch is gone: the diff fails visibly instead of using the stale ref.
+  // A confirmed missing branch selects the default even while GitHub says OPEN.
   git(author, "push", "-q", "origin", "--delete", "feat/parent");
-  await assert.rejects(
-    resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null),
-    (error: unknown) => error instanceof StackDiffBaseError && /stacked base could not be refreshed/.test(String(error)),
-  );
-  // So does a fetch that cannot reach origin at all.
+  const recovered = await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, parentGitHub());
+  assert.equal(recovered?.branch, "main");
+  assert.equal(recovered?.sha, git(author, "rev-parse", "main"));
+  // An unreachable remote is not evidence of a missing branch and still fails.
   git(checkout, "remote", "set-url", "origin", join(home, "does-not-exist.git"));
-  await assert.rejects(resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null), StackDiffBaseError);
+  await assert.rejects(resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, parentGitHub()), StackDiffBaseError);
 });
 
 test("a merge-based restack after a squash merge leaves only the child's own change", () => {
@@ -251,6 +377,11 @@ test("a stacked child's review diff uses its pull request's CURRENT base, read f
   // A stale polled value loses to GitHub's current answer too.
   updateInspectorPr("acme/repo#71", { baseRefName: "feat/parent" }, 2);
   assert.equal((await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, seam("feat/other"), worktree))?.branch, "feat/other");
+
+  // The same positive-absence recovery works if the child's adopted PR still names a
+  // deleted base. It preserves the actual PR base whenever that branch exists.
+  git(author, "push", "-q", "origin", "--delete", "feat/other");
+  assert.equal((await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, null, seam("feat/other"), worktree))?.branch, "main");
 
   // Unreadable or unreported: the capture fails visibly instead of guessing a base.
   await assert.rejects(

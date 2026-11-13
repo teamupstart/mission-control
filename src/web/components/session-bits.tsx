@@ -23,7 +23,9 @@ import {
   repoLeaf,
   sessionTitleDetail,
   type StateDisplay,
+  type Tone,
 } from "../lib/format.ts";
+import { ariaKeyshortcuts, formatChord, useKeybindings } from "../lib/keybindings.ts";
 import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
 import { useSessionRuntimeDisplay } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
@@ -2596,6 +2598,136 @@ export function ColumnWidthControl({
   );
 }
 
+/** One state group as the folded session rail counts it. */
+export interface FoldedRailGroup {
+  /** A lifecycle tone, or the Blocked group, which is drawn red wherever the placement puts it. */
+  tone: Tone | "blocked";
+  label: string;
+  count: number;
+}
+
+/** The breakdown a folded rail reads out - "1 needs you, 3 working" - in rail order. */
+export function foldedRailSummary(groups: readonly FoldedRailGroup[]): string {
+  const parts = groups.filter((g) => g.count > 0).map((g) => `${g.count} ${g.label.toLowerCase()}`);
+  return parts.length > 0 ? parts.join(", ") : "no sessions";
+}
+
+/**
+ * The control that folds the session rail beside an open session, drawn in the rail's head.
+ *
+ * Shared by the Console rail and both Board drill-in rails, so the glyph, the name and the
+ * shortcut it prints are one fact wherever the rail is.
+ */
+export function SessionRailFoldButton({ onFold }: { onFold: () => void }): React.JSX.Element {
+  const { bindings } = useKeybindings();
+  return (
+    <Tooltip
+      label={`Fold the session rail to give the conversation its width (${formatChord(bindings.sessionRail)})`}
+    >
+      <button
+        type="button"
+        className="session-rail-fold"
+        aria-label="Fold the session rail"
+        aria-keyshortcuts={ariaKeyshortcuts(bindings.sessionRail)}
+        onClick={onFold}
+      >
+        «
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * A folded session rail: a 40px strip in the folded Board column's register, which counts what
+ * each state group holds and is itself the button that unfolds the rail.
+ *
+ * Counts, never rows. The point of folding is the width it hands back, and a strip of
+ * per-session targets would spend it again. The Needs you count pulses when it goes up, for the
+ * reason `CollapsedColumnStrip` gives - and the rise is tracked here, at the strip, against the
+ * fleet's Needs you count rather than the pill's. A group that was empty is not drawn, so its
+ * first arrival would otherwise mount a pill with nothing to compare against; and on the Board
+ * the strip lists one column, so the column it follows into Needs you is not a rise by itself.
+ */
+export function FoldedSessionRail({
+  label,
+  groups,
+  asking,
+  onUnfold,
+}: {
+  /** What the rail lists, set vertically: "All sessions", or the drilled-in column's name. */
+  label: string;
+  groups: readonly FoldedRailGroup[];
+  /**
+   * The fleet's Needs you count, when the strip lists less than the whole fleet (a Board column
+   * rail). Omitted, it is read from `groups`, which is the whole fleet on the Console.
+   */
+  asking?: number;
+  onUnfold: () => void;
+}): React.JSX.Element {
+  const { bindings } = useKeybindings();
+  const pulses = useRisePulse(asking ?? groups.find((g) => g.tone === "attention")?.count ?? 0, true);
+  const summary = foldedRailSummary(groups);
+  return (
+    <Tooltip label={`Unfold ${label} (${formatChord(bindings.sessionRail)}): ${summary}`}>
+      <button
+        type="button"
+        className="session-rail-strip"
+        aria-label={`Unfold ${label}: ${summary}`}
+        aria-keyshortcuts={ariaKeyshortcuts(bindings.sessionRail)}
+        onClick={onUnfold}
+      >
+        <span className="session-rail-strip-glyph" aria-hidden>»</span>
+        {groups.filter((g) => g.count > 0).map((g) => (
+          <FoldedRailCount key={g.tone} group={g} pulses={g.tone === "attention" ? pulses : 0} />
+        ))}
+        <span className="board-col-strip-name session-rail-strip-name" aria-hidden>
+          {label}
+        </span>
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * One count pill on a folded rail, which pulses only for rises it was on screen for.
+ *
+ * `pulses` is the strip's running count of Needs you rises. The pill measures from the value it
+ * mounted at, so a pill that appears because focus moved into a column that already had sessions
+ * waiting - no new arrival - starts calm; one that appears because of an arrival mounts first and
+ * pulses on the rise its strip records a moment later. Each later rise re-keys the span, which
+ * remounts it so the animation plays again.
+ */
+function FoldedRailCount({ group, pulses }: { group: FoldedRailGroup; pulses: number }): React.JSX.Element {
+  const since = useRef(pulses);
+  const rises = pulses - since.current;
+  return (
+    <span
+      key={rises}
+      className={`board-col-n session-rail-strip-n tone-${group.tone}${rises > 0 ? " is-pulsing" : ""}`}
+      aria-hidden
+    >
+      {group.count}
+    </span>
+  );
+}
+
+/**
+ * How many times `count` has gone UP while `enabled`, for a folded surface's count to pulse on.
+ *
+ * Keyed into a `key` by the caller, so each rise remounts the pill and the animation replays.
+ * Shared by a folded Board column and the folded session rail, which make the same promise: a
+ * session that starts waiting on you is not hidden by a fold you made an hour ago.
+ */
+function useRisePulse(count: number, enabled: boolean): number {
+  const previous = useRef(count);
+  const [pulses, setPulses] = useState(0);
+  useEffect(() => {
+    if (enabled && count > previous.current) setPulses((n) => n + 1);
+    previous.current = count;
+  }, [enabled, count]);
+  return pulses;
+}
+
 /**
  * A collapsed Board column: a thin strip that still says what the column is and how much it
  * holds, and is itself the button that restores it.
@@ -2604,30 +2736,31 @@ export function ColumnWidthControl({
  * session that starts waiting on you is not hidden by a fold you made an hour ago. It pulses
  * rather than reopening the column: the operator chose to fold it, and a board that undid that
  * choice on every arrival would be one you could not keep folded at all.
+ *
+ * `blockedCount` is the In Needs you Blocked lane folded with its column: a second, red count
+ * under the first, so a fold hides neither how many need you nor how many are blocked.
  */
 export function CollapsedColumnStrip({
   label,
   count,
+  blockedCount,
   announce = false,
   onRestore,
 }: {
   label: string;
   count: number;
+  blockedCount?: number;
   announce?: boolean;
   onRestore: () => void;
 }): React.JSX.Element {
-  const previous = useRef(count);
-  const [pulses, setPulses] = useState(0);
-  useEffect(() => {
-    if (announce && count > previous.current) setPulses((n) => n + 1);
-    previous.current = count;
-  }, [announce, count]);
+  const pulses = useRisePulse(count, announce);
   return (
     <Tooltip label={`Restore ${label} to normal width`}>
       <button
         type="button"
         className="board-col-strip"
-        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}`}
+        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}${
+          blockedCount ? `, ${blockedCount} blocked` : ""}`}
         onClick={onRestore}
       >
         <span className="board-swatch" aria-hidden />
@@ -2639,6 +2772,11 @@ export function CollapsedColumnStrip({
         >
           {count}
         </span>
+        {blockedCount ? (
+          <span className="board-col-n board-col-strip-blocked" aria-hidden>
+            {blockedCount}
+          </span>
+        ) : null}
         <span className="board-col-strip-name" aria-hidden>
           {label}
         </span>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
+  SETUP_REPOSITORY_ANCHORS,
   SETUP_SERVICE_INFO,
   homeRelative,
   setupRowAnchor,
@@ -34,6 +35,8 @@ import {
 import { useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
 import { useTerminalsConfig, type TerminalsConfigState } from "../useTerminalsConfig.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
+import { useRepoIndex } from "../useRepoIndex.ts";
+import { RepositoriesPanel } from "./RepositoriesPanel.tsx";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   EMULATOR_GROUPS,
@@ -788,6 +791,9 @@ function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
 export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): SetupFamilyId | null {
   const named = SETUP_FAMILY_IDS.find((family) => anchor === `setup/family-${family}`);
   if (named) return named;
+  // The Repositories family's directory editor is not a row, but it is only mounted while
+  // that family is selected, so its controls resolve the same way a row anchor does.
+  if ((Object.values(SETUP_REPOSITORY_ANCHORS) as string[]).includes(anchor)) return "repositories";
   return rows.find((row) => setupRowAnchor(row.rowId) === anchor)?.family ?? null;
 }
 
@@ -991,6 +997,9 @@ export function SetupPanel({
 
   const info = SETUP_FAMILY_INFO[active];
   const activeRows = rows.filter((row) => row.family === active);
+  // Polled only while its family is on screen, like every other Settings reader: the index
+  // walks the filesystem, and nothing else in Setup needs its directory list.
+  const repoIndex = useRepoIndex(active === "repositories");
 
   return (
     <section className="settings-section setup-panel">
@@ -1115,6 +1124,9 @@ export function SetupPanel({
                 </div>
               )
             : <p className="setup-loading">{state.error ? "No result" : "Checking this machine..."}</p>}
+          {/* Below the row that requires a detected repository, so the check and the list it
+              reads are one screen: an edit here re-reads the machine and the row follows. */}
+          {active === "repositories" && <RepositoriesPanel state={repoIndex} onChanged={onRepaired} />}
         </div>
       </div>
     </section>

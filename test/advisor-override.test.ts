@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -20,6 +21,12 @@ import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-advisor-override-"));
 process.env.HARNESS_HOME = home;
+// A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
+// Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`
+// before `npm run build`) the launch is refused. What it publishes is answered by
+// `MISSION_TEST_MCP_DEPS`.
+process.env.MISSION_MCP_SERVER = join(home, "mission-mcp-stand-in.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 // A binary that exists, so bin resolution is never what fails a launch. The terminal home is
 // faked through the dispatcher's `spawn` seam, so nothing reaches a real backend.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
@@ -307,7 +314,7 @@ async function terminalLaunch(
   }));
   let captured = { args: [] as string[], extraEnv: undefined as Readonly<Record<string, string>> | undefined };
   const dispatcher = new Dispatcher(registry, async () => {}, {
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     spawn: async (_label, _short, _cwd, _bin, args, _stateHome, _backend, extraEnv) => {
       captured = { args: [...(args ?? [])], extraEnv };
       // Nothing is discovered, so the dispatch stops here. The launch is what this is about.

@@ -20,7 +20,7 @@ import {
 } from "./check-lease.ts";
 import type { CheckGroupEmptiness, CheckGroupTeardownOptions } from "./check-group.ts";
 import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.ts";
-import { resolveCapturedCommit } from "./commit-id.ts";
+import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
 import {
   createCheckGroupRecovery,
   DEFAULT_CHECK_TIMEOUT_MS,
@@ -280,6 +280,10 @@ export class CheckRuntime {
       // that turns one into the other. See `resolveCapturedCommit`: without it every check on
       // every real submission failed here, before a tree was ever leased.
       headSha = await this.resolveCommit(request.repoRoot, request.headSha);
+      if (request.publicationTreeOid
+        && await resolveCommitTree(request.repoRoot, headSha) !== request.publicationTreeOid) {
+        return { kind: "infrastructure", reason: "Commit the required deliverables and resubmit: the check commit does not match the reviewed publication tree" };
+      }
       leasePath = await this.leases.acquireForAttempt({
         attemptId: attempt.attemptId,
         submissionId: attempt.submissionId,

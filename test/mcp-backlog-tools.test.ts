@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import assert from "node:assert/strict";
 import { after, afterEach, test, type TestContext } from "node:test";
 import { execFileSync } from "node:child_process";
@@ -197,7 +198,7 @@ test("MCP dispatch defaultModel selects an unpinned launch model and preserves a
     "commit", "--allow-empty", "-qm", "Fixture base"]);
   setHarnessesConfig({ defaultModel: { claude: "claude-haiku-4-5" } });
   const dispatcher = new Dispatcher(f.registry, async () => {}, {
-    supervisor, resolveRuntime: () => "sdk", missionMcpDescriptor: async () => null,
+    supervisor, resolveRuntime: () => "sdk", ...MISSION_TEST_MCP_DEPS,
     worktrees: new WorktreeManager(undefined, {
       resolvePolicy: () => ({ enabled: false, maxSlots: 1, setupArgv: null }),
     }),

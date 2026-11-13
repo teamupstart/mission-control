@@ -354,3 +354,80 @@ test("reconnect with Sound on and running audio plays a chime with a silent noti
   expect((await delivery(page)).toasts[0]).toMatchObject({ tag: "reconnect-catchup", silent: true });
   expect((await delivery(page)).notes).toBe(2);
 });
+
+for (const mode of ["live", "reconnect"] as const) {
+  test(`request_input alerts for a second pending question over ${mode} delivery`, async ({ dashboard: page, daemon }) => {
+    await observeDelivery(page);
+    await page.reload();
+    await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+    const panel = page.getByRole("dialog", { name: "Alert settings" });
+    await panel.getByRole("switch", { name: "Desktop notifications", exact: true }).click();
+    await panel.getByRole("switch", { name: "Sound", exact: true }).click();
+    await expect.poll(() => savedSound(daemon)).toBe(false);
+    await page.keyboard.press("Escape");
+    const session = await dispatch(page, daemon);
+    const ask = async (question: string) => {
+      const response = await fetch(`${daemon.baseURL}/mcp/reviews`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim(),
+        },
+        // The same payload request_input posts, against the real review owner and SSE.
+        body: JSON.stringify({ env: {}, cwd: session.cwd, kind: "input", title: question, body: question,
+          decisions: [{ id: "q", question, options: [{ id: "o0", label: "Proceed" }, { id: "o1", label: "Wait" }], allowOther: true }],
+        }),
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      return (await response.json()) as { id: string };
+    };
+    await ask("Which release should we target?");
+    await expect.poll(async () => (await delivery(page)).toasts.length).toBe(1);
+    expect((await delivery(page)).toasts[0]).toMatchObject({
+      title: "Check Notification Delivery needs your answer",
+      body: "Which release should we target?",
+    });
+    if (mode === "reconnect") await disconnect(page);
+    const second = await ask("Should we include the migration?");
+    if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+    await expect.poll(async () => (await delivery(page)).toasts.length).toBe(2);
+    expect((await delivery(page)).toasts[1]).toMatchObject({
+      tag: mode === "live" ? `review:${session.id}` : "reconnect-catchup", silent: true,
+    });
+    expect((await delivery(page)).toasts[1]?.body).toContain("Should we include the migration?");
+    expect((await delivery(page)).notes).toBe(0);
+    // A retried MCP ask returns the existing pending card, not another interruption.
+    expect((await ask("Should we include the migration?")).id).toBe(second.id);
+    await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+    await expect(panel).toBeVisible();
+    expect((await delivery(page)).toasts).toHaveLength(2);
+    // Muting an already-working channel must suppress the next real question.
+    await panel.getByRole("switch", { name: "Desktop notifications", exact: true }).click();
+    await expect(panel.getByRole("switch", { name: "Desktop notifications", exact: true })).toHaveAttribute("aria-checked", "false");
+    await ask("Who should handle the rollout?");
+    // The reconnect probe forwards snapshots, not an ongoing replacement stream.
+    if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+    await expect.poll(async () => {
+      const sessions = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+      return sessions.find((s) => s.id === session.id)?.pendingReviews;
+    }).toBe(3);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: /to answer/ }).click();
+    const inbox = page.getByRole("dialog", { name: /attention/i });
+    await expect(inbox.getByText("Who should handle the rollout?", { exact: true }).first()).toBeVisible();
+    await expectContentClearsBorder(inbox);
+    expect((await delivery(page)).toasts).toHaveLength(2);
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("macos-notifications");
+      mkdirSync(dir, { recursive: true });
+      await inbox.screenshot({ path: join(dir, `${mode}-questions.png`) });
+    }
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+    await panel.getByRole("switch", { name: "Desktop notifications", exact: true }).click();
+    await expect.poll(async () => (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.alerts.notifications).toBe(true);
+    await page.reload();
+    await expect(page.locator(".rail-row")).toHaveCount(1);
+    expect((await delivery(page)).toasts).toHaveLength(0);
+  });
+}

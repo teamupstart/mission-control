@@ -51,6 +51,7 @@ function deps(
     skills: () => ({ enabled: false, readable: true, configured: 0, directories: ["/fake/skills"], problems: [] }),
     conductorProbe: async () => { throw new Error("isolated failure"); },
     terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
+    repositoryIndex: async () => ({ repoCount: 1, directories: [{ path: "~/workspace", status: "ok", repoCount: 1 }] }),
     environmentChecks: async () => [{
       id: "upstartclaw-core-setup",
       label: "UpstartClaw",
@@ -84,7 +85,7 @@ test("the route returns every row and folds an environment warning field by fiel
     rows: Array<Record<string, unknown>>;
     banner: { visible: boolean; attentionRowIds: unknown[]; attentionCount: number };
   };
-  assert.equal(body.rows.length, SETUP_DEPENDENCY_IDS.length + 2);
+  assert.equal(body.rows.length, SETUP_DEPENDENCY_IDS.length + 3);
   const folded = body.rows.find((row) => JSON.stringify(row.rowId) === JSON.stringify({ source: "environment-check", id: "upstartclaw-core-setup" }));
   assert.deepEqual(folded, {
     rowId: { source: "environment-check", id: "upstartclaw-core-setup" },
@@ -143,7 +144,7 @@ test("the read prunes repaired acknowledgements before composing its banner", as
   };
 
   assert.equal(response.status, 200);
-  assert.equal(body.rows.length, SETUP_DEPENDENCY_IDS.length + 1, "every dependency and the derived terminal row remain present");
+  assert.equal(body.rows.length, SETUP_DEPENDENCY_IDS.length + 2, "every dependency and both derived rows remain present");
   assert.deepEqual(store.value, { firstLaunchAcknowledged: true, acknowledged: [] });
   assert.equal(store.writes, 1);
   assert.deepEqual(body.banner, { visible: false, attentionRowIds: [], attentionCount: 0 });

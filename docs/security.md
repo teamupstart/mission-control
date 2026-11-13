@@ -237,6 +237,21 @@ private click boundary specifically prevents local HTTP from self-granting this 
 it does not protect against OS-level UI automation or a compromised desktop process. Revocation
 refuses new requests; it does not undo an action already accepted by a runtime.
 
+## Resident instruction changes
+
+A resident reads untrusted text as part of its work, so it cannot change its own standing role
+on its own say-so. `propose_resident_instruction_changes` only asks a `request_input` question; it
+writes nothing.
+The daemon stores the proposal beside that review and applies exactly the changes an answer
+selects, and only when the answer's actor is `human`. Foreman and a session acting through
+**Control other sessions** are refused before the answer settles, so a resident with session
+control cannot approve another resident's proposal, or its own through another session. The
+caller is the signed session that asked, never a profile or Persona id in the request.
+
+Like every review, the answer arrives on the dashboard's loopback route. That is the same
+single-user local trust boundary described above: it keeps Mission Control's own agents and
+delegated sessions from approving a change, not arbitrary shell code running as the operator.
+
 ## Resident MCP secrets
 
 A custom MCP server's secret values - environment variables and headers marked **Secret**, and

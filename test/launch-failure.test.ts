@@ -26,7 +26,8 @@ process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 
 const db = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { Dispatcher } = await import("../src/server/dispatcher.ts");
+const { Dispatcher, resolveDispatchBase, resolveTaskBases } = await import("../src/server/dispatcher.ts");
+const { run, stubRun } = await import("../src/server/util/exec.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { detectAlerts } = await import("../src/shared/alerts.ts");
@@ -109,7 +110,8 @@ const failingBases = async (): Promise<never> => {
   throw new Error("could not freeze the remote default branch: git fetch origin failed");
 };
 
-test("a backlog kind that fails while provisioning returns to the Backlog carrying the record", async () => {
+test("a backlog kind that fails while provisioning returns to the Backlog carrying the record", async (t) => {
+  const log = t.mock.method(console, "error", () => {});
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "ship-1", kind: "ship", status: "dispatching", repoRoot: mkRepo("ship-repo") }));
   await new Dispatcher(registry, undefined, { resolveBases: failingBases }).dispatch("ship-1");
@@ -120,7 +122,95 @@ test("a backlog kind that fails while provisioning returns to the Backlog carryi
   assert.equal(task.launchFailure?.phase, "prepare");
   assert.equal(task.launchFailure?.dismissedAt, null);
   assert.equal(lf.launchFailureOutcome(task), "returned");
+  const entries = log.mock.calls.map(({ arguments: args }) => String(args[0]))
+    .filter((line) => line.startsWith("[dispatch] {"))
+    .map((line) => JSON.parse(line.slice("[dispatch] ".length)));
+  assert.equal(entries.length, 1, "even an early prepare refusal must reach the daemon log");
+  assert.equal(entries[0].event, "dispatch_failed");
+  assert.equal(entries[0].taskId, task.id);
+  assert.equal(entries[0].phase, "prepare");
+  assert.equal(entries[0].repoRoot, task.repoRoot);
+  assert.equal(entries[0].error, task.error);
+  assert.equal(Date.parse(entries[0].timestamp), task.launchFailure!.at);
 });
+
+for (const scenario of [
+  { name: "origin probe timeout", step: "remote", secondary: false, script: "setInterval(() => {}, 1000)", timeoutMs: 80, exitCode: null, signal: "SIGTERM", timedOut: true },
+  { name: "fetch timeout", step: "fetch", secondary: false, script: "setInterval(() => {}, 1000)", timeoutMs: 80, exitCode: null, signal: "SIGTERM", timedOut: true },
+  { name: "attached repository fetch refusal", step: "fetch", secondary: true, script: 'process.stderr.write("remote refused\\nsecond line\\n"); process.exit(128)', timeoutMs: 5000, exitCode: 128, signal: null, timedOut: false },
+  { name: "remote HEAD probe killed externally", step: "ls-remote", secondary: false, script: 'process.kill(process.pid, "SIGTERM")', timeoutMs: 5000, exitCode: null, signal: "SIGTERM", timedOut: false },
+]) {
+  test(`prepare logs process facts for ${scenario.name} before returning to Backlog`, async (t) => {
+    const log = t.mock.method(console, "error", () => {});
+    const repo = mkRepo(`diagnostic-${scenario.step}-${scenario.secondary}-${scenario.timedOut}`);
+    const attached = mkRepo(`attached-${scenario.step}-${scenario.secondary}-${scenario.timedOut}`);
+    const failedRepo = scenario.secondary ? attached : repo;
+    const registry = new Registry();
+    const id = `diagnostic-${scenario.name}`;
+    registry.upsertTask(mkTask({
+      id, kind: "ship", status: "dispatching", repoRoot: repo,
+      extraRepos: [{
+        repoRoot: attached, worktreePath: null, branch: null, provider: null,
+        worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null,
+      }],
+    }));
+    let failedCommands = 0;
+    const execute: typeof run = async (bin, args, opts) => {
+      if (args[1] !== failedRepo) return run(bin, args, opts);
+      if (args.includes(scenario.step)) {
+        failedCommands++;
+        assert.equal(opts?.timeoutMs, scenario.step === "remote" ? 15_000 : 30_000,
+          "the production local-probe and network budgets stay bounded");
+        // Exercise the real executor's timeout, signal and exit handling with a local child.
+        // The shorter fixture budget avoids a 30-second wait or any network/agent access.
+        return run(process.execPath, ["-e", scenario.script], { timeoutMs: scenario.timeoutMs });
+      }
+      if (args.includes("remote")) return stubRun({ code: 0, stdout: "origin\n", stderr: "" });
+      if (args.includes("for-each-ref")) return stubRun({ code: 0, stdout: "refs/heads/main\n", stderr: "" });
+      if (args.includes("fetch")) return stubRun({ code: 0, stdout: "", stderr: "" });
+      assert.fail(`unexpected command ${args.join(" ")}`);
+    };
+    await new Dispatcher(registry, undefined, {
+      resolveBases: (roots, pinned) => resolveTaskBases(roots, pinned, (root) => resolveDispatchBase(root, execute)),
+    }).dispatch(id);
+
+    const task = registry.getTask(id)!;
+    assert.equal(task.status, "backlog");
+    assert.match(task.error!, scenario.step === "remote"
+      ? /could not determine whether .* has an origin remote: git remote was stopped/
+      : /could not freeze .*remote default branch/);
+    assert.equal(task.worktreePath, null);
+    assert.equal(task.sessionId, null);
+    assert.equal(task.extraRepos[0]!.worktreePath, null);
+    assert.equal(failedCommands, 1, "timeouts, signals and ordinary refusals are not retried");
+    for (const root of [repo, attached]) {
+      assert.equal(execFileSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8" })
+        .split("\n").filter((line) => line.startsWith("worktree ")).length, 1);
+    }
+    const lines = log.mock.calls.map(({ arguments: args }) => String(args[0]))
+      .filter((line) => line.startsWith("[dispatch] {"));
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0]!.includes("\n"), false, "stderr newlines cannot split the structured log record");
+    const entry = JSON.parse(lines[0]!.slice("[dispatch] ".length));
+    assert.equal(entry.event, "dispatch_failed");
+    assert.equal(entry.taskId, id);
+    assert.equal(entry.phase, "prepare");
+    assert.equal(entry.repoRoot, failedRepo, "an attached failure must name the attached repository");
+    assert.equal(entry.error, task.error);
+    assert.equal(Date.parse(entry.timestamp), task.launchFailure!.at);
+    assert.deepEqual(entry.git.command, ["git", "-C", failedRepo, ...(
+      scenario.step === "remote" ? ["remote"]
+        : scenario.step === "fetch" ? ["fetch", "origin"] : ["ls-remote", "--symref", "origin", "HEAD"]
+    )]);
+    assert.ok(entry.git.elapsedMs >= (scenario.timedOut ? scenario.timeoutMs - 1 : 0));
+    assert.equal(entry.git.timeoutMs, scenario.timeoutMs);
+    assert.equal(entry.git.exitCode, scenario.exitCode);
+    assert.equal(entry.git.signal, scenario.signal);
+    assert.equal(entry.git.timedOut, scenario.timedOut);
+    assert.equal(entry.git.outcomeUnknown, scenario.signal !== null);
+    assert.equal(entry.git.overflowed, false);
+  });
+}
 
 test("a chat, which has no backlog, fails as not-started, and its next attempt starts with no record", async () => {
   const registry = new Registry();

@@ -26,6 +26,8 @@ import {
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
+import { RESIDENT_RETRO_ACTION_NAME, RESIDENT_RETRO_PROMPT } from "./residents/retro-packet.ts";
+import { getResidentProfile, residentRunForTask } from "./residents/store.ts";
 
 // Delivering the retro on demand, which is the one session action a human asks for directly.
 //
@@ -124,6 +126,9 @@ function retroAction() {
  * merged posture, an unreachable session retains the original backlog fallback.
  */
 export async function runRetro(session: Session, deps: RetroDeps): Promise<RetroResult> {
+  // A resident's retro is about its standing instructions, not repository memory, and it has no
+  // pull request to route by. It always runs in the resident's own conversation.
+  if (session.task?.kind === "resident") return runResidentRetro(session, deps);
   const action = retroAction();
   if (!action) {
     return {
@@ -180,6 +185,28 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
     };
   }
 
+  // Re-checked INSIDE the write lock, which is the same guarantee `deliveryBlock` gives a
+  // workflow's delivery. Rendering and typing look adjacent here, but an embedded session
+  // serializes sends per session, so the packet can wait behind another turn - and a skill
+  // switched off in that window would have this type `/retro` at a session that no longer
+  // loads it, which is an instruction with no procedure behind it.
+  return deliverRetroPacket(session, rendered, deps, () =>
+    deps.promptBlocker(session.id) ?? staleSkill(session, rendered.payload, action.requiredSkillId, requireSkill));
+}
+
+/**
+ * Type a rendered retro packet into a live session, and report the delivery honestly.
+ *
+ * Shared by the memory retro and the resident retro, which differ in what they type and agree on
+ * everything about how: the authorship claim before the write, the blocker re-checked inside the
+ * write lock, and `pasted` reported rather than inferred when the write fails.
+ */
+async function deliverRetroPacket(
+  session: Session,
+  rendered: { payload: string; payloadSha256: string },
+  deps: RetroDeps,
+  blocker: () => string | null,
+): Promise<RetroResult> {
   const inject = deps.inject ?? injectPromptForRuntime;
   // Claimed BEFORE the write, because the agent's prompt hook can report this packet back
   // while the send is still unresolved. An echo with no authorship on file is captured as the
@@ -190,12 +217,7 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
     session,
     rendered.payload,
     undefined,
-    // Re-checked INSIDE the write lock, which is the same guarantee `deliveryBlock` gives a
-    // workflow's delivery. Rendering and typing look adjacent here, but an embedded session
-    // serializes sends per session, so the packet can wait behind another turn - and a skill
-    // switched off in that window would have this type `/retro` at a session that no longer
-    // loads it, which is an instruction with no procedure behind it.
-    () => deps.promptBlocker(session.id) ?? staleSkill(session, rendered.payload, action.requiredSkillId, requireSkill),
+    blocker,
   );
   if (!result.ok) {
     // `pasted === false` is positive evidence that nothing reached the pane, so no echo is
@@ -234,6 +256,51 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
     payloadSha256: rendered.payloadSha256,
     submitVerified: result.submitVerified,
   };
+}
+
+/**
+ * A resident's retro: its own conversation reviews itself and proposes instruction changes.
+ *
+ * No skill gates it, because its approval is not prose an agent might skip: the only write it can
+ * make is `propose_resident_instruction_changes`, and the daemon applies nothing a person did not
+ * select. A resident that cannot take a turn has no conversation to review, so it is refused
+ * rather than filed as a task - a fresh agent has no standing instructions of its own to improve.
+ */
+async function runResidentRetro(session: Session, deps: RetroDeps): Promise<RetroResult> {
+  if (session.state === "exited" || !canMessage(session)) {
+    return {
+      kind: "refused",
+      status: 409,
+      error: "This resident can no longer receive a turn, so it cannot review its own conversation. "
+        + "Edit its profile on the Residents page instead.",
+    };
+  }
+  const run = session.task ? residentRunForTask(session.task.id)?.run : undefined;
+  const profile = run ? getResidentProfile(run.profileId) : null;
+  if (profile?.builtin) {
+    return {
+      kind: "refused",
+      status: 409,
+      error: `${profile.name} is a built-in resident, so nothing a retro proposes could be written to it. `
+        + "Duplicate it on the Residents page and launch the copy to shape its instructions.",
+    };
+  }
+  const rendered = renderSessionAction({
+    origin: { kind: "session", sessionId: session.id },
+    actionName: RESIDENT_RETRO_ACTION_NAME,
+    promptMarkdown: RESIDENT_RETRO_PROMPT,
+    skillCommand: null,
+    workflowEvidence: false,
+  });
+  if (!rendered.ok) {
+    return {
+      kind: "refused",
+      status: 500,
+      error: `The resident retro instruction is ${rendered.bytes} bytes once addressed to the session, `
+        + `over the ${rendered.limit} a single packet can carry.`,
+    };
+  }
+  return deliverRetroPacket(session, rendered, deps, () => deps.promptBlocker(session.id));
 }
 
 /**

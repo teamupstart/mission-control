@@ -14,7 +14,11 @@ import { mkTask } from "./helpers/session-fixture.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-claim-stop-"));
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -253,6 +257,11 @@ function taskManagerFor(registry: InstanceType<typeof Registry>, worktrees: Work
   const supervisor = fakeSupervisor(registry);
   const manager = new TaskManager(registry, undefined, supervisor, undefined, undefined, {}, worktrees);
   const dispatcher = (manager as unknown as { dispatcher: Dispatcher }).dispatcher;
+  // Every Claude launch now requires a registered server that publishes `request_input`.
+  Object.assign((dispatcher as unknown as { deps: Record<string, unknown> }).deps, {
+    missionMcpDescriptor: async () => ({ serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+  });
   return { manager, supervisor, dispatcher };
 }
 

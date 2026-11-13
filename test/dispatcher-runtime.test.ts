@@ -33,7 +33,13 @@ process.env.MISSION_PI_BIN = "/bin/echo";
 // `heldHomeNames` about sibling worktrees' live agents. Pointed at a path rather than
 // unset, because a built checkout HAS the bundle and the test would otherwise pass or fail
 // depending on whether `npm run build` had been run.
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
+/** The Mission Control MCP server every Claude and Codex launch is now handed. */
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
@@ -193,7 +199,8 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     supervisor,
     // The bundle is not built in a test run, and a dispatch that passes no `missionMcp`
     // requirement is unaffected by its absence.
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     // A pane write here would be the defect, not a fixture detail: reaching `injectPrompt`
     // at all means the branch did not take.
     inject: async () => {
@@ -274,7 +281,8 @@ test("with both toggles off, Claude and Codex stay on the terminal branch", asyn
   });
   const dispatcher = new Dispatcher(registry, async () => {}, { supervisor, worktrees });
 
-  // Required Mission MCP tools with no bundle on disk is the terminal path's own refusal,
+  // Required Mission MCP tools the bundle cannot publish is the terminal path's own refusal
+  // (here the stand-in bundle fails the handshake),
   // and it fires while it is assembling the argv - BEFORE it would open a terminal home.
   // That is deliberate here: a test that let the terminal path run to its spawn would
   // create a real tmux session on the developer's machine, and `heldHomeNames` would then
@@ -287,7 +295,7 @@ test("with both toggles off, Claude and Codex stay on the terminal branch", asyn
     assert.equal(registry.getTask(`task-term-${agent}`)?.status, "failed");
     assert.match(
       registry.getTask(`task-term-${agent}`)?.error ?? "",
-      /required Mission MCP tools/,
+      /Mission MCP tools/,
     );
   }
 });
@@ -665,7 +673,7 @@ test("a cancel landing mid-launch stops the driver it just started", async () =>
     // The teardown a cancel triggers. Cancelling here, at the moment the driver has just
     // been started, is what leaves an agent working in a worktree that is being handed back.
     async () => {},
-    { supervisor, missionMcpDescriptor: async () => null },
+    { supervisor, missionMcpDescriptor: async () => MISSION_DESCRIPTOR, verifyMissionMcpTools: async () => ({ ok: true }) },
   );
   const original = supervisor.start.bind(supervisor);
   supervisor.start = async (input) => {

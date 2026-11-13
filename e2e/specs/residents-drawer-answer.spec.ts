@@ -222,8 +222,16 @@ test("Chat about it in the modal a drawer row opened moves the question to the r
   await expect(cardOf(drawer).getByLabel(`${NAME} is asking`)).toHaveCount(0);
 });
 
-/** The turn `fake-claude.mjs` answers by raising its own `AskUserQuestion` menu and blocking. */
-const ASK_TURN = "ask me which linter to use";
+/**
+ * The turn `fake-claude.mjs` answers by asking permission for a tool call and blocking on it.
+ *
+ * A permission ask, not a question: a resident always launches with Mission MCP, so its
+ * built-in `AskUserQuestion` is taken away and every question it asks is a `request_input`
+ * review. The menu a resident can still be parked on is the driver's permission prompt.
+ */
+const PERMISSION_TURN = "ask permission to run the suite";
+/** The row a card draws for that menu: its kind, its prompt and its choices. */
+const MENU_ROW_NAME = /^menu: Claude wants to run npm test/;
 
 test("a menu the resident is parked on is a Needs you row too, and a click opens the review modal that answers it", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
@@ -231,15 +239,15 @@ test("a menu the resident is parked on is a Needs you row too, and a click opens
   const sessions = await request<Array<{ id: string; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
   const sessionId = sessions.find((s) => s.task?.kind === "resident")?.id;
   expect(sessionId, "the resident has a session to send the turn to").toBeTruthy();
-  // Stand in for the operator's turn that makes the resident ask through the agent's own menu,
-  // not through `request_input`: no review is created, only the menu it is parked on.
-  await request(daemon, `/api/sessions/${encodeURIComponent(sessionId!)}/send`, { text: ASK_TURN, submit: true, origin: "human" });
+  // Stand in for the operator's turn that parks the resident on the driver's own permission
+  // menu, not on `request_input`: no review is created, only the menu it is parked on.
+  await request(daemon, `/api/sessions/${encodeURIComponent(sessionId!)}/send`, { text: PERMISSION_TURN, submit: true, origin: "human" });
 
   await openDrawer(page);
   const drawer = drawerOf(page);
   const card = cardOf(drawer);
   const ask = card.getByLabel(`${NAME} is asking`);
-  const row = ask.getByRole("button", { name: "menu: Claude has some questions. - 2 questions", exact: true });
+  const row = ask.getByRole("button", { name: MENU_ROW_NAME });
   await expect(row).toBeVisible({ timeout: 30_000 });
   // The row names the menu; its rows are not on the card.
   await expect(card.locator(".pane-dialog")).toHaveCount(0);
@@ -257,15 +265,13 @@ test("a menu the resident is parked on is a Needs you row too, and a click opens
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("1 pending");
   const form = modal.locator(".pane-dialog");
-  await expect(form).toContainText("Which linter?");
+  await expect(form).toContainText("Claude wants to run npm test");
   await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toHaveCount(0);
   await expect(headOf(drawer)).toHaveAttribute("aria-current", "true");
   await expectContentClearsBorder(modal);
   await capture(page, "06-menu-in-review-modal");
 
-  await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
-  await form.getByRole("button", { name: "Submit answers" }).click();
+  await form.getByRole("button", { name: "1 Yes", exact: true }).click();
 
   // Answered, the menu is gone: the modal closes on its own and the card's row clears.
   await expect(modal).toBeHidden({ timeout: 15_000 });
@@ -279,12 +285,12 @@ test("a menu and a pending review are both rows on the card, and the review moda
   const sessions = await request<Array<{ id: string; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
   const sessionId = sessions.find((s) => s.task?.kind === "resident")?.id;
   expect(sessionId, "the resident has a session to send the turn to").toBeTruthy();
-  await request(daemon, `/api/sessions/${encodeURIComponent(sessionId!)}/send`, { text: ASK_TURN, submit: true, origin: "human" });
+  await request(daemon, `/api/sessions/${encodeURIComponent(sessionId!)}/send`, { text: PERMISSION_TURN, submit: true, origin: "human" });
 
   await openDrawer(page);
   const drawer = drawerOf(page);
   const ask = cardOf(drawer).getByLabel(`${NAME} is asking`);
-  const menuRow = ask.getByRole("button", { name: "menu: Claude has some questions. - 2 questions", exact: true });
+  const menuRow = ask.getByRole("button", { name: MENU_ROW_NAME });
   await expect(menuRow).toBeVisible({ timeout: 30_000 });
   // With the menu still open, the resident also asks through `request_input`.
   const reviewId = await askResident(daemon);
@@ -302,15 +308,13 @@ test("a menu and a pending review are both rows on the card, and the review moda
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("2 pending");
   const form = modal.locator(".pane-dialog");
-  await expect(form).toContainText("Which linter?");
+  await expect(form).toContainText("Claude wants to run npm test");
   await expect(modal).toContainText("Ship the nightly migration?");
   await capture(page, "08-menu-and-review-in-modal");
 
   // Answering the menu leaves the review: the modal stays open on it, and the card drops the
   // menu's row but keeps the review's.
-  await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
-  await form.getByRole("button", { name: "Submit answers" }).click();
+  await form.getByRole("button", { name: "1 Yes", exact: true }).click();
   await expect(form).toHaveCount(0, { timeout: 15_000 });
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("1 pending");

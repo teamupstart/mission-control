@@ -50,6 +50,7 @@ import {
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import {
   inspectWorktreeOccupancy,
+  describeWorktreeOccupants,
   type WorktreeOccupancy,
 } from "./occupancy.ts";
 
@@ -402,7 +403,7 @@ export class WorktreeOperationsService {
         .map((entry) => {
           const owner = ownerView(entry, this.deps.tasks);
           const processes = entry.occupancy.status === "known"
-            ? { state: "known" as const, count: entry.occupancy.occupants.length, reason: null }
+            ? { state: "known" as const, count: entry.occupancy.occupants.length, reason: describeWorktreeOccupants(entry.occupancy.occupants) }
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;

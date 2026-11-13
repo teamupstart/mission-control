@@ -393,10 +393,16 @@ const t=setInterval(()=>{if(existsSync(${JSON.stringify(stop)}))clearInterval(t)
   if (!crash) {
     // Parallel workers can start new orphans that correctly make real inventory ambiguous.
     // Isolate only this positive cleanup proof; crash and detached regressions use real ps.
-    const ps = join(home, "unambiguous-ps.mjs");
-    writeFileSync(ps, `#!${process.execPath}
-const date='Wed Sep 30 12:34:56 2026';
-console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 '+date);`, { mode: 0o755 });
+    // Use shell builtins so cold Node startup cannot consume the guard's ps timeout.
+    const ps = join(home, "unambiguous-ps");
+    writeFileSync(ps, `#!/bin/sh
+date='Wed Sep 30 12:34:56 2026'
+if [ "$1" = '-p' ]; then
+  printf '%s\\n' "$date"
+else
+  printf '1 0 %s\\n%s 1 %s\\n' "$date" "$PPID" "$date"
+fi
+`, { mode: 0o755 });
     env.MISSION_PS_BIN = ps;
   }
   const child = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });

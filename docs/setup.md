@@ -26,7 +26,8 @@ keep their own prerequisites.
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
 agent CLIs, terminal backends, GitHub CLI authentication, the Atlassian CLI for Jira,
-agent extensions, ai-conductor, and the system Node.js runtime.
+agent extensions, ai-conductor, the system Node.js runtime, and the repositories Mission Control
+can find.
 
 The panel opens with a verdict for the whole machine - whether it can run sessions, how many
 checks are ready, and whether any gap is a required one - above a rail of dependency families.
@@ -55,6 +56,28 @@ in, and **Needs setup** when a configured acli source reads a different site, na
 override included - so you finish the OAuth sign-in in your browser, choose the site your
 sources use, then press **Re-check**. Sign-in commands are a closed list of exact argvs the
 daemon checks before opening anything; they are never assembled from the browser.
+
+### Repositories
+
+The **Repositories** family holds one required row, **At least one detected repository**, and
+the indexed-directory editor that answers it. Setup does not pass until the repository index has
+detected at least one repository, an ordinary or a bare clone: with none, the dispatch repo picker offers nothing and tasks
+filed by repository name cannot resolve, so the verdict reports a required gap and the Setup
+banner counts it. The row says what the walk saw - no indexed directories at all, or each
+indexed directory with its repository count or why it was skipped.
+
+Below the row, the editor lists the directories Mission Control walks for repositories, seeded
+with `~/workspace`, `~/code`, `~/dev`, and `~/upstart`. Add a directory, or remove any row, a
+seeded default included. **Restore defaults** adds back only seeded directories that are missing
+and leaves your own rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
+path instead of silently omitting it. **Rescan now** drops the discovery cache so a newly cloned
+repository appears immediately. Every accepted change re-reads the machine, so the row follows the edit
+without a separate **Re-check**. While `MISSION_WORKSPACE_DIRS` is set, the editor names the
+override and keeps the saved list read-only. Indexing offers a checkout to pickers; it grants
+nothing, and Trust stays separate.
+
+This used to be its own **Settings → Repositories** category. A kept `#/settings/repositories`
+link now opens Setup.
 
 Pi's **Agent SDK** runtime is unlocked only when Setup reports two ready rows: the global Pi
 CLI in **Agent CLIs** and the Mission Control Pi extension in **Agent extensions**. The Pi CLI

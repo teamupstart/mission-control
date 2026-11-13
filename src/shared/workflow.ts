@@ -4803,9 +4803,19 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     headSha: string | null;
     /** Complete tracked and nonignored worktree content, independent of commit identity. */
     contentTreeOid?: string | null;
+    /** Daemon-derived publication proof. Older captures retain their strict dirty-tree rule. */
+    publication?: {
+      version: 1;
+      treeOid: string;
+      unpublishedPaths: string[];
+      pathsTruncated: boolean;
+      localArtifacts: Array<{ path: string; sha256: string; bytes: number }>;
+      artifactProblems?: string[];
+    };
     /**
      * The full commit Commands and CodeRabbit are pinned to. HEAD for a clean capture; for an
-     * uncommitted one, a Mission Control review snapshot of `contentTreeOid` parented on HEAD.
+     * uncommitted one, a Mission Control review snapshot of the publication tree parented on
+     * HEAD (the complete content tree for captures made before publication proofs existed).
      * Null for snapshots captured before review snapshots existed, or with no Command to run.
      */
     reviewCommit?: string | null;

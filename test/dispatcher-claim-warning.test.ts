@@ -12,7 +12,13 @@ import { mkTask } from "./helpers/session-fixture.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-claim-"));
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
+/** The Mission Control MCP server every Claude and Codex launch is now handed. */
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
@@ -75,7 +81,8 @@ function dispatcherFor(
   return new Dispatcher(registry, async () => {}, {
     supervisor,
     worktrees,
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     resolveBases: async () => ({ primary: sha, extras: [] }),
     inject: async () => {
       throw new Error("an embedded dispatch must never type at a pane");

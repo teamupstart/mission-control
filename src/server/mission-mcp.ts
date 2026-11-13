@@ -98,6 +98,8 @@ export const MISSION_MCP_TOOLS = [
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
   COMPLETE_RETRO_NO_CHANGE_TOOL,
   "schedule_next_iteration",
+  "get_resident_instructions",
+  "propose_resident_instruction_changes",
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
@@ -147,7 +149,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL, "publish_plan"],
   pipeline: [],
   chat: [PLAN_SCHEDULING_TOOL, "dispatch_task"],
-  resident: ["schedule_next_iteration"],
+  resident: ["schedule_next_iteration", "get_resident_instructions", "propose_resident_instruction_changes"],
 };
 
 /**
@@ -175,6 +177,30 @@ export function kindMissionMcpRequirement(
   if (workflowEvidence) tools.add(SUBMIT_WORKFLOW_EVIDENCE_TOOL);
   if (task.planInputs?.length) tools.add(PLAN_READ_TOOL);
   return { tools: [...tools] };
+}
+
+/**
+ * `requirement` plus `request_input`, for a launch whose harness carries Mission tools through
+ * an MCP client registered on that launch.
+ *
+ * Every decision a Mission Control task asks goes through `request_input`, with its context
+ * and per-option tradeoffs. Declaring it REQUIRED puts it through the same two guards as any
+ * other required tool before the agent spawns - the registration must reach the launch, and
+ * the bundle it names must actually publish the tool (a real handshake, so a stale bundle is
+ * caught) - and a launch failing either is refused with the reason rather than started able
+ * to ask only outside it. On Claude it also widens nothing: `request_input` is the tool the
+ * ask channel already pre-approves.
+ *
+ * A harness whose Mission tools arrive another way (Pi's installed extension) is left as it
+ * was: its availability is decided by its own probe, not by a launch registration.
+ */
+export function withDecisionAskTool(
+  requirement: MissionMcpRequirement | null,
+  mechanism: "mcp-client" | "installed-extension" | null | undefined,
+): MissionMcpRequirement | null {
+  if (mechanism !== "mcp-client") return requirement;
+  const tools = requirement?.tools ?? [];
+  return tools.includes("request_input") ? requirement : { tools: ["request_input", ...tools] };
 }
 
 /**
@@ -718,7 +744,17 @@ async function publishedTools(descriptor: MissionMcpDescriptor): Promise<Publish
 }
 
 /** Whether the bundle a launch is about to register can actually serve what that launch declares. */
-export type MissionMcpToolCheck = { ok: true } | { ok: false; reason: string };
+/**
+ * `cause` separates a VERDICT from a non-answer. `missing-tools` means the bundle was asked and
+ * answered without the tool - only a rebuild changes that. `unbuilt` (no bundle where one is
+ * expected) and `unreachable` (no handshake completed) say nothing about what a working bundle
+ * publishes, and can clear on their own: a rebuild in progress, a slow start under load.
+ * Optional so a stand-in that only answers `ok` and `reason` still type-checks; a caller that
+ * acts on the difference treats an absent cause as no verdict.
+ */
+export type MissionMcpToolCheck =
+  | { ok: true }
+  | { ok: false; reason: string; cause?: "unbuilt" | "unreachable" | "missing-tools" };
 
 /**
  * Assert that every tool a launch DECLARES is one the resolved bundle actually publishes.
@@ -759,6 +795,7 @@ export async function verifyMissionMcpTools(
     if (!descriptor) {
       return {
         ok: false,
+        cause: "unbuilt",
         reason: `Mission Control's MCP server is not built at ${mcpServerPath()} - run: npm run build`,
       };
     }
@@ -766,6 +803,7 @@ export async function verifyMissionMcpTools(
     if (!published.ok) {
       return {
         ok: false,
+        cause: "unreachable",
         reason:
           `Mission Control's MCP server at ${descriptor.args[0]} could not be interrogated: ` +
           `${published.reason}. Rebuild it with: npm run build`,
@@ -775,6 +813,7 @@ export async function verifyMissionMcpTools(
     if (missing.length === 0) return { ok: true };
     return {
       ok: false,
+      cause: "missing-tools",
       reason:
         `Mission Control's MCP server at ${descriptor.args[0]} does not publish ` +
         `${missing.join(", ")} (it publishes ${[...published.tools].sort().join(", ") || "nothing"}). ` +

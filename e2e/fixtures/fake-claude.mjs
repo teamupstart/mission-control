@@ -149,6 +149,8 @@ const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2
  * real ordering without slowing every dispatch in the suite.
  */
 const HOLD_FIRST_TURN = process.env.MC_E2E_HOLD_FIRST_TURN === "1";
+/** Opt-in: `/compact` turns stay open until interrupted. See the branch that reads it. */
+const STALL_COMPACT = process.env.MC_E2E_CLAUDE_STALL_COMPACT === "1";
 const SLOW_STOP = "E2E_SLOW_SESSION_STOP";
 const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
@@ -244,6 +246,13 @@ function failThenHoldCount(prompt) {
  */
 const ASK_TURN = "ask me which linter to use";
 /**
+ * The prompt this CLI answers by asking PERMISSION for a tool call and blocking on it - the
+ * menu every session can still be parked on, whatever its ask channel. A dispatched task has
+ * `AskUserQuestion` taken away (`ask-channel.ts`), so `ASK_TURN` reaches the native form only
+ * on a launch with no Mission MCP; a permission ask reaches the driver on every launch.
+ */
+const PERMISSION_TURN = "ask permission to run the suite";
+/**
  * The prompt that makes this CLI leave deterministic tool activity in its transcript:
  * one assistant turn carrying prose AND a tool call, then a tool-only turn, then the
  * ordinary echoed reply. That pair of shapes is the whole surface the Observed
@@ -276,6 +285,35 @@ const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
  * advisor plan relies on this output; extend it, do not change it.
  */
 const ADVISOR_TURN = "E2E_ADVISOR_CALLS";
+/**
+ * The prompt that launches three BACKGROUND sub-agents and ends its turn with them still
+ * running, in the frame shapes Claude Code's SDK stream uses: an `Agent` tool_use in the
+ * transcript, `background_tasks_changed` (the live set), `task_started` and `task_progress`
+ * per agent, then the turn's `result`. About a second later the third agent finishes
+ * (`task_updated`, `task_notification`, and a level without it).
+ *
+ * Alongside them, everything that must NOT count: a foreground agent that starts and ends
+ * inside the turn, an ambient housekeeping agent, and a background shell. After the result a
+ * sub-agent's own assistant frame arrives, which must not re-arm the idle parent. Matched by
+ * `includes` so a dispatch can carry it in its task text. Later phases rely on this output;
+ * extend it, do not change it.
+ */
+const BACKGROUND_AGENTS_TURN = "E2E_BACKGROUND_AGENTS";
+const BACKGROUND_AGENTS = [
+  { id: "bg-agent-1", type: "Explore", description: "Map every offset-pagination call site", tools: 18, tokens: 41_000, last: "Grep" },
+  { id: "bg-agent-2", type: "general-purpose", description: "Convert billing report queries", tools: 6, tokens: 12_000, last: "Edit" },
+  { id: "bg-agent-3", type: "Explore", description: "Find contract tests for /ledger", tools: 9, tokens: 22_000, last: "Read" },
+];
+const BACKGROUND_AGENTS_FINISH_MS = 1_000;
+/**
+ * Five background agents, all left running: more than the board draws before folding the
+ * rest behind "+N more". The same frame shapes as `BACKGROUND_AGENTS_TURN`, with no extras
+ * and nothing finishing. Distinct by its prefix, so neither sentinel contains the other.
+ */
+const MANY_BACKGROUND_AGENTS_TURN = "E2E_MANY_BACKGROUND_AGENTS";
+const MANY_BACKGROUND_AGENTS = Array.from({ length: 5 }, (_, i) => ({
+  id: `many-agent-${i + 1}`, type: "Explore", description: `Survey area ${i + 1}`, tools: i + 1, tokens: 1_000, last: "Read",
+}));
 const ADVISOR_MODEL = "claude-opus-5-5";
 const ADVISOR_TEXT = "E2E advisor guidance: check the empty input before the loop.";
 
@@ -1197,6 +1235,43 @@ const ASK_INPUT = {
 /** Control requests this CLI has sent UP and is waiting on, by request id. */
 const asked = new Map();
 
+/**
+ * The tools this launch removed, as the real CLI reads them: `--disallowedTools a,b`. A
+ * removed `AskUserQuestion` is never raised, so a spec cannot reach the native form on a
+ * launch that took it away.
+ */
+const DISALLOWED_TOOLS = (argvValue("--disallowedTools") ?? "")
+  .split(/[,\s]+/)
+  .filter(Boolean);
+/** What the SDK appended to the system prompt, delivered on `initialize`. */
+let appendedSystemPrompt = "";
+const REQUEST_INPUT_TOOL = "mcp__mission-control__request_input";
+
+/**
+ * `ASK_TURN` on a launch without `AskUserQuestion`: what a model does with what it was told.
+ * Pointed at `request_input`, it asks there and blocks until the human answers. Told
+ * nothing, it asks in prose and ends its turn (arm B in `ask-channel.ts`).
+ */
+function askWithoutBuiltin(prompt) {
+  if (!appendedSystemPrompt.includes(REQUEST_INPUT_TOOL)) {
+    answer([prompt]);
+    return;
+  }
+  const [first] = ASK_INPUT.questions;
+  const args = {
+    question: first.question,
+    options: first.options.map((o) => ({ label: o.label, detail: o.description })),
+  };
+  appendTurn("assistant", [
+    { type: "tool_use", id: `ask-${++turn}`, name: REQUEST_INPUT_TOOL, input: args },
+  ]);
+  beginHeldTurn(withMissionMcp(async (request) => {
+    const called = await request("tools/call", { name: "request_input", arguments: args });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `request_input answered: ${text}`;
+  }));
+}
+
 function ask(prompt) {
   const requestId = `ask-${++turn}`;
   asked.set(requestId, prompt);
@@ -1207,6 +1282,28 @@ function ask(prompt) {
     type: "control_request",
     request_id: requestId,
     request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: ASK_INPUT },
+  });
+}
+
+/** `PERMISSION_TURN`: a `Bash` call the CLI wants approved before it runs. */
+const PERMISSION_INPUT = { command: "npm test", description: "Run the test suite" };
+
+function askPermission(prompt) {
+  const requestId = `ask-${++turn}`;
+  asked.set(requestId, prompt);
+  appendTurn("assistant", [
+    { type: "tool_use", id: requestId, name: "Bash", input: PERMISSION_INPUT },
+  ]);
+  emit({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Bash",
+      input: PERMISSION_INPUT,
+      title: "Claude wants to run npm test",
+      permission_suggestions: [],
+    },
   });
 }
 
@@ -1223,14 +1320,17 @@ function answerAsked(requestId, response) {
   const prompt = asked.get(requestId);
   if (prompt === undefined) return;
   asked.delete(requestId);
-  const picked = response?.updatedInput?.answers ?? {};
+  const picked = response?.updatedInput?.answers;
   appendTurn("user", [
     {
       type: "tool_result",
       tool_use_id: requestId,
-      content: `Your questions have been answered: ${Object.entries(picked)
-        .map(([question, answer]) => `"${question}"="${answer}"`)
-        .join(", ")}.`,
+      // A question carries answers; an approved permission ask carries only the tool's run.
+      content: picked
+        ? `Your questions have been answered: ${Object.entries(picked)
+            .map(([question, answer]) => `"${question}"="${answer}"`)
+            .join(", ")}.`
+        : "ok - 0 failures",
     },
   ]);
   answer([prompt]);
@@ -1338,6 +1438,108 @@ function answerAuthenticationFailure() {
     session_id: SESSION_ID,
     ...turnUsage(),
   });
+}
+
+/** The `MANY_BACKGROUND_AGENTS_TURN` script: launch five, end the turn, leave them running. */
+function runManyBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  appendTurn("assistant", [
+    { type: "text", text: "Launching many background agents" },
+    ...MANY_BACKGROUND_AGENTS.map((agent) => ({
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+    })),
+  ]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching many background agents" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: MANY_BACKGROUND_AGENTS.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  for (const agent of MANY_BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: `toolu_${agent.id}`,
+    });
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 1_000 },
+    });
+  }
+  answer([prompt]);
+}
+
+/** The `BACKGROUND_AGENTS_TURN` script. See that constant for what it proves. */
+function runBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const toolUse = (agent) => `toolu_${agent.id}`;
+  const levelEntry = (agent) => ({
+    task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+  });
+  const shell = { task_id: "bg-shell-1", task_type: "local_bash", description: "npm run watch" };
+  const ambient = { ...levelEntry({ id: "bg-ambient-1", type: "general-purpose", description: "Housekeeping" }), ambient: true };
+
+  appendTurn("assistant", [
+    { type: "text", text: "Launching background agents" },
+    ...BACKGROUND_AGENTS.map((agent) => ({
+      type: "tool_use",
+      id: toolUse(agent),
+      name: "Agent",
+      input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+    })),
+  ]);
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching background agents" }] },
+  });
+
+  // A foreground agent: it blocks the turn, so it never counts.
+  system("task_started", {
+    task_id: "fg-agent-1", task_type: "local_agent", subagent_type: "Plan", description: "Foreground planning",
+    is_backgrounded: false, tool_use_id: "toolu_fg-agent-1",
+  });
+  system("task_notification", { task_id: "fg-agent-1", status: "completed", output_file: "", summary: "planned" });
+
+  // The live set joins before each task_started, as the real CLI orders it.
+  system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.map(levelEntry), shell, ambient] });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: toolUse(agent),
+    });
+  }
+  system("task_started", { task_id: shell.task_id, task_type: "local_bash", description: shell.description, is_backgrounded: true });
+  system("task_started", { ...ambient, is_backgrounded: true, skip_transcript: true });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 5_000 },
+    });
+  }
+  answer([prompt]);
+
+  // A background agent keeps talking after the parent's turn ended.
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: toolUse(BACKGROUND_AGENTS[0]),
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_inner_grep", name: "Grep", input: { pattern: "offset" } }] },
+  });
+
+  setTimeout(() => {
+    const done = BACKGROUND_AGENTS[2];
+    system("task_updated", { task_id: done.id, patch: { status: "completed", end_time: Date.now() } });
+    system("task_notification", {
+      task_id: done.id, tool_use_id: toolUse(done), status: "completed", output_file: "", summary: "Found 4 contract tests",
+      usage: { total_tokens: done.tokens + 1_000, tool_uses: done.tools + 1, duration_ms: 6_000 },
+    });
+    system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.slice(0, 2).map(levelEntry), shell, ambient] });
+  }, BACKGROUND_AGENTS_FINISH_MS);
 }
 
 /** Run the fake scout's file write and real submission while its SDK turn stays open. */
@@ -1495,6 +1697,60 @@ async function runResidentReview() {
   });
 }
 
+/**
+ * The first sentence of the packet the DAEMON types for a resident's retro
+ * (`RESIDENT_RETRO_LEAD` in `src/server/residents/retro-packet.ts`). Recognised from the daemon's
+ * own words, so the packet's delivery is part of what a spec proves.
+ */
+const RESIDENT_RETRO_MARKER = "Run a retrospective over your work as this resident, and turn what the operator taught you into proposed changes to your standing instructions.";
+
+/**
+ * A resident's retro without a model, following the packet's own procedure: read the
+ * conversation back from the daemon's transcript route for the session the packet names, keep
+ * the operator's turns (every user turn after the opening brief, less loop wakes and this
+ * packet), read the current
+ * instructions through the real tool, and propose one change per steering turn, each quoting the
+ * turn it came from. A turn that sets a new cadence edits the profile's "every hour"; any other
+ * steering becomes Persona guidance when the profile names an editable Persona. Then it waits
+ * inside the real proposal tool for the operator. No steering, no proposal.
+ */
+async function runResidentRetro(prompt) {
+  const sessionId = /^Session: (\S+)$/m.exec(prompt)?.[1];
+  if (!sessionId) return "Resident retro: the packet named no session, so there is no conversation to read.";
+  const response = await fetch(`http://127.0.0.1:${process.env.MISSION_PORT ?? "7317"}/api/sessions/${encodeURIComponent(sessionId)}/transcript?turns=200`);
+  if (!response.ok) return `Resident retro: the transcript could not be read (${response.status}).`;
+  // The first user turn is the opening brief, whatever launch sections ride on it; steering is
+  // what comes after it, less loop wakes and this packet.
+  const steering = ((await response.json()).messages ?? [])
+    .filter((message) => message.role === "user")
+    .slice(1)
+    .map((message) => String(message.text ?? "").trim())
+    .filter((text) => text
+      && !text.startsWith("[mission-resident:")
+      && !text.includes(RESIDENT_RETRO_MARKER));
+  if (steering.length === 0) return "Resident retro: nothing in the conversation warrants a change.";
+  return withMissionMcp(async (request) => {
+    const text = (called) => called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    const read = await request("tools/call", { name: "get_resident_instructions", arguments: {} });
+    if (read.error || read.result?.isError) return `get_resident_instructions failed: ${text(read)}`;
+    const view = JSON.parse(text(read));
+    const personaEditable = view.persona !== null && view.refusals.persona === null;
+    const changes = [];
+    for (const turn of steering) {
+      const rationale = `You told me: "${turn}"`;
+      const cadence = /every (\d+) minutes/i.exec(turn);
+      if (cadence && view.profile.instructions.includes("every hour")) {
+        changes.push({ target: "profile", title: `Check every ${cadence[1]} minutes`, rationale, find: "every hour", replace: `every ${cadence[1]} minutes` });
+      } else {
+        const title = turn.split(/\s+/).slice(0, 6).join(" ").replace(/[.,;:]+$/, "");
+        changes.push({ target: personaEditable ? "persona" : "profile", title, rationale, replace: turn });
+      }
+    }
+    const proposed = await request("tools/call", { name: "propose_resident_instruction_changes", arguments: { summary: `Proposed from ${steering.length} steering turn(s) in this conversation.`, changes } });
+    return `Resident retro: ${text(proposed)}`;
+  });
+}
+
 /** Hold an SDK turn open across real I/O, then answer it with the text the work produced. */
 function beginHeldTurn(work) {
   const held = { prompts: [] };
@@ -1566,6 +1822,16 @@ rl.on("line", (line) => {
     // per result) and the driver .catch()es a missing answer, but answering keeps the log
     // clean.
     if (frame.request?.subtype === "initialize") {
+      appendedSystemPrompt = typeof frame.request.appendSystemPrompt === "string" ? frame.request.appendSystemPrompt : "";
+      // What the driver appended to Claude Code's system prompt travels in this frame, not on
+      // the argv, so it is recorded here - apart from `claude/`, whose readers expect launches.
+      if (recordDir) {
+        mkdirSync(join(recordDir, "claude-initialize"), { recursive: true });
+        writeFileSync(
+          join(recordDir, "claude-initialize", `initialize-${Date.now()}-${process.pid}.json`),
+          JSON.stringify({ cwd: process.cwd(), appendSystemPrompt: frame.request.appendSystemPrompt ?? null }, null, 2),
+        );
+      }
       ok(frame.request_id, {
         commands: [], agents: [], output_style: "default", available_output_styles: [],
         account: {},
@@ -1692,8 +1958,13 @@ rl.on("line", (line) => {
 
     // Blocks the turn on a human, which is the whole point: no `result` is emitted until the
     // answer comes back down, so the card stays "waiting on you" for the spec to act on.
+    if (prompt === PERMISSION_TURN) {
+      askPermission(prompt);
+      return;
+    }
     if (prompt === ASK_TURN) {
-      ask(prompt);
+      if (DISALLOWED_TOOLS.includes("AskUserQuestion")) askWithoutBuiltin(prompt);
+      else ask(prompt);
       return;
     }
 
@@ -1708,6 +1979,11 @@ rl.on("line", (line) => {
 
     // A Report bug session, recognised by the brief the daemon wrote. The turn is held open
     // while the real `report_product_issue` call waits for the human's review.
+    if (prompt.includes(RESIDENT_RETRO_MARKER)) {
+      beginHeldTurn(runResidentRetro(prompt));
+      return;
+    }
+
     if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {
       beginHeldTurn(runResidentReview());
       return;
@@ -1764,6 +2040,15 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (prompt.includes(MANY_BACKGROUND_AGENTS_TURN)) {
+      runManyBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(BACKGROUND_AGENTS_TURN)) {
+      runBackgroundAgents(prompt);
+      return;
+    }
+
     // Three advisor calls, then the echoed reply, all stamped with the advisor model as the
     // real CLI stamps every record of an advisor-enabled request. See `ADVISOR_TURN`.
     if (prompt === ADVISOR_TURN) {
@@ -1786,6 +2071,12 @@ rl.on("line", (line) => {
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
+    // A `/compact` that the CLI accepts and then never finishes, the way it hung behind a
+    // dead network. Only an interrupt ends it, which is the recovery under test.
+    if (STALL_COMPACT && prompt.startsWith("/compact")) {
+      openTurn = { prompts: [prompt] };
+      return;
+    }
     if (prompt.includes(RELEASED_TURN)) {
       const turnState = { prompts: [prompt] };
       turnState.timer = setInterval(() => {

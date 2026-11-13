@@ -133,7 +133,7 @@ import {
 } from "./task-resource-generation.ts";
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
-import { inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
+import { describeWorktreeOccupants, inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
 import { gitInfo } from "./util/git.ts";
 import {
   kindMissionMcpRequirement,
@@ -1042,7 +1042,7 @@ export class TaskManager {
    * are exactly the awaits during which a second caller used to be able to walk in.
    */
   private readonly cleanupReservations = new Set<string>();
-  private readonly nextCompletedReturn = new Map<string, number>();
+  private readonly nextCompletedReturn = new Map<string, { ownership: string; failures: number; due: number }>();
   private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
@@ -6523,15 +6523,13 @@ export class TaskManager {
   ): boolean {
     if (this.closuresStopped) return false;
     if (reason === "complete" && !taskOwesWorktreeReturn(task)) return false;
-    if (reason === "complete" && (this.nextCompletedReturn.get(task.id) ?? 0) > Date.now()) return false;
     const ownership = this.worktreeOwnership(task);
+    const retry = this.nextCompletedReturn.get(task.id);
+    if (reason === "complete" && retry?.ownership === ownership && retry.due > Date.now()) return false;
     return this.cleanupQueue.enqueue({
       taskId: task.id,
       repoKeys: taskCleanupRepoKeys(task),
       run: async () => {
-        // Closure sweeps can run in quick succession. Refused return retries at a bounded
-        // cadence, while the explicit durable obligation survives daemon restart.
-        if (reason === "complete") this.nextCompletedReturn.set(task.id, Date.now() + 30_000);
         const context = { taskId: task.id, reason };
         console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_started", ...context })}`);
         let outcome: "returned" | "retained" | "failed" = "failed";
@@ -6545,7 +6543,19 @@ export class TaskManager {
           detail = readFailureClass(error);
           throw error;
         } finally {
-          console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail })}`);
+          let retryAt: number | undefined;
+          if (reason === "complete" && outcome !== "returned") {
+            const current = this.registry.getTask(task.id);
+            if (current && taskOwesWorktreeReturn(current)) {
+              const remaining = this.worktreeOwnership(current);
+              // Progress (including a partial provider return) and a new attempt start fresh.
+              const failures = remaining === ownership && retry?.ownership === ownership
+                ? Math.min(retry.failures + 1, 7) : 1;
+              retryAt = Date.now() + Math.min(30_000 * 2 ** (failures - 1), 1_800_000);
+              this.nextCompletedReturn.set(task.id, { ownership: remaining, failures, due: retryAt });
+            } else this.nextCompletedReturn.delete(task.id);
+          }
+          console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail, retryAt })}`);
         }
       },
     });
@@ -6580,8 +6590,8 @@ export class TaskManager {
       const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths);
       for (const path of paths) {
         const state = occupancy.get(path);
-        if (!state || state.status === "unknown") return "checkout occupancy is unknown";
-        if (state.occupants.length) return "a process still uses a checkout";
+        if (!state || state.status === "unknown") return `checkout occupancy is unknown: ${state?.reason.slice(0, 1024) ?? "not observed"}`;
+        if (state.occupants.length) return `a process still uses a checkout: ${describeWorktreeOccupants(state.occupants)}`;
       }
       return owned() ? null : "task ownership changed";
     };

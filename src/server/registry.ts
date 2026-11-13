@@ -60,6 +60,7 @@ import type {
   InspectionUpdated,
   KeepAwakeStatus,
   RetroSummary,
+  SubagentSummary,
   SettingsStatus,
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
@@ -301,6 +302,7 @@ import {
   type TaskDependencyRewrite,
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
+  getInspectorPr as getInspectorPrRow,
 } from "./db.ts";
 // The ONE telemetry call in this file, and deliberately so: everything else Phase 3 needs
 // from the Registry arrives through the event stream it already publishes. This is the
@@ -321,7 +323,7 @@ import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { stackStandingFor } from "./stacking/delivery.ts";
-import type { StackStanding } from "@shared/stacking.ts";
+import { stackBrokenReason, type StackStanding } from "@shared/stacking.ts";
 import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
@@ -3086,6 +3088,9 @@ export class Registry extends EventEmitter {
       case "pr_created":
         if (evt.urls.length > 0) this.applyDriverPrCreated(s, evt.urls);
         return;
+      case "subagents":
+        this.setSubagents(id, evt.subagents);
+        return;
       case "exited":
         // The same exited-then-linger-then-`session_remove` sequence a vanished pane gets.
         // `reason` and `resumable` are the supervisor's to act on (a resumable exit is what
@@ -3093,6 +3098,29 @@ export class Registry extends EventEmitter {
         this.beginEviction(s);
         return;
     }
+  }
+
+  /**
+   * Replace a session's background sub-agent summary - the ONLY writer of
+   * `Session.subagents`. Null removes the field, so a session with nothing to show is the
+   * same object shape it was before it ever launched an agent.
+   *
+   * Touches nothing else: not state, not activity, not the work cycle. A parent that is
+   * idle with agents still running stays idle; the "still running" line is the browser's
+   * reading of this field beside that state.
+   */
+  setSubagents(id: string, subagents: SubagentSummary | null): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    const next: Session = { ...s };
+    if (subagents && (subagents.agents.length > 0 || subagents.finishedFolded > 0)) {
+      next.subagents = subagents;
+    } else {
+      delete next.subagents;
+    }
+    if (sessionEqual(s, next)) return;
+    this.sessions.set(id, next);
+    this.emitSession(next);
   }
 
   /**
@@ -3325,7 +3353,12 @@ export class Registry extends EventEmitter {
     const ts = evt.ts ?? now;
     const key = overlayKeyFromEnv(evt.env);
     const { state, activity } = spec.toState(evt);
-    const workCycleSignal = spec.workCycleSignal(evt);
+    // A hook a sub-agent's own work raised describes that sub-agent, never its parent. It may
+    // still bind identity, carry a PR or a permission mode, but it moves neither the parent's
+    // state, its activity line, nor its work cycle - otherwise a background agent's tool call
+    // flips an idle parent back to working with no turn left to close it.
+    const fromSubagent = evt.agentId !== undefined;
+    const workCycleSignal = fromSubagent ? null : spec.workCycleSignal(evt);
     // A keyless emulator hook can arrive before OS discovery. Retain its exact native
     // identity across restart, but let only the coordinator's launch proof attach it.
     const transfer = evt.sessionId ? transferForNote(evt.sessionId) : null;
@@ -3390,7 +3423,9 @@ export class Registry extends EventEmitter {
       lastActivity: ts,
       updatedAt: now,
     };
-    if (retainedKey) this.overlays.set(retainedKey, overlay);
+    // The overlay is the parent's lifecycle reading that later sweeps replay, so a sub-agent's
+    // hook leaves it as it was.
+    if (retainedKey && !fromSubagent) this.overlays.set(retainedKey, overlay);
 
     // Apply immediately to a matching live session for instant feedback.
     if (target) {
@@ -3449,10 +3484,10 @@ export class Registry extends EventEmitter {
         instrumented: true,
         stateConfirmed: true,
         hooksSeen: true,
-        state,
-        activity,
+        state: fromSubagent ? target.state : state,
+        activity: fromSubagent ? target.activity : activity,
         permissionMode,
-        lastActivity: ts,
+        lastActivity: fromSubagent ? target.lastActivity : ts,
         agentSessionId,
         transcriptPath,
         gitBranch,
@@ -3469,7 +3504,7 @@ export class Registry extends EventEmitter {
       this.ensureWorkEpisode(
         next,
         ts,
-        evt.sessionId
+        evt.sessionId && !fromSubagent
           ? evt.event === "SessionStart" && evt.source === "clear"
             ? {
                 kind: "clear_start",
@@ -3519,8 +3554,8 @@ export class Registry extends EventEmitter {
       this.resolveInspectionSummaries(next);
       this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
-      logEvent(next.id, ts, evt.event, { activity, state });
-      if (!sessionEqual(target, next) || target.lastActivity !== ts) this.emitSession(next);
+      logEvent(next.id, ts, evt.event, fromSubagent ? { activity, state, agentId: evt.agentId } : { activity, state });
+      if (!sessionEqual(target, next) || next.lastActivity !== target.lastActivity) this.emitSession(next);
       // Last, deliberately. `upsertGoal` re-denormalizes and emits through
       // `syncSessionsForGoal`, so running it before the emit above would leave that emit
       // shipping the pre-goal object and the card would show the change only on the next
@@ -4766,6 +4801,15 @@ export class Registry extends EventEmitter {
       !DEFAULT_WORK_BRANCHES.has(existing.branch) &&
       existing.branch !== session.gitBranch;
     if (branchChanged) {
+      // Leaving a stacked pull request that merged into its parent's branch is the recovery
+      // starting, not the session walking away from its task: the recovery prompt asks for a
+      // new branch cut from the default branch, because both merged branches must stay as they
+      // are. So the task moves to a new episode with the session, as after an ordinary merge,
+      // and the recovery pull request opened there is the one whose merge completes it.
+      if (this.recoveringStrayMerge(existing)) {
+        const next = this.rolloverWorkEpisode(existing, now, session);
+        if (next) return next;
+      }
       return this.startWorkEpisode(
         session.id,
         session.agentSessionId,
@@ -4792,6 +4836,34 @@ export class Registry extends EventEmitter {
       this.bindTaskToWorkEpisode(taskId, session.id, existing, now);
     }
     return existing;
+  }
+
+  /**
+   * Stacked pull requests the PR poller confirmed merged off the default branch (lowercased
+   * URLs). A merged pull request's base never changes, so an entry never goes stale; it is lost
+   * on restart, by which time the Inspector's own observation says the same.
+   */
+  private readonly strayStackedMerges = new Set<string>();
+
+  /** The poller confirmed this stacked pull request merged somewhere other than the default branch. */
+  noteStrayStackedMerge(url: string): void {
+    this.strayStackedMerges.add(url.toLowerCase());
+  }
+
+  /**
+   * Whether an episode's pull request is a stacked child that merged into its parent's branch
+   * rather than the default branch. The poller never recorded that merge, so the episode still
+   * reads unmerged: the poller's stray verdict, or the Inspector's lifecycle observation, is
+   * what says it happened.
+   */
+  private recoveringStrayMerge(episode: SessionWorkEpisode): boolean {
+    if (!episode.prUrl || episode.mergedAt !== null) return false;
+    // The poller's own verdict, so a session that starts its recovery before the next Inspector
+    // tick has recorded the merge still keeps its task.
+    if (this.strayStackedMerges.has(episode.prUrl.toLowerCase())) return true;
+    const parsed = parsePrUrl(episode.prUrl);
+    const observation = parsed ? getInspectorPrRow(parsed.key)?.stack?.observation : null;
+    return Boolean(observation && stackBrokenReason(observation) === "merged-into-parent");
   }
 
   resetWorkEpisode(
@@ -7725,6 +7797,35 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Whether a pull request is a stacked child, for the merge gate: only a stacked child's merge
+   * has to have reached the default branch to complete anything (see `StackMergeWatch`).
+   *
+   * Stacked when its Inspector row carries stack lineage, which is written in the same step
+   * that adopts it, or - for a pull request the Inspector never adopted - when it is in the
+   * primary repository of a stacked task: the task named, else any stacked task one of whose
+   * bindings carries this URL. A secondary repository is never stacked, and neither is any
+   * pull request of an ordinary task.
+   */
+  isStackedTaskPr(url: string, taskId: string | null): boolean {
+    const parsed = parsePrUrl(url);
+    if (!parsed) return false;
+    if (getInspectorPrRow(parsed.key)?.stack) return true;
+    const sameRepo = (task: Task | undefined): boolean => {
+      const parent = task?.stackParentTaskId && task.stackPrUrl ? parsePrUrl(task.stackPrUrl) : null;
+      return Boolean(parent && parent.owner.toLowerCase() === parsed.owner.toLowerCase()
+        && parent.repo.toLowerCase() === parsed.repo.toLowerCase());
+    };
+    if (taskId !== null) return sameRepo(this.tasks.get(taskId) ?? getDurableTask(taskId) ?? undefined);
+    const wanted = url.toLowerCase();
+    for (const task of this.tasks.values()) {
+      if (!sameRepo(task)) continue;
+      const bindings = [taskWorkEpisodeForTask(task.id), ...historicalTaskWorkEpisodeBindingsForTask(task.id)];
+      if (bindings.some((binding) => binding?.prUrl?.toLowerCase() === wanted)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Most-recently-updated task whose worktree matches this cwd. A backlog task has
    * no worktree; a cancelled or cleanly-failed task cleared its worktree fields, so
    * it can't match a cwd here. A failed-but-alive task keeps its worktree, so it
@@ -10624,6 +10725,10 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // the tick that flips it is a tick where, on a finished session, nothing else moves at all,
   // so leaving it out would withhold the prompt until something unrelated shook the card.
   retro: byJson,
+  // byJson over an OPTIONAL bounded list: an agent finishing, a fold, or a counter tick each
+  // move nothing else on the card - the parent is typically idle and still while its agents
+  // work - so leaving it out would freeze the sub-cards until something unrelated moved.
+  subagents: byJson,
   // byJson over a small nested object the badge renders as a unit, and the one field here
   // whose comparison matters most while it is NULL: on a fleet with no pipeline provider
   // enabled every session carries null and this is one `undefined === undefined` per

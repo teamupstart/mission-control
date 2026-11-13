@@ -394,6 +394,17 @@ export class WorktreeStore {
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
+  /** The manager has re-proven safety; recovery never clears an active lease or its history. */
+  recoverQuarantined(slotId: string, version: number, head: string, now: number): WorktreeSlotRow | null {
+    const changed = this.db.prepare(
+      `UPDATE worktree_slots SET state = 'available', version = version + 1,
+         current_head_sha = ?, quarantine_reason = NULL, last_error = NULL, updated_at = ?
+       WHERE id = ? AND state = 'quarantined' AND version = ?
+         AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
+    ).run(head, now, slotId, version);
+    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  }
+
   markPruning(slotId: string, version: number, now: number): WorktreeSlotRow | null {
     const changed = this.db
       .prepare(

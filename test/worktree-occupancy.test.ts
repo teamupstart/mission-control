@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { Proc } from "../src/server/discovery/processes.ts";
 import {
   inspectWorktreeOccupancy,
+  describeWorktreeOccupants,
   pathContains,
 } from "../src/server/worktrees/occupancy.ts";
 import { bothAttempts } from "../src/server/worktrees/observation-retry.ts";
@@ -607,4 +608,17 @@ test("an overflowed cwd listing is not retried when the disappearance check then
     status: "unknown",
     reason: "process disappearance check failed: Error: ps vanished",
   });
+});
+
+
+test("occupant diagnostics bound process count and commands and remove control characters", () => {
+  assert.equal(describeWorktreeOccupants([]), null);
+  const occupants = Array.from({ length: 20 }, (_, i) => ({ ...process(i + 1),
+    cwd: "/pool/one", knownOwner: null, command: "node\n" + "x".repeat(500) }));
+  const detail = describeWorktreeOccupants(occupants)!;
+  assert.match(detail, /^PID 1 node /);
+  assert.match(detail, /PID 4 /);
+  assert.doesNotMatch(detail, /PID 5|\n/);
+  assert.match(detail, /and 16 more$/);
+  assert.ok(detail.length < 750);
 });

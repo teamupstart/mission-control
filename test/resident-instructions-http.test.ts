@@ -577,3 +577,165 @@ test("a Persona selection is stale once the profile names a different Persona, o
     } finally { f.stop(); }
   }
 });
+
+test("a built-in Persona is refused as an edit target, and nothing opens or changes", async () => {
+  const f = fixture();
+  try {
+    const shipped = f.personas.list().find((persona) => persona.builtin)!;
+    assert.ok(shipped, "this build ships at least one built-in Persona");
+    const current = store.getResidentProfile(f.profileId)!;
+    assert.equal(store.updateResidentProfile({
+      id: f.profileId, expectedRevision: current.revision, at: Date.now(),
+      settings: { ...current.settings, persona: { personaId: shipped.id } },
+    }).status, "ok");
+    const before = { profile: store.getResidentProfile(f.profileId)!, persona: f.personas.get(shipped.id)! };
+
+    const view = (await (await f.agent("/mcp/residents/instructions")).json()) as ResidentInstructionsView;
+    assert.equal(view.persona?.id, shipped.id);
+    assert.equal(view.persona?.builtin, true);
+    assert.match(view.refusals.persona ?? "", /ships with Mission Control and cannot be edited/);
+
+    const refused = await f.agent("/mcp/residents/instructions/proposals", {
+      changes: [{ target: "persona", title: "Tone", replace: "Be brief." }],
+    });
+    assert.equal(refused.status, 409);
+    assert.match((await refused.json()).error, new RegExp(`The Persona ${shipped.name} ships with Mission Control and cannot be edited`));
+    assert.equal(f.registry.pendingReviews(f.resident.id).length, 0);
+    const after = { profile: store.getResidentProfile(f.profileId)!, persona: f.personas.get(shipped.id)! };
+    assert.equal(after.persona.revision, before.persona.revision);
+    assert.equal(after.persona.guidanceMarkdown, before.persona.guidanceMarkdown);
+    assert.equal(after.profile.revision, before.profile.revision);
+    assert.equal(after.profile.settings.instructions.markdown, INSTRUCTIONS);
+  } finally { f.stop(); }
+});
+
+test("an archived Persona is refused as an edit target, and nothing opens or changes", async () => {
+  const f = fixture();
+  try {
+    assert.ok(f.personas.archive(f.personaId, 1).ok);
+    const before = f.personas.get(f.personaId)!;
+    assert.notEqual(before.archivedAt, null);
+
+    const view = (await (await f.agent("/mcp/residents/instructions")).json()) as ResidentInstructionsView;
+    assert.match(view.refusals.persona ?? "", /is archived/);
+
+    const refused = await f.agent("/mcp/residents/instructions/proposals", {
+      changes: [{ target: "persona", title: "Tone", replace: "Be brief." }],
+    });
+    assert.equal(refused.status, 409);
+    assert.match((await refused.json()).error, new RegExp(`The Persona Watcher \\d+ is archived\\.`));
+    assert.equal(f.registry.pendingReviews(f.resident.id).length, 0);
+    const after = f.personas.get(f.personaId)!;
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.archivedAt, before.archivedAt);
+    assert.equal(after.guidanceMarkdown, GUIDANCE);
+    assert.equal(store.getResidentProfile(f.profileId)?.revision, 1);
+  } finally { f.stop(); }
+});
+
+test("an archived profile is refused as an edit target, a mixed proposal is refused whole, and nothing opens or changes", async () => {
+  const f = fixture();
+  try {
+    assert.equal(store.archiveResidentProfile({ id: f.profileId, expectedRevision: 1, at: Date.now() }).status, "ok");
+    const before = store.getResidentProfile(f.profileId)!;
+    assert.notEqual(before.archivedAt, null);
+
+    const view = (await (await f.agent("/mcp/residents/instructions")).json()) as ResidentInstructionsView;
+    assert.match(view.refusals.profile ?? "", /is archived/);
+
+    for (const changes of [
+      [{ target: "profile", title: "Half-hourly checks", find: "every hour", replace: "every 30 minutes" }],
+      // A Persona change beside it does not let the profile change through.
+      [
+        { target: "persona", title: "Tone", replace: "Be brief." },
+        { target: "profile", title: "Half-hourly checks", find: "every hour", replace: "every 30 minutes" },
+      ],
+    ]) {
+      const refused = await f.agent("/mcp/residents/instructions/proposals", { changes });
+      assert.equal(refused.status, 409);
+      assert.match((await refused.json()).error, new RegExp(`edits the profile: The profile Queue watcher \\d+ is archived\\.`));
+    }
+    assert.equal(f.registry.pendingReviews(f.resident.id).length, 0);
+    const after = store.getResidentProfile(f.profileId)!;
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.archivedAt, before.archivedAt);
+    assert.equal(after.settings.instructions.markdown, INSTRUCTIONS);
+    const persona = f.personas.get(f.personaId)!;
+    assert.equal(persona.revision, 1);
+    assert.equal(persona.guidanceMarkdown, GUIDANCE);
+  } finally { f.stop(); }
+});
+
+test("a profile archived while its proposals are open refuses their answers, and nothing is written to either target", async () => {
+  const f = fixture();
+  try {
+    // Two proposals open before the archive: one answered with a profile change alone, one with a
+    // Persona change beside a profile change.
+    const profileOnly = await f.propose(THREE_CHANGES);
+    const mixed = await f.propose({ changes: [
+      { target: "persona", title: "Name the change", replace: "Lead with what changed." },
+      { target: "profile", title: "Half-hourly checks", find: "every hour", replace: "every 30 minutes" },
+    ] });
+    assert.equal(f.registry.pendingReviews(f.resident.id).length, 2);
+    assert.equal(store.archiveResidentProfile({ id: f.profileId, expectedRevision: 1, at: Date.now() }).status, "ok");
+    const archived = store.getResidentProfile(f.profileId)!;
+
+    for (const [reviewId, selected] of [[profileOnly, ["o0"]], [mixed, ["o0", "o1"]]] as const) {
+      const answered = await f.resolve(reviewId, {
+        action: "answer", response: "selected", selections: [{ decisionId: "q", selected: [...selected], other: null }],
+      });
+      assert.equal(answered.status, 200, await answered.clone().text());
+      assert.equal(f.registry.getReview(reviewId)?.status, "answered");
+      const result = await f.outcome(reviewId);
+      assert.equal(result.status, "refused");
+      assert.match(result.message, /^The profile Queue watcher \d+ can no longer be edited, so nothing was changed\.$/);
+      assert.deepEqual(result.applied, []);
+      assert.equal(result.profileRevision, null);
+      assert.equal(result.personaRevision, null);
+    }
+    const after = store.getResidentProfile(f.profileId)!;
+    assert.equal(after.revision, archived.revision);
+    assert.equal(after.archivedAt, archived.archivedAt);
+    assert.equal(after.settings.instructions.markdown, INSTRUCTIONS);
+    // The mixed answer's Persona change was not written on its own.
+    const persona = f.personas.get(f.personaId)!;
+    assert.equal(persona.revision, 1);
+    assert.equal(persona.guidanceMarkdown, GUIDANCE);
+    assert.ok(!f.events.some((event) => event.type === "persona_upsert" && event.persona.id === f.personaId && event.persona.revision > 1));
+  } finally { f.stop(); }
+});
+
+test("a Persona archived while its proposals are open refuses their answers, and a mixed answer writes no profile change", async () => {
+  const f = fixture();
+  try {
+    const personaOnly = await f.propose({ changes: [{ target: "persona", title: "Name the change", replace: "Lead with what changed." }] });
+    const mixed = await f.propose(THREE_CHANGES);
+    assert.equal(f.registry.pendingReviews(f.resident.id).length, 2);
+    assert.ok(f.personas.archive(f.personaId, 1).ok);
+    const archived = f.personas.get(f.personaId)!;
+    assert.notEqual(archived.archivedAt, null);
+
+    for (const [reviewId, selected] of [[personaOnly, ["o0"]], [mixed, ["o0", "o2"]]] as const) {
+      const answered = await f.resolve(reviewId, {
+        action: "answer", response: "selected", selections: [{ decisionId: "q", selected: [...selected], other: null }],
+      });
+      assert.equal(answered.status, 200, await answered.clone().text());
+      assert.equal(f.registry.getReview(reviewId)?.status, "answered");
+      const result = await f.outcome(reviewId);
+      assert.equal(result.status, "refused");
+      assert.equal(result.message, "The Persona can no longer be edited, so nothing was changed.");
+      assert.deepEqual(result.applied, []);
+      assert.equal(result.profileRevision, null);
+      assert.equal(result.personaRevision, null);
+    }
+    const persona = f.personas.get(f.personaId)!;
+    assert.equal(persona.revision, archived.revision);
+    assert.equal(persona.archivedAt, archived.archivedAt);
+    assert.equal(persona.guidanceMarkdown, GUIDANCE);
+    // The mixed answer's profile change passed its own checks and was still not written.
+    const profile = store.getResidentProfile(f.profileId)!;
+    assert.equal(profile.revision, 1);
+    assert.equal(profile.settings.instructions.markdown, INSTRUCTIONS);
+    assert.ok(!f.events.some((event) => event.type === "resident_profile_upsert" && event.profile.id === f.profileId));
+  } finally { f.stop(); }
+});

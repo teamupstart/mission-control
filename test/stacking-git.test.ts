@@ -138,6 +138,34 @@ test("freshRemoteBranchSha fetches one branch and returns the tip origin adverti
   assert.equal(git(checkout, "rev-parse", "--abbrev-ref", "HEAD"), "main");
 });
 
+test("a stack without a parent PR URL captures against the freshly verified parent branch", async () => {
+  const { author, checkout } = fixture();
+  const cutAt = git(checkout, "rev-parse", "origin/feat/parent");
+  const worktree = join(dirname(checkout), "child-no-parent-pr");
+  git(checkout, "worktree", "add", "-q", "-b", "feat/child-no-parent-pr", worktree, cutAt);
+  commit(worktree, "child.txt", "child\n", "child work");
+  const moved = commit(author, "parent.txt", "parent v2\n", "parent repair");
+  git(author, "push", "-q", "origin", "feat/parent");
+  const task = mkTask({
+    id: "child-no-parent-pr", status: "running", repoRoot: checkout, stackParentTaskId: "parent",
+    stackBaseBranch: "feat/parent", stackBaseSha: cutAt, stackPrUrl: null,
+  });
+  const registry = { taskForSession: () => task, workEpisodeForSession: () => null };
+  const base = await resolveStackDiffBase(registry, { id: "s1", cwd: worktree }, checkout, {
+    ...defaultStackGitHub,
+    prRefs: async () => { throw new Error("no parent PR exists to query"); },
+  });
+  assert.ok(base);
+  assert.equal(base.branch, "feat/parent");
+  assert.equal(base.sha, moved, "the recorded branch is refreshed, not the dispatch-time SHA");
+  const diff = await computeStackedDiff({
+    repoRoot: base.repoRoot, worktree, head: base.head, branch: base.headBranch, mergeBase: base.mergeBase, label: base.branch,
+  });
+  assert.equal(diff.ok, true, diff.error ?? "");
+  assert.match(diff.patch, /child\.txt/);
+  assert.doesNotMatch(diff.patch, /parent\.txt/);
+});
+
 test("before a child PR exists, capture follows the current parent state and refuses unknown bases", async () => {
   const { author, checkout } = fixture();
   const cutAt = git(checkout, "rev-parse", "origin/feat/parent");

@@ -638,6 +638,9 @@ exists, each capture reads the parent's current state: its head branch while ope
 repository's current default branch once merged or closed. A parent squash merge with branch
 deletion therefore does not strand capture or its resubmit probe, even before the dependency
 watcher records satisfaction. The dispatch-time stack fields remain as lineage provenance.
+When no parent PR URL has been recorded yet, capture uses the recorded parent branch and
+still refreshes and verifies its remote tip. A recorded PR that cannot be read remains an
+error rather than taking this branch-only path.
 If the selected base branch is confirmed absent by a successful remote listing, capture
 instead fetches and verifies the current default branch, including while the parent still
 appears open or an adopted child PR still names the deleted base. Network failures, denied

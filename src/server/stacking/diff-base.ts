@@ -129,20 +129,25 @@ export async function resolveStackDiffBase(
     }
     branch = current.value.baseRefName;
     defaultBranch = current.value.defaultBranch || null;
+  } else if (!task.stackPrUrl) {
+    // A branch-only stack has no PR state to consult yet. Preserve its recorded base,
+    // subject to the same fresh remote verification below as every other selected branch.
+    branch = task.stackBaseBranch;
+    defaultBranch = null;
   } else {
     // Dispatch facts are provenance, not a live base. Use the same rule as PR base
     // correction, including when the parent merged before the dependency watcher caught up.
-    const parent = task.stackPrUrl ? await github.prRefs(task.repoRoot, task.stackPrUrl) : null;
-    const expected = parent?.ok && parent.value
+    const parent = await github.prRefs(task.repoRoot, task.stackPrUrl);
+    const expected = parent.ok && parent.value
       ? expectedStackBase(parent.value, parent.value.defaultBranch || null)
       : null;
     if (!expected) {
       throw new StackDiffBaseError(
-        `stacked base could not be refreshed: could not resolve the base from parent ${task.stackPrUrl ?? "(unknown)"}: ${parent?.error ?? "GitHub reported no parent state or base"}`,
+        `stacked base could not be refreshed: could not resolve the base from parent ${task.stackPrUrl}: ${parent.error ?? "GitHub reported no parent state or base"}`,
       );
     }
     branch = expected;
-    defaultBranch = parent?.value?.defaultBranch || null;
+    defaultBranch = parent.value?.defaultBranch || null;
   }
   let tip = await github.branchSha(task.repoRoot, branch);
   // A positively absent base cannot be refreshed by resubmission. Recover against the

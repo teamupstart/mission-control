@@ -1066,7 +1066,9 @@ how it ended. Only `local_agent` tasks count: shells, MCP tasks, monitors, workf
 backgrounded main session and anything flagged `ambient` are left out. The flag counts
 whichever frame carries it: a run marked ambient by its start or by the live set stays hidden
 even when a later frame about the same run omits the field. The flag belongs to the run, so a
-new run of the same agent starts unclassified. A foreground agent
+new run of the same agent starts unclassified. A resumed agent keeps its task id and gets a new
+run id; the live set is what establishes a run, so a start, progress or end that names a run
+other than the one being shown is a late frame and changes nothing. A foreground agent
 counts only once it is moved to the background. Finished agents fold on the next turn you
 send, not on a turn the agent starts for itself, because a finished agent's notification can
 start one. A change to who is running or how one ended reaches the board at once; a change

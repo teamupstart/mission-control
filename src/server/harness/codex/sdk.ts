@@ -463,7 +463,7 @@ class CodexSdkSession implements SdkSessionHandle {
    */
   async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     const threadId = this.requireThread();
-    const finished = this.subagents.finishedIds();
+    const finished = this.subagents.finishedRuns();
     const input = turnInput(turn);
     const active = this.activeTurnId;
     if (active) {
@@ -477,8 +477,8 @@ class CodexSdkSession implements SdkSessionHandle {
     return "started";
   }
 
-  private foldSubagents(ids: readonly string[]): void {
-    this.subagents.fold(ids);
+  private foldSubagents(runs: ReadonlyMap<string, number>): void {
+    this.subagents.fold(runs);
     this.subagentEvents.update(this.subagents.summary());
   }
 
@@ -501,7 +501,7 @@ class CodexSdkSession implements SdkSessionHandle {
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     const threadId = this.requireThread();
     if (this.activeTurnId) return null;
-    const finished = this.subagents.finishedIds();
+    const finished = this.subagents.finishedRuns();
     await this.startTurn(threadId, turnInput(turn));
     this.foldSubagents(finished);
     return "started";

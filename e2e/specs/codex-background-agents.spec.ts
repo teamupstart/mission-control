@@ -46,6 +46,26 @@ test("Codex background children remain visible after their parent ends and fold 
   const detail = dashboard.locator(".cdetail");
   const reply = detail.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
+  const restart = "restart the reviewer before acknowledging this send";
+  await reply.fill(restart);
+  await reply.press("Enter");
+  await expect(detail.getByText(`Mock reply to: ${restart}`)).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+  await dashboard.keyboard.press("Escape");
+  await expect(detail).toHaveCount(0);
+  await expect(tree.getByRole("button", { name: "2 sub-agents · 1 running" })).toBeVisible();
+  await expect(done).toBeVisible();
+  await expect(done).toHaveClass(/is-completed/);
+  await expect(tree.getByText("1 finished")).toHaveCount(0);
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    await dashboard.mouse.move(0, 0);
+    await dashboard.locator("main.board section.board-col.tone-idle").screenshot({
+      path: join(artifactsDir("codex-background-agents"), "completion-after-restart.png"),
+    });
+  }
+
+  await tile.click();
+  await expect(reply).toBeEnabled();
   await reply.fill("continue after reviewing the child result");
   await reply.press("Enter");
   await expect(detail.getByText("Mock reply to: continue after reviewing the child result")).toBeVisible();

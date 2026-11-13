@@ -27,7 +27,7 @@
  * WHAT THE DRIVER ACTUALLY READS
  *   - `initialize`            -> handshake, result ignored
  *   - `thread/start`          -> binds: thread.id becomes agentSessionId, thread.path the rollout
- *   - `turn/start`            -> the response's turn.id is recorded BEFORE any notification
+ *   - `turn/start`            -> the response's turn.id is recorded BEFORE its root-turn notifications
  *   - `turn/started`          -> card goes working
  *   - `turn/completed`        -> `turn_done`, card goes idle
  *   - `thread/status/changed` -> the idle backstop, redundant with turn/completed by design
@@ -850,7 +850,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     case "turn/start": {
       const turnId = `turn-${++turnSeq}`;
-      // Answered BEFORE a single notification is written, and the turn's own frames are
+      // Independent children can resume and finish before this send is acknowledged.
+      if (textOf(params?.input) === "restart the reviewer before acknowledging this send") {
+        for (const status of ["running", "completed"]) {
+          notify("item/completed", { threadId: THREAD_ID, turnId, item: {
+            type: "collabAgentToolCall", id: `review-${status}-${turnId}`, tool: "resumeAgent", status: "completed",
+            senderThreadId: THREAD_ID, receiverThreadIds: ["e2e-reviewer"],
+            agentsStates: { "e2e-reviewer": { status, message: status === "completed" ? "New review result" : null } },
+          } });
+        }
+      }
+      // Answered BEFORE this turn's own notifications are written, and those frames are
       // deferred a tick behind it. The driver records `activeTurnId` from this response as
       // well as from `turn/started`, so a `turn/completed` that overtook the response would
       // be matched against a turn the driver has not adopted yet - and the response would

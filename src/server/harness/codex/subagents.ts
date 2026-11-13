@@ -6,6 +6,7 @@ import type { CollabAgentStatus, ItemStartedNotification, ThreadStartedNotificat
 const TRACKED_LIMIT = 512;
 type Tracked = {
   entry: SubagentEntry;
+  runVersion: number;
   folded: boolean;
   /** A folded identity stays hidden even after its aggregate count has been cleared. */
   counted: boolean;
@@ -32,6 +33,8 @@ function agentState(status: CollabAgentStatus): SubagentState | null {
 export class CodexSubagents {
   private readonly agents = new Map<string, Tracked>();
   private readonly waits = new Map<string, Wait>();
+  // Never reuse a version, even when context clearing or cap eviction forgets an identity.
+  private nextRunVersion = 0;
 
   clear(): void {
     this.agents.clear();
@@ -95,6 +98,7 @@ export class CodexSubagents {
     };
     const restarting = prior && prior.state !== "running" && patch.state === "running";
     this.agents.set(id, {
+      runVersion: known && !restarting ? known.runVersion : ++this.nextRunVersion,
       entry: {
         ...entry,
         ...(restarting ? { summary: null } : {}),
@@ -111,14 +115,15 @@ export class CodexSubagents {
   }
 
   /** Snapshot before sending: completions that overtake the acknowledgement stay visible. */
-  finishedIds(): string[] {
-    return [...this.agents].filter(([, t]) => !t.folded && t.entry.state !== "running").map(([id]) => id);
+  finishedRuns(): ReadonlyMap<string, number> {
+    return new Map([...this.agents].filter(([, t]) => !t.folded && t.entry.state !== "running")
+      .map(([id, t]) => [id, t.runVersion]));
   }
 
-  fold(ids: readonly string[]): void {
-    for (const id of ids) {
+  fold(runs: ReadonlyMap<string, number>): void {
+    for (const [id, version] of runs) {
       const t = this.agents.get(id);
-      if (!t || t.folded || t.entry.state === "running") continue;
+      if (!t || t.runVersion !== version || t.folded || t.entry.state === "running") continue;
       t.folded = true;
       t.counted = true;
     }

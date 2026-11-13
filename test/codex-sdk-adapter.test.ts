@@ -2286,6 +2286,68 @@ test("Codex preserves a completion arriving during a send acknowledgement for th
   await handle.stop(); await drained;
 });
 
+for (const delivery of ["steer", "start", "sendIfIdle"] as const) {
+  test(`Codex preserves a restarted child's new completion during ${delivery} acknowledgement`, async (t) => {
+    let starts = 0;
+    const server = new FakeServer(defaultReplies({
+      "turn/start": () => ++starts === 1 ? { turn: { id: "turn-1", status: "inProgress" } } : NO_REPLY,
+      "turn/steer": NO_REPLY,
+    }));
+    const { handle, events, drained } = await launch(server);
+    t.after(async () => { await handle.stop(); await drained; });
+    const report = (id: string, status: string, message: string | null) => server.notify("item/completed",
+      collabFrame(`report-${id}-${status}`, [id], { tool: "resumeAgent", agentsStates: { [id]: { status, message } } }));
+    server.notify("item/completed", collabFrame("spawn", ["restarted", "stable", "running"]));
+    report("restarted", "completed", "old result");
+    report("stable", "completed", "stable result");
+    if (delivery !== "steer") {
+      server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1", status: "completed" } });
+    }
+    await settle();
+
+    const send = delivery === "sendIfIdle" ? handle.sendIfIdle({ text: "continue" }) : handle.send({ text: "continue" });
+    report("restarted", "running", null);
+    report("restarted", "completed", "new result");
+    report("stable", "completed", "stable result"); // A repeated report still belongs to the snapshotted run.
+    await settle();
+    const method = delivery === "steer" ? "turn/steer" : "turn/start";
+    server.push({ id: server.calls(method).at(-1)!.id, result: delivery === "steer"
+      ? { turnId: "turn-1" } : { turn: { id: "turn-2", status: "inProgress" } } });
+    await send;
+    await settle();
+    const summary = latestSubagents(events)!;
+    assert.equal(summary.agents.find((a) => a.id === "restarted")?.summary, "new result");
+    assert.equal(summary.agents.some((a) => a.id === "stable"), false);
+    assert.equal(summary.finishedFolded, 1, "only the unchanged completion folds");
+
+    const next = handle.send({ text: "reviewed the new result" });
+    await settle();
+    server.push({ id: server.calls("turn/steer").at(-1)!.id, result: {} });
+    await next;
+    await settle();
+    assert.deepEqual(latestSubagents(events)?.agents.map((a) => a.id), ["running"]);
+    assert.equal(latestSubagents(events)?.finishedFolded, 2, "the new completion folds on the following send");
+  });
+}
+
+test("Codex fold snapshots distinguish runs with identical clocks and identities reused after clear", () => {
+  for (const clear of [false, true]) {
+    const children = new CodexSubagents();
+    const report = (status: string, message: string | null) => children.observe("item/completed",
+      collabFrame(`report-${status}`, ["child"], { tool: "resumeAgent", agentsStates: { child: { status, message } } }),
+      () => true, 1);
+    report("completed", "old result");
+    const beforeSend = children.finishedRuns();
+    if (clear) children.clear();
+    report("running", null);
+    report("completed", "new result");
+    children.fold(beforeSend);
+    assert.equal(children.summary()?.agents[0]?.summary, "new result");
+    children.fold(children.finishedRuns());
+    assert.equal(children.summary(), null, "the following send folds the new result");
+  }
+});
+
 test("a resumed Codex identity whose folded count was cleared cannot subtract another child's finish", () => {
   const children = new CodexSubagents();
   const report = (id: string, status: string, message: string | null = null) => {
@@ -2294,11 +2356,11 @@ test("a resumed Codex identity whose folded count was cleared cannot subtract an
     }), () => true, 1);
   };
   report("old", "completed", "old result");
-  children.fold(children.finishedIds());
+  children.fold(children.finishedRuns());
   assert.equal(children.summary(), null, "folding the last finished child clears the count");
   report("running", "running");
   report("recent", "completed", "recent result");
-  children.fold(children.finishedIds());
+  children.fold(children.finishedRuns());
   assert.equal(children.summary()?.finishedFolded, 1);
   report("old", "running");
   assert.equal(children.summary()?.finishedFolded, 1, "only the recent child's finish is still counted");
@@ -2317,7 +2379,7 @@ for (const removal of ["cap eviction", "ownership pruning"] as const) {
     report("forgotten", "completed");
     report("retained", "completed");
     report("running", "running");
-    children.fold(children.finishedIds());
+    children.fold(children.finishedRuns());
     assert.equal(children.summary()?.finishedFolded, 2);
 
     if (removal === "cap eviction") {

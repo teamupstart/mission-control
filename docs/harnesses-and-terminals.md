@@ -608,7 +608,9 @@ Role or nickname, spawn prompt or preview, and reported completion state populat
 rows. Receipt time supplies elapsed time; tokens, tool counts, last tool and launch links
 stay absent because these frames do not provide them. `notFound` does not invent an end
 state. Finished rows fold after the next accepted send, including steering, but not on an
-unsolicited parent turn or a refused send. Context clearing drops the old summary, and
+unsolicited parent turn or a refused send. The send snapshots each finished child's run;
+a child that restarts and finishes again before acknowledgement keeps its new result visible
+until the following send. Context clearing drops the old summary, and
 late frames from retired trees cannot repopulate it.
 
 The summary lists at most 12 agents, running first, then newest finished; overflow finished

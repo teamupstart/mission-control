@@ -1,7 +1,10 @@
-import { useId, useLayoutEffect, useRef } from "react";
-import type { TranscriptMessage } from "@shared/types.ts";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { SubagentEntry, SubagentSummary, TranscriptMessage } from "@shared/types.ts";
+import { subagentCountLabel, subagentCounts, subagentElapsedMs } from "@shared/subagents.ts";
 import { observedActivity } from "../lib/conversation-activity.ts";
 import { yourMessages } from "../lib/conversation-yours.ts";
+import { compactTokens, duration } from "../lib/format.ts";
+import { useNow } from "../useNow.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -47,10 +50,126 @@ import { Tooltip } from "./Tooltip.tsx";
  * Wide containers get a separate fold (`data-collapsed`) to a thin edge strip. Below the
  * breakpoint the stylesheet ignores it: the rail is already one row there, and the narrow
  * disclosure is the control that matters.
+ *
+ * **Agents** is the third tab, and the only one that comes and goes: it is the conversation
+ * half of the Chip and popover treatment for background sub-agents, so it exists only while
+ * the operator has chosen that treatment AND the session has background agents to list.
+ * `TranscriptPanel` decides both and hands the summary in as `subagents`; without it the rail
+ * is exactly the two-tab rail it was. Like the tray it replaces, it lists and controls nothing.
  */
 
 /** Which tab the rail is showing. Held by `TranscriptPanel` so find cannot reset it. */
-export type ActivityTab = "activity" | "yours";
+export type ActivityTab = "activity" | "yours" | "agents";
+
+/**
+ * The rail's selected tab, as its owner holds it, given whether Agents is offered right now.
+ *
+ * Agents can stop being offered while it is up: the operator switches to Nested sub-cards, or
+ * the session's agents go. The rail already draws Activity for a held tab it no longer offers;
+ * this also LEAVES Agents, so when the tab is offered again - the next launch, or switching
+ * back - the rail stays on Activity rather than jumping to a tab the reader left long ago.
+ * Exercised statefully in `test/rail-tab-reset-electron.test.ts`.
+ */
+export function useRailTab(agentsOffered: boolean): [ActivityTab, (tab: ActivityTab) => void] {
+  const [tab, setTab] = useState<ActivityTab>("activity");
+  useEffect(() => {
+    if (!agentsOffered && tab === "agents") setTab("activity");
+  }, [agentsOffered, tab]);
+  return [tab, setTab];
+}
+
+/** What each tab is called, on the tab, the folded strip and the narrow disclosure. */
+const TAB_COPY: Record<ActivityTab, {
+  label: string;
+  tip: string;
+  /** What the folded strip expands to, in the strip's tooltip. */
+  strip: string;
+  /** The narrow disclosure's name, which has no visible label of its own. */
+  toggle: string;
+  hide: string;
+  show: string;
+}> = {
+  activity: {
+    label: "Activity",
+    tip: "Tool calls observed in this conversation",
+    strip: "observed tool calls",
+    toggle: "Observed activity",
+    hide: "Hide the observed tool calls",
+    show: "Show the tool calls observed in this conversation's loaded transcript",
+  },
+  yours: {
+    label: "Yours",
+    tip: "The messages you sent in this conversation",
+    strip: "your messages",
+    toggle: "Your messages",
+    hide: "Hide your messages",
+    show: "Show the messages you sent in this conversation",
+  },
+  agents: {
+    label: "Agents",
+    tip: "The sub-agents this session launched in the background",
+    strip: "background agents",
+    toggle: "Background agents",
+    hide: "Hide the background agents",
+    show: "Show the sub-agents this session launched in the background",
+  },
+};
+
+const END_LABEL: Record<Exclude<SubagentEntry["state"], "running">, string> = {
+  completed: "done",
+  failed: "failed",
+  stopped: "stopped",
+};
+
+/**
+ * An Agents row's detail line: elapsed, last tool and tokens. A value the source did not
+ * report is left out rather than drawn as a placeholder - a terminal hook knows only that an
+ * agent started and stopped, so its row reads elapsed time alone.
+ */
+export function agentsTabDetail(agent: SubagentEntry, now: number): string {
+  const parts = [duration(subagentElapsedMs(agent, now))];
+  if (agent.lastTool) parts.push(agent.lastTool);
+  if (agent.tokens !== null) parts.push(`${compactTokens(agent.tokens)} tokens`);
+  return parts.join(" · ");
+}
+
+/**
+ * The Agents tab's list, with a clock of its own.
+ *
+ * Its own component so the once-a-second tick re-renders these rows and nothing else in the
+ * rail. The tick runs whenever the list is mounted - Agents is the shown tab - and an agent is
+ * running. It is NOT gated on the wide-layout fold: React cannot see the container's width,
+ * and a rail folded wide is still a visible list once the pane is narrowed, where the
+ * stylesheet ignores the fold. A clock that stopped on `collapsed` would freeze elapsed times
+ * on screen there.
+ */
+export function AgentsTabList({ subagents }: { subagents: SubagentSummary }): React.JSX.Element {
+  const counts = subagentCounts(subagents);
+  const now = useNow(counts.running > 0);
+  return (
+    <>
+      <p className="activity-note">Sub-agents this session launched in the background.</p>
+      <ol className="agents-list">
+        {subagents.agents.map((agent) => (
+          <li key={agent.id} className={`agents-row is-${agent.state}`}>
+            <span className="agents-pip" aria-hidden />
+            <span className="agents-body">
+              <span className="agents-title">
+                {agent.type && <span className="agents-type">{agent.type}</span>}
+                {agent.description && <span className="agents-desc">{agent.description}</span>}
+              </span>
+              <span className="agents-detail">
+                {agent.state !== "running" && <span className="agents-end">{END_LABEL[agent.state]} · </span>}
+                {agentsTabDetail(agent, now)}
+              </span>
+            </span>
+          </li>
+        ))}
+        {counts.folded > 0 && <li className="agents-row agents-folded">{counts.folded} finished</li>}
+      </ol>
+    </>
+  );
+}
 
 export function ConversationActivity({
   messages,
@@ -62,6 +181,7 @@ export function ConversationActivity({
   onSelectTurn,
   collapsed,
   onCollapsed,
+  subagents = null,
 }: {
   messages: TranscriptMessage[];
   /** Narrow-container disclosure state. Wide layouts show the list regardless. */
@@ -75,18 +195,36 @@ export function ConversationActivity({
   /** Wide-layout fold to the edge strip. Narrow layouts ignore it. */
   collapsed: boolean;
   onCollapsed: (collapsed: boolean) => void;
+  /**
+   * The session's background agents, when the rail offers the Agents tab: the operator chose
+   * Chip and popover and there is something to list. Null draws the two-tab rail.
+   */
+  subagents?: SubagentSummary | null;
 }): React.JSX.Element {
   const listId = useId();
   const activityTabId = useId();
   const yoursTabId = useId();
+  const agentsTabId = useId();
+  const tabIds: Record<ActivityTab, string> = { activity: activityTabId, yours: yoursTabId, agents: agentsTabId };
   const rows = observedActivity(messages);
   const { yours, injected } = yourMessages(messages);
-  const yoursTab = tab === "yours";
+  // Agents is only ever up while it is offered; a held tab it no longer names reads Activity.
+  const shown: ActivityTab = tab === "agents" && !subagents ? "activity" : tab;
+  const yoursTab = shown === "yours";
+  const agentsTab = shown === "agents";
+  const agentCounts = subagentCounts(subagents);
+  const agentCount = subagentCountLabel(agentCounts.listed, agentCounts.atLeast);
+  // Every agent already folded into the finished count: the tab says how many finished, the
+  // way the card's chip reads "N finished", rather than "Agents 0" over a list that has them.
+  const foldedOnly = agentCounts.listed === 0 && agentCounts.folded > 0;
+  const tabs: readonly ActivityTab[] = subagents ? ["activity", "yours", "agents"] : ["activity", "yours"];
+  const copy = TAB_COPY[shown];
 
-  // The count means the same thing on both tabs: how many rows the tab is about. On
+  // The count means the same thing on every tab: how many rows the tab is about. On
   // Yours that is the operator's own messages ONLY - the dimmed rows below them are
-  // context, and counting them would restate the exact conflation the tab avoids.
-  const count = yoursTab ? yours.length : rows.length;
+  // context, and counting them would restate the exact conflation the tab avoids. Agents
+  // counts its listed agents, which its own tab already prints.
+  const count = agentsTab ? (foldedOnly ? agentCounts.folded : agentCounts.listed) : yoursTab ? yours.length : rows.length;
 
   // Follow the newest row the way the log follows its tail: hold the resting place while
   // the reader is there, stay put while they are reading history. A layout effect so the
@@ -104,7 +242,7 @@ export function ConversationActivity({
   /** Whether the list is sitting where it would sit if nobody had scrolled it. */
   const atRest = useRef(true);
   /** Which tab the scroller was last positioned for. */
-  const shownTab = useRef(tab);
+  const shownTab = useRef(shown);
 
   /**
    * How far the scroller is from where it belongs, in pixels, signed.
@@ -120,6 +258,8 @@ export function ConversationActivity({
    * whichever ancestor happens to be positioned.
    */
   function restOffset(el: HTMLDivElement): number {
+    // Agents puts its running agents first, so its resting place is the top.
+    if (agentsTab) return -el.scrollTop;
     const anchor = yoursTab && injected.length > 0 ? lastOwnRef.current : null;
     if (!anchor) return el.scrollHeight - el.scrollTop - el.clientHeight;
     return anchor.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
@@ -132,15 +272,15 @@ export function ConversationActivity({
     // means to start rather than wherever the other one had been left. Without this the
     // reader scrolls up on Activity, switches to Yours, and lands mid-list on a tab whose
     // entire job is to show them their latest message.
-    if (shownTab.current !== tab) {
-      shownTab.current = tab;
+    if (shownTab.current !== shown) {
+      shownTab.current = shown;
       atRest.current = true;
     }
     if (!atRest.current) return;
     const offset = restOffset(el);
     // Sub-pixel differences are not a scroll anyone asked for.
     if (Math.abs(offset) >= 1) el.scrollTop += offset;
-  }, [rows.length, yours.length, injected.length, open, tab, yoursTab, collapsed]);
+  }, [rows.length, yours.length, injected.length, agentCounts.listed, open, shown, collapsed]);
 
   // Folding swaps which of the two fold controls is drawn, so the one just pressed vanishes
   // from under the keyboard. Hand focus to its counterpart - but only after a press from
@@ -198,11 +338,12 @@ export function ConversationActivity({
       aria-label="Conversation rail"
       data-open={open ? "true" : "false"}
       data-collapsed={collapsed ? "true" : "false"}
-      data-tab={tab}
+      data-tab={shown}
+      data-tabs={tabs.length}
     >
       {/* Rendered at every width and shown only by the stylesheet: React cannot see the
           container's width. */}
-      <Tooltip label={`Expand the rail (${yoursTab ? "your messages" : "observed tool calls"})`}>
+      <Tooltip label={`Expand the rail (${copy.strip})`}>
         <button
           type="button"
           ref={stripRef}
@@ -214,41 +355,53 @@ export function ConversationActivity({
           <span className="activity-strip-caret" aria-hidden>
             «
           </span>
-          <span className="activity-strip-label">{yoursTab ? "Yours" : "Activity"}</span>
+          <span className="activity-strip-label">{copy.label}</span>
           {count > 0 && <span className="activity-strip-count">{count}</span>}
         </button>
       </Tooltip>
       <div className="activity-head">
         <div className="activity-tabs" role="tablist" aria-label="Rail view">
-          <Tooltip label="Tool calls observed in this conversation">
-            <button
-              type="button"
-              role="tab"
-              id={activityTabId}
-              className="activity-tab"
-              aria-selected={!yoursTab}
-              aria-controls={listId}
-              onClick={() => onTab("activity")}
+          {tabs.map((id) => (
+            <Tooltip
+              key={id}
+              label={id === "agents" && foldedOnly
+                ? `${agentCounts.folded} finished ${agentCounts.folded === 1 ? "sub-agent" : "sub-agents"} this session launched in the background`
+                : TAB_COPY[id].tip}
             >
-              Activity
-            </button>
-          </Tooltip>
-          <Tooltip label="The messages you sent in this conversation">
-            <button
-              type="button"
-              role="tab"
-              id={yoursTabId}
-              className="activity-tab"
-              aria-selected={yoursTab}
-              aria-controls={listId}
-              onClick={() => onTab("yours")}
-            >
-              Yours
-            </button>
-          </Tooltip>
+              <button
+                type="button"
+                role="tab"
+                id={tabIds[id]}
+                className="activity-tab"
+                aria-selected={shown === id}
+                aria-controls={listId}
+                onClick={() => onTab(id)}
+              >
+                {TAB_COPY[id].label}
+                {/* "Agents 3": the count rides the tab, so the rail says agents are running
+                    whichever tab is up. */}
+                {id === "agents" && (
+                  <span className="activity-tab-count">
+                    {foldedOnly ? (
+                      <>
+                        <span aria-hidden>✓</span>
+                        {agentCounts.folded}
+                        <span className="sr-only"> finished</span>
+                      </>
+                    ) : (
+                      agentCount
+                    )}
+                  </span>
+                )}
+              </button>
+            </Tooltip>
+          ))}
         </div>
         <div className="activity-head-end">
-        {count > 0 && <span className="activity-count">{count}</span>}
+        {/* Only beside two tabs. Three tabs need the head's whole width in 244px - measured in
+            `conversation-rail-tabs-electron.test.ts`, where the count left them no slack -
+            and Agents prints its own count on its tab. The folded strip still counts every tab. */}
+        {count > 0 && tabs.length < 3 && <span className="activity-count">{count}</span>}
         {/* The narrow layout's disclosure, and a member of the head rather than a row of
             its own. Rendered at every width and shown by the container query alone,
             because React cannot see the container's width - the stylesheet is the one
@@ -259,21 +412,13 @@ export function ConversationActivity({
             states the same count twice while doing it. Sharing the row means the narrow
             layout gives up no more transcript height than it did before the tabs existed,
             and the tabs stay reachable even while the list is shut. */}
-        <Tooltip
-          label={
-            open
-              ? `Hide ${yoursTab ? "your messages" : "the observed tool calls"}`
-              : yoursTab
-                ? "Show the messages you sent in this conversation"
-                : "Show the tool calls observed in this conversation's loaded transcript"
-          }
-        >
+        <Tooltip label={open ? copy.hide : copy.show}>
           <button
             type="button"
             className="activity-toggle"
             // The name is carried here because the caret is the only thing drawn: there
             // is no visible label for it to have to agree with.
-            aria-label={yoursTab ? "Your messages" : "Observed activity"}
+            aria-label={copy.toggle}
             aria-expanded={open}
             aria-controls={listId}
             onClick={onToggle}
@@ -301,7 +446,7 @@ export function ConversationActivity({
         className="activity-body"
         id={listId}
         role="tabpanel"
-        aria-labelledby={yoursTab ? yoursTabId : activityTabId}
+        aria-labelledby={tabIds[shown]}
         ref={bodyRef}
         onScroll={() => {
           const el = bodyRef.current;
@@ -311,7 +456,9 @@ export function ConversationActivity({
           if (el) atRest.current = Math.abs(restOffset(el)) < 32;
         }}
       >
-        {yoursTab ? (
+        {agentsTab && subagents ? (
+          <AgentsTabList subagents={subagents} />
+        ) : yoursTab ? (
           yours.length === 0 && injected.length === 0 ? (
             <p className="activity-empty">No messages from you yet</p>
           ) : (

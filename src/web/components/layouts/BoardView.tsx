@@ -42,6 +42,7 @@ import { RailRow } from "./RailRow.tsx";
 import { ResidentVisitorCard } from "../../residents/ResidentVisitorCard.tsx";
 import { SessionTile } from "./SessionTile.tsx";
 import { SubagentTree } from "./SubagentTree.tsx";
+import { useDisplayChoice } from "../../lib/board-card.ts";
 import {
   ensembleSummaryFor,
   pipelineCommissionForSession,
@@ -121,6 +122,9 @@ interface PendingDrop {
 export function BoardView(props: SessionViewProps): React.JSX.Element {
   const boardTourRef = useTourTargetRef<HTMLElement>("see-work:board");
   const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
+  // Which background sub-agent treatment the board draws. The tile draws the chip itself; the
+  // nested sub-cards hang beneath it from here.
+  const agentsStyle = useDisplayChoice("backgroundAgentsStyle");
   // A refused drop (agent went busy, wrong repo, pane locked). Shown on the board
   // rather than swallowed, because the card silently staying in the backlog looks
   // identical to a drag that simply missed.
@@ -282,7 +286,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   const tile = (s: Session): React.JSX.Element => (
     <Fragment key={s.id}>
       {card(s)}
-      <SubagentTree session={s} />
+      {/* Only under Nested sub-cards: Chip and popover draws the agents inside the card - a
+          session card's flag row, or a resident visitor tile's. */}
+      {agentsStyle === "nested" && <SubagentTree session={s} />}
     </Fragment>
   );
   const card = (s: Session): React.JSX.Element => {

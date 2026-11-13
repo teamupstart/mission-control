@@ -53,6 +53,8 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // chose from the mockups: a badge before the console's title, a tab on the card's edge.
   assert.equal(config.taskKindHeader, "badge");
   assert.equal(config.taskKindCard, "tab");
+  // Nested sub-cards, the recommended treatment, for an install that never chose.
+  assert.equal(config.backgroundAgentsStyle, "nested");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
@@ -95,6 +97,8 @@ test("a written cache round-trips", () => {
     // Off on both, so neither round-trips by falling back to its default.
     taskKindHeader: "off",
     taskKindCard: "off",
+    // Off its default, so it cannot round-trip by falling back.
+    backgroundAgentsStyle: "chip",
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
@@ -137,6 +141,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.skin, "daylight");
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
+  assert.equal(config.backgroundAgentsStyle, "chip");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
@@ -262,6 +267,14 @@ test("a task-kind style this build does not ship reads as the shipped one", () =
   );
   assert.equal(readCache().taskKindHeader, "badge");
   assert.equal(readCache().taskKindCard, "tab");
+});
+
+test("a background sub-agents treatment this build does not ship reads as Nested sub-cards", () => {
+  // An `off` was never offered, and a treatment from a later build is not this one's to draw.
+  for (const stray of ["off", "lane", 3, null]) {
+    store.set("mission-control.ui", JSON.stringify({ backgroundAgentsStyle: stray }));
+    assert.equal(readCache().backgroundAgentsStyle, "nested", `${JSON.stringify(stray)} was adopted`);
+  }
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

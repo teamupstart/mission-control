@@ -4087,6 +4087,10 @@ body {
    nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
 .is-desktop .launch-pop,
 .is-desktop .session-toolbar-menu,
+/* The background sub-agents popover a board card's chip opens. It is fixed to the viewport
+   and opens ABOVE a chip in the lower half of the window, clamped to the top - which is the
+   bar. An eaten click would leave it unable to take focus or be dismissed by a press inside. */
+.is-desktop .subagent-popover,
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
@@ -9598,6 +9602,105 @@ mark.find-hit.is-current {
 }
 .yours-row.is-injected {
   color: var(--muted);
+}
+
+/* ---- the Agents tab: background sub-agents on the rail ----
+   The conversation half of Chip and popover, offered only while there are agents. A row
+   lists and controls nothing, so it is not a button. State hues are the board tree's:
+   running `--working`, done `--idle`, failed `--danger`, stopped `--exited`. */
+.activity-tab-count {
+  margin-left: 4px;
+  font: 500 10px/1 var(--mono);
+  letter-spacing: 0;
+  color: var(--working);
+  font-variant-numeric: tabular-nums;
+}
+/* Three tabs share the head with the fold in 244px (the head drops its count for them), and
+   give up a little padding and tracking too, so a wider system face still leaves them room
+   rather than wrapping or pushing the fold out of the column. */
+.activity-rail[data-tabs="3"] .activity-tab {
+  padding: 3px 4px;
+  letter-spacing: 0.02em;
+}
+.activity-rail[data-tabs="3"] .activity-tab-count {
+  margin-left: 3px;
+}
+.activity-rail[data-tabs="3"] .activity-head {
+  gap: 4px;
+}
+.agents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.agents-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  min-width: 0;
+}
+.agents-pip {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.agents-row.is-completed .agents-pip {
+  background: var(--idle);
+}
+.agents-row.is-failed .agents-pip {
+  background: var(--danger);
+}
+.agents-row.is-stopped .agents-pip {
+  background: var(--exited);
+}
+.agents-row.is-completed,
+.agents-row.is-failed,
+.agents-row.is-stopped {
+  opacity: 0.55;
+}
+.agents-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agents-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font: 12px/1.35 var(--sans);
+  color: var(--fg);
+}
+.agents-type {
+  font: 600 10.5px/1.4 var(--mono);
+  color: var(--muted);
+}
+.agents-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agents-detail {
+  font: 10px/1.4 var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.agents-folded {
+  padding: 3px 6px;
+  font-size: 10.5px;
+  color: var(--dim);
 }
 
 /* Below this panel width a 244px column would leave too little conversation to read,
@@ -32836,7 +32939,7 @@ span.line-run-prov {
   order: -1;
   margin-left: 0;
 }
-.subagent-tree .st-list {
+:is(.subagent-tree, .subagent-popover) .st-list {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -32844,7 +32947,7 @@ span.line-run-prov {
   padding: 0;
   list-style: none;
 }
-.subagent-tree .st-row {
+:is(.subagent-tree, .subagent-popover) .st-row {
   position: relative;
   display: flex;
   align-items: flex-start;
@@ -32864,7 +32967,7 @@ span.line-run-prov {
   width: 10px;
   border-top: 1px solid color-mix(in oklab, var(--working) 35%, var(--border-soft));
 }
-.subagent-tree .st-pip {
+:is(.subagent-tree, .subagent-popover) .st-pip {
   flex: none;
   width: 6px;
   height: 6px;
@@ -32872,55 +32975,55 @@ span.line-run-prov {
   border-radius: 50%;
   background: var(--working);
 }
-.subagent-tree .st-row.is-completed .st-pip {
+:is(.subagent-tree, .subagent-popover) .st-row.is-completed .st-pip {
   background: var(--idle);
 }
-.subagent-tree .st-row.is-failed .st-pip {
+:is(.subagent-tree, .subagent-popover) .st-row.is-failed .st-pip {
   background: var(--danger);
 }
-.subagent-tree .st-row.is-stopped .st-pip {
+:is(.subagent-tree, .subagent-popover) .st-row.is-stopped .st-pip {
   background: var(--exited);
 }
 /* Finished agents stay listed until the next turn (or until a full list folds the oldest to
    make room), dimmed so the running ones lead. */
-.subagent-tree .st-row.is-completed,
-.subagent-tree .st-row.is-failed,
-.subagent-tree .st-row.is-stopped {
+:is(.subagent-tree, .subagent-popover) .st-row.is-completed,
+:is(.subagent-tree, .subagent-popover) .st-row.is-failed,
+:is(.subagent-tree, .subagent-popover) .st-row.is-stopped {
   opacity: 0.55;
 }
-.subagent-tree .st-body {
+:is(.subagent-tree, .subagent-popover) .st-body {
   display: flex;
   flex-direction: column;
   min-width: 0;
   flex: 1;
 }
-.subagent-tree .st-title {
+:is(.subagent-tree, .subagent-popover) .st-title {
   display: flex;
   gap: 0;
   min-width: 0;
   color: var(--fg);
   white-space: nowrap;
 }
-.subagent-tree .st-type {
+:is(.subagent-tree, .subagent-popover) .st-type {
   flex: none;
   font-weight: 600;
 }
-.subagent-tree .st-sep {
+:is(.subagent-tree, .subagent-popover) .st-sep {
   flex: none;
   white-space: pre;
 }
-.subagent-tree .st-desc {
+:is(.subagent-tree, .subagent-popover) .st-desc {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.subagent-tree .st-end {
+:is(.subagent-tree, .subagent-popover) .st-end {
   flex: none;
   margin-left: auto;
   padding-left: 6px;
   color: var(--muted);
 }
-.subagent-tree .st-detail {
+:is(.subagent-tree, .subagent-popover) .st-detail {
   font-family: var(--mono);
   font-size: 10px;
   color: var(--dim);
@@ -32929,7 +33032,7 @@ span.line-run-prov {
   text-overflow: ellipsis;
 }
 .subagent-tree .st-more-row,
-.subagent-tree .st-folded {
+:is(.subagent-tree, .subagent-popover) .st-folded {
   padding: 2px 7px;
   background: none;
   border-style: dashed;
@@ -32945,8 +33048,90 @@ span.line-run-prov {
 .subagent-tree .st-more:hover {
   color: var(--fg);
 }
-.subagent-tree .st-folded {
+:is(.subagent-tree, .subagent-popover) .st-folded {
   color: var(--dim);
+}
+
+/* ---- board tile: the background sub-agents chip and its popover ----
+   The Chip and popover treatment: one chip in the tile's flags, so the card keeps its height,
+   opening a portalled list with the tree's own rows. Pips use the tree's state hues. */
+.tile-flag.tf-agents {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.tile-flag.tf-agents.is-running {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  color: var(--working);
+}
+.tile-flag.tf-agents:hover,
+.tile-flag.tf-agents[aria-expanded="true"] {
+  border-color: var(--working);
+}
+.tile-flag.tf-agents:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.tf-agents-pips {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.tf-agents-pip {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.tf-agents-pip.is-completed {
+  background: var(--idle);
+}
+.tf-agents-pip.is-failed {
+  background: var(--danger);
+}
+.tf-agents-pip.is-stopped {
+  background: var(--exited);
+}
+.subagent-popover {
+  position: fixed;
+  z-index: 40;
+  /* Width and max-height are set inline from the visible area; border-box keeps the padding
+     and border inside them, stated here rather than left to the global rule. */
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 16px));
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 11px;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow-ink) calc(100% / 3), transparent);
+}
+.subagent-popover:focus {
+  outline: none;
+}
+.subagent-popover:focus-visible {
+  outline: 1px solid var(--select);
+  outline-offset: -1px;
+}
+.subagent-popover .sp-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 6px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.subagent-popover .sp-glyph {
+  color: var(--working);
+}
+.subagent-popover .st-list {
+  margin: 0;
 }
 
 /* ---- conversation: the Background agents tray ----
@@ -33687,6 +33872,14 @@ span.line-run-prov {
 }
 .board-card-preview-stage .tile:hover {
   transform: none;
+}
+/* The preview's sub-cards: the stage has no column gap for the tree's pull-up to eat, so it
+   sits where the board's gap would leave it. Inert like the tile, so it advertises no fold. */
+.board-card-preview-stage > .subagent-tree {
+  margin-top: 4px;
+}
+.board-card-preview-stage > .subagent-tree * {
+  cursor: default;
 }
 /* Display > Top bar's preview: the real `Topbar`, drawn at its natural one-row width and
    zoomed down to fit the stage (`TopbarPreview` measures the ratio), so the operator compares

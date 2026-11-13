@@ -221,7 +221,10 @@ for (const reopenDuringUpdate of [false, true]) test(
       expect(processIdentity(helper.pid)).toBe(helper.identity);
       process.kill(helper.pid, 'SIGCONT');
       pausedHelper = null;
-      await expect.poll(() => progressWindow!(helper.pid), {timeout: 10_000}).not.toBeNull();
+      // The resumed helper has to spawn a fresh osascript and the window server has to draw
+      // its dialog. Alone that takes a few seconds; with the suite's four workers sharing the
+      // machine it overran 10s, so this wait gets the same headroom as the quit wait above.
+      await expect.poll(() => progressWindow!(helper.pid), {timeout: 30_000}).not.toBeNull();
       const shown = progressWindow!(helper.pid)!;
       reopenedProgressPid = shown.pid;
       if (hidden) expect(shown.pid).not.toBe(hidden.pid);

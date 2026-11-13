@@ -34,6 +34,7 @@ import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { TaskKindMark } from "../TaskKindMark.tsx";
+import { SubagentChip } from "./SubagentChip.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { StackLifecycle } from "../StackLifecycle.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
@@ -297,6 +298,10 @@ export function SessionTile({
   const kindStyle = useDisplayChoice("taskKindCard");
   const taskKind = session.task?.kind ?? null;
   const kindMark = taskKind && kindStyle !== "off" ? kindStyle : null;
+  // The board half of the background sub-agent treatment the operator chose. Nested sub-cards
+  // hang beneath the tile (`SubagentTree`, drawn by the board beside this card), so only the
+  // chip is this tile's to draw.
+  const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
   const agentDot = <AgentDot agent={session.agent} />;
 
   return (
@@ -543,6 +548,9 @@ export function SessionTile({
             through the console. The DECISION and the tooltip are shared (`PrTileFlag`);
             only the presentation differs, matching how the Inspector flag beside it works. */}
         <PrTileFlag session={session} />
+        {/* Background sub-agents, as one chip beside the PR when the operator chose Chip and
+            popover. Draws nothing for a session without background agents. */}
+        {agentsChip && <SubagentChip session={session} />}
         {/* The Inspector, in the tile's own flag vocabulary. The DECISION and the tooltip
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}

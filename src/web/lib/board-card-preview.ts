@@ -150,6 +150,53 @@ export function previewSession(now: number): Session {
       step: "stories",
     },
     paneDialog: null,
+    // Background agents, so the Background sub-agents picker governs something the preview
+    // draws: sub-cards under the card, or a chip in its flags. The plan's own sample - two
+    // running, one finished a minute ago - so both treatments show every state they mark.
+    subagents: {
+      agents: [
+        {
+          id: "board-card-preview-agent-map",
+          type: "Explore",
+          description: "Map every offset-pagination call site",
+          state: "running",
+          startedAt: now - 134_000,
+          endedAt: null,
+          toolUses: 18,
+          tokens: 41_000,
+          lastTool: "Grep",
+          summary: null,
+          launchTurnId: null,
+        },
+        {
+          id: "board-card-preview-agent-billing",
+          type: "general-purpose",
+          description: "Convert billing report queries",
+          state: "running",
+          startedAt: now - 48_000,
+          endedAt: null,
+          toolUses: 6,
+          tokens: 12_000,
+          lastTool: "Edit",
+          summary: null,
+          launchTurnId: null,
+        },
+        {
+          id: "board-card-preview-agent-contracts",
+          type: "Explore",
+          description: "Find contract tests for /ledger",
+          state: "completed",
+          startedAt: now - 125_000,
+          endedAt: now - 60_000,
+          toolUses: 9,
+          tokens: 22_000,
+          lastTool: null,
+          summary: null,
+          launchTurnId: null,
+        },
+      ],
+      finishedFolded: 0,
+    },
   };
 }
 

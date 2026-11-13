@@ -1047,7 +1047,10 @@ agents are still reading, editing and spending tokens under it. The board shows 
 the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), the parent's
 conversation docks them in a tray above its reply box with a **Jump to launch** link per agent
 (see [Background agents in a conversation](ui.md#background-agents-in-a-conversation)), and the
-parent's activity line reads **idle · N agents still running**.
+parent's activity line reads **idle · N agents still running**. That is the default treatment;
+**Settings → Display → Board card → Background sub-agents → Chip and popover** shows the same
+summary as a chip on the card and an **Agents** tab on the conversation rail instead (see
+[Chip and popover](ui.md#chip-and-popover)).
 
 Each driver reduces its own sub-agent signal into one bounded summary on the session,
 `Session.subagents`, and sends it to the daemon whole as an `SdkEvent` of kind `subagents`.

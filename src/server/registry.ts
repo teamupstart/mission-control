@@ -4800,12 +4800,28 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Whether an episode's pull request is a stacked child the Inspector saw merge into its
-   * parent's branch rather than the default branch. The poller never recorded that merge, so
-   * the episode still reads unmerged; the lifecycle observation is what says it happened.
+   * Stacked pull requests the PR poller confirmed merged off the default branch (lowercased
+   * URLs). A merged pull request's base never changes, so an entry never goes stale; it is lost
+   * on restart, by which time the Inspector's own observation says the same.
+   */
+  private readonly strayStackedMerges = new Set<string>();
+
+  /** The poller confirmed this stacked pull request merged somewhere other than the default branch. */
+  noteStrayStackedMerge(url: string): void {
+    this.strayStackedMerges.add(url.toLowerCase());
+  }
+
+  /**
+   * Whether an episode's pull request is a stacked child that merged into its parent's branch
+   * rather than the default branch. The poller never recorded that merge, so the episode still
+   * reads unmerged: the poller's stray verdict, or the Inspector's lifecycle observation, is
+   * what says it happened.
    */
   private recoveringStrayMerge(episode: SessionWorkEpisode): boolean {
     if (!episode.prUrl || episode.mergedAt !== null) return false;
+    // The poller's own verdict, so a session that starts its recovery before the next Inspector
+    // tick has recorded the merge still keeps its task.
+    if (this.strayStackedMerges.has(episode.prUrl.toLowerCase())) return true;
     const parsed = parsePrUrl(episode.prUrl);
     const observation = parsed ? getInspectorPrRow(parsed.key)?.stack?.observation : null;
     return Boolean(observation && stackBrokenReason(observation) === "merged-into-parent");

@@ -873,7 +873,9 @@ follow-up cannot see it, and the row says so and offers the manual send.
 
 The session then leaves the merged branch for a new one. That would ordinarily end its claim on
 the task. Leaving a branch whose stacked pull request merged into its parent's branch instead
-rolls the task onto a new work episode with the session, as after any merge. The pull request it
+rolls the task onto a new work episode with the session, as after any merge. Either the
+poller's own verdict or the Inspector's observation of the merge is enough, so a session that
+starts its recovery before the next Inspector tick keeps its task too. The pull request it
 opens there is the task's, and the task completes, releasing its dependents, when that pull
 request merges into the default branch. Once that pull request is adopted, the stray row reads
 *Replaced by #N*.

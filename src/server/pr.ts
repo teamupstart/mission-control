@@ -402,6 +402,9 @@ export async function pollAndReconcilePrs(
         skip.add(t.id);
         continue;
       }
+      // Remembered on the Registry, so the session leaving this branch for its recovery keeps
+      // its task even before the Inspector's next tick records the same merge.
+      if (held === "stray") registry.noteStrayStackedMerge(r.url);
       found.set(t.id, {
         ...r,
         // A stacked pull request that merged off the default branch is the session's pull

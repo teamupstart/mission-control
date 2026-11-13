@@ -516,3 +516,19 @@ test("children of a parent that merged off the default branch are not retargeted
   assert.equal(standing.prompt, null);
   assert.equal(standing.label, "Stack broken: #1700 merged into `feat/phase-0`, not main");
 });
+
+test("the poller's stray verdict alone keeps the task when the session starts its recovery before the Inspector records the merge", async () => {
+  const f = fleet("recover-before-tick", STACKED);
+  const child = "https://github.com/example/repo/pull/1490";
+  github({ [child]: { baseRefName: "feat/phase-1" } });
+  await poll(f, onBranch(f, child, "merged"), new StackMergeWatch());
+  assert.equal(f.episode().prUrl, child);
+  // No Inspector row, so no lifecycle observation: only the poller has seen the stray merge.
+  assert.equal(db.getInspectorPr("example/repo#1490"), null);
+  f.registry.applyDiscovery([{ ...f.disco, gitBranch: "feat/phase-2-recovery" }]);
+  f.registry.workEpisodeForSession(f.id);
+  const task = f.registry.getTask(f.taskId)!;
+  assert.equal(task.status, "running", "starting the recovery before the Inspector tick cancelled the task");
+  assert.equal(task.sessionId, f.id);
+  assert.equal(f.registry.workEpisodeForTask(f.taskId)?.branch, "feat/phase-2-recovery");
+});

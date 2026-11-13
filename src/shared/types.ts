@@ -520,7 +520,9 @@ export interface SubagentEntry {
  *
  * `agents` holds at most `SUBAGENT_LIMIT` entries, running first (oldest start first) and
  * then the newest finished. A finished agent stays listed until the operator's next turn,
- * which folds it into `finishedFolded`. Foreground and ambient work never appears here.
+ * which folds it into `finishedFolded` - except when the list would exceed the limit, which
+ * folds the oldest finished agents at once to make room. Foreground and ambient work never
+ * appears here.
  */
 export interface SubagentSummary {
   agents: SubagentEntry[];

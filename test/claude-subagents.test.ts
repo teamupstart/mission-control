@@ -161,14 +161,39 @@ test("an agent folded before the live set drops it is not revived by that late l
   assert.deepEqual(states(s), { a: "running", b: "running" });
 });
 
-test("a resumed agent's start lifts the guard even while a late live set still lists it", () => {
-  let s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
-  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", status: "completed", summary: "" }), 2);
+test("only a start for a later run lifts the guard while a late live set still lists the agent", () => {
+  let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })]);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "" }), 2);
   s = foldClaudeSubagents(s);
   assert.equal(s.retired.has("a"), true);
-  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 3);
+  // A start without a run id proves nothing about a new run: it stays folded.
+  assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 3), s);
+  // A start for a later run is a resume.
+  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r2" }), 4);
   assert.equal(s.retired.has("a"), false);
   assert.deepEqual(states(s), { a: "running" });
+});
+
+test("a repeated start without a run id does not revive an agent that just finished", () => {
+  // The live set still names `a` after its notification, until the next frame drops it.
+  let s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", status: "completed", summary: "" }), 2);
+  assert.equal(s.live.has("a"), true);
+  assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 3), s);
+  assert.deepEqual(states(s), { a: "completed" });
+});
+
+test("an agent the live set marked ambient stays hidden when its start omits the flag", () => {
+  // The set classifies `h` before its start, which then arrives without `ambient`.
+  let s = run([level(agent("a"), agent("h", { ambient: true })), started("a", { is_backgrounded: true })]);
+  s = observeClaudeSubagentFrame(s, started("h", { is_backgrounded: true }), 2);
+  assert.deepEqual(states(s), { a: "running" });
+  assert.equal(subagentCounts(claudeSubagentSummary(s)).running, 1);
+  // Its later progress and end change nothing visible either.
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "h", status: "completed", summary: "" }), 3);
+  s = foldClaudeSubagents(s);
+  assert.deepEqual(states(s), { a: "running" });
+  assert.equal(claudeSubagentSummary(s)!.finishedFolded, 0, "housekeeping is never counted as finished");
 });
 
 test("an agent pushed past the cap is not revived by a late live set either", () => {
@@ -325,6 +350,62 @@ test("an ambient agent that ends is dropped at once rather than held until the n
   // And its id stays guarded while the live set still names it.
   s = observeClaudeSubagentFrame(s, level(agent("a"), agent("b")), 4);
   assert.deepEqual(states(s), { b: "running" });
+});
+
+test("once the live set has dropped an agent, a late start cannot bring it back", () => {
+  // Folded after the live set dropped it: the guard is spent, so only live membership stops it.
+  let s = run([level(agent("a"), agent("b")), started("a", { is_backgrounded: true }), started("b", { is_backgrounded: true })]);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", status: "completed", summary: "" }), 2);
+  s = observeClaudeSubagentFrame(s, level(agent("b")), 3);
+  s = foldClaudeSubagents(s);
+  s = observeClaudeSubagentFrame(s, level(agent("b")), 4);
+  assert.equal(s.retired.has("a"), false);
+  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 5);
+  assert.deepEqual(states(s), { b: "running" }, "a delayed start does not count it");
+  assert.deepEqual(subagentCounts(claudeSubagentSummary(s)).running, 1);
+  // The next live set, still without it, clears the hidden leftover too.
+  s = observeClaudeSubagentFrame(s, level(agent("b")), 6);
+  assert.equal(s.tasks.has("a"), false);
+
+  // Ended and still listed dimmed, with no run ids: a repeated start does not revive it either.
+  let t = run([level(agent("c")), started("c", { is_backgrounded: true })]);
+  t = observeClaudeSubagentFrame(t, sys("task_notification", { task_id: "c", status: "failed", summary: "" }), 2);
+  t = observeClaudeSubagentFrame(t, level(), 3);
+  assert.equal(observeClaudeSubagentFrame(t, started("c", { is_backgrounded: true }), 4), t);
+  assert.deepEqual(states(t), { c: "failed" });
+});
+
+test("a start that beats its agent into the live set stays hidden until the set names it", () => {
+  let s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
+  s = observeClaudeSubagentFrame(s, started("b", { is_backgrounded: true, description: "early" }), 2);
+  assert.deepEqual(states(s), { a: "running" }, "not counted on the edge alone");
+  s = observeClaudeSubagentFrame(s, level(agent("a"), agent("b")), 3);
+  assert.deepEqual(states(s), { a: "running", b: "running" });
+  assert.equal(claudeSubagentSummary(s)!.agents.find((x) => x.id === "b")!.launchTurnId, "toolu_b", "its detail was kept");
+});
+
+test("a foreground agent moved to the background counts only once the live set names it", () => {
+  let s = run([level(agent("a")), started("a", { is_backgrounded: true }), started("fg", { is_backgrounded: false })]);
+  s = observeClaudeSubagentFrame(s, sys("task_updated", { task_id: "fg", patch: { is_backgrounded: true } }), 2);
+  assert.deepEqual(states(s), { a: "running" });
+  s = observeClaudeSubagentFrame(s, level(agent("a"), agent("fg")), 3);
+  assert.deepEqual(states(s), { a: "running", fg: "running" });
+});
+
+test("without run ids, an ended agent the live set re-lists after dropping it is a new run", () => {
+  let s = run([level(agent("a")), started("a", { is_backgrounded: true })], emptyClaudeSubagents(), 100);
+  s = observeClaudeSubagentFrame(s, sys("task_progress", { task_id: "a", usage: { total_tokens: 9, tool_uses: 4, duration_ms: 1 } }), 150);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", status: "completed", summary: "" }), 200);
+  // Still listed after its end: a late listing, not a rejoin.
+  s = observeClaudeSubagentFrame(s, level(agent("a")), 250);
+  assert.deepEqual(states(s), { a: "completed" });
+  s = observeClaudeSubagentFrame(s, level(), 300);
+  // Resumed: its start arrives while the set does not name it (ignored), then the set names it.
+  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true }), 400);
+  assert.deepEqual(states(s), { a: "completed" });
+  s = observeClaudeSubagentFrame(s, level(agent("a")), 500);
+  const entry = claudeSubagentSummary(s)!.agents[0]!;
+  assert.deepEqual([entry.state, entry.startedAt, entry.endedAt, entry.toolUses], ["running", 500, null, null]);
 });
 
 test("a no-op frame returns the same state object", () => {

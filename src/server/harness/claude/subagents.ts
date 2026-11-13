@@ -29,7 +29,10 @@ interface Tracked {
   /** Registered in the background, or moved there later. */
   background: boolean;
   ambient: boolean;
-  /** Has counted as a background agent; stays listed until the next turn folds it. */
+  /**
+   * Has counted as a background agent. Once ended it stays listed until the next turn folds
+   * it, or until the cap folds it sooner to make room (see `bounded`).
+   */
   shown: boolean;
   /** The run this entry describes, when the CLI names runs. A resumed task gets a new one. */
   runId: string | null;
@@ -52,10 +55,22 @@ export interface ClaudeSubagentState {
    * map is never larger than the live set plus what ended since its last frame.
    */
   readonly retired: ReadonlyMap<string, string | null>;
+  /**
+   * Every agent the last `background_tasks_changed` named, ambient ones included. The live set is the
+   * authority on who is running: once it has been seen, an edge frame (a start, or a move to the
+   * background) may only count an agent the set currently names. A delayed or repeated start
+   * for an agent the set has already dropped is late, and cannot bring it back.
+   */
+  readonly live: ReadonlySet<string>;
+  /**
+   * The agents that set marked `ambient`. A start that omits the flag still describes the same
+   * housekeeping task, so it inherits the live set's classification rather than counting.
+   */
+  readonly ambientLive: ReadonlySet<string>;
 }
 
 export function emptyClaudeSubagents(): ClaudeSubagentState {
-  return { levelSeen: false, tasks: new Map(), finishedFolded: 0, retired: new Map() };
+  return { levelSeen: false, tasks: new Map(), finishedFolded: 0, retired: new Map(), live: new Set(), ambientLive: new Set() };
 }
 
 function withRetired(
@@ -84,6 +99,17 @@ function laterRun(incoming: string | null, known: string | null): boolean {
 function continuing(known: Tracked | undefined, runId: string | null): Tracked | undefined {
   if (!known || known.entry.state !== "running" || laterRun(runId, known.runId)) return undefined;
   return known;
+}
+
+/**
+ * Whether a live-set entry for an agent that already ended is a new run of it. Run ids decide
+ * when both sides carry one. Without them the live set's own history does: a finishing task
+ * leaves the set only after its end is reported, so an ended agent the previous set still named
+ * is a late listing, while one the set had dropped and now names again has rejoined.
+ */
+function newRun(incoming: string | null, known: string | null, wasLive: boolean): boolean {
+  if (incoming !== null && known !== null) return incoming > known;
+  return !wasLive;
 }
 
 /** Whether `incoming` names the same run as `known`, or an earlier one. */
@@ -164,6 +190,8 @@ export function observeClaudeSubagentFrame(
   const tasks = new Map(state.tasks);
   let levelSeen = state.levelSeen;
   let retired = state.retired;
+  let liveNow = state.live;
+  let ambientNow = state.ambientLive;
   const put = (id: string, next: Tracked): void => {
     tasks.set(id, next);
   };
@@ -178,15 +206,22 @@ export function observeClaudeSubagentFrame(
     case "task_started": {
       const id = str(message.task_id);
       if (!id || !isAgentTask(message.task_type, message.subagent_type)) return state;
-      // A start for a run already seen (a repeat, or a late frame) changes nothing. Any other
-      // start of an ended id is a real one - a resumed agent keeps its task id - and is the one
-      // thing that brings it back.
+      // With a live set to answer to, only an agent it currently names may count or come back.
+      const listedNow = !levelSeen || state.live.has(id);
+      // Whether this start may bring an ended agent back: it must be evidence of a new run. A
+      // resumed agent keeps its task id, so the id alone proves nothing, and a repeated start
+      // arrives while the live set can still name the agent it just finished. With a live set,
+      // only a later run id is that evidence here; a resume without run ids is recognised when
+      // the set drops the agent and names it again (see `newRun`). Without a live set there is
+      // no other signal, so any start that is not for the same or an earlier run counts.
+      const restarts = (known: string | null): boolean =>
+        levelSeen ? listedNow && laterRun(runId, known) : !sameOrEarlierRun(runId, known);
       if (retired.has(id)) {
-        if (sameOrEarlierRun(runId, retired.get(id) ?? null)) return state;
+        if (!restarts(retired.get(id) ?? null)) return state;
         unretire(id);
       }
       const known = tasks.get(id);
-      if (known && known.entry.state !== "running" && sameOrEarlierRun(runId, known.runId)) return state;
+      if (known && known.entry.state !== "running" && !restarts(known.runId)) return state;
       // A start from a run before the one tracked is late, running or not: taking it would
       // roll the entry back to that run, and the old run's own end would then end this one.
       if (known && earlierRun(runId, known.runId)) return state;
@@ -203,8 +238,10 @@ export function observeClaudeSubagentFrame(
       put(id, {
         entry,
         background,
-        ambient: (prior?.ambient ?? false) || message.ambient === true,
-        shown: (prior?.shown ?? false) || background,
+        ambient: (prior?.ambient ?? false) || message.ambient === true || state.ambientLive.has(id),
+        // A start that beats the agent into the live set records its detail hidden; the live-set
+        // frame that names it is what shows it.
+        shown: (prior?.shown ?? false) || (background && listedNow),
         runId: runId ?? prior?.runId ?? null,
       });
       break;
@@ -219,26 +256,28 @@ export function observeClaudeSubagentFrame(
         const id = str(t?.task_id);
         if (!t || !id || !isAgentTask(t.task_type, t.subagent_type)) continue;
         listed.add(id);
+        // Recorded before anything can skip the entry, so a start that later omits the flag still
+        // inherits it.
+        if (t.ambient === true) ambientIds.add(id);
         const entryRun = str(t.run_id);
         // Already ended and no longer tracked: this level is late, not a new start - unless it
         // names a later run, which is the agent resumed (a run joins the set before its start).
         if (retired.has(id)) {
-          if (!laterRun(entryRun, retired.get(id) ?? null)) continue;
+          if (!newRun(entryRun, retired.get(id) ?? null, state.live.has(id))) continue;
           unretire(id);
         }
-        if (t.ambient === true) {
-          ambientIds.add(id);
-          continue;
-        }
+        if (t.ambient === true) continue;
         live.add(id);
         const known = tasks.get(id);
         // A late level that still lists an agent which already reported its end does not
         // revive it: a finishing task leaves the set after its notification.
-        if (known && known.entry.state !== "running" && !laterRun(entryRun, known.runId)) continue;
+        const rejoined = known !== undefined && known.entry.state !== "running" &&
+          newRun(entryRun, known.runId, state.live.has(id));
+        if (known && known.entry.state !== "running" && !rejoined) continue;
         // A level about an older run than the one tracked is late; it neither updates nor stops.
         if (known && earlierRun(entryRun, known.runId)) continue;
         // A later run starts clean, even if the run it replaces is still tracked as running.
-        const prior = continuing(known, entryRun);
+        const prior = rejoined ? undefined : continuing(known, entryRun);
         const base = prior?.entry ?? freshEntry(id, now);
         put(id, {
           entry: {
@@ -258,12 +297,19 @@ export function observeClaudeSubagentFrame(
         } else if (t.shown && t.entry.state === "running" && !live.has(id)) {
           // Left the live set without reporting an end: it was stopped.
           put(id, { ...t, entry: { ...t.entry, state: "stopped", endedAt: now } });
+        } else if (!t.shown && t.background && !listed.has(id)) {
+          // A background start the set never took up was a late one for an agent already gone:
+          // an early start is always followed by a set that names it. Foreground agents stay
+          // tracked, since one may still be moved to the background.
+          tasks.delete(id);
         }
       }
       // A retired id the live set no longer lists has nothing left to be revived by.
       if ([...retired.keys()].some((id) => !listed.has(id))) {
         retired = new Map([...retired].filter(([id]) => listed.has(id)));
       }
+      liveNow = listed;
+      ambientNow = ambientIds;
       break;
     }
     case "task_progress": {
@@ -296,8 +342,9 @@ export function observeClaudeSubagentFrame(
       put(id, {
         ...prior,
         background,
-        // Moved to the background while still running: it starts counting now.
-        shown: prior.shown || (background && running),
+        // Moved to the background while still running: it starts counting now - once the live
+        // set, when there is one, names it too.
+        shown: prior.shown || (background && running && (!levelSeen || state.live.has(id))),
         entry: {
           ...prior.entry,
           description: str(patch.description) ?? prior.entry.description,
@@ -339,7 +386,7 @@ export function observeClaudeSubagentFrame(
     }
   }
   if (forgotten.length > 0) retired = withRetired({ levelSeen, retired }, forgotten);
-  return bounded({ levelSeen, tasks, finishedFolded: state.finishedFolded, retired }, state);
+  return bounded({ levelSeen, tasks, finishedFolded: state.finishedFolded, retired, live: liveNow, ambientLive: ambientNow }, state);
 }
 
 /**
@@ -363,6 +410,8 @@ export function foldClaudeSubagents(state: ClaudeSubagentState): ClaudeSubagentS
   if (tasks.size === state.tasks.size && finishedFolded === state.finishedFolded) return state;
   return {
     levelSeen: state.levelSeen,
+    live: state.live,
+    ambientLive: state.ambientLive,
     tasks,
     finishedFolded,
     retired: gone.length > 0 ? withRetired(state, gone) : state.retired,
@@ -406,6 +455,10 @@ function bounded(next: ClaudeSubagentState, prior: ClaudeSubagentState): ClaudeS
 
 function sameState(a: ClaudeSubagentState, b: ClaudeSubagentState): boolean {
   if (a.levelSeen !== b.levelSeen || a.finishedFolded !== b.finishedFolded) return false;
+  if (a.live.size !== b.live.size || [...a.live].some((id) => !b.live.has(id))) return false;
+  if (a.ambientLive.size !== b.ambientLive.size || [...a.ambientLive].some((id) => !b.ambientLive.has(id))) {
+    return false;
+  }
   if (a.retired.size !== b.retired.size) return false;
   for (const [id, run] of a.retired) {
     if (!b.retired.has(id) || b.retired.get(id) !== run) return false;

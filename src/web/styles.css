@@ -32876,7 +32876,8 @@ span.line-run-prov {
 .subagent-tree .st-row.is-stopped .st-pip {
   background: var(--exited);
 }
-/* Finished agents stay listed until the next turn, dimmed so the running ones lead. */
+/* Finished agents stay listed until the next turn (or until a full list folds the oldest to
+   make room), dimmed so the running ones lead. */
 .subagent-tree .st-row.is-completed,
 .subagent-tree .st-row.is-failed,
 .subagent-tree .st-row.is-stopped {

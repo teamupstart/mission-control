@@ -71,8 +71,8 @@ export interface HookSubagentState {
   readonly agents: ReadonlyMap<string, Tracked>;
   /** Agents seen starting and not (yet) counted, with when and as what. */
   readonly started: ReadonlyMap<string, { at: number; type: string | null }>;
-  /** Ended ids, newest last, so a late signal cannot revive one. */
-  readonly ended: ReadonlySet<string>;
+  /** Ended ids with when they ended, newest last, so a late signal cannot revive one. */
+  readonly ended: ReadonlyMap<string, number>;
   readonly finishedFolded: number;
   /**
    * The newest COMPLETE live set: when it was taken and which agents it named. Anything older
@@ -98,7 +98,7 @@ const RUNNING_MAX = 64;
 const EMPTY: HookSubagentState = {
   agents: new Map(),
   started: new Map(),
-  ended: new Set(),
+  ended: new Map(),
   finishedFolded: 0,
   lastLive: null,
   resetAt: null,
@@ -142,7 +142,7 @@ function order(a: SubagentEntry, b: SubagentEntry): number {
 class Draft {
   agents: Map<string, Tracked>;
   started: Map<string, { at: number; type: string | null }>;
-  ended: Set<string>;
+  ended: Map<string, number>;
   finishedFolded: number;
   lastLive: HookSubagentState["lastLive"];
   resetAt: number | null;
@@ -151,7 +151,7 @@ class Draft {
   constructor(state: HookSubagentState) {
     this.agents = new Map(state.agents);
     this.started = new Map(state.started);
-    this.ended = new Set(state.ended);
+    this.ended = new Map(state.ended);
     this.finishedFolded = state.finishedFolded;
     this.lastLive = state.lastLive;
     this.resetAt = state.resetAt;
@@ -162,10 +162,10 @@ class Draft {
     return this.lastLive !== null && at < this.lastLive.at && !this.lastLive.ids.has(id);
   }
 
-  private end(id: string): void {
+  private end(id: string, at: number): void {
     this.ended.delete(id);
-    this.ended.add(id);
-    while (this.ended.size > ENDED_MAX) this.ended.delete(this.ended.values().next().value as string);
+    this.ended.set(id, at);
+    while (this.ended.size > ENDED_MAX) this.ended.delete(this.ended.keys().next().value as string);
   }
 
   private count(id: string, at: number, type: string | null, description: string | null): void {
@@ -240,7 +240,7 @@ class Draft {
         }
         if (this.started.delete(signal.id)) this.changed = true;
         if (!this.ended.has(signal.id)) this.changed = true;
-        this.end(signal.id);
+        this.end(signal.id, at);
         return;
       }
       case "live": {
@@ -280,7 +280,7 @@ class Draft {
           // after is newer than the reading and says nothing about it.
           if (known.entry.state !== "running" || listed.has(id) || known.countedAt > at) continue;
           this.agents.set(id, { ...known, inferred: true, entry: { ...known.entry, state: "stopped", endedAt: at } });
-          this.end(id);
+          this.end(id, at);
           this.changed = true;
         }
         return;
@@ -299,15 +299,23 @@ class Draft {
         return;
       }
       case "reset": {
+        // Forget only what was stamped before this start. The new process's own hooks can land
+        // before its `SessionStart` does, and what they reported is newer than the reset.
+        const agents = new Map([...this.agents].filter(([, t]) => t.countedAt >= at));
+        const started = new Map([...this.started].filter(([, s]) => s.at >= at));
+        const ended = new Map([...this.ended].filter(([, endedAt]) => endedAt >= at));
+        const lastLive = this.lastLive !== null && this.lastLive.at >= at ? this.lastLive : null;
+        // The folded count describes agents of whichever process folded them; with no way to
+        // tell, a start begins it again.
         if (
-          this.agents.size > 0 || this.started.size > 0 || this.ended.size > 0 || this.finishedFolded > 0 ||
-          this.lastLive !== null
+          agents.size !== this.agents.size || started.size !== this.started.size ||
+          ended.size !== this.ended.size || this.finishedFolded > 0 || lastLive !== this.lastLive
         ) {
-          this.agents = new Map();
-          this.started = new Map();
-          this.ended = new Set();
+          this.agents = agents;
+          this.started = started;
+          this.ended = ended;
           this.finishedFolded = 0;
-          this.lastLive = null;
+          this.lastLive = lastLive;
           this.changed = true;
         }
         if (this.resetAt !== at) {

@@ -173,6 +173,23 @@ test("a hook from the previous process, landing after the new process starts, is
   assert.equal(hookSubagentSummary(run([[{ kind: "reset" }, 1_000], [launched("same-ms"), 1_000]]))!.agents[0]?.id, "same-ms");
 });
 
+test("a reset that lands late keeps what the new process already reported", () => {
+  // The new process starts at 1000, but its launch and an end are ingested before its SessionStart.
+  let state = run([
+    [launched("old"), 500],
+    [{ kind: "ended", id: "old-done", type: null }, 600],
+    [launched("new-a"), 1_010],
+    [{ kind: "ended", id: "new-gone", type: null }, 1_020],
+    [{ kind: "reset" }, 1_000],
+  ]);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => [a.id, a.state]), [["new-a", "running"]]);
+  assert.equal(state.ended.has("old-done"), false, "the previous process's ends are forgotten");
+  assert.equal(state.ended.has("new-gone"), true, "an end stamped after the reset is kept");
+  // So a late launch for the agent that already ended under the new process stays out.
+  state = reduceHookSubagents(state, [launched("new-gone")], 1_030);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["new-a"]);
+});
+
 test("the list is capped: running first, the oldest finished fold", () => {
   const steps: [Signal, number][] = [];
   for (let i = 0; i < SUBAGENT_LIMIT + 3; i++) steps.push([launched(`f${i}`), i]);
@@ -291,9 +308,10 @@ test("a newer complete live set outranks a delayed launch or an older live set",
   assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["named"]);
   state = reduceHookSubagents(state, [launched("fresh")], 400);
   assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id).sort(), ["fresh", "named"]);
-  // A reset forgets the remembered set.
-  state = reduceHookSubagents(state, [{ kind: "reset" }, launched("old")], 100);
-  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["old"]);
+  // A reset forgets the remembered set and everything counted before it.
+  state = reduceHookSubagents(state, [{ kind: "reset" }, launched("after")], 500);
+  assert.equal(state.lastLive, null);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["after"]);
 });
 
 // --- each harness's reading ----------------------------------------------------------------

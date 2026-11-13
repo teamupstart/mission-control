@@ -118,7 +118,9 @@ overrides a stop that was only inferred. The newest complete in-flight list is a
 so a delayed launch or an older list cannot add an agent that list left out, and a
 `SubagentStart` that lands after its launch still moves the agent's start time earlier. A
 signal stamped before the newest process start or resume belongs to the previous process and is
-ignored, so a late `Stop` or launch from it cannot bring its agents back.
+ignored, so a late `Stop` or launch from it cannot bring its agents back. A `SessionStart` that
+lands late forgets only what was stamped before it, so agents the new process already reported
+stay listed.
 
 Hooks carry an agent's type, state and timing, and for Claude its launch description, but no tool
 or token counters and no last tool, so a terminal row omits those. See

@@ -184,8 +184,10 @@ function newRun(incoming: string | null, known: RunMemory, wasLive: boolean): bo
  * Whether a progress, update or notification frame is about a run other than the one tracked.
  * Those frames never open a run - only a start or a live-set entry does - so when both sides
  * name a run and the names differ, the frame belongs to some other run and changes nothing.
- * That needs no memory of the old run, so it still holds after the task's history is gone (a
- * folded agent that left the live set and later rejoined under a new run).
+ * The check compares the two ids directly rather than consulting the run history, so it holds
+ * for any other run, including one never recorded. `earlierRun` covers the remaining case, a
+ * current run with no id, from the task's past runs (kept across live-set gaps in
+ * `runHistory`).
  */
 function otherRun(incoming: string | null, known: RunMemory): boolean {
   return incoming !== null && known.runId !== null && incoming !== known.runId;

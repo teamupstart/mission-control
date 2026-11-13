@@ -37,6 +37,7 @@ import {
   readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
 import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
+import { DECISION_CONTEXT_MAX_CHARS, DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -385,7 +386,7 @@ server.registerTool(
                 z.object({
                   id: z.string().describe("Stable id, echoed back in the selection"),
                   label: z.string().describe("What the human reads on the control"),
-                  detail: z.string().optional().describe("Optional one-line elaboration"),
+                  detail: z.string().optional().describe("One line: this option's tradeoff - what it gains and what it costs"),
                   recommended: z
                     .boolean()
                     .optional()
@@ -780,7 +781,9 @@ server.registerTool(
 // redirect prompt to name, with the agent choosing the SHAPE from the question rather than
 // choosing between two tools.
 //
-// The description says what the tool DOES and stops there. It deliberately does NOT claim
+// The description says what the tool DOES and what a decision asked through it carries
+// (`DECISION_CONTEXT_RULE`: the decision, its context, each option's tradeoff) - true for
+// every session that can call it. It deliberately does NOT claim
 // that nobody is reading your terminal, or that this is the only way to reach your human:
 // this one MCP server is shared by every session on the machine, including the ones a human
 // started themselves, which keep `AskUserQuestion` on purpose and whose terminal usually IS
@@ -800,14 +803,23 @@ server.registerTool(
       "choose to chat about it instead; the result then says so and how to proceed, and you " +
       "must not decide or re-ask the question yourself. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
-      "`options` only for open-ended asks.",
+      "`options` only for open-ended asks. " +
+      DECISION_CONTEXT_RULE,
     inputSchema: {
-      question: z.string().describe("The question to ask"),
+      question: z.string().describe("The decision or question itself, in one or two sentences"),
+      context: z
+        .string()
+        .max(DECISION_CONTEXT_MAX_CHARS)
+        .optional()
+        .describe(
+          "What the human needs to answer without your context: what is being decided, why it " +
+            "came up, what you found, and the tradeoffs. Shown beneath the question.",
+        ),
       options: z
         .array(
           z.object({
             label: z.string().describe("What the human reads on the control"),
-            detail: z.string().optional().describe("Optional one-line elaboration"),
+            detail: z.string().optional().describe("One line: this option's tradeoff - what it gains and what it costs"),
             recommended: z
               .boolean()
               .optional()
@@ -827,7 +839,7 @@ server.registerTool(
         .describe("Adds a free-text 'Other' field for an answer outside the options"),
     },
   },
-  async ({ question, options, multiSelect, allowOther }, extra) => {
+  async ({ question, context, options, multiSelect, allowOther }, extra) => {
     // Refused before any review exists: a card the human cannot answer would leave this call,
     // and the session, waiting on something nobody can resolve. The daemon's schema enforces
     // the same rule; checking here first lets the agent read why instead of a transport error.
@@ -841,10 +853,11 @@ server.registerTool(
     }
     try {
       // One construction for every `request_input` review (`@shared/request-input.ts`): a
-      // heading clipped from the question, the whole question as the body, and positional
-      // option ids, which the human's answer never shows the agent - it comes back as LABELS.
-      // A resident's proposed instruction changes are asked through the same builder.
-      const ask = requestInputReview({ question, options, multiSelect, allowOther });
+      // heading clipped from the question, the question followed by its context as the body
+      // (`inputReviewBody`), and positional option ids, which the human's answer never shows the
+      // agent - it comes back as LABELS. A resident's proposed instruction changes are asked
+      // through the same builder.
+      const ask = requestInputReview({ question, context, options, multiSelect, allowOther });
       const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);

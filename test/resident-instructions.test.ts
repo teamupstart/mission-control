@@ -169,3 +169,17 @@ test("the tool's answer names what landed, what did not and what the operator wr
     "The operator also wrote: Keep the Persona as it is.",
   ].join("\n"));
 });
+
+test("the shared request_input builder files the question then its context, exactly as the tool always has", () => {
+  const withContext = requestInputReview({
+    question: "Ship the nightly migration?",
+    context: "  Staging was clean; production is three times larger.  ",
+    options: [{ label: "Ship it", detail: "Done tonight, larger blast radius" }, { label: "Hold it" }],
+  });
+  assert.equal(withContext.title, "Ship the nightly migration?");
+  assert.equal(withContext.body, "Ship the nightly migration?\n\nStaging was clean; production is three times larger.");
+  assert.equal(withContext.decisions?.[0]?.question, "Ship the nightly migration?");
+  // Without context the body is the question alone, the shape a resident's proposal is filed with.
+  assert.equal(requestInputReview({ question: "Ship it?" }).body, "Ship it?");
+  assert.equal(requestInputReview({ question: "Ship it?", context: "   " }).body, "Ship it?");
+});

@@ -7,6 +7,7 @@
 
 import type { PlanDecision } from "./types.ts";
 import { titleLine } from "./title.ts";
+import { inputReviewBody } from "./decision-asks.ts";
 
 /** The id of a `request_input` ask's one decision. Persisted in answered review rows. */
 export const REQUEST_INPUT_DECISION_ID = "q";
@@ -22,6 +23,8 @@ export function requestInputOptionId(index: number): string {
 
 export interface RequestInputAsk {
   question: string;
+  /** Background and tradeoffs, printed beneath the question (`inputReviewBody`). */
+  context?: string;
   options?: ReadonlyArray<{ label: string; detail?: string; recommended?: boolean }>;
   multiSelect?: boolean;
   allowOther?: boolean;
@@ -37,11 +40,12 @@ export interface RequestInputReview {
 /**
  * The review a `request_input` ask is shown as.
  *
- * The title is a HEADING clipped from the question and the body is the whole question, so a long
- * or multi-line ask is readable rather than folded into a bold one-liner with its newlines
- * collapsed. A question already short enough comes back as its own title, which keeps the equal
- * case equal, and the review modal then shows it once. With options, the ask carries exactly one
- * decision; without, it is the open-ended ask the human answers in free text.
+ * The title is a HEADING clipped from the question and the body is the whole question followed by
+ * its context (`inputReviewBody`), so a long or multi-line ask is readable rather than folded into
+ * a bold one-liner with its newlines collapsed. A question already short enough comes back as its
+ * own title, which keeps the equal case equal, and the review modal then shows it once. With
+ * options, the ask carries exactly one decision; without, it is the open-ended ask the human
+ * answers in free text.
  */
 export function requestInputReview(ask: RequestInputAsk): RequestInputReview {
   const decisions = ask.options?.length
@@ -53,5 +57,5 @@ export function requestInputReview(ask: RequestInputAsk): RequestInputReview {
       allowOther: ask.allowOther,
     }]
     : undefined;
-  return { kind: "input", title: titleLine(ask.question), body: ask.question, decisions };
+  return { kind: "input", title: titleLine(ask.question), body: inputReviewBody(ask.question, ask.context), decisions };
 }

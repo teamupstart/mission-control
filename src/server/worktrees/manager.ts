@@ -56,6 +56,7 @@ import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observatio
 import { taskOwner } from "./owners.ts";
 import {
   inspectWorktreeOccupancy,
+  describeWorktreeOccupants,
   pathContains,
   type WorktreeOccupancy,
 } from "./occupancy.ts";
@@ -627,10 +628,18 @@ export class WorktreeManager {
         this.deps.now(),
         slot.version,
       );
-      if (quarantined) this.publish();
+      if (quarantined) {
+        this.logSlot(slot, "quarantined", reason, error);
+        this.publish();
+      }
     } catch (quarantineError) {
       console.error(`[worktrees] could not quarantine slot ${slot.id}:`, quarantineError);
     }
+  }
+
+  private logSlot(slot: WorktreeSlotRow, event: string, reason: string, detail: string | null = null): void {
+    console.info(`[worktrees] ${JSON.stringify({ event, poolId: slot.poolId, slotOrdinal: slot.ordinal,
+      reason: bounded(reason), detail: detail ? bounded(detail) : null })}`);
   }
 
   private async occupancy(paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> {
@@ -667,7 +676,7 @@ export class WorktreeManager {
       return occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown";
     }
     return occupancy.occupants.length > 0
-      ? "one or more processes still occupy the worktree"
+      ? `one or more processes still occupy the worktree: ${describeWorktreeOccupants(occupancy.occupants)}`
       : null;
   }
 
@@ -768,15 +777,16 @@ export class WorktreeManager {
   /**
    * Which of these available slots are idle: the one definition acquisition and seed-source
    * selection share. Anything a slot cannot prove (its path, its identities, its last owner's
-   * absence, its occupancy, its registration, its Git state, its cleanliness) is quarantined
-   * here, as acquisition always has. A slot whose last owner still references it stays
+   * absence, its registration, its Git state, its cleanliness) is quarantined
+   * here. Unknown process occupancy defers the entire screen without changing slot state.
+   * A slot whose last owner still references it stays
    * available but is not idle. `head` is the commit each idle slot was observed at.
    */
   private async screenIdleSlots(
     pool: WorktreePoolRow,
     identity: WorktreeRepositoryIdentity,
     available: readonly WorktreeSlotRow[],
-  ): Promise<{ ok: true; idle: Array<{ slot: WorktreeSlotRow; head: string }> } | { ok: false; reason: string }> {
+  ): Promise<{ ok: true; idle: Array<{ slot: WorktreeSlotRow; head: string }> } | { ok: false; reason: string; outcomeUnknown?: boolean }> {
     if (available.length === 0) return { ok: true, idle: [] };
     let registrations: Awaited<ReturnType<WorktreeGit["list"]>>;
     try {
@@ -791,6 +801,15 @@ export class WorktreeManager {
       return { ok: false, reason: `Git registrations could not be read: ${registrations.reason}` };
     }
     const occupancy = await this.occupancy(available.map((slot) => slot.path));
+    // A failed machine-wide observation is not evidence against any individual slot.
+    // Defer this acquisition, including fallback, without persisting a quarantine storm.
+    for (const slot of available) {
+      const observed = occupancy.get(slot.path);
+      if (!observed || observed.status === "unknown") {
+        const reason = observed?.reason ?? "slot occupancy was not observed";
+        return { ok: false, reason: bounded(reason), outcomeUnknown: true };
+      }
+    }
     const idle: Array<{ slot: WorktreeSlotRow; head: string }> = [];
     for (const slot of available) {
       if (!exactSlotPath(pool, identity, slot)) {
@@ -825,14 +844,7 @@ export class WorktreeManager {
         }
       }
       const observedOccupancy = occupancy.get(slot.path);
-      if (!observedOccupancy || observedOccupancy.status === "unknown") {
-        this.quarantine(
-          slot,
-          "slot occupancy is unknown",
-          observedOccupancy?.status === "unknown" ? observedOccupancy.reason : null,
-        );
-        continue;
-      }
+      if (!observedOccupancy || observedOccupancy.status === "unknown") continue;
       if (observedOccupancy.occupants.length > 0) {
         this.quarantine(slot, "an available slot has process occupancy");
         continue;
@@ -964,7 +976,7 @@ export class WorktreeManager {
       identity,
       this.store.slots(pool.id).filter((slot) => slot.state === "available"),
     );
-    if (!screened.ok) return { outcome: "notAcquired", reason: screened.reason };
+    if (!screened.ok) return { outcome: screened.outcomeUnknown ? "outcomeUnknown" : "notAcquired", reason: screened.reason };
     const eligible = screened.idle.map((entry) => entry.slot);
 
     const leaseId = this.deps.randomId();
@@ -2016,6 +2028,7 @@ export class WorktreeManager {
       return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
     }
     if (!available) return { outcome: "outcomeUnknown", reason: "completed return could not be recorded" };
+    this.logSlot(available, "released", "return reset positively verified");
     this.publish();
     return { outcome: "released" };
   }
@@ -2172,7 +2185,9 @@ export class WorktreeManager {
           reason: "slot occupancy was not observed",
         };
         if (observedOccupancy.status === "unknown") {
-          reject("slot process occupancy is unknown", observedOccupancy.reason);
+          // An unavailable observer cannot prove a slot unsafe. Keep its durable state and
+          // lease version, but do not recover it or complete any pending mutation this pass.
+          errors.push(`slot ${slot.ordinal}: slot process occupancy is unknown: ${observedOccupancy.reason}`);
           continue;
         }
 
@@ -2254,6 +2269,7 @@ export class WorktreeManager {
             continue;
           }
           if (this.store.recoverQuarantined(slot.id, slot.version, inspection.value.head, now)) {
+            this.logSlot(slot, "quarantine_recovered", "all recovery safety checks passed", slot.quarantineReason);
             this.publish();
           } else {
             errors.push(`slot ${slot.ordinal}: quarantine recovery raced`);
@@ -2284,7 +2300,10 @@ export class WorktreeManager {
           }
           const completed = this.store.completeRelease(slot.id, slot.version, inspection.value.head, now);
           if (!completed) errors.push(`slot ${slot.ordinal}: proven return completion raced`);
-          else this.publish();
+          else {
+            this.logSlot(slot, "released", "interrupted return positively verified");
+            this.publish();
+          }
           continue;
         }
         if (slot.state === "available") {
@@ -2326,8 +2345,8 @@ export class WorktreeManager {
         }
 
         // A valid active lease can legitimately be dirty and occupied after restart. Exact
-        // durable owner identity keeps it leased; only an unknown scan or stale reference is
-        // quarantined. This preserves live work while still preventing reuse.
+        // durable owner identity keeps it leased; a stale reference is quarantined, while
+        // an unknown occupancy scan defers the pass. This preserves live work while preventing reuse.
         const active = activeReference(slot);
         if (!active || active === "invalid") {
           reject("leased slot has incomplete active identity");

@@ -35,11 +35,13 @@ process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";
 process.env.MISSION_PI_BIN = "/bin/echo";
-// No MCP bundle. That is not incidental: with the ask channel off, the ONLY thing that can
-// put `--append-system-prompt` on a Claude command line is this feature, which is what makes
-// the argv difference below a clean measurement - and it is also Finding 2's case, where the
-// standing instruction has to ship even though the ask channel bailed entirely.
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+// The ask channel rides on every Claude launch, so its redirect always leads the one
+// `--append-system-prompt`; the measurement below is what this feature adds AFTER it.
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
@@ -57,12 +59,16 @@ const { standingInstructionsView, updateStandingInstructions } = await import(
 const { STANDING_INSTRUCTIONS_HEADING, STANDING_INSTRUCTIONS_MULTI_HEADING } = await import("../src/server/instructions/compose.ts");
 const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
 const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { askChannelPrompt } = await import("../src/server/ask-channel.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 
 const RULE = "Never run the E2E suite locally. It only runs in CI.";
 const DEFAULT_RULE = "Preserve unrelated work.";
 const BLOCK = `${STANDING_INSTRUCTIONS_HEADING}\n\n${DEFAULT_RULE}\n\n${RULE}`;
+
+/** The Mission Control MCP server every Claude and Codex launch is now handed. */
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
 
 const clones: string[] = [];
 
@@ -164,7 +170,8 @@ async function terminalDispatch(options: {
   let sessionId = "";
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     spawn: async (_label, _short, cwd, _bin, args, _stateHome, selectedBackend) => {
       argv = [...(args ?? [])];
       terminalBackend = selectedBackend ?? null;
@@ -280,7 +287,8 @@ async function sdkDispatch(options: {
   const supervisor = fakeSupervisor(registry);
   await new Dispatcher(registry, async () => {}, {
     supervisor,
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     inject: async () => {
       throw new Error("an embedded dispatch must never type at a pane");
     },
@@ -310,12 +318,14 @@ test("a repository with NO standing instructions dispatches a byte-identical pro
       planDiscovery: await taskPlanDiscovery(registryTask(baseline, "guard-none")),
     }),
   );
-  assert.equal(baseline.argv.includes("--append-system-prompt"), false);
+  // The only append is the ask redirect every Claude launch carries.
+  assert.equal(baseline.argv.filter((a) => a === "--append-system-prompt").length, 1);
+  assert.equal(baseline.argv[baseline.argv.indexOf("--append-system-prompt") + 1], askChannelPrompt);
   // And nothing was recorded about a delivery that did not happen.
   assert.equal(baseline.registry.standingInstructionsFor(baseline.sessionId), null);
 
   // Now the SAME dispatch against a configured document. The argv difference is the whole
-  // measurement: one appended flag, and nothing else moved.
+  // measurement: the block joins the one append, after the redirect, and nothing else moved.
   setRule(repo, RULE);
   const withRules = await terminalDispatch({
     agent: "claude",
@@ -323,7 +333,8 @@ test("a repository with NO standing instructions dispatches a byte-identical pro
     taskId: "guard-some",
     intent,
   });
-  assert.deepEqual(withRules.argv, [...baseline.argv, "--append-system-prompt", BLOCK]);
+  const at = baseline.argv.indexOf("--append-system-prompt") + 1;
+  assert.deepEqual(withRules.argv, baseline.argv.map((arg, i) => (i === at ? `${askChannelPrompt}\n\n${BLOCK}` : arg)));
   // Exactly once: the pair HAS a channel, so turn one is untouched.
   assert.equal(withRules.prompt, withTaskKindContract(registryTask(withRules, "guard-some"), intent, {
     planDiscovery: await taskPlanDiscovery(registryTask(withRules, "guard-some")),
@@ -342,7 +353,7 @@ test("claude · terminal carries it on ONE --append-system-prompt, and not in tu
     intent: "do the thing",
   });
   assert.equal(run.argv.filter((a) => a === "--append-system-prompt").length, 1);
-  assert.equal(run.argv[run.argv.indexOf("--append-system-prompt") + 1], BLOCK);
+  assert.equal(run.argv[run.argv.indexOf("--append-system-prompt") + 1], `${askChannelPrompt}\n\n${BLOCK}`);
   assert.equal(run.prompt.includes(RULE), false, "and not also in turn one");
   assert.equal(
     run.registry.standingInstructionsFor(run.sessionId)?.mechanism,
@@ -500,7 +511,8 @@ test("a multi-repo dispatch's row holds the WHOLE composed block and one source 
   setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
   await new Dispatcher(registry, async () => {}, {
     supervisor,
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
   }).dispatch("multi");
   assert.equal(registry.getTask("multi")?.status, "running", registry.getTask("multi")?.error ?? "");
 
@@ -556,7 +568,8 @@ test("the out-of-band fallback turn one keeps manifest -> instructions -> intent
   setHarnessesConfig({ sessionRuntime: { codex: "sdk" } });
   await new Dispatcher(registry, async () => {}, {
     supervisor,
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
   }).dispatch("fallback-order");
   assert.equal(
     registry.getTask("fallback-order")?.status,
@@ -619,7 +632,7 @@ test("the snapshot records the channel the DRIVER used, not the one the launch a
   // snapshot has to say so, because an assignment reads that snapshot to decide whether the
   // rule is still installed on the process or is turn-one prose that has to be repeated.
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, { missionMcpDescriptor: async () => MISSION_DESCRIPTOR, verifyMissionMcpTools: async () => ({ ok: true }) });
   const real = HARNESSES.codex.sdk;
   const launched: unknown[] = [];
   HARNESSES.codex.sdk = {
@@ -695,7 +708,7 @@ test("a RESUME that falls back to prose corrects the snapshot, so the next assig
   });
   // Constructed AFTER both rows, because a daemon reads them at boot and resumes afterwards.
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, { missionMcpDescriptor: async () => MISSION_DESCRIPTOR, verifyMissionMcpTools: async () => ({ ok: true }) });
 
   const real = HARNESSES.codex.sdk;
   const launched: { standingInstructions: string; standingInstructionsPrompt: string }[] = [];

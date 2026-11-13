@@ -324,7 +324,7 @@ test("a launch preserves developer instructions and routes discrete choices thro
   const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
   assert.equal(
     String(start.developerInstructions),
-    "Keep this operator instruction.\n\nWhenever the operator chooses among discrete options, call the Mission Control request_input MCP tool. Pass the choices through the tool's options field and wait for the structured response before continuing. Never end a turn by asking for a numbered or prose reply when the MCP tool is available. If you are waiting on someone or something other than the operator, call the Mission Control report_blocker MCP tool instead; for a decision the operator can make, call request_input. Ask your question where its owner will see it first (for example Commonroom), then report the blocker with a link to that question, and end your turn.",
+    "Keep this operator instruction.\n\nWhenever you need a decision, a clarification or a choice from the operator, call the Mission Control request_input MCP tool. Pass discrete choices through the tool's options field and wait for the structured response before continuing. Never end a turn by asking for a numbered or prose reply when the MCP tool is available. A decision must carry what the operator needs to make it without reconstructing your context: keep `question` to the decision itself, put the background in `context` (what is being decided, why it came up, and what you found), give each option a `detail` that states its tradeoff, and mark the option you would pick as `recommended`. If you are waiting on someone or something other than the operator, call the Mission Control report_blocker MCP tool instead; for a decision the operator can make, call request_input. Ask your question where its owner will see it first (for example Commonroom), then report the blocker with a link to that question, and end your turn.",
   );
 });
 
@@ -399,6 +399,88 @@ test("an unusable config/read delivers standing instructions in turn one instead
     // carried the text and an assignment later reads it to decide whether to repeat the rule.
     assert.equal(handle.standingInstructionsMechanism, "prompt-prefix");
   }
+});
+
+test("an unusable config/read still tells the session to ask its decisions through request_input, in turn one", async (t) => {
+  // The developer instruction is the channel that normally carries the decision routing, and
+  // an unusable config/read means it cannot be used. The session still has request_input; it
+  // must still be TOLD to ask its decisions there, or it can ask them as prose. So the routing rides
+  // turn one - AFTER the standing block when that fell back too, after the intent when it did
+  // not (a turn one can open with a skill invocation that must stay its first token), and by
+  // itself on a resume that has nothing else to send.
+  const mcp = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+  const ROUTING = /^Whenever you need a decision, a clarification or a choice from the operator, call the Mission Control request_input MCP tool\.[\s\S]*states its tradeoff[\s\S]*end your turn\.$/;
+  const cases = [
+    {
+      name: "with standing instructions",
+      over: {
+        standingInstructions: "Never run E2E locally.",
+        standingInstructionsPrompt: "## Standing instructions\n\nNever run E2E locally.\n\n---\n\ndo the thing",
+      },
+      rest: "## Standing instructions\n\nNever run E2E locally.\n\n---\n\ndo the thing",
+    },
+    { name: "with only the intent", over: {}, rest: "do the thing" },
+    // A Pipeline Engineer's turn one is a skill invocation: `$engineer` must stay first.
+    { name: "with a skill invocation", over: { prompt: "$engineer - run this skill now. build it" }, rest: "$engineer - run this skill now. build it" },
+    { name: "on a resume with nothing else to send", over: { prompt: "", resume: "thread-1" }, rest: null },
+  ];
+  for (const { name, over, rest } of cases) {
+    const server = new FakeServer(defaultReplies({
+      "config/read": () => {
+        throw new Error("config/read is not supported by this build");
+      },
+    }));
+    const { handle, drained } = await launch(server, { mcp, ...over });
+    t.after(async () => {
+      await handle.stop();
+      await drained;
+    });
+    const opened = (server.calls("thread/start")[0] ?? server.calls("thread/resume")[0])?.params as Record<string, unknown>;
+    assert.equal(opened.developerInstructions, undefined, `${name}: the operator's own value is untouched`);
+    const turns = server.calls("turn/start");
+    assert.equal(turns.length, 1, `${name}: exactly one turn one`);
+    const text = String((turns[0]?.params as { input: { text?: string }[] }).input[0]?.text);
+    if (rest === null) {
+      assert.match(text, ROUTING, `${name}: the routing is turn one by itself`);
+    } else {
+      assert.ok(text.startsWith(rest + "\n\n"), `${name}: turn one is first, exactly as it would have been`);
+      assert.match(text.slice(rest.length + 2), ROUTING, `${name}: the routing follows it`);
+    }
+  }
+});
+
+test("a resumed thread with a live turn takes its fallback as a steer, never a turn that would not run", async (t) => {
+  // A resume can bind a thread whose turn is still running, and `turn/start` on a running
+  // thread is accepted and never runs - so the decision routing seeded by an unusable
+  // config/read would be lost while launch reported success. It must steer the live turn,
+  // naming that turn as the precondition, and nothing may start a second one.
+  const idle = threadResponse(THREAD);
+  const resumed = {
+    ...idle,
+    thread: {
+      ...idle.thread,
+      status: { type: "active", activeFlags: [] },
+      turns: [{ id: "turn-live", status: "inProgress" }],
+    },
+  };
+  const server = new FakeServer(defaultReplies({
+    "thread/resume": resumed,
+    "config/read": () => {
+      throw new Error("config/read is not supported by this build");
+    },
+  }));
+  const mcp = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+  const { handle, drained } = await launch(server, { mcp, prompt: "", resume: THREAD.id });
+  t.after(async () => {
+    await handle.stop();
+    await drained;
+  });
+  assert.equal(server.calls("turn/start").length, 0, "no turn was started on a running thread");
+  const steers = server.calls("turn/steer");
+  assert.equal(steers.length, 1, "the fallback was delivered, once");
+  const steer = steers[0]!.params as { expectedTurnId: string; input: { text?: string }[] };
+  assert.equal(steer.expectedTurnId, "turn-live", "into the turn that is actually running");
+  assert.match(String(steer.input[0]?.text), /^Whenever you need a decision, a clarification or a choice from the operator/);
 });
 
 test("a RESUMED thread whose config/read is unusable is sent the block as prose", async (t) => {

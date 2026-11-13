@@ -5,7 +5,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 import { CreateReviewSchema, inputQuestionProblem } from "../src/shared/protocol.ts";
 import { decisionLead } from "../src/shared/review-item.ts";
-import { reviewDecisions, showsBody } from "../src/web/lib/reviews.ts";
+import { inputBody, reviewAskSummary, reviewDecisions, showsBody } from "../src/web/lib/reviews.ts";
+import { inputReviewBody } from "../src/shared/decision-asks.ts";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
 import { titleLine, TITLE_MAX_CHARS } from "../src/shared/title.ts";
 
@@ -170,6 +171,16 @@ test("what request_input actually sends reaches showsBody both ways", () => {
     true,
     "the full question still reaches the human as the readable paragraph",
   );
+
+  // A question with `context`: the short question is the heading, so the body still has
+  // something to say - its context - and that alone is what the card prints beneath it.
+  const withContext = review({ title: short, body: inputReviewBody(short, "Option a is faster; b is safer.") });
+  assert.equal(showsBody(withContext), true, "context is shown");
+  assert.equal(inputBody(withContext), "Option a is faster; b is safer.", "without repeating the heading");
+  assert.deepEqual(reviewAskSummary(review({ title: short, body: inputReviewBody(short, "Line 1\nLine 2") })), {
+    kind: "input",
+    detail: "Line 1",
+  });
 });
 
 test("two forms in one document do not share a radio group", () => {

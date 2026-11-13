@@ -89,17 +89,15 @@ const REDIRECT_PROMPT = askChannelRedirect(MISSION_MCP_SERVER_NAME);
  *   --disallowed-tools       removes the built-in
  *   --append-system-prompt   tells the agent where to go instead, inline
  *
- * Returns EMPTY whenever anything at all goes wrong, and that direction is the whole point.
- * A session with `AskUserQuestion` intact is merely the status quo - pane-dialog reads its
- * menu and Foreman answers it. A session with the built-in removed and no replacement is arm
- * B: an agent that asks into the void. So the failure mode is "no ask channel", never "no way
- * to ask", and EVERY failure has to disarm the whole thing rather than half of it.
+ * Returns EMPTY flags whenever anything at all goes wrong, never half of them: a session with
+ * the built-in removed and no replacement is arm B, an agent that asks into the void. And it
+ * says WHY in `unavailable`, because the dispatcher refuses such a launch rather than
+ * starting it with the built-in intact - a session that kept `AskUserQuestion` would ask its
+ * decisions outside `request_input`, without the context and tradeoffs a decision needs.
  *
- * Which is why the body below cannot throw. It is called from inside `Dispatcher.dispatch`'s
- * try block, so an unhandled EACCES / ENOSPC / read-only state dir would not just skip the
- * channel - it would abort a dispatch that had nothing else wrong with it, and a session that
- * would have launched fine never launches. Setting up the ask channel is best-effort by
- * construction; failing to set it up is never a reason to fail the task.
+ * The body below still cannot throw. It is called from inside `Dispatcher.dispatch`'s try
+ * block, and an unhandled EACCES / ENOSPC / read-only state dir must surface as that one
+ * stated refusal - the task in Did not start, the reason on it - not as a stray exception.
  *
  * Claude-only: these are Claude's flags, and codex has no equivalent.
  *
@@ -133,9 +131,26 @@ export interface AskChannelContribution {
   args: string[];
   /** The system-prompt text telling the agent where to ask instead, or null. */
   redirect: string | null;
+  /**
+   * Why a launch that NEEDS the channel could not have it, or null. Set only for an agent
+   * the channel applies to: such a launch must be refused with this reason rather than
+   * started, because every decision a Mission Control task asks goes through
+   * `request_input`. Keeping the built-in would let the session ask outside it, and removing
+   * the built-in with no replacement would leave it no way to ask at all (arm B).
+   */
+  unavailable: string | null;
 }
 
-const ASK_CHANNEL_OFF: AskChannelContribution = { args: [], redirect: null, missionMcp: false };
+const ASK_CHANNEL_OFF: AskChannelContribution = { args: [], redirect: null, missionMcp: false, unavailable: null };
+
+function askChannelUnavailable(why: string): AskChannelContribution {
+  return {
+    ...ASK_CHANNEL_OFF,
+    unavailable:
+      `this Claude session would ask its decisions through Mission Control's request_input tool, ` +
+      `but ${why} (run: npm run build)`,
+  };
+}
 
 export async function askChannelContribution(
   agent: AgentType,
@@ -148,12 +163,7 @@ export async function askChannelContribution(
   try {
     const descriptor = await missionMcpDescriptor(cwd, stateHome);
     if (!descriptor) {
-      console.warn(
-        `[mission-control] MCP server bundle not found at ${mcpServerPath()} - dispatched sessions will ` +
-          `keep Claude's built-in ${DISALLOWED_TOOL} menu (run: npm run build). ` +
-          `Disallowing it without a replacement would leave the agent no way to ask at all.`,
-      );
-      return { ...ASK_CHANNEL_OFF };
+      return askChannelUnavailable(`its MCP server bundle was not found at ${mcpServerPath()}`);
     }
 
     // Deduplicated and ask-first, so the common case is byte-identical to what a dispatch
@@ -170,14 +180,12 @@ export async function askChannelContribution(
       ],
       redirect: REDIRECT_PROMPT,
       missionMcp: descriptor !== null,
+      unavailable: null,
     };
   } catch (err) {
-    console.warn(
-      `[mission-control] could not set up the ask channel (${err instanceof Error ? err.message : String(err)}) - ` +
-        `dispatched sessions keep Claude's built-in ${DISALLOWED_TOOL} menu. The dispatch itself ` +
-        `proceeds: failing to set this up is never a reason to fail a task.`,
+    return askChannelUnavailable(
+      `the ask channel could not be set up (${err instanceof Error ? err.message : String(err)})`,
     );
-    return { ...ASK_CHANNEL_OFF };
   }
 }
 

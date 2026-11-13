@@ -3573,6 +3573,11 @@ function migrate(d: DatabaseSync): void {
   // The task's advisor pin, kept on the driver row so a relaunch renders the same flag
   // layer the first launch did. NULL inherits, which is what every older row did.
   addColumn(d, "sdk_sessions", "advisor_model", "TEXT");
+  // Consecutive restores that deferred this row because its decision tool could not be
+  // confirmed (`ResumeDeferred` in sdk/supervisor.ts). Bounded there, so a bundle that never
+  // builds turns into a visible refusal instead of a silent retry on every restart. 0 on
+  // every older row, which is what they all were.
+  addColumn(d, "sdk_sessions", "resume_deferrals", "INTEGER NOT NULL DEFAULT 0");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
@@ -1036,4 +1036,119 @@ test("Reconcile recovers a safe quarantine for prune and preserves dirty work", 
   expect(existsSync(safe.path)).toBe(false);
   expect(existsSync(join(dirty.path, "unfinished.txt"))).toBe(true);
   await expect(dirtyRow.getByText("quarantined", { exact: true })).toBeVisible();
+});
+
+
+test("Settings identifies the process blocking a native worktree return", async ({ dashboard, daemon }) => {
+  const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "blocked return diagnostic" },
+  });
+  expect(response.status()).toBe(201);
+  const lease = await response.json() as { path: string; leaseId: string };
+  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: lease.path, stdio: "ignore",
+  });
+  await once(occupant, "spawn");
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    await expect(pool.getByText(new RegExp(`PID ${occupant.pid} .*node`))).toBeVisible();
+    await pool.getByRole("button", { name: "Return", exact: true }).click();
+    const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+    await expectContentClearsBorder(preview);
+    await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+    await preview.getByRole("button", { name: "Cancel" }).click();
+    await pool.getByText(new RegExp(`PID ${occupant.pid} .*node`)).click();
+    await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
+    await shoot(dashboard, "16-blocking-process-identity");
+  } finally {
+    const exited = once(occupant, "exit");
+    occupant.kill("SIGKILL");
+    await exited;
+  }
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+});
+
+
+test("Reconcile survives a transient process scan failure through Settings", async ({ dashboard, daemon }) => {
+  // Fail the real daemon's subprocess boundary, not an inventory response or stored slot.
+  // The override belongs only to this fixture daemon and delegates to real ps when healthy.
+  const marker = join(daemon.home, "fail-process-scan");
+  const attempts = join(daemon.home, "failed-process-scans.jsonl");
+  const wrapper = join(daemon.home, "controlled-ps.cjs");
+  writeFileSync(wrapper, `#!${process.execPath}
+const { existsSync, appendFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+if (existsSync(${JSON.stringify(marker)})) {
+  appendFileSync(${JSON.stringify(attempts)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+  process.stderr.write("injected transient process scan failure\\n");
+  process.exit(1);
+}
+const result = spawnSync(${JSON.stringify(process.platform === "darwin" ? "/bin/ps" : "/usr/bin/ps")}, process.argv.slice(2), { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`, { mode: 0o755 });
+  await daemon.shutdown();
+  await daemon.restart({ MISSION_PS_BIN: wrapper });
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["idle slot one", "idle slot two", "live manual lease"]) {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    leases.push(await response.json());
+  }
+  for (const lease of leases.slice(0, 2)) {
+    expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    })).ok()).toBe(true);
+  }
+  const inventory = async () => await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const observedPool = async () => (await inventory()).repositories.find((repo) => repo.slots.some((slot) => slot.path === leases[0]!.path))!;
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const rows = leases.map((lease) => pool.locator(".wt-slot", { hasText: lease.path }));
+  const reconcile = async () => {
+    const before = (await observedPool()).lastReconciledAt ?? 0;
+    await pool.getByRole("button", { name: "Reconcile", exact: true }).click();
+    const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+    await expectContentClearsBorder(preview);
+    await preview.getByRole("button", { name: "Execute" }).click();
+    await expect(preview).toHaveCount(0);
+    await expect.poll(async () => (await observedPool()).lastReconciledAt ?? 0, { timeout: EXECUTES_MS }).toBeGreaterThan(before);
+  };
+  writeFileSync(marker, "fail until removed");
+  try {
+    await reconcile();
+    await expect(pool.getByText(/slot 1: slot process occupancy is unknown/)).toBeVisible();
+    // Two ps commands per attempt, with the allocator's real retry before the verdict.
+    expect(readFileSync(attempts, "utf8").trim().split("\n").length).toBeGreaterThanOrEqual(4);
+    await dashboard.getByRole("heading", { name: "Worktrees", exact: true }).click();
+    await shoot(dashboard, "17-transient-scan-failed", true);
+    for (const row of rows.slice(0, 2)) {
+      await expect.soft(row.getByText("available", { exact: true })).toBeVisible({ timeout: 1_000 });
+    }
+    await expect.soft(rows[2]!.getByText("leased", { exact: true })).toBeVisible({ timeout: 1_000 });
+  } finally {
+    unlinkSync(marker);
+  }
+  await reconcile();
+  // Wait for the browser's SSE-driven inventory refresh, not only the API observation.
+  await expect(pool.getByText("processes unknown", { exact: true })).toHaveCount(0);
+  for (const row of rows.slice(0, 2)) await expect(row.getByText("available", { exact: true })).toBeVisible();
+  await expect.soft(rows[2]!.getByText("leased", { exact: true })).toBeVisible({ timeout: 1_000 });
+  await dashboard.getByRole("heading", { name: "Worktrees", exact: true }).click();
+  await shoot(dashboard, "18-transient-scan-recovered", true);
+  const reused = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "reuse after transient scan failure" },
+  });
+  expect(reused.status()).toBe(201);
+  expect(leases.slice(0, 2).map((lease) => lease.path)).toContain((await reused.json()).path);
+  expect((await observedPool()).slots).toHaveLength(3);
 });

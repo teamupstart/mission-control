@@ -569,7 +569,9 @@ The operations have deliberately narrow meanings:
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
-  only states whose result is positively proven and keeps uncertainty quarantined. A quarantined
+  only states whose result is positively proven. An unknown process scan leaves slot states and
+  lease versions intact and records a pool diagnostic; it authorizes no recovery or return.
+  Acquisition also defers without fallback when idle-slot occupancy cannot be observed. A quarantined
   slot returns to available only when its pool identity, marker, exact path, Git registration,
   repository, cleanliness, merge into the observed remote default, and empty process occupancy
   are proven again. It must carry no active lease identity, and any last-released lease must be
@@ -657,10 +659,15 @@ is unchanged: **Mission Control removes a terminal task's retained worktrees aut
 30 days without a Git-visible change.** The best-effort safe-Kill intent is in memory; a daemon
 restart before it runs falls back to that retention policy. New final completions record an
 explicit return obligation atomically with completion and any session closure. Those durable
-obligations resume after discovery, with refused returns retried at a bounded cadence. Tasks
+obligations resume after discovery. Refused completion returns wait 30 seconds after the attempt
+finishes, then double the delay on each refusal up to 30 minutes. Partial progress or changed
+ownership restarts the delay; daemon restart also starts fresh from the durable obligation. Tasks
 completed before this policy keep their existing retained checkouts and 30-day activity window;
 upgrade never infers return permission from an old done status or session-closure record.
-Another live session or process always blocks automatic return.
+Another live session or process always blocks automatic return. Settings > Worktrees shows up to
+four blocking PIDs and bounded commands in each native slot. Return logs carry the same detail
+and the next retry time; quarantine, recovery and release logs identify the pool and slot ordinal.
+These observations never terminate an operator shell or an orphaned program automatically.
 
 The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
 untracked files, local commits, and commits that were never pushed are all deleted when the

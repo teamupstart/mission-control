@@ -306,7 +306,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Tasks**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Harnesses**, **Tasks**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -565,7 +565,7 @@ is on screen when it changes.
 
 ### Trust (who may act in which repository)
 
-Repository candidates come from **Settings → Repositories**. Its indexed directories are
+Repository candidates come from the **Repositories** family in **Settings → Setup**. Its indexed directories are
 searched at every depth unless `MISSION_REPOS_MAX_DEPTH` limits the walk. Both ordinary and
 bare clones are recognized; discovery stops at a repository instead of searching its contents.
 Dependency directories, hidden folders other than bare `.bare` metadata, and descendant

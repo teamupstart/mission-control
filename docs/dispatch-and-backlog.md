@@ -458,17 +458,13 @@ Internal Ensemble member and replacement tasks opt out because an Ensemble's opt
 Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans the directories
-listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~/dev`, and
+listed in the **Repositories** family of **Settings → Setup**, seeded with `~/workspace`, `~/code`, `~/dev`, and
 `~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
 override. Select the repo to base the task on rather than typing a path. Type to filter;
 arrow/enter to pick.
 
-The Settings panel is also where the index is maintained. Any directory can be removed, including
-a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
-leaving operator-added rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
-path instead of silently omitting it. **Rescan now** clears the discovery cache so a newly cloned
-checkout appears immediately. While `MISSION_WORKSPACE_DIRS` is set, the panel names the override
-and keeps the saved list read-only. This same repository picker is reused by Dispatch,
+That Setup family is also where the index is maintained; see
+[Repositories in the setup guide](setup.md#repositories). This same repository picker is reused by Dispatch,
 **Settings → Trust**, **Standing instructions**, and **Task sources**.
 
 Each row is the checkout's **directory name**, not its path: every repo under one workspace

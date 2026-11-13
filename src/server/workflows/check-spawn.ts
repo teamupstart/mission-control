@@ -526,6 +526,11 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     supervisor = ready;
     watchCheckGroup(pid, identity, () => {
       failure = infrastructure("check interrupted because Mission Control is shutting down");
+      // The group's best-effort signal can be refused, or skipped if its identity cannot
+      // be read again. Close our private owner pipe as well: the shim already tears down
+      // its own group on EOF, without guessing from a PID. Let the child's close settle the
+      // attempt so emptiness is checked after the shim exits, not while its identity changes.
+      report.destroy();
     });
     gate.write("G");
   }

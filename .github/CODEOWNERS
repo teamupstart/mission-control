@@ -17,4 +17,4 @@ package-lock.json       @teamupstart/infosec
 **/.yarn/cache/**       @teamupstart/infosec
 
 # Infosec for CODEOWNERS file changes
-CODEOWNERS              @teamupstart/infosec
+CODEOWNERS              @teamupstart/infosec @teamupstart/repo-automation

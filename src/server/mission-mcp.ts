@@ -174,6 +174,30 @@ export function kindMissionMcpRequirement(
 }
 
 /**
+ * `requirement` plus `request_input`, for a launch whose harness carries Mission tools through
+ * an MCP client registered on that launch.
+ *
+ * Every decision a Mission Control task asks goes through `request_input`, with its context
+ * and per-option tradeoffs. Declaring it REQUIRED puts it through the same two guards as any
+ * other required tool before the agent spawns - the registration must reach the launch, and
+ * the bundle it names must actually publish the tool (a real handshake, so a stale bundle is
+ * caught) - and a launch failing either is refused with the reason rather than started able
+ * to ask only outside it. On Claude it also widens nothing: `request_input` is the tool the
+ * ask channel already pre-approves.
+ *
+ * A harness whose Mission tools arrive another way (Pi's installed extension) is left as it
+ * was: its availability is decided by its own probe, not by a launch registration.
+ */
+export function withDecisionAskTool(
+  requirement: MissionMcpRequirement | null,
+  mechanism: "mcp-client" | "installed-extension" | null | undefined,
+): MissionMcpRequirement | null {
+  if (mechanism !== "mcp-client") return requirement;
+  const tools = requirement?.tools ?? [];
+  return tools.includes("request_input") ? requirement : { tools: ["request_input", ...tools] };
+}
+
+/**
  * One resolved way to launch the bundled MCP server: a runtime, its argv, and the env
  * that runtime needs.
  *

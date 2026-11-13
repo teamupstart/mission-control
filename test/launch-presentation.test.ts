@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -593,7 +594,7 @@ test("the SDK marker is durable BEFORE the session can stream", async () => {
   // Proven by asking the registry at the instant registration happens, which is the earliest
   // moment anything could read the session at all.
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const observedAtRegistration: Array<string | null | undefined> = [];
   const realRegister = registry.registerSdkSession.bind(registry);
   registry.registerSdkSession = ((input: Parameters<typeof realRegister>[0]) => {
@@ -636,7 +637,7 @@ test("the SDK marker is durable BEFORE the session can stream", async () => {
 
 test("a direct supervisor caller that supplies no presentation is unchanged", async () => {
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const handle = fakeHandle();
   const restore = withFakeClaudeDriver(async () => handle);
   try {

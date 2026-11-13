@@ -55,6 +55,9 @@ const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only 
  * see three of them and still finish. Every other spec keeps the shipped value.
  */
 const HELD_TURN_MS = Number(process.env.MC_E2E_CODEX_HELD_TURN_MS ?? 5_000);
+/** A longer hold, for a spec that queues two messages behind a busy turn. */
+const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
+const REVIEW_HELD_TURN_MS = 15_000;
 /**
  * Hold only the native resume handshake, so a restart spec can observe the daemon while
  * the driver is genuinely not yet adoptable. The default is zero and leaves every other
@@ -725,8 +728,86 @@ function runTurn(turnId, input, effort, model) {
     setTimeout(() => finish(turnState.prompts, true), HELD_TURN_MS);
     return;
   }
+  // The longer busy window `fake-claude.mjs` keeps for the same prompt: long enough to queue
+  // two messages under contention before the turn ends.
+  if (prompt === REVIEW_HELD_TURN) {
+    const turnState = { prompts: [prompt] };
+    turnState.timer = setTimeout(() => finish(turnState.prompts), REVIEW_HELD_TURN_MS);
+    turnState.interrupt = () => {
+      clearTimeout(turnState.timer);
+      finish([], false, true);
+    };
+    openTurn = turnState;
+    return;
+  }
+  // Codex's own question tool, blocking the turn on a human: the native driver form, which a
+  // dispatched Claude task no longer reaches (it asks through `request_input`), so this is
+  // the harness that keeps the form reachable in a browser spec.
+  if (prompt === ASK_TURN) {
+    const requestId = `ask-${turnId}`;
+    const turnState = { prompts: [prompt] };
+    turnState.interrupt = () => {
+      asked.delete(requestId);
+      finish([], false, true);
+    };
+    openTurn = turnState;
+    asked.set(requestId, () => {
+      asked.delete(requestId);
+      // No narration of the answer: the conversation's account of it must come from the
+      // review the daemon records, not from this fake's prose.
+      finish(turnState.prompts);
+    });
+    write({
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: THREAD_ID,
+        turnId,
+        itemId: `ask-item-${turnId}`,
+        questions: ASK_QUESTIONS,
+        isBlocking: true,
+        autoResolutionMs: null,
+      },
+    });
+    return;
+  }
   finish([prompt]);
 }
+
+/**
+ * The prompt this app-server answers by asking the operator through `request_user_input` and
+ * blocking until they answer - the same prompt and the same two questions `fake-claude.mjs`
+ * raises with `AskUserQuestion`, so a spec reads the same form on either harness. Codex's tool
+ * has no multi-select, so both questions take one answer (or custom text).
+ */
+const ASK_TURN = "ask me which linter to use";
+const ASK_QUESTIONS = [
+  {
+    id: "linter",
+    header: "Linter",
+    question: "Which linter?",
+    isOther: true,
+    isSecret: false,
+    options: [
+      { label: "biome", description: "lint + format in one binary" },
+      { label: "eslint", description: "widest plugin ecosystem" },
+    ],
+  },
+  {
+    id: "checks",
+    header: "Checks",
+    question: "Which checks should run?",
+    isOther: true,
+    isSecret: false,
+    options: [
+      { label: "types", description: "tsc --noEmit" },
+      { label: "tests", description: "the node:test suite" },
+    ],
+  },
+];
+/** Server requests this app-server sent and is waiting on, by request id: what to do on the answer. */
+const asked = new Map();
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   if (!line.trim()) return;
@@ -737,6 +818,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return; // the real server tolerates noise on this pipe; so do we
   }
   const { id, method, params } = frame ?? {};
+  // The client's response to a request this server sent (`request_user_input`): no method,
+  // an id we issued, and a result or an error. Either one resolves the ask.
+  if (method === undefined && id !== undefined && asked.has(id)) {
+    asked.get(id)();
+    return;
+  }
   if (typeof method !== "string" || id === undefined) return;
 
   switch (method) {

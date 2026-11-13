@@ -1357,6 +1357,30 @@ export class SdkSupervisor {
         );
       }
     }
+    // Every decision a resumed session asks goes through `request_input`, exactly as at
+    // dispatch (`withDecisionAskTool`): a harness that carries Mission tools through an MCP
+    // client resumes only with a registration whose bundle actually publishes it, and is
+    // otherwise refused with the reason rather than started able to ask only outside it.
+    if (capabilitiesFor(row.agent).missionTools?.mechanism === "mcp-client") {
+      if (!mcp) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw new Error(
+          "this session asks its decisions through Mission Control's request_input tool, but its " +
+            "MCP server could not be resolved for the resume - rebuild with: npm run build",
+        );
+      }
+      let published: Awaited<ReturnType<typeof verifyMissionMcpTools>>;
+      try {
+        published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(["request_input"], mcp);
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw error;
+      }
+      if (!published.ok) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw new Error(`this session asks its decisions through request_input, but ${published.reason}`);
+      }
+    }
     if (task?.kind === "pipeline") {
       try {
         this.registry.registerManagedPipelineCaller(

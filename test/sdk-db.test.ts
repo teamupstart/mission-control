@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -300,7 +301,7 @@ test("restore fails a row nothing can resume, and leaves an unreadable one alone
   // a driver that was removed - so `restore` exercises its refusal path without this test
   // ever spawning a real agent. (`sdk:alien` from the previous case is that row.)
   setSdkSessionStatus("sdk:alien", "running", 8_000);
-  await new SdkSupervisor(new Registry()).restore();
+  await new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS).restore();
   // A row nothing can resume is FAILED, which is what makes the task it was running settle
   // visibly through the ordinary path instead of sitting `running` for ever with no session
   // anyone can see.
@@ -335,7 +336,7 @@ test("a restored card comes back under the name a person gave it", async () => {
   setSdkSessionDisplayName("sdk:restored-name", "the name I typed", 9_100);
 
   const registry = new Registry();
-  await new SdkSupervisor(registry).restore();
+  await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
 
   assert.equal(registry.getSession("sdk:restored-name")?.name, "the name I typed");
 });
@@ -361,7 +362,7 @@ test("a restored card with no rename still derives its name from the checkout", 
   );
 
   const registry = new Registry();
-  await new SdkSupervisor(registry).restore();
+  await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
 
   assert.equal(registry.getSession("sdk:derived-name")?.name, "other-checkout");
 });

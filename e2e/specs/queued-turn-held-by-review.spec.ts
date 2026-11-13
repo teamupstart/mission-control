@@ -4,7 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { NO_MISSION_MCP_ENV, type DaemonHandle } from "../fixtures/daemon.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * A queued message the agent's own question is sitting on, and whether the log says so.
@@ -31,10 +31,10 @@ import { NO_MISSION_MCP_ENV, type DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * The hold below is a hold behind a pane dialog, and the dialog it is provoked with is the
- * native `AskUserQuestion` form - which a dispatched task raises only when it launched with
- * no Mission MCP server to ask through instead.
+ * native form a Codex session's `request_user_input` raises - a dispatched Claude task asks
+ * every decision through MCP instead - so this file dispatches Codex. Codex's tool has no
+ * multi-select, so both questions take one answer.
  */
-test.use({ daemonEnv: NO_MISSION_MCP_ENV });
 
 const EVIDENCE = artifactsDir("queued-turn-held-by-review");
 
@@ -42,7 +42,7 @@ const EVIDENCE = artifactsDir("queued-turn-held-by-review");
 const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
 /** The ordinary five-second hold is sufficient when this spec queues only one message. */
 const HELD_TURN = "hold the current turn open";
-/** The fake answers this one by raising `AskUserQuestion` and blocking on it. */
+/** The fake answers this one by raising `request_user_input` and blocking on it. */
 const ASK_TURN = "ask me which linter to use";
 const FOLLOW_UP = "and once you have picked, run the suite twice";
 /** `--attention`, the gold the blocking dialog wears. Asserted as a used colour. */
@@ -67,6 +67,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog
     .getByPlaceholder("What should this agent do?")
     .fill("exercise a queued turn held by a review");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
   await dialog
     .locator("select")
     .filter({ hasText: "finish without a Workflow" })
@@ -156,7 +157,7 @@ test("a queued message says the open review is what is holding it, and stops say
   // Answering releases it. The claim is not "amber for ever" - it is that the amber tracks
   // the blocker, so clearing the blocker has to clear the amber.
   await form.getByRole("radio", { name: /eslint/ }).click();
-  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("radio", { name: /tests/ }).click();
   await form.getByRole("button", { name: "Submit answers" }).click();
   await expect(form).toBeHidden({ timeout: 30_000 });
 

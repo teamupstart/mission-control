@@ -1524,17 +1524,28 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
+      // Every decision a Claude SDK session asks goes through `request_input` - with its
+      // context and per-option tradeoffs - never the built-in `AskUserQuestion`. That needs
+      // the Mission Control MCP server on this very launch, so a launch without it is
+      // REFUSED rather than started: keeping the built-in would let the session ask a
+      // decision with no room for its context, and removing it with no replacement would
+      // leave the agent no way to ask at all. Checked before anything is started.
+      const askChannel = sdkAskChannel(opts.mcp?.serverName ?? null);
+      if (!askChannel) {
+        throw new Error(
+          "Claude sessions on the Agent SDK runtime ask every decision through Mission Control's " +
+            "request_input tool, but this launch was not given Mission Control's MCP server " +
+            "(is the MCP bundle built? run: npm run build)",
+        );
+      }
       const session = new ClaudeSdkSession(opts.cwd, opts.resume, authTiming);
       // Turn one is queued before the query is constructed, so the first thing the CLI
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);
       const permissionMode = sdkPermissionMode(opts.permissionMode);
-      // A task asks its human through `request_input`, exactly as a terminal dispatch does,
-      // and only when this launch registers the server that provides it - see `sdkAskChannel`.
-      const askChannel = sdkAskChannel(opts.mcp?.serverName ?? null);
-      // ONE append carrying every contributor, in the terminal path's order: the redirect,
-      // then the operator's standing instructions.
-      const systemPromptAppend = [askChannel?.redirect, opts.standingInstructions]
+      // The ask redirect leads and the operator's standing instructions follow, the order the
+      // terminal launch joins them in (`systemPromptAppendArgs`).
+      const systemPromptAppend = [askChannel.redirect, opts.standingInstructions]
         .filter((part): part is string => !!part)
         .join("\n\n");
       const options: ClaudeSdkQueryOptions = {
@@ -1566,6 +1577,8 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
               },
             }
           : {}),
+        allowedTools: askChannel.allowedTools,
+        disallowedTools: askChannel.disallowedTools,
         // The secondary worktrees of a multi-repo task. Spread conditionally so an
         // ordinary session's options object is exactly what it always was.
         //
@@ -1598,11 +1611,10 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...claudeFlagOptions(opts),
-        // The ask channel: `AskUserQuestion` removed, `request_input` pre-approved. Tied to
-        // the redirect above and to the Mission MCP registration, all or nothing.
-        ...(askChannel
-          ? { allowedTools: askChannel.allowedTools, disallowedTools: askChannel.disallowedTools }
-          : {}),
+        // The ask channel's allow, disallow and redirect are rendered above on every launch
+        // (`sdkAskChannel`; a launch without the Mission server is refused at the top), so a
+        // decision this session asks goes through `request_input` with its context and
+        // tradeoffs, as on every other runtime.
         canUseTool: session.canUseTool,
         hooks: session.hooks(),
         // CLAUDE.md, skills and the operator's settings - the same sources an

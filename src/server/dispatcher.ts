@@ -93,6 +93,7 @@ import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
   missionMcpDescriptorForPipelineTask,
+  withDecisionAskTool,
   newPipelineCallerCredential,
   verifyMissionMcpTools,
   type MissionMcpDescriptor,
@@ -467,7 +468,10 @@ export class Dispatcher {
         return;
       }
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
-      const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence);
+      const missionMcp = withDecisionAskTool(
+        kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence),
+        capabilitiesFor(task.agent).missionTools?.mechanism,
+      );
       // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
       // the fork further down. Resolved before provisioning so the guard can refuse before
       // any worktree exists. A toggle flipped mid-batch still reaches the next session.
@@ -828,8 +832,8 @@ export class Dispatcher {
       // as a menu we read off the child's screen. Scoped to dispatch for the same reason
       // `modeArgs` is - we only reconfigure agents WE launched, never one the operator
       // started and we merely discovered. It returns nothing rather than half its flags on
-      // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
-      // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
+      // ANY failure - a missing bundle, an unwritable state dir - and says why, and the
+      // launch is then refused below with that reason; see `askChannelContribution`.
       const codexLaunch = task.agent === "codex"
         ? await prepareCodexLaunch(
             getHarnessesConfig().autoModeOnDispatch,
@@ -860,15 +864,19 @@ export class Dispatcher {
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
       const askChannel = await askChannelContribution(task.agent, missionMcp, wt.path, stateHome);
+      // Every decision a task asks goes through `request_input`. A launch that needs the ask
+      // channel and cannot have it is refused, with the reason, rather than started with the
+      // built-in menu (a decision asked outside it) or with no way to ask at all.
+      if (askChannel.unavailable) throw new Error(askChannel.unavailable);
       // Claude: ONE `--append-system-prompt`, carrying every contributor to it. The flag is
       // single-valued and repeating it is last-wins with no warning, so a second flag beside
       // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
       //
       // The ask channel's redirect keeps its all-or-nothing tie to the MCP flags: an agent
       // with `AskUserQuestion` removed and no replacement is worse than one with the
-      // built-in intact. The standing instruction does NOT acquire that tie - a missing MCP
-      // bundle has nothing to do with the operator's own words - so it still ships when
-      // `askChannelContribution` returns nothing at all.
+      // built-in intact, and a launch that needs the channel and cannot have it was refused
+      // just above. The standing instruction does NOT acquire that tie, so it still ships for
+      // an agent the ask channel does not apply to.
       const askArgs = [
         ...askChannel.args,
         ...systemPromptAppendArgs([
@@ -908,8 +916,8 @@ export class Dispatcher {
       if (missionMcp && !missionMcpRegistered) {
         throw new Error(
           `the launch could not carry the required Mission MCP tools ` +
-            `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
-            `session could not submit its result`,
+            `${missionMcp.tools.join(", ")} (is the MCP bundle built? run: npm run build), so this ${task.agent} ` +
+            `session could not use them`,
         );
       }
       // …and that the registration points at a server which actually PUBLISHES them.
@@ -1943,8 +1951,8 @@ export class Dispatcher {
     if (missionMcp && !extensionProvidesMissionTools && !mcp) {
       throw new Error(
         `the launch could not carry the required Mission MCP tools ` +
-          `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
-          `session could not submit its result`,
+          `${missionMcp.tools.join(", ")} (is the MCP bundle built? run: npm run build), so this ${task.agent} ` +
+          `session could not use them`,
       );
     }
     // The terminal arm's content check, applied to the same bundle for the same reason: an

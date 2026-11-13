@@ -187,10 +187,11 @@ export interface ClaudeSdkQueryOptions {
   resume?: string;
   /**
    * Tool rules the CLI auto-approves (`--allowedTools`). Adds approval, never narrows the
-   * toolset. Present only with the ask channel, so `request_input` raises no permission ask.
+   * toolset. The ask channel pre-approves `request_input` on every launch (`sdkAskChannel`),
+   * so calling it raises no permission ask.
    */
   allowedTools?: string[];
-  /** Tools removed from the session (`--disallowedTools`). Present only with the ask channel. */
+  /** Tools removed from the session (`--disallowedTools`); the ask channel removes `AskUserQuestion`. */
   disallowedTools?: string[];
   mcpServers?: Record<string, unknown>;
   /**

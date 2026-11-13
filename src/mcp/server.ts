@@ -32,6 +32,7 @@ import {
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
 import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
+import { DECISION_CONTEXT_MAX_CHARS, DECISION_CONTEXT_RULE, inputReviewBody } from "@shared/decision-asks.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -380,7 +381,7 @@ server.registerTool(
                 z.object({
                   id: z.string().describe("Stable id, echoed back in the selection"),
                   label: z.string().describe("What the human reads on the control"),
-                  detail: z.string().optional().describe("Optional one-line elaboration"),
+                  detail: z.string().optional().describe("One line: this option's tradeoff - what it gains and what it costs"),
                   recommended: z
                     .boolean()
                     .optional()
@@ -775,7 +776,9 @@ server.registerTool(
 // redirect prompt to name, with the agent choosing the SHAPE from the question rather than
 // choosing between two tools.
 //
-// The description says what the tool DOES and stops there. It deliberately does NOT claim
+// The description says what the tool DOES and what a decision asked through it carries
+// (`DECISION_CONTEXT_RULE`: the decision, its context, each option's tradeoff) - true for
+// every session that can call it. It deliberately does NOT claim
 // that nobody is reading your terminal, or that this is the only way to reach your human:
 // this one MCP server is shared by every session on the machine, including the ones a human
 // started themselves, which keep `AskUserQuestion` on purpose and whose terminal usually IS
@@ -795,14 +798,23 @@ server.registerTool(
       "choose to chat about it instead; the result then says so and how to proceed, and you " +
       "must not decide or re-ask the question yourself. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
-      "`options` only for open-ended asks.",
+      "`options` only for open-ended asks. " +
+      DECISION_CONTEXT_RULE,
     inputSchema: {
-      question: z.string().describe("The question to ask"),
+      question: z.string().describe("The decision or question itself, in one or two sentences"),
+      context: z
+        .string()
+        .max(DECISION_CONTEXT_MAX_CHARS)
+        .optional()
+        .describe(
+          "What the human needs to answer without your context: what is being decided, why it " +
+            "came up, what you found, and the tradeoffs. Shown beneath the question.",
+        ),
       options: z
         .array(
           z.object({
             label: z.string().describe("What the human reads on the control"),
-            detail: z.string().optional().describe("Optional one-line elaboration"),
+            detail: z.string().optional().describe("One line: this option's tradeoff - what it gains and what it costs"),
             recommended: z
               .boolean()
               .optional()
@@ -822,7 +834,7 @@ server.registerTool(
         .describe("Adds a free-text 'Other' field for an answer outside the options"),
     },
   },
-  async ({ question, options, multiSelect, allowOther }, extra) => {
+  async ({ question, context, options, multiSelect, allowOther }, extra) => {
     // Refused before any review exists: a card the human cannot answer would leave this call,
     // and the session, waiting on something nobody can resolve. The daemon's schema enforces
     // the same rule; checking here first lets the agent read why instead of a transport error.
@@ -850,15 +862,17 @@ server.registerTool(
             },
           ]
         : undefined;
-      // The title is a HEADING and the body is the question itself, so a long or multi-line
-      // ask is readable rather than folded into a bold one-liner with its newlines collapsed.
+      // The title is a HEADING and the body is the question itself followed by its context
+      // (`inputReviewBody`), so a long or multi-line ask is readable rather than folded into a
+      // bold one-liner with its newlines collapsed, and the background and tradeoffs read
+      // beneath the decision instead of displacing it from the heading.
       // Sending the question as both (which this did) made them equal for every review the
       // tool produced, and the modal's de-duplication then suppressed the readable paragraph
       // in every case - including the ones it exists to protect. `titleLine` is the shared
       // clipper (word boundary, ellipsis, `TITLE_MAX_CHARS`), so a heading here and a heading
       // on a task card are cut the same way; a question already short enough comes back
       // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
-      const id = await createReview("input", titleLine(question), question, decisions);
+      const id = await createReview("input", titleLine(question), inputReviewBody(question, context), decisions);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);

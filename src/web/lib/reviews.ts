@@ -1,4 +1,5 @@
 import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "@shared/types.ts";
+import { inputReviewBodyText } from "@shared/decision-asks.ts";
 
 // Which control a pending review is answered with, decided in one place.
 //
@@ -48,7 +49,17 @@ export function reviewDecisions(review: ReviewItem): PlanDecision[] | null {
  * `plan` and `diff` bodies ARE the content, and always render.
  */
 export function showsBody(review: ReviewItem): boolean {
-  return review.kind !== "input" || review.body !== review.title;
+  return review.kind !== "input" || inputReviewBodyText(review.title, review.body) !== "";
+}
+
+/**
+ * What an `input` review prints beneath its heading: the body without a leading paragraph
+ * that only repeats the heading (`inputReviewBodyText`). A `request_input` call with
+ * `context` files its question and then its context, so a short question shows the context
+ * alone under it, while a question too long for the heading keeps its full text.
+ */
+export function inputBody(review: ReviewItem): string {
+  return inputReviewBodyText(review.title, review.body);
 }
 
 // ---- answering a decision form, and replaying it afterwards ----
@@ -120,7 +131,7 @@ export function reviewAskSummary(review: ReviewItem): { kind: string; detail: st
       if (decisions && decisions.length > 1) return { kind: "input", detail: `${decisions.length} questions` };
       const options = decisions?.[0]?.options.map((option) => option.label) ?? [];
       if (options.length > 0) return { kind: "input", detail: options.join(" · ") };
-      return { kind: "input", detail: showsBody(review) ? firstLine(review.body) : "Needs a written answer" };
+      return { kind: "input", detail: showsBody(review) ? firstLine(inputBody(review)) : "Needs a written answer" };
     }
     case "plan-decisions": {
       const n = decisions?.length ?? 0;

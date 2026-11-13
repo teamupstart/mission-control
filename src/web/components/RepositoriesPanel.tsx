@@ -7,8 +7,10 @@ import { Tooltip } from "./Tooltip.tsx";
 function directoryStatus(row: IndexedDirectoryView): string {
   switch (row.status) {
     case "ok": {
-      const count = row.repoCount ?? 0;
-      return `${count} ${count === 1 ? "repository" : "repositories"}`;
+      // Null for a readable directory means no scan could count it (a stalled mount) - never
+      // "0 repositories", which would read as an empty directory.
+      if (row.repoCount === null) return "count unknown";
+      return `${row.repoCount} ${row.repoCount === 1 ? "repository" : "repositories"}`;
     }
     case "missing":
       return "not found";
@@ -223,7 +225,9 @@ export function RepositoriesPanel({
         <span className="ri-count">
           {view === null
             ? "Repository count unknown"
-            : `${view.repoCount} ${view.repoCount === 1 ? "repository" : "repositories"} indexed · last scanned ${scanAge(view.scannedAt)}`}
+            : view.repoCount === null || view.scannedAt === null
+              ? `Repository count unknown - ${view.scanUnavailable ?? "the workspace scan is unavailable"}`
+              : `${view.repoCount} ${view.repoCount === 1 ? "repository" : "repositories"} indexed · last scanned ${scanAge(view.scannedAt)}`}
         </span>
       </div>
 

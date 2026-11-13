@@ -449,9 +449,21 @@ export async function listReposScan(
     scannedAt: snapshot.at,
     identity: identityOf(snapshot.key),
   });
-  // Every stamp handed out so far belongs to a scan that started before this call.
-  if (options.rescan) return answer(await refresh(roots, lastStamp));
   const current = cache?.key === scanKeyFor(roots) ? cache : null;
+  // A walk that timed out, or is refused over one still stuck, is a stalled mount - exactly
+  // when the operator must reach Settings to remove it. A held scan of these directories is
+  // then the best answer there is: wrong only by what the stalled walk would have found. With
+  // none held there is nothing to answer with, and the reader is told the scan is unavailable.
+  const walked = async (scan: Promise<Snapshot>) => {
+    try {
+      return answer(await scan);
+    } catch (error) {
+      if (current && isScanUnavailable(error)) return answer(current);
+      throw error;
+    }
+  };
+  // Every stamp handed out so far belongs to a scan that started before this call.
+  if (options.rescan) return await walked(refresh(roots, lastStamp));
   if (current && current.generation === generation && Date.now() - current.startedAt < CACHE_TTL_MS) {
     return answer(current);
   }
@@ -463,13 +475,18 @@ export async function listReposScan(
         // A timeout was logged where it happened, and a refusal over a stuck walk is the
         // quiet consequence of that one line; anything else would leave the cache stale with
         // no trace at all.
-        if (error instanceof ReposScanTimeoutError || error instanceof ReposScanStuckError) return;
+        if (isScanUnavailable(error)) return;
         warnOnce("background-rescan", `background workspace rescan failed; still serving the previous scan: ${reasonOf(error)}`, error);
       },
     );
     return answer(current);
   }
-  return answer(await refresh(roots));
+  return await walked(refresh(roots));
+}
+
+/** A walk that could not run to an answer: timed out, or refused over one still stuck. */
+export function isScanUnavailable(error: unknown): error is ReposScanTimeoutError | ReposScanStuckError {
+  return error instanceof ReposScanTimeoutError || error instanceof ReposScanStuckError;
 }
 
 /**

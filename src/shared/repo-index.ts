@@ -84,6 +84,13 @@ export interface RepoIndexView {
   /** Stored rows that remain intact but do not participate while the environment wins. */
   savedDirectories: IndexedDirectoryView[];
   defaultsMissing: string[];
-  repoCount: number;
-  scannedAt: number;
+  /** Null when no scan could run - see `scanUnavailable`. */
+  repoCount: number | null;
+  /** Null when no scan could run - see `scanUnavailable`. */
+  scannedAt: number | null;
+  /**
+   * Why the counts are unknown: no scan of these directories has ever finished and the walk
+   * timed out or is stuck behind one that did (a stalled mount). Null whenever a count is shown.
+   */
+  scanUnavailable: string | null;
 }

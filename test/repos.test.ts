@@ -743,3 +743,51 @@ test("a background rescan that fails is logged with its reason while the previou
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("with a scan held, a fresh or rescan read on a stalled mount answers from it instead of failing", async (t) => {
+  const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const previous = process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
+  const realReaddir = fsPromises.readdir;
+  let recover!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    recover = resolve;
+  });
+  let stalled = false;
+  let rootReads = 0;
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (String(args[0]) === root) {
+      rootReads += 1;
+      if (stalled) await recovered;
+    }
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  t.mock.method(console, "warn", () => {});
+  try {
+    rmSync(SNAPSHOT, { force: true });
+    setRepoIndexConfig({ directories: [{ path: root }] });
+    process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = "200";
+    const repos = await restartedRepos("stalled-with-held-scan");
+    // A scan is held from before the mount stalled.
+    assert.deepEqual(await repos.listRepos({ fresh: true }), [join(root, "alpha")]);
+
+    stalled = true;
+    invalidateReposCache();
+    // The walk times out; the held scan answers rather than a ReposScanTimeoutError.
+    assert.deepEqual(await repos.listRepos({ rescan: true }), [join(root, "alpha")]);
+    // Refused over the stuck walk: answered from the held scan at once, without a new walk.
+    const started = Date.now();
+    assert.deepEqual(await repos.listRepos({ fresh: true }), [join(root, "alpha")]);
+    assert.deepEqual(await repos.listRepos({ rescan: true }), [join(root, "alpha")]);
+    assert.ok(Date.now() - started < 200, "no second deadline was waited out");
+    assert.equal(rootReads, 2, "the stalled directory was walked once after the scan held");
+  } finally {
+    recover();
+    if (previous === undefined) delete process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
+    else process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = previous;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(SNAPSHOT, { force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});

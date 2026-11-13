@@ -39,6 +39,9 @@ mkdirSync(stateHome, { recursive: true });
 // Set the supported test home before importing any server module that can resolve the DB.
 process.env.MISSION_HOME = stateHome;
 process.env.HOME = operatorHome;
+// Short enough for the stalled-mount case below to finish quickly, long enough that no
+// ordinary walk of these small fixture trees ever reaches it, even on a loaded runner.
+process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = "3000";
 for (const name of WORKSPACE_ENV_NAMES) delete process.env[name];
 
 const { openDb } = await import("../src/server/db.ts");
@@ -306,5 +309,55 @@ test("unreadable directories have a stable view status when the host enforces pe
     );
   } finally {
     chmodSync(unreadable, 0o700);
+  }
+});
+
+test("a stalled mount with no scan held leaves the Repositories view open, with the count unknown", async (t) => {
+  const workspace = join(operatorHome, "workspace");
+  mkdirSync(workspace, { recursive: true });
+  makeRepo(join(workspace, "alpha"));
+  const fsPromises = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const realReaddir = fsPromises.readdir;
+  let recover!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    recover = resolve;
+  });
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (String(args[0]) === realpathSync(workspace)) await recovered;
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  t.mock.method(console, "warn", () => {});
+  try {
+    // The save is what the operator does; the walk behind the view it returns stalls.
+    const saved = await putDirectories([workspace]);
+    assert.equal(saved.status, 200, "the editor's own write must not fail on a stalled scan");
+    const view = await saved.json() as RepoIndexView;
+    assert.equal(view.repoCount, null);
+    assert.equal(view.scannedAt, null);
+    assert.match(view.scanUnavailable ?? "", /did not finish within 3 s and was abandoned/);
+    assert.equal(view.directories[0]?.status, "ok", "the directory rows still render, so it can be removed");
+    assert.equal(view.directories[0]?.repoCount, null);
+
+    // A read while the walk is stuck is refused at once, and still answers 200.
+    const again = await getView();
+    assert.equal(again.repoCount, null);
+    assert.match(again.scanUnavailable ?? "", /waiting on an earlier scan that is still stuck/);
+
+    // The mount recovers: the count comes back.
+    recover();
+    const deadline = Date.now() + 5_000;
+    let current = await getView();
+    while (current.repoCount === null && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      current = await getView();
+    }
+    assert.equal(current.repoCount, 1);
+    assert.equal(current.scanUnavailable, null);
+  } finally {
+    recover();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
   }
 });

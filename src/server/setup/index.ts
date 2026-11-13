@@ -549,6 +549,7 @@ export function defaultSetupDeps(): SetupDeps {
       const repos = await listRepos({ fresh: true });
       if (repos.length > 0) return { repoCount: repos.length, directories: [] };
       const view = await repoIndexView();
+      if (view.repoCount === null) throw new Error(view.scanUnavailable ?? "the workspace scan is unavailable");
       return {
         repoCount: view.repoCount,
         directories: view.directories.map(({ path, status, repoCount }) => ({ path, status, repoCount })),

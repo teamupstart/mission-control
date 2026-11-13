@@ -584,6 +584,18 @@ test("membership and state changes emit at once; counters at most once per inter
   assert.equal(sent.length, 4, "nothing moved, nothing sent");
 });
 
+test("a new run under the same task id is sent at once, not held as a counter change", () => {
+  const clock = fakeClock();
+  const sent: (SubagentSummary | null)[] = [];
+  const emitter = new SubagentEmitter((s) => sent.push(s), 5_000, clock);
+  emitter.update(summaryOf(entry({ startedAt: 0, toolUses: 9 })));
+  clock.advance(1_000);
+  // Same id, type, description and launch id; a fresh start and cleared counters.
+  emitter.update(summaryOf(entry({ startedAt: 1_000, toolUses: null, tokens: null })));
+  assert.equal(sent.length, 2, "the replacement run reached the board immediately");
+  assert.equal(sent[1]!.agents[0]!.startedAt, 1_000);
+});
+
 test("a pending counter send is dropped when its change is undone", () => {
   const clock = fakeClock();
   const sent: (SubagentSummary | null)[] = [];

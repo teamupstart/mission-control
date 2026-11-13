@@ -11,13 +11,15 @@ export const SUBAGENT_COUNTER_INTERVAL_MS = 5_000;
 
 /**
  * The part of a summary that must reach the board at once: which agents are listed, in what
- * state, and how many have folded. Counters, last tool and summary text are left out.
+ * state, which run each row describes, and how many have folded. `startedAt` is part of that:
+ * a new run under the same task id resets it, and a board left on the old start would count
+ * the old run's elapsed time. Counters, last tool and summary text are left out.
  */
 function membershipKey(summary: SubagentSummary | null): string {
   if (!summary) return "null";
   return JSON.stringify([
     summary.finishedFolded,
-    summary.agents.map((a) => [a.id, a.state, a.type, a.description, a.endedAt, a.launchTurnId]),
+    summary.agents.map((a) => [a.id, a.state, a.type, a.description, a.startedAt, a.endedAt, a.launchTurnId]),
   ]);
 }
 

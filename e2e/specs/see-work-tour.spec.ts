@@ -239,6 +239,10 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
   // start a pass, because the pass state behind it was never wired for this form.
   await expect(dispatchDialog.getByRole("switch", { name: "Guided" })).toHaveCount(0);
   await expect(dispatchDialog.getByRole("radio", { name: "Ensemble" })).toHaveCount(0);
+  // The tour's dispatcher sends only the repository, so a Grill me first choice would do nothing.
+  // The control is a toggle chip, a button, and so is what is looked for.
+  await expect(dispatchDialog.getByRole("button", { name: "Grill me first", exact: true }))
+    .toHaveCount(0);
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("dispatch-modes");
     mkdirSync(evidence, { recursive: true });

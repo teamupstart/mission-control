@@ -11350,6 +11350,140 @@ span.task-outcome:hover {
 .dispatch-crew-hint {
   font-size: 11.5px;
 }
+/* Settings -> Tasks: one card per setting, stacked. Grill me first is a row of kind chips;
+   After work is one row per kind, its name in a fixed column and its select beside it. */
+.task-kind-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  max-width: 720px;
+}
+.grill-chips-hint {
+  margin: 0 0 10px;
+}
+.grill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.task-kind-settings {
+  display: grid;
+  gap: 10px;
+}
+.task-kind-setting {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.task-kind-setting-name {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.task-kind-setting-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* InfoTip: the "i" whose tooltip explains the control beside it. */
+button.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 15px;
+  min-width: 0;
+  height: 15px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: help;
+}
+button.info-tip:hover,
+button.info-tip:focus-visible {
+  color: var(--fg);
+}
+
+/* Grill me first's toggle chip: a kind's default on Settings -> Tasks, and a task's own choice
+   in the bar under the dispatch form's Task box. Pressed reads as a stronger border, a lifted
+   surface and a check rather than a hue: every tone in the palette already means a session
+   state, and this is neither. */
+.grill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+  padding: 3px 10px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: 500 12px/1.4 var(--sans);
+  text-transform: capitalize;
+  cursor: pointer;
+}
+.grill-chip:hover:not(:disabled) {
+  color: var(--fg);
+}
+.grill-chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.grill-chip[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: var(--panel-2);
+}
+.grill-chip[aria-pressed="mixed"] {
+  border-style: dashed;
+}
+.grill-chip-mark {
+  font-size: 11px;
+}
+.dispatch-grill-chip {
+  text-transform: none;
+}
+.dispatch-grill-chip svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.dispatch-grill-chip svg circle {
+  fill: currentColor;
+}
+/* Changed from the kind's default for this task only. */
+.grill-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+}
+/* The bar under the Task box that holds the chip, with where its value came from opposite. */
+.dispatch-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -6px 0 2px;
+}
+.dispatch-composer-status {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--dim);
+}
 /* Which advisor this launch gets. Read-only - the advisor is chosen on Settings ->
    Harnesses - so it is a sentence under the crew row rather than a fifth select in it. */
 .dispatch-advisor-line {
@@ -23608,22 +23742,6 @@ select.foreman-model-input {
 }
 .wf-judge-passes input {
   accent-color: var(--working);
-}
-.wf-default-rows {
-  display: grid;
-  gap: 6px;
-}
-.wf-default-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.wf-default-kind {
-  flex: none;
-  width: 56px;
-  color: color-mix(in oklab, var(--working) 72%, var(--muted));
-  font: 10px var(--mono);
-  letter-spacing: 0.02em;
 }
 .wf-default-select {
   width: min(100%, 390px);

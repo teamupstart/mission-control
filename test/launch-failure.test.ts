@@ -32,6 +32,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { detectAlerts } = await import("../src/shared/alerts.ts");
 const lf = await import("../src/shared/launch-failure.ts");
+const { applySkillsConfig } = await import("../src/server/skills/config.ts");
 
 after(() => {
   rmSync(home, { recursive: true, force: true });
@@ -385,6 +386,23 @@ test("Retry dispatches a backlog kind as the same task, files a chat again, and 
   const resident = await post("/api/launch-failures/retry", { taskId: "w1" });
   assert.equal(resident.status, 409);
   assert.match(String(resident.body.error), /from its profile/);
+});
+
+test("Retry files a chat again with its own Grill me first pin, not the kind's current default", async () => {
+  const { registry, post } = setup();
+  const repo = mkRepo("retry-grill-repo");
+  applySkillsConfig({ grillFirstKinds: ["chat"] });
+  try {
+    registry.upsertTask(mkTask({
+      id: "chat-off", kind: "chat", status: "failed", repoRoot: repo, title: "Talk", intent: "Talk it over",
+      grillFirst: false, error: "boom", launchFailure: failure(),
+    }));
+    const retried = await post("/api/launch-failures/retry", { taskId: "chat-off" });
+    assert.equal(retried.status, 200, JSON.stringify(retried.body));
+    assert.equal((retried.body.task as Task).grillFirst, false);
+  } finally {
+    applySkillsConfig({ grillFirstKinds: [] });
+  }
 });
 
 test("when the same work starts, its earlier launch failures are answered, and unrelated ones are not", () => {

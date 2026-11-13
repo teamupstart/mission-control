@@ -424,6 +424,7 @@ function externalSourceFromRow(row: Record<string, unknown>): WorkflowExternalSo
 export const WORKFLOW_TABLES = [
   "personas",
   "session_actions",
+  "builtin_session_action_overrides",
   "workflow_commands",
   "workflow_command_overrides",
   "workflow_builtin_round_limits",
@@ -3388,19 +3389,102 @@ export class WorkflowStore {
   }
 
   private withBuiltinActions(rows: SessionAction[]): SessionAction[] {
-    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.builtinActions)));
+    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.currentBuiltinActions())));
   }
 
   private withAddressableBuiltinActions(rows: SessionAction[]): SessionAction[] {
-    return this.sortSessionActions(rows.concat(this.builtinActions));
+    return this.sortSessionActions(rows.concat(this.currentBuiltinActions()));
+  }
+
+  /**
+   * The shipped actions as this machine runs them: an editable built-in carries the operator's
+   * instruction when one is saved, with that row's revision, so every read - the library, a
+   * draft's validation, Publish's snapshot, Grill me first's delivery - sees one text.
+   */
+  private currentBuiltinActions(): SessionAction[] {
+    const rows = this.db
+      .prepare(`SELECT action_id, prompt_md, revision, updated_at FROM builtin_session_action_overrides`)
+      .all() as Array<{ action_id: string; prompt_md: string | null; revision: number; updated_at: number }>;
+    if (rows.length === 0) return [...this.builtinActions];
+    const overrides = new Map(rows.map((row) => [row.action_id, row]));
+    return this.builtinActions.map((action) => {
+      const row = action.editable ? overrides.get(action.id) : undefined;
+      if (!row) return action;
+      return {
+        ...action,
+        revision: Number(row.revision),
+        updatedAt: Number(row.updated_at),
+        ...(row.prompt_md === null ? {} : { promptMarkdown: row.prompt_md, customized: true }),
+      };
+    });
   }
 
   private builtinSessionAction(id: string): SessionAction | null {
-    return this.builtinActions.find((action) => action.id === id) ?? null;
+    return this.currentBuiltinActions().find((action) => action.id === id) ?? null;
   }
 
   private builtinSessionActionNamed(normalizedName: string): SessionAction | null {
     return this.builtinActions.find((action) => action.normalizedName === normalizedName) ?? null;
+  }
+
+  /**
+   * Save an editable built-in's instruction. Only the instruction moves: a patch that would
+   * change the name, description, required skill or completion is refused as `builtin`,
+   * because those are the shipped contract. The shipped text itself is stored as a reset.
+   */
+  private updateEditableBuiltinCas(
+    current: SessionAction,
+    expectedRevision: number,
+    patch: SessionActionPatch,
+    updatedAt: number,
+  ): SessionActionStoreWrite {
+    const contractMoves = (patch.name !== undefined && patch.name !== current.name)
+      || (patch.description !== undefined && patch.description !== current.description)
+      || ("requiredSkillId" in patch && (patch.requiredSkillId ?? null) !== current.requiredSkillId)
+      || (patch.completion !== undefined && patch.completion.kind !== current.completion.kind);
+    if (contractMoves) return { ok: false, reason: "builtin", current };
+    if (current.revision !== expectedRevision) return { ok: false, reason: "revision_conflict", current };
+    if (patch.promptMarkdown === undefined) return { ok: true, action: current };
+    const shipped = this.builtinActions.find((action) => action.id === current.id);
+    return this.writeBuiltinOverride(
+      current,
+      patch.promptMarkdown === shipped?.promptMarkdown ? null : patch.promptMarkdown,
+      updatedAt,
+    );
+  }
+
+  /** Put an editable built-in back on its shipped instruction. */
+  resetBuiltinSessionActionCas(
+    id: string,
+    expectedRevision: number,
+    updatedAt = Date.now(),
+  ): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.builtinSessionAction(id);
+      if (!current) {
+        const row = this.getSessionActionInTransaction(id);
+        return { ok: false, reason: row ? "builtin" : "not_found", current: row };
+      }
+      if (!current.editable) return { ok: false, reason: "builtin", current };
+      if (current.revision !== expectedRevision) return { ok: false, reason: "revision_conflict", current };
+      return this.writeBuiltinOverride(current, null, updatedAt);
+    });
+  }
+
+  private writeBuiltinOverride(
+    current: SessionAction,
+    promptMarkdown: string | null,
+    updatedAt: number,
+  ): SessionActionStoreWrite {
+    this.db
+      .prepare(
+        `INSERT INTO builtin_session_action_overrides (action_id, prompt_md, revision, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(action_id) DO UPDATE SET
+           prompt_md = excluded.prompt_md, revision = excluded.revision, updated_at = excluded.updated_at`,
+      )
+      .run(current.id, promptMarkdown, current.revision + 1, updatedAt);
+    return { ok: true, action: this.builtinSessionAction(current.id)! };
   }
 
   listSessionActions(includeArchived = false): SessionAction[] {
@@ -3504,7 +3588,11 @@ export class WorkflowStore {
   ): SessionActionStoreWrite {
     return transaction(this.db, () => {
       const shipped = this.builtinSessionAction(id);
-      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      if (shipped) {
+        return shipped.editable
+          ? this.updateEditableBuiltinCas(shipped, expectedRevision, patch, updatedAt)
+          : { ok: false, reason: "builtin", current: shipped };
+      }
       const current = this.getSessionActionInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt !== null) return { ok: false, reason: "archived", current };

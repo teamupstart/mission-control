@@ -12,7 +12,7 @@ import { dependencyInputOf, dependencyInputKey as sharedDependencyInputKey } fro
 
 import type { AdvisorChoice, Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
-import { normalizeLabels, taskKindPersonaRefusal } from "@shared/task.ts";
+import { isGrillFirstTaskKind, normalizeLabels, taskKindPersonaRefusal } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
 
 /**
@@ -80,6 +80,11 @@ export type DispatchDraft = {
    */
   workflowId: string | null | undefined;
   planStorage?: "repository" | "local" | null;
+  /**
+   * Grill me first. Undefined follows the kind's default on Settings -> Tasks (the daemon pins
+   * it at creation); a boolean is the operator's choice on this form.
+   */
+  grillFirst: boolean | undefined;
   /** Whether Foreman's backlog autopilot may schedule the shelved task. */
   enabled: boolean;
   /** Selected prerequisite ids; the daemon resolves them to durable dependency edges. */
@@ -110,6 +115,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   advisorModel: "",
   personaId: "",
   workflowId: undefined,
+  grillFirst: undefined,
   enabled: true,
   dependencies: [],
   attachments: [],
@@ -126,6 +132,11 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
  */
 export function parseLabelInput(raw: string): string[] {
   return normalizeLabels(raw.split(/[,\n]/));
+}
+
+/** The Grill me first pin a task holds, as the form reads it: none on a kind that lacks it. */
+function grillFirstPin(task: Task): boolean | undefined {
+  return isGrillFirstTaskKind(task.kind) ? task.grillFirst ?? false : undefined;
 }
 
 /**
@@ -165,6 +176,9 @@ export function draftFromTask(t: Task): DispatchDraft {
     personaId: t.personaId ?? "",
     workflowId: t.workflowId,
     planStorage: t.kind === "plan" ? t.planPolicy?.storage ?? "repository" : undefined,
+    // A pin reads back as a choice; a kind without Grill me first has none, so switching the
+    // editor to a kind with it shows that kind's Settings default until the box is touched.
+    grillFirst: grillFirstPin(t),
     enabled: t.enabled,
     dependencies: t.dependencies.map(dependencyInputOf),
     attachments: [],
@@ -203,6 +217,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.personaId === b.personaId &&
     a.workflowId === b.workflowId &&
     a.planStorage === b.planStorage &&
+    a.grillFirst === b.grillFirst &&
     a.enabled === b.enabled &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
     a.attachments.length === b.attachments.length &&
@@ -295,6 +310,12 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
     && (task.kind !== "plan" || draft.planStorage !== (task.planPolicy?.storage ?? "repository"))
   ) {
     patch.planStorage = draft.planStorage;
+  }
+  // Compared like every other field: a choice on the box is sent when it is not the pin the
+  // task holds, and a kind without Grill me first holds none. Whatever the daemon does with an
+  // omitted pin (`resolveGrillFirstPin`) is its business, not a rule restated here.
+  if (isGrillFirstTaskKind(draft.kind) && draft.grillFirst !== undefined && draft.grillFirst !== grillFirstPin(task)) {
+    patch.grillFirst = draft.grillFirst;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;
   const storedDependencies: TaskDependencyInput[] = task.dependencies.map(dependencyInputOf);

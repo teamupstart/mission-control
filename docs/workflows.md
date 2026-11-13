@@ -449,8 +449,8 @@ affordance off, Archive and Publish are disabled, the settings rail does not tak
 there is a line saying why. **Duplicate** is the way to a version you own - the copy is an
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
-bindable. To have new tasks use your copy, publish it and choose it for each task kind under
-**Settings → Tasks → Dispatch defaults** (see
+bindable. To have new tasks use your copy, publish it and choose it in each task kind's
+**After work** row under **Settings → Tasks** (see
 [Dispatch an agent](dispatch-and-backlog.md), under **After work**).
 
 The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
@@ -676,7 +676,13 @@ Archive is soft: an archived action is read-only, leaves the add
 controls, keeps reserving its normalized name, and stays readable because drafts and published
 versions name its id. Built-in actions ship with the application, are listed under their own
 **Built-in** rail group and tagged in the editor's header, and are read-only; **Duplicate to
-edit** is the way to a copy you own.
+edit** is the way to a copy you own. The one exception is **Grill**, which
+[Grill me first](dispatch-and-backlog.md#grill-me-first) sends ahead of a task's work by id: its
+instruction is edited in place and saved as this machine's text (tagged **edited**), and **Reset
+to built-in** in its `⋯` menu restores the shipped one. Its name, description, required skill and
+completion stay as shipped, and the edit is not part of a settings backup. Grill is not offered as
+a Workflow stage, and a draft that names it is refused at Publish: its instruction is written to
+run before a task's work, so bound after the work it would have the agent start that work over.
 
 The authored Markdown behind the built-ins is in this repository under [`actions/`](../actions/) -
 Mission Control session actions, not GitHub Actions - one document per action, beside the

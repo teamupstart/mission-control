@@ -232,7 +232,10 @@ let db: DatabaseSync | undefined;
 //     backfill: no slot was claimed and no task warned before these existed.
 // 29: resident instruction proposals (`resident_instruction_proposals`), a new empty table: no
 //     resident proposed a change to its own instructions before this existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 29;
+// 30: a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task filed
+//     before it started without grilling; and the Grill action's operator text
+//     (`builtin_session_action_overrides`), a new empty table on an upgraded database.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 30;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -411,6 +414,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
       plan_inputs TEXT, plan_policy TEXT,
+      -- Grill me first (resolveGrillFirstPin). 0 on every kind that does not offer it.
+      grill_first   INTEGER NOT NULL DEFAULT 0,
       dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
       -- May the backlog autopilot schedule this? 1 unless somebody switched it off.
       -- NOT NULL DEFAULT 1 rather than nullable: there is no third state, and a NULL
@@ -1057,6 +1062,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_actions_normalized_name
       ON session_actions(normalized_name);
+
+    -- The operator's instruction for an editable built-in session action (today only Grill),
+    -- overlaid on the shipped one by WorkflowStore. prompt_md NULL is "reset to the shipped
+    -- text"; the row stays so the revision only ever moves forward.
+    CREATE TABLE IF NOT EXISTS builtin_session_action_overrides (
+      action_id  TEXT PRIMARY KEY,
+      prompt_md  TEXT,
+      revision   INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
 
     -- The Global Command catalog: what each portable workflow slot runs on this machine.
     --
@@ -3900,6 +3915,9 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "dependencies", "TEXT");
   addColumn(d, "tasks", "plan_inputs", "TEXT");
   addColumn(d, "tasks", "plan_policy", "TEXT");
+  // A task's Grill me first pin. NOT NULL DEFAULT 0 is the whole migration: every task filed
+  // before it started without grilling, and reads back exactly as it was.
+  addColumn(d, "tasks", "grill_first", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "tasks", "workflow_id", "TEXT");
   // `enabled`: the backlog's autopilot toggle. NOT NULL DEFAULT 1, which is the whole
   // migration - every task already in an operator's backlog was schedulable before this
@@ -5872,6 +5890,7 @@ interface TaskRow {
   dependencies: string | null;
   plan_inputs: string | null;
   plan_policy: string | null;
+  grill_first: number | null;
   enabled: number;
   // `unknown`, not `number | null`: the column is bare INTEGER affinity, so anything a
   // build or a hand edit wrote is what comes back. `rowToTask` validates rather than casts.
@@ -6323,6 +6342,7 @@ function rowToTask(
     labels: parseLabels(r.labels),
     dependencies: parseTaskDependencies(r.dependencies),
     ...readTaskPlans(r.plan_inputs, r.plan_policy),
+    grillFirst: r.grill_first === 1,
     // Only an explicit 0 parks a task. A row written by an older build, or one whose
     // column somehow reads NULL, is schedulable - the direction that degrades to the
     // behaviour every install already had rather than to a silently frozen backlog.
@@ -6434,7 +6454,7 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
+         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
          model, effort, advisor_model, persona_id,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
@@ -6444,12 +6464,12 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
-         enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
+         grill_first=excluded.grill_first, enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
          persona_id=excluded.persona_id,
          workflow_id=excluded.workflow_id,
@@ -6488,6 +6508,7 @@ export function upsertTask(t: Task): string[] {
       serializeTaskDependencies(t.dependencies),
       t.planInputError ? JSON.stringify({ error: t.planInputError }) : t.planInputs?.length ? JSON.stringify(t.planInputs) : null,
       t.planPolicyError ? JSON.stringify({ error: t.planPolicyError }) : t.planPolicy ? JSON.stringify(t.planPolicy) : null,
+      t.grillFirst ? 1 : 0,
       t.enabled ? 1 : 0,
       t.backlogRank,
       t.model,

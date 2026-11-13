@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Task, TaskKind } from "@shared/types.ts";
+import { taskGrillsFirst } from "@shared/task.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   type ProductIssueClient,
@@ -152,6 +153,19 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
 };
 
 /**
+ * The Mission tools Grill me first needs, whatever the task's kind: the interview asks every
+ * round with `request_plan_decisions`. THE one statement of that rule - a fresh launch reads it
+ * through `kindMissionMcpRequirement`, and assigning to a live session asks that session's
+ * bundle for the same list - so the two paths cannot disagree about what the interview needs.
+ * Empty for a task that does not grill first.
+ */
+export function grillFirstMissionMcpTools(
+  task: Pick<Task, "kind" | "grillFirst">,
+): readonly MissionMcpTool[] {
+  return taskGrillsFirst(task) ? [PLAN_DECISIONS_TOOL] : [];
+}
+
+/**
  * The requirement a task's KIND imposes, unioned with whatever its caller asked for.
  *
  * Derived from the durable `Task.kind` here, once, rather than left to whichever caller
@@ -162,14 +176,16 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
  * same object, `null` included - so every existing ship dispatch's argv stays byte-identical.
  */
 export function kindMissionMcpRequirement(
-  task: Pick<Task, "kind" | "workflowId" | "planInputs">,
+  task: Pick<Task, "kind" | "workflowId" | "planInputs" | "grillFirst">,
   requested: MissionMcpRequirement | null,
   workflowEvidence = false,
 ): MissionMcpRequirement | null {
   const required = KIND_MISSION_MCP_TOOLS[task.kind];
-  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length) return requested;
+  const grillFirst = grillFirstMissionMcpTools(task);
+  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length && grillFirst.length === 0) return requested;
   const tools = new Set<MissionMcpTool>(requested?.tools ?? []);
   for (const tool of required) tools.add(tool);
+  for (const tool of grillFirst) tools.add(tool);
   if (workflowEvidence) tools.add(SUBMIT_WORKFLOW_EVIDENCE_TOOL);
   if (task.planInputs?.length) tools.add(PLAN_READ_TOOL);
   return { tools: [...tools] };

@@ -1426,10 +1426,25 @@ export interface SessionAction {
   updatedAt: number;
   /**
    * Shipped with the application rather than authored here. Exactly `Persona.builtin`:
-   * app data, never a row, neither editable nor archivable, and Duplicate is the path to
-   * a customized copy.
+   * app data, never a row, never archivable, and Duplicate is the path to a customized copy -
+   * except for a built-in `editable` marks, whose instruction is edited in place.
    */
   builtin: boolean;
+  /**
+   * A built-in whose instruction the operator may edit in place and reset to the shipped
+   * text: the Grill action, which Grill me first delivers by id rather than by a stage an
+   * operator chose. Absent on every other action.
+   */
+  editable?: boolean;
+  /**
+   * False for an action a Workflow stage may never run: the Grill action, which runs ahead of a
+   * task through Grill me first and, bound after the work, would tell the agent to start that
+   * finished task over. Absent on every other action. Independent of `editable`, which says who
+   * may change the instruction, not where it may run.
+   */
+  workflowStage?: false;
+  /** An editable built-in whose instruction is the operator's rather than the shipped text. */
+  customized?: boolean;
 }
 
 /** SessionAction names use the same durable Unicode spelling rule as Persona names. */
@@ -1476,10 +1491,16 @@ export function sessionActionsForDisplay<
  * honest "nothing is addable yet" rather than a silent fallback to everything.
  */
 export function addableSessionActions<
-  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName">,
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName" | "workflowStage">,
 >(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
   return sessionActionsForDisplay(actions)
-    .filter((action) => action.archivedAt === null && available.has(action.completion.kind));
+    .filter((action) =>
+      action.archivedAt === null && available.has(action.completion.kind) && sessionActionIsStage(action));
+}
+
+/** Whether a Workflow stage may run this action. See `SessionAction.workflowStage`. */
+export function sessionActionIsStage(action: Pick<SessionAction, "workflowStage">): boolean {
+  return action.workflowStage !== false;
 }
 
 /**
@@ -2300,6 +2321,7 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
   "unsupported_effort",
+  "session_action_not_a_stage",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 

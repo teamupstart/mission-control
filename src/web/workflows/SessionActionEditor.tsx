@@ -424,16 +424,30 @@ export function sessionActionOverflowActions({
   action,
   builtin,
   archived,
+  customized = false,
   onDuplicate,
   onArchive,
+  onReset,
 }: {
   action: boolean;
   builtin: boolean;
   archived: boolean;
+  /** An editable built-in carrying the operator's instruction, which Reset puts back. */
+  customized?: boolean;
   onDuplicate: () => void;
   onArchive: () => void;
+  onReset?: () => void;
 }): LibraryMenuAction[] {
   const actions: LibraryMenuAction[] = [];
+  if (action && builtin && customized && onReset) {
+    actions.push({
+      id: "reset",
+      label: "Reset to built-in",
+      hint: "Put back the instruction this build shipped with",
+      danger: true,
+      onSelect: onReset,
+    });
+  }
   // Not on a read-only action, where Duplicate is the promoted verb: offering it twice makes
   // the more prominent one the one nobody can find again later.
   if (action && !archived && !builtin) {
@@ -575,6 +589,8 @@ export function SessionActionEditorStatus({
   conflict,
   archived,
   builtin = false,
+  editable = false,
+  customized = false,
   onReload,
   onReapply,
   onDuplicate,
@@ -583,12 +599,24 @@ export function SessionActionEditorStatus({
   conflict: SessionAction | null;
   archived: boolean;
   builtin?: boolean;
+  /** A built-in whose instruction is edited in place (Grill). */
+  editable?: boolean;
+  customized?: boolean;
   onReload: () => void;
   /** Write the preserved draft onto the revision the conflict reported. */
   onReapply: () => void;
   onDuplicate: () => void;
 }): React.JSX.Element | null {
-  if (builtin) {
+  if (builtin && editable && !conflict) {
+    return (
+      <p className="wf-state builtin">
+        {customized
+          ? "Built-in, edited - Grill me first sends your instruction on this machine. Reset to built-in, in the menu, restores the shipped text."
+          : "Built-in, editable - Grill me first sends this instruction ahead of a task's own work. Edit it here; the name, required skill and completion stay as shipped."}
+      </p>
+    );
+  }
+  if (builtin && !editable) {
     return (
       <p className="wf-state builtin">
         Built-in - this session action ships with Mission Control and carries the instruction
@@ -650,6 +678,7 @@ export function SessionActionEditor({
   onSaved,
   onDuplicate,
   onArchive,
+  onReset,
   footer,
 }: {
   action: SessionAction | null;
@@ -674,6 +703,11 @@ export function SessionActionEditor({
   onSaved: (action: SessionAction) => void;
   onDuplicate: (seed: SessionActionDraftSeed) => void;
   onArchive: (action: SessionAction) => void | Promise<void>;
+  /**
+   * Reset an edited built-in to its shipped instruction. The host confirms and writes; `apply`
+   * hands the reset row back so the editor adopts it, dropping any unsaved text with it.
+   */
+  onReset?: (action: SessionAction, apply: (reset: SessionAction) => void) => void;
   /** The Library's shared usage footer; absent on a new draft and on older daemon state. */
   footer?: ReactNode;
 }): React.JSX.Element {
@@ -722,7 +756,12 @@ export function SessionActionEditor({
   const [promptMode, setPromptMode] = useState<"editor" | "preview">("editor");
   const archived = action?.archivedAt != null;
   const builtin = action?.builtin === true;
-  const readOnly = archived || builtin;
+  // The one built-in edited in place (Grill): its instruction is the operator's to change,
+  // while its name, description, required skill and completion stay the shipped contract.
+  const editable = builtin && action?.editable === true;
+  const customized = editable && action?.customized === true;
+  const readOnly = archived || (builtin && !editable);
+  const contractReadOnly = readOnly || editable;
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -995,10 +1034,17 @@ export function SessionActionEditor({
     action: action !== null,
     builtin,
     archived,
+    customized,
     onDuplicate: duplicate,
     onArchive: () => {
       if (action) void onArchive(action);
     },
+    onReset: onReset && action
+      ? () => onReset(action, (reset) => {
+        adopt(reset);
+        onSaved(reset);
+      })
+      : undefined,
   });
   const updated = sessionActionUpdatedLine(action);
   /*
@@ -1032,13 +1078,14 @@ export function SessionActionEditor({
                 <span className="sr-only">Name</span>
                 <input
                   value={draft.name}
-                  readOnly={readOnly}
+                  readOnly={contractReadOnly}
                   maxLength={WORKFLOW_LIMITS.sessionActionName}
                   placeholder="Untitled session action"
                   onChange={(event) => edit({ name: event.target.value })}
                 />
               </label>
               {builtin && <span className="lib-tag lib-tag-builtin">built-in</span>}
+              {customized && <span className="lib-tag lib-tag-builtin">edited</span>}
             </div>
           </>
         }
@@ -1047,7 +1094,7 @@ export function SessionActionEditor({
             <span className="sr-only">Description</span>
             <input
               value={draft.description}
-              readOnly={readOnly}
+              readOnly={contractReadOnly}
               maxLength={WORKFLOW_LIMITS.sessionActionDescription}
               placeholder="One line on what this instruction does"
               onChange={(event) => edit({ description: event.target.value })}
@@ -1074,6 +1121,8 @@ export function SessionActionEditor({
         conflict={conflict}
         archived={archived}
         builtin={builtin}
+        editable={editable}
+        customized={customized}
         onReload={reload}
         onReapply={() => void save("reapply")}
         onDuplicate={() => void save("duplicate")}
@@ -1114,7 +1163,7 @@ export function SessionActionEditor({
               skills={skills}
               value={draft.requiredSkillId}
               unlisted={skillUnlisted}
-              disabled={readOnly}
+              disabled={contractReadOnly}
               onChange={(requiredSkillId) => edit({ requiredSkillId })}
             />
           </LibraryPropertyChip>
@@ -1136,7 +1185,7 @@ export function SessionActionEditor({
             <SessionActionCompletionControl
               choices={choices}
               value={draft.completionKind}
-              disabled={readOnly}
+              disabled={contractReadOnly}
               onChange={(completionKind) => edit({ completionKind })}
             />
           </LibraryPropertyChip>

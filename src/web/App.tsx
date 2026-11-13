@@ -4,7 +4,6 @@ import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
-  type RestoringSession,
   type Session,
   type Task,
 } from "@shared/types.ts";
@@ -118,7 +117,8 @@ import {
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay } from "./lib/format.ts";
-import { matchesSessionFilter } from "./lib/fleet-filter.ts";
+import { matchesRestoringFilter, matchesSessionFilter } from "./lib/fleet-filter.ts";
+import { matchesBacklogSearch } from "./lib/backlog-filter.ts";
 import { autopilotGate, type BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import {
@@ -2521,7 +2521,7 @@ export function App(): React.JSX.Element {
     const q = filter.trim().toLowerCase();
     const items = backlogTasks(tasks);
     if (!q) return items;
-    return items.filter((t) => matchesTaskFilter(t, q));
+    return items.filter((t) => matchesBacklogSearch(t, q));
   }, [tasks, filter]);
 
   // Dispatched, not yet standing on a session. Deliberately NOT narrowed by `filter`: this
@@ -5097,28 +5097,6 @@ export function App(): React.JSX.Element {
       </LaunchFailureProvider>
     </OverlayHost>
   );
-}
-
-/** The restoring-row counterpart of `matchesSessionFilter`, with its only truthful state label. */
-function matchesRestoringFilter(session: RestoringSession, q: string): boolean {
-  const haystack = `${session.name} restoring ${session.agent ?? ""}`.toLowerCase();
-  return haystack.includes(q);
-}
-
-/**
- * True when a backlog task matches the nav-bar filter - the task-shaped counterpart of
- * `matchesSessionFilter`, matching the same three core things a session does (title, status, agent)
- * so one query reads the board across both.
- *
- * `status` is the literal here, not a display label, and that is not the inconsistency
- * it looks like: a backlog task's status IS "backlog", the word already on the column
- * header, whereas a session's raw state lies (see `matchesSessionFilter`). Labels join the
- * haystack because they exist to be searched - they are the operator's own tags, and a
- * filter that could not see them would make them decorative.
- */
-function matchesTaskFilter(t: Task, q: string): boolean {
-  const haystack = `${t.title} ${t.status} ${t.agent} ${t.labels.join(" ")}`.toLowerCase();
-  return haystack.includes(q);
 }
 
 /** A launch failure can be terminal, or safely returned to Backlog with its reason. */

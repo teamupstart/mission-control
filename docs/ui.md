@@ -1131,8 +1131,16 @@ available:
   down to nothing. It's a gesture rather than a setting: it isn't persisted, and opening a
   session drills in exactly as it did before.
 - **The filter box (<kbd>/</kbd>) narrows the whole board, backlog included.** A query is a
-  case-insensitive substring match against a session's title, status and agent - and, on the
-  board, against a backlog task's title, status, agent and labels. So `ghostty` finds the
+  case-insensitive match against everything a card says: for a session, its title, goal,
+  status, agent, runtime (such as **Agent SDK**), repository and checkout (by name and by full
+  path), branch, model, reasoning effort, permission mode, context meter, cost, last-seen time,
+  task kind, blocker and pull request; for a backlog task, its title, intent, labels,
+  repositories, agent, kind, priority, model, effort, status, autopilot switch and
+  "autopilot will skip this" line, and added time. Every word of the query must appear, each in any
+  field, so `codex mission-control` finds Codex cards in that repository. The one thing not
+  searched is the live activity line ("running Bash") - what the session is doing this
+  second rather than what the card is about. A fact is searched even while its card item is
+  hidden in **Settings → Display**. So `ghostty` finds the
   queued *P5: Ghostty terminal emulator adapter* whether or not any live session matches, and
   the board stays on screen to show it. Console draws no tasks, so there a query
   matching only backlog items correctly reads as "nothing matches".

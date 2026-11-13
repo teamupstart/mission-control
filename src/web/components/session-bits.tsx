@@ -1999,19 +1999,30 @@ function AdvisorChip({ modelId }: { modelId: string }): React.JSX.Element {
  * keeps its token-only chip; a zero-dollar, zero-token summary stays absent because `≈$0.00`
  * would claim evidence the ledger does not carry.
  */
-export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
+/**
+ * The text the cost chip prints, or null when it draws nothing. One spelling for the chip and
+ * for the nav-bar search, so a query for what the card reads always finds the card.
+ */
+export function costChipText(cost: SessionCost | null): string | null {
   if (!cost) return null;
+  if (cost.costUsd === null) {
+    const total = cost.input + cost.cacheRead + cost.cacheWrite + cost.output;
+    return total > 0 ? `${compactTokens(total)} tok` : null;
+  }
+  return cost.costUsd > 0 ? `≈${fmtUsd(cost.costUsd)}` : null;
+}
+
+export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
+  const text = costChipText(cost);
+  if (!cost || text === null) return null;
   const tokensIn = cost.input + cost.cacheRead + cost.cacheWrite;
   if (cost.costUsd === null) {
-    const total = tokensIn + cost.output;
-    if (total <= 0) return null;
     return (
       <Tooltip label={`${compactTokens(tokensIn)} in / ${compactTokens(cost.output)} out${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning)` : ""}. Standard API pricing unavailable${cost.pricingModels.length ? ` for ${cost.pricingModels.join(", ")}` : " because no exact model was recorded"}.`}>
-        <span className="rt-pill cost-chip">{compactTokens(total)} tok</span>
+        <span className="rt-pill cost-chip">{text}</span>
       </Tooltip>
     );
   }
-  if (cost.costUsd <= 0) return null;
   const tone = costTone(cost.costUsd);
   const missionEstimated = cost.basis === "api-equivalent";
   const models = cost.pricingModels.length ? cost.pricingModels.join(", ") : "unknown model";
@@ -2028,7 +2039,7 @@ export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Elem
             `${compactTokens(cost.output)} out.\nCalculated by Claude Code; not subscription-plan spend or an invoice.`
       }
     >
-      <span className={`rt-pill cost-chip cost-${tone}`}>≈{fmtUsd(cost.costUsd)}</span>
+      <span className={`rt-pill cost-chip cost-${tone}`}>{text}</span>
     </Tooltip>
   );
 }

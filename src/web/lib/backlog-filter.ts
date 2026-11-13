@@ -1,4 +1,8 @@
+import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { PRIORITY_LABELS, TASK_KIND_INFO } from "@shared/task.ts";
 import type { Task } from "@shared/types.ts";
+import { relativeTime } from "./format.ts";
+import { matchesEveryWord, pathLeaf } from "./search-text.ts";
 
 /**
  * Search and filtering for the backlog, shared by the Board's Backlog column and the Line's
@@ -57,29 +61,41 @@ export function backlogFacetCount(filter: BacklogFilter): number {
   return filter.deps.length + filter.autopilot.length;
 }
 
-/** The last path segment of a repository root, which is the name a person knows it by. */
-function repoName(root: string): string {
-  return root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? root;
-}
-
 /**
- * Whether a task matches the search text: every whitespace-separated word must appear in the
- * title, the intent, a label, or a repository name. Every word rather than the whole phrase,
- * so "auth codex" finds "Rotate Codex auth token" as a person would expect.
+ * Everything a backlog card says about its task, as searchable text: the title, the intent,
+ * the labels, every repository it spans, the agent, the kind, the priority, the model and
+ * effort it will dispatch with, its status, its autopilot switch ("on"/"off") and the
+ * "autopilot will skip this" line a parked card prints, and how long ago it was added. Repositories
+ * match by their name and by the full path the card's repository tooltip shows.
  */
-export function matchesBacklogSearch(task: Task, query: string): boolean {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return true;
-  const haystack = [
+export function backlogSearchFields(task: Task): (string | null | undefined)[] {
+  return [
     task.title,
     task.intent,
     ...task.labels,
-    repoName(task.repoRoot),
-    ...task.extraRepos.map((extra) => repoName(extra.repoRoot)),
-  ]
-    .join("\n")
-    .toLowerCase();
-  return words.every((word) => haystack.includes(word));
+    pathLeaf(task.repoRoot),
+    task.repoRoot,
+    ...task.extraRepos.flatMap((extra) => [pathLeaf(extra.repoRoot), extra.repoRoot]),
+    task.agent,
+    AGENT_IDENTITY[task.agent]?.label,
+    task.kind,
+    TASK_KIND_INFO[task.kind]?.label,
+    task.priority && PRIORITY_LABELS[task.priority],
+    task.model,
+    task.effort,
+    task.status,
+    task.enabled ? "on" : "off",
+    task.enabled ? null : "autopilot will skip this",
+    relativeTime(task.createdAt),
+  ];
+}
+
+/**
+ * Whether a task matches the search text: every whitespace-separated word must appear
+ * somewhere on its card (see `backlogSearchFields`).
+ */
+export function matchesBacklogSearch(task: Task, query: string): boolean {
+  return matchesEveryWord(backlogSearchFields(task), query);
 }
 
 function depFacet(subject: BacklogFilterSubject): BacklogDepFacet {

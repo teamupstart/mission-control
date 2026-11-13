@@ -44,8 +44,36 @@ test("search matches every word across title, intent, labels and repository name
   assert.equal(matchesBacklogSearch(task, "security"), true);
   assert.equal(matchesBacklogSearch(task, "mission-control"), true);
   assert.equal(matchesBacklogSearch(task, "rotate github"), false, "every word must match");
-  // The repository's parent path is not part of the name a person searches by.
-  assert.equal(matchesBacklogSearch(task, "/w/"), false);
+  // The full path the repository tooltip shows is searchable too.
+  assert.equal(matchesBacklogSearch(task, "/w/mission"), true);
+  assert.equal(matchesBacklogSearch(task, "/x/"), false);
+});
+
+test("search also matches the agent, kind, priority, model and every repository on the card", () => {
+  const task = mkTask({
+    title: "Rotate token",
+    agent: "codex",
+    kind: "ship",
+    priority: "high",
+    model: "gpt-5.5",
+    effort: "max",
+    repoRoot: "/w/mission-control",
+    extraRepos: [{ repoRoot: "/w/ghostty" }] as ReturnType<typeof mkTask>["extraRepos"],
+  });
+  for (const query of ["codex", "ship", "high", "gpt-5.5", "max", "ghostty", "rotate codex ghostty"]) {
+    assert.equal(matchesBacklogSearch(task, query), true, query);
+  }
+  assert.equal(matchesBacklogSearch(task, "claude"), false);
+  assert.equal(matchesBacklogSearch({ ...task, createdAt: Date.now() - 3 * 3_600_000 }, "3h ago"), true, "added time");
+});
+
+test("search matches the autopilot switch and a parked card's skip line", () => {
+  const parked = mkTask({ title: "Parked", enabled: false });
+  const live = mkTask({ title: "Live", enabled: true });
+
+  assert.equal(matchesBacklogSearch(parked, "off"), true);
+  assert.equal(matchesBacklogSearch(parked, "autopilot will skip"), true);
+  assert.equal(matchesBacklogSearch(live, "skip"), false, "only a parked card prints the skip line");
 });
 
 test("facets OR within a facet and AND across facets", () => {

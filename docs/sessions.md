@@ -1039,6 +1039,98 @@ readings beside it are consequences of running under it. Before
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
 
+### Background sub-agents
+
+A session can launch sub-agents: Claude through its Agent tool. One launched in the
+background keeps running after the parent's turn ends, so the parent can read as idle while
+agents are still reading, editing and spending tokens under it. The board shows them beneath
+the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), the parent's
+conversation docks them in a tray above its reply box with a **Jump to launch** link per agent
+(see [Background agents in a conversation](ui.md#background-agents-in-a-conversation)), and the
+parent's activity line reads **idle · N agents still running**.
+
+Each driver reduces its own sub-agent signal into one bounded summary on the session,
+`Session.subagents`, and sends it to the daemon whole as an `SdkEvent` of kind `subagents`.
+`Registry.setSubagents` is its only writer and it rides the existing `session_upsert`.
+It is live state, rebuilt from the agent's stream: nothing is written to SQLite, a session
+registered again starts without it, and a Claude process that is replaced starts from an empty
+set. The summary lists at most twelve agents, running first and then the newest finished;
+older finished ones fold into a count. Because running agents come first, a list with any
+finished agent in it holds every running one. Only a list of twelve running agents can be cut
+short, and `subagentCounts` reports that as `atLeast`, so every surface writes the count as
+**12+** instead of understating it.
+
+For a Claude Agent SDK session the source is the CLI's task stream. `background_tasks_changed`
+is the full live set and decides who is running; an agent that leaves it without reporting an
+end is shown as stopped. `task_started`, `task_progress`, `task_updated` and
+`task_notification` add the type, description, tool and token counts, last tool, summary and
+how it ended. Only `local_agent` tasks count: shells, MCP tasks, monitors, workflows, a
+backgrounded main session and anything flagged `ambient` are left out. The flag counts
+whichever frame carries it: a run marked ambient by its start or by the live set stays hidden
+even when a later frame about the same run omits the field. The flag belongs to the run, so a
+new run of the same agent starts unclassified.
+
+A resumed agent keeps its task id. When the CLI reports run ids it also gets a new run id, but
+any frame, the live set included, may omit one. The run ids a task has had are remembered for
+the life of the CLI process, including after it leaves the live set and rejoins, and the rules
+below read them:
+
+- **What opens a run.** A run is new when the task reports an id it has not had before that
+  differs from the current run's id. If the current run has no id, a newly reported id is taken
+  as that run's own. Without run ids, a live set that names again an agent it had dropped opens
+  a new run. A new run starts a fresh row with nothing carried over. Once a live set has been
+  seen, a start counts only if the set names the agent, and it is refused when the set lists a
+  different run for it or when it names a run the task already had. An agent that has ended
+  then comes back only for a new run, so a repeated start without a run id does not revive it.
+  A CLI that sends no live set is read from its start and update frames, by `is_backgrounded`.
+- **What a progress, update or end frame can change.** These frames never open a run. One that
+  names a run other than the run being shown, or a run the task already had, is a late frame and
+  changes nothing. The second check covers a shown run that has no id of its own.
+
+A foreground agent
+counts only once it is moved to the background. Finished agents fold on the next turn you
+send, not on a turn the agent starts for itself, because a finished agent's notification can
+start one. A change to who is running or how one ended reaches the board at once; a change
+that moves only counters is sent at most once every five seconds per session.
+
+Each agent's `launchTurnId` is the id of the parent's tool call that launched it (Claude's
+`tool_use` id), not a transcript record id: the SDK stream and the transcript file do not share
+record ids, and the call id is the one both carry. The transcript reader keeps that id on each
+`ToolCall`, and the browser finds the turn that made the call among the turns it has loaded,
+paging older ones in when it is not there yet. An agent whose `launchTurnId` is null is found
+by identity too. Claude Code answers an `Agent` call that went to the background with a tool
+result naming the agent (`agentId`, in the result text and in the record's `toolUseResult`),
+and that id is the task id the SDK reports, so `SubagentEntry.id`. The browser asks
+`GET /api/sessions/:id/subagents/:agentId/launch`, and the harness's
+`TranscriptSpec.subagentLaunch` reads the transcript FILE for the result naming that agent and
+returns its `tool_use_id`; the browser then searches for that call id like any other. The read
+is asynchronous and incremental: each file's launch results are indexed in awaited chunks, so a
+long resident's transcript never holds the daemon's event loop, and a later lookup reads only
+what was appended since. A file that shrinks, is replaced, or is rewritten in place (its last
+indexed bytes changed, checked only when the file changed) is indexed again, and at most 32
+files' indexes are kept. The file answers rather than the turns the browser holds because the
+call and its result are written apart, so a live conversation receives them in separate appends
+and paging can split them, while the file holds both once the result is written. Until then the
+file names no call for the agent: the route answers `{ toolUseId: null }`, the link reports the
+launch as not in the transcript, and a later click asks again. A description is never used to claim
+a launch: agents can share one, and a folded agent's call stays behind. No page count limits a
+search; it ends at the start, on a failed page, or when a page arrives without moving the
+paging cursor back. A page that moves it while adding no turn, such as a stretch of pure tool
+output, is progress and the search continues.
+
+A sub-agent's own activity cannot restart its parent. The two channels it arrives on are
+handled separately:
+
+- **The SDK stream.** A frame carrying `parent_tool_use_id` belongs to a sub-agent. While the
+  parent's own turn is running, it updates the parent's activity line, since the session is
+  working on that sub-agent's behalf, but it never opens a turn of its own. Once the parent's
+  turn has ended, such a frame is dropped, so it cannot re-open a finished turn or flip an idle
+  parent back to working.
+- **Hooks.** A hook Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it
+  as `HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
+  cycle as they were, in the moment and in the hook reading that later discovery sweeps replay.
+  SDK sessions run the machine's installed hooks too, so this matters for both runtimes.
+
 ### Open a terminal, or the agent's own CLI, on a session
 
 Above every conversation sits the worktree that session is working in, and two buttons.

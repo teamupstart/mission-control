@@ -21,6 +21,7 @@ import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt,
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
 import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
+import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
@@ -339,7 +340,7 @@ import {
   reserveInjection,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
-import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
@@ -4472,6 +4473,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // reason, and it chains: each page reports the `start` the next call passes back. The
   // panel is the only caller, but it belongs on this route rather than the SSE stream
   // because it is a request for history, not a subscription to new turns.
+  /**
+   * The tool call that launched one of this session's background sub-agents, as its
+   * transcript file records it: `{ toolUseId }`, null when it records none.
+   *
+   * Asked by "Jump to launch" for an agent whose source did not name its launching call. The
+   * answer comes from the file because only the file always holds both halves of a launch -
+   * the call and the result naming its agent are written apart, so the dashboard can receive
+   * them in separate appends or on separate pages. The browser then finds the call by its id
+   * among the turns it holds, paging older ones in, exactly as for an agent the source named.
+   */
+  app.get("/api/sessions/:id/subagents/:agentId/launch", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const agentId = c.req.param("agentId");
+    if (!agentId || agentId.length > 256) return c.json({ error: "agentId must be a sub-agent id" }, 400);
+    const spec = transcriptFor(session);
+    // A harness whose transcript ties no call to its agents answers "none", as does a file
+    // that has not appeared yet: both read as a launch this transcript does not record.
+    const path = spec?.subagentLaunch ? spec.locate(session) : null;
+    return c.json({ toolUseId: path && spec?.subagentLaunch ? await spec.subagentLaunch(path, agentId) : null });
+  });
+
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -6215,7 +6238,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const stackGuard = (): string | null => {
       if (!stackRequest) return null;
       try {
-        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        if (stackParentRead && !isStackPromptKind(stackRequest.kind)) {
           const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
           if (changed) return changed;
         }
@@ -6237,7 +6260,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
       // A recovery action was chosen from the parent's last observed state; read it again
       // before typing, so a parent that merged or closed since never gets a stale instruction.
-      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+      if (!isStackPromptKind(stackRequest.kind)) {
         const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
         if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
         stackParentRead = recheck.parent;

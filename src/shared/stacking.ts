@@ -219,6 +219,20 @@ export function stackStartEdge(task: Task, byId: ReadonlyMap<string, Task>): Tas
 export interface StackParentState {
   state: "OPEN" | "CLOSED" | "MERGED" | null;
   headRefName: string | null;
+  /** The branch the parent targets, and its repository's default branch, when read. */
+  baseRefName?: string | null;
+  defaultBranch?: string | null;
+}
+
+/**
+ * The parent merged, but into a branch GitHub says is not the default branch - it was itself a
+ * stacked child merged into its own finished parent's branch. Its work is not on the default
+ * branch, so nothing stacked on it may be moved there: a child retargeted onto the default
+ * branch could merge and complete while the work it was built on is missing.
+ */
+export function parentMergedOffDefault(parent: StackParentState, defaultBranch: string | null = null): boolean {
+  return parent.state === "MERGED"
+    && mergeLandedOnDefault(parent.baseRefName, parent.defaultBranch || defaultBranch) === false;
 }
 
 /**
@@ -235,6 +249,9 @@ export function expectedStackBase(
 ): string | null {
   if (!parent || parent.state === null) return null;
   if (parent.state === "OPEN") return parent.headRefName || null;
+  // A parent that merged somewhere other than the default branch gives its children no branch
+  // to belong on: unknown, so nothing retargets them (`parentMergedOffDefault`).
+  if (parentMergedOffDefault(parent, defaultBranch)) return null;
   return defaultBranch || null;
 }
 
@@ -323,6 +340,7 @@ export function stackedOnLabel(task: Pick<Task, "stackParentTaskId" | "stackPrUr
  */
 export const STACK_STATES = [
   "released",
+  "merge-unconfirmed",
   "broken",
   "parent-merged-needs-retarget",
   "restack-needed",
@@ -338,7 +356,25 @@ export type StackBrokenReason =
   /** The parent task was cancelled, failed or rescheduled while its pull request was open. */
   | "parent-task-stopped"
   /** GitHub closed the child itself, which is what deleting its base branch does. */
-  | "child-closed";
+  | "child-closed"
+  /**
+   * The child merged, but into its parent's branch rather than the default branch - a person
+   * merged it on GitHub before it was retargeted. Its code is not on the default branch, so it
+   * completes nothing (see `mergeLandedOnDefault`).
+   */
+  | "merged-into-parent"
+  /**
+   * The child merged into some other branch that is neither the default branch nor its
+   * parent's (its base was changed by hand, say). It completes nothing either, but the
+   * parent-branch recovery does not describe it, so none is offered.
+   */
+  | "merged-off-default"
+  /**
+   * The parent merged, but into a branch that is not the default branch (it was a stacked
+   * child merged into its own parent's branch). This child is not retargeted onto the default
+   * branch and has no prompt: the parent's work has to reach the default branch first.
+   */
+  | "parent-merged-off-default";
 
 /**
  * What the Inspector tick last observed about one stacked child and its current parent.
@@ -376,6 +412,16 @@ export interface StackObservation {
   parentEpisodeId: string | null;
   /** GitHub's reason the last base reconciliation failed; null once one succeeds. */
   retargetError: string | null;
+  /** The child's merge commit and merge instant (epoch ms), once it merged. */
+  childMergeCommitSha?: string | null;
+  childMergedAt?: number | null;
+  /** When the current parent merged (epoch ms), once it has. */
+  parentMergedAt?: number | null;
+  /**
+   * The branch the parent merged into, recorded only when that is not the default branch
+   * (`parentMergedOffDefault`): the stack is broken under this child.
+   */
+  parentMergedInto?: string | null;
   /**
    * When a tick last failed to read the current parent, if it has not been read since. The
    * facts above are then the last ones GitHub gave and may be stale - the parent may have
@@ -419,6 +465,11 @@ export function parseStackObservation(raw: string | null | undefined): StackObse
       parentTaskId: str("parentTaskId"),
       retargetError: str("retargetError"),
       parentUnreadSince: typeof value.parentUnreadSince === "number" ? value.parentUnreadSince : null,
+      // Written only once known, so an observation of an unmerged stack keeps its old shape.
+      ...(str("childMergeCommitSha") ? { childMergeCommitSha: str("childMergeCommitSha") } : {}),
+      ...(typeof value.childMergedAt === "number" ? { childMergedAt: value.childMergedAt } : {}),
+      ...(typeof value.parentMergedAt === "number" ? { parentMergedAt: value.parentMergedAt } : {}),
+      ...(str("parentMergedInto") ? { parentMergedInto: str("parentMergedInto") } : {}),
     };
   } catch {
     return null;
@@ -428,9 +479,12 @@ export function parseStackObservation(raw: string | null | undefined): StackObse
 /**
  * The lifecycle state of one stacked child, by the fixed precedence above.
  *
- * - `released`: Phase 1's release check passed for the child's current head.
+ * - `released`: Phase 1's release check passed for the child's current head, or the child
+ *   merged into the default branch.
+ * - `merge-unconfirmed`: the child merged, but GitHub has not yet reported both the branch it
+ *   merged into and the default branch, so whether it landed is unknown.
  * - `broken`: the parent closed unmerged, the parent task stopped while its pull request was
- *   still open, or GitHub closed the child.
+ *   still open, GitHub closed the child, or the child merged into its parent's branch.
  * - `parent-merged-needs-retarget`: the parent merged and the child's base is still not the
  *   default branch.
  * - `restack-needed`: the parent merged, the child is on the default branch, and the release
@@ -441,7 +495,16 @@ export function parseStackObservation(raw: string | null | undefined): StackObse
 export function deriveStackState(facts: StackStateFacts): StackState {
   const o = facts.observation;
   const head = o?.childHeadSha ?? null;
-  if (o?.childState === "MERGED") return "released";
+  if (o?.childState === "MERGED") {
+    // Released only once GitHub has said the merge landed on the default branch. Until both
+    // branches are read the merge is unresolved - the poller holds it the same way - so the
+    // stack keeps saying so rather than reading as finished.
+    const landed = mergeLandedOnDefault(o.baseRefName, o.defaultBranch);
+    return landed === null ? "merge-unconfirmed" : landed ? "released" : "broken";
+  }
+  // A parent whose own merge missed the default branch outranks a release recorded earlier: the
+  // work this child was built on is not on the default branch, whatever was verified before.
+  if (o && o.childState === "OPEN" && o.parentState === "MERGED" && o.parentMergedInto) return "broken";
   if (head && facts.releasedHeadSha === head && o?.childState !== "CLOSED") return "released";
   if (!o) return "current";
   if (stackBrokenReason(o)) return "broken";
@@ -455,6 +518,9 @@ export function deriveStackState(facts: StackStateFacts): StackState {
 
 /** Why the stack is broken, or null when it is not. Precedence: the child, then the parent. */
 export function stackBrokenReason(o: StackObservation): StackBrokenReason | null {
+  if (mergedIntoParentBranch(o)) return "merged-into-parent";
+  if (mergedOffDefault(o)) return "merged-off-default";
+  if (o.parentState === "MERGED" && o.parentMergedInto) return "parent-merged-off-default";
   if (o.childState === "CLOSED") return "child-closed";
   if (o.parentState === "CLOSED") return "parent-closed";
   // Only while the parent's pull request is still open: a parent task stopped AFTER its pull
@@ -463,8 +529,63 @@ export function stackBrokenReason(o: StackObservation): StackBrokenReason | null
   return null;
 }
 
-/** The two prompts that bring a held child up to date. */
-export type StackPromptKind = "catch-up" | "restack";
+/**
+ * Whether a merge landed on the repository's default branch. Only that merge completes work:
+ * a stacked child merged into its parent's branch has not reached the default branch, so it
+ * must not mark its work episode merged, complete its task or satisfy a dependency edge.
+ * Null when either branch is unknown - the caller holds rather than guesses.
+ */
+export function mergeLandedOnDefault(baseRefName: string | null | undefined, defaultBranch: string | null | undefined): boolean | null {
+  if (!baseRefName || !defaultBranch) return null;
+  return baseRefName === defaultBranch;
+}
+
+/** The child merged, and the branch it merged into is known not to be the default branch. */
+function mergedOffDefault(o: StackObservation): boolean {
+  return o.childState === "MERGED" && mergeLandedOnDefault(o.baseRefName, o.defaultBranch) === false;
+}
+
+/** It merged off the default branch, and the branch it merged into is its parent's. */
+function mergedIntoParentBranch(o: StackObservation): boolean {
+  return mergedOffDefault(o) && Boolean(o.parentHeadRefName) && o.baseRefName === o.parentHeadRefName;
+}
+
+/**
+ * The child merged into its parent's branch AFTER the parent had already merged, so the merge
+ * went into a branch that was finished with and its changes reached nothing. Exactly the case
+ * the recovery prompt answers. A child merged into a parent that was still open is not offered
+ * one: the parent's later merge may have carried its changes, which nothing here verifies, so the
+ * operator decides. Judged by merge times only; unknown instants decide nothing.
+ */
+export function strayMergeAfterParent(o: StackObservation): boolean {
+  return mergedIntoParentBranch(o) && o.parentState === "MERGED"
+    && typeof o.parentMergedAt === "number" && typeof o.childMergedAt === "number"
+    // Strictly later: equal reported times do not establish which merged first, and the
+    // prompt asserts the parent had already merged. A tie is left to the operator.
+    && o.parentMergedAt < o.childMergedAt;
+}
+
+/**
+ * The child merged into its parent's branch and the parent has merged, but GitHub has not yet
+ * reported a fact the recovery needs: the child's merge commit (the prompt's key and the diff it
+ * names) or either merge time (whether the parent merged first). Until all three are known the
+ * recovery can be neither offered nor ruled out, so the merged child is read again.
+ */
+export function strayMergeUndecided(o: StackObservation): boolean {
+  return mergedIntoParentBranch(o) && o.parentState === "MERGED"
+    && (!o.childMergeCommitSha || typeof o.childMergedAt !== "number" || typeof o.parentMergedAt !== "number");
+}
+
+/**
+ * The prompts Foreman types into a child's session: the two that bring a held child up to date,
+ * and the recovery for a child merged into its finished parent's branch.
+ */
+export type StackPromptKind = "catch-up" | "restack" | "recover-merge";
+
+/** Whether a stack prompt or action kind is a prompt (claimed by its tip) rather than an action. */
+export function isStackPromptKind(kind: StackPromptKind | StackPromptActionKind): kind is StackPromptKind {
+  return kind === "catch-up" || kind === "restack" || kind === "recover-merge";
+}
 /** The broken-stack actions typed into the child's session as a prompt. */
 export type StackPromptActionKind = "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
 /**
@@ -480,12 +601,16 @@ export type StackActionKind = StackPromptActionKind | "await-replacement" | "res
  * Keyed to the CONDITION, never to the child's head: the parent's head for a catch-up, the
  * parent's merge commit for a restack. An unrelated push to the child therefore never re-sends
  * the same prompt, and a new parent tip (it pushed again, or a different parent merged after a
- * replacement) is a new key and re-arms it.
+ * replacement) is a new key and re-arms it. A recovery is keyed to the child's own merge
+ * commit: the stray merge it recovers can only ever happen once.
  */
 export function stackPromptNeed(state: StackState, o: StackObservation | null): { kind: StackPromptKind; tip: string } | null {
   // Never on facts the last read could not confirm: a parent that merged or closed since would
   // turn a catch-up into an instruction to merge a branch that no longer exists.
   if (!o || o.parentUnreadSince) return null;
+  if (state === "broken" && strayMergeAfterParent(o) && o.childMergeCommitSha) {
+    return { kind: "recover-merge", tip: o.childMergeCommitSha };
+  }
   if (state === "parent-moved" && o.parentHeadSha) return { kind: "catch-up", tip: o.parentHeadSha };
   if (state === "restack-needed" && o.parentMergeCommitSha) return { kind: "restack", tip: o.parentMergeCommitSha };
   return null;
@@ -591,7 +716,31 @@ export interface StackStanding {
 const PROMPT_NAME: Record<StackPromptKind, { needed: string; prompt: string }> = {
   "catch-up": { needed: "Catch-up needed", prompt: "Catch-up prompt" },
   restack: { needed: "Restack needed", prompt: "Restack prompt" },
+  "recover-merge": { needed: "Recovery needed", prompt: "Recovery prompt" },
 };
+
+/**
+ * What a prompt's delivery status says, after the state it answers: why nobody can send it, or
+ * that it is uncertain or went to a session that has gone. Null while it is on its way or sent.
+ */
+function promptStatusPhrase(prompt: NonNullable<StackStanding["prompt"]>): string | null {
+  const name = PROMPT_NAME[prompt.kind];
+  switch (prompt.status) {
+    case "no-session":
+      return `${name.needed}: no session`;
+    case "no-pane":
+      return `${name.needed}: the session has no pane to type into - resume its task to restore one`;
+    case "foreman-off":
+      return prompt.blocker ? `${name.needed}: Foreman can't send it - ${prompt.blocker}` : `${name.needed}: Foreman is off`;
+    case "uncertain":
+      return `${name.prompt} delivery uncertain`;
+    case "orphaned":
+      return `${name.prompt} went to a session that has gone - send it to the resumed one`;
+    case "pending":
+    case "sent":
+      return null;
+  }
+}
 
 /**
  * The lifecycle label for a standing, and whether it is in progress. Broken and retarget
@@ -599,12 +748,33 @@ const PROMPT_NAME: Record<StackPromptKind, { needed: string; prompt: string }> =
  */
 export function stackLifecycleLabel(
   s: Pick<StackStanding, "state" | "parentNumber" | "brokenReason" | "retargetError" | "prompt">,
-  o: Pick<StackObservation, "parentState" | "parentTaskStopped"> & Partial<Pick<StackObservation, "defaultBranch">> | null,
+  o: Pick<StackObservation, "parentState" | "parentTaskStopped"> & Partial<Pick<StackObservation, "defaultBranch" | "baseRefName" | "parentMergedInto">> | null,
 ): { label: string | null; inProgress: boolean } {
   const parent = s.parentNumber === null ? "its parent" : `#${s.parentNumber}`;
   const onto = `Restacking onto ${o?.defaultBranch || "main"}`;
   if (s.state === "released") return { label: null, inProgress: false };
+  if (s.state === "merge-unconfirmed") {
+    return { label: `Merged - checking on GitHub whether it reached ${o?.defaultBranch || "the default branch"}`, inProgress: true };
+  }
   if (s.state === "broken") {
+    if (s.brokenReason === "parent-merged-off-default") {
+      return {
+        label: `Stack broken: ${parent} merged into ${o?.parentMergedInto ? `\`${o.parentMergedInto}\`` : "another branch"}, not ${o?.defaultBranch || "the default branch"}`,
+        inProgress: false,
+      };
+    }
+    if (s.brokenReason === "merged-off-default") {
+      return { label: `Stack broken: merged into ${o?.baseRefName ? `\`${o.baseRefName}\`` : "another branch"}, not ${o?.defaultBranch || "the default branch"}`, inProgress: false };
+    }
+    if (s.brokenReason === "merged-into-parent") {
+      const broken = `Stack broken: merged into ${parent}'s branch, not ${o?.defaultBranch || "the default branch"}`;
+      if (!s.prompt) return { label: broken, inProgress: false };
+      const phrase = promptStatusPhrase(s.prompt);
+      return {
+        label: phrase ? `${broken} - ${phrase}` : `${broken} - ${s.prompt.status === "sent" ? "recovering" : "recovery prompt on its way"}`,
+        inProgress: false,
+      };
+    }
     if (s.brokenReason === "child-closed") {
       return {
         label: o?.parentState === "MERGED"
@@ -622,29 +792,11 @@ export function stackLifecycleLabel(
   }
   if (s.retargetError) return { label: `Retarget failed: ${s.retargetError}`, inProgress: false };
   if (s.prompt) {
-    const name = PROMPT_NAME[s.prompt.kind];
-    switch (s.prompt.status) {
-      case "no-session":
-        return { label: `${name.needed}: no session`, inProgress: false };
-      case "no-pane":
-        return { label: `${name.needed}: the session has no pane to type into - resume its task to restore one`, inProgress: false };
-      case "foreman-off":
-        return {
-          label: s.prompt.blocker
-            ? `${name.needed}: Foreman can't send it - ${s.prompt.blocker}`
-            : `${name.needed}: Foreman is off`,
-          inProgress: false,
-        };
-      case "uncertain":
-        return { label: `${name.prompt} delivery uncertain`, inProgress: false };
-      case "orphaned":
-        return { label: `${name.prompt} went to a session that has gone - send it to the resumed one`, inProgress: false };
-      case "pending":
-      case "sent":
-        return s.prompt.kind === "restack"
-          ? { label: onto, inProgress: true }
-          : { label: `Catching up with ${parent}`, inProgress: false };
-    }
+    const phrase = promptStatusPhrase(s.prompt);
+    if (phrase) return { label: phrase, inProgress: false };
+    return s.prompt.kind === "restack"
+      ? { label: onto, inProgress: true }
+      : { label: `Catching up with ${parent}`, inProgress: false };
   }
   if (s.state === "restack-needed" || s.state === "parent-merged-needs-retarget") {
     return { label: onto, inProgress: true };
@@ -656,6 +808,7 @@ export function stackLifecycleLabel(
 export const STACK_SEND_LABEL: Record<StackPromptKind, string> = {
   "catch-up": "Send catch-up prompt",
   restack: "Send restack prompt",
+  "recover-merge": "Send recovery prompt",
 };
 
 /**
@@ -691,6 +844,9 @@ export interface StackPromptFacts {
   parentUrl: string;
   parentHeadRefName: string | null;
   defaultBranch: string | null;
+  /** The branch the child merged into, and its merge commit, for the recovery prompt. */
+  mergedIntoRefName?: string | null;
+  mergeCommitSha?: string | null;
 }
 
 /**
@@ -699,6 +855,10 @@ export interface StackPromptFacts {
  *
  * Every variant says what never to do: force-push, rebase, or open a second pull request for a
  * catch-up or restack. The daemon never runs git in the worktree; the session does the merge.
+ * The recovery is the one that opens a new pull request, from a new branch, because both
+ * branches it would otherwise touch have already merged and must not be rewritten. It applies
+ * the pull request's whole diff rather than the merge commit's first-parent diff, which holds
+ * only the last commit of a rebase merge.
  */
 export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, f: StackPromptFacts): string {
   const parent = f.parentNumber === null ? f.parentUrl : `#${f.parentNumber} (${f.parentUrl})`;
@@ -735,6 +895,18 @@ export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, 
         "Do not reopen it against the default branch: it merges after its parent does.",
         noForce,
       ]);
+    case "recover-merge": {
+      const merge = f.mergeCommitSha ? `\`${f.mergeCommitSha}\`` : "its merge commit";
+      const into = f.mergedIntoRefName ? `\`${f.mergedIntoRefName}\`` : "its parent's branch";
+      const merged = [branch, f.mergedIntoRefName ? into : null].filter(Boolean).join(" or ");
+      return `PR #${f.prNumber} (${f.prUrl}) was merged into ${into} after ${parent} had already merged, so its changes never reached ${base}. Recover them onto ${base} in a new pull request.\n\n` + steps([
+        `Fetch, then create a new branch from \`origin/${base}\`.`,
+        `Bring over every change PR #${f.prNumber} introduced with \`gh pr diff ${f.prUrl} | git apply --3way\`, then commit. That is the pull request's whole diff, whatever merge method GitHub used: for a merge or squash commit it is the diff between merge commit ${merge} and its first parent, and for a rebase merge it spans every rebased commit, where the first-parent diff of ${merge} would hold only the last one. If the diff names binary files git cannot apply, apply the rest with \`--exclude=<path>\` and copy those files from ${branch} with \`git checkout ${f.headRefName ?? "<child branch>"} -- <path>\`.`,
+        `Resolve any conflicts with ${base} and run focused checks for what you touched.`,
+        `Push the new branch and open a new pull request with \`gh pr create --base ${base}\`, saying it recovers PR #${f.prNumber}. This task completes when that pull request merges into ${base}.`,
+        `Do NOT force-push, rebase, reset or otherwise rewrite ${merged}: they have already merged.`,
+      ]);
+    }
     case "reopen-against-main":
       return `GitHub closed PR #${f.prNumber} (${f.prUrl}) when ${parent} merged and its branch was deleted. Open it again against ${base}.\n\n` + steps([
         `Open a new pull request from the same branch, ${branch}, with \`gh pr create --base ${base}\`.`,

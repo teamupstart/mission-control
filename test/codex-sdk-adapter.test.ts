@@ -19,6 +19,7 @@ import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
+import { CodexSubagents } from "../src/server/harness/codex/subagents.ts";
 import { CompactionError } from "../src/server/harness/compaction.ts";
 
 // What is at stake: this adapter is the only thing standing between `codex app-server` and
@@ -2179,3 +2180,330 @@ test("a turn Codex failed at capacity reports the failure on turn_done; other en
   await handle.stop();
   await drained;
 });
+
+function collabFrame(id: string, children: string[], patch: Record<string, unknown> = {}) {
+  return {
+    threadId: THREAD.id, turnId: "turn-1",
+    item: { type: "collabAgentToolCall", id, tool: "spawnAgent", status: "completed",
+      senderThreadId: THREAD.id, receiverThreadIds: children, prompt: "Map the ledger",
+      agentsStates: {}, ...patch },
+  };
+}
+
+const latestSubagents = (events: SdkEvent[]) => events.filter((e) => e.kind === "subagents").at(-1)?.subagents;
+
+test("Codex background children survive parent completion, hide for overlapping waits, and retain source detail", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  server.notify("item/completed", collabFrame("spawn", ["child-a", "child-b"]));
+  server.notify("thread/started", { thread: { id: "child-a", parentThreadId: THREAD.id, agentRole: "explorer", preview: "Map the ledger" } });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1", status: "completed" } });
+  await settle();
+  assert.equal(latestSubagents(events)?.agents.length, 2);
+  assert.equal(latestSubagents(events)?.agents[0]?.type, "explorer");
+  assert.equal(latestSubagents(events)?.agents[0]?.description, "Map the ledger");
+  for (const key of ["tokens", "toolUses", "lastTool", "launchTurnId"] as const) {
+    assert.equal(latestSubagents(events)?.agents[0]?.[key], null);
+  }
+  const startedAt = latestSubagents(events)!.agents[0]!.startedAt;
+  for (const id of ["wait-1", "wait-2"]) {
+    server.notify("item/started", collabFrame(id, ["child-a"], { tool: "wait", status: "inProgress" }));
+  }
+  await settle();
+  assert.deepEqual(latestSubagents(events)?.agents.map((a) => a.id), ["child-b"]);
+  server.notify("item/completed", collabFrame("wait-1", ["child-a"], { tool: "wait" }));
+  await settle();
+  assert.equal(latestSubagents(events)?.agents.length, 1, "the other wait still hides its child");
+  server.notify("item/completed", collabFrame("wait-2", ["child-a"], { tool: "wait" }));
+  await settle();
+  assert.equal(latestSubagents(events)?.agents[0]?.startedAt, startedAt);
+  assert.equal(latestSubagents(events)?.agents.length, 2);
+  await handle.stop(); await drained;
+});
+
+test("Codex source endings map honestly, repeated completions stay folded, and resume starts a new clock", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  const states = { done: "completed", failed: "errored", interrupted: "interrupted", closed: "shutdown", missing: "notFound" };
+  server.notify("item/completed", collabFrame("spawn", Object.keys(states)));
+  for (const [id, status] of Object.entries(states)) {
+    server.notify("item/completed", collabFrame(`state-${id}`, [id], { tool: "listAgents", agentsStates: { [id]: { status, message: `${id} result` } } }));
+  }
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1", status: "completed" } });
+  await settle();
+  assert.deepEqual(Object.fromEntries(latestSubagents(events)!.agents.map((a) => [a.id, a.state])), {
+    done: "completed", failed: "failed", interrupted: "stopped", closed: "stopped", missing: "running",
+  });
+  assert.equal(latestSubagents(events)!.agents.find((a) => a.id === "done")!.summary, "done result");
+  const oldStart = latestSubagents(events)!.agents.find((a) => a.id === "done")!.startedAt;
+  await handle.sendIfIdle({ text: "continue" });
+  await settle();
+  assert.equal(latestSubagents(events)?.finishedFolded, 4);
+  server.notify("item/completed", collabFrame("repeat", ["done"], { tool: "wait", agentsStates: { done: { status: "completed", message: "done result" } } }));
+  await settle();
+  assert.deepEqual(latestSubagents(events)?.agents.map((a) => a.id), ["missing"]);
+  server.notify("item/completed", collabFrame("resume", ["done"], { tool: "resumeAgent", agentsStates: { done: { status: "running", message: null } } }));
+  await settle();
+  assert.ok(latestSubagents(events)!.agents.find((a) => a.id === "done")!.startedAt > oldStart);
+  assert.equal(latestSubagents(events)!.agents.find((a) => a.id === "done")!.endedAt, null);
+  const resumed = latestSubagents(events)!;
+  assert.deepEqual({
+    summary: resumed.agents.find((a) => a.id === "done")!.summary,
+    finishedFolded: resumed.finishedFolded,
+  }, { summary: null, finishedFolded: 3 }, "a resumed child no longer contributes its previous result or finished count");
+  server.notify("item/completed", collabFrame("resume-again", ["done"], { tool: "resumeAgent", agentsStates: { done: { status: "running", message: null } } }));
+  await settle();
+  assert.equal(latestSubagents(events)?.finishedFolded, 3, "repeated running status must not decrement again");
+  await handle.stop(); await drained;
+});
+
+test("Codex summaries ignore foreign and retired trees and clear with context", async () => {
+  let starts = 0;
+  const server = new FakeServer(defaultReplies({ "thread/start": () => threadResponse(starts++ ? SECOND_THREAD : THREAD) }));
+  const { handle, events, drained } = await launch(server);
+  server.notify("thread/started", { thread: { id: "foreign-child", parentThreadId: "foreign-root" } });
+  server.notify("thread/started", { thread: { id: "own-child", parentThreadId: THREAD.id, agentNickname: "Scout", preview: "Scout files" } });
+  await settle();
+  assert.deepEqual(latestSubagents(events)?.agents.map((a) => a.id), ["own-child"]);
+  await handle.clearContext!();
+  await settle();
+  assert.equal(latestSubagents(events), null);
+  server.notify("thread/started", { thread: { id: "late-child", parentThreadId: THREAD.id } });
+  server.notify("item/completed", collabFrame("late-spawn", ["late-spawn-child"]));
+  await settle();
+  assert.equal(latestSubagents(events), null);
+  await handle.stop(); await drained;
+});
+
+test("Codex activity items and interrupted waits project without rearming an idle parent", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  const activity = (kind: string) => ({ threadId: THREAD.id, turnId: "turn-1", item: {
+    type: "subAgentActivity", id: `activity-${kind}`, kind, agentThreadId: "child", agentPath: "/scout",
+  } });
+  server.notify("item/started", activity("started"));
+  server.notify("item/started", collabFrame("wait", ["child"], { tool: "wait", status: "inProgress" }));
+  await settle();
+  assert.equal(latestSubagents(events), null);
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1", status: "interrupted" } });
+  await settle();
+  assert.equal(latestSubagents(events)?.agents[0]?.state, "running");
+  const boundary = events.length;
+  server.notify("item/completed", activity("interrupted"));
+  await settle();
+  assert.equal(latestSubagents(events)?.agents[0]?.state, "stopped");
+  assert.equal(events.slice(boundary).some((e) => e.kind === "state" && e.state === "working"), false);
+  // An unsolicited parent turn is not an accepted operator send.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "auto-turn", status: "inProgress" } });
+  await settle();
+  assert.equal(latestSubagents(events)?.agents[0]?.state, "stopped");
+  await handle.send({ text: "continue" });
+  await settle();
+  assert.equal(latestSubagents(events), null);
+  await handle.stop(); await drained;
+});
+
+test("Codex summary caps the wire at twelve, keeps running first, and folds overflow completions", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  const ids = Array.from({ length: 14 }, (_, i) => `child-${i}`);
+  server.notify("item/completed", collabFrame("spawn", ids));
+  await settle();
+  assert.equal(latestSubagents(events)?.agents.length, 12);
+  server.notify("item/completed", collabFrame("done", [ids[0]!], { tool: "wait", agentsStates: { [ids[0]!]: { status: "completed", message: null } } }));
+  await settle();
+  assert.equal(latestSubagents(events)?.agents.length, 12);
+  assert.ok(latestSubagents(events)?.agents.every((a) => a.state === "running"));
+  assert.equal(latestSubagents(events)?.finishedFolded, 1);
+  await handle.stop(); await drained;
+});
+
+test("Codex refuses to fold on a rejected send or a busy sendIfIdle", async () => {
+  const server = new FakeServer(defaultReplies({ "turn/steer": undefined }));
+  const { handle, events, drained } = await launch(server);
+  server.notify("item/completed", collabFrame("spawn", ["child"]));
+  server.notify("item/completed", collabFrame("done", ["child"], { tool: "wait", agentsStates: { child: { status: "completed", message: null } } }));
+  await settle();
+  assert.equal(await handle.sendIfIdle({ text: "busy" }), null);
+  await assert.rejects(handle.send({ text: "refused" }), /no fake reply/);
+  await settle();
+  assert.equal(latestSubagents(events)?.agents[0]?.state, "completed");
+  assert.equal(latestSubagents(events)?.finishedFolded, 0);
+  await handle.stop(); await drained;
+});
+
+for (const delivery of ["send", "sendIfIdle"] as const) {
+  test(`Codex ${delivery} preserves completed children when an idle turn/start is rejected`, async (t) => {
+    const replies: Record<string, unknown> = defaultReplies();
+    const server = new FakeServer(replies);
+    const { handle, events, drained } = await launch(server);
+    t.after(async () => { await handle.stop(); await drained; });
+    server.notify("item/completed", collabFrame("spawn", ["done", "running"]));
+    server.notify("item/completed", collabFrame("done", ["done"], {
+      tool: "wait", agentsStates: { done: { status: "completed", message: "child result" } },
+    }));
+    server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1", status: "completed" } });
+    await settle();
+    const before = latestSubagents(events)!;
+    assert.equal(before.agents.find((agent) => agent.id === "done")?.state, "completed");
+    assert.equal(before.finishedFolded, 0);
+
+    // Reject the next start after launch succeeded and the parent returned to idle.
+    replies["turn/start"] = undefined;
+    await assert.rejects(handle[delivery]({ text: "refused" }), /no fake reply for turn\/start/);
+    await settle();
+    assert.equal(server.calls("turn/start").length, 2, "the idle send reached turn/start");
+    assert.equal(server.calls("turn/steer").length, 0);
+    const after = latestSubagents(events)!;
+    assert.equal(after.agents.find((agent) => agent.id === "done")?.summary, "child result");
+    assert.equal(after.finishedFolded, 0, "a rejected start cannot fold a completed child");
+    assert.deepEqual(after, before);
+  });
+}
+
+test("Codex bounds retained child identities and outstanding waits independently of the wire cap", () => {
+  const children = new CodexSubagents();
+  for (let i = 0; i < 514; i++) {
+    children.observe("thread/started", { thread: { id: `child-${i}` } }, () => true, i);
+  }
+  assert.equal(children.summary()?.agents[0]?.id, "child-2", "oldest bookkeeping is forgotten past 512");
+  assert.equal(children.summary()?.agents.length, 12);
+
+  const waits = new CodexSubagents();
+  waits.observe("thread/started", { thread: { id: "child" } }, () => true, 1);
+  for (let i = 0; i < 513; i++) {
+    waits.observe("item/started", collabFrame(`wait-${i}`, ["child"], { tool: "wait", status: "inProgress" }), () => true, 2);
+  }
+  assert.equal(waits.summary(), null);
+  for (let i = 1; i < 513; i++) {
+    waits.observe("item/completed", collabFrame(`wait-${i}`, ["child"], { tool: "wait" }), () => true, 3);
+  }
+  assert.equal(waits.summary()?.agents[0]?.id, "child", "the oldest wait was evicted, not retained forever");
+});
+
+test("Codex preserves a completion arriving during a send acknowledgement for the operator to see", async () => {
+  const server = new FakeServer(defaultReplies({ "turn/steer": NO_REPLY }));
+  const { handle, events, drained } = await launch(server);
+  server.notify("item/completed", collabFrame("spawn", ["child"]));
+  await settle();
+  const send = handle.send({ text: "keep going" });
+  server.notify("item/completed", collabFrame("done", ["child"], { tool: "wait", agentsStates: { child: { status: "completed", message: null } } }));
+  await settle();
+  server.push({ id: server.calls("turn/steer").at(-1)!.id, result: {} });
+  await send;
+  await settle();
+  assert.equal(latestSubagents(events)?.agents[0]?.state, "completed");
+  assert.equal(latestSubagents(events)?.finishedFolded, 0);
+  await handle.stop(); await drained;
+});
+
+for (const delivery of ["steer", "start", "sendIfIdle"] as const) {
+  test(`Codex preserves a restarted child's new completion during ${delivery} acknowledgement`, async (t) => {
+    let starts = 0;
+    const server = new FakeServer(defaultReplies({
+      "turn/start": () => ++starts === 1 ? { turn: { id: "turn-1", status: "inProgress" } } : NO_REPLY,
+      "turn/steer": NO_REPLY,
+    }));
+    const { handle, events, drained } = await launch(server);
+    t.after(async () => { await handle.stop(); await drained; });
+    const report = (id: string, status: string, message: string | null) => server.notify("item/completed",
+      collabFrame(`report-${id}-${status}`, [id], { tool: "resumeAgent", agentsStates: { [id]: { status, message } } }));
+    server.notify("item/completed", collabFrame("spawn", ["restarted", "stable", "running"]));
+    report("restarted", "completed", "old result");
+    report("stable", "completed", "stable result");
+    if (delivery !== "steer") {
+      server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1", status: "completed" } });
+    }
+    await settle();
+
+    const send = delivery === "sendIfIdle" ? handle.sendIfIdle({ text: "continue" }) : handle.send({ text: "continue" });
+    report("restarted", "running", null);
+    report("restarted", "completed", "new result");
+    report("stable", "completed", "stable result"); // A repeated report still belongs to the snapshotted run.
+    await settle();
+    const method = delivery === "steer" ? "turn/steer" : "turn/start";
+    server.push({ id: server.calls(method).at(-1)!.id, result: delivery === "steer"
+      ? { turnId: "turn-1" } : { turn: { id: "turn-2", status: "inProgress" } } });
+    await send;
+    await settle();
+    const summary = latestSubagents(events)!;
+    assert.equal(summary.agents.find((a) => a.id === "restarted")?.summary, "new result");
+    assert.equal(summary.agents.some((a) => a.id === "stable"), false);
+    assert.equal(summary.finishedFolded, 1, "only the unchanged completion folds");
+
+    const next = handle.send({ text: "reviewed the new result" });
+    await settle();
+    server.push({ id: server.calls("turn/steer").at(-1)!.id, result: {} });
+    await next;
+    await settle();
+    assert.deepEqual(latestSubagents(events)?.agents.map((a) => a.id), ["running"]);
+    assert.equal(latestSubagents(events)?.finishedFolded, 2, "the new completion folds on the following send");
+  });
+}
+
+test("Codex fold snapshots distinguish runs with identical clocks and identities reused after clear", () => {
+  for (const clear of [false, true]) {
+    const children = new CodexSubagents();
+    const report = (status: string, message: string | null) => children.observe("item/completed",
+      collabFrame(`report-${status}`, ["child"], { tool: "resumeAgent", agentsStates: { child: { status, message } } }),
+      () => true, 1);
+    report("completed", "old result");
+    const beforeSend = children.finishedRuns();
+    if (clear) children.clear();
+    report("running", null);
+    report("completed", "new result");
+    children.fold(beforeSend);
+    assert.equal(children.summary()?.agents[0]?.summary, "new result");
+    children.fold(children.finishedRuns());
+    assert.equal(children.summary(), null, "the following send folds the new result");
+  }
+});
+
+test("a resumed Codex identity whose folded count was cleared cannot subtract another child's finish", () => {
+  const children = new CodexSubagents();
+  const report = (id: string, status: string, message: string | null = null) => {
+    children.observe("item/completed", collabFrame(`report-${id}`, [id], {
+      tool: "resumeAgent", agentsStates: { [id]: { status, message } },
+    }), () => true, 1);
+  };
+  report("old", "completed", "old result");
+  children.fold(children.finishedRuns());
+  assert.equal(children.summary(), null, "folding the last finished child clears the count");
+  report("running", "running");
+  report("recent", "completed", "recent result");
+  children.fold(children.finishedRuns());
+  assert.equal(children.summary()?.finishedFolded, 1);
+  report("old", "running");
+  assert.equal(children.summary()?.finishedFolded, 1, "only the recent child's finish is still counted");
+  assert.equal(children.summary()?.agents.find((a) => a.id === "old")?.summary, null);
+  report("recent", "running", "new run detail");
+  assert.equal(children.summary()?.finishedFolded, 0);
+  assert.equal(children.summary()?.agents.find((a) => a.id === "recent")?.summary, "new run detail");
+});
+
+for (const removal of ["cap eviction", "ownership pruning"] as const) {
+  test(`Codex ${removal} removes only the forgotten child's folded contribution`, () => {
+    const children = new CodexSubagents();
+    const report = (id: string, status: string) => children.observe("item/completed",
+      collabFrame(`report-${id}`, [id], { tool: "resumeAgent", agentsStates: { [id]: { status, message: null } } }),
+      () => true, 1);
+    report("forgotten", "completed");
+    report("retained", "completed");
+    report("running", "running");
+    children.fold(children.finishedRuns());
+    assert.equal(children.summary()?.finishedFolded, 2);
+
+    if (removal === "cap eviction") {
+      for (let i = 0; i < 510; i++) report(`extra-${i}`, "running");
+    } else {
+      children.observe("unrelated", {}, (id) => id !== "forgotten", 2);
+    }
+    assert.equal(children.summary()?.finishedFolded, 1, "the retained child's finish still counts");
+    // Drop cap-test filler so the returning child's row fits inside the wire limit.
+    children.observe("unrelated", {}, (id) => id === "retained" || id === "running", 3);
+    report("forgotten", "running");
+    const summary = children.summary()!;
+    assert.equal(summary.agents.find((a) => a.id === "forgotten")?.state, "running");
+    assert.equal(summary.finishedFolded, 1, "the returning child is not counted as both running and finished");
+  });
+}

@@ -14922,6 +14922,24 @@ export function latestStackedPr(
 }
 
 /**
+ * The most recently adopted stacked pull request of a task in one repository, in ANY work
+ * episode. A child merged into its parent's branch is recovered from a new branch, which is a
+ * new episode, so its replacement is not found by `latestStackedPr`'s episode match.
+ */
+export function latestStackedPrForTask(taskId: string, owner: string, repo: string, exceptKey = ""): InspectorPr | null {
+  const row = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE stack_task_id = ? AND lower(owner) = lower(?) AND lower(repo) = lower(?)
+          AND stack_parent_pr_url IS NOT NULL AND key <> ?
+        ORDER BY stack_adopted_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(taskId, owner, repo, exceptKey) as InspectorPrRow | undefined;
+  return row ? rowToInspectorPr(row) : null;
+}
+
+/**
  * Record that the stack release check passed for exactly this child head, and under which
  * parent state (`basis`). Rewritten when either changes: a release first granted under a
  * closed parent that later merged is re-recorded as merged once that ancestry is verified.
@@ -15022,13 +15040,33 @@ function stackAtomically<T>(fn: () => T): T {
  * recovery action still depends on a parent that can move. Ordered by key and resumed after
  * `afterKey`, so a caller walking the pages reaches every row in turn. Ordering by recency
  * would starve the oldest rows, since observing a row makes it recent again.
+ *
+ * Also a child that merged while its parent could not be read, or whose base or default branch
+ * GitHub did not report, or that merged into its finished parent's branch without a merge commit
+ * or merge times yet: whether its merge reached the default branch, or needs the recovery
+ * prompt, is unresolved until those are read again.
  */
 export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
-          AND (observed_state IS NULL OR observed_state <> 'MERGED') AND key > ?
+        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL
+          -- Closed without merging: its recovery action follows a parent that can still move.
+          AND ((merged_at IS NULL AND (observed_state IS NULL OR observed_state <> 'MERGED'))
+            -- Merged, whoever recorded the merge time, with its landing still unresolved.
+            OR (CASE WHEN json_valid(stack_state) THEN CASE WHEN json_extract(stack_state, '$.childState') = 'MERGED' THEN
+                  json_extract(stack_state, '$.parentUnreadSince') IS NOT NULL
+                  OR json_extract(stack_state, '$.baseRefName') IS NULL
+                  OR json_extract(stack_state, '$.defaultBranch') IS NULL
+                  -- Merged into its finished parent's branch, with a fact the recovery prompt
+                  -- needs still unreported (\`strayMergeUndecided\`).
+                  OR (json_extract(stack_state, '$.parentState') = 'MERGED'
+                    AND json_extract(stack_state, '$.baseRefName') = json_extract(stack_state, '$.parentHeadRefName')
+                    AND (json_extract(stack_state, '$.childMergeCommitSha') IS NULL
+                      OR json_extract(stack_state, '$.childMergedAt') IS NULL
+                      OR json_extract(stack_state, '$.parentMergedAt') IS NULL))
+                END END) = 1)
+          AND key > ?
         ORDER BY key ASC LIMIT ?`,
     )
     .all(afterKey, limit) as unknown as InspectorPrRow[];
@@ -15039,7 +15077,7 @@ export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[
 export interface StackPromptClaim {
   prKey: string;
   /** A prompt (`catch-up`, `restack`) or a broken-stack recovery action typed as one. */
-  kind: "catch-up" | "restack" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
+  kind: "catch-up" | "restack" | "recover-merge" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
   tip: string;
   claimId: string;
   outcome: "uncertain" | "delivered";
@@ -15054,7 +15092,7 @@ export function readStackPromptClaim(prKey: string, kind: StackPromptClaim["kind
   if (!row) return null;
   return {
     prKey: String(row.pr_key),
-    kind: (["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
+    kind: (["catch-up", "restack", "recover-merge", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
       .find((kind) => kind === row.kind) ?? "catch-up",
     tip: String(row.tip),
     claimId: String(row.claim_id),

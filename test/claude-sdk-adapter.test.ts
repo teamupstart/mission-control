@@ -2099,3 +2099,131 @@ test("resident durable memory uses flag settings and the same directory on resum
     await handle.stop();
   }
 });
+
+test("background sub-agents become one coalesced summary, and their frames never re-arm the parent", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagents"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-subagents", ...body });
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "launching" }] } });
+  query.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "a", task_type: "local_agent", subagent_type: "Explore", description: "Map call sites" },
+    { task_id: "sh", task_type: "local_bash", description: "watch" },
+  ] }));
+  query.emit(sys("task_started", { task_id: "a", task_type: "local_agent", subagent_type: "Explore",
+    description: "Map call sites", is_backgrounded: true, tool_use_id: "toolu_a" }));
+  // Counter-only, inside the interval: held rather than sent.
+  query.emit(sys("task_progress", { task_id: "a", description: "Map call sites", last_tool_name: "Grep",
+    usage: { total_tokens: 10, tool_uses: 2, duration_ms: 1 } }));
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagents" });
+  const turn = await collect(handle.events, (e) => e.kind === "turn_done");
+  const summaries = turn.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.equal(summaries.length, 2, "the level, then task_started's launch id; progress is held");
+  assert.deepEqual(summaries[1]?.agents.map((a) => [a.id, a.type, a.state, a.launchTurnId, a.toolUses]), [
+    ["a", "Explore", "running", "toolu_a", null],
+  ]);
+
+  // After the turn: a sub-agent's own frame, then its end.
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: "toolu_a",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  query.emit(sys("task_notification", { task_id: "a", status: "completed", summary: "found 4",
+    usage: { total_tokens: 20, tool_uses: 3, duration_ms: 1 } }));
+  const after = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(after.map((e) => e.kind), ["subagents"], "the sub-agent frame did not flip the parent to working");
+  const done = after[0]!.kind === "subagents" ? after[0]!.subagents : null;
+  assert.deepEqual(done?.agents.map((a) => [a.state, a.toolUses, a.summary]), [["completed", 3, "found 4"]]);
+
+  // The operator's next turn folds the finished agent; nothing runs, so nothing is left.
+  await handle.send({ text: "next" });
+  const next = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(next.map((e) => e.kind), ["state", "subagents"]);
+  assert.equal(next[1]!.kind === "subagents" && next[1]!.subagents, null);
+  await handle.stop();
+});
+
+test("task frames the stale process sends while its replacement launches do not survive the relaunch", async (t) => {
+  // The first process ignores its closed input; the relaunch is held open until the test says.
+  const starts: Harnessed[] = [];
+  let requested!: () => void;
+  const relaunchRequested = new Promise<void>((resolve) => { requested = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    authFailureTurnGraceMs: 20,
+    authRecoveryDrainMs: 20,
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        if (launchIndex !== 0) query.end();
+      })();
+      if (launchIndex === 1) {
+        requested();
+        await released;
+      }
+      return query;
+    },
+  };
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.return = () => new Promise<never>(() => {});
+  stale.emit(INIT("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const sending = handle.sendIfIdle({ text: "continue after login" });
+  await relaunchRequested;
+  // The stale process is still the attached query while the replacement launches.
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-auth-subagents", ...body });
+  stale.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore", description: "from the replaced process" },
+  ] }));
+  stale.emit(sys("task_started", { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore",
+    description: "from the replaced process", is_backgrounded: true }));
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal(await sending, "started");
+
+  const events = await collect(handle.events, (e) => e.kind === "state" && e.state === "working");
+  const summaries = events.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.ok(summaries.length > 0, "the stale frames did reach the driver before the relaunch landed");
+  assert.equal(summaries.at(-1), null, "the replacement process starts with no sub-agents");
+});
+
+test("a sub-agent's frame during the parent's turn updates its activity without opening another turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagent-active"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  // The parent's own turn is running (the launch seeded it); a foreground sub-agent reports.
+  query.emit({ type: "assistant", session_id: "agent-subagent-active", parent_tool_use_id: "toolu_sub",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  // Bounded, so a frame that never reports fails here instead of hanging the suite.
+  const during = await Promise.race([
+    collect(handle.events, (e) => e.kind === "state"),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the sub-agent frame reported no activity")), 2_000)),
+  ]);
+  assert.deepEqual(during.at(-1), { kind: "state", state: "working", activity: "Grep" });
+
+  // One result closes the one turn: the sub-agent frame opened nothing of its own.
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagent-active" });
+  const closed = await collect(handle.events, (e) => e.kind === "turn_done");
+  assert.equal(closed.filter((e) => e.kind === "turn_done").length, 1);
+  assert.equal(await handle.sendIfIdle({ text: "next" }), "started", "the session is idle once its turn ends");
+  await handle.stop();
+});

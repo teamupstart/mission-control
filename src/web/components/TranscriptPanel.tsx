@@ -10,6 +10,7 @@ import type {
   TranscriptStreamMsg,
   TurnOriginSession,
   Session,
+  SubagentEntry,
 } from "@shared/types.ts";
 import type { ConversationView } from "@shared/protocol.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -18,7 +19,7 @@ import { messageBlockReason } from "@shared/pane.ts";
 import { pipelineDrivenSentence } from "@shared/pipeline.ts";
 import { liveActivity } from "@shared/session.ts";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
-import { api, fetchTranscriptBefore } from "../lib/api.ts";
+import { api, fetchSubagentLaunch, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { useComposerActivity } from "../lib/composer-activity.ts";
 import { composerEditorRequested, composerKeysHint } from "../lib/composer-editor.ts";
@@ -69,6 +70,8 @@ import {
   type FindScope,
 } from "../lib/find.ts";
 import { ConversationActivity, type ActivityTab } from "./ConversationActivity.tsx";
+import { BackgroundAgentsTray, type LaunchSearch } from "./BackgroundAgentsTray.tsx";
+import { launchStep, pagingStalled } from "../lib/launch-lookup.ts";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
@@ -493,6 +496,45 @@ export function TranscriptPanel({
    */
   const [flashedTurnId, setFlashedTurnId] = useState<string | null>(null);
   const turnFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The background agent whose launch is being looked for, and the call id that launched it.
+   *
+   * `toolUseId` is null while the daemon is still being asked which call the transcript file
+   * records for an agent its source did not name (`fetchSubagentLaunch`). A launch can be
+   * older than the loaded window, so finding it may then take several pages; `launchStep`
+   * decides each step. The nonce tells a reply apart from a later click on the same agent.
+   */
+  const [launchSearch, setLaunchSearch] = useState<{ agentId: string; toolUseId: string | null; nonce: number } | null>(
+    null,
+  );
+  /**
+   * The back anchor (byte offset) the current search last asked for an older page from, or
+   * null before it has asked. A page that lands without moving the anchor means paging has
+   * stopped advancing, which is the one thing that ends a search short of the start - a page
+   * that moves it while adding no turn is progress (`pagingStalled`).
+   */
+  const launchAskedAt = useRef<number | null>(null);
+  /** The search and the session as of this render, for a daemon reply to check it still applies. */
+  const launchSearchRef = useRef(launchSearch);
+  launchSearchRef.current = launchSearch;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  /** Searches that ended without a turn, by agent id, so their row can say so. Cleared by a retry. */
+  const [launchMisses, setLaunchMisses] = useState<ReadonlyMap<string, LaunchSearch>>(() => new Map());
+  /**
+   * The session the launch-search state above belongs to. Today's hosts remount this panel
+   * per session, but the panel itself follows a `sessionId` change (its stream and paging
+   * reset on one), so a search started for one session must not run against the next: it
+   * would page through the new transcript for the old session's call id. Reset during
+   * render, not in an effect, so no effect of the new session ever sees the old search.
+   */
+  const [launchSession, setLaunchSession] = useState(sessionId);
+  if (launchSession !== sessionId) {
+    setLaunchSession(sessionId);
+    setLaunchSearch(null);
+    setLaunchMisses(new Map());
+    launchAskedAt.current = null;
+  }
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composerActivity = useComposerActivity(sessionId);
@@ -644,8 +686,15 @@ export function TranscriptPanel({
    */
   useEffect(() => {
     if (!jump) return;
-    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(jump.id)}"]`);
-    el?.scrollIntoView({ block: "center" });
+    const log = logRef.current;
+    const target = turnElement(log, jump.id);
+    if (!log || !target) return;
+    target.scrollIntoView({ block: "center" });
+    // Say where the reader now is at once, not when the scroll event arrives a frame later.
+    // A session upsert landing in between - background agents send them steadily - re-runs
+    // the tail-follow layout effect, which would read the stale "at the bottom" and snap the
+    // log straight back down past the turn the reader just asked to see.
+    atBottom.current = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
   }, [jump, terminal]);
 
   /**
@@ -667,7 +716,7 @@ export function TranscriptPanel({
    */
   useEffect(() => {
     if (!jump) return;
-    const el = logRef.current?.querySelector(`[data-turn-id="${CSS.escape(jump.id)}"]`);
+    const el = turnElement(logRef.current, jump.id);
     for (const animation of el?.getAnimations() ?? []) animation.currentTime = 0;
     setFlashedTurnId(jump.id);
     if (turnFlashTimer.current) clearTimeout(turnFlashTimer.current);
@@ -921,6 +970,81 @@ export function TranscriptPanel({
   }, [loadingOlder, sessionId]);
 
   /**
+   * Run "Jump to launch" one step at a time: jump when the launching turn is loaded, page
+   * older turns in while it is not and the transcript has more, and record a miss once the
+   * start is reached or a page fails. Re-run by every page that lands, through `visible` and
+   * the paging state, so a launch any number of pages back is found without the reader
+   * scrolling.
+   *
+   * Searched in `visible` - the turns the log draws - because the jump below lands on a drawn
+   * element; `messages` holds the same calls, but a turn the projection replaced has no row.
+   */
+  useEffect(() => {
+    // Nothing to search for until the daemon has said which call launched the agent.
+    if (!launchSearch?.toolUseId) return;
+    const step = launchStep(visible, launchSearch.toolUseId, {
+      canLoadOlder,
+      loadingOlder,
+      failed: olderError !== null,
+      stalled: pagingStalled(launchAskedAt.current, backAnchor(readHistory(sessionId)), loadingOlder),
+    });
+    switch (step.kind) {
+      case "found":
+        setLaunchSearch(null);
+        setJump((j) => ({ id: step.turnId, nonce: (j?.nonce ?? 0) + 1 }));
+        break;
+      case "load":
+        launchAskedAt.current = backAnchor(readHistory(sessionId));
+        void loadOlder();
+        break;
+      case "wait":
+        break;
+      case "miss":
+        setLaunchSearch(null);
+        setLaunchMisses((prev) => new Map(prev).set(launchSearch.agentId, step.reason));
+        break;
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
+    }
+  }, [launchSearch, visible, messages, canLoadOlder, loadingOlder, olderError, loadOlder, sessionId]);
+
+  function jumpToLaunch(agent: SubagentEntry): void {
+    launchAskedAt.current = null;
+    // A failure from before this search is not this search's failure.
+    setOlderError(null);
+    setLaunchMisses((prev) => {
+      if (!prev.has(agent.id)) return prev;
+      const next = new Map(prev);
+      next.delete(agent.id);
+      return next;
+    });
+    const nonce = (launchSearch?.nonce ?? 0) + 1;
+    setLaunchSearch({ agentId: agent.id, toolUseId: agent.launchTurnId, nonce });
+    if (agent.launchTurnId) return;
+    // The source named no launching call: ask which call the transcript file records as
+    // launching this agent, then search for it like any other. A reply that arrives after
+    // another click, or after this panel moved to another session, is dropped.
+    const asked = sessionId;
+    void fetchSubagentLaunch(sessionId, agent.id).then((res) => {
+      const current = launchSearchRef.current;
+      if (asked !== sessionIdRef.current || current?.nonce !== nonce || current.agentId !== agent.id) return;
+      if (res.ok && res.toolUseId) {
+        setLaunchSearch({ ...current, toolUseId: res.toolUseId });
+        return;
+      }
+      setLaunchSearch(null);
+      setLaunchMisses((prev) => new Map(prev).set(agent.id, res.ok ? "missing" : "error"));
+    });
+  }
+
+  /** What each tray row's link says: a search under way, or one that ended without a turn. */
+  const launches: ReadonlyMap<string, LaunchSearch> = launchSearch
+    ? new Map(launchMisses).set(launchSearch.agentId, "searching")
+    : launchMisses;
+
+  /**
    * Keep the reader's place across both kinds of list growth.
    *
    * Prepending older turns pushes everything down by exactly the height that arrived, so
@@ -953,6 +1077,26 @@ export function TranscriptPanel({
     }
     if (atBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages, session.pendingTurns, inProgress]);
+
+  /**
+   * Keep a reader at the tail there when the LOG itself changes height.
+   *
+   * The effect above follows the content. This follows the box: the Background agents tray
+   * appears, grows a row, folds or goes between the log and the composer, and the composer
+   * grows as a reply is typed. Each takes height from the log without moving `scrollTop` and
+   * without a scroll event, so a pinned reader's last lines would slide under the tray and
+   * `atBottom` would still claim they were in view.
+   */
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (atBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+    // The terminal frame wraps the log in a different parent, so switching view remounts it.
+  }, [terminal]);
 
   // Deliberately don't grab focus when the panel opens. Focus mode is opened with
   // `e` and closed with `e`, and the app's global keys (including that toggle)
@@ -1195,6 +1339,8 @@ export function TranscriptPanel({
                     endTs={row.endTs}
                     agentLabel={agentLabel}
                     find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                    turnIds={row.turnIds}
+                    flashed={flashedTurnId !== null && row.turnIds.includes(flashedTurnId)}
                   />
                 ) : (
                   <ToolRun
@@ -1203,6 +1349,8 @@ export function TranscriptPanel({
                     ts={row.ts}
                     agentLabel={agentLabel}
                     find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                    turnIds={row.turnIds}
+                    flashed={flashedTurnId !== null && row.turnIds.includes(flashedTurnId)}
                   />
                 )
               ) : terminal ? (
@@ -1330,6 +1478,12 @@ export function TranscriptPanel({
           />
         )}
       </div>
+
+      {/* Between the split and the composer, as a sibling of both: inside `.find-split` it
+          would share the rail's column and vanish with it, and inside `.transcript-compose`
+          it would sit under that box's image-drop handlers. Here it stays in view whatever
+          the rail shows and wherever the log is scrolled. Draws nothing without agents. */}
+      <BackgroundAgentsTray session={session} launches={launches} onJumpToLaunch={jumpToLaunch} />
 
       {/*
         An engine-driven session gets a SENTENCE where the box would be, not a disabled box.
@@ -1943,6 +2097,19 @@ function TurnProse({
 }
 
 /**
+ * The element a turn id lands on: the turn's own root, or the folded tool row that holds it.
+ *
+ * A tool-only turn that joined a run has no element of its own - the run keeps its first
+ * turn's id - so a jump keyed on the others would find nothing. Real Claude transcripts write
+ * each tool call as its own record, so a launch is usually one of those joined turns. Rows
+ * list every turn they hold in `data-turn-ids`, and `~=` matches one entry of that list.
+ */
+function turnElement(log: HTMLElement | null, id: string): Element | null {
+  const quoted = CSS.escape(id);
+  return log?.querySelector(`[data-turn-id="${quoted}"], [data-turn-ids~="${quoted}"]`) ?? null;
+}
+
+/**
  * A run of back-to-back tool-only turns, on one line. Reads as a single sentence -
  * "claude executed  bash ls  bash wc" - because to the person watching, that's what
  * it was: one stretch of the agent working, not a dozen turns worth a header each.
@@ -1952,15 +2119,20 @@ function ToolRun({
   ts,
   agentLabel,
   find,
+  turnIds,
+  flashed,
 }: {
   tools: ToolCall[];
   /** Start of the folded run: transcriptRows deliberately keeps its first turn's time. */
   ts: number;
   agentLabel: string;
   find?: RowFind | null;
+  /** Every turn folded into this row, so a jump to any of them lands here (`turnElement`). */
+  turnIds: readonly string[];
+  flashed?: boolean;
 }): React.JSX.Element {
   return (
-    <div className="turn turn-assistant turn-toolrun">
+    <div className={`turn turn-assistant turn-toolrun${flashed ? " is-flashed" : ""}`} data-turn-ids={turnIds.join(" ")}>
       <div className="turn-role">{agentLabel} executed</div>
       <ToolChips tools={tools} find={find} />
       {/* The same byline time as a prose turn, but a child of the row rather than of the
@@ -2222,12 +2394,16 @@ function TerminalToolRun({
   endTs,
   agentLabel,
   find,
+  turnIds,
+  flashed,
 }: {
   tools: ToolCall[];
   ts: number;
   endTs: number;
   agentLabel: string;
   find?: RowFind | null;
+  turnIds: readonly string[];
+  flashed?: boolean;
 }): React.JSX.Element {
   const span = endTs > ts && ts > 0 ? endTs - ts : 0;
   // Open when it holds a match, because a closed record is not on screen: find counts a
@@ -2235,7 +2411,11 @@ function TerminalToolRun({
   // otherwise - `open` as a starting state, so the reader's own click still wins.
   const hasHit = (find?.hits.length ?? 0) > 0;
   return (
-    <details className="pty-toolrun" open={hasHit || undefined}>
+    <details
+      className={`pty-toolrun${flashed ? " is-flashed" : ""}`}
+      open={hasHit || undefined}
+      data-turn-ids={turnIds.join(" ")}
+    >
       {/* One tooltip on the row rather than one per part: the span needs a sentence saying
           which of the two times it is, and a second bubble nested inside this one would
           fire under the same pointer. */}

@@ -307,6 +307,13 @@ export const HookIngestSchema = z.object({
   //
   // Absent (not `false`) when it doesn't match, and absent on every non-Bash event.
   prCreated: z.boolean().optional(),
+  // The sub-agent this hook fired inside, when it did. Claude stamps `agent_id` on every hook
+  // a sub-agent's own tool calls raise, and those describe the sub-agent, not its parent: a
+  // background agent's `PreToolUse` must not flip an idle parent back to working. The daemon
+  // reads its presence and nothing else, so the value is a free string.
+  //
+  // Optional so a hook installed before this field existed keeps ingesting unchanged.
+  agentId: z.string().min(1).max(200).optional(),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;
@@ -5625,7 +5632,7 @@ export const InjectPromptSchema = z.object({
    */
   stack: z.object({
     prKey: z.string().min(1).max(512),
-    kind: z.enum(["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
+    kind: z.enum(["catch-up", "restack", "recover-merge", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
     tip: z.string().min(1).max(128).nullable(),
   }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),

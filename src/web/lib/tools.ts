@@ -338,6 +338,12 @@ export type TranscriptRow =
        */
       endTs: number;
       tools: ToolCall[];
+      /**
+       * Every turn folded into this row, oldest first; `id` is the first of them. A turn
+       * that joined a run has no element of its own, so anything that jumps to a turn by
+       * id (the Yours rail, Jump to launch) lands on the row that holds it through this.
+       */
+      turnIds: string[];
     };
 
 /**
@@ -366,10 +372,27 @@ export function transcriptRows(messages: TranscriptMessage[]): TranscriptRow[] {
     const last = rows[rows.length - 1];
     if (last?.kind === "tools") {
       last.tools = [...last.tools, ...m.tools];
+      last.turnIds = [...last.turnIds, m.id];
       // Only ever forward: an undated turn (`ts` 0) joining a dated run must not drag the
       // span backwards into a negative number the presentation would have to guard.
       last.endTs = Math.max(last.endTs, m.ts);
-    } else rows.push({ kind: "tools", id: m.id, ts: m.ts, endTs: m.ts, tools: [...m.tools] });
+    } else rows.push({ kind: "tools", id: m.id, ts: m.ts, endTs: m.ts, tools: [...m.tools], turnIds: [m.id] });
   }
   return rows;
 }
+
+/**
+ * The turn whose tool calls include `toolUseId`, or null when no loaded turn made that call.
+ *
+ * Background sub-agents name their launch by the parent's tool call id, not by a transcript
+ * record, because the Agent SDK stream and the transcript file do not share record ids. The
+ * call id is the one thing both sides agree on, so the launch is found here, in the turns the
+ * browser holds, and handed to the same turn jump the Yours rail uses.
+ */
+export function turnForToolUse(messages: readonly TranscriptMessage[], toolUseId: string): string | null {
+  for (const m of messages) {
+    if (m.tools.some((t) => t.id === toolUseId)) return m.id;
+  }
+  return null;
+}
+

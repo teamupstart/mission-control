@@ -478,6 +478,57 @@ export interface WorkCycleSummary {
   updatedAt: number;
 }
 
+/** Where one background sub-agent is. Running is live; the other three are how it ended. */
+export type SubagentState = "running" | "completed" | "failed" | "stopped";
+
+/**
+ * One background sub-agent a session launched, as its harness reported it.
+ *
+ * Every nullable value is null when the source does not report it, never a placeholder: a
+ * terminal hook says only that an agent started and stopped, so its row carries no counters,
+ * and a renderer omits what is null rather than drawing a zero. Elapsed time is not a field -
+ * the browser derives it from `startedAt` and `endedAt`, so a running row ticks without a
+ * frame per second on the wire.
+ */
+export interface SubagentEntry {
+  /** The harness's own id for this agent (Claude's `task_id`). Unique within the summary. */
+  id: string;
+  /** Agent type, such as `Explore` or `general-purpose`. */
+  type: string | null;
+  description: string | null;
+  state: SubagentState;
+  /** Epoch ms the source says it started, else when the daemon first saw it. */
+  startedAt: number;
+  /** Epoch ms it ended; null while running. */
+  endedAt: number | null;
+  toolUses: number | null;
+  tokens: number | null;
+  /** Name of the last tool it ran. */
+  lastTool: string | null;
+  /** The source's one-line progress or result summary. */
+  summary: string | null;
+  /**
+   * The id of the parent's tool call that launched it (Claude's Agent `tool_use` id), which
+   * is what a conversation surface anchors "jump to launch" on.
+   */
+  launchTurnId: string | null;
+}
+
+/**
+ * A session's background sub-agents: live state, rebuilt from the driver's stream and never
+ * persisted. Absent on a session with nothing to show.
+ *
+ * `agents` holds at most `SUBAGENT_LIMIT` entries, running first (oldest start first) and
+ * then the newest finished. A finished agent stays listed until the operator's next turn,
+ * which folds it into `finishedFolded` - except when the list would exceed the limit, which
+ * folds the oldest finished agents at once to make room. Foreground and ambient work never
+ * appears here.
+ */
+export interface SubagentSummary {
+  agents: SubagentEntry[];
+  finishedFolded: number;
+}
+
 /**
  * A persisted SDK session whose driver has not been adopted by this daemon yet.
  *
@@ -862,6 +913,12 @@ export interface Session {
    * offer rather than making Retro permanent chrome.
    */
   retro?: RetroSummary;
+  /**
+   * The background sub-agents this session launched, or ABSENT when there are none running
+   * or recently finished. Written only by `Registry.setSubagents` from the session's driver,
+   * and cleared when an SDK session registers again or its process is replaced.
+   */
+  subagents?: SubagentSummary;
   /**
    * The pipeline run this session is doing the work of, or null - which is every session
    * on a fleet with no pipeline provider enabled, and so the overwhelmingly common case.
@@ -3884,6 +3941,13 @@ export interface ToolCall {
    * reviewer through here or not at all.
    */
   input?: string;
+  /**
+   * The harness's own id for this call (Claude's `tool_use` block id), when the transcript
+   * records one. It is the id the Agent SDK names a background sub-agent's launch by
+   * (`SubagentEntry.launchTurnId`), so the conversation can find the turn that launched an
+   * agent. Display-only: Foreman's window never reads it.
+   */
+  id?: string;
 }
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */

@@ -13,6 +13,8 @@ import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
 import type { StandingInstructionsMechanism } from "@shared/standing-instructions.ts";
+import { CodexSubagents } from "./subagents.ts";
+import { SubagentEmitter } from "../../sdk/subagent-emitter.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
   SdkEvent,
@@ -373,6 +375,8 @@ class CodexSdkSession implements SdkSessionHandle {
    */
   rolloutPath: (path: string) => string = (path) => path;
   private readonly out = new EventStream();
+  private readonly subagents = new CodexSubagents();
+  private readonly subagentEvents = new SubagentEmitter((summary) => this.out.emit({ kind: "subagents", subagents: summary }));
   private readonly pending = new Map<string, Pending>();
   private readonly fileChanges = new Map<
     string,
@@ -462,15 +466,23 @@ class CodexSdkSession implements SdkSessionHandle {
    */
   async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     const threadId = this.requireThread();
+    const finished = this.subagents.finishedRuns();
     const input = turnInput(turn);
     const active = this.activeTurnId;
     if (active) {
       const params: TurnSteerParams = { threadId, input, expectedTurnId: active };
       await this.client.request<TurnSteerResponse>("turn/steer", params);
+      this.foldSubagents(finished);
       return "steered";
     }
     await this.startTurn(threadId, input);
+    this.foldSubagents(finished);
     return "started";
+  }
+
+  private foldSubagents(runs: ReadonlyMap<string, number>): void {
+    this.subagents.fold(runs);
+    this.subagentEvents.update(this.subagents.summary());
   }
 
   private readonly compaction = new CompactionCompletion();
@@ -492,7 +504,9 @@ class CodexSdkSession implements SdkSessionHandle {
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     const threadId = this.requireThread();
     if (this.activeTurnId) return null;
+    const finished = this.subagents.finishedRuns();
     await this.startTurn(threadId, turnInput(turn));
+    this.foldSubagents(finished);
     return "started";
   }
 
@@ -638,6 +652,8 @@ class CodexSdkSession implements SdkSessionHandle {
       sessionStartSource: "clear",
     } satisfies ThreadStartParams);
     this.retireThread(retiring);
+    this.subagents.clear();
+    this.subagentEvents.update(null);
     this.activeTurnId = null;
     this.lastUsage = null;
     this.bind(started, true);
@@ -655,6 +671,7 @@ class CodexSdkSession implements SdkSessionHandle {
     this.compaction.fail("Session stopped during compaction.");
     if (this.stopped) return;
     this.stopped = true;
+    this.subagentEvents.dispose();
     try {
       await this.interrupt();
     } catch {
@@ -948,6 +965,8 @@ class CodexSdkSession implements SdkSessionHandle {
     // attached to that root the first time it is asked about.
     this.learnThreadTree(method, params, threadId);
     if (this.isRetired(threadId)) return;
+    this.subagents.observe(method, params, (id) => id !== this.threadId && this.isOwnTree(id) && !this.isRetired(id), Date.now());
+    this.subagentEvents.update(this.subagents.summary());
     switch (method) {
       case "turn/started": {
         if (!this.isCurrentThread(params)) return;
@@ -1270,6 +1289,7 @@ class CodexSdkSession implements SdkSessionHandle {
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err);
     } finally {
+      this.subagentEvents.dispose();
       this.compaction.fail(reason);
       this.stopped = true;
       for (const [key, held] of this.pending) {

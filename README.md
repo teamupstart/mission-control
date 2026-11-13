@@ -61,6 +61,9 @@ that handles the routine interruptions you don't want, a verification workflow t
 and repository memory so the next agent does not repeat the last one's mistake. When an external SDLC engine 
 drives the work, Mission Control watches that too.
 
+Codex SDK sessions show background child agents from their native thread-tree frames, including
+children still running after the parent finishes. See [harness behavior](docs/harnesses-and-terminals.md#codex-sdk-background-sub-agents).
+
 Prefer one page? The
 [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html)
 is this same tour as a single self-contained document, with 25 screenshots from a running

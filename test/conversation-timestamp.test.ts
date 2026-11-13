@@ -76,7 +76,7 @@ test("the conversation dates prose and a folded tool run from its first turn", (
   assert.match(html, /<div class="turn-role">you<time class="conversation-time turn-time"/);
   // A folded run lays label and chips along one line, so its byline cannot reach the row's
   // right edge; the time is a sibling of both. Asserted by the label div closing on itself.
-  assert.match(html, /turn-toolrun"><div class="turn-role">claude executed<\/div>/);
+  assert.match(html, /turn-toolrun" data-turn-ids="[^"]+"><div class="turn-role">claude executed<\/div>/);
   assert.match(html, /<\/div><time class="conversation-time turn-time" dateTime="[^"]+:08/);
 });
 

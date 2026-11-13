@@ -285,6 +285,98 @@ const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
  * advisor plan relies on this output; extend it, do not change it.
  */
 const ADVISOR_TURN = "E2E_ADVISOR_CALLS";
+/**
+ * The prompt that launches three BACKGROUND sub-agents and ends its turn with them still
+ * running, in the frame shapes Claude Code's SDK stream uses: an `Agent` tool_use in the
+ * transcript, `background_tasks_changed` (the live set), `task_started` and `task_progress`
+ * per agent, then the turn's `result`. About a second later the third agent finishes
+ * (`task_updated`, `task_notification`, and a level without it).
+ *
+ * Alongside them, everything that must NOT count: a foreground agent that starts and ends
+ * inside the turn, an ambient housekeeping agent, and a background shell. After the result a
+ * sub-agent's own assistant frame arrives, which must not re-arm the idle parent. Matched by
+ * `includes` so a dispatch can carry it in its task text. Later phases rely on this output;
+ * extend it, do not change it.
+ */
+const BACKGROUND_AGENTS_TURN = "E2E_BACKGROUND_AGENTS";
+const BACKGROUND_AGENTS = [
+  { id: "bg-agent-1", type: "Explore", description: "Map every offset-pagination call site", tools: 18, tokens: 41_000, last: "Grep" },
+  { id: "bg-agent-2", type: "general-purpose", description: "Convert billing report queries", tools: 6, tokens: 12_000, last: "Edit" },
+  { id: "bg-agent-3", type: "Explore", description: "Find contract tests for /ledger", tools: 9, tokens: 22_000, last: "Read" },
+];
+const BACKGROUND_AGENTS_FINISH_MS = 1_000;
+/**
+ * The same three agents and the same frames as `BACKGROUND_AGENTS_TURN`, with the launch
+ * written to the transcript the way the real CLI writes it: one record per content block, so
+ * the prose is a record of its own and each `Agent` call is a tool-only record. Those fold
+ * into one tool row behind a leading `Read`, which is exactly where a launch's own turn id
+ * stops having an element of its own. A long prose turn follows, so the launch sits above
+ * the fold of any conversation pane and "Jump to launch" has somewhere to scroll. Distinct
+ * by its prefix, so neither sentinel contains the other.
+ */
+const SPLIT_BACKGROUND_AGENTS_TURN = "E2E_SPLIT_BACKGROUND_AGENTS";
+/**
+ * Background agents launched further back than the conversation first loads. The launch is
+ * followed by about 600 KB of later turns - past the daemon's 512 KB, 80-turn opening read -
+ * so "Jump to launch" has to page older turns in before it can land. Three agents, one per
+ * way a search can go: the first names its launching call (`tool_use_id`); the second's start
+ * frame does not, so it is found by its own id, which the launch's tool result records against
+ * its `Agent` call; the third was never launched by any call in this transcript, so its search
+ * reaches the start and says so.
+ * Distinct by its prefix, so no other sentinel contains it.
+ */
+const DISTANT_BACKGROUND_AGENTS_TURN = "E2E_DISTANT_BACKGROUND_AGENTS";
+const DISTANT_AGENTS = [
+  { id: "distant-agent-1", type: "Explore", description: "Trace the distant ledger writes", launched: true, named: true },
+  { id: "distant-agent-2", type: "general-purpose", description: "Rewrite the distant export job", launched: true, named: false },
+  { id: "distant-agent-3", type: "Explore", description: "Audit an orphaned migration", launched: false, named: false },
+];
+const DISTANT_FILLER_TURNS = 100;
+/**
+ * The same agents and frames as `DISTANT_BACKGROUND_AGENTS_TURN`, with twice the later turns
+ * (about 1.2 MB), so the launch sits two older pages back rather than one. Distinct by its
+ * prefix, so neither sentinel contains the other.
+ */
+const DEEP_BACKGROUND_AGENTS_TURN = "E2E_DEEP_BACKGROUND_AGENTS";
+const DEEP_FILLER_TURNS = 200;
+const DISTANT_FILLER = `Later work, long enough to push the launch out of the opening window. ${"ledger ".repeat(850)}`;
+/**
+ * Three agents with the same description and type, none named by a call id on its start frame.
+ * Two were launched by their own `Agent` calls, written as separate tool rows, and each call's
+ * tool result names the agent it launched, as the real CLI writes it. The third was launched by
+ * no call in this transcript. About a second after the turn the newer launched agent finishes,
+ * so the operator's next turn folds it out of the tray while its call stays in the transcript:
+ * the third, still running, must not be handed that call. Distinct by its prefix.
+ */
+const FOLDED_TWIN_BACKGROUND_AGENTS_TURN = "E2E_FOLDED_TWIN_BACKGROUND_AGENTS";
+const FOLDED_TWINS = [
+  { id: "folded-twin-older", type: "Explore", description: "Sweep the ledger for offsets", launched: true },
+  { id: "folded-twin-newer", type: "Explore", description: "Sweep the ledger for offsets", launched: true },
+  { id: "folded-twin-orphan", type: "Explore", description: "Sweep the ledger for offsets", launched: false },
+];
+/**
+ * One background agent whose start frame names no launching call, launched while someone is
+ * watching: the `Agent` call is written at once and its async-launch result - the record naming
+ * the agent - about 4 s later, well past the daemon's 900 ms stream poll, so an open
+ * conversation receives the two in separate appends, and a click in between finds no launch
+ * recorded yet. Distinct by its prefix.
+ */
+const LIVE_BACKGROUND_AGENTS_TURN = "E2E_LIVE_BACKGROUND_AGENTS";
+const LIVE_AGENT = { id: "live-agent-1", type: "Explore", description: "Watch the ledger stream" };
+const LIVE_RESULT_DELAY_MS = 4_000;
+const SPLIT_LAUNCH_FILLER = Array.from(
+  { length: 60 },
+  (_, i) => `Step ${i + 1}: while the background agents work, keep reading the ledger module.`,
+).join("\n");
+/**
+ * Five background agents, all left running: more than the board draws before folding the
+ * rest behind "+N more". The same frame shapes as `BACKGROUND_AGENTS_TURN`, with no extras
+ * and nothing finishing. Distinct by its prefix, so neither sentinel contains the other.
+ */
+const MANY_BACKGROUND_AGENTS_TURN = "E2E_MANY_BACKGROUND_AGENTS";
+const MANY_BACKGROUND_AGENTS = Array.from({ length: 5 }, (_, i) => ({
+  id: `many-agent-${i + 1}`, type: "Explore", description: `Survey area ${i + 1}`, tools: i + 1, tokens: 1_000, last: "Read",
+}));
 const ADVISOR_MODEL = "claude-opus-5-5";
 const ADVISOR_TEXT = "E2E advisor guidance: check the empty input before the loop.";
 
@@ -1411,6 +1503,231 @@ function answerAuthenticationFailure() {
   });
 }
 
+/** The `MANY_BACKGROUND_AGENTS_TURN` script: launch five, end the turn, leave them running. */
+function runManyBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  appendTurn("assistant", [
+    { type: "text", text: "Launching many background agents" },
+    ...MANY_BACKGROUND_AGENTS.map((agent) => ({
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+    })),
+  ]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching many background agents" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: MANY_BACKGROUND_AGENTS.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  for (const agent of MANY_BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: `toolu_${agent.id}`,
+    });
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 1_000 },
+    });
+  }
+  answer([prompt]);
+}
+
+/**
+ * The user record Claude Code answers a backgrounded `Agent` call with: a tool result whose
+ * text names the agent (`agentId: ...`) and the structured `toolUseResult` beside it, in the
+ * shape the real CLI writes. The agent id is the task id its SDK stream reports.
+ */
+function appendAsyncLaunched(agent) {
+  appendTurn("user", [{
+    type: "tool_result",
+    tool_use_id: `toolu_${agent.id}`,
+    content: [{
+      type: "text",
+      text: `Async agent launched successfully.\nagentId: ${agent.id} (internal ID - do not mention to user.)\nThe agent is working in the background. You will be notified automatically when it completes.`,
+    }],
+  }], { toolUseResult: { isAsync: true, status: "async_launched", agentId: agent.id, description: agent.description } });
+}
+
+/** The `LIVE_BACKGROUND_AGENTS_TURN` script: the call now, the result naming its agent later. */
+function runLiveBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const agent = LIVE_AGENT;
+  appendTurn("assistant", [{ type: "text", text: "Launching a live background agent" }]);
+  appendTurn("assistant", [{
+    type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+    input: { description: agent.description, prompt: agent.id, subagent_type: agent.type, run_in_background: true },
+  }]);
+  appendTurn("assistant", [{ type: "text", text: SPLIT_LAUNCH_FILLER }]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching a live background agent" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: [{ task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description }],
+  });
+  system("task_started", {
+    task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    is_backgrounded: true, spawn_depth: 1,
+  });
+  answer([prompt]);
+  setTimeout(() => appendAsyncLaunched(agent), LIVE_RESULT_DELAY_MS);
+}
+
+/** The `FOLDED_TWIN_BACKGROUND_AGENTS_TURN` script: launch, finish the newer launched one. */
+function runFoldedTwinBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const level = (agents) => system("background_tasks_changed", {
+    tasks: agents.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  appendTurn("assistant", [{ type: "text", text: "Launching folded twin agents" }]);
+  for (const agent of FOLDED_TWINS.filter((a) => a.launched)) {
+    appendTurn("assistant", [{
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { description: agent.description, prompt: agent.id, subagent_type: agent.type, run_in_background: true },
+    }]);
+    appendAsyncLaunched(agent);
+    // Prose between the launches, so each call is a tool row of its own.
+    appendTurn("assistant", [{ type: "text", text: `Launched ${agent.id}.` }]);
+  }
+  appendTurn("assistant", [{ type: "text", text: SPLIT_LAUNCH_FILLER }]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching folded twin agents" }] },
+  });
+  level(FOLDED_TWINS);
+  for (const agent of FOLDED_TWINS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1,
+    });
+  }
+  answer([prompt]);
+  setTimeout(() => {
+    const newer = FOLDED_TWINS[1];
+    system("task_notification", { task_id: newer.id, status: "completed", output_file: "", summary: "swept" });
+    level(FOLDED_TWINS.filter((a) => a !== newer));
+  }, BACKGROUND_AGENTS_FINISH_MS);
+}
+
+/** The `DISTANT_BACKGROUND_AGENTS_TURN` script: launch, bury the launch, leave them running. */
+function runDistantBackgroundAgents(prompt, fillerTurns = DISTANT_FILLER_TURNS) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  appendTurn("assistant", [{ type: "text", text: "Launching distant background agents" }]);
+  for (const agent of DISTANT_AGENTS.filter((a) => a.launched)) {
+    appendTurn("assistant", [{
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { description: agent.description, prompt: agent.description, subagent_type: agent.type, run_in_background: true },
+    }]);
+    appendAsyncLaunched(agent);
+  }
+  for (let i = 0; i < fillerTurns; i += 1) {
+    appendTurn("assistant", [{ type: "text", text: `${i + 1}. ${DISTANT_FILLER}` }]);
+  }
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching distant background agents" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: DISTANT_AGENTS.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  for (const agent of DISTANT_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, ...(agent.named ? { tool_use_id: `toolu_${agent.id}` } : {}),
+    });
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: "Read",
+      usage: { total_tokens: 1_000, tool_uses: 3, duration_ms: 1_000 },
+    });
+  }
+  answer([prompt]);
+}
+
+/**
+ * The `BACKGROUND_AGENTS_TURN` script. See that constant for what it proves. `split` writes
+ * the launch as `SPLIT_BACKGROUND_AGENTS_TURN` describes; the frames are identical.
+ */
+function runBackgroundAgents(prompt, { split = false } = {}) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const toolUse = (agent) => `toolu_${agent.id}`;
+  const levelEntry = (agent) => ({
+    task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+  });
+  const shell = { task_id: "bg-shell-1", task_type: "local_bash", description: "npm run watch" };
+  const ambient = { ...levelEntry({ id: "bg-ambient-1", type: "general-purpose", description: "Housekeeping" }), ambient: true };
+
+  const launches = BACKGROUND_AGENTS.map((agent) => ({
+    type: "tool_use",
+    id: toolUse(agent),
+    name: "Agent",
+    input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+  }));
+  if (split) {
+    appendTurn("assistant", [{ type: "text", text: "Launching background agents" }]);
+    appendTurn("assistant", [{ type: "tool_use", id: "toolu_split_read", name: "Read", input: { file_path: "src/ledger.ts" } }]);
+    for (const launch of launches) appendTurn("assistant", [launch]);
+    appendTurn("assistant", [{ type: "text", text: SPLIT_LAUNCH_FILLER }]);
+  } else {
+    appendTurn("assistant", [{ type: "text", text: "Launching background agents" }, ...launches]);
+  }
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching background agents" }] },
+  });
+
+  // A foreground agent: it blocks the turn, so it never counts.
+  system("task_started", {
+    task_id: "fg-agent-1", task_type: "local_agent", subagent_type: "Plan", description: "Foreground planning",
+    is_backgrounded: false, tool_use_id: "toolu_fg-agent-1",
+  });
+  system("task_notification", { task_id: "fg-agent-1", status: "completed", output_file: "", summary: "planned" });
+
+  // The live set joins before each task_started, as the real CLI orders it.
+  system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.map(levelEntry), shell, ambient] });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: toolUse(agent),
+    });
+  }
+  system("task_started", { task_id: shell.task_id, task_type: "local_bash", description: shell.description, is_backgrounded: true });
+  system("task_started", { ...ambient, is_backgrounded: true, skip_transcript: true });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 5_000 },
+    });
+  }
+  answer([prompt]);
+
+  // A background agent keeps talking after the parent's turn ended.
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: toolUse(BACKGROUND_AGENTS[0]),
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_inner_grep", name: "Grep", input: { pattern: "offset" } }] },
+  });
+
+  setTimeout(() => {
+    const done = BACKGROUND_AGENTS[2];
+    system("task_updated", { task_id: done.id, patch: { status: "completed", end_time: Date.now() } });
+    system("task_notification", {
+      task_id: done.id, tool_use_id: toolUse(done), status: "completed", output_file: "", summary: "Found 4 contract tests",
+      usage: { total_tokens: done.tokens + 1_000, tool_uses: done.tools + 1, duration_ms: 6_000 },
+    });
+    system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.slice(0, 2).map(levelEntry), shell, ambient] });
+  }, BACKGROUND_AGENTS_FINISH_MS);
+}
+
 /** Run the fake scout's file write and real submission while its SDK turn stays open. */
 function beginScoutTurn(prompt) {
   beginHeldTurn(runScout(prompt));
@@ -1906,6 +2223,35 @@ rl.on("line", (line) => {
         { type: "tool_use", id: `run-${turn}-c`, name: "Read", input: { file_path: "src/server/registry.ts" } },
       ]);
       answer([prompt]);
+      return;
+    }
+
+    if (prompt.includes(MANY_BACKGROUND_AGENTS_TURN)) {
+      runManyBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(LIVE_BACKGROUND_AGENTS_TURN)) {
+      runLiveBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(FOLDED_TWIN_BACKGROUND_AGENTS_TURN)) {
+      runFoldedTwinBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(DEEP_BACKGROUND_AGENTS_TURN)) {
+      runDistantBackgroundAgents(prompt, DEEP_FILLER_TURNS);
+      return;
+    }
+    if (prompt.includes(DISTANT_BACKGROUND_AGENTS_TURN)) {
+      runDistantBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(SPLIT_BACKGROUND_AGENTS_TURN)) {
+      runBackgroundAgents(prompt, { split: true });
+      return;
+    }
+    if (prompt.includes(BACKGROUND_AGENTS_TURN)) {
+      runBackgroundAgents(prompt);
       return;
     }
 

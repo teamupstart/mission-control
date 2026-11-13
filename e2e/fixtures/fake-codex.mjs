@@ -27,7 +27,7 @@
  * WHAT THE DRIVER ACTUALLY READS
  *   - `initialize`            -> handshake, result ignored
  *   - `thread/start`          -> binds: thread.id becomes agentSessionId, thread.path the rollout
- *   - `turn/start`            -> the response's turn.id is recorded BEFORE any notification
+ *   - `turn/start`            -> the response's turn.id is recorded BEFORE its root-turn notifications
  *   - `turn/started`          -> card goes working
  *   - `turn/completed`        -> `turn_done`, card goes idle
  *   - `thread/status/changed` -> the idle backstop, redundant with turn/completed by design
@@ -612,6 +612,25 @@ function runTurn(turnId, input, effort, model) {
     notify("thread/status/changed", { threadId: THREAD_ID, status: { type: "idle" } });
   };
 
+  if (prompt.includes("E2E_CODEX_BACKGROUND_AGENTS")) {
+    const children = ["e2e-scout", "e2e-reviewer"];
+    for (const [index, child] of children.entries()) {
+      notify("item/completed", { threadId: THREAD_ID, turnId, completedAtMs: Date.now(), item: {
+        type: "collabAgentToolCall", id: `spawn-${child}`, tool: "spawnAgent", status: "completed",
+        senderThreadId: THREAD_ID, receiverThreadIds: [child],
+        prompt: index === 0 ? "Map the ledger" : "Review ledger tests", agentsStates: {},
+      } });
+      notify("thread/started", { thread: { ...thread(), id: child, parentThreadId: THREAD_ID,
+        agentRole: index === 0 ? "explorer" : "reviewer", preview: "" } });
+    }
+    finish([prompt]);
+    setTimeout(() => notify("item/completed", { threadId: THREAD_ID, turnId, completedAtMs: Date.now(), item: {
+      type: "subAgentActivity", id: "review-done", kind: "completed",
+      agentThreadId: children[1], agentPath: "/reviewer",
+    } }), 1500);
+    return;
+  }
+
   if (prompt === FAILING_TURN) {
     appendRolloutEvent({
       type: "task_complete",
@@ -921,7 +940,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     case "turn/start": {
       const turnId = `turn-${++turnSeq}`;
-      // Answered BEFORE a single notification is written, and the turn's own frames are
+      // Independent children can resume and finish before this send is acknowledged.
+      if (textOf(params?.input) === "restart the reviewer before acknowledging this send") {
+        for (const status of ["running", "completed"]) {
+          notify("item/completed", { threadId: THREAD_ID, turnId, item: {
+            type: "collabAgentToolCall", id: `review-${status}-${turnId}`, tool: "resumeAgent", status: "completed",
+            senderThreadId: THREAD_ID, receiverThreadIds: ["e2e-reviewer"],
+            agentsStates: { "e2e-reviewer": { status, message: status === "completed" ? "New review result" : null } },
+          } });
+        }
+      }
+      // Answered BEFORE this turn's own notifications are written, and those frames are
       // deferred a tick behind it. The driver records `activeTurnId` from this response as
       // well as from `turn/started`, so a `turn/completed` that overtook the response would
       // be matched against a turn the driver has not adopted yet - and the response would

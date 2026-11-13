@@ -8,6 +8,7 @@ import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
 import { TelemetrySettingsPanel } from "./TelemetrySettingsPanel.tsx";
 import { useTelemetry } from "../useTelemetry.ts";
 import { RestoreSettingsPanel } from "./RestoreSettingsPanel.tsx";
+import { StorageSettingsPanel } from "./StorageSettingsPanel.tsx";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
 import { LlmSettingsPanel } from "./LlmSettingsPanel.tsx";
 import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
@@ -21,12 +22,12 @@ import { ConductorPanel } from "./ConductorPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { checksArmedReading } from "../lib/trust.ts";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
+import { TaskSettingsPanel } from "./TaskSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
-import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { TopbarPanel } from "./TopbarPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
@@ -46,6 +47,7 @@ import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { SettingsStatus } from "@shared/types.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
@@ -206,6 +208,8 @@ export function SettingsPage({
   layout,
   onLayoutChange,
   settingsStatus,
+  storageHealth = null,
+  storageConfigRevision = 0,
   harnessesRevision = 0,
   worktreesRevision = 0,
   workflowSummaries = [],
@@ -270,6 +274,10 @@ export function SettingsPage({
    * NOT come from here: it derives from the App-owned `foreman` prop above.
    */
   settingsStatus: SettingsStatus | null;
+  /** `MissionState.storageHealth`, the live aggregate Settings > Storage draws. */
+  storageHealth?: StorageHealth | null;
+  /** `MissionState.storageConfigRevision`: Settings > Storage re-reads its config when it moves. */
+  storageConfigRevision?: number;
   /**
    * `MissionState.harnessesRevision` - bumped whenever the daemon announces a change to the
    * per-harness dispatch defaults. Handed to `useHarnesses` so this page reflects an edit
@@ -567,7 +575,6 @@ export function SettingsPage({
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
             {/* Beside Layout: where residents are drawn is part of how sessions are arranged. */}
             <ResidentPlacementPanel />
-            <LineDensityPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,
@@ -608,6 +615,14 @@ export function SettingsPage({
         return <SkillsPanel state={skills} />;
       case "harnesses":
         return <HarnessesPanel state={harnesses} setup={setup.view} />;
+      case "tasks":
+        return (
+          <TaskSettingsPanel
+            state={workflowSettings}
+            workflows={workflowSummaries}
+            foremanEnabled={foreman.config?.enabled ?? false}
+          />
+        );
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} />;
       case "repositories":
@@ -645,7 +660,6 @@ export function SettingsPage({
           <WorkflowSettingsPanel
             state={workflowSettings}
             workflows={workflowSummaries}
-            foremanEnabled={foreman.config?.enabled ?? false}
             onNavigate={navigateWithAnchor}
             onOpenRuns={onOpenRuns}
           />
@@ -654,6 +668,14 @@ export function SettingsPage({
         return <CostSettingsPanel state={cost} />;
       case "telemetry":
         return <TelemetrySettingsPanel state={telemetry} />;
+      case "storage":
+        return (
+          <StorageSettingsPanel
+            health={storageHealth}
+            configRevision={storageConfigRevision}
+            onNavigate={navigateWithAnchor}
+          />
+        );
       case "restore":
         return <RestoreSettingsPanel />;
       case "inspector":

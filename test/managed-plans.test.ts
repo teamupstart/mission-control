@@ -49,7 +49,11 @@ test("a pre-feature database upgrades additively and retains existing settings",
   try {
     old.exec("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO app_config VALUES ('skills', '{\"enabled\":false}'); PRAGMA user_version = 4;");
     upgradeDatabaseToCurrentSchema(old);
-    assert.equal((old.prepare("SELECT value FROM app_config WHERE key = 'skills'").get() as { value: string }).value, '{"enabled":false}');
+    // The current upgrade includes the one-time Mockups rollout; the saved master-off
+    // choice must survive even while that row is enabled.
+    assert.deepEqual(JSON.parse((old.prepare("SELECT value FROM app_config WHERE key = 'skills'").get() as { value: string }).value), {
+      enabled: false, skills: { mockups: true },
+    });
     assert.equal(old.prepare("SELECT * FROM managed_plans").all().length, 0);
     assert.equal(old.prepare("SELECT * FROM managed_plan_revisions").all().length, 0);
     upgradeDatabaseToCurrentSchema(old);
@@ -569,7 +573,7 @@ for (const excess of [0, 1]) {
   test(`bundle limits: ${excess ? "rejects 65" : "accepts 64"} files`, async () => {
     const files = [...minimalBundle(), ...Array.from({ length: 62 + excess }, (_, i) => ({ name: `review-${i}.txt`, content: "Review" }))];
     assert.equal(files.length, 64 + excess);
-    await checkBundleLimit(files, excess ? /Array must contain at most 64 element/ : undefined);
+    await checkBundleLimit(files, excess ? /Too big: expected array to have <=64 items/ : undefined);
   });
 
   test(`bundle limits: ${excess ? "rejects 1 MiB plus one byte" : "accepts 1 MiB"} of multibyte UTF-8`, async () => {

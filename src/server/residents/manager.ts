@@ -1,3 +1,5 @@
+import { ensureResidentState, removeResidentState, residentStateDir } from "./state.ts";
+import { residentProfileTasks } from "./store.ts";
 import { residentSpendProblem } from "./spend.ts";
 import { residentSkillIndex } from "./skill-index.ts";
 import { randomUUID } from "node:crypto";
@@ -341,7 +343,10 @@ export class ResidentManager {
   private mcpProblem(settings: ResidentProfileRevision): string | null {
     const agent = settings.execution.agent;
     const label = AGENT_IDENTITY[agent].label;
-    const { inheritDefaults, selected } = settings.mcp;
+    const { inheritDefaults, selected, nativeSources } = settings.mcp;
+    if (nativeSources === "all" && !capabilitiesFor(agent).mcpSelection?.allNativeSources) {
+      return `${label} cannot start a resident on all of its native MCP sources, so a profile on it must keep a pinned set`;
+    }
     if (capabilitiesFor(agent).mcpSelection === null && (selected.length > 0 || !inheritDefaults)) {
       return `${label} cannot pin a resident's MCP servers, so a profile on it cannot choose them`;
     }
@@ -453,6 +458,22 @@ export class ResidentManager {
     }
   }
 
+  private readonly resettingState = new Set<string>();
+
+  async resetState(id: string): Promise<void> {
+    const profile = getResidentProfile(id);
+    if (!profile || profile.archivedAt !== null) throw new Error("No live resident profile.");
+    if (this.resettingState.has(id)) throw new Error("State reset is already in progress.");
+    if (residentProfileTasks(id).some((run) => run.open || this.runtimeStillRunning(run.taskId))) {
+      throw new Error("Complete and close every run of this profile before resetting state. Pausing alone keeps its session open.");
+    }
+    this.resettingState.add(id);
+    try {
+      await removeResidentState(id, residentStateDir(id));
+      ensureResidentState(id);
+    } finally { this.resettingState.delete(id); }
+  }
+
   // ---- launch ----
 
   /**
@@ -466,6 +487,7 @@ export class ResidentManager {
   ): Promise<ResidentLaunchOutcome> {
     const spelling = input.repoRoot?.trim() ?? "";
     const resolved = spelling ? await this.resolveRepoRoot(spelling) : { ok: true as const, repoRoot: null };
+    if (this.resettingState.has(profileId)) return { ok: false, status: 409, code: "conflict", error: "State reset is in progress; retry launch." };
     // A replay first, from the run row alone, read AFTER the await: a racing request with the
     // same id may have reserved while this one resolved its repository, and its run - not this
     // request's view of the profile - decides the answer. A known request id never re-validates

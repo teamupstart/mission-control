@@ -3,10 +3,19 @@ import { ghBin } from "../config.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
-import { BODY_ONLY_FINDINGS_MARKER, isCleanReview, isOurs, parseMarker } from "./marker.ts";
+import {
+  BODY_ONLY_FINDINGS_MARKER,
+  isCleanReview,
+  isOurBodyFindingsReview,
+  isOurs,
+  parseMarker,
+  reviewHeader,
+} from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
+import type { InspectorComment } from "@shared/types.ts";
+import { scrubSecrets } from "./scrub.ts";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -22,6 +31,9 @@ import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shippi
 /** Generous next to `pr.ts`'s 8s: these carry a whole PR's thread history or a review body. */
 const GH_TIMEOUT_MS = 20_000;
 
+/** Full GraphQL connection pages and their validation ceilings share one budget. */
+export const GITHUB_PAGE_SIZE = 100;
+
 export interface GhResult<T> {
   ok: boolean;
   value?: T;
@@ -34,6 +46,12 @@ export interface GhResult<T> {
   outcomeUnknown?: boolean;
   /** The response did not fit in the pipe. Retrying the same request cannot produce less. */
   tooLarge?: boolean;
+  /**
+   * Everything `gh` printed to stderr, unclipped. `error` keeps only its first 300 bytes for
+   * the operator, and gh prints the HTTP status at the END of its message, so a long 422
+   * would lose it there. `classifyReviewRefusal` reads this instead.
+   */
+  stderr?: string;
 }
 
 /**
@@ -67,7 +85,79 @@ function fail<T>(what: string, res: RunResult): GhResult<T> {
     error: `${what} failed (exit ${res.code}): ${detail}`,
     outcomeUnknown: res.outcomeUnknown,
     tooLarge: res.overflowed,
+    stderr: res.stderr,
   };
+}
+
+/**
+ * Why GitHub refused a review, as far as attributing the refusal goes.
+ *
+ * - `whole-review`: the refusal says nothing about any one comment in the review - a rate
+ *   limit (429, or a 403 naming a secondary rate limit), an auth refusal (401), an organization's
+ *   SAML SSO refusal (whatever status it carries), a server error (5xx), a head that moved under the
+ *   review, and any other status that is not 422. No finding is ever charged for one.
+ * - `validation`: a 422 on a head that has not moved. GitHub validated the review against
+ *   the commit it names and rejected something in it, most often a line it cannot anchor.
+ */
+export type ReviewRefusalClass = "whole-review" | "validation";
+
+/** gh's wording for an organization's SAML SSO refusal, which GraphQL can report as a 422. */
+const SSO_REFUSAL_RE =
+  /Resource protected by organization SAML enforcement|has enabled or enforced SAML SSO/i;
+
+/**
+ * GitHub's wording when one review comment cannot be anchored: its line, path or position
+ * could not be resolved, or is not in the diff. Other 422s, such as the one-pending-review
+ * limit, are about the review as a whole and say nothing about any draft.
+ */
+const ANCHOR_REFUSAL_RE =
+  /\b(?:line|path|position|start[ _]line)\b[^()\n]*?\b(?:could not be resolved|must be part of the diff|is not part of the diff|is outside the diff|is invalid)/i;
+
+/** gh ends an API error with `(HTTP nnn)`. The last one wins, in case a body quoted another. */
+function httpStatus(stderr: string): number | null {
+  const all = [...stderr.matchAll(/\(HTTP (\d{3})\)/g)];
+  const last = all.at(-1);
+  return last ? Number(last[1]) : null;
+}
+
+/**
+ * Classify a review POST GitHub refused. The one place that decides it: the worker's
+ * drafts-only path and its retry of a mixed review both ask here, and nothing else does.
+ *
+ * Reads the status from gh's stderr, where gh prints it last. A status it
+ * cannot find is `whole-review`, so a change in gh's wording can make the refusal cap
+ * engage less often but can never pin a refusal on the wrong finding. The same holds for
+ * the message: a 422 is `validation` only when it names a comment that could not be
+ * anchored (`ANCHOR_REFUSAL_RE`).
+ *
+ * `headUnmoved` is called only for a 422, and it is the only extra request a refusal costs:
+ * GitHub also answers 422 for a review whose `commit_id` is no longer the pull request's
+ * head, and that says nothing about any finding. A failed read is not proof the head stayed
+ * put, so it reads as moved.
+ *
+ * A result that was not a refusal at all - a lost response, or a success - is
+ * `whole-review` too. It should never be asked, and if it is, nothing gets counted.
+ */
+export async function classifyReviewRefusal(
+  res: GhResult<unknown>,
+  headUnmoved: () => Promise<boolean>,
+): Promise<ReviewRefusalClass> {
+  if (!wasRefused(res)) return "whole-review";
+  const stderr = res.stderr ?? "";
+  if (SSO_REFUSAL_RE.test(stderr)) return "whole-review";
+  if (httpStatus(stderr) !== 422) return "whole-review";
+  if (!ANCHOR_REFUSAL_RE.test(stderr)) return "whole-review";
+  return (await headUnmoved()) ? "validation" : "whole-review";
+}
+
+/**
+ * GitHub's reason for a refusal, as recorded on the finding it was pinned on: what gh
+ * printed, with the `gh:` prefix dropped, whitespace collapsed, secrets scrubbed, and
+ * clipped to 300 bytes like every other GitHub error this subsystem stores.
+ */
+export function refusalReason(res: GhResult<unknown>): string {
+  const raw = (res.stderr || res.error || "GitHub refused the review").replace(/^gh:\s*/, "");
+  return clipUtf8Bytes(scrubSecrets(raw.replace(/\s+/g, " ").trim()), 300);
 }
 
 /**
@@ -252,10 +342,11 @@ export interface ThreadSnapshot {
   path: string | null;
   comments: {
     id?: string;
-    url?: string;
     updatedAt?: string;
     actorType?: string | null;
     databaseId: number | null;
+    /** The comment's GitHub link, or null when GitHub did not report one. */
+    url: string | null;
     body: string;
     author: string;
     createdAt: string;
@@ -263,6 +354,8 @@ export interface ThreadSnapshot {
 }
 
 export interface ReviewSnapshot {
+  /** The review's GitHub link, or null when GitHub did not report one. */
+  url: string | null;
   body: string;
   author: string;
   headSha: string;
@@ -310,18 +403,18 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
       baseRefName baseRefOid mergeCommit{ oid } repository{ defaultBranchRef{ name } }
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-      reviewThreads(first:100){
+      reviewThreads(first:${GITHUB_PAGE_SIZE}){
         nodes{
           id isResolved path
-          comments(first:100){
+          comments(first:${GITHUB_PAGE_SIZE}){
             nodes{ id url databaseId body createdAt updatedAt author{ __typename login } }
           }
         }
         pageInfo{ hasNextPage endCursor }
       }
-      ${includeCodeRabbitComments ? `comments(first:100){ ${ISSUE_COMMENT_FIELDS} }` : ""}
-      reviews(last:100){
-        nodes{ body author{ login } commit{ oid } }
+      ${includeCodeRabbitComments ? `comments(first:${GITHUB_PAGE_SIZE}){ ${ISSUE_COMMENT_FIELDS} }` : ""}
+      reviews(last:${GITHUB_PAGE_SIZE}){
+        nodes{ url body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
     }
@@ -331,8 +424,8 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
 const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$before:String!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      reviews(last:100,before:$before){
-        nodes{ body author{ login } commit{ oid } }
+      reviews(last:${GITHUB_PAGE_SIZE},before:$before){
+        nodes{ url body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
     }
@@ -342,7 +435,7 @@ const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$befo
 const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      reviewThreads(first:100,after:$after){
+      reviewThreads(first:${GITHUB_PAGE_SIZE},after:$after){
         nodes{ id isResolved path comments(first:1){ nodes{ id url databaseId body createdAt updatedAt author{ __typename login } } } }
         pageInfo{ hasNextPage endCursor }
       }
@@ -352,7 +445,7 @@ const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
 
 const ISSUE_COMMENT_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$name){ pullRequest(number:$number){
-    comments(first:100,after:$after){ ${ISSUE_COMMENT_FIELDS} }
+    comments(first:${GITHUB_PAGE_SIZE},after:$after){ ${ISSUE_COMMENT_FIELDS} }
   } }
 }`;
 
@@ -665,6 +758,11 @@ export async function retargetPr(
   return { ok: true };
 }
 
+/** A link GitHub reported, or null for anything that is not a non-empty string. */
+function linkOf(raw: unknown): string | null {
+  return typeof raw === "string" && raw ? raw : null;
+}
+
 function threadPageInfo(raw: unknown): ThreadPageInfo {
   const pageInfo = (raw as { pageInfo?: Record<string, unknown> } | null)?.pageInfo;
   return {
@@ -675,7 +773,7 @@ function threadPageInfo(raw: unknown): ThreadPageInfo {
 
 function issueCommentPage(raw: unknown): IssueCommentPage {
   const parsed = z.object({
-    nodes: z.array(IssueCommentSchema),
+    nodes: z.array(IssueCommentSchema).max(GITHUB_PAGE_SIZE),
     pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
   }).safeParse(raw);
   return parsed.success
@@ -683,19 +781,29 @@ function issueCommentPage(raw: unknown): IssueCommentPage {
     : { comments: [], pageInfo: { hasNextPage: false, endCursor: null }, error: "Incomplete issue-comment connection or identity" };
 }
 
+const ThreadRootCommentSchema = z.object({
+  id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
+  author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
+});
 const ThreadConnectionSchema = z.object({
   nodes: z.array(z.object({
     id: z.string().min(1), isResolved: z.boolean(), path: z.string().nullable(),
-    comments: z.object({ nodes: z.tuple([z.object({
-      id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
-      author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
-    })]).rest(z.unknown()) }),
-  })),
+    // The first snapshot requests a full page; later pages request only the root.
+    // Later comments may have deleted authors, so only root identity is required.
+    comments: z.object({ nodes: z.array(z.unknown()).min(1).max(GITHUB_PAGE_SIZE)
+      .refine(nodes => ThreadRootCommentSchema.safeParse(nodes[0]).success, "Invalid review-thread root identity") }),
+  })).max(GITHUB_PAGE_SIZE),
   pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
 });
 
 function threadPage(raw: unknown): ThreadPage {
   const connection = (raw ?? {}) as { nodes?: unknown[] };
+  const parsed = ThreadConnectionSchema.safeParse(raw);
+  // Refuse oversized pages before the tolerant history projection copies their entries.
+  // Other malformed pages still retain partial history, with an explicit read error.
+  if (!parsed.success && parsed.error.issues.some(issue => issue.code === "too_big")) {
+    return { threads: [], pageInfo: threadPageInfo(connection), error: "Incomplete review-thread connection or root identity" };
+  }
   const threads = (connection.nodes ?? []).filter(Boolean).map((rawThread) => {
     const thread = rawThread as Record<string, unknown>;
     const comments = ((thread.comments as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[];
@@ -707,11 +815,11 @@ function threadPage(raw: unknown): ThreadPage {
         const comment = rawComment as Record<string, unknown>;
         return {
           id: typeof comment.id === "string" ? comment.id : undefined,
-          url: typeof comment.url === "string" ? comment.url : undefined,
           updatedAt: typeof comment.updatedAt === "string" ? comment.updatedAt : undefined,
           actorType: typeof (comment.author as { __typename?: unknown } | null)?.__typename === "string"
             ? (comment.author as { __typename: string }).__typename : null,
           databaseId: typeof comment.databaseId === "number" ? comment.databaseId : null,
+          url: linkOf(comment.url),
           body: typeof comment.body === "string" ? comment.body : "",
           author: String((comment.author as { login?: unknown } | null)?.login ?? "unknown"),
           createdAt: String(comment.createdAt ?? ""),
@@ -719,7 +827,7 @@ function threadPage(raw: unknown): ThreadPage {
       }),
     } satisfies ThreadSnapshot;
   });
-  return { threads, pageInfo: threadPageInfo(connection), error: ThreadConnectionSchema.safeParse(raw).success ? null : "Incomplete review-thread connection or root identity" };
+  return { threads, pageInfo: threadPageInfo(connection), error: parsed.success ? null : "Incomplete review-thread connection or root identity" };
 }
 
 function toReviewPage(raw: unknown): ReviewPage {
@@ -727,10 +835,14 @@ function toReviewPage(raw: unknown): ReviewPage {
     nodes?: unknown[];
     pageInfo?: { hasPreviousPage?: unknown; startCursor?: unknown };
   };
+  if (Array.isArray(connection.nodes) && connection.nodes.length > GITHUB_PAGE_SIZE) {
+    throw new Error(`Pull request review page exceeds ${GITHUB_PAGE_SIZE} entries`);
+  }
   return {
     reviews: (connection.nodes ?? []).filter(Boolean).map((item) => {
       const review = item as Record<string, unknown>;
       return {
+        url: linkOf(review.url),
         body: typeof review.body === "string" ? review.body : "",
         author: String((review.author as { login?: unknown } | null)?.login ?? "unknown"),
         headSha: String((review.commit as { oid?: unknown } | null)?.oid ?? ""),
@@ -746,7 +858,12 @@ function toReviewPage(raw: unknown): ReviewPage {
   };
 }
 
-async function fetchReviewPage(
+/**
+ * One earlier page of reviews, for the traversals that read past the snapshot's newest
+ * hundred. Exported so the worker can see the pages its clean-review traversals load,
+ * and take the links on them, without reading any page a second time.
+ */
+export async function fetchReviewPage(
   cwd: string | null,
   owner: string,
   repo: string,
@@ -788,6 +905,10 @@ async function fetchReviewPage(
   }
 }
 
+/**
+ * One later page of review threads, past the snapshot's first hundred. Exported for the
+ * same reason as `fetchReviewPage`.
+ */
 export async function fetchThreadPage(
   cwd: string | null,
   owner: string,
@@ -1003,6 +1124,123 @@ export function ourThreads(snapshot: PrSnapshot, login: string | null): Map<stri
   return out;
 }
 
+/** What `findingUrls` needs from a ledger row. */
+export type FindingLinkRow = Pick<InspectorComment, "fingerprint" | "line" | "round" | "githubUrl">;
+
+/**
+ * The GitHub link each ledger row should now hold, for only the rows whose stored link is
+ * missing or different. Read from pages the tick has already loaded, so it costs no call.
+ *
+ * - **A thread finding** links to the first comment of our thread carrying its marker,
+ *   owned by the same two-part `isOurs` rule as `ourThreads`. A finding raised again after
+ *   it was resolved has a thread per post, so the one with the highest marker round wins:
+ *   the newest post, whatever order GitHub lists the threads in.
+ * - **A demoted finding** (`line` null) links to our review for that row's round that
+ *   carries the body-only findings marker (`isOurBodyFindingsReview`). The newest one wins
+ *   if a round somehow has two. A demoted row with no such review in the snapshot falls
+ *   back to its marker thread, which a version raised earlier with a line may have left.
+ *
+ * A row that matches nothing is left out, so its stored link stays as it is. That is what
+ * carries a link forward to a drafted row whose earlier version was posted: the earlier
+ * comment either is still seen, giving the same link, or is not, and nothing overwrites it.
+ * A null `login` matches nothing, the same fail-closed answer as `ourThreads`.
+ *
+ * **Partial reads.** `sources` may hold only some of a pull request's threads or reviews:
+ * the snapshot's first page, plus whatever continuation pages the tick happened to load.
+ * Such a set always FILLS a missing link, but it REPLACES a stored one only when no unread
+ * page could change the answer. Otherwise a finding whose older thread is on the first
+ * page and newer one on a later page would have its link rewritten back and forth, once
+ * per read. The answer is settled when:
+ * - a demoted finding's review for its round was found, since a round has one such review;
+ * - the newest thread seen carries the row's own round, since no later post can exist;
+ * - or every page of that kind was read.
+ * A demoted finding falls back to its thread only once every review has been read, because
+ * an unread page may still hold its review.
+ */
+export function findingUrls(
+  sources: LinkSources,
+  login: string | null,
+  rows: Iterable<FindingLinkRow>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!login) return out;
+  const threads = newestOwnThreads(sources.threads, login);
+  const threadsComplete = sources.threadsComplete ?? true;
+  const reviewsComplete = sources.reviewsComplete ?? true;
+  for (const row of rows) {
+    const review = row.line === null ? bodyFindingsReviewUrl(sources.reviews, login, row.round) : null;
+    const thread = threads.get(row.fingerprint);
+    let url: string | null;
+    let settled: boolean;
+    if (review) {
+      url = review;
+      settled = true;
+    } else if (row.line === null && !reviewsComplete) {
+      url = null;
+      settled = false;
+    } else {
+      url = thread?.url ?? null;
+      settled = threadsComplete || (thread !== undefined && thread.round >= row.round);
+    }
+    if (!url || url === row.githubUrl) continue;
+    if (row.githubUrl && !settled) continue;
+    out.set(row.fingerprint, url);
+  }
+  return out;
+}
+
+/**
+ * The threads and reviews a tick has read, for `findingUrls`. The completeness flags default
+ * to true, which is right for a snapshot that GitHub reported as a single page.
+ */
+export interface LinkSources {
+  threads: readonly ThreadSnapshot[];
+  reviews: readonly ReviewSnapshot[];
+  /** Every page of review threads was read. */
+  threadsComplete?: boolean;
+  /** Every page of reviews was read, back to the first. */
+  reviewsComplete?: boolean;
+}
+
+/** A snapshot's first page as link sources, complete only where GitHub said there is no more. */
+export function snapshotLinkSources(snapshot: PrSnapshot): Required<LinkSources> {
+  return {
+    threads: [...snapshot.threads],
+    reviews: [...snapshot.reviews],
+    threadsComplete: !snapshot.threadsPageInfo?.hasNextPage,
+    reviewsComplete: !snapshot.reviewsPageInfo.hasPreviousPage,
+  };
+}
+
+/** Our threads with a link, keyed by fingerprint, keeping the highest marker round. */
+function newestOwnThreads(
+  threads: readonly ThreadSnapshot[],
+  login: string,
+): Map<string, { url: string; round: number }> {
+  const out = new Map<string, { url: string; round: number }>();
+  for (const t of threads) {
+    const first = t.comments[0];
+    if (!first?.url || !isOurs(first, login)) continue;
+    const marker = parseMarker(first.body)!;
+    const seen = out.get(marker.fingerprint);
+    if (!seen || marker.round >= seen.round) out.set(marker.fingerprint, { url: first.url, round: marker.round });
+  }
+  return out;
+}
+
+/** The link of our body-only findings review for `round`, the newest if there are two. */
+function bodyFindingsReviewUrl(
+  reviews: readonly ReviewSnapshot[],
+  login: string,
+  round: number,
+): string | null {
+  let url: string | null = null;
+  for (const review of reviews) {
+    if (review.url && isOurBodyFindingsReview(review, login, round)) url = review.url;
+  }
+  return url;
+}
+
 /**
  * How much of a diff we will hold in memory to slice `maxBytes` off the front of it.
  *
@@ -1083,6 +1321,29 @@ export async function postReview(
   );
   if (res.code !== 0) return fail("gh api (create review)", res);
   return { ok: true };
+}
+
+/**
+ * The pull request's current head sha, and nothing else.
+ *
+ * Exists for one caller: `classifyReviewRefusal`'s moved-head check, made only after GitHub
+ * refused a review with a 422. The tick's own `fetchPr` is far larger, and its answer is
+ * from before the POST, which is exactly the instant this question is not about.
+ */
+export async function fetchHeadSha(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GhResult<string>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/pulls/${number}`, "--jq", ".head.sha"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (head)", res);
+  const sha = res.stdout.trim();
+  return sha ? { ok: true, value: sha } : { ok: false, error: "gh api (head) returned no sha" };
 }
 
 // There is deliberately NO "read back the ids GitHub minted" call here. Everything that
@@ -1209,7 +1470,7 @@ export function renderComment(marker: string, c: PlannedComment): string {
 export function renderCleanReview(marker: string, round: number): string {
   return [
     marker,
-    `**⌕ GitHub Inspector** · round ${round}`,
+    reviewHeader(round),
     "",
     "No further issues found. This pull request is safe to merge.",
   ].join("\n");

@@ -226,16 +226,31 @@ const DOMAINS_BEFORE = [
   "workflow-versions",
 ] as const;
 
+/** Ids appended after the terminals change, at the end of the list, by later features. */
+const DOMAINS_APPENDED_SINCE: readonly string[] = [
+  "resident-profiles",
+  "resident-skill-sources",
+  "resident-mcp-servers",
+  "database-backups",
+];
+
 test("the terminals backup domain is appended, and every id that existed stays where it was", () => {
   assert.deepEqual(
-    // Resident domains were appended later still, at the end of the list.
-    SETTINGS_BACKUP_DOMAIN_IDS.filter((id) => id !== "terminals" && id !== "resident-profiles" && id !== "resident-skill-sources" && id !== "resident-mcp-servers"),
+    SETTINGS_BACKUP_DOMAIN_IDS.filter((id) => id !== "terminals" && !DOMAINS_APPENDED_SINCE.includes(id)),
     [...DOMAINS_BEFORE],
     "removing the new id must reproduce the previous list exactly, in order",
   );
+  assert.deepEqual(
+    SETTINGS_BACKUP_DOMAIN_IDS.slice(-DOMAINS_APPENDED_SINCE.length),
+    [...DOMAINS_APPENDED_SINCE],
+    "a later domain is appended, never inserted",
+  );
   // The append point the one precedent used (`repo-index`): end of the settings group, which
-  // keeps the surfaces contiguous.
-  const settings = SETTINGS_BACKUP_DOMAINS.filter((domain) => domain.surface === "settings");
+  // keeps the surfaces contiguous. Judged among the ids that existed then: a later id is
+  // appended at the very end whatever its surface (`database-backups` is a Settings control),
+  // because ids are never reordered.
+  const settings = SETTINGS_BACKUP_DOMAINS.filter((domain) =>
+    domain.surface === "settings" && !DOMAINS_APPENDED_SINCE.includes(domain.id));
   assert.equal(settings.at(-1)?.id, "terminals");
   assert.equal(SETTINGS_BACKUP_DOMAIN_IDS.filter((id) => id === "terminals").length, 1);
   assert.equal(APP_CONFIG_ENTRIES.terminals.backupDomain, "terminals");

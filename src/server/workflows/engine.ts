@@ -68,8 +68,10 @@ import {
   tailBounded,
   type CheckRunDeps,
   type CheckScheduler,
+  type CheckSlot,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
+import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
@@ -366,7 +368,18 @@ function checkVerdict(
       confidence: 1,
     });
   }
-  const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
+  const coderabbit = outcome.slot === "coderabbit";
+  const fit = { slot: outcome.slot, command: outcome.command, commandSource: outcome.commandSource, runId };
+  // A Command the repository does not provide is a configuration repair, never a code one.
+  // `runCheck` classified it against the argv that ran and its complete output, so a nested
+  // command failing inside a real target stays an ordinary failure. The output tail is
+  // shortened so the procedure, which comes first, always fits.
+  const signal = coderabbit ? null : outcome.misfitSignal ?? null;
+  const misfit = signal ? misfitCommandRepair({ ...fit, signal }) : null;
+  const tail = tailBounded(
+    outcome.output,
+    misfit ? WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput / 2 : WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput,
+  );
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
   const dropped = tail.droppedBytes + outcome.truncatedBytes;
   const reader = outcome.artifacts
@@ -375,18 +388,27 @@ function checkVerdict(
       `read_workflow_command_output({ runId: ${JSON.stringify(runId)}, attemptId: `
       + `${JSON.stringify(attemptId)}, artifactId: ${JSON.stringify(artifact.id)} })`)
     .join("\n");
-  const rationale = (dropped > 0
+  const output = (dropped > 0
     ? `${quote}\n\n(${dropped} earlier bytes of output omitted.)`
     : quote) + (reader ? `\n\nRetained output:\n${reader}` : "");
+  const rationale = coderabbit
+    ? `${output}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.`
+    : misfit
+    ? `${misfit.guidance}\n\nCommand output:\n${output}`
+    : outcome.commandSource === "default"
+    ? `${output}\n\n${defaultCommandFailureNote(fit)}`
+    : output;
   return normalizePersonaVerdict({
     verdict: "fail",
     summary,
     requestedChanges: [{
-      title: outcome.slot === "coderabbit" ? "Verify all retained CodeRabbit findings and repair valid issues" : `Fix the failing ${outcome.slot} check`,
-      rationale: outcome.slot === "coderabbit" ? `${rationale}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.` : rationale,
+      title: coderabbit
+        ? "Verify all retained CodeRabbit findings and repair valid issues"
+        : misfit?.title ?? `Fix the failing ${outcome.slot} check`,
+      rationale,
       evidence: [{ kind: "check", path: attemptId, quote }],
     }],
-    confidence: outcome.slot === "coderabbit" ? 0.8 : 1,
+    confidence: coderabbit ? 0.8 : 1,
   }, new Set(), new Set(), new Set([attemptId]));
 }
 
@@ -441,6 +463,13 @@ export class WorkflowEngine {
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
   private scheduledAttempts = new Set<string>();
+  /**
+   * One abort controller per check attempt from the moment it is claimed until it settles.
+   * Cancelling a run aborts its attempts' controllers, and the dependency claim follows the
+   * signal wherever the attempt has got to: a claim already running is stopped, and one that has
+   * not registered yet is stopped the moment it does.
+   */
+  private readonly checkAttemptAborts = new Map<string, AbortController>();
 
   constructor(
     readonly store: WorkflowStore,
@@ -929,7 +958,9 @@ export class WorkflowEngine {
         const skipCheckLimit = target?.kind === "check"
           && this.checkBudgetAlreadySpent(attempt, target);
         const checkLimitHeld = target?.kind === "check" && !skipCheckLimit;
-        const run = () => this.runAttempt(attempt, checkLimitHeld);
+        // The held check slot goes to the attempt, which gives it up while a dependency claim
+        // runs and takes one again before its Command spawns.
+        const run = (slot?: CheckSlot) => this.runAttempt(attempt, checkLimitHeld, slot);
         // A Command whose per-run allowance is already spent needs no execution capacity:
         // `runCheck` records budget_spent without calling the executor. Starting that attempt
         // directly prevents a repair round from sitting behind unrelated builds merely to be
@@ -1011,7 +1042,11 @@ export class WorkflowEngine {
     );
   }
 
-  private async runAttempt(initial: WorkflowNodeAttempt, checkLimitHeld = false): Promise<void> {
+  private async runAttempt(
+    initial: WorkflowNodeAttempt,
+    checkLimitHeld = false,
+    checkSlot?: CheckSlot,
+  ): Promise<void> {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
     const { submission, run, version, node } = resolved;
@@ -1029,7 +1064,7 @@ export class WorkflowEngine {
       }
     }
     if (isCheck(node)) {
-      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld);
+      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld, checkSlot);
       return;
     }
     if (!isPersona(node)) return;
@@ -1063,8 +1098,29 @@ export class WorkflowEngine {
     // reached only once the skip above has declined to reuse an earned pass: a skipped judge
     // spawns nothing, so it must resolve nothing.
     const execution = resolveWorkflowNodeExecution(node, this.resolveExecution);
-    const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
+    const effort = execution.effort?.level ?? null;
+    // Still run at the provider default - a CLI would reject the level - but never silently:
+    // the dropped level is recorded on the attempt, which the run detail prints, and logged.
+    const effortUnsupported = execution.effort?.unsupported ?? null;
+    const claimed = this.store.claimAttempt(
+      initial.id,
+      execution.runner.id,
+      execution.model.id,
+      this.now(),
+      effort,
+      effortUnsupported,
+    );
     if (!claimed) return;
+    if (effortUnsupported) {
+      workflowLog("warn", {
+        event: "persona_effort_unsupported",
+        run: run.id,
+        submission: submission.id,
+        runner: execution.runner.id,
+        model: execution.model.id,
+        effort: effortUnsupported,
+      });
+    }
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success) {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
@@ -1115,6 +1171,7 @@ export class WorkflowEngine {
           purpose: "persona_review",
           runner: execution.runner.id,
           model: execution.model.id,
+          ...(effort ? { effort } : {}),
           attempt,
           state: "running",
           startedAt: this.now(),
@@ -1166,7 +1223,12 @@ export class WorkflowEngine {
         return;
       }
       const result = await runStructured(
-        (request) => runner.run(request, { model: execution.model.id, timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs), images }),
+        (request) => runner.run(request, {
+          model: execution.model.id,
+          ...(effort ? { effort } : {}),
+          timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs),
+          images,
+        }),
         index === 0 ? prompt : `${prompt}\n\nCorrection required: ${violation ?? "the prior reply could not be executed or parsed"}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
         (raw) => {
           const parsed = parsePersonaVerdict(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
@@ -1363,12 +1425,59 @@ export class WorkflowEngine {
     version: WorkflowVersion,
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
     checkLimitHeld: boolean,
+    scheduledSlot?: CheckSlot,
   ): Promise<void> {
     // Null runner and model: a check is not a model call, and stamping it with a provider it
     // never used would put a fiction in front of whoever reads the run.
     const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
     if (!claimed) return;
+    // Armed in the same synchronous run as the claim, so there is no moment at which the
+    // attempt is running and a run cancel cannot reach it.
+    const abort = new AbortController();
+    this.checkAttemptAborts.set(claimed.id, abort);
+    try {
+      await this.runClaimedCheckAttempt(
+        claimed,
+        submission,
+        run,
+        version,
+        node,
+        checkLimitHeld,
+        scheduledSlot,
+        abort.signal,
+      );
+    } finally {
+      if (this.checkAttemptAborts.get(claimed.id) === abort) this.checkAttemptAborts.delete(claimed.id);
+    }
+  }
 
+  /**
+   * Abort these check attempts' work in progress: the dependency claim each is running or is
+   * about to run. A cancelled run calls it with the attempts it was running. Returns how many
+   * of them were check attempts still in flight. The command a check already spawned is not
+   * signalled; its result is recorded as audit-only, as it always was after a cancel.
+   */
+  stopCheckAttempts(attemptIds: readonly string[]): number {
+    let stopped = 0;
+    for (const id of attemptIds) {
+      const abort = this.checkAttemptAborts.get(id);
+      if (!abort) continue;
+      abort.abort("cancelled");
+      stopped += 1;
+    }
+    return stopped;
+  }
+
+  private async runClaimedCheckAttempt(
+    claimed: WorkflowNodeAttempt,
+    submission: WorkflowSubmission,
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    node: Extract<PublishedWorkflowNode, { kind: "check" }>,
+    checkLimitHeld: boolean,
+    scheduledSlot: CheckSlot | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) {
       this.handleInfrastructureFailure(claimed, run.id, "This run's binding no longer exists");
@@ -1390,19 +1499,34 @@ export class WorkflowEngine {
       ? { ...(catalogCommand ?? emptyWorkflowCommandView(node.slot)),
           ...(frozenComparison ? { maxRuns: frozenComparison.maxRuns, timeoutMs: frozenComparison.timeoutMs } : {}) }
       : catalogCommand;
+    // On the fallback path the slot is only taken around the executor, after the attempt ref
+    // is bound, so the ref carries a handle onto whichever slot that wrapper holds.
+    let fallbackSlot: CheckSlot | undefined;
+    const checkSlot: CheckSlot | undefined = checkLimitHeld
+      ? scheduledSlot
+      : {
+          release: () => fallbackSlot?.release(),
+          reacquire: () => fallbackSlot?.reacquire() ?? Promise.resolve(),
+        };
     const attemptRef = {
       runId: run.id,
       attemptId: claimed.id,
       submissionId: submission.id,
       nodeId: node.id,
+      signal,
+      ...(checkSlot ? { checkSlot } : {}),
     };
     const baseDeps = this.checkDeps(attemptRef);
-    const signal = this.checkShutdown.signal;
+    const shutdown = this.checkShutdown.signal;
+    const gated = <T>(fn: () => Promise<T>): Promise<T> => this.checkLimit((slot) => {
+      fallbackSlot = slot;
+      return fn();
+    });
     const deps = baseDeps.execute ? {
       ...baseDeps,
       execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) => {
-        const execute = () => baseDeps.execute!({...request, signal});
-        return checkLimitHeld ? execute() : this.checkLimit(execute);
+        const execute = () => baseDeps.execute!({...request, signal: shutdown});
+        return checkLimitHeld ? execute() : gated(execute);
       },
     } : baseDeps;
 

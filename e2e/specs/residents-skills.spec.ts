@@ -188,8 +188,8 @@ test("valid installed skill links appear without stale symlink warnings", async 
   }
 });
 
-test("all five pre-installed Mission skills appear despite stale global installation links", async ({ dashboard: page, daemon }) => {
-  const names = ["html-plans", "html-report", "phased-plan", "pull-request", "retro"];
+test("all six pre-installed Mission skills appear despite stale global installation links", async ({ dashboard: page, daemon }) => {
+  const names = ["html-plans", "html-report", "mockups", "phased-plan", "pull-request", "retro"];
   for (const global of [".claude/skills", ".agents/skills"]) {
     const root = join(daemon.home, global);
     mkdirSync(root, { recursive: true });

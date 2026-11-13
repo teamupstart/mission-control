@@ -1305,9 +1305,9 @@ test("a template's Workflow reaches the task, and none of them inherits the disp
   const policy = setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: "wf-dispatch-default",
+    kindWorkflowDefaults: { ship: "wf-dispatch-default", scout: "wf-dispatch-default" },
   });
-  assert.equal(policy.defaultWorkflowId, "wf-dispatch-default");
+  assert.equal(policy.kindWorkflowDefaults.ship, "wf-dispatch-default");
 
   const none = harness("after-work-none");
   const missionA = ok(await none.manager.create(definition({ name: "No handoff" }))).schedule;

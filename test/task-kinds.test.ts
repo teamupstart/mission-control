@@ -177,7 +177,7 @@ test("resident is launched only from a profile: Dispatch does not offer it and i
   assert.equal(taskKindForcedRuntime("chat"), null);
   assert.equal(taskKindLaunchesHarness("resident"), false, "the profile, not a per-kind default, owns its launch");
   assert.equal(allowsBacklogAutopilot("resident"), false);
-  assert.equal(taskDefaultWorkflowId("resident", null), null);
+  assert.equal(taskDefaultWorkflowId("resident", {}), null);
   assert.equal(taskKindBacklogRefusal("resident"), RESIDENT_TASK_REFUSAL);
   assert.equal(taskKindBacklogRefusal("chat"), TASK_KIND_BACKLOG_REFUSAL);
 });

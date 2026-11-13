@@ -22,13 +22,19 @@ revision, timestamps, and text. This applies changed feedback once without makin
 directive force perpetual rechecks; removing and recreating a directive cannot revive a pass
 from its earlier revision sequence.
 A Persona node also carries an optional `executionOverride` - one explicit
-`{ runner, model }` pair chosen by the workflow rather than by the reviewer. It lives on the
-node in both the draft and published graph JSON, is frozen beside the Persona snapshot at
-publish rather than folded into it, and is absent when the node inherits, so no migration
-touches an existing graph.
+`{ runner, model, effort? }` choice made by the workflow rather than by the reviewer. The
+override lives on the node in both the draft and published graph JSON, is frozen beside the
+Persona snapshot at publish rather than folded into it, and is absent when the node inherits,
+so no migration touches an existing graph.
 [`resolveWorkflowNodeExecution`](../src/server/workflows/personas.ts) composes it over
 `resolvePersonaExecution`, which keeps the app and environment fallback ladder in its
 existing single owner and leaves every non-workflow Persona caller unchanged.
+Effort, on the override and on the Persona, uses the shared `THINKING_LEVELS` vocabulary and
+is checked with `personaEffortLevels`, which reads the same `launchEffortLevels` capability
+table sessions and tasks use. An unsupported override level is an `unsupported_effort` graph
+diagnostic rather than a parse failure, so stored graphs stay readable. The Persona's own
+`effort` is frozen into its snapshot only when set, so a Persona with none publishes
+byte-identically to a pre-effort version.
 
 Personas and session actions are editable catalogs managed by
 [`personas.ts`](../src/server/workflows/personas.ts) and
@@ -47,8 +53,18 @@ Persona calls cannot read checkout files, so document and plan contracts request
 registered text and the relevant unchanged comparison material.
 
 Task workflow defaults resolve through `taskDefaultWorkflowId` in `src/shared/task.ts`, used by
-both the dispatch form and server task creation. Plan defaults to Plan Validation; Bugfix defaults
-to Bug Fix Review; Document defaults to Documentation Review; Ship retains the machine workflow setting. Explicit IDs and null opt-outs win.
+the dispatch form, the Recurring Mission editor, and server task creation. It reads the
+operator's per-kind rows (`WorkflowPolicy.kindWorkflowDefaults`, edited under Settings → Tasks →
+Dispatch defaults) and falls back to `BUILTIN_KIND_WORKFLOW_DEFAULTS`: Ship defaults to
+No-Mistakes Review, Bugfix to Bug Fix Review, Document to Documentation Review, Plan to Plan
+Validation, and Scout and Chat to None. A plan pinned to local storage always resolves to Local
+Plan Validation. Pipeline always resolves to None. Explicit IDs and null opt-outs win. The map
+replaced the single `defaultWorkflowId`, which `StoredWorkflowPolicySchema` migrates into the
+Ship row on read (a stored No-Mistakes reads as the built-in), including for settings backups
+written before it. `PUT /api/workflows/config` still accepts the old field as a deprecated alias
+that sets the Ship row by the same rule, ahead of any Ship key in the same body's map. Each save
+also stores `defaultWorkflowId` as the effective Ship row, so rolling back to a build from before
+per-kind defaults keeps the Ship choice; this build ignores it whenever the map is present.
 Bugfix and Document share Ship's deferred publication, automatic wrap-up, backlog eligibility, and recovery
 through the existing registries and `isShippingTaskKind` predicate.
 

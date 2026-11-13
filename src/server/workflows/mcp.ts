@@ -2,6 +2,7 @@ import type { Context, Hono } from "hono";
 import type { z } from "zod";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import {
+  ConfigureWorkflowCommandSchema,
   GetWorkflowRunSchema, ListWorkflowRunsSchema, ReadWorkflowCommandOutputMcpSchema,
   WorkflowMcpActionSchema,
   type WorkflowActionRequestSchema, workflowActionPath,
@@ -12,6 +13,8 @@ import { logEvent } from "../db.ts";
 import { parseBody } from "../http-body.ts";
 import { noteKeyFor, type Registry } from "../registry.ts";
 import { sessionControlCaller } from "../session-control.ts";
+import type { WorkflowCommandManager } from "./commands.ts";
+import type { ReviewManager } from "../reviews.ts";
 import type { WorkflowManager } from "./manager.ts";
 import { decodeWorkflowRunCursor } from "./store.ts";
 
@@ -53,6 +56,8 @@ const denied = (c: Context) => c.json({
 
 export function registerWorkflowMcpRoutes(
   app: Hono, registry: Registry, getManager: () => WorkflowManager | null,
+  getCommands: () => WorkflowCommandManager | null = () => null,
+  getReviews: () => ReviewManager | null = () => null,
 ): void {
   app.post("/mcp/workflows/list", async (c) => {
     const auth = callerFor(c, registry);
@@ -120,6 +125,61 @@ export function registerWorkflowMcpRoutes(
     const stillCurrent = callerFor(c, registry);
     if (stillCurrent.response) return stillCurrent.response;
     return allowed() ? response : denied(c);
+  });
+
+  /**
+   * Set one slot's Command for the repository the caller's own run reviews.
+   *
+   * Own runs only, with no delegated path: this writes the operator's Command catalog, which
+   * `control_session` is documented never to alter, so the Control other sessions grant does
+   * not stretch to it. Identity and ownership are this route's; every rule about whether the
+   * write may happen - operator confirmation included - and what it does to the run belongs
+   * to `WorkflowCommandManager.configureRepositoryCommand`.
+   */
+  app.post("/mcp/workflows/configure-command", async (c) => {
+    const auth = callerFor(c, registry);
+    if (auth.response) return auth.response;
+    const parsed = await parseBody(c, ConfigureWorkflowCommandSchema);
+    if (!parsed.ok) return parsed.res;
+    const current = callerFor(c, registry);
+    if (current.response) return current.response;
+    const manager = getManager();
+    const commands = getCommands();
+    if (!manager || !commands) return c.json({ error: "Workflow Command catalog unavailable" }, 503);
+    const caller = current.caller!;
+    const { runId, slot, command } = parsed.data;
+    const run = manager.store.getRun(runId);
+    const binding = run ? manager.store.getBinding(run.bindingId) : null;
+    if (!run || !binding || !ownsBinding(registry, caller, binding)) {
+      return c.json({ error: "Only the session that owns this workflow run can configure its Command" }, 403);
+    }
+    const reviews = getReviews();
+    const result = commands.configureRepositoryCommand({
+      runs: manager.store, run, binding, slot, command, sessionId: caller, reviews: registry.reviewsFor(caller),
+      requestConfirmation: reviews
+        ? (card) => reviews.create(caller, "input", card.title, card.question, [card.decision]).id
+        : undefined,
+    });
+    if (!result.ok) {
+      const status = result.reason === "unconfirmed" ? 403 : result.reason === "not_found" ? 404 : 409;
+      return c.json({
+        error: result.message,
+        code: result.reason,
+        ...(result.confirmation ? { confirmation: result.confirmation } : {}),
+        ...(result.confirmationReviewId ? { confirmationReviewId: result.confirmationReviewId } : {}),
+      }, status);
+    }
+    logEvent(caller, Date.now(), "workflow_mcp_command_configured", { runId: run.id, slot, repoRoot: result.repoRoot });
+    return c.json({
+      slot,
+      repoRoot: result.repoRoot,
+      command,
+      revision: result.view.revision,
+      forgivenRuns: result.forgiven,
+      restoredRuns: result.restored,
+      confirmationReviewId: result.confirmationReviewId,
+      next: "Resubmit the run with trigger_workflow_action resubmit; pass resubmitUnchanged: true when no files changed.",
+    });
   });
 
   app.post("/mcp/workflows/act", async (c) => {

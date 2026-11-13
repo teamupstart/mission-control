@@ -58,6 +58,12 @@ choice or per-skill off choice stays off across restarts and updates. New valid 
 follow the default-on policy unless explicitly disabled. A stored configuration from an older
 build keeps its original sparse-map meaning: rows it never enabled stay off.
 
+The Mockups rollout is a one-time exception: the first upgrade across database schema 23
+switches the **Mockups** row on, including an existing off choice. It preserves the master
+switch, other skill choices, and the catalog default policy. If the master switch is off,
+Mockups stays inactive until you turn it on. Disabling Mockups after that upgrade keeps it
+off across later restarts and upgrades; the rollout is not repeated for each release.
+
 Skills are ordinary native harness skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
 `mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for
@@ -171,6 +177,32 @@ a human saying the plan is right, so there is nothing to enforce it against and 
 hands the procedure over instead. That is the whole reason the two planning rows above are a
 launch requirement and this one is not.
 
+The **Mockups** row applies when someone asks to see what something could look like:
+mock-ups, mockups, wireframes, UI sketches, or design comps. The session writes each one as a
+self-contained HTML page or a browser image under `docs/mockups/<slug>/` in its own checkout,
+and names each checkout-relative path on its own line, such as
+`Mockup: docs/mockups/settings-panel/two-column.html`. The conversation links that path to the
+Files tab and previews the page or image inline at the foot of the turn, as
+[Message formatting](ui.md#message-formatting) describes.
+
+**Mock-ups are not committed unless a plan needs them.** Every mock-up under `docs/mockups/` must
+be git-ignored before it is written, so it never appears in `git status`, is never staged by
+`git add -A`, and is never captured in a workflow's review snapshot - the snapshot a workflow's
+pull request step commits. When `docs/mockups/.gitignore` does not exist yet, the session creates
+it holding `*`; a repository's own `docs/mockups/.gitignore` is left as it is and may not ignore
+anything, so the marker alone proves nothing. Either way, the session confirms with
+`git check-ignore` that each mock-up path is ignored before writing it. Where it is not, it adds
+`docs/mockups/` to the checkout's local `info/exclude`, which is never committed, and checks again. A path the repository tracks cannot be ignored at all, so the mock-up takes
+another name. Before presenting mock-ups, it checks again that every `docs/mockups/` path it names
+is ignored and that git has nothing to commit there. The Files list shows the ignored HTML pages
+and browser images in `docs/mockups/` anyway. It is the only ignored directory it lists, and the
+exception admits nothing else that git ignores there, such as a stray `.env`. The one mock-up that is committed is one a plan in
+the repository needs: it moves beside that plan's `plan.md`, the plan links it, and it is
+committed with the plan. That mock-up is deliberately not ignored, so the hand-over check above
+leaves it out; the session confirms instead that it sits in the plan's directory and the plan
+links it. The contract lives in
+[`skills/mockups/SKILL.md`](../skills/mockups/SKILL.md).
+
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`
 into its pane when it next goes quiet. Codex declares no reload command, because it
@@ -260,6 +292,13 @@ verified preview plus the exact final confirmation text. A successful restore re
 window that submitted it. Every other open window keeps its unsaved drafts and offers
 **Reload now** in a persistent notice.
 
+**Storage**, just above Restore, holds full-database backups: the interval and how many
+scheduled and pre-migration copies are kept, **Back up now**, the last success and failure of
+each kind, the kept copies and their total size, and a **Problems** list whose rows link to
+where each is fixed. It updates live from the `storage_health` event, and a config saved in
+another window reaches it through `storage_config_changed`. See
+[Backup and restore](sqlite-database.html#backup).
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
@@ -267,7 +306,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Tasks**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -309,10 +348,9 @@ card draws - and a one-tile preview, which is what the Board card panel offers, 
 grouping. See [Layout](ui.md#layout-console-or-board-in-settings) for what the heading says and
 why a repository can appear in more than one column.
 
-The same panel carries **Show the empty-column stash**, which also ships checked. The Board
-folds each empty column into a chip beside its last column, and a chip brings its column
-back. Uncheck it to hide that stash, so empty columns leave the board entirely. An empty
-**needs you** column is never in the stash: it stays as a slim all-clear rail either way.
+There is no setting for empty columns. The Board draws a column only while it has a card in
+it - **needs you**, **unconfirmed**, **gone** and the **Backlog** included - and an empty one
+leaves nothing behind. See [Layout](ui.md#layout-console-or-board-in-settings).
 
 Display's **Board card** panel is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,
@@ -446,6 +484,14 @@ promising it changes what the daemon does, for sessions this page never opened. 
 costs less than a badge that overclaims. What the row buys is the thing the header switch
 could not: the preference is now in ⌘K by name, flippable from a search result without
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
+
+**Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
+with when nothing names its own choice. Its **Dispatch defaults** card is the per-kind
+after-work Workflow rows (see [Dispatch an agent](dispatch-and-backlog.md), under **After
+work**). They replace the single **Dispatch default** that **Settings → Workflows** used to
+hold, because they describe a task kind rather than the Workflow subsystem's policy. They are
+daemon-backed, so they reach tasks from the API, task sources and recurring missions as well as
+the dispatch form.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the

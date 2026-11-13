@@ -119,7 +119,11 @@ const MISSION_CONTROL_REVIEW_INSTRUCTION =
   "Whenever the operator chooses among discrete options, call the Mission Control " +
   "request_input MCP tool. Pass the choices through the tool's options field and wait for " +
   "the structured response before continuing. Never end a turn by asking for a numbered " +
-  "or prose reply when the MCP tool is available.";
+  "or prose reply when the MCP tool is available. If you are waiting on someone or " +
+  "something other than the operator, call the Mission Control report_blocker MCP tool " +
+  "instead; for a decision the operator can make, call request_input. Ask your question " +
+  "where its owner will see it first (for example Commonroom), then report the blocker " +
+  "with a link to that question, and end your turn.";
 
 /**
  * What a `permissionMode` MEANS to the app-server, and the exact inverse of what
@@ -1516,9 +1520,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // on the embedded runtime from being the one dispatch that silently cannot write to
       // the secondary worktrees its intent names.
       const multiRepo = capabilitiesFor("codex").multiRepoDispatch;
+      const writableDirs = [...opts.extraDirs, ...(opts.residentStateDir ? [opts.residentStateDir] : [])];
       const extraDirArgs =
-        opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
-          ? multiRepo.launchArgs(opts.extraDirs)
+        writableDirs.length > 0 && multiRepo?.kind === "flags"
+          ? multiRepo.launchArgs(writableDirs)
           : [];
       const compactLimit = opts.residentCompaction
         ? opts.residentCompaction.tokenLimit ?? codexResidentCompactionLimit(opts.model, opts.residentCompaction.threshold)
@@ -1542,6 +1547,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.stateHome,
         {
           ...(overlay ? { codexHome: overlay } : {}),
+          ...(opts.residentStateDir ? { residentStateDir: opts.residentStateDir } : {}),
           traceContext: opts.traceContext ?? null,
         },
       );

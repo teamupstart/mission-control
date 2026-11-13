@@ -154,8 +154,8 @@ test("the resolver closes before returning null when blockers disappear", () => 
     new URL("../src/web/components/session-bits.tsx", import.meta.url),
     "utf8",
   );
-  const close = source.indexOf("if (deadBlockers.length === 0 && open) changeOpen(false);");
-  const empty = source.indexOf("if (deadBlockers.length === 0) return null;");
+  const close = source.indexOf("if (total === 0 && open) changeOpen(false);");
+  const empty = source.indexOf("if (total === 0) return null;");
   assert.ok(close >= 0);
   assert.ok(empty > close);
 });

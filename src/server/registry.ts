@@ -1,5 +1,6 @@
 import { taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
+import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -39,6 +40,7 @@ import type {
   SessionCost,
   SessionMeta,
   SessionGoal,
+  SessionBlocker,
   PromptedDirectHandoffKind,
   SessionIntentGuard,
   SessionGoalSummary,
@@ -48,6 +50,7 @@ import type {
   SessionQueueSummary,
   SessionState,
   Task,
+  TaskProvisioning,
   TaskSummary,
   ThinkingLevel,
   WorkItem,
@@ -62,6 +65,7 @@ import type {
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { residentRunSummary, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -90,16 +94,18 @@ import type {
   RecordEpisode,
   ResolveEpisode,
   SetGoal,
+  ReportBlockerBody,
   SetNote,
   StatusLineIngest,
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
-import { reportBucket } from "@shared/session.ts";
+import { hasBlocker, reportBucket } from "@shared/session.ts";
 import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
+import { isWorkDependency } from "@shared/task-dependency.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
@@ -278,6 +284,12 @@ import {
   insertStandingInstructions,
   moveStandingInstructions,
   pruneStandingInstructions as pruneStandingInstructionsDb,
+  loadSessionBlockers,
+  upsertSessionBlocker,
+  deleteSessionBlocker,
+  moveSessionBlocker,
+  touchSessionBlockersHeld,
+  type SessionBlockerRecord,
   type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
@@ -323,6 +335,11 @@ import { pruneDelegatedTurns } from "./delegated-turns.ts";
 export interface PrOpened {
   url: string;
   sessionId: string;
+  /**
+   * The session's agent id once bound, which is its note key and survives the synthetic id
+   * re-minting on restart. Null before it binds: the synthetic id would stop matching then.
+   */
+  noteKey: string | null;
   cwd: string | null;
   repoRoot: string | null;
 }
@@ -606,6 +623,7 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "harnesses_config_changed",
   // Deliberately absent: worktree inventory and policy do not feed the Line's execution
   // fold. Its content-free event only tells an open Settings panel to re-observe.
+  // `storage_config_changed` is absent for the same reason: backup counts are no Line input.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -971,6 +989,8 @@ export class Registry extends EventEmitter {
    * something.
    */
   private standingInstructions = new Map<string, StandingInstructionsSnapshot>();
+  /** Durable session blockers, keyed by the SAME note key. See `reportBlocker`. */
+  private blockers = new Map<string, SessionBlockerRecord>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Cleanup targets only, never published or eligible for work. Bounded by owed closures. */
   private retiredMissionTargets = new Map<string, Session>();
@@ -1139,6 +1159,12 @@ export class Registry extends EventEmitter {
     since: null,
     error: null,
   };
+  /**
+   * The storage aggregate, held for the snapshot. `StorageHealthService` computes it and pushes
+   * only changed values here. Null until it does: an empty placeholder would read as "no copies
+   * and no problems" and hide the real answer the Storage panel reads from its route.
+   */
+  private storageHealth: StorageHealth | null = null;
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -1167,6 +1193,7 @@ export class Registry extends EventEmitter {
     for (const i of loadForemanInvites()) this.invites.set(i.noteKey, i);
     for (const m of loadSessionLaunchTurns()) this.launchTurns.set(m.noteKey, m);
     for (const r of loadStandingInstructions()) this.standingInstructions.set(r.noteKey, r);
+    for (const b of loadSessionBlockers()) this.blockers.set(b.noteKey, b);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold resources so they get reconciled, even if newer
@@ -1232,6 +1259,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
     return {
@@ -1276,8 +1304,15 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      storageHealth: this.storageHealth,
       latestSettingsRestore: this.latestSettingsRestore,
     };
+  }
+
+  /** Adopt a recomputed storage aggregate. The service already dropped unchanged ones. */
+  setStorageHealth(health: StorageHealth): void {
+    this.storageHealth = health;
+    this.emitEvent({ type: "storage_health", health });
   }
 
   /**
@@ -1353,6 +1388,16 @@ export class Registry extends EventEmitter {
   /** Announce that the bounded Worktrees route should be re-observed. */
   emitWorktreesChanged(): void {
     this.emitEvent({ type: "worktrees_changed" });
+  }
+
+  /** Announce a saved database backup config, so every open Storage panel re-reads it. */
+  emitStorageConfigChanged(): void {
+    this.emitEvent({ type: "storage_config_changed" });
+  }
+
+  /** Announce that the attention-inbox dismissals changed, so every dashboard re-reads them. */
+  emitAttentionDismissalsChanged(): void {
+    this.emitEvent({ type: "attention_dismissals_changed" });
   }
 
   /**
@@ -2638,6 +2683,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      blocker: null,
       pendingTurns: prev?.pendingTurns ?? [],
       orphanedQueue: null,
     };
@@ -2693,6 +2739,7 @@ export class Registry extends EventEmitter {
     // policy, not prose, so it may not.
     if (prev) this.moveForemanInviteKey(noteKeyFor(prev), noteKeyFor(base));
     if (prev) this.moveStandingInstructionsKey(noteKeyFor(prev), noteKeyFor(base));
+    if (prev) this.moveBlockerKey(noteKeyFor(prev), noteKeyFor(base));
     // And the launch marker, but only across a FIRST bind - see the method for why a
     // /clear's native-to-native rotation must strand it instead.
     if (prev) this.moveLaunchTurnOnInitialBind(prev, base);
@@ -2700,6 +2747,7 @@ export class Registry extends EventEmitter {
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
     base.goal = this.goalSummaryFor(base);
+    base.blocker = this.blockerFor(base);
     base.foremanInvite = this.foremanInviteFor(base);
     // Read the ledger on FIRST SIGHT and on a key rotation, and carry the figure the rest
     // of the time. First sight is the case that matters: the ledger outlives the daemon,
@@ -2833,6 +2881,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      blocker: null,
       pendingTurns: [],
       orphanedQueue: null,
       inspector: null,
@@ -2848,6 +2897,7 @@ export class Registry extends EventEmitter {
     s.workspace = workspace.view;
     s.note = this.noteSummaryFor(s);
     s.goal = this.goalSummaryFor(s);
+    s.blocker = this.blockerFor(s);
     s.foremanInvite = this.foremanInviteFor(s);
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
@@ -3114,12 +3164,14 @@ export class Registry extends EventEmitter {
     // Foreman from a session Mission Control launched. Move first, resolve after.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
     this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
+    this.moveBlockerKey(noteKeyFor(s), noteKeyFor(next));
     // The launch marker moves on the FIRST bind only. `evt.cleared` is a replacement
     // conversation, and the guard inside refuses it because the source key is already
     // native by then - so the projection cannot follow a /clear onto a real human turn.
     this.moveLaunchTurnOnInitialBind(s, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
+    next.blocker = this.blockerFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
@@ -3243,6 +3295,7 @@ export class Registry extends EventEmitter {
       this.emit("pr_opened", {
         url,
         sessionId: s.id,
+        noteKey: s.agentSessionId ?? null,
         cwd: s.cwd,
         repoRoot: s.repoRoot,
       } satisfies PrOpened);
@@ -3436,9 +3489,11 @@ export class Registry extends EventEmitter {
       // strand the way the note and goal below are allowed to.
       this.moveForemanInviteKey(noteKeyFor(target), noteKeyFor(next));
       this.moveStandingInstructionsKey(noteKeyFor(target), noteKeyFor(next));
+      this.moveBlockerKey(noteKeyFor(target), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(target, next);
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
+      next.blocker = this.blockerFor(next);
       next.foremanInvite = this.foremanInviteFor(next);
       // On a key ROTATION only, exactly as `applyRuntimeMeta` and `mergeDiscovered`
       // decide it. The ledger is not the only writer of this field - `applyPassiveUsage`
@@ -3591,11 +3646,13 @@ export class Registry extends EventEmitter {
     // Foreman from a session Mission Control just dispatched.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
     this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
+    this.moveBlockerKey(noteKeyFor(s), noteKeyFor(next));
     // Pi's turn one travelled in the argv, so its marker was written under the synthetic
     // key moments ago and this rebind is exactly the first bind the guard allows.
     this.moveLaunchTurnOnInitialBind(s, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
+    next.blocker = this.blockerFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
@@ -4080,8 +4137,7 @@ export class Registry extends EventEmitter {
     const episodeKeys = new Set<string>();
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.type === "plan") continue;
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "task") {
           if (dependency.episodeId === null) legacyTaskIds.add(dependency.taskId);
           else if (dependency.sessionId !== null) {
@@ -4212,6 +4268,7 @@ export class Registry extends EventEmitter {
         if (dependency.type === "plan") return dependency;
         if (
           dependency.satisfiedAt !== null ||
+          !isWorkDependency(dependency) ||
           dependency.sessionId !== previous.sessionId ||
           dependency.episodeId !== previous.episodeId ||
           dependency.agentSessionId !== previous.agentSessionId ||
@@ -5643,8 +5700,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.type === "plan") continue;
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "session") {
           if (dependency.prUrl) urls.add(dependency.prUrl);
           continue;
@@ -5761,8 +5817,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
-        if (dependency.type === "plan") continue;
-        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.satisfiedAt !== null || !isWorkDependency(dependency)) continue;
         if (dependency.type === "session") {
           if (
             !dependency.prUrl ||
@@ -5929,8 +5984,10 @@ export class Registry extends EventEmitter {
       // the note key like any other binding - and the invite moves with the key.
       this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
       this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
+      this.moveBlockerKey(noteKeyFor(s), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
+      next.blocker = this.blockerFor(next);
       next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
@@ -6030,8 +6087,10 @@ export class Registry extends EventEmitter {
       // Inside the rotation guard for the same per-render economy the cost re-read is.
       this.moveForemanInviteKey(noteKeyFor(s), key);
       this.moveStandingInstructionsKey(noteKeyFor(s), key);
+      this.moveBlockerKey(noteKeyFor(s), key);
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
+      next.blocker = this.blockerFor(next);
       next.workCycle = dbWorkCycleFor(key) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
@@ -6854,6 +6913,19 @@ export class Registry extends EventEmitter {
     return out;
   }
 
+  /**
+   * Every review this daemon holds for one session, settled ones included.
+   *
+   * A read for the one caller that must see an ANSWER rather than an open question: a
+   * session-configured workflow Command is accepted only when its operator picked that exact
+   * argv on one of this session's `request_input` cards (`workflows/commands.ts`).
+   */
+  reviewsFor(sessionId: string): ReviewItem[] {
+    const out: ReviewItem[] = [];
+    for (const r of this.reviews.values()) if (r.sessionId === sessionId) out.push(r);
+    return out;
+  }
+
   private refreshPendingCount(sessionId: string): void {
     const s = this.sessions.get(sessionId);
     if (!s) return;
@@ -7032,6 +7104,47 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Where a dispatching task's `provisioning` comes from; null until a dispatcher sets one.
+   */
+  private taskProvisioningSource: ((task: Task) => TaskProvisioning | null) | null = null;
+
+  /**
+   * Name what a dispatching task's `provisioning` is derived from: the worktree manager's
+   * claim registry, as the dispatcher reads it. The registry never imports the manager.
+   */
+  setTaskProvisioningSource(source: (task: Task) => TaskProvisioning | null): void {
+    this.taskProvisioningSource = source;
+  }
+
+  /**
+   * A task with its derived `provisioning` recomputed. Only a dispatching task can be waiting
+   * on a claim, and a task that is not carries no `provisioning` key at all, so every other
+   * task's payload is exactly what it was. A value carried in by spreading an earlier snapshot
+   * is never trusted: it is read again here, on every publish.
+   */
+  private withProvisioning(task: Task): Task {
+    const provisioning = task.status === "dispatching" ? this.taskProvisioningSource?.(task) ?? null : null;
+    if (provisioning) return { ...task, provisioning };
+    if (task.provisioning === undefined) return task;
+    const { provisioning: _dropped, ...rest } = task;
+    return rest;
+  }
+
+  /**
+   * Re-derive and re-send one in-memory task's `provisioning`, when the claim it waits on
+   * starts a step or ends. Silent when nothing a dashboard draws changed. A task outside the
+   * in-memory board is skipped: nothing is drawing it, and it cannot be dispatching.
+   */
+  refreshTaskProvisioning(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const next = this.withProvisioning(current);
+    if (JSON.stringify(next.provisioning ?? null) === JSON.stringify(current.provisioning ?? null)) return;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  /**
    * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
    *
    * Called by the retention service after it moves the ledger, and it re-reads rather than
@@ -7074,9 +7187,10 @@ export class Registry extends EventEmitter {
     // Re-derived on every resident write rather than trusted from the caller. A writer that
     // built its row from a copy taken before Restart ended the run would otherwise broadcast it
     // without the record, and the replaced session would silently lose its Complete offer.
-    const task: Task = written.kind === "resident"
+    const published: Task = written.kind === "resident"
       ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
       : written;
+    const task = this.withProvisioning(published);
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -7100,6 +7214,7 @@ export class Registry extends EventEmitter {
       this.resyncSessionTask(previous.sessionId);
     }
     if (task.sessionId) this.resyncSessionTask(task.sessionId);
+    if (isTerminalTask(task.status)) this.clearBlockersForTask(task, previous);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
     if (dependenciesChanged && !deferDependencyCleanup) this.cleanupDependencyProvenance();
   }
@@ -7341,6 +7456,7 @@ export class Registry extends EventEmitter {
               ? []
               : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
+          ...(t.claimWarnings && t.claimWarnings.length > 0 ? { claimWarnings: t.claimWarnings } : {}),
         }
       : null;
   }
@@ -8309,6 +8425,227 @@ export class Registry extends EventEmitter {
     return removed;
   }
 
+  // ---- session blockers (waiting on someone other than the operator) ----
+
+  /** The blocker this session stands on, projected onto `Session.blocker`. */
+  private blockerFor(s: Session): SessionBlocker | null {
+    return this.blockers.get(noteKeyFor(s))?.blocker ?? null;
+  }
+
+  /** Whether a blocker stands on this note key, whether or not a session holds it now. */
+  hasBlockerForKey(noteKey: string): boolean {
+    return this.blockers.has(noteKey);
+  }
+
+  /** A session's current blocker, or null. */
+  getBlocker(sessionId: string): SessionBlocker | null {
+    const s = this.sessions.get(sessionId);
+    return s ? this.blockerFor(s) : null;
+  }
+
+  /**
+   * Record (or re-report) what this session is waiting on.
+   *
+   * A first report sets the blocker. A later one updates it and keeps `startedAt`; when a
+   * reply had been flagged, the re-report means "I checked, still blocked", so it clears
+   * `reply` and stamps `checkedAt`. Refused while the session has a pending `request_input`
+   * of its own: that session is already waiting on the operator, which is not a blocker.
+   */
+  reportBlocker(
+    sessionId: string,
+    body: ReportBlockerBody,
+    now = Date.now(),
+  ): { ok: true; blocker: SessionBlocker; created: boolean } | { ok: false; status: 404 | 409; error: string } {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.state === "exited") return { ok: false, status: 404, error: "no matching session" };
+    // A terminal task already ran its blocker clear, and nothing would ever clear one stored
+    // against it. Read from the task map at the report itself, so a report racing the terminal
+    // write lands on whichever side of it the daemon processed first, never in between.
+    const task = s.task ? this.tasks.get(s.task.id) : undefined;
+    if (task && isTerminalTask(task.status)) {
+      return {
+        ok: false,
+        status: 409,
+        error: `This session's task is already ${task.status}, so there is nothing for it to wait on.`,
+      };
+    }
+    const asking = this.pendingReviews(s.id).some((r) => r.kind === "input");
+    if (asking) {
+      return {
+        ok: false,
+        status: 409,
+        error: "This session is already waiting on the operator through request_input. A blocker is only for waiting on someone or something else.",
+      };
+    }
+    const key = noteKeyFor(s);
+    const prev = this.blockers.get(key)?.blocker ?? null;
+    const blocker: SessionBlocker = {
+      // A re-report keeps the blocker's identity; a first report mints one.
+      id: prev?.id ?? randomUUID(),
+      kind: body.kind,
+      reason: body.reason,
+      waitingOn: body.waitingOn,
+      resumeWhen: body.resumeWhen,
+      details: body.details ?? null,
+      referenceUrl: body.referenceUrl ?? null,
+      startedAt: prev?.startedAt ?? now,
+      updatedAt: now,
+      checkedAt: prev?.reply ? now : (prev?.checkedAt ?? null),
+      reply: null,
+    };
+    // Reported by a live session, so the key is held right now.
+    const record: SessionBlockerRecord = { noteKey: key, taskId: s.task?.id ?? null, blocker, lastHeldAt: now };
+    upsertSessionBlocker(record);
+    this.blockers.set(key, record);
+    logEvent(s.id, now, prev ? "session_blocker_updated" : "session_blocker_set", {
+      actor: "session",
+      kind: blocker.kind,
+      reason: blocker.reason,
+      ...(prev ? { sinceMs: now - blocker.startedAt, checked: Boolean(prev.reply) } : {}),
+    });
+    this.syncSessionsForBlocker(key);
+    return { ok: true, blocker, created: !prev };
+  }
+
+  /**
+   * Flag a likely answer on a blocker. It does NOT clear the blocker and sends nothing to the
+   * session: whoever flagged it follows up (usually a `message` telling it to check).
+   */
+  flagBlockerReply(
+    sessionId: string,
+    actor: string,
+    input: { note?: string; referenceUrl?: string },
+    now = Date.now(),
+  ): SessionBlocker | null {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    const key = noteKeyFor(s);
+    const record = this.blockers.get(key);
+    if (!record) return null;
+    const blocker: SessionBlocker = {
+      ...record.blocker,
+      reply: {
+        flaggedAt: now,
+        flaggedBy: actor,
+        note: input.note?.trim() || null,
+        referenceUrl: input.referenceUrl ?? null,
+      },
+    };
+    const next = { ...record, blocker };
+    upsertSessionBlocker(next);
+    this.blockers.set(key, next);
+    logEvent(s.id, now, "session_blocker_reply_flagged", { actor, sinceMs: now - blocker.startedAt });
+    this.syncSessionsForBlocker(key);
+    return blocker;
+  }
+
+  /** Clear a session's blocker. A session with none is a no-op that reports `false`. */
+  clearBlocker(sessionId: string, actor: string, resolution?: string, now = Date.now()): boolean {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    return this.clearBlockerKey(noteKeyFor(s), s.id, actor, resolution, now);
+  }
+
+  private clearBlockerKey(key: string, sessionId: string, actor: string, resolution: string | undefined, now: number): boolean {
+    const record = this.blockers.get(key);
+    if (!record) return false;
+    deleteSessionBlocker(key);
+    this.blockers.delete(key);
+    logEvent(sessionId, now, "session_blocker_cleared", {
+      actor,
+      durationMs: now - record.blocker.startedAt,
+      ...(resolution ? { resolution } : {}),
+    });
+    this.syncSessionsForBlocker(key);
+    return true;
+  }
+
+  /**
+   * A task that reached a terminal status (merge settlement, Mark done, cancel, fail) ends
+   * the blocker reported for THAT task, and only that one. A late terminal write for an
+   * earlier task must not clear the blocker a session reported for the task it holds now, so
+   * a session's key is matched only when its recorded task is this one, or when the blocker
+   * recorded no task and the session is still bound to this one.
+   */
+  private clearBlockersForTask(task: Task, previous: Task | undefined, now = Date.now()): void {
+    const sessionFor = (key: string) => [...this.sessions.values()].find((s) => noteKeyFor(s) === key);
+    const keys = new Map<string, string>();
+    for (const [key, record] of this.blockers) {
+      if (record.taskId === task.id) keys.set(key, sessionFor(key)?.id ?? task.sessionId ?? previous?.sessionId ?? key);
+    }
+    for (const sid of [task.sessionId, previous?.sessionId]) {
+      const s = sid ? this.sessions.get(sid) : undefined;
+      if (!s || s.task?.id !== task.id) continue;
+      const record = this.blockers.get(noteKeyFor(s));
+      if (record && record.taskId === null) keys.set(noteKeyFor(s), s.id);
+    }
+    for (const [key, sid] of keys) this.clearBlockerKey(key, sid, "task", `task ${task.status}`, now);
+  }
+
+  /**
+   * Carry a blocker across a note-key rotation - EVERY rotation, like standing instructions:
+   * a `/clear` inside the same task does not resolve what the task is waiting on.
+   */
+  moveBlockerKey(fromKey: string, toKey: string): void {
+    if (fromKey === toKey) return;
+    const record = this.blockers.get(fromKey);
+    if (!record) return;
+    moveSessionBlocker(fromKey, toKey);
+    this.blockers.delete(fromKey);
+    this.blockers.set(toKey, { ...record, noteKey: toKey });
+    // Re-project onto whoever already holds the destination key, so a session rediscovered
+    // under it (a reset's rebind) is blocked at once rather than on the next sweep. Only the
+    // DESTINATION re-syncs: the rotation sites re-resolve their own `next`, and syncing
+    // `fromKey` would emit the mid-rotation session with a momentarily-null blocker.
+    this.syncSessionsForBlocker(toKey);
+  }
+
+  /**
+   * Drop blockers no session has held for the window. `pruneGoals`' twin, gated on the first
+   * sweep for the same reason: before it, an empty session map means "liveness unknown".
+   * An exit alone never ends a blocker, because a resumed conversation keeps its key, so the
+   * clock is the later of its last report and `lastHeldAt` - the last tick a live session was
+   * seen holding the key. That is stored, so a restart does not reset it: a session briefly
+   * missing from the first sweep after a restart keeps a blocker it held before the restart.
+   * An exited session does not hold its key: its card lingers in the map until eviction, and
+   * counting it would keep refreshing the clock for a blocker nobody is holding any more.
+   * Every write to the table goes through this map, so the map decides which rows go.
+   */
+  pruneBlockers(olderThan: number, now = Date.now()): number {
+    if (!this.sweptSessions) return 0;
+    const liveKeys = new Set(
+      [...this.sessions.values()].filter((s) => s.state !== "exited").map((s) => noteKeyFor(s)),
+    );
+    const held: string[] = [];
+    let removed = 0;
+    for (const [key, record] of this.blockers) {
+      if (liveKeys.has(key)) {
+        held.push(key);
+        this.blockers.set(key, { ...record, lastHeldAt: now });
+        continue;
+      }
+      const last = Math.max(record.blocker.updatedAt, record.lastHeldAt ?? 0);
+      if (last >= olderThan) continue;
+      deleteSessionBlocker(key);
+      this.blockers.delete(key);
+      logEvent(key, now, "session_blocker_cleared", { actor: "prune", durationMs: now - record.blocker.startedAt });
+      removed++;
+    }
+    touchSessionBlockersHeld(held, now);
+    return removed;
+  }
+
+  private syncSessionsForBlocker(key: string): void {
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      const blocker = this.blockerFor(s);
+      if (JSON.stringify(s.blocker ?? null) === JSON.stringify(blocker)) continue;
+      const next = { ...s, blocker };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
   // ---- goals (what a session is attempting to solve) ----
 
   /**
@@ -9150,21 +9487,10 @@ export class Registry extends EventEmitter {
     const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
-      codeRabbit: codeRabbitSummary(row.key, owner),
+      ...inspectorSummaryOf(row, getInspectorConfig(), codeRabbitSummary(row.key, owner)),
       // Stacked pull requests: the lifecycle standing Foreman's follow-up reads to deliver a
       // catch-up or restack prompt, and the card reads to say why the child is held.
       stack: row.stack ? this.stackStanding(row) : null,
-      prKey: row.key,
-      url: row.url,
-      mode: getInspectorConfig().mode,
-      open: row.openFindings,
-      postedOpen: row.postedOpenFindings,
-      round: row.round,
-      lastReviewedAt: row.lastReviewedAt,
-      failed: row.lastError !== null,
-      reviewedHeadSha: row.headSha,
-      observedHeadSha: row.observedHeadSha,
-      cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
     };
   }
 
@@ -9574,6 +9900,8 @@ export class Registry extends EventEmitter {
   ): boolean {
     const session = this.sessions.get(id);
     if (!session || session.state === "exited" || workQueueBlockedReason(session)) return false;
+    // Refused, not consumed: a blocked session keeps its generation for after the clear.
+    if (hasBlocker(session)) return false;
     if (noteKeyFor(session) !== input.logicalKey) return false;
     if (session.state !== "idle" || reportBucket(session, [...this.sessions.values()]) === "needs-you") {
       return false;
@@ -9623,6 +9951,9 @@ export class Registry extends EventEmitter {
     const session = this.sessions.get(id);
     if (!session || noteKeyFor(session) !== input.logicalKey) return null;
     if (session.task?.id !== input.taskId) return null;
+    // Read off the LIVE session at the write, so a blocker reported while the route awaited
+    // the checkout diff still refuses the claim; the route's decision used an earlier object.
+    if (hasBlocker(session)) return null;
     const claimed = dbClaimPromptedRecovery(input, now);
     if (!claimed) return null;
     this.syncSessionsForQueue(input.logicalKey);
@@ -10272,6 +10603,8 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // in any way of its own - an idle sibling is equal by every other field, stays
   // quiet, and never surfaces the stranded batch.
   queue: byJson,
+  // Nested and moves on its own (a report, a reply flag, a clear), so JSON like `goal`.
+  blocker: byJson,
   pendingTurns: byJson,
   steeredTurns: byJson,
   steerReceipts: byJson,

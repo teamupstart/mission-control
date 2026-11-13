@@ -501,6 +501,60 @@ export interface RestoringSession {
   createdAt: number;
 }
 
+/**
+ * What a session blocker is waiting on. There is deliberately no `user` / `operator` kind: a
+ * decision the operator can make goes through `request_input`, which already blocks the turn.
+ */
+export const SESSION_BLOCKER_KINDS = ["question", "dependency", "service", "other"] as const;
+export type SessionBlockerKind = (typeof SESSION_BLOCKER_KINDS)[number];
+
+/** Field limits a blocker is validated against, shared by the MCP tool and the daemon. */
+export const SESSION_BLOCKER_LIMITS = {
+  reason: 200,
+  waitingOn: 120,
+  resumeWhen: 200,
+  details: 4000,
+  note: 500,
+  resolution: 200,
+  url: 2048,
+} as const;
+
+/** A likely answer someone flagged on a blocker. It never clears the blocker by itself. */
+export interface SessionBlockerReply {
+  flaggedAt: number;
+  /** `"operator"` or `"session:<controller-id>"`. */
+  flaggedBy: string;
+  note: string | null;
+  referenceUrl: string | null;
+}
+
+/**
+ * A session waiting on someone or something other than the operator. Durable session state
+ * keyed by the note key, so it survives turn completion, daemon restarts and `/clear`; it ends
+ * when someone clears it or the session's task reaches a terminal status.
+ */
+export interface SessionBlocker {
+  /**
+   * This blocker's identity: minted when it is first reported and kept across re-reports, so
+   * a replacement is always distinguishable from the blocker a control was opened on, even
+   * within the same millisecond. Flag reply and Clear name it to refuse stale actions.
+   */
+  id: string;
+  kind: SessionBlockerKind;
+  reason: string;
+  waitingOn: string;
+  resumeWhen: string;
+  details: string | null;
+  referenceUrl: string | null;
+  /** First report; kept across re-reports. */
+  startedAt: number;
+  /** Last report. */
+  updatedAt: number;
+  /** Last re-report after a reply flag ("checked, still blocked"). */
+  checkedAt: number | null;
+  reply: SessionBlockerReply | null;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -756,6 +810,12 @@ export interface Session {
    * key. Null when the session has no queue.
    */
   queue: SessionQueueSummary | null;
+  /**
+   * What this session is waiting on outside the operator, or null. Denormalized like `goal`
+   * and keyed on the same note key. While it stands every idle-triggered automation leaves
+   * the session alone (`hasBlocker` in `session.ts`).
+   */
+  blocker: SessionBlocker | null;
   /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
   pendingTurns: PendingTurn[];
   /**
@@ -2022,7 +2082,46 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    } & StackEdgeFields);
+    } & StackEdgeFields)
+  | {
+      /**
+       * An item in an external tracker that blocks this task and has no Mission Control
+       * task of its own - a blocking link a task source recovered (`canRelate`).
+       *
+       * Satisfied when the item closes as completed. Closed as not planned, it reports
+       * `stopped`, because the work it stood for will not happen on its own. The sweep of
+       * the source named by `sourceId` re-checks `state`; nothing else writes it.
+       */
+      type: "source";
+      sourceId: string;
+      externalId: string;
+      url: string | null;
+      title: string;
+      state: TaskSourceItemState;
+      /** When the owning source last read this item's state, for oldest-first re-checks. */
+      checkedAt: number | null;
+      selectedAt: number | null;
+      satisfiedAt: number | null;
+    }
+  | {
+      /**
+       * An edge written by a newer build, whose type this build does not know.
+       *
+       * Kept rather than dropped, and never satisfied, so running an older build cannot
+       * release work a newer one was holding back. `raw` is written back verbatim, so the
+       * newer build reads its own edge again after an upgrade.
+       */
+      type: "unknown";
+      /** The stored `type` string, for display. */
+      edgeType: string;
+      /** A stable identity for this edge (its stored JSON), so an edit can keep it. */
+      key: string;
+      title: string;
+      raw: Record<string, unknown>;
+      selectedAt: number | null;
+      /** Always null when read: this build cannot tell whether the edge is met. */
+      satisfiedAt: number | null;
+    };
 
 /**
  * Stacked pull requests, on a task or session edge. Every field is optional on read, so an
@@ -2046,6 +2145,15 @@ export interface StackEdgeFields {
   /** The prerequisite's primary-repository pull request the stamp was read from. */
   stackPrUrl?: string | null;
 }
+
+/**
+ * An external item's state, as a task source reports it.
+ *
+ * `completed` and `not_planned` are both closed. They are separate because they mean
+ * opposite things to a dependent: the first is work that landed, the second is work that
+ * will not happen, which is why only the first satisfies a `source` dependency.
+ */
+export type TaskSourceItemState = "open" | "completed" | "not_planned";
 
 /**
  * One SECONDARY repository attached to a multi-repo task.
@@ -2140,6 +2248,90 @@ export interface TaskAutomaticCleanup {
   detail: string | null;
 }
 
+/**
+ * A dispatch waiting on a pool's dependency claim: which repository's tree, which step, and
+ * since when. `slotId` and `claimId` are what Stop names, so a Stop can only ever stop the
+ * claim this view describes.
+ */
+export interface TaskProvisioning {
+  phase: "installingDependencies";
+  /** The repository whose worktree is claiming: the task's primary, or an attached one. */
+  repoRoot: string;
+  slotId: string;
+  claimId: string;
+  /** When the claim began, for its elapsed time. */
+  startedAt: number;
+  step: {
+    /** 1-based, of `stepCount`. */
+    step: number;
+    stepCount: number;
+    /** The step's command as text, cut to a fixed bound. */
+    command: string;
+    startedAt: number;
+  };
+}
+
+/**
+ * A dependency claim that failed in one of a task's worktrees, field by field. Claim variable
+ * values were removed from `reason` and `tail` before the claim reported them.
+ */
+export interface TaskClaimWarning {
+  repoRoot: string;
+  /** 1-based, of `stepCount`. */
+  step: number;
+  stepCount: number;
+  /** The failing step's command as text, cut to a fixed bound. */
+  command: string;
+  /** What happened to it, as a phrase: "exited with code 1", "was stopped". */
+  reason: string;
+  /** The step's last output. Empty when it printed nothing. */
+  tail: string;
+  /** Output bytes dropped from the front of the tail. */
+  truncatedBytes: number;
+}
+
+/**
+ * A manual lease being acquired in the background, as `make session` polls it. The daemon
+ * answers a manual acquire with `202` and this request's id when the pool has a dependency
+ * claim, because a claim can outlast any HTTP request. In memory only: a request unknown after
+ * a restart is a `404`.
+ */
+export type ManualWorktreeRequestView =
+  | {
+      requestId: string;
+      state: "claiming";
+      /** Since the daemon accepted the request. */
+      elapsedMs: number;
+      /**
+       * The claim step running right now. Null while the slot is still being chosen, reset or
+       * set up, or its fingerprint read.
+       */
+      step: {
+        /** 1-based, of `stepCount`. */
+        step: number;
+        stepCount: number;
+        /** The step's command as text, cut to a fixed bound. */
+        command: string;
+        elapsedMs: number;
+      } | null;
+    }
+  | {
+      requestId: string;
+      state: "granted";
+      elapsedMs: number;
+      lease: { path: string; leaseId: string; baseSha: string };
+      /** Present when the claim failed. The lease is granted anyway. */
+      claimWarning?: Omit<TaskClaimWarning, "repoRoot">;
+    }
+  | {
+      requestId: string;
+      state: "failed";
+      elapsedMs: number;
+      reason: string;
+      /** `expired` is a grant nobody picked up within the pickup window. */
+      outcome: "notAcquired" | "outcomeUnknown" | "expired";
+    };
+
 export interface Task {
   /** Null or absent on historical tasks means a Git checkout. */
   workspaceKind?: "resident-workspace" | null;
@@ -2231,6 +2423,17 @@ export interface Task {
    */
   advisorModel: AdvisorChoice | null;
   /**
+   * The Library Persona whose guidance this task's agent launches with, or null for none.
+   *
+   * An id, not a snapshot: like `model` and `effort`, a backlogged task reads the Persona as
+   * it stands when it LAUNCHES, and the launch records the composed text in the session's
+   * standing-instruction snapshot, which is what a resume replays. Every kind Dispatch offers
+   * may carry one: a harness-launched kind in its launch's standing instructions, a pipeline on
+   * its managed Engineer host's own channel (a Terminal host refuses it). A resident never does,
+   * because it takes its Persona from its resident profile (`taskKindPersonaRefusal`).
+   */
+  personaId: string | null;
+  /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
    * This is durable dispatch intent rather than a binding id: the binding cannot exist until
@@ -2247,6 +2450,12 @@ export interface Task {
    * no-op. A seen row deliberately outlives the task; this field dies with it.
    */
   source: TaskSourceRef | null;
+  /**
+   * The item this task's source item is a sub-issue of, as the source last reported it, else
+   * null. Display only: written on ingest and on keep-updated refresh, and never read to
+   * create a dependency edge.
+   */
+  sourceParent: TaskSourceRef | null;
   /**
    * The provider run this pipeline dispatch owns.
    *
@@ -2409,6 +2618,23 @@ export interface Task {
    * open. Derived like `automaticCleanup`; optional so tasks built in memory need not carry it.
    */
   residentRestart?: TaskResidentRestart | null;
+  /**
+   * What this task's dispatch is waiting on while it provisions, or null when it waits on
+   * nothing worth naming. Present only while a pool's dependency claim runs a step in one of
+   * its worktrees.
+   *
+   * A projection of the worktree manager's claim registry, never a column: the server derives
+   * it on every `task_upsert` it publishes and re-sends the task as the claim moves, so it
+   * needs no event of its own. A restart drops it with the claim, and the dispatch's existing
+   * recovery reports the outcome.
+   */
+  provisioning?: TaskProvisioning | null;
+  /**
+   * Every worktree of this task whose dependency claim failed when it was leased, primary
+   * first. The trees were handed over anyway, and the agent's launch prompt names the same
+   * failures. Missing or empty when every claim succeeded or none ran; a new dispatch clears it.
+   */
+  claimWarnings?: TaskClaimWarning[];
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2507,6 +2733,11 @@ export interface TaskSummary {
    * see. This list includes it.
    */
   repoPrs: TaskRepoPrSummary[];
+  /**
+   * `Task.claimWarnings`, carried to the session card. Absent, never empty, when no claim
+   * failed, so every other card's payload is what it was before claims existed.
+   */
+  claimWarnings?: TaskClaimWarning[];
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */
@@ -2737,10 +2968,12 @@ export interface MissionReport {
 export type InspectorMode = "dry-run" | "live";
 
 /** How a PR came to be adopted. Older persisted provenance is normalized to `legacy`. */
-export type InspectorSource = "hook" | "legacy" | "pipeline";
+export const INSPECTOR_SOURCES = ["hook", "legacy", "pipeline"] as const;
+export type InspectorSource = (typeof INSPECTOR_SOURCES)[number];
 
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
-export type InspectorPrState = "open" | "closed";
+export const INSPECTOR_PR_STATES = ["open", "closed"] as const;
+export type InspectorPrState = (typeof INSPECTOR_PR_STATES)[number];
 
 /**
  * What a failed attempt says about whether the NEXT PUSH is worth trying immediately.
@@ -2751,9 +2984,11 @@ export type InspectorPrState = "open" | "closed";
  * not answer in time for a diff nobody has meaningfully changed. Pushing buys nothing
  * there, so those are the failures the push-escape is capped on.
  */
-export type InspectorFailKind = "push-fixable" | "persistent";
+export const INSPECTOR_FAIL_KINDS = ["push-fixable", "persistent"] as const;
+export type InspectorFailKind = (typeof INSPECTOR_FAIL_KINDS)[number];
 
-export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
+export const INSPECTOR_SEVERITIES = ["blocker", "major", "minor", "nit"] as const;
+export type InspectorSeverity = (typeof INSPECTOR_SEVERITIES)[number];
 
 /**
  * `drafted` is a dry-run finding: computed, deduped, never posted. It occupies the
@@ -2768,7 +3003,12 @@ export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
  * operator's name. A `posting` row is read as "already raised" for dedup, so the
  * duplicate cannot happen; the next round reconciles it against the live threads.
  */
-export type InspectorCommentStatus = "drafted" | "posting" | "open" | "resolved";
+export const INSPECTOR_COMMENT_STATUSES = ["drafted", "posting", "open", "resolved"] as const;
+export type InspectorCommentStatus = (typeof INSPECTOR_COMMENT_STATUSES)[number];
+
+/** What GitHub reports a polled pull request's state to be. */
+export const INSPECTOR_OBSERVED_STATES = ["OPEN", "CLOSED", "MERGED"] as const;
+export type InspectorObservedState = (typeof INSPECTOR_OBSERVED_STATES)[number];
 
 /** One adopted pull request. The row's existence IS the permission to comment on it. */
 export interface InspectorPr {
@@ -2784,6 +3024,8 @@ export interface InspectorPr {
   cwd: string | null;
   /** The session that opened it. Nullable: a PR outlives the session, deliberately. */
   sessionId: string | null;
+  /** That session's agent id when it was bound, which survives the id re-minting on restart. */
+  noteKey?: string | null;
   source: InspectorSource;
   state: InspectorPrState;
   /**
@@ -2863,7 +3105,7 @@ export interface InspectorPr {
    */
   observedHeadSha: string | null;
   /** What that same poll saw the pull request's state to be, or null when never polled. */
-  observedState: "OPEN" | "CLOSED" | "MERGED" | null;
+  observedState: InspectorObservedState | null;
   /** When that observation was made, epoch ms, or null when never polled. */
   observedAt: number | null;
   /**
@@ -2988,9 +3230,37 @@ export interface InspectorComment {
   answeredCommentId: number | null;
   /** Inspector agreed to resolve the finding; its GitHub thread mutation is still pending. */
   resolutionPending?: boolean;
+  /**
+   * When this build confirmed the finding on GitHub, epoch ms. Stamped when an accepted
+   * review promotes the row to `open`, or when posting reconciliation finds it published;
+   * never cleared, so a posted finding that was later resolved still reads as posted.
+   *
+   * Null: not confirmed by a build that tracks posting. Absent: an older snapshot taken
+   * before the field existed, which `findingPublication` reads as unknown.
+   */
+  postedAt?: number | null;
+  /** The finding's GitHub comment, or the review that carried a demoted one. */
+  githubUrl?: string | null;
+  /** What a row recorded before `postedAt` existed proves about posting. Null on newer rows. */
+  legacyPosted?: InspectorLegacyPosted | null;
+  /**
+   * Validation refusals GitHub pinned on this finding while it was a draft being offered
+   * after a switch to live. At `INSPECTOR_LIMITS.maxPostRefusals` the planner stops offering
+   * it. Absent on an older snapshot taken before the field existed, which reads as zero.
+   */
+  postRefusals?: number;
+  /** GitHub's reason for the newest counted refusal, scrubbed and clipped. Null when none. */
+  lastPostError?: string | null;
   createdAt: number;
   updatedAt: number;
 }
+
+/**
+ * The one-time backfill's answer for a finding recorded before posting was tracked.
+ * Persisted values: never rename or reorder them.
+ */
+export const INSPECTOR_LEGACY_POSTED = ["posted", "unposted", "unknown"] as const;
+export type InspectorLegacyPosted = (typeof INSPECTOR_LEGACY_POSTED)[number];
 
 /**
  * The compact per-session view, denormalized onto a Session card like `TaskSummary`.
@@ -3395,6 +3665,12 @@ export type ServerEvent =
        */
       keepAwake: KeepAwakeStatus;
       /**
+       * Backups and storage problems at connect time, so Settings > Storage is right from
+       * the first render. Null until the daemon's storage service has computed
+       * it once; absent from an older daemon, which sends none.
+       */
+      storageHealth?: import("./storage-health.ts").StorageHealth | null;
+      /**
        * The latest committed restore marker, or null when this daemon has restored nothing.
        * Bounded to the same three public scalars as the incremental event. A fresh browser
        * baselines it; a reconnect compares it with the marker seen before the stream gap.
@@ -3545,12 +3821,33 @@ export type ServerEvent =
    */
   | { type: "worktrees_changed" }
   /**
+   * The database backup config was saved. Content-free: `GET /api/storage` is the one reader
+   * of that config, and `storage_health` cannot stand in, because a save that prunes nothing
+   * leaves the aggregate unchanged and publishes no frame.
+   */
+  | { type: "storage_config_changed" }
+  /**
+   * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
+   * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the
+   * inbox and the `to answer` count in every other.
+   *
+   * CONTENT-FREE and out of the reconnect snapshot, like `worktrees_changed`: the set is an
+   * HTTP read of one small row per inbox row ever dismissed, and the hook that holds it
+   * re-reads on every (re)connect, which covers a dismissal made while this stream was down.
+   */
+  | { type: "attention_dismissals_changed" }
+  /**
    * The Keep Awake observation moved - a transition was requested, the OS assertion was
    * acquired or released, or a transition failed. Carries the whole status so every open dashboard
    * converges without a fetch; emitted only when an observable field changed (see
    * `Registry.setKeepAwakeStatus`).
    */
   | { type: "keep_awake_status"; status: KeepAwakeStatus }
+  /**
+   * The storage aggregate moved: a capture settled or copies were pruned. Carries the whole aggregate, for `line_summary`'s reason,
+   * and is emitted only when it changed (see `StorageHealthService.recompute`).
+   */
+  | { type: "storage_health"; health: import("./storage-health.ts").StorageHealth }
   /**
    * The local archive library changed - a reconciliation batch indexed, refused, or pruned
    * at least one bundle. An invalidation signal: a surface showing archive history re-runs

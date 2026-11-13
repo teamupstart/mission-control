@@ -1,4 +1,10 @@
-import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, LOCAL_PLAN_VALIDATION_WORKFLOW_ID, DOCUMENTATION_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
+import {
+  BUG_FIX_REVIEW_WORKFLOW_ID,
+  DOCUMENTATION_REVIEW_WORKFLOW_ID,
+  LOCAL_PLAN_VALIDATION_WORKFLOW_ID,
+  NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  PLAN_VALIDATION_WORKFLOW_ID,
+} from "./builtin-workflow.ts";
 // Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
@@ -271,6 +277,20 @@ export const HARNESS_LAUNCHED_TASK_KINDS = TASK_KINDS.filter(
 /** Whether this kind's launch is ours to give an agent, model and effort to. */
 export function taskKindLaunchesHarness(kind: TaskKind): kind is HarnessLaunchedTaskKind {
   return TASK_KIND_BEHAVIOR[kind].launch === "harness";
+}
+
+/**
+ * Why a task of this kind cannot carry a dispatch Persona, or null when it can.
+ *
+ * Every kind the Dispatch form offers can. A harness-launched kind carries it in its launch's
+ * standing instructions, and a pipeline carries it to its managed Engineer host the same way.
+ * A resident is the one exception: it takes its Persona from its resident profile, and a
+ * second source for the same answer would only disagree with it.
+ */
+export function taskKindPersonaRefusal(kind: TaskKind): string | null {
+  return TASK_KIND_BEHAVIOR[kind].launch === "resident"
+    ? `a ${TASK_KIND_INFO[kind].label} task takes its Persona from its resident profile`
+    : null;
 }
 
 /** Whether the external provider projection, rather than a host session, owns completion. */
@@ -664,24 +684,60 @@ export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
   return kind === "ship" || kind === "bugfix" || kind === "document";
 }
 
-const KIND_WORKFLOW_DEFAULTS: Record<TaskKind, string | undefined> = {
+/**
+ * The after-work Workflow each kind arms when nobody chose one, keyed by the kinds this app
+ * launches. `pipeline` has no entry: Conductor owns what runs after its work.
+ *
+ * These are the BUILT-IN answers. An operator overrides any of them under Settings ->
+ * Tasks -> Dispatch defaults (`WorkflowPolicy.kindWorkflowDefaults`), and a kind left
+ * unset there keeps following this record, so a later build can change a built-in and reach
+ * everyone who never chose.
+ */
+export const BUILTIN_KIND_WORKFLOW_DEFAULTS: Readonly<Record<HarnessLaunchedTaskKind, string | null>> = {
   document: DOCUMENTATION_REVIEW_WORKFLOW_ID,
-  ship: undefined,
-  scout: undefined,
+  ship: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  scout: null,
   plan: PLAN_VALIDATION_WORKFLOW_ID,
-  pipeline: undefined,
-  chat: undefined,
+  chat: null,
   bugfix: BUG_FIX_REVIEW_WORKFLOW_ID,
-  resident: undefined,
 };
 
-export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
-  return KIND_WORKFLOW_DEFAULTS[kind] !== undefined;
+/**
+ * The operator's per-kind choices. An absent kind follows `BUILTIN_KIND_WORKFLOW_DEFAULTS`;
+ * `null` is an explicit None; a string is a workflow identity, resolved to its newest
+ * published version when the session is bound.
+ */
+export type KindWorkflowDefaults = Partial<Record<HarnessLaunchedTaskKind, string | null>>;
+
+/**
+ * The Workflow a new task of this kind arms when its creator named none.
+ *
+ * Explicit None and workflow choices bypass this default at the caller. Every creation path
+ * resolves through here - the dispatch form, `POST /api/tasks`, task-source sweeps and the
+ * Recurring Mission editor - so a row set in Settings reaches all of them.
+ */
+export function taskDefaultWorkflowId(
+  kind: TaskKind,
+  configured: KindWorkflowDefaults,
+  storage: "repository" | "local" = "repository",
+): string | null {
+  if (!taskKindLaunchesHarness(kind)) return null;
+  // A locally stored plan has no checkout files and no planning PR, so the repository Plan
+  // Validation (and any row aimed at it) cannot review it.
+  if (kind === "plan" && storage === "local") return LOCAL_PLAN_VALIDATION_WORKFLOW_ID;
+  const chosen = configured[kind];
+  return chosen === undefined ? BUILTIN_KIND_WORKFLOW_DEFAULTS[kind] : chosen;
 }
 
-/** Explicit None and workflow choices bypass this default at the caller. */
-export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null, storage: "repository" | "local" = "repository"): string | null {
-  return kind === "plan" && storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
+/**
+ * The kinds whose row names this workflow, in registry order, for the archive and delete
+ * guards: a workflow a row still points at cannot be retired from under it.
+ */
+export function kindsDefaultingToWorkflow(
+  workflowId: string,
+  configured: KindWorkflowDefaults,
+): HarnessLaunchedTaskKind[] {
+  return HARNESS_LAUNCHED_TASK_KINDS.filter((kind) => configured[kind] === workflowId);
 }
 
 /** Missing markers on historical tasks still mean a repository. Only residents may opt out. */

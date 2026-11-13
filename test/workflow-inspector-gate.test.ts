@@ -1,5 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +39,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { renderInspectorFeedback } = await import("../src/server/workflows/feedback.ts");
 const {
   WorkflowStore,
   clearWorkflowTables,
@@ -1638,6 +1640,150 @@ test("finding state and its immutable repair packet survive insertion failure an
   await recoveredManager.stop();
   setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });
+
+// The findings text changes between builds (posted markers, whole-finding truncation). A
+// delivery is keyed on its payload hash, so a build that rendered a prepared packet again
+// would mint a second delivery beside the frozen one, or type different bytes than the hash
+// the run recorded. Neither restart recovery nor a fresh observation of the same head may
+// render it: the stored bytes are what reach the pane.
+for (const policy of ["restart_workflow", "inspector_only"] as const) {
+  test(`a packet frozen by an older build is delivered as stored and never rendered again: ${policy}`, async () => {
+    const seeded = await seed({ policy });
+    await seeded.manager.stop();
+    updateInspectorPr(seeded.key, {
+      headSha: seeded.head,
+      lastAttemptSha: seeded.head,
+      reviewPosture: "live",
+      round: 1,
+      lastReviewedAt: Date.now(),
+    }, Date.now());
+    const row: InspectorComment = {
+      id: `frozen-comment-${serial}`,
+      prKey: seeded.key,
+      fingerprint: `frozen-finding-${serial}`,
+      path: "src/file.ts",
+      line: 10,
+      title: "Fix the edge",
+      body: "The edge loses the durable state.",
+      severity: "major",
+      round: 1,
+      status: "open",
+      replies: 0,
+      answeredCommentId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    upsertInspectorComment(row);
+    const state = seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState;
+    const findingsState: WorkflowInspectorGateState = {
+      ...state,
+      targetHeadSha: seeded.head,
+      failedHeadSha: seeded.head,
+      waitReason: "findings",
+      findingFingerprints: [row.fingerprint],
+    };
+    // What the previous build typed: the same finding, without a posted marker.
+    const frozen = [
+      "GitHub Inspector reviewed the pinned pull request head and found changes that are required.",
+      "",
+      "## MAJOR - Fix the edge",
+      "Location: src/file.ts:10",
+      "The edge loses the durable state.",
+      `Fingerprint: ${row.fingerprint}`,
+    ].join("\n");
+    const frozenSha = createHash("sha256").update(frozen).digest("hex");
+    const current = renderInspectorFeedback({
+      workflowName: `Workflow ${serial}`,
+      workflowVersion: 1,
+      runId: seeded.ids.run,
+      submissionRound: 1,
+      originalGoal: "Ship the reviewed change",
+      prUrl: seeded.url,
+      targetHeadSha: seeded.head,
+      inspectorRound: 1,
+      reviewPosture: "live",
+      policy,
+      findings: [row],
+      workflowEvidence: false,
+    });
+    assert.notEqual(current.payloadSha256, frozenSha, "this build would render different bytes");
+    const prepared = seeded.store.transitionInspectorFindingsWithDelivery({
+      runId: seeded.ids.run,
+      expectedState: state,
+      state: findingsState,
+      status: policy === "inspector_only" ? "waiting_for_new_head" : "waiting_for_session",
+      findingEvent: { findingFingerprints: [row.fingerprint] },
+      delivery: {
+        id: `frozen-delivery-${serial}`,
+        runId: seeded.ids.run,
+        submissionId: seeded.ids.submission,
+        kind: "inspector_feedback",
+        sessionId: seeded.ids.session,
+        noteKey: `agent-${serial}`,
+        payload: frozen,
+        payloadSha256: frozenSha,
+      },
+      deliveryEvent: { deliveryId: `frozen-delivery-${serial}`, payloadSha256: frozenSha },
+      now: seeded.now + 1,
+    });
+    assert.ok(prepared);
+
+    seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 2);
+    setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
+    const injected: string[] = [];
+    const recovered = new WorkflowManager(seeded.registry, seeded.store, {
+      resolveCommit: async (_root, head) => head,
+      inject: async (_session, payload) => {
+        injected.push(payload);
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+      recordInjection: () => {},
+      resumptionSettleMs: 0,
+    });
+    // Count gate evaluations of an observation as they FINISH. Under `restart_workflow` the
+    // gate records nothing when it re-enters (the run is parked in `waiting_for_session`), so
+    // there is no state to wait on; waiting for the evaluation itself is what makes the
+    // delivery count below an assertion about this observation rather than about a timer.
+    const gate = recovered as unknown as {
+      evaluateInspectorGate(runId: string, event: unknown): Promise<void>;
+    };
+    const evaluate = gate.evaluateInspectorGate.bind(recovered);
+    let observationsEvaluated = 0;
+    gate.evaluateInspectorGate = async (runId, event) => {
+      await evaluate(runId, event);
+      if (event && runId === seeded.ids.run) observationsEvaluated += 1;
+    };
+    try {
+      recovered.start();
+      await waitFor(
+        () => seeded.store.getDelivery(prepared.delivery.id)?.state === "delivered",
+        "the frozen Inspector packet did not resume after restart",
+      );
+      // The same head observed again, findings still open: the gate re-enters and must
+      // leave the prepared packet alone.
+      const before = observationsEvaluated;
+      const observedAt = Date.now();
+      signal(seeded, seeded.head, observedAt);
+      await waitFor(
+        () => observationsEvaluated > before,
+        "the gate never evaluated the fresh observation",
+      );
+      if (policy === "inspector_only") {
+        const state = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+        assert.ok((state.lastObservedAt ?? 0) >= observedAt, "the Inspector-only gate did not take the observation");
+      }
+      const packets = seeded.store.listDeliveries(seeded.ids.run)
+        .filter((delivery) => delivery.kind === "inspector_feedback");
+      assert.equal(packets.length, 1, "a second Inspector packet was prepared for the same submission");
+      assert.equal(packets[0]!.payload, frozen);
+      assert.equal(packets[0]!.payloadSha256, frozenSha);
+      assert.deepEqual(injected, [frozen]);
+    } finally {
+      await recovered.stop();
+      setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    }
+  });
+}
 
 test("restart recovery never sends a prepared packet from an older submission", async () => {
   const seeded = await seed({ policy: "inspector_only" });

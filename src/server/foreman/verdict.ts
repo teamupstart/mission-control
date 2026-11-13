@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { LLM_REPLY_COLLECTION_MAX } from "@shared/llm.ts";
+import { boundedRecord } from "@shared/zod-shapes.ts";
 import type { ForemanConfig, RecordEpisode, SetNote, SubmitOptions } from "@shared/protocol.ts";
 import { foremanAllowlisted, noteAwaitsYou } from "@shared/foreman.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
@@ -73,7 +75,7 @@ const AnswerField = z.preprocess(
        */
       form: z
         .object({
-          answers: z.record(z.string().min(1), z.union([z.string(), z.array(z.string())])),
+          answers: boundedRecord(z.string().min(1), z.union([z.string(), z.array(z.string()).max(LLM_REPLY_COLLECTION_MAX)]), LLM_REPLY_COLLECTION_MAX),
         })
         .optional(),
     })

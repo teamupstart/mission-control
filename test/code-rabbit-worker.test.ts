@@ -27,8 +27,69 @@ const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { readCodeRabbit, getInspectorPr } = await import("../src/server/db.ts");
-const { fetchPr, fetchIssueCommentPage } = await import("../src/server/inspector/github.ts");
+const { fetchPr, fetchIssueCommentPage, fetchThreadPage, cleanReviewExists, hasBodyOnlyFindings, GITHUB_PAGE_SIZE } = await import("../src/server/inspector/github.ts");
 after(() => rmSync(dir, { force: true, recursive: true }));
+
+test("GitHub connection collections refuse more than the requested page size", async (t) => {
+  t.after(() => writeFileSync(calls, ""));
+  const pageSize = GITHUB_PAGE_SIZE;
+  const requestedSizes = () => {
+    const args = JSON.parse(readFileSync(calls, "utf8").trim().split("\n").at(-1)!) as string[];
+    const query = args.find(arg => arg.startsWith("query="))!;
+    return [...query.matchAll(/\b(?:reviewThreads|comments|reviews)\s*\(\s*(?:first|last)\s*:\s*(\d+)/g)]
+      .map(match => Number(match[1]));
+  };
+  const pageInfo = { hasNextPage: false, endCursor: null };
+  const comment = preMergeComment(undefined, "https://github.com/a/b/pull/1#issuecomment-70");
+  const comments = { nodes: Array.from({ length: pageSize }, () => comment), pageInfo };
+  const root = { id: "root", url: comment.url, body: "Finding", updatedAt: "2026-01-01T00:00:00Z", author: { __typename: "Bot", login: "coderabbitai" } };
+  const thread = { id: "thread", isResolved: false, path: "a.ts", comments: { nodes: [root, ...Array.from({ length: pageSize - 1 }, () => ({ author: null }))] } };
+  const reviewThreads = { nodes: Array.from({ length: pageSize }, () => thread), pageInfo };
+  const respond = (pr: unknown) => writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: pr } } }));
+  respond({ state: "OPEN", headRefOid: "sha", isDraft: false, comments, reviewThreads });
+  const initial = await fetchPr(dir, "a", "b", 1, true);
+  assert.equal(initial.value?.threads.length, pageSize);
+  assert.equal(initial.value?.threadError, null);
+  assert.equal(initial.value?.issueComments?.comments.length, pageSize);
+  assert.deepEqual(requestedSizes(), [pageSize, pageSize, pageSize, pageSize]);
+  assert.equal((await fetchIssueCommentPage(dir, "a", "b", 1, "next")).value?.comments.length, pageSize);
+  assert.deepEqual(requestedSizes(), [pageSize]);
+  assert.equal((await fetchThreadPage(dir, "a", "b", 1, "next")).value?.error, null);
+  assert.deepEqual(requestedSizes(), [pageSize, 1], "follow-up thread pages request only root comments");
+  respond({ comments: { ...comments, nodes: [...comments.nodes, null] } });
+  assert.ok((await fetchIssueCommentPage(dir, "a", "b", 1, "next")).value?.error);
+  respond({ reviewThreads: { ...reviewThreads, nodes: [...reviewThreads.nodes, thread] } });
+  assert.ok((await fetchThreadPage(dir, "a", "b", 1, "next")).value?.error);
+  respond({ reviewThreads: { ...reviewThreads, nodes: [{ ...thread, comments: { nodes: [...thread.comments.nodes, null] } }] } });
+  assert.ok((await fetchThreadPage(dir, "a", "b", 1, "next")).value?.error);
+});
+test("GitHub review pages refuse oversized lists through snapshot and history reads", async (t) => {
+  t.after(() => writeFileSync(calls, ""));
+  const review = { body: "ordinary review", author: { login: "reviewer" }, commit: { oid: "sha" } };
+  const nodes = Array.from({ length: GITHUB_PAGE_SIZE }, () => review);
+  const respond = (items: unknown[]) => writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: {
+    reviews: { nodes: items, pageInfo: { hasPreviousPage: false, startCursor: null } },
+  } } } }));
+  const input = { cwd: dir, owner: "a", repo: "b", number: 1, login: "reviewer", headSha: "sha",
+    snapshot: { reviews: [], reviewsPageInfo: { hasPreviousPage: true, startCursor: "before" } } };
+  respond(nodes);
+  assert.equal((await fetchPr(dir, "a", "b", 1)).value?.reviews.length, GITHUB_PAGE_SIZE);
+  assert.deepEqual(await cleanReviewExists(input), { ok: true, value: false });
+  assert.deepEqual(await hasBodyOnlyFindings(input), { ok: true, value: false });
+  const args = JSON.parse(readFileSync(calls, "utf8").trim().split("\n").at(-1)!) as string[];
+  assert.ok(args.some(arg => arg.includes(`reviews(last:${GITHUB_PAGE_SIZE},before:$before)`)));
+  respond([...nodes, review]);
+  for (const result of [await fetchPr(dir, "a", "b", 1), await cleanReviewExists(input), await hasBodyOnlyFindings(input)]) {
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /review page exceeds/);
+    assert.equal(result.value, undefined);
+  }
+  // Ordinary malformed entries keep their existing tolerant projection within the bound.
+  respond([null, { body: 42, author: null, commit: null }]);
+  assert.deepEqual((await fetchPr(dir, "a", "b", 1)).value?.reviews, [{ url: null, body: "", author: "unknown", headSha: "" }]);
+  assert.deepEqual(await cleanReviewExists(input), { ok: true, value: false });
+  assert.deepEqual(await hasBodyOnlyFindings(input), { ok: true, value: false });
+});
 const pause = () => new Promise((r) => setTimeout(r, 20));
 async function until(check: () => boolean) { const end = Date.now() + 5000; while (!check() && Date.now() < end) await pause(); assert.ok(check()); }
 
@@ -60,7 +121,7 @@ test("CodeRabbit-only sweeps use one shared snapshot, never call a model or writ
     for (const args of invocations) {
       assert.deepEqual(args.slice(0, 2), ["api", "graphql"]);
       assert.ok(args.some((a) => a.startsWith("query=query(")));
-      assert.ok(args.some((a) => a.includes("comments(first:100){ nodes{ id url body")));
+      assert.ok(args.some((a) => a.includes(`comments(first:${GITHUB_PAGE_SIZE}){ nodes{ id url body`)));
       assert.ok(!args.some((a) => /mutation|--method/.test(a)));
     }
     const withChecks = { ...data.data.repository.pullRequest,
@@ -94,7 +155,7 @@ test("provider requests issue comments only when enabled and validates paginated
   const disabled = await fetchPr(dir, "a", "b", 1);
   assert.equal(disabled.value?.issueComments, undefined);
   const lastCall = () => JSON.parse(readFileSync(calls, "utf8").trim().split("\n").at(-1)!) as string[];
-  assert.equal(lastCall().some((arg) => arg.includes("comments(first:100){ nodes{ id url body")), false);
+  assert.equal(lastCall().some((arg) => arg.includes(`comments(first:${GITHUB_PAGE_SIZE}){ nodes{ id url body`)), false);
   assert.equal((await fetchPr(dir, "a", "b", 1, true)).value?.issueComments?.comments.length, 1);
   const page = await fetchIssueCommentPage(dir, "a", "b", 1, "next");
   assert.equal(page.value?.comments.length, 1);

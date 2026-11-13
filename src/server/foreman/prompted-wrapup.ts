@@ -6,7 +6,7 @@ import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { VERIFY_FAILURE_CAP, hasPane } from "./queue-machine.ts";
-import { settledIdle } from "@shared/session.ts";
+import { hasBlocker, settledIdle } from "@shared/session.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 
@@ -194,6 +194,9 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   if (session.state === "awaiting_input") {
     return { kind: "skip", why: "the session is waiting on input" };
   }
+  // 4b. The session reported a durable blocker: it is waiting on someone else, not finished.
+  //     A skip consumes nothing, so the generation is still there to complete once cleared.
+  if (hasBlocker(session)) return { kind: "skip", why: "the session is blocked" };
 
   // 5. No hooks, ever: no completion signal exists for this session, so its `idle` is
   //    the rebuild default rather than a claim anyone made. `hooksSeen`, NOT

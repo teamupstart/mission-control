@@ -9,6 +9,7 @@ import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { z } from "zod";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
+import type { TaskSourceRef } from "@shared/task-source.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -97,10 +98,14 @@ import type {
   WorkItemState,
   WorkCycleSummary,
   WorktreeProvider,
+  SessionBlocker,
+  SessionBlockerKind,
+  SessionBlockerReply,
 } from "@shared/types.ts";
 import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
+  SESSION_BLOCKER_KINDS,
   TASK_KINDS,
 } from "@shared/types.ts";
 import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
@@ -120,6 +125,7 @@ import {
   type PromptedRecoveryDelivery,
 } from "@shared/protocol.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
+import { isInspectorLegacyPosted } from "@shared/inspector-findings.ts";
 import { nextShipRecoveryAt } from "./foreman/ship-shepherd.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
 import {
@@ -208,7 +214,23 @@ let db: DatabaseSync | undefined;
 //     (`inspector_prs.stack_state`), the operator's *Wait for a replacement* choice
 //     (`stack_await_replacement_at`), and the catch-up / restack prompt claims
 //     (`stack_prompt_claims`). Nullable, no backfill: a Phase 1 row reads as unobserved.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 21;
+// 22: a task's dispatch Persona (`tasks.persona_id`), nullable with no backfill: NULL is a
+//     task that launches with no Persona, which is what every older task did.
+// 23: enable the Mockups skill once, preserving the master switch and later opt-outs.
+// 24: attention-inbox dismissals (`attention_dismissals`), a new empty table: nothing was
+//     dismissed before the inbox could dismiss.
+// 25: durable session blockers (`session_blockers`), keyed by note key. Additive: an
+//     upgraded database gains an empty table and no session reads as blocked.
+// 26: a swept item's parent (`tasks.source_parent`), nullable with no backfill: NULL is an item
+//     with no recorded parent, which is what every older task has.
+// 27: whether each GitHub Inspector finding was posted (`inspector_comments.posted_at`,
+//     `github_url`, `legacy_posted`), draft refusals (`post_refusals`, `last_post_error`),
+//     and the adopting session's note key (`inspector_prs.note_key`, nullable, no backfill).
+//     `legacy_posted` is backfilled once, so this one rewrites rows.
+// 28: dependency claims (`worktree_slots.deps_state`, `deps_fingerprint`, `deps_fingerprint_sha`,
+//     `deps_claimed_at`, `deps_last_error`, and `tasks.claim_warnings`), nullable with no
+//     backfill: no slot was claimed and no task warned before these existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 28;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -396,6 +418,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       effort        TEXT,
       -- Advisor override (opus | sonnet | off). NULL inherits the operator's Claude settings.
       advisor_model TEXT,
+      -- Library Persona whose guidance the launch carries as standing instructions. NULL is none.
+      persona_id    TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -405,6 +429,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       source_id     TEXT,
       external_id   TEXT,
       source_url    TEXT,
+      -- JSON TaskSourceRef of the item the source item is a sub-issue of. Display only,
+      -- never a dependency edge. NULL when it has none or nobody swept this.
+      source_parent TEXT,
       repo_root     TEXT NOT NULL,
       workspace_kind TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
@@ -453,6 +480,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       launch_failure TEXT,
       -- A Report bug session: the failed task it was started to report. NULL on every other.
       launch_report_for TEXT,
+      -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
+      -- when they were leased. NULL when none failed, which is nearly every task.
+      claim_warnings TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -946,6 +976,14 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       last_used_at              INTEGER,
       quarantine_reason         TEXT,
       last_error                TEXT,
+      -- Dependency claim state. NULL is "never claimed". The vocabulary is append-only
+      -- (WORKTREE_DEPS_STATES). A claim writes its intent and clears the fingerprint in one
+      -- write before any step runs, so a crash never leaves a fingerprint to trust.
+      deps_state                TEXT,
+      deps_fingerprint          TEXT,
+      deps_fingerprint_sha      TEXT,
+      deps_claimed_at           INTEGER,
+      deps_last_error           TEXT,
       created_at                INTEGER NOT NULL,
       updated_at                INTEGER NOT NULL
     );
@@ -3343,7 +3381,29 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   createTelemetryTables(d);
   migrateTelemetry(d);
   migrate(d);
+  migrateMockupsSkill(d);
   markDatabaseSchemaCurrent(d);
+}
+
+/** One rollout, not a default applied again whenever the app is upgraded. */
+function migrateMockupsSkill(d: DatabaseSync): void {
+  // Keep this boundary fixed when CURRENT_DATABASE_SCHEMA_VERSION advances.
+  if (databaseSchemaVersion(d) >= 23) return;
+  const entry = APP_CONFIG_ENTRIES.skills;
+  const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(entry.key) as
+    | { value: string }
+    | undefined;
+  // Missing settings already default on. Corrupt settings must still fail closed.
+  if (!row) return;
+  try {
+    if (!entry.schema.safeParse(JSON.parse(row.value)).success) return;
+  } catch {
+    return;
+  }
+  // Preserve all other values, including sparse-map policy and reload generation.
+  // Startup reconciliation owns symlinks and advances the generation if they change.
+  d.prepare("UPDATE app_config SET value = json_set(value, '$.skills.mockups', json('true')) WHERE key = ?")
+    .run(entry.key);
 }
 
 /** Close the daemon's singleton connection before releasing state-directory ownership. */
@@ -3433,6 +3493,13 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
   addColumn(d, "task_session_closures", "retired_at", "INTEGER");
   migrateWorktreeOrdinalHighWater(d);
+  // Dependency claims. Null on every existing slot, which is exact: no slot was ever claimed
+  // before these columns existed, so each one's next claim runs every step.
+  addColumn(d, "worktree_slots", "deps_state", "TEXT");
+  addColumn(d, "worktree_slots", "deps_fingerprint", "TEXT");
+  addColumn(d, "worktree_slots", "deps_fingerprint_sha", "TEXT");
+  addColumn(d, "worktree_slots", "deps_claimed_at", "INTEGER");
+  addColumn(d, "worktree_slots", "deps_last_error", "TEXT");
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
   // puts several elements on one line, that cannot distinguish a paragraph from its inline
@@ -3738,6 +3805,17 @@ function migrate(d: DatabaseSync): void {
   // provenance is read with the row it belongs to and never searched by.
   addColumn(d, "personas", "import_provenance_json", "TEXT");
 
+  // The reasoning effort a Persona's calls ask for. Nullable with no default: NULL is the
+  // provider's own default, which is exactly what every Persona written before it ran at.
+  addColumn(d, "personas", "effort", "TEXT");
+  // The effort a Persona call actually ran at, beside the runner and model it was resolved
+  // with. NULL is the provider default, which every historical attempt and call ran at.
+  addColumn(d, "workflow_node_attempts", "effort", "TEXT");
+  // A configured effort the resolved model could not run, so the attempt ran at the provider
+  // default. NULL whenever nothing was dropped, which every historical attempt is.
+  addColumn(d, "workflow_node_attempts", "effort_unsupported", "TEXT");
+  addColumn(d, "workflow_llm_calls", "effort", "TEXT");
+
   // The delivery-to-attempt link. Nullable with no default so every historical row - every
   // persona_feedback, inspector_feedback, unchanged_evidence_nudge and pr_handoff ever
   // written - stays valid and recoverable exactly as it is.
@@ -3826,6 +3904,9 @@ function migrate(d: DatabaseSync): void {
   // every historical row used Automatic, and preserving that answer keeps its existing
   // multi-backend liveness and cleanup policy intact.
   addColumn(d, "tasks", "home_backend", "TEXT");
+  // The dependency claims that failed in a task's worktrees, as the task card shows them.
+  // Nullable with no backfill: no task leased a claimed slot before this column existed.
+  addColumn(d, "tasks", "claim_warnings", "TEXT");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -4149,6 +4230,39 @@ function migrate(d: DatabaseSync): void {
   // `advisor_model`: the per-task advisor override. NULL inherits the operator's own
   // Claude settings, which is exactly what every task dispatched before it existed did.
   addColumn(d, "tasks", "advisor_model", "TEXT");
+  // `persona_id`: the Library Persona a task launches with. NULL launches with none, which is
+  // exactly what every task filed before a dispatch could name a Persona did.
+  addColumn(d, "tasks", "persona_id", "TEXT");
+  // Schema 25: what a session is waiting on outside the operator. Keyed like
+  // session_standing_instructions (noteKeyFor = agentSessionId ?? synthetic id), so a resumed
+  // conversation comes back blocked; `task_id` is recorded for reference and for the
+  // terminal-task clear. `reply` is a JSON object or NULL. Created here, beside its upgrade
+  // path, so a database from before schema 25 gains the table on its next open.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS session_blockers (
+      note_key      TEXT PRIMARY KEY,
+      task_id       TEXT,
+      kind          TEXT NOT NULL,
+      reason        TEXT NOT NULL,
+      waiting_on    TEXT NOT NULL,
+      resume_when   TEXT NOT NULL,
+      details       TEXT,
+      reference_url TEXT,
+      started_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      checked_at    INTEGER,
+      reply         TEXT,
+      last_held_at  INTEGER,
+      blocker_id    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_blockers_task ON session_blockers(task_id);
+  `);
+  // When a live session was last seen holding the key, so pruning measures OBSERVED absence
+  // across restarts rather than restarting the clock from an empty process.
+  addColumn(d, "session_blockers", "last_held_at", "INTEGER");
+  // Each blocker's identity, kept across re-reports. A row written before it existed reads
+  // back with an id derived from its key and start (see `rowToSessionBlocker`).
+  addColumn(d, "session_blockers", "blocker_id", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -4163,6 +4277,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "source_id", "TEXT");
   addColumn(d, "tasks", "external_id", "TEXT");
   addColumn(d, "tasks", "source_url", "TEXT");
+  // `source_parent`: the JSON TaskSourceRef of the item's parent (a GitHub sub-issue's
+  // parent), shown beside the upstream link. Display only - it never becomes a dependency
+  // edge. Nullable: every older task genuinely has no recorded parent.
+  addColumn(d, "tasks", "source_parent", "TEXT");
   // The provider-run identity learned after a pipeline dispatch's first child agent appears.
   // Both nullable with no default: old and non-pipeline tasks have no provider lifecycle to
   // follow, and a half-written pair fails closed when the row is read.
@@ -4322,6 +4440,35 @@ function migrate(d: DatabaseSync): void {
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
+  // Whether, and when, a finding was published on GitHub. `status` cannot say it once a row
+  // is `resolved`, and a resolved finding that was posted must keep reading as posted.
+  //
+  // `posted_at` is stamped by the worker when GitHub confirms a post, and never cleared:
+  // the upsert keeps the stored value when a caller omits it. Nullable with no default,
+  // because a build that never tracked posting cannot say when anything was posted, and
+  // inventing a time for a legacy row would break the rule that NULL stays truthful.
+  addColumn(d, "inspector_comments", "posted_at", "INTEGER");
+  // The finding's GitHub comment, or for a finding demoted into the review body, the review
+  // that carried it. NULL until a tick captures it from the PR snapshot.
+  addColumn(d, "inspector_comments", "github_url", "TEXT");
+  // What a row written before `posted_at` existed can prove about posting: `posted`,
+  // `unposted` or `unknown`. A NULL `posted_at` can carry only one of those three answers,
+  // so the other two live here. Written ONCE, by this backfill: the upsert never names the
+  // column, so `ON CONFLICT DO UPDATE` leaves it alone, and every row this build creates
+  // keeps it NULL.
+  migrateInspectorLegacyPosted(d);
+  // Validation refusals GitHub pinned on a drafted finding the planner offered after a switch
+  // to live, and GitHub's reason for the newest one. Zero and NULL are the truthful values for
+  // every existing row: no build before this one offered a draft again, so none was refused.
+  // Written only by `upsertInspectorComment`, as a pair, and carried forward like `replies`.
+  // No index: nothing selects on either column.
+  addColumn(d, "inspector_comments", "post_refusals", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "inspector_comments", "last_post_error", "TEXT");
+  // The adopting session's agent id (its note key), written once at adoption like
+  // `session_id`. The session id re-mints on every restart and the agent id does not, so
+  // Foreman also matches adopted pull requests on this. NULL when the agent id was not yet
+  // bound, or for a row adopted before the column; either still matches on `session_id`.
+  addColumn(d, "inspector_prs", "note_key", "TEXT");
 
   // Whether a parked repair round resumes itself. NULLABLE with NO default on purpose: a
   // NULL is the truthful record of a draft authored, or a version PUBLISHED, by a build
@@ -4457,6 +4604,8 @@ function migrate(d: DatabaseSync): void {
   // job has always covered the whole episode, so null reads as "the episode" rather than as a
   // value that went missing.
   addColumn(d, "archive_capture_jobs", "scope_json", "TEXT");
+  // Null preserves legacy directory capture; [] is an explicit (invalid) selection, never discovery.
+  addColumn(d, "archive_capture_jobs", "files_json", "TEXT");
 
   // Prompt context is additive in both places. The capture row is immutable recovery
   // coordination; the archive row is a disposable projection rebuilt from manifests.
@@ -4469,6 +4618,24 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archives", "source_session_json", "TEXT");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+
+  // Attention-inbox items the operator dismissed without resolving them (schema 24). One row per
+  // dismissal key (`attentionDismissalKeys`): an inbox row's item id, or for a row of questions
+  // each question's own `review:<id>`. `occurrence` is the fold's fingerprint of what it said
+  // when it was dismissed, so it comes back only when it says something new. Rows never expire and are
+  // never pruned (`src/server/attention-dismissals.ts`). `revision` is assigned afresh on every
+  // write, which rewrites the row, and AUTOINCREMENT never reuses a number - not even the one
+  // that rewrite just deleted - so a write that names an older revision than the one stored was
+  // made without seeing the newer dismissal and is refused rather than allowed to overwrite it.
+  // A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS attention_dismissals (
+      revision     INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id      TEXT NOT NULL UNIQUE,
+      occurrence   TEXT NOT NULL,
+      dismissed_at INTEGER NOT NULL
+    );
+  `);
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
@@ -4747,6 +4914,42 @@ function hasColumn(d: DatabaseSync, table: string, column: string): boolean {
  * hang a one-time data backfill off "the column is new" rather than re-running it on every
  * open - see the `home_name` migration.
  */
+/**
+ * Add `legacy_posted` and run its backfill in one transaction. `addColumn` answers "added" only
+ * once, so a column committed without its backfill would leave every legacy row NULL for good.
+ */
+function migrateInspectorLegacyPosted(d: DatabaseSync): void {
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT")) backfillInspectorLegacyPosted(d);
+    d.exec("COMMIT;");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw err;
+  }
+}
+
+/**
+ * Classify every finding that predates `posted_at` by what its row proves.
+ *
+ * - `posted`: an `open` row is confirmed on GitHub, and replies or an answered comment
+ *   exist only on a GitHub thread.
+ * - `unposted`: a `drafted` row was never posted.
+ * - `unknown`: everything else - a resolved row with no replies, or one left in `posting`.
+ *
+ * Runs once, in the migration that adds the column, so it can only ever see legacy rows.
+ */
+function backfillInspectorLegacyPosted(d: DatabaseSync): void {
+  d.exec(`UPDATE inspector_comments
+             SET legacy_posted = CASE
+               WHEN status = 'open' OR replies > 0 OR answered_comment_id IS NOT NULL THEN 'posted'
+               WHEN status = 'drafted' THEN 'unposted'
+               ELSE 'unknown'
+             END`);
+}
+
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
   if (hasColumn(d, table, column)) return false;
   d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
@@ -5644,10 +5847,12 @@ interface TaskRow {
   model: string | null;
   effort: string | null;
   advisor_model: string | null;
+  persona_id: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
   source_url: string | null;
+  source_parent: string | null;
   repo_root: string;
   pipeline_provider: string | null;
   pipeline_slug: string | null;
@@ -5667,6 +5872,7 @@ interface TaskRow {
   terminal_resource_id: string | null;
   terminal_launch: string | null;
   session_id: string | null;
+  claim_warnings?: string | null;
   schedule_id: string | null;
   schedule_occurrence_id: string | null;
   scheduled_for: number | null;
@@ -5825,6 +6031,36 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
 
 const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
 
+/**
+ * The stored form of `Task.claimWarnings`. A tail is at most the claim's 4,000-byte ring and a
+ * command is rendered to 512 bytes plus its suffix; these caps sit above both, so they refuse
+ * only a row no build of this feature wrote.
+ */
+const TaskClaimWarningsSchema = z.array(z.object({
+  repoRoot: z.string().max(4_096),
+  step: z.number().int().min(1),
+  stepCount: z.number().int().min(1),
+  command: z.string().max(1_024),
+  reason: z.string().max(8_192),
+  tail: z.string().max(16_384),
+  truncatedBytes: z.number().int().min(0),
+}).strict()).max(64);
+
+/**
+ * `tasks.claim_warnings` read back, as the key `rowToTask` spreads: absent when there is
+ * nothing to say, so a task no claim failed for reads exactly as it did before the column.
+ * An unreadable blob is no warnings, because one bad row must not take out `listTasks`.
+ */
+function readTaskClaimWarnings(raw: string | null): Pick<Task, "claimWarnings"> {
+  if (!raw) return {};
+  try {
+    const parsed = TaskClaimWarningsSchema.safeParse(JSON.parse(raw));
+    return parsed.success && parsed.data.length > 0 ? { claimWarnings: parsed.data } : {};
+  } catch {
+    return {};
+  }
+}
+
 function parseTerminalLaunch(raw: string | null): Task["terminalLaunch"] {
   if (!raw) return null;
   try {
@@ -5888,8 +6124,6 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
         const identity = PlanIdentitySchema.parse({ repoKey: row.repoKey, planId: row.planId, revision: row.revision });
         out.push({ ...identity, type: "plan", title: typeof row.title === "string" ? row.title : "Plan publication",
           sessionId: null, episodeId: null, agentSessionId: null, branch: null, prUrl: null, selectedAt, satisfiedAt });
-      } else if (row.type !== "task" && row.type !== "session") {
-        throw new Error("Unsupported dependency");
       } else if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
         const key = `task:${row.taskId}`;
         if (!seen.has(key)) {
@@ -5929,6 +6163,47 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
           });
         }
         seen.add(key);
+      } else if (
+        row.type === "source" &&
+        typeof row.sourceId === "string" &&
+        typeof row.externalId === "string"
+      ) {
+        const key = `source:${row.sourceId}:${row.externalId}`;
+        if (!seen.has(key)) {
+          out.push({
+            type: "source",
+            sourceId: row.sourceId,
+            externalId: row.externalId,
+            url: typeof row.url === "string" ? row.url : null,
+            title: typeof row.title === "string" ? row.title : row.externalId,
+            state:
+              row.state === "completed" || row.state === "not_planned" ? row.state : "open",
+            checkedAt: typeof row.checkedAt === "number" ? row.checkedAt : null,
+            selectedAt,
+            satisfiedAt,
+          });
+        }
+        seen.add(key);
+      } else if (row.type !== "task" && row.type !== "session" && row.type !== "source") {
+        // A type this build does not know - a newer build wrote it. Kept, unsatisfied, and
+        // written back verbatim: dropping it here would release work the newer build was
+        // holding back, the moment anybody ran this one. A malformed KNOWN type still fails
+        // closed below: this build does know what that edge should look like.
+        const key = JSON.stringify(row);
+        if (!seen.has(`unknown:${key}`)) {
+          const edgeType = typeof row.type === "string" ? row.type : "unknown";
+          out.push({
+            type: "unknown",
+            edgeType,
+            key,
+            title:
+              typeof row.title === "string" ? row.title : `Unrecognized dependency (${edgeType})`,
+            raw: row,
+            selectedAt: null,
+            satisfiedAt: null,
+          });
+        }
+        seen.add(`unknown:${key}`);
       } else { throw new Error("Invalid dependency"); }
     }
     return out;
@@ -5936,6 +6211,19 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
     return [{ type: "session", sessionId: "unsupported-prerequisite", title: "Unsupported or corrupt prerequisite; repair this task",
       episodeId: null, agentSessionId: null, branch: null, prUrl: null, selectedAt: null, satisfiedAt: null }];
   }
+}
+
+/**
+ * Dependency edges as the JSON the column stores, or null for none.
+ *
+ * An edge of a type this build does not know is written back as the object it was read
+ * from, so a newer build finds its own edge again - see `parseTaskDependencies`.
+ */
+export function serializeTaskDependencies(dependencies: Task["dependencies"]): string | null {
+  if (dependencies.length === 0) return null;
+  return JSON.stringify(
+    dependencies.map((dependency) => (dependency.type === "unknown" ? dependency.raw : dependency)),
+  );
 }
 
 function readTaskPlans(inputs: string | null, policy: string | null): Pick<Task, "planInputs" | "planPolicy" | "planInputError" | "planPolicyError"> {
@@ -6020,6 +6308,7 @@ function rowToTask(
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
+    personaId: r.persona_id || null,
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -6027,6 +6316,7 @@ function rowToTask(
       r.source_id && r.external_id
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
+    sourceParent: parseSourceParent(r.source_parent),
     repoRoot: r.repo_root,
     workspaceKind: r.workspace_kind === "resident-workspace" ? r.workspace_kind : null,
     pipelineRun:
@@ -6061,11 +6351,27 @@ function rowToTask(
     launchReportFor: r.launch_report_for,
     automaticCleanup,
     residentRestart,
+    ...readTaskClaimWarnings(r.claim_warnings ?? null),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
     completedAt: r.completed_at,
   };
+}
+
+/**
+ * A stored `source_parent` blob, or null. A malformed one reads as no parent rather than
+ * throwing: it is display data, and one bad row must not take out `listTasks`.
+ */
+function parseSourceParent(raw: string | null): TaskSourceRef | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<TaskSourceRef> | null;
+    if (!v || typeof v.sourceId !== "string" || typeof v.externalId !== "string") return null;
+    return { sourceId: v.sourceId, externalId: v.externalId, url: typeof v.url === "string" ? v.url : null };
+  } catch {
+    return null;
+  }
 }
 
 export function upsertTask(t: Task): string[] {
@@ -6097,25 +6403,26 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
-         model, effort, advisor_model,
-         workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
+         model, effort, advisor_model, persona_id,
+         workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error, launch_failure, launch_report_for,
+         status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
+         persona_id=excluded.persona_id,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
-         source_url=excluded.source_url,
+         source_url=excluded.source_url, source_parent=excluded.source_parent,
          repo_root=excluded.repo_root, workspace_kind=excluded.workspace_kind,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
@@ -6137,7 +6444,7 @@ export function upsertTask(t: Task): string[] {
          scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, launch_failure=excluded.launch_failure,
-         launch_report_for=excluded.launch_report_for,
+         launch_report_for=excluded.launch_report_for, claim_warnings=excluded.claim_warnings,
          updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
@@ -6146,7 +6453,7 @@ export function upsertTask(t: Task): string[] {
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
-      t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
+      serializeTaskDependencies(t.dependencies),
       t.planInputError ? JSON.stringify({ error: t.planInputError }) : t.planInputs?.length ? JSON.stringify(t.planInputs) : null,
       t.planPolicyError ? JSON.stringify({ error: t.planPolicyError }) : t.planPolicy ? JSON.stringify(t.planPolicy) : null,
       t.enabled ? 1 : 0,
@@ -6154,8 +6461,10 @@ export function upsertTask(t: Task): string[] {
       t.model,
       t.effort,
       t.advisorModel,
+      t.personaId,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
+      t.sourceParent ? JSON.stringify(t.sourceParent) : null,
       t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
@@ -6167,6 +6476,7 @@ export function upsertTask(t: Task): string[] {
       t.status, t.outcome, t.outcomeUrl, t.error,
       t.launchFailure ? JSON.stringify(t.launchFailure) : null,
       t.launchReportFor ?? null,
+      t.claimWarnings && t.claimWarnings.length > 0 ? JSON.stringify(t.claimWarnings) : null,
       t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,
@@ -6208,6 +6518,20 @@ export function upsertTask(t: Task): string[] {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * The titles of whichever of `ids` name a task, in any status. Ids that name nothing are
+ * absent from the result. Reads two columns rather than building whole `Task`s, because the
+ * only caller wants a name to print in place of an id.
+ */
+export function getTaskTitles(ids: readonly string[]): Map<string, string> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const rows = openDb()
+    .prepare(`SELECT id, title FROM tasks WHERE id IN (${unique.map(() => "?").join(", ")})`)
+    .all(...unique) as unknown as { id: string; title: string }[];
+  return new Map(rows.map((row) => [row.id, row.title]));
 }
 
 export function getTask(id: string): Task | undefined {
@@ -6429,7 +6753,7 @@ function writeTaskDependencyRewrites(
   );
   for (const rewrite of rewrites) {
     const result = update.run(
-      rewrite.dependencies.length > 0 ? JSON.stringify(rewrite.dependencies) : null,
+      serializeTaskDependencies(rewrite.dependencies),
       rewrite.updatedAt,
       rewrite.taskId,
     );
@@ -11573,6 +11897,140 @@ export function pruneStandingInstructions(liveKeys: Iterable<string>, olderThan:
   return Number(r.changes);
 }
 
+// ---- session blockers ----
+
+/** A stored blocker and the two columns the wire record does not carry. */
+export interface SessionBlockerRecord {
+  noteKey: string;
+  taskId: string | null;
+  blocker: SessionBlocker;
+  /** When a live session was last seen holding this key; null until first observed. */
+  lastHeldAt: number | null;
+}
+
+interface SessionBlockerRow {
+  note_key: string;
+  task_id: string | null;
+  kind: string;
+  reason: string;
+  waiting_on: string;
+  resume_when: string;
+  details: string | null;
+  reference_url: string | null;
+  started_at: number;
+  updated_at: number;
+  checked_at: number | null;
+  reply: string | null;
+  last_held_at: number | null;
+  blocker_id: string | null;
+}
+
+const SESSION_BLOCKER_COLUMNS = `note_key, task_id, kind, reason, waiting_on, resume_when, details,
+  reference_url, started_at, updated_at, checked_at, reply, last_held_at, blocker_id`;
+
+function parseBlockerReply(raw: string | null): SessionBlockerReply | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<SessionBlockerReply> | null;
+    if (!v || typeof v.flaggedAt !== "number" || typeof v.flaggedBy !== "string") return null;
+    return {
+      flaggedAt: v.flaggedAt,
+      flaggedBy: v.flaggedBy,
+      note: typeof v.note === "string" ? v.note : null,
+      referenceUrl: typeof v.referenceUrl === "string" ? v.referenceUrl : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function rowToSessionBlocker(r: SessionBlockerRow): SessionBlockerRecord {
+  // An unknown kind (a newer build appended one) reads as `other` rather than dropping the
+  // blocker: the hold is the part that must survive a downgrade, not the label.
+  const kind = (SESSION_BLOCKER_KINDS as readonly string[]).includes(r.kind)
+    ? (r.kind as SessionBlockerKind)
+    : "other";
+  return {
+    noteKey: r.note_key,
+    taskId: r.task_id,
+    blocker: {
+      id: r.blocker_id ?? `legacy:${r.note_key}:${r.started_at}`,
+      kind,
+      reason: r.reason,
+      waitingOn: r.waiting_on,
+      resumeWhen: r.resume_when,
+      details: r.details,
+      referenceUrl: r.reference_url,
+      startedAt: r.started_at,
+      updatedAt: r.updated_at,
+      checkedAt: r.checked_at,
+      reply: parseBlockerReply(r.reply),
+    },
+    lastHeldAt: r.last_held_at,
+  };
+}
+
+/** Every stored blocker, reloaded into the registry on start. */
+export function loadSessionBlockers(): SessionBlockerRecord[] {
+  const rows = openDb()
+    .prepare(`SELECT ${SESSION_BLOCKER_COLUMNS} FROM session_blockers ORDER BY started_at`)
+    .all() as unknown as SessionBlockerRow[];
+  return rows.map(rowToSessionBlocker);
+}
+
+/** Write a blocker whole: a first report, a re-report, a reply flag. */
+export function upsertSessionBlocker(record: SessionBlockerRecord): void {
+  const b = record.blocker;
+  openDb()
+    .prepare(
+      `INSERT INTO session_blockers (${SESSION_BLOCKER_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         task_id=excluded.task_id, kind=excluded.kind, reason=excluded.reason,
+         waiting_on=excluded.waiting_on, resume_when=excluded.resume_when,
+         details=excluded.details, reference_url=excluded.reference_url,
+         started_at=excluded.started_at, updated_at=excluded.updated_at,
+         checked_at=excluded.checked_at, reply=excluded.reply, last_held_at=excluded.last_held_at,
+         blocker_id=excluded.blocker_id`,
+    )
+    .run(
+      record.noteKey, record.taskId, b.kind, b.reason, b.waitingOn, b.resumeWhen, b.details,
+      b.referenceUrl, b.startedAt, b.updatedAt, b.checkedAt,
+      b.reply ? JSON.stringify(b.reply) : null, record.lastHeldAt, b.id,
+    );
+}
+
+/** Record that a live session holds each of these keys right now. */
+export function touchSessionBlockersHeld(noteKeys: readonly string[], now: number): void {
+  if (!noteKeys.length) return;
+  openDb()
+    .prepare(`UPDATE session_blockers SET last_held_at = ? WHERE note_key IN (${noteKeys.map(() => "?").join(",")})`)
+    .run(now, ...noteKeys);
+}
+
+export function deleteSessionBlocker(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_blockers WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a blocker across a note-key rotation - every rotation, as standing instructions move:
+ * a `/clear` inside the same task does not resolve what the task is waiting on.
+ */
+export function moveSessionBlocker(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(`DELETE FROM session_blockers WHERE note_key = ? AND EXISTS
+      (SELECT 1 FROM session_blockers WHERE note_key = ?)`).run(toKey, fromKey);
+    d.prepare(`UPDATE session_blockers SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
 // ---- usage ledger (API-equivalent estimates and token usage) ----
 
 /**
@@ -14108,6 +14566,7 @@ interface InspectorPrRow {
   repo_root: string | null;
   cwd: string | null;
   session_id: string | null;
+  note_key?: string | null;
   source: string;
   state: string;
   head_sha: string | null;
@@ -14191,6 +14650,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     repoRoot: r.repo_root,
     cwd: r.cwd,
     sessionId: r.session_id,
+    noteKey: r.note_key ?? null,
     source: r.source === "hook" || r.source === "pipeline" ? r.source : "legacy",
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
@@ -14233,12 +14693,12 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
   const res = openDb()
     .prepare(
       `INSERT INTO inspector_prs
-         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+         (key, url, owner, repo, number, repo_root, cwd, session_id, note_key, source, state,
           head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block,
           observed_head_sha, observed_state, observed_at, head_ref_name, title,
           adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -14250,6 +14710,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.repoRoot,
       pr.cwd,
       pr.sessionId,
+      pr.noteKey ?? null,
       pr.source,
       pr.state,
       pr.headSha,
@@ -14718,6 +15179,11 @@ interface InspectorCommentRow {
   replies: number;
   answered_comment_id: number | null;
   resolution_pending: number;
+  posted_at: number | null;
+  github_url: string | null;
+  legacy_posted: string | null;
+  post_refusals: number;
+  last_post_error: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -14737,6 +15203,11 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
     replies: r.replies,
     answeredCommentId: r.answered_comment_id,
     ...(r.resolution_pending === 1 ? { resolutionPending: true } : {}),
+    postedAt: r.posted_at,
+    githubUrl: r.github_url,
+    legacyPosted: isInspectorLegacyPosted(r.legacy_posted) ? r.legacy_posted : null,
+    postRefusals: r.post_refusals,
+    lastPostError: r.last_post_error,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -14750,14 +15221,24 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
  * second one. That is also what lets a resolved-then-regressed issue come back: the
  * row flips out of `resolved` and gets a fresh comment id, rather than being blocked
  * by a primary key it can't reuse.
+ *
+ * `posted_at` and `github_url` are kept, never cleared, when the caller passes null or
+ * omits them: a finding confirmed on GitHub stays confirmed through resolution and
+ * re-raising, and a writer that forgot to carry the field cannot erase the record.
+ * `legacy_posted` is never named here, so only its one-time backfill ever writes it.
+ *
+ * `post_refusals` and `last_post_error` are written as a pair. A caller that passes
+ * `postRefusals` writes both as given; one that omits it keeps both stored values, so a
+ * writer that forgot to carry the refusal record cannot reset a draft's count toward the cap.
  */
 export function upsertInspectorComment(c: InspectorComment): void {
   openDb()
     .prepare(
       `INSERT INTO inspector_comments
          (id, pr_key, fingerprint, path, line, title, body, severity,
-          round, status, replies, answered_comment_id, resolution_pending, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          round, status, replies, answered_comment_id, resolution_pending, posted_at, github_url,
+          created_at, updated_at, post_refusals, last_post_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?18, 0), ?19)
        ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
          path = excluded.path,
          line = excluded.line,
@@ -14769,6 +15250,10 @@ export function upsertInspectorComment(c: InspectorComment): void {
          replies = excluded.replies,
          answered_comment_id = excluded.answered_comment_id,
          resolution_pending = excluded.resolution_pending,
+         posted_at = COALESCE(excluded.posted_at, inspector_comments.posted_at),
+         github_url = COALESCE(excluded.github_url, inspector_comments.github_url),
+         post_refusals = COALESCE(?18, inspector_comments.post_refusals),
+         last_post_error = CASE WHEN ?18 IS NULL THEN inspector_comments.last_post_error ELSE ?19 END,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -14785,8 +15270,12 @@ export function upsertInspectorComment(c: InspectorComment): void {
       c.replies,
       c.answeredCommentId,
       Number(c.resolutionPending ?? false),
+      c.postedAt ?? null,
+      c.githubUrl ?? null,
       c.createdAt,
       c.updatedAt,
+      c.postRefusals ?? null,
+      c.postRefusals === undefined ? null : (c.lastPostError ?? null),
     );
 }
 
@@ -14885,6 +15374,18 @@ function rowToInspection(r: InspectionTallyRow): InspectorInspection {
   };
 }
 
+/** One ledger row with its finding tallies, through the same grouped query, or null. */
+export function loadInspectorInspection(prKey: string): InspectorInspection | null {
+  const row = openDb()
+    .prepare(
+      `${INSPECTION_TALLY_FROM}
+        WHERE p.key = ?
+        GROUP BY p.key`,
+    )
+    .get(prKey) as unknown as InspectionTallyRow | undefined;
+  return row ? rowToInspection(row) : null;
+}
+
 /**
  * Every ledger row with its finding tallies, most recently REVIEWED first - the settings
  * panel's list, and what the per-session chip is derived from.
@@ -14907,6 +15408,25 @@ export function loadInspectorInspections(limit?: number): InspectorInspection[] 
         LIMIT ?`,
     )
     .all(limit ?? -1) as unknown as InspectionTallyRow[];
+  return rows.map(rowToInspection);
+}
+
+/**
+ * Every OPEN ledger row with its tallies, ordered like `loadInspectorInspections`.
+ *
+ * Foreman's PR follow-through reads this to find an open pull request the Inspector adopted
+ * under a session whose card no longer carries it. Uncapped, because a cap would silently drop
+ * an open PR off the bottom; closed rows are excluded, which is what keeps it small.
+ */
+export function loadOpenInspectorInspections(): InspectorInspection[] {
+  const rows = openDb()
+    .prepare(
+      `${INSPECTION_TALLY_FROM}
+        WHERE p.state = 'open'
+        GROUP BY p.key
+        ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC`,
+    )
+    .all() as unknown as InspectionTallyRow[];
   return rows.map(rowToInspection);
 }
 

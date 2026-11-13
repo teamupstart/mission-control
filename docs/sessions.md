@@ -427,9 +427,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   `AskUserQuestion` keeps those one-click choice rows and adds a separate custom-answer
   field; multi-question or multi-select asks show every question together and submit once.
   Each question accepts either its choice rows or non-empty custom text, and parallel asks
-  wait their turn on the same session detail instead of replacing one another. Claude's own question
-  tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
-  terminal is unreadable, and here it is not;
+  wait their turn on the same session detail instead of replacing one another. A task's Claude
+  session only shows that form when it launched without the Mission MCP server, because
+  otherwise it asks through `request_input` like a terminal session does
+  ([the ask channel](#the-ask-channel));
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
   just as they control a pane-backed one - though on Codex a reasoning-effort selection
   takes effect when the next turn starts rather than immediately, which the effort badge
@@ -1420,6 +1421,15 @@ sent. It shares its column with find - while find is open its results own the sp
 ([below](#find-in-a-conversation)), and closing find gives the rail back on the tab you
 left it on.
 
+To give its width back to the transcript, press **»** in the rail's header. The rail folds to
+a thin strip on the right edge that still names the tab that is up and its count; click
+anywhere on the strip to open it again. The fold is the same in the chat and terminal
+renderings - in the terminal one the key legend under the rail moves beside **Send** while it
+is folded - and it is remembered per machine, so it holds across sessions and restarts. Find
+still opens its results in a full column while the rail is folded. On a narrow conversation,
+where the rail is already a single row (below), there is nothing to fold and the control is
+not shown.
+
 #### Activity
 
 Not to be confused with the row above, which is a different feature with a different
@@ -2037,14 +2047,16 @@ forged browser headers.
 
 The session uses two Mission Control tools:
 
-- `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
+- `read_sessions` lists other live sessions, each with a compact `blocker` summary (`null`
+  when it has none). Pass `blocked: true` to list only blocked sessions. Supply `sessionId` to inspect a target's state,
   pending review prompts, native approval/question dialog, outbox and work queue. The top-level
   `queue` contains full items with their ids, revisions and proposed payloads, or is `null`
   when the target has no queue. Set `transcript: true` to include a bounded recent conversation window.
 - `control_session` takes that target's `sessionId` and a typed `command`. It supports
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
-  and model, effort and permission-mode changes. Use current request ids, option labels and
+  model, effort and permission-mode changes, and the two blocker actions
+  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)). Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
   `queue_approve` requires the inspected item revision. A changed proposal invalidates that
   revision and any earlier approval, so read the new text before approving it.
@@ -2080,6 +2092,55 @@ records the controller, target, action and HTTP outcome without recording the me
 These tools cannot change the controller grant, global settings, delete sessions, or reset
 worktrees. The target's normal runtime and resource guards continue to apply. See
 [Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
+
+### Blocked sessions
+
+A session that cannot go on because it is waiting on **someone or something other than you**
+records a **blocker** with `report_blocker`: what it is waiting for (`reason`), who owns the
+answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`question`,
+`dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
+lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
+through `request_input`, and `report_blocker` is refused while the session has a
+`request_input` of its own pending. It is also refused once the session's task has finished,
+since nothing would clear a blocker stored against a done, failed or cancelled task.
+
+The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
+an exit, a daemon restart and a `/clear`. It ends when the session calls `clear_blocker`, when
+you or a controlling session clear it, when the task it was reported for reaches a terminal status
+(merge settlement, Mark done, cancel, fail), or when no session has held its key for the goal
+pruning window. A later `report_blocker` updates it and keeps its start time; after a reply was
+flagged, it means "I checked, still blocked", clears the flag and records the check.
+
+While it stands, every idle-triggered automation leaves the session alone without marking
+anything complete: prompted completion (the work-cycle generation is not consumed, so it can
+still complete after the blocker clears), queue drain and the wrap-up ask, pre-PR ship
+recovery, review follow-through, backlog autopilot assignment, stack readiness for dependents,
+workflow resumption and evidence-preparation recovery, and the stuck-session alerts. Your own
+queued turns, delegated messages, restart continuations and merge settlement still run. The
+daemon enforces the hold too: it refuses Foreman's free-text writes, the wrap-up ask, queue
+items moving forward and ship-recovery claims for a blocked session. Foreman can still answer
+a blocked session's review, menu or form, which can only respond to the question on screen.
+
+On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
+flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
+[Board card items](ui.md). For now a blocked idle session stays in the Idle column.
+The Conversation tab opens with a red band: one row with the kind, the reason, how long it has
+stood and two buttons. **Flag reply** marks a likely answer (with an optional note and link)
+without clearing anything or messaging the session, and **Clear blocker** ends the hold. Click
+the reason to expand the row in place to every other field and the collapsible details. A
+flagged reply prints under the row either way. The band never shrinks to make room for a long
+conversation, so its buttons are always in view.
+
+Residents and other controlling sessions use `read_sessions` with `blocked: true` to find
+blocked sessions, `control_session` with `{"action":"flag_blocker_reply","note":"...",
+"referenceUrl":"..."}` to flag a likely reply, a `message` to tell the session to check, and
+`{"action":"clear_blocker","resolution":"..."}` to clear it. Every set, re-report, flag and
+clear writes one `session_events` row naming its actor: `session`, `operator`,
+`session:<controller-id>`, `task` for a terminal task, or `prune` for the pruning window.
+`session_blocker_set` also records the kind and reason. `session_blocker_updated` records the
+kind, reason, time since the blocker started (`sinceMs`) and whether it followed a flagged reply
+(`checked`). `session_blocker_reply_flagged` records `sinceMs`. `session_blocker_cleared` records
+how long the blocker stood (`durationMs`) and any one-line `resolution`.
 
 ### Review channel (MCP)
 
@@ -2138,6 +2199,20 @@ stale item. The composer keeps unfinished uploads and edits across a
 closed confirmation or a failed submission, then clears only after the daemon accepts the
 review request.
 
+Task ids are tool arguments, not names. The dashboard shows tasks only by title, so the server's
+MCP instructions and the description of every task tool (`create_task`, `list_tasks`, `get_task`,
+`update_task`, `delete_task`) tell the agent to name another task by its title, never its id,
+whenever it mentions one to the human. An agent can still ignore that, so the daemon enforces it
+on everything it sends the dashboard: every task id in an agent's conversation turns, its status
+line, its blocker and its review or question cards arrives as the task's quoted title, including a
+task that has left the live board. A task id is a random UUID, so it is titled wherever it sits and
+in any case - `task-<id>`, `/tasks/<id>`, capitals and all - unless a letter or digit touches it.
+The one exception is a checkout path (`…/worktrees/<id>/…`), the only name Mission Control builds
+from a full task id, which is left as written so the path still opens its file. When titling would give two options of one question
+the same label, the titled one is numbered (` (2)`). The Sitrep report reads the same titled view.
+A diff review's patch is left byte for byte, and the human's own turns are shown exactly as typed.
+What is stored, and what agents and Foreman read back, keeps the agent's own words.
+
 The MCP tools are:
 
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -2168,6 +2243,15 @@ The MCP tools are:
   use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
   ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `dispatch_task(taskId, overrideDisabled?, defaultModel?)` - launch a saved task, including one
+  just filed with `create_task`. Shares the dashboard's dispatch path and its dependency,
+  workflow, kind, and launch checks. Disabled backlog work needs `overrideDisabled: true`.
+  The calling agent can set this override itself, without human approval; disabled is an
+  autopilot hold, not a permission boundary against the agent.
+  `defaultModel` fills only a task without a pinned model. Returns the task's current status:
+  `dispatching` means accepted, so use `get_task` to confirm it reaches `running`. Uses the same
+  daemon-token authority as task creation without a Control other sessions grant. Chat launches
+  pre-approve task creation and dispatch so a conversation can delegate separate work.
 - `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
   work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`),
   `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),
@@ -2218,6 +2302,11 @@ The MCP tools are:
   attachment failure without that matching URL is unknown and blocks retry; only a text-only
   refusal without a URL says retrying is safe
 - `report_status(activity)` - update the session's activity line
+- `report_blocker(kind, reason, waitingOn, resumeWhen, referenceUrl?, details?)` - record that
+  this session is waiting on someone or something other than the operator. See
+  [Blocked sessions](#blocked-sessions)
+- `clear_blocker(resolution?)` - clear this session's own blocker. A session with none is a
+  no-op success
 - `respond_to_file_comments(commentId, body, addressed?)` - answer one line comment a human
   left on a file, in the thread it was written in (non-blocking). `commentId` is the handle
   the delivered message printed - `MC-a41f.2`, the comment's per-session short id plus which
@@ -2360,14 +2449,18 @@ publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 
 ### The ask channel
 
-Claude sessions the dashboard dispatches into the **terminal runtime** do not use Claude's
-built-in `AskUserQuestion`. It is disallowed on the spawn, and the agent is pointed at
-`request_input` instead, so a clarifying question arrives as structured arguments in the
-dashboard rather than as a menu drawn on a terminal nobody is watching. Agent SDK sessions
-keep the built-in tool because its questions already arrive as structured driver requests;
-see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
-lands in the session's conversation as the same gold entry - the two channels differ in how
-the question reaches you, not in what is written down afterwards.
+Claude sessions the dashboard dispatches for a task do not use Claude's built-in
+`AskUserQuestion`, on either runtime. It is disallowed at launch, and the agent is pointed at
+`request_input` instead, so every clarifying question a task asks arrives as the same
+`request_input` review - in the review queue, with **Chat about it** - rather than as a menu
+drawn on a terminal nobody is watching or a driver-only form. On the **Agent SDK runtime**
+the same three pieces ride on the query options (`sdkAskChannel` in
+`src/server/ask-channel-prompt.ts`): `allowedTools` pre-approves `request_input`, `disallowedTools`
+removes the built-in, and the redirect leads the one `systemPrompt.append`, ahead of any
+standing instructions. An SDK launch that registers no Mission MCP server keeps the built-in,
+whose questions then arrive as structured driver requests; see
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer lands
+in the session's conversation as the same gold entry.
 
 A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
 appends one developer instruction: when the operator needs to review alternatives, select an

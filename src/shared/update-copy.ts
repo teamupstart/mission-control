@@ -22,6 +22,11 @@ export interface UpdatePhaseCopy {
   detail: string;
 }
 
+/** A newer build exists, but its signed binary is still being produced. */
+export function pendingBuildNotice(version: string): string {
+  return `Mission Control ${version} is still being built and signed. It will be offered once it is ready to install.`;
+}
+
 export function migrationReadyDetail(source: string, target: string, kind?: "rename"): string {
   if (kind === "rename") return `This update renames ${source} to ${target} in the same folder. Your installation scope, settings and sessions stay in the same state home. The old app is retired only after the new app confirms readiness. You can cancel before restart.`;
   return `This update moves Mission Control from ${source} to ${target}. The system copy is retained for other accounts and existing sessions. Your state stays where it is. Mission Control will close and reopen from your personal Applications folder.`;

@@ -1,7 +1,8 @@
 // Exercise the agent-facing stdio protocol through HTTP to the real workflow owner and SQLite.
 import assert from "node:assert/strict";
 import { after, test, type TestContext } from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,7 @@ import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { decisionLead, formatResponse } from "../src/shared/review-item.ts";
 import { WorkflowActionRequestSchema, workflowActionPath } from "../src/shared/workflow-mcp.ts";
 import { WORKFLOW_ACTION_ROUTES } from "../src/shared/workflow-actions.ts";
 import type { WorkflowManagerOptions } from "../src/server/workflows/manager.ts";
@@ -37,6 +39,8 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowCommandArtifactService } = await import("../src/server/workflows/command-artifacts.ts");
+const { WorkflowCommandManager } = await import("../src/server/workflows/commands.ts");
+const { scrubCheckEnv } = await import("../src/server/workflows/check-env.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -48,7 +52,9 @@ const { sessionScoutCredentialLocator } = await import("../src/server/scouts/sub
 const { sessionScoutCredentialPath, sessionScoutCredentialDirectory } = await import("../src/shared/harness-runtime.mjs");
 after(() => rmSync(sessionScoutCredentialDirectory(), { recursive: true, force: true }));
 
-async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, credentialLocator?: string) {
+async function fixture(
+  t: TestContext, options: WorkflowManagerOptions = {}, credentialLocator?: string, childSessionIdentity = false,
+) {
   const registry = new Registry();
   const releaseCredentials = maintainScoutSessionCredentials(registry);
   const caller = registry.registerSdkSession({ id: `sdk:workflow-caller-${randomUUID()}`,
@@ -58,8 +64,10 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, cre
     ?? new WorkflowCommandArtifactService(undefined, join(home, `command-output-${randomUUID()}`));
   const workflows = new WorkflowManager(registry, undefined, { ...options, commandArtifacts });
   const store = workflows.store;
-  const app = buildApp({ registry, workflows, tasks: new TaskManager(registry),
-    queues: new QueueManager(registry), reviews: new ReviewManager(registry) });
+  const workflowCommands = new WorkflowCommandManager(registry, store);
+  const reviews = new ReviewManager(registry);
+  const app = buildApp({ registry, workflows, workflowCommands, tasks: new TaskManager(registry),
+    queues: new QueueManager(registry), reviews });
   const requests: Array<{ path: string; method: string; body: unknown; actor: string | null; surface: string | null }> = [];
   const server = serve({ hostname: "127.0.0.1", port, fetch: async (req) => {
     requests.push({ path: new URL(req.url).pathname, method: req.method,
@@ -80,7 +88,9 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, cre
   await client.connect(new StdioClientTransport({ command: process.execPath,
     args: ["--import", "tsx", fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
     env: { ...process.env, MISSION_HOME: home, MISSION_API_TOKEN: ensureToken(), MISSION_PORT: String(address.port),
-      MISSION_SCOUT_SESSION_LOCATOR: credentialLocator ?? sessionScoutCredentialLocator(caller.id) } as Record<string, string>,
+      MISSION_SCOUT_SESSION_LOCATOR: credentialLocator ?? sessionScoutCredentialLocator(caller.id),
+      // Only where a test asks: the SDK launch identity `request_input` files its card under.
+      ...(childSessionIdentity ? { MISSION_SESSION_ID: caller.id } : {}) } as Record<string, string>,
     stderr: "pipe" }));
   async function call(name: string, args: Record<string, unknown>, error?: RegExp) {
     const result = await client.callTool({ name, arguments: args });
@@ -90,13 +100,13 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, cre
     if (name === "trigger_workflow_action") successfulActions.add((args.request as { action: string }).action);
     return JSON.parse(text);
   }
-  function seed(ownerSessionId?: string) {
+  function seed(ownerSessionId?: string, sessionRepoRoot: string | null = "/repo") {
     const key = randomUUID();
     const version = store.getWorkflowVersionById(BUILTIN_WORKFLOWS[0]!.definition.currentVersionId!)!;
     const binding = store.insertBinding({ id: `binding-${key}`, workflowVersionId: version.id,
       noteKey: ownerSessionId === caller.id ? caller.agentSessionId! : key,
       sessionId: ownerSessionId ?? key, sessionAgent: "claude", sessionName: "MCP test", sessionCwd: "/repo",
-      sessionRepoRoot: "/repo", repoRoot: `/repo/${key}`, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() });
+      sessionRepoRoot, repoRoot: `/repo/${key}`, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() });
     const { run, submission } = store.createInitialSubmission({ id: key, binding, intent: FIXTURE_RUN_INTENT,
       triggerSource: "manual", triggerKey: key, now: Date.now() },
     { id: `submission-${key}`, triggerSource: "manual", triggerKey: key, context: {}, evidence: {}, now: Date.now() });
@@ -106,14 +116,32 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, cre
     return { run, submission, version };
   }
   const credential = () => readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
+  /**
+   * The operator choosing Configure on the confirmation card the DAEMON raises for this change:
+   * an unconfirmed call creates it and returns its id, which is the only card that counts.
+   */
+  async function confirm(runId: string, command: string[], slot = "test") {
+    const credentialText = readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
+    const refused = await app.request("/mcp/workflows/configure-command", { method: "POST",
+      headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+        "x-mission-scout-credential": credentialText },
+      body: JSON.stringify({ runId, slot, command }) });
+    const body = await refused.json() as { code?: string; confirmationReviewId?: string; confirmation?: { decision: { id: string } } };
+    assert.equal(body.code, "unconfirmed", JSON.stringify(body));
+    reviews.resolve(body.confirmationReviewId!, "answer", "Answered", "human",
+      [{ decisionId: body.confirmation!.decision.id, selected: ["configure"], other: null }]);
+    return body.confirmationReviewId!;
+  }
   return {
     client, call, seed, requests, store, workflows, registry, caller, app, credential,
-    commandArtifacts,
+    commandArtifacts, workflowCommands, reviews, confirm,
   };
 }
 
 /** Fake only external work. Actions still use the real MCP child, routes, manager and store. */
-async function runtimeFixture(t: TestContext, readiness = false) {
+async function runtimeFixture(
+  t: TestContext, readiness = false, extra: WorkflowManagerOptions = {}, childSessionIdentity = false,
+) {
   const control = { mappingFails: false, revision: 1, captures: 0 };
   const sent: string[] = [];
   const runner: LlmRunner = {
@@ -137,6 +165,7 @@ async function runtimeFixture(t: TestContext, readiness = false) {
     };
   }
   const f = await fixture(t, {
+    ...extra,
     requireSkill: () => ({ ok: true, command: "/pull-request" }),
     inject: async (_session, text, _deps, beforeWrite) => {
       const blocked = beforeWrite?.();
@@ -166,7 +195,7 @@ async function runtimeFixture(t: TestContext, readiness = false) {
     engine: { runnerFor: () => runner, resolveExecution: () => ({
       runner: { id: "claude", source: "config", unknown: null }, model: { id: "fake", source: "config" },
     }) },
-  });
+  }, undefined, childSessionIdentity);
   function session() {
     const sessionId = `sdk:${randomUUID()}`;
     f.registry.registerSdkSession({ id: sessionId, agent: "claude", name: "MCP runtime", cwd: home, repoRoot: home, gitRoot: home });
@@ -352,6 +381,442 @@ test("MCP retained Command output uses the same owning-session authorization and
   }, /No such retained Command output/i);
 });
 
+test("MCP configures the Command for its own run's repository and frees the slot to run again", async (t) => {
+  const f = await fixture(t);
+  const own = f.seed(f.caller.id);
+  const other = f.seed();
+  // The operator's machine-wide default, and an override another repository already holds.
+  const seeded = f.workflowCommands.get("test")!;
+  const kept = { repoRoot: "/elsewhere", command: ["npm", "test"] };
+  assert.ok(f.workflowCommands.replace("test", { expectedRevision: seeded.revision,
+    defaultCommand: ["make", "test"], overrides: [kept], maxRuns: 1, timeoutMs: null,
+    onUnavailable: "skip", onBudgetExhausted: "skip" }).ok);
+  // The misconfigured default already spent this run's one execution of `test`.
+  f.store.insertAttempt({ id: `spent-${own.run.id}`, submissionId: own.submission.id, nodeId: "gate",
+    attempt: 1, state: "running", persona: null, inputFingerprint: "fingerprint", now: Date.now() });
+  assert.equal(f.store.reserveCheckRun(own.run.id, `spent-${own.run.id}`, "test", 1, null).granted, true);
+  f.store.finishAttempt(`spent-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
+    command: ["make", "test"], exitCode: 2, output: "", truncatedBytes: 0, note: "make test exited 2.",
+    misfitSignal: "make: *** No rule to make target 'test'.  Stop." } }, Date.now());
+
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  // Without the operator's answer on the daemon's card, the route stores nothing and hands
+  // back that card for the tool to show.
+  const unconfirmedRevision = f.workflowCommands.get("test")!.revision;
+  const unconfirmed = await f.app.request("/mcp/workflows/configure-command", { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+      "x-mission-scout-credential": f.credential() },
+    body: JSON.stringify({ runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"] }) });
+  assert.equal(unconfirmed.status, 403);
+  const refusal = await unconfirmed.json() as { code: string; confirmation: { decision: { id: string; question: string } } };
+  assert.equal(refusal.code, "unconfirmed");
+  assert.match(refusal.confirmation.decision.question, /\["npm","run","test:unit"\]/);
+  assert.equal(f.workflowCommands.get("test")!.revision, unconfirmedRevision);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "an unconfirmed call forgives nothing");
+  const confirmationId = await f.confirm(own.run.id, ["npm", "run", "test:unit"]);
+  const result = await f.call("configure_workflow_command", {
+    runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"],
+  });
+  assert.equal(result.confirmationReviewId, confirmationId);
+  assert.equal(result.repoRoot, "/repo");
+  assert.deepEqual(result.command, ["npm", "run", "test:unit"]);
+  assert.equal(result.forgivenRuns, 1);
+  const view = f.workflowCommands.get("test")!;
+  assert.deepEqual(view.defaultCommand, ["make", "test"], "the machine-wide default is never changed");
+  assert.deepEqual(view.overrides, [kept, { repoRoot: "/repo", command: ["npm", "run", "test:unit"] }]);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 0);
+  assert.ok(f.store.listEvents(own.run.id).some((event) => event.kind === "workflow_command_configured"));
+
+  // The corrected command then spends the allowance again. Re-confirming that same argv - any
+  // number of times - neither rewrites the catalog nor hands it another execution.
+  f.store.insertAttempt({ id: `rerun-${own.run.id}`, submissionId: own.submission.id, nodeId: "gate",
+    attempt: 2, state: "running", persona: null, inputFingerprint: "fingerprint", now: Date.now() });
+  assert.equal(f.store.reserveCheckRun(own.run.id, `rerun-${own.run.id}`, "test", 1, null).granted, true);
+  f.store.finishAttempt(`rerun-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
+    command: ["npm", "run", "test:unit"], exitCode: 1, output: "", truncatedBytes: 0, note: "exited 1." } }, Date.now());
+  const revision = f.workflowCommands.get("test")!.revision;
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    const again = await f.call("configure_workflow_command", {
+      runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"],
+    });
+    assert.equal(again.forgivenRuns, 0);
+  }
+  assert.equal(f.workflowCommands.get("test")!.revision, revision, "an unchanged override is not rewritten");
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "maxRuns still bounds the same command");
+
+  // A second answer replaces this repository's override rather than adding a duplicate. The
+  // corrected command actually ran, so switching away from it forgives nothing either.
+  await f.confirm(own.run.id, ["pytest", "-q"]);
+  const switched = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["pytest", "-q"] });
+  assert.deepEqual([switched.forgivenRuns, switched.restoredRuns], [0, 0]);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "a real execution is never returned");
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides,
+    [kept, { repoRoot: "/repo", command: ["pytest", "-q"] }]);
+
+  // Another session's run is refused even with Control other sessions on: this is catalog config.
+  f.registry.setSessionControlEnabled(f.caller.id, true);
+  await f.call("configure_workflow_command", { runId: other.run.id, slot: "test", command: ["npm", "test"] },
+    /Only the session that owns this workflow run/);
+  // CodeRabbit is typed review tuning, never an argv, and a malformed argv fails before HTTP.
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "coderabbit", command: ["x"] }, /Invalid|invalid_enum|Expected/i);
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: [] }, /Invalid|too_small|at least/i);
+  assert.deepEqual(f.workflowCommands.get("lint")!.overrides, []);
+});
+
+async function waitFor(predicate: () => boolean, message: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out: ${message}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test("the Command a session configures over MCP is the argv the resubmitted check runs", async (t) => {
+  // The whole repair, end to end through the real MCP child, routes, manager, engine and store:
+  // the machine-wide `make test` fails in a repository without a Makefile, the session sets the
+  // repository's command, resubmits unchanged work, and the next check runs THAT argv - not
+  // the default, and not skipped as `budget_spent` for the execution the default already used.
+  const executed: string[][] = [];
+  const f = await runtimeFixture(t, false, {
+    checkDeps: () => ({
+      checkoutSubpath: async () => "",
+      execute: async (request) => {
+        executed.push([...request.command]);
+        return request.command[0] === "make"
+          ? { kind: "exited", exitCode: 2, output: "make: *** No rule to make target 'test'.  Stop.\n", truncatedBytes: 0 }
+          : { kind: "exited", exitCode: 0, output: "3 passing\n", truncatedBytes: 0 };
+      },
+    }),
+  });
+  setWorkflowPolicy({ checksEnabled: true, repoAllowlist: ["/repo"] });
+  t.after(() => { setWorkflowPolicy({}); });
+  const slot = f.workflowCommands.get("test")!;
+  assert.ok(f.workflowCommands.replace("test", { expectedRevision: slot.revision, defaultCommand: ["make", "test"],
+    overrides: [], maxRuns: 1, timeoutMs: null, onUnavailable: "skip", onBudgetExhausted: "skip" }).ok);
+
+  const key = randomUUID();
+  assert.ok(f.store.insertWorkflow({ id: key, name: key, normalizedName: key, description: "",
+    draft: { nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "gate", kind: "check", slot: "test", position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ], edges: [
+      { id: "start", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+      { id: "pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ] }, completionPolicy: { kind: "none" }, resumptionPolicy: "manual", evidenceReadinessPolicy: "off",
+    bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 }, createdAt: 1, updatedAt: 1 }).ok);
+  const published = f.store.publishWorkflow(key, 1, `version-${key}`, 2);
+  assert.ok(published.ok);
+  const binding = f.store.insertBinding({ id: `binding-${key}`, workflowVersionId: published.version.id,
+    noteKey: f.caller.agentSessionId!, sessionId: f.caller.id, sessionAgent: "claude", sessionName: "MCP test",
+    sessionCwd: "/repo", sessionRepoRoot: "/repo", repoRoot: "", triggerMode: "manual", deliveryMode: "preview",
+    maxRepairRounds: 5, now: Date.now() });
+
+  // This fixture leaves the engine stopped for the action tests; this one needs the check to run.
+  f.workflows.engine.start();
+  const first = await f.act("submit", { bindingId: binding.id });
+  const runId = first.run.id as string;
+  await waitFor(() => f.store.getRun(runId)?.status === "waiting_for_session", "the default should fail");
+  const failed = f.store.listAttempts(first.submission.id).find((attempt) => attempt.nodeId === "gate")!;
+  assert.match((failed.verdict as { requestedChanges: Array<{ title: string }> }).requestedChanges[0]!.title,
+    /^Configure the test Command for this repository/);
+
+  await f.confirm(runId, ["npm", "test"]);
+  const configured = await f.call("configure_workflow_command", { runId, slot: "test", command: ["npm", "test"] });
+  assert.equal(configured.forgivenRuns, 1);
+  const resubmitted = await f.act("resubmit", { runId }, { resubmitUnchanged: true });
+  assert.equal(resubmitted.submission.round, 2);
+  await waitFor(() => f.store.getRun(runId)?.status === "completed", "the configured command should pass");
+
+  assert.deepEqual(executed, [["make", "test"], ["npm", "test"]]);
+  const rerun = f.store.listAttempts(resubmitted.submission.id).find((attempt) => attempt.nodeId === "gate")!;
+  const output = rerun.output as { status: string; command: string[]; commandSource: string };
+  assert.equal(output.status, "passed");
+  assert.deepEqual(output.command, ["npm", "test"]);
+  assert.equal(output.commandSource, "override");
+});
+
+test("a session inspects a repository without a Makefile, confirms its command through request_input, and the confirmed command runs", async (t) => {
+  // The repair a session performs, scripted step by step through the real MCP tools rather than
+  // a model, so it spends no tokens: the packet, the inspection, the operator's confirmation,
+  // the repository override, the resubmission, and the real commands spawned in a real
+  // repository that has no Makefile. Every step is reported as a diagnostic line.
+  for (const bin of ["make", "npm"]) {
+    if (spawnSync(bin, ["--version"], { encoding: "utf8" }).error) {
+      t.skip(`${bin} is not installed`);
+      return;
+    }
+  }
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-no-makefile-")));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  writeFileSync(join(repo, "package.json"), `${JSON.stringify({
+    name: "no-makefile-fixture", version: "1.0.0", private: true,
+    scripts: { test: "node -e \"console.log('CONFIRMED SUITE RAN')\"" },
+  }, null, 2)}\n`);
+  for (const name of ["Makefile", "makefile", "GNUmakefile"]) assert.equal(existsSync(join(repo, name)), false);
+  const say = (line: string) => t.diagnostic(line);
+  say(`repository ${repo} holds ${JSON.stringify(readFileSync(join(repo, "package.json"), "utf8").trim())} and no Makefile`);
+
+  const executed: string[][] = [];
+  const outputs: string[] = [];
+  const f = await runtimeFixture(t, false, {
+    checkDeps: () => ({
+      checkoutSubpath: async () => "",
+      // The real argv, spawned in the real repository: `make` and `npm` answer for themselves.
+      execute: async (request) => {
+        executed.push([...request.command]);
+        // The environment the daemon gives a Command: scrubbed, which drops make's recursion
+        // state even when this suite itself runs under `make test`.
+        const ran = spawnSync(request.command[0]!, request.command.slice(1), {
+          cwd: request.repoRoot, encoding: "utf8", timeout: 60_000, env: scrubCheckEnv(process.env, ""),
+        });
+        if (ran.error) throw ran.error;
+        const output = `${ran.stdout}${ran.stderr}`;
+        outputs.push(output);
+        say(`check spawned \`${request.command.join(" ")}\` in the repository -> exit ${ran.status}: ${JSON.stringify(output.trim())}`);
+        return { kind: "exited", exitCode: ran.status ?? 1, output, truncatedBytes: 0 };
+      },
+    }),
+  }, true);
+  setWorkflowPolicy({ checksEnabled: true, repoAllowlist: [repo] });
+  t.after(() => { setWorkflowPolicy({}); });
+  const slot = f.workflowCommands.get("test")!;
+  assert.ok(f.workflowCommands.replace("test", { expectedRevision: slot.revision, defaultCommand: ["make", "test"],
+    overrides: [], maxRuns: 1, timeoutMs: null, onUnavailable: "skip", onBudgetExhausted: "skip" }).ok);
+  say("operator's machine-wide test Command is `make test`; no repository override exists");
+
+  const key = randomUUID();
+  assert.ok(f.store.insertWorkflow({ id: key, name: key, normalizedName: key, description: "",
+    draft: { nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "gate", kind: "check", slot: "test", position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ], edges: [
+      { id: "start", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+      { id: "pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ] }, completionPolicy: { kind: "none" }, resumptionPolicy: "manual", evidenceReadinessPolicy: "off",
+    bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 }, createdAt: 1, updatedAt: 1 }).ok);
+  const published = f.store.publishWorkflow(key, 1, `version-${key}`, 2);
+  assert.ok(published.ok);
+  const binding = f.store.insertBinding({ id: `binding-${key}`, workflowVersionId: published.version.id,
+    noteKey: f.caller.agentSessionId!, sessionId: f.caller.id, sessionAgent: "claude", sessionName: "MCP test",
+    sessionCwd: repo, sessionRepoRoot: repo, repoRoot: "", triggerMode: "manual", deliveryMode: "preview",
+    maxRepairRounds: 5, now: Date.now() });
+
+  f.workflows.engine.start();
+  const first = await f.act("submit", { bindingId: binding.id });
+  const runId = first.run.id as string;
+  await waitFor(() => f.store.listDeliveries(runId).length === 1, "the failed default should prepare a repair packet");
+  // Whatever make implementation answered, it refused before running anything; the packet
+  // below is what proves the refusal was classified as the repository not providing `test`.
+  assert.match(outputs[0]!, /\btest\b/);
+
+  // 1. The session reads its repair packet.
+  const packet = f.store.listDeliveries(runId)[0]!.payload;
+  assert.match(packet, /Configure the test Command for this repository; do not add files to satisfy it/);
+  assert.match(packet, /asks the operator to confirm through a request_input card that Mission Control writes/);
+  say("session received: \"Configure the test Command for this repository; do not add files to satisfy it\"");
+
+  // 2. It inspects the repository for how tests run, and writes no Makefile.
+  const manifest = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+  assert.ok(manifest.scripts?.test);
+  const proposed = ["npm", "test"];
+  say(`session inspected the repository: no Makefile; package.json scripts.test is ${JSON.stringify(manifest.scripts.test)}; proposes ${JSON.stringify(proposed)}`);
+
+  // 3. It calls configure_workflow_command with that argv. The tool asks the operator through a
+  // request_input card Mission Control writes for exactly this change, and blocks for the answer.
+  const configuring = f.client.callTool({ name: "configure_workflow_command",
+    arguments: { runId, slot: "test", command: proposed } });
+  await waitFor(() => f.registry.pendingReviews(f.caller.id).length === 1, "the confirmation card should be pending");
+  const card = f.registry.pendingReviews(f.caller.id)[0]!;
+  assert.equal(card.kind, "input");
+  const decision = card.decisions![0]!;
+  assert.match(decision.id, /^configure-command:[0-9a-f]{32}$/);
+  assert.match(decision.question, new RegExp(`Repository: ${repo.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`));
+  assert.match(decision.question, new RegExp(`Workflow run: ${runId}`));
+  assert.match(decision.question, /Command \(exact argv, one JSON string per argument\): \["npm","test"\]/);
+  assert.deepEqual(decision.options.map((option) => option.label), ["Configure this Command", "Don't configure it"]);
+  say(`session called configure_workflow_command; the operator's request_input card asks: ${JSON.stringify(decision.question)}`);
+  // Nothing is configured while the operator has not answered.
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides, []);
+
+  // 4. The operator chooses Configure on the card, sending exactly what the dashboard's review
+  // form sends: the selections and the shared formatted response.
+  const selections = [{ decisionId: decision.id, selected: ["configure"], other: null }];
+  const resolved = await f.app.request(`/api/reviews/${encodeURIComponent(card.id)}/resolve`, { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ action: "answer", by: "human", selections,
+      response: formatResponse(card.decisions!, selections, decisionLead(card.kind)) }) });
+  assert.equal(resolved.status, 200, await resolved.clone().text());
+  say("operator chose \"Configure this Command\" on the card");
+
+  // 5. Only then is the confirmed argv written for this repository.
+  const answer = await configuring;
+  const answerText = (answer.content as Array<{ type: string; text: string }>).map((item) => item.text).join("\n");
+  assert.equal(Boolean(answer.isError), false, answerText);
+  const configured = JSON.parse(answerText) as { repoRoot: string; forgivenRuns: number; confirmationReviewId: string };
+  assert.equal(configured.repoRoot, repo);
+  assert.equal(configured.confirmationReviewId, card.id);
+  const view = f.workflowCommands.get("test")!;
+  assert.deepEqual(view.overrides, [{ repoRoot: repo, command: ["npm", "test"] }]);
+  assert.deepEqual(view.defaultCommand, ["make", "test"]);
+  say(`configure_workflow_command returned: override ${JSON.stringify(view.overrides[0])}; machine-wide default still ${JSON.stringify(view.defaultCommand)}; forgivenRuns ${configured.forgivenRuns}; confirmed by card ${card.id === configured.confirmationReviewId ? "answered above" : "?"}`);
+
+  // 6. It resubmits the unchanged work, and the confirmed command is what the gate runs.
+  const resubmitted = await f.act("resubmit", { runId }, { resubmitUnchanged: true });
+  say(`session called trigger_workflow_action resubmit (resubmitUnchanged) -> round ${resubmitted.submission.round}`);
+  await waitFor(() => f.store.getRun(runId)?.status === "completed", "the confirmed command should pass", 60_000);
+  assert.deepEqual(executed, [["make", "test"], ["npm", "test"]]);
+  assert.match(outputs[1]!, /CONFIRMED SUITE RAN/);
+  const rerun = f.store.listAttempts(resubmitted.submission.id).find((attempt) => attempt.nodeId === "gate")!;
+  const output = rerun.output as { status: string; command: string[]; commandSource: string };
+  assert.deepEqual([output.status, output.command, output.commandSource], ["passed", ["npm", "test"], "override"]);
+  assert.equal(existsSync(join(repo, "Makefile")), false);
+  say(`run ${f.store.getRun(runId)?.status}: round 2 gate ${output.status} with ${JSON.stringify(output.command)} (${output.commandSource}); no Makefile was created`);
+});
+
+test("MCP refuses to configure a Command for a finished run and leaves the catalog unchanged", async (t) => {
+  const f = await fixture(t);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const phases = { completed: "complete", cancelled: "binding_archived", failed: "failed_outcome" } as const;
+  for (const status of ["completed", "cancelled", "failed"] as const) {
+    const own = f.seed(f.caller.id);
+    f.store.setRunState(own.run.id, status, phases[status], null);
+    assert.equal(f.store.getRun(own.run.id)?.status, status);
+    const before = f.workflowCommands.get("test")!;
+    await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "test"] },
+      /This workflow run has finished/);
+    const signed = f.credential();
+    const response = await f.app.request("/mcp/workflows/configure-command", { method: "POST",
+      headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+        "x-mission-scout-credential": signed },
+      body: JSON.stringify({ runId: own.run.id, slot: "test", command: ["npm", "test"] }) });
+    assert.equal(response.status, 409, status);
+    const after = f.workflowCommands.get("test")!;
+    assert.equal(after.revision, before.revision, status);
+    assert.deepEqual(after.overrides, before.overrides, status);
+  }
+});
+
+test("an operator's answer authorizes one write, and a Command already in place needs none", async (t) => {
+  const f = await fixture(t);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const own = f.seed(f.caller.id);
+  // Every test in this file shares one catalog and `/repo`; leave the overrides as found.
+  const original = f.workflowCommands.get("test")!.overrides;
+  t.after(() => {
+    const view = f.workflowCommands.get("test")!;
+    f.workflowCommands.replace("test", { expectedRevision: view.revision, defaultCommand: view.defaultCommand,
+      overrides: original, maxRuns: view.maxRuns, timeoutMs: view.timeoutMs,
+      onUnavailable: view.onUnavailable, onBudgetExhausted: view.onBudgetExhausted });
+  });
+  const configure = (command: string[]) => f.app.request("/mcp/workflows/configure-command", { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+      "x-mission-scout-credential": f.credential() },
+    body: JSON.stringify({ runId: own.run.id, slot: "test", command }) });
+
+  // A session that copies the daemon's card into a review of its own, which the human answers,
+  // has authorized nothing: only a card the daemon raised and recorded on the run counts.
+  const refused = await configure(["npm", "test"]);
+  const offered = await refused.json() as { confirmationReviewId: string;
+    confirmation: { title: string; question: string; decision: { id: string; question: string; options: Array<{ id: string; label: string }> } } };
+  // Byte-identical to the daemon's card - title, body and decision - so only provenance can tell
+  // them apart. The daemon's own card is dismissed first so the copy is not de-duplicated into it.
+  f.reviews.resolve(offered.confirmationReviewId, "dismiss", null, "human");
+  const copy = f.reviews.create(f.caller.id, "input", offered.confirmation.title, offered.confirmation.question,
+    [offered.confirmation.decision]);
+  assert.notEqual(copy.id, offered.confirmationReviewId);
+  assert.equal(copy.body, offered.confirmation.question);
+  f.reviews.resolve(copy.id, "answer", "Answered", "human",
+    [{ decisionId: offered.confirmation.decision.id, selected: ["configure"], other: null }]);
+  const byCopy = await configure(["npm", "test"]);
+  assert.equal(byCopy.status, 403, "an answer on a session-made copy is not authorization");
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides.find((entry) => entry.repoRoot === "/repo"), original.find((entry) => entry.repoRoot === "/repo"));
+
+  // The operator confirms A on the daemon's own card and the session writes it.
+  const answerA = await f.confirm(own.run.id, ["npm", "test"]);
+  const first = await configure(["npm", "test"]);
+  assert.equal(first.status, 200);
+  assert.equal((await first.json() as { confirmationReviewId: string }).confirmationReviewId, answerA);
+
+  // Already A: nothing to write, so no answer is needed and none is spent.
+  const noop = await configure(["npm", "test"]);
+  assert.equal(noop.status, 200);
+  const noopBody = await noop.json() as { confirmationReviewId: string | null; forgivenRuns: number };
+  assert.deepEqual([noopBody.confirmationReviewId, noopBody.forgivenRuns], [null, 0]);
+
+  // The operator then changes the override to B in Library while the run is still active.
+  const view = f.workflowCommands.get("test")!;
+  assert.ok(f.workflowCommands.replace("test", { expectedRevision: view.revision, defaultCommand: view.defaultCommand,
+    overrides: [...view.overrides.filter((entry) => entry.repoRoot !== "/repo"), { repoRoot: "/repo", command: ["pnpm", "test"] }], maxRuns: view.maxRuns, timeoutMs: view.timeoutMs,
+    onUnavailable: view.onUnavailable, onBudgetExhausted: view.onBudgetExhausted }).ok);
+
+  // Re-proposing A cannot reuse the spent answer to undo the operator's edit.
+  const reused = await configure(["npm", "test"]);
+  assert.equal(reused.status, 403);
+  assert.equal((await reused.json() as { code: string }).code, "unconfirmed");
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides.find((entry) => entry.repoRoot === "/repo"),
+    { repoRoot: "/repo", command: ["pnpm", "test"] });
+
+  // A fresh answer authorizes it again.
+  const answerAgain = await f.confirm(own.run.id, ["npm", "test"]);
+  const again = await configure(["npm", "test"]);
+  assert.equal(again.status, 200);
+  assert.equal((await again.json() as { confirmationReviewId: string }).confirmationReviewId, answerAgain);
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides.find((entry) => entry.repoRoot === "/repo"),
+    { repoRoot: "/repo", command: ["npm", "test"] });
+});
+
+test("MCP defers configuring a Command while a check for that slot is still running", async (t) => {
+  // The running check's outcome is unknown, so whether its reservation proved nothing is too.
+  // Configuring now would leave a misfit it later records counted against the new command.
+  const f = await fixture(t);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const own = f.seed(f.caller.id);
+  const gate = own.version.graph.nodes.find((node) => node.kind === "check" && node.slot === "test")!;
+  f.store.insertAttempt({ id: `running-${own.run.id}`, submissionId: own.submission.id, nodeId: gate.id,
+    attempt: 1, state: "running", persona: null, inputFingerprint: "fingerprint", now: Date.now() });
+  assert.equal(f.store.reserveCheckRun(own.run.id, `running-${own.run.id}`, "test", 1, null).granted, true);
+  const before = f.workflowCommands.get("test")!;
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "test"] },
+    /A test check is still running in this workflow run; configure the Command after it finishes/);
+  assert.equal(f.workflowCommands.get("test")!.revision, before.revision);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "the running reservation is untouched");
+  // Another slot is not held up by it.
+  await f.confirm(own.run.id, ["npm", "run", "lint"], "lint");
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: ["npm", "run", "lint"] });
+
+  // Once the check finishes and records its misfit, configuring proceeds and forgives it.
+  f.store.finishAttempt(`running-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
+    command: ["make", "test"], exitCode: 2, output: "", truncatedBytes: 0, note: "make test exited 2.",
+    misfitSignal: "make: *** No rule to make target 'test'.  Stop." } }, Date.now());
+  await f.confirm(own.run.id, ["npm", "test"]);
+  const configured = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "test"] });
+  assert.equal(configured.forgivenRuns, 1);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 0);
+});
+
+test("MCP refuses to configure a Command for a run that reported no repository", async (t) => {
+  const f = await fixture(t);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const own = f.seed(f.caller.id, null);
+  assert.equal(f.store.getBinding(own.run.bindingId)?.sessionRepoRoot, null);
+  const before = f.workflowCommands.get("test")!;
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "test"] },
+    /This workflow run reported no repository to configure/);
+  const response = await f.app.request("/mcp/workflows/configure-command", { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+      "x-mission-scout-credential": f.credential() },
+    body: JSON.stringify({ runId: own.run.id, slot: "test", command: ["npm", "test"] }) });
+  assert.equal(response.status, 409);
+  const after = f.workflowCommands.get("test")!;
+  assert.equal(after.revision, before.revision);
+  assert.deepEqual(after.overrides, before.overrides);
+  assert.ok(!f.store.listEvents(own.run.id).some((event) => event.kind === "workflow_command_configured"));
+});
+
 test("MCP requires daemon-issued caller identity even when the machine token and grant are present", async (t) => {
   const f = await fixture(t, {}, "not-a-private-locator");
   const { run } = f.seed(f.caller.id);
@@ -427,7 +892,7 @@ test("every dashboard action denies unowned targets without delegation and retai
   ] as const;
   const paths = new Set<string>();
   for (const [action, extra, suffix] of cases) {
-    const request = { action, runId: "missing", ...("submissionId" in WorkflowActionRequestSchema.optionsMap.get(action)!.shape ? { submissionId: "sub" } : {}), parameters: { ...parameters, ...extra } };
+    const request = { action, runId: "missing", ...("submissionId" in WorkflowActionRequestSchema.options.find((option) => option.shape.action.value === action)!.shape ? { submissionId: "sub" } : {}), parameters: { ...parameters, ...extra } };
     f.registry.setSessionControlEnabled(f.caller.id, false);
     await f.call("trigger_workflow_action", { request }, /Control other sessions/i);
     f.registry.setSessionControlEnabled(f.caller.id, true);
@@ -711,7 +1176,7 @@ test("MCP retries readiness with new proof, overrides gaps, and recovers failed 
 });
 
 test("valid-state scenarios successfully execute every advertised MCP workflow action", () => {
-  assert.deepEqual([...successfulActions].sort(), [...WorkflowActionRequestSchema.optionsMap.keys()].sort());
+  assert.deepEqual([...successfulActions].sort(), WorkflowActionRequestSchema.options.map((option) => option.shape.action.value).sort());
 });
 
 test("MCP retrieves complete normalized findings independently of a clipped raw stream",async(t)=>{

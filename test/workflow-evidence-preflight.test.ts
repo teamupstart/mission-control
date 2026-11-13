@@ -1339,7 +1339,23 @@ for (const invalid of ["uncaptured", "malformed", "inspector_only"] as const) {
 
 test("failed mapping is infrastructure and explicit recovery freezes a same-round child without live recapture", async (t) => {
   let calls = 0; let recovered = false; let captures = 0;
-  const h = await harness(t, "mapping-recovery", async () => { captures++; }, {
+  const repo = join(realpathSync(home), "mapping-recovery-repo");
+  mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.invalid");
+  git("config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, "source.txt"), "required content\n");
+  git("add", "."); git("commit", "-qm", "base");
+  const report = "docs/reports/recovery/report.html";
+  mkdirSync(join(repo, "docs/reports/recovery"), { recursive: true });
+  writeFileSync(join(repo, report), "<!doctype html><title>Recovery</title><p>Retained proof.</p>");
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot, realpathSync(repo)] });
+  t.after(() => setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] }));
+  const h = await harness(t, "mapping-recovery", undefined, {
+    cwd: repo,
+    readContextRaw: async (...args) => { captures++; return readWorkflowContextRaw(...args); },
     compactContext: async (raw) => compactWorkflowContext(raw, {
       deferReconciliation: true, execute: async () => ({ kind: "ok", value: { constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"], canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }] } }),
     }),
@@ -1373,7 +1389,18 @@ test("failed mapping is infrastructure and explicit recovery freezes a same-roun
   assert.deepEqual(h.store.getSubmission(submission.id), prior);
   assert.equal(rows[1]?.readiness?.status, "ready");
   assert.equal(h.store.consecutiveEvidencePreflightRefinements(rows[1]!.id), 0);
-  assert.equal(h.store.listSubmissionTextArtifacts(rows[1]!.id).length, 1);
+  assert.equal(h.store.listSubmissionTextArtifacts(rows[1]!.id).length, 2);
+  const { workflowPublicationRetained, workflowPublicationTree } = await import("../src/shared/workflow-publication.ts");
+  const parentEvidence = WorkflowContextSnapshotSchema.parse(prior.context).evidence;
+  const childEvidence = WorkflowContextSnapshotSchema.parse(rows[1]!.context).evidence;
+  assert.equal(parentEvidence.publication!.localArtifacts.length, 1);
+  assert.deepEqual(childEvidence.publication, parentEvidence.publication);
+  assert.equal(workflowPublicationRetained(childEvidence), true,
+    "recovery must inherit the retained report bytes before the engine selects a check tree");
+  assert.equal(workflowPublicationTree(childEvidence), git("rev-parse", "HEAD^{tree}"));
+  assert.notEqual(workflowPublicationTree(childEvidence), childEvidence.contentTreeOid);
+  assert.equal(childEvidence.artifacts!.find(item => item.displayName === report)?.content,
+    parentEvidence.artifacts!.find(item => item.displayName === report)?.content);
 });
 
 test("each explicit mapping recovery gets a fresh bounded operation without spending author repairs", async (t) => {
@@ -1929,6 +1956,28 @@ test("capture repair delivers once across restart, excludes stale reservations a
   assert.equal(h.store.listSubmissionImages(original.id).length, 1);
   assert.equal(h.store.listSubmissionImages(child.id)[0]?.sha256, h.store.listSubmissionImages(original.id)[0]?.sha256);
   assert.deepEqual(h.store.listReservedWorkflowEvidence(child.id).map((item) => item.clientItemId).sort(), ["replacement-handoff", "retained-image"]);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+});
+
+test("capture repair holds a blocked session and resumes once its blocker is cleared", async (t) => {
+  const id = "capture-repair-blocked";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "repair was not delivered");
+  h.registry.getSession(id)!.state = "idle";
+  await h.register("replacement-handoff");
+  const reported = h.registry.reportBlocker(id, {
+    kind: "service", reason: "Staging is down", waitingOn: "Infra on-call", resumeWhen: "Staging is back",
+    referenceUrl: null, details: null,
+  });
+  assert.equal(reported.ok, true);
+  await h.manager.sweepResumptions(Date.now() + 120_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1, "a blocked session's corrected proof was resubmitted");
+
+  h.registry.clearBlocker(id, "operator");
+  await h.manager.sweepResumptions(Date.now() + 180_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "clearing the blocker did not release recovery");
+  const child = h.store.latestSubmission(h.run.id)!;
+  assert.equal(child.refinementReason, "evidence_capture_repair");
   assert.equal(h.store.listSubmissions(h.run.id).length, 2);
 });
 

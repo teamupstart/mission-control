@@ -10,8 +10,7 @@ import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { TASK_STATUSES, type Task } from "../src/shared/types.ts";
-import { DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
-import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { McpTaskConfigurationSchema, type McpTaskSnapshot } from "../src/shared/protocol.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
@@ -63,7 +62,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     fetch: (req) => {
       const path = new URL(req.url).pathname;
       paths.push(path);
-      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path === "/mcp/tasks/delete")) {
+      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete")) {
         return new Response("Not Found", { status: 404 });
       }
       return app.fetch(req);
@@ -104,8 +103,125 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
   async function create(over: Record<string, unknown> = {}) {
     return (await call("create_task", { title: "Backlog work", intent: "Deliver the requested change", repository: repoA, ...over }))!;
   }
-  return { client, call, create, registry, tasks, app, paths, reviews };
+  function disconnectHttp() {
+    // Keep the port reserved but terminate connections before any HTTP response can exist.
+    server.on("connection", (socket) => socket.destroy());
+  }
+  return { client, call, create, registry, tasks, app, paths, reviews, disconnectHttp };
 }
+
+test("MCP dispatch uses the dashboard's validation and TaskManager launch path", async (t) => {
+  const f = await fixture(t);
+  const launched: string[] = [];
+  const seam = f.tasks as unknown as { dispatcher: { dispatch: (id: string) => Promise<unknown> } };
+  seam.dispatcher.dispatch = async (id) => { launched.push(id); return { ok: true }; };
+  const task = await f.create({ workflowId: null, enabled: false });
+
+  const unauthenticated = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  assert.equal(unauthenticated.status, 401);
+  const malformed = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ overrideDisabled: "yes" }),
+  });
+  assert.equal(malformed.status, 400);
+  await f.call("dispatch_task", { taskId: "missing" }, /404.*no such task/);
+  await f.call("dispatch_task", { taskId: task.id }, /409.*disabled/i);
+  assert.equal(getTask(task.id)!.status, "backlog");
+  assert.deepEqual(launched, []);
+
+  const dispatched = await f.call("dispatch_task", { taskId: task.id, overrideDisabled: true });
+  assert.equal(dispatched!.id, task.id);
+  assert.deepEqual(launched, [task.id]);
+  // The dispatcher is the only stubbed boundary; a real launch is covered in Playwright.
+  // Model its in-flight state to check TaskManager's existing repeat-dispatch behavior.
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "dispatching" });
+  const repeated = await f.call("dispatch_task", { taskId: task.id });
+  assert.equal(repeated!.status, "dispatching");
+  assert.deepEqual(launched, [task.id], "a repeated dispatch does not launch again");
+
+  const prerequisite = await f.create({ workflowId: null });
+  const dependent = await f.create({ workflowId: null, dependsOnTaskIds: [prerequisite.id] });
+  await f.call("dispatch_task", { taskId: dependent.id }, /409.*waiting on/);
+  assert.equal(getTask(dependent.id)!.status, "backlog");
+  const blocked = await f.create({ workflowId: null });
+  f.registry.upsertTask({ ...getTask(blocked.id)!, workflowId: "missing-workflow" });
+  await f.call("dispatch_task", { taskId: blocked.id }, /409.*[Ww]orkflow/);
+  assert.equal(getTask(blocked.id)!.status, "backlog");
+  assert.deepEqual(launched, [task.id]);
+});
+
+test("MCP dispatch on an older daemon reports failure without another launch route", async (t) => {
+  const f = await fixture(t, true);
+  await f.call("dispatch_task", { taskId: "old-task" }, /404/);
+  assert.deepEqual(f.paths, ["/mcp/tasks/old-task/dispatch"]);
+});
+
+test("MCP dispatch returns an error result when the HTTP request rejects", async (t) => {
+  const f = await fixture(t);
+  f.disconnectHttp();
+  const result = await f.client.callTool({ name: "dispatch_task", arguments: { taskId: "unreachable-task" } });
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.content, [{
+    type: "text", text: "Could not reach Mission Control: TypeError: fetch failed",
+  }]);
+  assert.deepEqual(f.paths, [], "the connection failed before an HTTP handler answered");
+});
+
+test("MCP dispatch defaultModel selects an unpinned launch model and preserves a pinned model", async (t) => {
+  const f = await fixture(t);
+  const { Dispatcher } = await import("../src/server/dispatcher.ts");
+  const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+  type Supervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  type Start = Parameters<Supervisor["start"]>[0];
+  const starts: Start[] = [];
+  const supervisor = {
+    async start(input: Start) {
+      starts.push(input);
+      return f.registry.registerSdkSession({
+        id: `sdk:model-selection-${starts.length}`, agent: input.agent, name: input.name, cwd: input.cwd,
+      });
+    },
+    taskLiveness: () => null,
+    stop: async () => {},
+  } as unknown as Supervisor;
+  const priorBin = process.env.MISSION_CLAUDE_BIN;
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  t.after(() => {
+    if (priorBin === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = priorBin;
+  });
+  const repo = gitRepo("dispatch-model-selection");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--allow-empty", "-qm", "Fixture base"]);
+  setHarnessesConfig({ defaultModel: { claude: "claude-haiku-4-5" } });
+  const dispatcher = new Dispatcher(f.registry, async () => {}, {
+    supervisor, resolveRuntime: () => "sdk", missionMcpDescriptor: async () => null,
+    worktrees: new WorktreeManager(undefined, {
+      resolvePolicy: () => ({ enabled: false, maxSlots: 1, setupArgv: null }),
+    }),
+  });
+  // Keep model resolution and launch composition real; fake only the SDK process boundary.
+  // Track the asynchronous dispatch so assertions run after it has reached the supervisor.
+  const launches: Promise<void>[] = [];
+  const seam = f.tasks as unknown as { dispatcher: Pick<typeof dispatcher, "dispatch"> };
+  seam.dispatcher = { dispatch: (...args) => {
+    const launch = dispatcher.dispatch(...args);
+    launches.push(launch);
+    return launch;
+  } };
+  for (const [pin, expected] of [[null, "claude-sonnet-5"], ["claude-opus-5", "claude-opus-5"]] as const) {
+    const task = await f.create({ repository: repo, agent: "claude", model: pin, workflowId: null });
+    await f.call("dispatch_task", { taskId: task.id, defaultModel: "claude-sonnet-5" });
+    await Promise.all(launches);
+    const stored = getTask(task.id)!;
+    assert.equal(stored.status, "running", stored.error ?? "dispatch must reach running");
+    assert.equal(starts.find((start) => start.taskId === task.id)?.model, expected,
+      "the resolved model must reach the SDK launch boundary");
+    assert.equal(stored.model, pin, "a launch default must not change the durable model pin");
+  }
+});
 
 test("MCP configuration and exact local plan inputs coexist without changing either dependency boundary", async (t) => {
   applySkillsConfig({ planStorage: "local", commitPlanHtml: true });
@@ -218,7 +334,7 @@ test("MCP advertises and persists every backlog configuration field without laun
   const prerequisite = await f.create();
   const created = await f.create({
     kind: "bugfix", agent: "codex", model: "gpt-6-sol", effort: "high",
-    workflowId: DEFAULT_WORKFLOW_POLICY.defaultWorkflowId, enabled: false,
+    workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID, enabled: false,
     priority: "high", labels: [" api ", "api", "mcp"],
     additionalRepositories: ["secondary"], dependsOnTaskIds: [prerequisite.id],
   });
@@ -227,7 +343,7 @@ test("MCP advertises and persists every backlog configuration field without laun
   assert.equal(created.model, "gpt-6-sol");
   assert.equal(created.effort, "high");
   assert.equal(created.kind, "bugfix");
-  assert.equal(created.workflowId, DEFAULT_WORKFLOW_POLICY.defaultWorkflowId);
+  assert.equal(created.workflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.equal(created.enabled, false);
   assert.equal(created.priority, "high");
   assert.deepEqual(created.labels, ["api", "mcp"]);
@@ -338,7 +454,7 @@ test("MCP refuses invalid configuration, dependencies, repositories, and non-bac
   const before = getTask(task.id);
   for (const [patch, error] of [
     [{ model: "--bad-model" }, /model id/],
-    [{ effort: "impossible" }, /Invalid enum/],
+    [{ effort: "impossible" }, /Invalid option/],
     [{ kind: "chat" }, /launched immediately/],
     [{ agent: "codex", effort: "max" }, /not supported/],
     [{ workflowId: "missing-workflow" }, /published version/],
@@ -410,7 +526,7 @@ test("a task can no longer be created with an advisor pin: MCP refuses the key, 
       workflowId: null, advisorModel: "opus" }),
   });
   assert.equal(mcp.status, 400);
-  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key\(s\) in object: 'advisorModel'/);
+  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key: \\"advisorModel\\"/);
   assert.equal(f.registry.snapshot().tasks.length, count);
   const dashboard = await f.app.request("/api/tasks", {
     method: "POST",
@@ -444,7 +560,7 @@ test("configured MCP tasks combine direct prerequisites and the calling session"
   const created = (await f.call("create_task", args))!;
   assert.equal(created.model, "gpt-6-sol");
   assert.equal(created.effort, "high");
-  assert.deepEqual(created.dependencies.map((edge) => edge.type === "task" ? edge.taskId : edge.sessionId), [prerequisite.id, "sdk:backlog-test"]);
+  assert.deepEqual(created.dependencies.map((edge) => edge.type === "task" ? edge.taskId : edge.type === "session" ? edge.sessionId : edge.type), [prerequisite.id, "sdk:backlog-test"]);
   assert.equal(created.status, "backlog");
 });
 
@@ -609,7 +725,7 @@ test("MCP creates and edits storage overrides without changing global settings",
   assert.equal(explicitRepo.planPolicy?.storage, "repository");
   const inherited = await f.call("update_task", { taskId: local.id, planStorage: null });
   assert.equal(inherited?.planPolicy?.storage, "local");
-  await f.call("update_task", { taskId: local.id, planStorage: "invalid" }, /Invalid enum/);
+  await f.call("update_task", { taskId: local.id, planStorage: "invalid" }, /Invalid option/);
   await f.call("create_task", { title: "Invalid storage kind", intent: "Ship", repository: repoA, kind: "ship", planStorage: "local" }, /only available for plan tasks/);
 });
 

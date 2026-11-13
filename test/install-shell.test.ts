@@ -64,6 +64,9 @@ const tool=basename(process.argv[1]), args=process.argv.slice(2), fail=${JSON.st
 appendFileSync(${JSON.stringify(log)}, tool+':'+JSON.stringify(args)+'\\n');
 if(tool==='gh') {
   const endpoint=args[3];
+  // A stalled download. It gives up on its own: spawnSync kills only bash at its bound and then
+  // waits for every process still holding its pipes, so a gh that never exits would hang the test.
+  if(fail==='hang') {Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2000);process.exit(1);}
   if(fail==='transport') {console.error('error connecting to api.github.com');process.exit(1);}
   if((fail.startsWith('missing-')||fail==='no-access')&&endpoint.includes('/releases/tags/')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
   if(fail==='no-access'&&endpoint.includes('/releases?')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
@@ -97,10 +100,25 @@ else {process.exit(99);}
   for (const tool of mocked.filter(t => t !== 'gh')) input = input.replaceAll(`/usr/bin/${tool}`, join(bin, tool)).replaceAll(`/usr/sbin/${tool}`, join(bin, tool));
   // Missing fixture tools must stay missing even on hosts with gh installed.
   // Production OS utilities use absolute paths; PATH contains only our probes.
-  // Every fake tool is a Node process, so a complete run already takes 15-20s on a
-  // loaded host; the bound catches a hang without failing a slow, correct run.
-  return {log, run: (args: string[] = []) => spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log}, encoding: 'utf8', timeout: 60_000})};
+  // Every fake tool is a Node process, and a complete run starts about 75 of them (55 are
+  // plutil reads), each ~130ms before it does anything. That is 10-15s on an idle host and
+  // several times that under the full suite's concurrency, where 60s killed correct runs.
+  // The bound only has to catch a hang, so it is wide, and hitting it fails as a timeout
+  // rather than as an empty-stderr mismatch that reads like a refusal that never happened.
+  return {log, run: (args: string[] = [], {timeoutMs = BOOTSTRAP_BOUND_MS}: {timeoutMs?: number} = {}) => {
+    const result = spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log}, encoding: 'utf8', timeout: timeoutMs});
+    // The code is always there; the signal only when one is reported, and which one is not
+    // stable (SIGTERM from the kill on macOS, none or SIGPIPE on Linux CI).
+    if (result.error) {
+      const code = (result.error as NodeJS.ErrnoException).code ?? result.error.message;
+      throw new Error(`bootstrap did not finish within ${timeoutMs / 1000}s (${code}${result.signal ? `, ${result.signal}` : ''})`, {cause: result.error});
+    }
+    return result;
+  }};
 }
+
+/** A hang guard for one fixture run, far above a correct run's time on a loaded host. */
+const BOOTSTRAP_BOUND_MS = 240_000;
 
 test('standalone bootstrap stays generated from the shipped publisher policy', () => {
   assert.equal(readFileSync(join(root, 'scripts/install.sh'), 'utf8'), shell);
@@ -150,6 +168,20 @@ for (const [failure, message] of Object.entries({
     assert.doesNotMatch(readFileSync(f.log, 'utf8'), /runtime:|forbidden:/);
   });
 }
+test('a fixture run that outlives its bound fails as a timeout, not as a missing refusal', t => {
+  // The incident this pins: a correct run killed at the bound printed nothing, and the refusal
+  // tests then reported an empty stderr - which reads exactly like a refusal that never fired.
+  const f = fixture(t, 'hang');
+  assert.throws(() => f.run([], {timeoutMs: 500}), (error: Error) => {
+    // Which signal ends bash is a race - the kill, or a closed stdin pipe (SIGPIPE on Linux) -
+    // and some platforms report none, so the diagnostic is pinned on the bound and the code.
+    assert.match(error.message, /^bootstrap did not finish within 0\.5s \(ETIMEDOUT(, SIG[A-Z0-9]+)?\)$/);
+    assert.equal((error.cause as NodeJS.ErrnoException | undefined)?.code, 'ETIMEDOUT');
+    return true;
+  });
+  // Killed while stalled on the first download, before anything downloaded could run.
+  assert.doesNotMatch(readFileSync(f.log, 'utf8'), /runtime:|forbidden:/);
+});
 for (const args of [['--scope','user','--scope','system'], ['--scope','user','--apps-dir','/somewhere'], ['--ref','main'], ['--repo','someone/fork'], ['--temporary-source'], ['--from-staged','/app']]) {
   test(`bootstrap rejects unsupported selection ${args.join(' ')}`, t => {
     const f = fixture(t); assert.notEqual(f.run(args).status, 0);

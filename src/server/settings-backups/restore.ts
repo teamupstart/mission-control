@@ -14,7 +14,9 @@ import type {
   SessionAction,
   WorkflowCommandView,
   WorkflowDefinition,
+  WorkflowPolicy,
 } from "@shared/workflow.ts";
+import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO } from "@shared/task.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
 import {
   SETTINGS_BACKUP_CATALOGS,
@@ -105,13 +107,13 @@ export function migrateSettingsBackupSnapshot(
   return {
     snapshot,
     settings,
-    personas: SettingsBackupPersonaSchema.array().parse(payload("personas")),
-    sessionActions: SettingsBackupSessionActionSchema.array().parse(payload("session-actions")),
-    workflowCommands: SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
-    workflows: SettingsBackupWorkflowDefinitionSchema.array().parse(payload("workflow-definitions")),
-    workflowVersions: SettingsBackupWorkflowVersionSchema.array().parse(payload("workflow-versions")),
+    personas: SettingsBackupPersonaSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("personas")),
+    sessionActions: SettingsBackupSessionActionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("session-actions")),
+    workflowCommands: SettingsBackupWorkflowCommandSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-commands")),
+    workflows: SettingsBackupWorkflowDefinitionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-definitions")),
+    workflowVersions: SettingsBackupWorkflowVersionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-versions")),
     residentProfiles: byDomain.has("resident-profiles")
-      ? SettingsBackupResidentProfileSchema.array().parse(payload("resident-profiles"))
+      ? SettingsBackupResidentProfileSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("resident-profiles"))
       : null,
   };
 }
@@ -474,12 +476,16 @@ export function preflightSettingsRestore(
     }
   }
 
-  const policy = configValue<{ defaultWorkflowId: string | null }>(staged, "workflow-policy");
-  if (policy.defaultWorkflowId !== null) {
-    const selected = stagedWorkflowById.get(policy.defaultWorkflowId)
-      ?? currentWorkflows.find((row) => row.builtin && row.id === policy.defaultWorkflowId);
+  const policy = configValue<WorkflowPolicy>(staged, "workflow-policy");
+  for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+    const workflowId = policy.kindWorkflowDefaults[kind];
+    if (!workflowId) continue;
+    const selected = stagedWorkflowById.get(workflowId)
+      ?? currentWorkflows.find((row) => row.builtin && row.id === workflowId);
     if (!selected || selected.archivedAt !== null || selected.currentVersionId === null) {
-      blockers.push(`Default workflow ${policy.defaultWorkflowId} is not a live published staged workflow`);
+      blockers.push(
+        `Default workflow ${workflowId} for ${TASK_KIND_INFO[kind].label} is not a live published staged workflow`,
+      );
     }
   }
 

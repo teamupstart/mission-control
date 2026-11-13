@@ -582,6 +582,11 @@ again, and it is the engine clearing the halt that resolves the row - through th
 own event, so what leaves the inbox is a row the daemon agrees is finished rather than one the
 browser hid on its own.
 
+The one exception is yours to make. **Dismiss** takes the row out of the inbox and out of **to
+answer** without clearing the halt: the pipeline stays halted until the engine clears it. When a
+dismissed halt or Pipeline lifecycle row comes back is set out in
+[dismiss a row without resolving it](attention-and-alerts.md#dismiss-a-row-without-resolving-it).
+
 ## Live events
 
 Reading files on a cadence always works and needs nothing installed. It also means Mission

@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { applyEdits, modify, parse as parseJson } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
 import { z } from "zod";
+import { boundedRecord } from "@shared/zod-shapes.ts";
 
 import type { SetupServicePrerequisite, SetupStatus } from "@shared/setup-catalog.ts";
 import { claudeSettingsPath } from "@shared/claude-settings.ts";
@@ -15,19 +16,20 @@ import type { TerminalResult } from "../terminal/types.ts";
 type TrustAgent = "claude" | "codex";
 export const CLAUDE_MCP_ALLOW = "mcp__mission-control__*";
 const APPROVAL_KEY = "default_tools_approval_mode";
+export const MCP_TRUST_COLLECTION_MAX = 10_000;
 const ClaudeSettings = z.object({
   permissions: z.object({
-    allow: z.array(z.string()).optional(),
-    ask: z.array(z.string()).optional(),
-    deny: z.array(z.string()).optional(),
+    allow: z.array(z.string()).max(MCP_TRUST_COLLECTION_MAX).optional(),
+    ask: z.array(z.string()).max(MCP_TRUST_COLLECTION_MAX).optional(),
+    deny: z.array(z.string()).max(MCP_TRUST_COLLECTION_MAX).optional(),
   }).passthrough().optional(),
 }).passthrough();
 const CodexSettings = z.object({
-  mcp_servers: z.record(z.object({
+  mcp_servers: boundedRecord(z.string(), z.object({
     command: z.string().optional(),
     url: z.string().optional(),
     default_tools_approval_mode: z.enum(["auto", "prompt", "writes", "approve"]).optional(),
-  }).passthrough()).optional(),
+  }).passthrough(), MCP_TRUST_COLLECTION_MAX).optional(),
 }).passthrough();
 
 export function mcpTrustPath(agent: TrustAgent): string {
@@ -94,9 +96,11 @@ export function withMcpTrust(agent: TrustAgent, original: string): string {
       tabSize: /\n( +)\S/.exec(source)?.[1]?.length ?? 2,
       eol: original.includes("\r\n") ? "\r\n" : "\n",
     };
-    return applyEdits(source, settings.permissions?.allow
+    const result = applyEdits(source, settings.permissions?.allow
       ? modify(source, ["permissions", "allow", -1], CLAUDE_MCP_ALLOW, { isArrayInsertion: true, formattingOptions })
       : modify(source, ["permissions", "allow"], [CLAUDE_MCP_ALLOW], { formattingOptions }));
+    claudeConfig(result);
+    return result;
   }
   const desired = codexConfig(original);
   const server = registeredCodexServer(desired);

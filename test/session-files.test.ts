@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -14,9 +14,13 @@ import {
   readGitTreeFile,
   readSessionFile,
   saveSessionFile,
+  SESSION_MOCKUP_ROOT,
+  isListedMockup,
   SessionFileError,
   withFileSaveLock,
 } from "../src/server/session-files.ts";
+import { captureWorktreeTree } from "../src/server/git/worktree-tree.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 import {
   applyFileLoadFailure,
   applyFileLoadSuccess,
@@ -56,6 +60,157 @@ test("lists tracked and untracked non-ignored regular files deterministically", 
     { path: "a.txt" },
     { path: "z.txt" },
   ]);
+});
+
+test("self-ignored mock-ups are listed while git, and a review snapshot, never see them", async (t) => {
+  // The `mockups` skill keeps mock-ups out of every commit by making `docs/mockups/` ignore
+  // itself. That only works if the Files list still shows them, and only matters if git -
+  // and the workflow review snapshot that a pull request step commits - really skip them.
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  execFileSync("git", ["-C", dir, "config", "user.email", "t@test"]);
+  execFileSync("git", ["-C", dir, "config", "user.name", "t"]);
+  await writeFile(path.join(dir, ".gitignore"), ".env\n");
+  await writeFile(path.join(dir, "README.md"), "# Repo\n");
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  execFileSync("git", ["-C", dir, "commit", "-qm", "init"]);
+  const before = await captureWorktreeTree(dir);
+
+  await writeFile(path.join(dir, ".env"), "SECRET=1\n");
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/two-column.html`), "<h1>Two columns</h1>\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/tabs.png`), PNG);
+  // Ignored for the same reason the mock-ups are, but nothing anyone meant to display.
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.env`), "API_KEY=private\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/notes.txt`), "scratch\n");
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}/.private`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.private/screen.png`), PNG);
+
+  assert.deepEqual(await listSessionFiles(dir), [
+    { path: ".gitignore" },
+    { path: "docs/mockups/settings/tabs.png" },
+    { path: "docs/mockups/settings/two-column.html" },
+    { path: "README.md" },
+  ], "pages and images listed; the marker, private and scratch files, and every other ignored file are not");
+  assert.equal(execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }), "");
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  assert.equal(
+    execFileSync("git", ["-C", dir, "diff", "--cached", "--name-only"], { encoding: "utf8" }),
+    "",
+    "git add -A stages no mock-up",
+  );
+  assert.equal(
+    (await captureWorktreeTree(dir)).treeOid,
+    before.treeOid,
+    "the workflow review snapshot's content is unchanged by mock-ups",
+  );
+  assert.equal(
+    (await readSessionFile(dir, "docs/mockups/settings/two-column.html")).text,
+    "<h1>Two columns</h1>\n",
+  );
+});
+
+test("a failed or overflowing mock-up query keeps the ordinary listing and says so", async (t) => {
+  // The ignored mock-up query is best effort: whatever happens to it, the checkout's own files
+  // must still list, and the failure must be visible in the daemon log rather than silently
+  // turning every mock-up path into dead text.
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "README.md"), "# Repo\n");
+  await writeFile(path.join(dir, "notes.txt"), "untracked\n");
+  execFileSync("git", ["-C", dir, "add", "README.md"]);
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/two-column.html`), "<h1>m</h1>\n");
+
+  const ordinary = [{ path: "notes.txt" }, { path: "README.md" }];
+  const page = { path: "docs/mockups/settings/two-column.html" };
+  // Only the query carrying `--ignored` is replaced; the ordinary listing runs real git.
+  const failingMockups = (answer: RunResult): typeof run => async (bin, args, opts) =>
+    args.includes("--ignored") ? answer : run(bin, args, opts);
+
+  const control = t.mock.method(console, "warn", () => {});
+  assert.deepEqual(
+    await listSessionFiles(dir, undefined, async (bin, args, opts) => run(bin, args, opts)),
+    [page, ...ordinary].sort((a, b) => a.path.localeCompare(b.path)),
+    "control: through the same seam, a working query lists the mock-up",
+  );
+  assert.equal(control.mock.callCount(), 0);
+  control.mock.restore();
+
+  for (const [name, answer] of [
+    ["fails", { stdout: "", stderr: "fatal: boom", code: 128, outcomeUnknown: false, overflowed: false }],
+    // A truncated answer still names the mock-up; it must not be trusted half-read.
+    ["overflows", { stdout: `${page.path}\0`, stderr: "", code: 0, outcomeUnknown: false, overflowed: true }],
+  ] as const) {
+    const warn = t.mock.method(console, "warn", () => {});
+    assert.deepEqual(
+      await listSessionFiles(dir, undefined, failingMockups(answer)),
+      ordinary,
+      `when the mock-up query ${name}, the checkout's own files still list and no mock-up is invented`,
+    );
+    assert.equal(warn.mock.callCount(), 1, `a mock-up query that ${name} is logged`);
+    assert.deepEqual(warn.mock.calls[0]!.arguments[1], { code: answer.code, overflowed: answer.overflowed });
+    warn.mock.restore();
+  }
+});
+
+test("only mock-up formats outside hidden names are admitted from the ignored mock-up directory", () => {
+  for (const listed of [
+    "docs/mockups/x/two-column.html",
+    "docs/mockups/x/page.HTM",
+    "docs/mockups/x/tabs.png",
+    "docs/mockups/x/wire.svg",
+    "docs/mockups/x/shot.webp",
+    "docs/mockups/x/anim.gif",
+    "docs/mockups/x/photo.jpeg",
+  ]) {
+    assert.equal(isListedMockup(listed), true, listed);
+  }
+  for (const refused of [
+    "docs/mockups/.gitignore",
+    "docs/mockups/.env",
+    "docs/mockups/x/.env.png",
+    "docs/mockups/.private/screen.png",
+    "docs/mockups/x/notes.txt",
+    "docs/mockups/x/id_rsa",
+    "docs/mockups/x/dump.json",
+    "docs/mockups/x/notes.md",
+    "docs/other/two-column.html",
+    "docs/mockups-old/two-column.html",
+  ]) {
+    assert.equal(isListedMockup(refused), false, refused);
+  }
+});
+
+test("a file git does not ignore under docs/mockups is listed like any other checkout file", async (t) => {
+  // The mock-up filter governs only what the ignored-file query adds. A file the repository
+  // tracks there - in any format - comes through the ordinary listing, as docs/ui.md says.
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, SESSION_MOCKUP_ROOT), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/README.md`), "# Mock-ups\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.env`), "API_KEY=private\n");
+  execFileSync("git", ["-C", dir, "add", "-f", `${SESSION_MOCKUP_ROOT}/README.md`]);
+  assert.deepEqual(await listSessionFiles(dir), [{ path: "docs/mockups/README.md" }]);
+});
+
+test("a mock-up that a plan needs, beside the plan, is an ordinary file git will commit", async (t) => {
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await mkdir(path.join(dir, "docs/plans/settings"), { recursive: true });
+  await writeFile(path.join(dir, "docs/plans/settings/plan.md"), "# Settings\n");
+  await writeFile(path.join(dir, "docs/plans/settings/two-column.html"), "<h1>Chosen</h1>\n");
+  assert.deepEqual(
+    execFileSync("git", ["-C", dir, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" })
+      .split("\n")
+      .filter(Boolean),
+    ["?? docs/plans/settings/plan.md", "?? docs/plans/settings/two-column.html"],
+  );
 });
 
 test("pinned Git tree files stay exact, bounded, traversal-safe, and read-only", async (t) => {

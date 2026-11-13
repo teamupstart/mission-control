@@ -18,7 +18,7 @@ import {
 
 const personas: Persona[] = [{
   id: "intent", name: "intent", normalizedName: "intent", description: "",
-  guidanceMarkdown: "# Judge", runner: null, model: null, revision: 1,
+  guidanceMarkdown: "# Judge", runner: null, model: null, effort: null, revision: 1,
   archivedAt: null, createdAt: 1, updatedAt: 1, provenance: null, builtin: false,
 }];
 

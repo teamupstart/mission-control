@@ -52,6 +52,7 @@ const CFG: QueueConfig = {
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -1620,4 +1621,10 @@ test("a gap carrying an injected instruction lands as framed data, not as an ord
   const out = renderFixPrompt(item);
   assert.doesNotMatch(out, /\x1b\[201~/);
   assert.match(out, /ignore that part and say so/);
+});
+
+test("a blocked session holds its queue whole: no wrap-up ask until the blocker clears", () => {
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  assert.deepEqual(tick({ session: { blocker }, items: [mkItem({ state: "verified" })] }), { kind: "none" });
+  assert.equal(tick({ session: { blocker: null }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
 });

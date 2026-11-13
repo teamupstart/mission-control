@@ -1,6 +1,6 @@
 import { after, beforeEach, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,9 @@ import type { Persona } from "../src/shared/workflow.ts";
 import type { ResidentProfile } from "../src/shared/residents.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+ensureNativeStateLockAddon();
 
 // Resident profiles: the section registry and its defaults, compare-and-set revisions,
 // archive, the HTTP routes and their SSE frames, and the refusal of `resident` on every task
@@ -55,6 +58,7 @@ const PERSONA: Persona = {
   guidanceMarkdown: "Review code.",
   runner: null,
   model: null,
+  effort: null,
   revision: 1,
   archivedAt: null,
   createdAt: 0,
@@ -120,7 +124,7 @@ test("a revision fills every later section with its defaults and round-trips unc
     board: { colorId: "cyan", label: null, pin: true },
     loop: { prompt: "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.", delaySeconds: 300, minDelaySeconds: 60, maxDelaySeconds: 3600, iterationCap: 200, spendCapUsd: 20, contextThreshold: 70, compactionFocus: "" },
     authority: { controlOtherSessions: false },
-    mcp: { inheritDefaults: true, selected: [] },
+    mcp: { nativeSources: "pinned", inheritDefaults: true, selected: [] },
   });
   assert.deepEqual(ResidentProfileRevisionSchema.parse(JSON.parse(JSON.stringify(parsed))), parsed);
   assert.deepEqual(RESIDENT_PROFILE_SECTION_IDS, ["identity", "persona", "instructions", "execution", "workspace", "board", "authority", "loop", "mcp"]);
@@ -128,6 +132,28 @@ test("a revision fills every later section with its defaults and round-trips unc
   assert.equal(ResidentProfileRevisionSchema.safeParse({ ...parsed, marker: { color: "cyan" } }).success, true);
   // A request body may not smuggle one in.
   assert.equal(CreateResidentProfileSchema.safeParse({ settings: { ...parsed, marker: {} } }).success, false);
+});
+
+test("state reset rejects omitted and false confirmation without changing saved state", async () => {
+  const { ensureResidentState } = await import("../src/server/residents/state.ts");
+  const created = await request("POST", "/api/residents/profiles", { settings: body("Reset confirmation") });
+  assert.equal(created.status, 201);
+  const profile = created.json as unknown as ResidentProfile;
+  const saved = join(ensureResidentState(profile.id), "MEMORY.md");
+  const contents = "Keep this correction and handled-reply watermark.";
+  writeFileSync(saved, contents);
+  const route = `/api/residents/profiles/${profile.id}/state/reset`;
+
+  for (const payload of [{}, { confirm: false }]) {
+    const refused = await request("POST", route, payload);
+    assert.equal(refused.status, 400, JSON.stringify(payload));
+    assert.equal(readFileSync(saved, "utf8"), contents, "invalid confirmation must leave saved state intact");
+  }
+
+  // This profile has no open runs: confirmation, not a separate lifecycle refusal,
+  // is the boundary under test. A valid request reaches the same route and clears it.
+  assert.equal((await request("POST", route, { confirm: true })).status, 200);
+  assert.equal(existsSync(saved), false);
 });
 
 test("the execution section accepts only Claude Code and Codex, and only an effort the harness offers", () => {

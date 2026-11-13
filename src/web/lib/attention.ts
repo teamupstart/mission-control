@@ -12,6 +12,7 @@ import {
   type PipelineCommissionAttention,
 } from "@shared/pipeline.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import type { AttentionDismissalKey } from "@shared/protocol.ts";
 import { stateDisplay } from "./format.ts";
 
 /**
@@ -170,6 +171,11 @@ export interface AttentionFold {
    * not be different SETS, because a header reading "1 need you / 0 to answer" says a thing is
    * stuck and simultaneously offers an empty inbox to fix it in. `session_blocked` is what
    * closes the gap; `attention-pill-invariant.test.ts` is what keeps it closed.
+   *
+   * The one exception is the operator's own: a row they DISMISSED leaves the fold and this
+   * count while the session it names may still be amber. That is the point of dismissing it
+   * - "stop showing me this" - and the board card stays amber, so nothing is hidden that the
+   * operator did not choose to hide. The invariant holds for every row nobody dismissed.
    */
   total: number;
 }
@@ -220,6 +226,97 @@ export interface AttentionInput {
   pipelineRuns?: readonly PipelineRun[];
   pipelineCommissions?: readonly PipelineCommission[];
   tasks?: readonly Task[];
+  /**
+   * Rows the operator dismissed, by item id, each with the `occurrence` it was dismissed at
+   * (see `attentionDismissalKeys`). A row whose current occurrence matches is left out of the
+   * list and the total; one that now says something else is shown again.
+   *
+   * Optional, and absent means nothing is dismissed: the fold is the same one every caller
+   * that predates dismissal already gets.
+   */
+  dismissed?: ReadonlyMap<string, string>;
+}
+
+/**
+ * What an operator's Dismiss records for one row: the key(s) that name it, each with the
+ * occurrence it was dismissed at.
+ *
+ * The occurrence is a fingerprint of what the row SAYS, never of when it was drawn, so a row
+ * that is re-derived on every frame keeps the same one while nothing about it changes - which
+ * is what keeps a dismissed row from popping back up. It changes when the obligation does:
+ *
+ *  - a session's questions are one key PER QUESTION, so a new question on the same session is
+ *    shown while the dismissed ones stay hidden;
+ *  - a Pipeline lifecycle row is its attention kind and title, so a different lifecycle
+ *    problem on the same commission is shown, and a re-worded detail line is not;
+ *  - a halt is its class and reason, a parked menu its prompt and rows, a blocked session its
+ *    state and what it is waiting on, a stuck finalization its error;
+ *  - an ensemble decision is the run, because a run parks on its decision once.
+ *
+ * Exported so the inbox's Dismiss and this fold's filter are the same function: a button that
+ * recorded one fingerprint while the fold compared another would dismiss nothing.
+ */
+export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalKey[] {
+  switch (item.kind) {
+    case "session_reviews":
+      return item.reviews.map((review) => ({ itemId: reviewDismissalId(review.id), occurrence: QUESTION_OCCURRENCE }));
+    case "ensemble_decision":
+      return [{ itemId: item.id, occurrence: "" }];
+    case "session_dialog": {
+      // Each option's number with its label, as `dialogIdentity` reads a menu: the same labels
+      // renumbered pick different rows, so that is a different menu. Not `dialogIdentity`
+      // itself, which also counts a driver dialog's request id - a new id for the same
+      // question asked again would bring back a menu the operator dismissed.
+      const dialog = activePaneDialog(item.session);
+      return [{
+        itemId: item.id,
+        occurrence: occurrenceOf(
+          item.prompt,
+          ...(dialog?.options.flatMap((option) => [String(option.number), option.label]) ?? []),
+        ),
+      }];
+    }
+    case "pipeline_commission":
+      return [{ itemId: item.id, occurrence: occurrenceOf(item.attention.kind, item.attention.title) }];
+    case "pipeline_halt":
+      return [{ itemId: item.id, occurrence: occurrenceOf(item.haltClass, item.reason) }];
+    case "session_blocked":
+      return [{ itemId: item.id, occurrence: occurrenceOf(item.session.state, item.activity) }];
+    case "parked_finalization":
+      return [{ itemId: item.id, occurrence: occurrenceOf(item.error) }];
+  }
+}
+
+/** A question's own dismissal key, separate from its session's row so each is dismissed alone. */
+function reviewDismissalId(reviewId: string): string {
+  return `review:${reviewId}`;
+}
+
+/** A question never changes what it asks, so its id alone is the occurrence. */
+const QUESTION_OCCURRENCE = "";
+
+/**
+ * A short, stable fingerprint of the parts that make a row the row it is.
+ *
+ * 32-bit FNV-1a over the parts joined with a NUL separator (so `["ab", "c"]` and `["a", "bc"]`
+ * differ), as hex. Hashed
+ * rather than stored as text so an agent's long error or a halt's reason is not copied into
+ * the daemon a second time, and so the stored value has a fixed width. A collision could only
+ * keep one changed row hidden, never hide a row nobody dismissed.
+ */
+function occurrenceOf(...parts: (string | null | undefined)[]): string {
+  const text = parts.map((part) => part ?? "").join("\u0000");
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>): boolean {
+  const keys = attentionDismissalKeys(item);
+  return keys.length > 0 && keys.every((key) => dismissed.get(key.itemId) === key.occurrence);
 }
 
 /**
@@ -244,6 +341,7 @@ export interface AttentionInput {
  */
 export function foldAttention(input: AttentionInput): AttentionFold {
   const items: AttentionItem[] = [];
+  const dismissed = input.dismissed ?? NOTHING_DISMISSED;
   const sessionById = new Map(input.sessions.map((s) => [s.id, s]));
   const summaryByRun = new Map(input.ensembles.map((e) => [e.id, e]));
   /** Sessions that already own a row, so the section (4) backstop cannot double-count them. */
@@ -274,10 +372,19 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // listed answers nobody could deliver: an exited session carries its reviews for the whole
   // 8s eviction linger (`EXIT_LINGER_MS`) before `orphanReviewsFor` settles them, and a
   // `stopping` session whose driver hangs while draining carries them indefinitely.
+  //
+  // A question the operator dismissed is dropped here, one question at a time, so a new one on
+  // the same session is still shown. Its session is still CLAIMED, though: a session whose
+  // every question was dismissed is amber, and leaving it unclaimed would let the backstop in
+  // section (5) redraw it as "Waiting on you" - the dismissed row popping back under a new name.
   const bySession = new Map<string, ReviewItem[]>();
   for (const review of input.reviews) {
     const session = sessionById.get(review.sessionId);
     if (!session || isSettling(session)) continue;
+    if (dismissed.get(reviewDismissalId(review.id)) === QUESTION_OCCURRENCE) {
+      represented.add(session.id);
+      continue;
+    }
     const group = bySession.get(review.sessionId);
     if (group) group.push(review);
     else bySession.set(review.sessionId, [review]);
@@ -410,9 +517,19 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  const total = items.reduce(
+  // Every other dismissed row leaves LAST, after every section has claimed its sessions, for
+  // the reason section (2) gives: a dismissed menu or Pipeline row filtered out any earlier
+  // would leave its session unclaimed, and the backstop would draw it again as "Waiting on you".
+  // Questions were already filtered one by one above, so their rows are never dropped here.
+  const visible =
+    dismissed.size === 0
+      ? items
+      : items.filter((item) => item.kind === "session_reviews" || !isDismissed(item, dismissed));
+  const total = visible.reduce(
     (sum, item) => sum + (item.kind === "session_reviews" ? item.reviews.length : 1),
     0,
   );
-  return { items, total };
+  return { items: visible, total };
 }
+
+const NOTHING_DISMISSED: ReadonlyMap<string, string> = new Map();

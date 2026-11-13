@@ -337,6 +337,32 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/board-card-jump-shortcut/focused-playwright-transcript.txt
 ```
 
+### The folded session rail
+
+`e2e/.artifacts/session-rail-fold/` carries seven frames; `07` is the Board's all-sessions
+drill-in folded, with the back to the board now at the left of the detail head. `01` and `02` are the same Console
+session with the rail open and then folded to its strip, which is the "the conversation takes
+the rail's width" claim: compare the reply box's left edge between them. `03` is a folded strip
+after a session started waiting on you, with the Needs you count drawn and pulsing, and `06` is
+the same strip after a second one did, the count risen to 2 and pulsing again. `04` and `05` are
+the Board drill-in's column rail, open and then folded. The spec also asserts what a frame cannot
+show: the fold survives a reload, `[` toggles it from the keyboard but not while you type a reply,
+<kbd>↑</kbd>/<kbd>↓</kbd> still switch the open session while no rail row is drawn, Escape out of
+the reader hands the keyboard to the strip, and the risen count is a fresh pill rather than the
+spent one, which is what makes its pulse replay.
+
+Regenerate them with:
+
+```sh
+mkdir -p e2e/.artifacts/session-rail-fold
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/session-rail-fold.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/session-rail-fold/focused-playwright-transcript.txt
+```
+
 ### The Board card panel and its preview
 
 `e2e/.artifacts/board-card-preview/` carries the **Settings → Display → Session display**

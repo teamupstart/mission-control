@@ -1,3 +1,5 @@
+import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,
@@ -43,7 +45,7 @@ import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inpu
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
-import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
+import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
@@ -51,7 +53,16 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
+import {
+  HARNESS_LAUNCHED_TASK_KINDS,
+  TASK_KIND_BEHAVIOR,
+  TASK_KIND_INFO,
+  isShippingTaskKind,
+  kindsDefaultingToWorkflow,
+  taskHasRepository,
+  taskKindAllowsBacklog,
+  taskKindCreator,
+} from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
 import {
   dismissLaunchFailures,
@@ -61,6 +72,7 @@ import {
   markLaunchFailureReport,
   recordLaunchFailureReport,
 } from "./launch-failures.ts";
+import { dismissAttentionItems, listAttentionDismissals } from "./attention-dismissals.ts";
 import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -92,6 +104,8 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   DismissLaunchFailuresSchema,
+  DismissAttentionItemsSchema,
+  ATTENTION_DISMISSAL_LIMITS,
   ReportLaunchFailureSchema,
   RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
@@ -136,6 +150,7 @@ import {
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
+  INSPECTOR_PR_KEY_PATTERN,
   ResolveFindingsSchema,
   SetupBannerDismissRequestSchema,
   ShippingConfigPatchSchema,
@@ -146,6 +161,7 @@ import {
   ManualWorktreeAcquireSchema,
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
+  StopWorktreeClaimSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -162,6 +178,7 @@ import {
   CreateResidentProfileSchema,
   UpdateResidentProfileSchema,
   ArchiveResidentProfileSchema,
+  ResetResidentStateSchema,
   LaunchResidentRequestSchema,
   RunScheduleNowSchema,
   ScheduleHistoryQuerySchema,
@@ -219,6 +236,10 @@ import {
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  McpReportBlockerSchema,
+  McpClearBlockerSchema,
+  FlagBlockerReplySchema,
+  ClearBlockerSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
   TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
@@ -265,8 +286,10 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
+  InspectorFindingsResponse,
   ResolveFindingsResult,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
@@ -280,10 +303,12 @@ import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
 import type { QueueManager } from "./queue.ts";
 import type {
+  InspectorInspection,
   InspectorStatus,
   LlmStatus,
   ReviewActor,
   Session,
+  SessionBlocker,
   SkillsView,
   Task,
   WorkItem,
@@ -294,6 +319,7 @@ import {
   ScoutArchiveNotReadyError,
   TaskDependencyError,
   TaskEffortUnsupportedError,
+  TaskPersonaError,
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
@@ -318,14 +344,14 @@ import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, hasBlocker, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
   interruptUnsupportedWhy,
   workQueueBlockedReason,
 } from "@shared/harness-capabilities.ts";
-import { AGENT_TYPES, SESSION_RUNTIMES } from "@shared/types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS } from "@shared/types.ts";
 import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
@@ -338,9 +364,11 @@ import {
   updateStandingInstructions,
 } from "./instructions/config.ts";
 import { composeStandingInstructions } from "./instructions/compose.ts";
+import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./instructions/persona.ts";
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { taskTitlePresenter } from "./task-titles.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
@@ -372,6 +400,11 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
+import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
+import type { DatabaseBackupService } from "./database-backups/service.ts";
+import type { StorageHealthService } from "./storage-health.ts";
+import type { StorageView } from "@shared/storage-health.ts";
+import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -547,6 +580,9 @@ import {
   loadConversationResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  loadOpenInspectorInspections,
+  loadInspectorInspection,
+  loadInspectorComments,
   getInspectorPr,
   resolveInspectorFindings,
   updateInspectorPr,
@@ -639,6 +675,7 @@ import {
   legacyCheckCommands,
 } from "@shared/workflow.ts";
 import type {
+  Persona,
   TestEvidenceAuditAggregate,
   WorkflowConfig,
   WorkflowLaunchBlock,
@@ -749,6 +786,21 @@ const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes *
  * schema is the real bound here. This is a cheap pre-parse guard against an absurd body, not a
  * second opinion about what a valid catalog looks like.
  */
+/**
+ * One attention-inbox Dismiss at its largest: every key a request may carry, each at its longest.
+ *
+ * Derived from `ATTENTION_DISMISSAL_LIMITS` so a body the schema accepts is never refused here,
+ * with `JSON_UTF8_MAX_BYTES_PER_CHAR` because the schema counts characters and `bodyLimit` counts
+ * bytes. The 256 per key covers the field names, the integer basis and the punctuation. Its job
+ * is the one the schema cannot do under Zod 3: stop an absurd body before every element of it is
+ * parsed (GHSA-mrhx-c7xc-m3w5).
+ */
+const ATTENTION_DISMISSAL_BODY_MAX_BYTES =
+  ATTENTION_DISMISSAL_LIMITS.keysPerRequest
+    * ((ATTENTION_DISMISSAL_LIMITS.itemIdLength + ATTENTION_DISMISSAL_LIMITS.occurrenceLength)
+        * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 256)
+  + 1024;
 const WORKFLOW_COMMAND_BODY_MAX_BYTES =
   (WORKFLOW_LIMITS.commandOverrides + 1)
     * ((WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength)
@@ -879,6 +931,7 @@ async function parseBoundedBody<S extends ZodTypeAny>(
 /** What a refused Foreman write says, on every route that refuses one. */
 const FOREMAN_UNINVITED = "Foreman is not invited into this session";
 const FOREMAN_COMPOSER_BUSY = "Foreman is waiting while the user composes a reply";
+const FOREMAN_SESSION_BLOCKED = "The session is blocked on someone else; Foreman holds until the blocker is cleared";
 
 interface ForemanWriteRefusal {
   error: string;
@@ -923,11 +976,49 @@ function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
   by: ReviewActor | "workflow" | "session",
+  /**
+   * The write answers the question on screen (a review decision, a menu row, a form). These
+   * are the triage responses a blocked session may still take: they can only answer what
+   * the session is asking, so they cannot carry a stale wrap-up or recovery payload.
+   */
+  structuredAnswer = false,
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
+  // The daemon's half of the blocker hold, for a worker that predates it and outlives a
+  // daemon restart. Free text from Foreman (wrap-up, recovery, follow-up, queue sends) never
+  // reaches a session waiting on someone else, whatever bucket it is in: the route cannot tell
+  // a prose triage answer from a stale automated payload, so a blocked session's prose
+  // question is left to the operator.
+  if (!structuredAnswer && hasBlocker(session)) {
+    return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
+  }
   return null;
+}
+
+/**
+ * Why a Flag reply or Clear aimed at one blocker must not act on the current one, or null.
+ * A caller that names the blocker it saw (its `id`) is refused when a different blocker now
+ * stands, so a button left open on blocker A cannot clear blocker B, even one reported in the
+ * same millisecond. No current blocker is not a mismatch: the routes treat that as their own
+ * no-op or 409.
+ */
+function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string | undefined): string | null {
+  if (expectedId === undefined || !current || current.id === expectedId) return null;
+  return "The blocker changed since you last looked; reread it before acting.";
+}
+
+/**
+ * The blocker half of `foremanWriteRefusal`, asked of the LIVE session at the moment of
+ * delivery. Every route reads its session before awaiting the request body, and delivery waits
+ * on a write lock after that; a blocker reported meanwhile replaces the registry's session
+ * object, so only a fresh read inside the delivery guard sees it.
+ */
+export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
+  if (origin !== "foreman") return null;
+  const live = registry.getSession(sessionId);
+  return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;
 }
 
 /**
@@ -1264,6 +1355,10 @@ export interface RouteDeps {
   fileCommentWalkthrough?: FileCommentWalkthrough;
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
   settingsBackups?: SettingsBackupService;
+  /** The daemon's full-database backup owner. Its routes return 503 without it. */
+  databaseBackups?: DatabaseBackupService;
+  /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
+  storageHealth?: StorageHealthService;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1319,6 +1414,8 @@ export const ROUTE_DEP_NAMES = [
   "fileComments",
   "fileCommentWalkthrough",
   "settingsBackups",
+  "databaseBackups",
+  "storageHealth",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1612,6 +1709,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     fileComments,
     fileCommentWalkthrough,
     settingsBackups,
+    databaseBackups,
+    storageHealth,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -1794,10 +1893,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
     }
     const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const owner = { kind: "manual", key: ownerKey } as const;
+    // A claim may run far longer than one HTTP request, and a caller that gave up would leave
+    // the lease granted to nobody. So a pool with a claim is acquired in the background and
+    // polled for. A pool without one answers synchronously, exactly as before, which keeps an
+    // older `make session` working against this daemon.
+    if (worktrees.poolClaim(parsed.data.repositoryPath)) {
+      const requestId = worktrees.manualRequests.start({
+        repositoryPath: parsed.data.repositoryPath,
+        baseSha,
+        owner,
+      });
+      return c.json({ requestId, baseSha }, 202);
+    }
     const acquired = await worktrees.acquire({
       repositoryPath: parsed.data.repositoryPath,
       baseSha,
-      owner: { kind: "manual", key: ownerKey },
+      owner,
     });
     if (acquired.outcome === "acquired") {
       return c.json({
@@ -1810,6 +1922,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       { error: acquired.reason, outcome: acquired.outcome },
       acquired.outcome === "outcomeUnknown" ? 503 : 409,
     );
+  });
+
+  app.get("/api/worktrees/manual/requests/:requestId", (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const view = worktrees.manualRequests.view(c.req.param("requestId"));
+    // Requests live in daemon memory, so one this daemon does not know was accepted by a daemon
+    // that has since restarted, or never existed.
+    if (!view) return c.json({ error: "manual acquire request was not found" }, 404);
+    return c.json(view);
   });
 
   app.post("/api/worktrees/manual/return", async (c) => {
@@ -1926,6 +2047,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       : c.json({ error: "no failed worktree operation has that id" }, 404);
   });
 
+  // Stop a running dependency claim, from its slot card or from the task card of the dispatch
+  // waiting on it. Found through the claim registry by slot and claim id; the step's process
+  // group is killed and the claim fails, so its lease is granted with the warning and the
+  // dispatch continues. 404 when that claim is no longer running.
+  app.post("/api/worktrees/:slotId/claim/stop", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, StopWorktreeClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const stopped = worktreeOperations.manager.stopClaim(c.req.param("slotId"), parsed.data.claimId);
+    return stopped
+      ? c.json({ ok: true })
+      : c.json({ error: "that dependency claim is no longer running" }, 404);
+  });
+
   app.post("/api/worktrees/:slotId/open", async (c) => {
     if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
     const parsed = await parseBody(c, OpenWorktreeSchema);
@@ -2004,7 +2139,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
-  registerWorkflowMcpRoutes(app, registry, workflowManager);
+  registerWorkflowMcpRoutes(app, registry, workflowManager, () => workflowCommands ?? null, () => reviews);
   const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
@@ -2127,6 +2262,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         code,
         current: result.current,
       }, 409);
+    }
+    // A 400 on create and update alike: the request itself names a combination that cannot run.
+    if (result.reason === "unsupported_effort") {
+      return c.json({
+        error: "reasoning effort is not supported by this provider and model",
+        code,
+        current: result.current,
+      }, 400);
     }
     return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
   };
@@ -2407,6 +2550,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.list(raw === "true"));
   });
   const workflowCommandManager = (): WorkflowCommandManager | null => workflowCommands ?? null;
+  /** The kinds whose dispatch default names this workflow, as copy, or null for none. */
+  const kindDefaultsNaming = (workflowId: string): string | null => {
+    const kinds = kindsDefaultingToWorkflow(workflowId, getWorkflowPolicy().kindWorkflowDefaults);
+    return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
+  };
   /**
    * The legacy config shape, COMPOSED rather than stored.
    *
@@ -2443,14 +2591,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
-    if (parsed.data.defaultWorkflowId) {
-      const detail = workflowManager()?.get(parsed.data.defaultWorkflowId) ?? null;
+    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+      const workflowId = parsed.data.kindWorkflowDefaults[kind];
+      if (!workflowId) continue;
+      const detail = workflowManager()?.get(workflowId) ?? null;
       if (
         !detail
         || detail.workflow.archivedAt !== null
         || detail.workflow.currentVersionId === null
       ) {
-        return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
+        return c.json({
+          error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
+        }, 409);
       }
     }
     // ONE transaction over both halves, because the old route's contract is that its body is
@@ -2587,9 +2739,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before archiving this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before archiving this workflow`,
       }, 409);
     }
     const result = manager.archive(id, parsed.data.expectedDraftRevision);
@@ -2614,9 +2767,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before deleting this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before deleting this workflow`,
       }, 409);
     }
     const result = manager.remove(id, parsed.data.expectedDraftRevision);
@@ -4107,8 +4261,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
-  app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
-  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
+  // Read by a person, so built from the snapshot as the dashboard sees it: agent-written
+  // lines with task ids shown as titles (`task-titles.ts`).
+  const reportSnapshot = () => taskTitlePresenter(registry).snapshot(registry.snapshot());
+  app.get("/api/report", (c) => c.json(buildReport(reportSnapshot())));
+  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(reportSnapshot()))));
 
   const backupUnavailable = (c: Context) => c.json({
     error: "service_unavailable" as const,
@@ -4318,13 +4475,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // enough to reach the launch turn must not make it reappear in full.
       return c.json({
         ...page,
-        messages: attributeTranscript(
+        // The same task-title projection the live stream applies (`task-titles.ts`).
+        messages: taskTitlePresenter(registry).transcript(attributeTranscript(
           session.id,
           page.messages,
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
           { key: noteKeyFor(session), transcript: t },
-        ),
+        )),
       });
     }
     const since = Number(c.req.query("since"));
@@ -4512,6 +4670,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * Composed through the SAME `compose.ts` a launch uses, over the same ordered list, so the
    * preview cannot drift from the delivery. This answers "what WILL a session get"; what a
    * session DID get is the launch snapshot below, whose text and provenance are immutable.
+   *
+   * `personaId`, when the form has chosen one, appends that Persona's section exactly as the
+   * launch will, and is refused for the reason the launch would refuse it. `kind`, when given,
+   * answers for that kind's launch: a Pipeline's Engineer host receives no repository block.
    */
   app.get("/api/instructions/resolved", async (c) => {
     const repoPaths = c.req.queries("repoPath") ?? [];
@@ -4540,9 +4702,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!repoPath) return c.json({ error: `not a git repository: ${raw}` }, 400);
       candidates.push({ repoPath });
     }
-    return c.json(
-      composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime),
-    );
+    const kindParam = c.req.query("kind");
+    const kind = kindParam === undefined ? null : TASK_KINDS.find((k) => k === kindParam);
+    if (kind === undefined) return c.json({ error: `unknown task kind: ${kindParam}` }, 400);
+    const personaId = c.req.query("personaId");
+    let persona: Persona | null = null;
+    if (personaId) {
+      const library = personaManager()?.store;
+      const resolved = resolveTaskPersona(library && ((id) => library.getPersona(id)), personaId);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 409);
+      persona = resolved.persona;
+    }
+    // A provider-launched kind is not this harness launch at all: its Engineer host is sent what
+    // `pipelineHostStanding` says for the runtime the daemon will launch it on - never the
+    // repository block - so the preview asks the same function the dispatcher does.
+    if (kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
+      return c.json(pipelineHostStanding(persona, agent, getPipelinesConfig().launchRuntime));
+    }
+    const repository = composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime);
+    return c.json(persona ? withTaskPersona(repository, persona, agent, runtime) : repository);
   });
 
   /**
@@ -5023,6 +5201,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
+  // Same task authority as creation/update. The dashboard and MCP share every launch gate.
+  app.post("/mcp/tasks/:id/dispatch", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    return dispatchSavedTask(c, c.req.param("id"));
+  });
+
   app.post("/mcp/retros/no-change", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CompleteRetroNoChangeSchema);
@@ -5106,6 +5290,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
+  });
+
+  // The blocked session's own report: bound to the caller like `/mcp/status` (pane key or
+  // Mission session id), never to a body-named target. Refused while the session has a pending
+  // `request_input` of its own - it is already waiting on the operator.
+  app.post("/mcp/blocker", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, ...body } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const result = registry.reportBlocker(session.id, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
+  });
+
+  // The session clearing its own blocker. Clearing a session with none is a no-op success.
+  app.post("/mcp/blocker/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const cleared = registry.clearBlocker(session.id, "session", parsed.data.resolution);
+    return c.json({ sessionId: session.id, cleared });
   });
 
   app.post("/mcp/pipelines/adopt", async (c) => {
@@ -5368,6 +5578,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await library.submit({
       authority,
       submission: {
+        files: parsed.data.files,
         title: parsed.data.title,
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,
@@ -5572,7 +5783,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by, true)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -5637,7 +5848,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
@@ -5658,7 +5869,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         parsed.data.text,
-        undefined,
+        origin === "foreman" ? () => foremanBlockedNow(registry, session.id, origin) : undefined,
         origin,
       );
       // A driver refusal is positive evidence nothing landed, so it races nothing after all.
@@ -5687,7 +5898,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       parsed.data.text,
       parsed.data.submit,
       undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
+      () => foremanBlockedNow(registry, session.id, origin) ?? registry.promptResourceBlockerForSession(session.id),
     );
     observeSessionOperation({
       session,
@@ -5717,7 +5928,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5759,7 +5970,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5820,6 +6031,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
+  // A likely answer to this session's blocker, flagged by the operator or (through
+  // `control_session flag_blocker_reply`) by a controller. Never clears the blocker and never
+  // sends anything to the session; the flag is a card pill, not an alert.
+  app.post("/api/sessions/:id/blocker/reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, FlagBlockerReplySchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
+    if (!blocker) return c.json({ error: "this session has no blocker" }, 409);
+    return c.json({ ok: true, blocker });
+  });
+
+  // Clear this session's blocker, from the dashboard or `control_session clear_blocker`.
+  app.post("/api/sessions/:id/blocker/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearBlocker(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
+  });
+
   // Rename the session. On the terminal runtime that means the session's handle - discovery
   // reads the new name back onto the card - and on the embedded one it means the durable row,
   // which is the only place an SDK session's name can live. Either way the registry echoes it
@@ -5877,7 +6117,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
@@ -6019,7 +6259,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       session,
       text,
       undefined,
-      () => codeRabbitGuard() ?? stackGuard() ?? registry.promptResourceBlockerForSession(session.id),
+      () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
+        ?? registry.promptResourceBlockerForSession(session.id),
       origin,
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
       .finally(() => {
@@ -6746,6 +6987,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, WrapupAskedSchema);
     if (!parsed.ok) return parsed.res;
+    // Asking "ship it?" is an idle-triggered wrap-up; a blocked session is not finished.
+    // Clearing a stored answer is a reset, not an ask, and stays open.
+    // The live session, not the one read before the body: a blocker reported while the
+    // request was in flight must still refuse the ask.
+    if (hasBlocker(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
+      return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
     queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
@@ -6844,6 +7092,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const diff = await computeSessionDiff(taskHasRepository(session.task ?? {}) ? session.cwd : null);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
+    // The session can report a blocker while the diff runs; the decision below reads the
+    // object taken before the await, so ask the live one first.
+    if (hasBlocker(registry.getSession(session.id) ?? session)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
     const cfg = getForemanConfig();
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
@@ -7054,7 +7307,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Written by the worker (which never touches the DB) and read by the board. `null`
   // rather than a 404 for "no plan yet": the absence of a plan is the ordinary starting
   // state, not an error, and both readers already branch on it.
-  app.get("/api/backlog/plan", (c) => c.json(getBacklogPlan()));
+  // The reasons and note are model prose the board prints, so they are served with every task
+  // id shown as its title (`task-titles.ts`). The stored plan keeps the model's own words; the
+  // worker reads only its ids and logs the note.
+  app.get("/api/backlog/plan", (c) => c.json(taskTitlePresenter(registry).plan(getBacklogPlan())));
   app.put("/api/backlog/plan", async (c) => {
     const parsed = await parseBody(c, BacklogPlanSchema);
     if (!parsed.ok) return parsed.res;
@@ -7260,17 +7516,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // against the Line's Shipped count, which is uncapped by construction (`prsOpenedSince`).
   // One route rather than two over the same table, for the reason `useShipping` records:
   // a second endpoint over one ledger is a second thing to keep honest.
+  //
+  // With `state=open`: every open row, uncapped, for Foreman's follow-through to find a pull
+  // request the Inspector adopted under a session whose card no longer carries it. It does not
+  // combine with `adoptedSince`, since the two orderings answer different questions.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) {
+    const state = c.req.query("state");
+    const withStanding = (rows: InspectorInspection[]) => {
       const sessions = registry.liveSessions();
       const foreman = getForemanConfig();
-      return c.json(loadInspectorInspections(50).map((row) => ({
+      return rows.map((row) => ({
         ...row,
         codeRabbit: codeRabbitStanding(registry, row.key),
         stackStanding: row.stack ? safeStackStanding(row, sessions, foreman) : null,
-      })));
+      }));
+    };
+    if (state !== undefined) {
+      const parsed = InspectorPrsStateSchema.safeParse(state);
+      if (!parsed.success) return c.json({ error: "state must be open" }, 400);
+      if (raw !== undefined) return c.json({ error: "state and adoptedSince do not combine" }, 400);
+      return c.json(withStanding(loadOpenInspectorInspections()));
     }
+    if (raw === undefined) return c.json(withStanding(loadInspectorInspections(50)));
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too
@@ -7288,6 +7556,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
     }
     return c.json(loadInspectionsAdoptedSince(since));
+  });
+  /**
+   * One pull request's findings, every one of them and in every status, with whether each
+   * reached GitHub - for Foreman's relay and the dashboard's findings view, which have no
+   * other way to read finding text: Foreman's worker never touches SQLite.
+   *
+   * The key is a query parameter rather than a path segment because it is `owner/repo#123`,
+   * and its shape is checked before the ledger is asked, so a malformed key is a 400 rather
+   * than a confident "no such pull request". Read-only.
+   */
+  app.get("/api/inspector/findings", (c) => {
+    const prKey = c.req.query("pr");
+    if (!prKey || !INSPECTOR_PR_KEY_PATTERN.test(prKey)) {
+      return c.json({ error: "pr must be a pull request key like owner/repo#123" }, 400);
+    }
+    const pr = loadInspectorInspection(prKey);
+    if (!pr) return c.json({ error: "no adopted pull request with that key" }, 404);
+    const findings = orderInspectorFindings(loadInspectorComments(prKey));
+    return c.json({ pr, findings } satisfies InspectorFindingsResponse);
   });
   /**
    * Close the findings the Inspector is carrying on one pull request.
@@ -8245,6 +8532,59 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(setTerminalsConfig(parsed.data));
   });
 
+  // --- Database backups: how many full recovery points of each kind are kept ---
+  //
+  // Saving prunes at once, so a lowered count frees its copies on save.
+  const databaseBackupsUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Database backup service is unavailable",
+  }, 503);
+  // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
+  // and reaches every open dashboard through the same `storage_health` event.
+  app.get("/api/storage", (c) => {
+    if (!storageHealth) {
+      return c.json({
+        error: "service_unavailable" as const,
+        message: "Storage health service is unavailable",
+      }, 503);
+    }
+    const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
+    return c.json(view);
+  });
+  app.put("/api/storage/backups/config", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    let saved;
+    try {
+      saved = setDatabaseBackupsConfig(parsed.data, databaseBackups);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
+    registry.emitStorageConfigChanged();
+    return c.json(saved);
+  });
+
+  // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
+  // It is never refused by the scheduled backoff; the service records its outcome either way.
+  app.post("/api/storage/backups", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    try {
+      const { kind, filename, createdAt } = await databaseBackups.captureManual();
+      return c.json({ kind, filename, createdAt }, 201);
+    } catch (error) {
+      return c.json({
+        error: "backup_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+  });
+
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---
   //
   // Always 200, carrying its own result - the shape `POST /api/ensembles/preview` uses: "your
@@ -8395,7 +8735,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) {
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskPersonaError) {
         return { ok: false, status: 400, body: { error: error.message } };
       }
       throw error;
@@ -8427,6 +8767,34 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     return c.json({ ok: true, dismissed: dismissLaunchFailures(registry, parsed.data.taskIds, Date.now()) });
   });
+
+  // ---- attention inbox: rows the operator dismissed without resolving them ----
+
+  // The stored decisions only. Which rows exist, and what each one currently says, is the
+  // dashboard's fold (`src/web/lib/attention.ts`); this remembers what was dismissed so a
+  // reload, a restart or a second window does not bring it back.
+  app.get("/api/attention/dismissals", (c) => c.json({ dismissals: listAttentionDismissals() }));
+  app.post(
+    "/api/attention/dismissals",
+    bodyLimit({
+      maxSize: ATTENTION_DISMISSAL_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Too many rows to dismiss in one request" }, 413),
+    }),
+    async (c) => {
+      const parsed = await parseBody(c, DismissAttentionItemsSchema);
+      if (!parsed.ok) return parsed.res;
+      const written = dismissAttentionItems(parsed.data.items, Date.now());
+      if (!written.stored) {
+        return c.json({
+          error: "another window dismissed this since this one last looked - check it and dismiss again",
+          superseded: written.superseded,
+        }, 409);
+      }
+      registry.emitAttentionDismissalsChanged();
+      // The revisions just stored, and nothing more: each window reads the whole set through GET.
+      return c.json({ ok: true, accepted: written.accepted });
+    },
+  );
 
   // Start the session that catalogs one failure and drafts its public bug report. The brief
   // is built here from the task, never sent by the browser; publication stays behind the
@@ -8548,6 +8916,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       agent: task.agent,
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
+      personaId: task.personaId ?? undefined,
       workflowId: task.workflowId,
       priority: task.priority,
       labels: task.labels,
@@ -8660,6 +9029,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/residents/profiles", (c) => {
     if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
     return c.json(registry.listResidentProfiles());
+  });
+
+  app.get("/api/residents/profiles/:id/state", async (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try {
+      const directory = ensureResidentState(c.req.param("id"));
+      return c.json({ directory, files: await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }) });
+    } catch (error) { return c.json({ error: error instanceof Error ? error.message : "State unavailable" }, 409); }
+  });
+  app.get("/api/residents/profiles/:id/state/file", (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try { return c.json({ text: readResidentStateFile(c.req.param("id"), c.req.query("path") ?? "") }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State file unavailable" }, 409); }
+  });
+  app.post("/api/residents/profiles/:id/state/reset", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, ResetResidentStateSchema);
+    if (!parsed.ok) return parsed.res;
+    try { await residents.resetState(c.req.param("id")); return c.json({ ok: true }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State reset failed" }, 409); }
   });
 
   app.post("/api/residents/profiles", async (c) => {
@@ -8956,10 +9345,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  app.post("/api/tasks/:id/dispatch", async (c) => {
+  async function dispatchSavedTask(c: Context, id: string) {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const id = c.req.param("id");
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
     const r = await tasks.dispatch(id, parsed.data);
@@ -8967,7 +9355,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
-  });
+  }
+
+  app.post("/api/tasks/:id/dispatch", (c) => dispatchSavedTask(c, c.req.param("id")));
 
   app.post("/api/tasks/:id/pipeline/readiness", async (c) => {
     const r = await tasks.recheckPipelineReadiness(c.req.param("id"));

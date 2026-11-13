@@ -161,8 +161,10 @@ function residentLaunch(
   names: string[],
   built: () => ResidentMcpEntry[],
   onStart: () => void = () => {},
+  nativeSources: ResidentMcpLaunch["nativeSources"] = "pinned",
 ): ResidentMcpLaunch & { starts: number } {
   const launch = {
+    nativeSources,
     names,
     privateDir: join(root, `private-${Math.random().toString(36).slice(2)}`),
     starts: 0,
@@ -367,6 +369,79 @@ test("a snapshot server still pending is asked about again until it settles", as
     /could not connect to its MCP server snap/,
   );
   assert.equal(asked, 3, "pending twice, then the settled answer decided");
+});
+
+test("a resident on all native sources lifts strict MCP config and the connectors switch, keeping Mission's server and its snapshot", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ options }) => {
+      seen.push(options as unknown as Record<string, unknown>);
+      const configured = Object.keys((options as { mcpServers?: Record<string, unknown> }).mcpServers ?? {});
+      return idleQuery(() => configured) as never;
+    },
+  });
+  const custom: ResidentMcpEntry = { name: "linear", options: {}, shape: "launcher", command: "/node", args: ["/l.mjs", "--credential", "/c.json"], env: {} };
+  const all = residentLaunch(["linear"], () => [{ ...custom }], () => {}, "all");
+  const handle = await spec.launch(sdkOptions({ residentMcp: all }));
+  const options = seen[0]!;
+  // Neither switch: Claude Code reads its user, local, project and plugin configuration and
+  // fetches the account's claude.ai connectors, as every other SDK session does.
+  assert.equal("strictMcpConfig" in options, false);
+  assert.equal("settings" in options, false);
+  assert.deepEqual(Object.keys(options.mcpServers as Record<string, unknown>), ["mission-control", "linear"]);
+  assert.equal(all.starts, 1, "the custom server's launcher entry still mints a credential per start");
+  await handle.stop();
+
+  // An advisor pin and the resident's memory still reach the one flag-layer settings object,
+  // with no connectors switch beside them.
+  const pinned = await spec.launch(sdkOptions({ residentMcp: residentLaunch([], () => [], () => {}, "all"), advisorModel: "opus", residentStateDir: "/state" }));
+  assert.deepEqual(seen[1]!.settings, { advisorModel: "opus", autoMemoryDirectory: "/state", autoMemoryEnabled: true });
+  assert.equal("strictMcpConfig" in seen[1]!, false);
+  await pinned.stop();
+
+  // The same snapshot pinned is exactly today's launch.
+  const strict = await spec.launch(sdkOptions({ residentMcp: residentLaunch(["linear"], () => [{ ...custom }]) }));
+  assert.equal(seen[2]!.strictMcpConfig, true);
+  assert.deepEqual(seen[2]!.settings, { disableClaudeAiConnectors: true });
+  await strict.stop();
+});
+
+test("a resident on all native sources is checked only for the servers Mission Control put in its set", async () => {
+  const launchWith = (statuses: Array<{ name: string; status: string }>) => claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async () => ({ ...idleQuery(() => []), mcpServerStatus: async () => statuses }) as never,
+  }).launch(sdkOptions({
+    residentMcp: residentLaunch(["linear"], () => [{ name: "linear", options: {}, shape: "stdio", command: "l", args: [], env: {} }], () => {}, "all"),
+  }));
+  const mission = { name: "mission-control", status: "connected" };
+  const linear = { name: "linear", status: "connected" };
+  // Connectors and plugin servers are expected, and one that fails, waits on a login or is still
+  // starting is Claude Code's to report, as in a terminal session: it does not stop the start.
+  const ok = await launchWith([
+    mission,
+    linear,
+    { name: "claude.ai Slack", status: "connected" },
+    { name: "claude.ai Gmail", status: "needs-auth" },
+    { name: "plugin:upstartclaw-core:slack", status: "failed" },
+    { name: "commonroom", status: "pending" },
+  ]);
+  await ok.stop();
+  // What Mission Control put in the set must still connect.
+  await assert.rejects(launchWith([{ name: "mission-control", status: "failed" }, linear]), /could not connect to its MCP server mission-control/);
+  await assert.rejects(launchWith([mission, { name: "linear", status: "needs-auth" }]), /cannot use its MCP server linear, which needs a login/);
+  await assert.rejects(launchWith([mission, { name: "claude.ai Slack", status: "connected" }]), /did not configure its MCP server linear/);
+  // Pinned, the same report refuses the start for its first server outside the snapshot.
+  await assert.rejects(
+    claudeSdkSpec({
+      executable: async () => "/fake/claude",
+      env: () => ({ PATH: "/usr/bin" }),
+      query: async () => ({ ...idleQuery(() => []), mcpServerStatus: async () => [mission, linear, { name: "claude.ai Slack", status: "connected" }] }) as never,
+    }).launch(sdkOptions({ residentMcp: residentLaunch(["linear"], () => [{ name: "linear", options: {}, shape: "stdio", command: "l", args: [], env: {} }]) })),
+    /configured the MCP server claude\.ai Slack, which is not in its snapshot/,
+  );
 });
 
 test("a server name that is an Object.prototype key is an own mcpServers entry, so it is not silently dropped", async () => {

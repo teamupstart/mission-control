@@ -1,4 +1,4 @@
-import { residentNativeCompactionForTask } from "../residents/launch.ts";
+import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
@@ -103,6 +103,13 @@ export const RESTART_CONTINUATION_PROMPT =
   "Continue that work from the current checkout and conversation. Inspect the current " +
   "state before acting, do not repeat completed work, and ask again for any approval or " +
   "input you still need.";
+
+/** Managed Pi SDK dispatch requires a healthy extension even for kinds with no MCP
+ * requirement, such as ship and bugfix. Keep that launch policy
+ * on restore and /new via the durable task association, without a second setting. */
+function requiresInstalledMissionTools(agent: AgentType, taskId: string | null): boolean {
+  return taskId !== null && capabilitiesFor(agent).missionTools?.mechanism === "installed-extension";
+}
 
 /** Bind one launch-scoped MCP process to the SDK session Mission Control registered. */
 function missionMcpForSession(
@@ -462,12 +469,14 @@ export class SdkSupervisor {
         cwd: input.cwd,
         stateHome,
         prompt: input.prompt,
+        residentStateDir: await residentStateForTask(input.taskId),
         residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
         advisorModel: input.advisorModel,
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
+        ...(requiresInstalledMissionTools(input.agent, input.taskId) ? { missionToolsRequired: true } : {}),
         residentMcp: input.residentMcp ?? null,
         extraDirs: input.extraDirs ?? [],
         standingInstructions: outOfBandStanding,
@@ -1373,6 +1382,7 @@ export class SdkSupervisor {
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
+        residentStateDir: await residentStateForTask(row.taskId),
         residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
@@ -1381,6 +1391,7 @@ export class SdkSupervisor {
         advisorModel: row.advisorModel,
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
+        ...(requiresInstalledMissionTools(row.agent, row.taskId) ? { missionToolsRequired: true } : {}),
         // A resident's MCP set comes from its run's snapshot, never from native configuration,
         // so a restart resumes exactly the servers it launched with.
         residentMcp: task ? this.residentMcp?.(task) ?? null : null,

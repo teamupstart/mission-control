@@ -1,7 +1,7 @@
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   AGENT_TYPES,
   TASK_KINDS,
@@ -39,7 +39,6 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   taskDefaultWorkflowId,
-  taskHasOwnDefaultWorkflow,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -66,6 +65,7 @@ import { WORKFLOW_LAUNCH_FIX_DOORS } from "../lib/workflow-fix.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
+  draftPersonaId,
   draftsEqual,
   parseLabelInput,
   taskUpdatePatch,
@@ -93,6 +93,7 @@ import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
+import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaField.tsx";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
 import {
@@ -268,6 +269,10 @@ function repoCollision(d: DispatchDraft): string | null {
  */
 const NO_STASH = Symbol("no-stash");
 type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
+type ProvisionalWorkflow = { kind: TaskKind; workflowId: string | null };
+
+const UNRESOLVED_KIND_DEFAULT =
+  "Settings → Tasks → Dispatch defaults could not be read, so this kind's After work default is unknown. Choose an After work Workflow, or try again.";
 type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
@@ -292,6 +297,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.model === EMPTY_DISPATCH_DRAFT.model &&
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
+    d.personaId === EMPTY_DISPATCH_DRAFT.personaId &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
     d.planStorage === EMPTY_DISPATCH_DRAFT.planStorage &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
@@ -568,7 +574,7 @@ export function DispatchLayer({
   opening: DispatchOpening | null;
   tasks?: Task[];
   sessions?: Session[];
-  /** Live Personas, for the Ensemble evaluator-guidance selector. */
+  /** Live Personas, for the Ensemble evaluator-guidance selector and the Advanced Persona choice. */
   personas?: PersonaView[];
   /** Live Workflow summaries, for the optional post-selection handoff placement. */
   workflowSummaries?: WorkflowSummary[];
@@ -622,6 +628,8 @@ export function DispatchLayer({
   const editTask = requested?.kind === "edit" ? requested.task : null;
   const tourDemo = requested?.kind === "tour" ? requested.demo : null;
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  // Lives with the draft, which outlives the modal: a guess left by a closed form is still a guess.
+  const draftProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   // The tour demonstrates the real form without borrowing or erasing the operator's draft.
   // This temporary slot lives beside the owner's existing new/edit slots and disappears when
   // a later tour id replaces it. It is not a second Dispatch owner or a persisted draft.
@@ -678,6 +686,7 @@ export function DispatchLayer({
   // frame of whatever the slot last held - an empty form, or the PREVIOUS task's text -
   // and a task whose intent blinks blank is a task that looks like it lost its intent.
   const [edit, setEdit] = useState<EditSlot | null>(null);
+  const editProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   const stored = editTask ? draftFromTask(editTask) : null;
   // Which task the open form is over. Held as state so the staleness test below runs
   // exactly once per opening, and never again while the form is up: re-testing on every
@@ -691,6 +700,11 @@ export function DispatchLayer({
     // that no longer exists. Dropping it costs an abandoned draft; keeping it costs
     // whoever made that change their change, silently, on the next Save.
     if (openOn && edit?.id === openOn && stored && !draftsEqual(edit.seed, stored)) setEdit(null);
+    // The guess belongs to the slot: a form opened without that slot, on another task or
+    // after it was saved, dropped or reverted, must not inherit it.
+    if (openOn && !(edit?.id === openOn && !(stored && !draftsEqual(edit.seed, stored)))) {
+      editProvisionalWorkflow.current = null;
+    }
   }
   /**
    * The mode the OPERATOR last chose, as distinct from one a launch intent imposed.
@@ -867,6 +881,9 @@ export function DispatchLayer({
    * means when the thing it was is still moving.
    */
   const onEditRevert = useCallback(() => {
+    // The form stays open, so the reset on opening never runs: a guess that matches the
+    // restored Workflow would otherwise retarget it when the rows land.
+    editProvisionalWorkflow.current = null;
     setEdit(null);
   }, []);
 
@@ -1011,6 +1028,7 @@ export function DispatchLayer({
         sessions={sessions}
         draft={editDraft}
         onDraftChange={onEditDraftChange}
+        provisionalWorkflowRef={editProvisionalWorkflow}
         onAttachmentsChange={onEditAttachmentsChange}
         onRevert={onEditRevert}
         onClose={onClose}
@@ -1021,6 +1039,7 @@ export function DispatchLayer({
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
         stackingDefault={stackingDefault}
+        personas={personas}
       />
     );
   }
@@ -1053,6 +1072,7 @@ export function DispatchLayer({
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
         stackingDefault={stackingDefault}
+        personas={personas}
       />
     );
   }
@@ -1063,6 +1083,7 @@ export function DispatchLayer({
       sessions={sessions}
       draft={draft}
       onDraftChange={setDraft}
+      provisionalWorkflowRef={draftProvisionalWorkflow}
       onAttachmentsChange={onAttachmentsChange}
       onRevert={onNewRevert}
       onClose={onClose}
@@ -1073,6 +1094,7 @@ export function DispatchLayer({
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
       stackingDefault={stackingDefault}
+      personas={personas}
     />
   );
 }
@@ -1098,6 +1120,7 @@ function DispatchModal({
   sessions,
   draft,
   onDraftChange,
+  provisionalWorkflowRef,
   onAttachmentsChange,
   onRevert,
   onClose,
@@ -1108,6 +1131,7 @@ function DispatchModal({
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
   stackingDefault = STACKING_SHIPPED_DEFAULT,
+  personas = [],
 }: {
   /**
    * Which of the form's four jobs this is, carrying that job's inputs and no others.
@@ -1124,6 +1148,7 @@ function DispatchModal({
   sessions: Session[];
   draft: DispatchDraft;
   onDraftChange: (draft: DispatchDraft) => void;
+  provisionalWorkflowRef?: MutableRefObject<ProvisionalWorkflow | null>;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   /** Discard the working copy - an empty form for a create, the live row for an edit. */
   onRevert: () => void;
@@ -1140,6 +1165,8 @@ function DispatchModal({
   harnessesRevision?: number;
   pipelinesRevision?: string;
   stackingDefault?: StackingMode;
+  /** Live Personas, for the Advanced fold's Persona choice. */
+  personas?: PersonaView[];
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   /**
@@ -1453,15 +1480,17 @@ function DispatchModal({
       });
     }
     // Durable completion takes precedence over current source availability or a newer episode.
-    // Keep unresolved disappeared targets visible so they can still be removed.
+    // Keep unresolved disappeared targets visible so they can still be removed. An external
+    // item a task source linked is listed under its tracker id: it can be removed here, and
+    // only the source's sweep adds one.
     for (const dependency of editing?.dependencies ?? []) {
       const input = dependencyInputOf(dependency);
       const key = dependencyKey(input);
-      if (dependency.satisfiedAt !== null || !out.has(key)) out.set(key, {
-        input,
-        label: `${dependency.title} (${dependency.satisfiedAt !== null ? dependency.type === "plan" ? "published" : "merged" : dependency.type === "plan" ? "waiting for publication" : "unavailable"})`,
-        group: "session",
-      });
+      const label =
+        dependency.type === "source"
+          ? `${dependency.title} (${dependency.externalId})`
+          : `${dependency.title} (${dependency.satisfiedAt !== null ? dependency.type === "plan" ? "published" : "merged" : dependency.type === "plan" ? "waiting for publication" : "unavailable"})`;
+      if (dependency.satisfiedAt !== null || !out.has(key)) out.set(key, { input, label, group: "session" });
     }
     return out;
   }, [editing, sessions, tasks]);
@@ -1473,7 +1502,9 @@ function DispatchModal({
         ) === dependencyKey(dependency),
     );
     if (stored?.satisfiedAt != null) return false;
-    if (dependency.type === "plan") return true;
+    // Only the source's sweep can satisfy an external item, only its publication a plan edge,
+    // and nothing satisfies an edge this build does not know.
+    if (dependency.type === "source" || dependency.type === "unknown" || dependency.type === "plan") return true;
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }
@@ -1487,7 +1518,15 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
-  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null, draft.planStorage ?? planStorage ?? "repository");
+  // Null while the config is out, as it always was: the rows are not known yet, and arming a
+  // built-in the operator may have replaced would gate the launch on Foreman for nothing.
+  const defaultWorkflowId = workflowConfig
+    ? taskDefaultWorkflowId(
+      draft.kind,
+      workflowConfig.kindWorkflowDefaults,
+      draft.planStorage ?? planStorage ?? "repository",
+    )
+    : null;
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
@@ -1545,35 +1584,82 @@ function DispatchModal({
   }
 
   /**
-   * What a ship-to-scout switch put aside, so switching back can hand it straight back.
+   * What a switch away from Ship put aside, so switching back can hand it straight back.
    *
    * A ref rather than draft state: it is scratch belonging to one uninterrupted sequence
    * of clicks, not something a shelved task should carry. Losing it on close is correct -
    * a reopened form has no reversal in flight - and the no-stash path leaves the stored
-   * selection alone rather than inventing one.
+   * selection alone rather than inventing one. Handing it back needs no config fetch, which
+   * is what keeps an edit's stored Workflow safe while the config is still loading.
    */
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
   const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
+  /**
+   * A kind default written while the Settings rows were still unknown, resolved against the
+   * built-ins. Held so the rows can correct it when they land: the value is otherwise
+   * indistinguishable from an operator's pick and would override their configured row.
+   */
+  const ownProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
+  const provisionalWorkflow = provisionalWorkflowRef ?? ownProvisionalWorkflow;
 
-  /** Preserve the prior selection until the operator makes an explicit after-work choice. */
+  /**
+   * A kind switch arms that kind's row under Settings -> Tasks -> Dispatch defaults.
+   *
+   * Ship is the kind the stash belongs to: leaving it puts the current choice aside, and
+   * returning hands it back, unless the operator chose an after-work Workflow by hand in
+   * between (which clears the stash, so their choice stands). Every other kind arms its row.
+   * Moving between two kinds with no diff whose rows agree leaves the choice alone, so a
+   * Workflow picked by hand on chat survives a hop to scout.
+   */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
-    if (taskHasOwnDefaultWorkflow(kind)) {
+    const guess = provisionalWorkflow.current;
+    provisionalWorkflow.current = null;
+    if (kind === "ship") {
+      const stashed = stashedWorkflowId.current;
+      stashedWorkflowId.current = NO_STASH;
+      return stashed === NO_STASH ? {} : { workflowId: stashed };
+    }
+    if (kind === "plan") {
       if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
       // Plan defaults resolve with storage at save time, even if Settings changed.
-      return { workflowId: kind === "plan"
-        ? undefined
-        : taskDefaultWorkflowId(kind, null, draft.planStorage ?? planStorage ?? "repository") };
+      return { workflowId: undefined };
     }
-    if (!hasReviewableDiff(kind)) {
-      if (!hasReviewableDiff(draft.kind)) return {};
-      if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: null };
+    const rows = workflowConfig?.kindWorkflowDefaults ?? {};
+    const storage = draft.planStorage ?? planStorage ?? "repository";
+    const target = taskDefaultWorkflowId(kind, rows, storage);
+    if (
+      !hasReviewableDiff(kind)
+      && !hasReviewableDiff(draft.kind)
+      && target === taskDefaultWorkflowId(draft.kind, rows, storage)
+    ) {
+      // The rows only agree as built-ins, so a guess still standing stays a guess.
+      if (guess && guess.kind === draft.kind && guess.workflowId === draft.workflowId) {
+        provisionalWorkflow.current = { kind, workflowId: guess.workflowId };
+      }
+      return {};
     }
-    const stashed = stashedWorkflowId.current;
-    stashedWorkflowId.current = NO_STASH;
-    return stashed === NO_STASH ? {} : { workflowId: stashed };
+    if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
+    if (!workflowConfig) provisionalWorkflow.current = { kind, workflowId: target };
+    return { workflowId: target };
   }
+
+  // The rows landed after a kind switch guessed at them: replace the guess with the kind's
+  // real row, unless the operator has since chosen, or the kind has moved on. Not while a
+  // save is out: it captured this draft, and a changed one stops it closing the form.
+  useEffect(() => {
+    const guess = provisionalWorkflow.current;
+    if (!workflowConfig || !guess || busy) return;
+    provisionalWorkflow.current = null;
+    if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
+    const resolved = taskDefaultWorkflowId(
+      guess.kind,
+      workflowConfig.kindWorkflowDefaults,
+      draft.planStorage ?? planStorage ?? "repository",
+    );
+    if (resolved !== guess.workflowId) update({ workflowId: resolved });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the rows arrive, or once a save settles
+  }, [workflowConfig, busy]);
 
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
   function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
@@ -1741,6 +1827,7 @@ function DispatchModal({
       // that was already lit. Taking None at that question therefore stands, and a later
       // kind switch leaves it alone.
       stashedWorkflowId.current = NO_STASH;
+      provisionalWorkflow.current = null;
       update({ workflowId });
     };
     const defaultName = defaultWorkflow
@@ -2267,6 +2354,8 @@ function DispatchModal({
   const push = editing && pushState?.taskId === editing.id ? pushState : null;
   // The link this form should draw: the row's own, or the one this opening just created.
   const taskLink = editing?.source ?? push?.ref ?? null;
+  // The parent a sweep recorded beside the row's own link. Display only, never an edge.
+  const taskParent = editing?.source ? editing.sourceParent : null;
   /**
    * The form holds edits the daemon has not been told about.
    *
@@ -2375,6 +2464,28 @@ function DispatchModal({
     else (onDeleted ?? onClose)();
   }
 
+  /**
+   * The draft's Workflow, with a kind-switch guess still standing from before the rows loaded
+   * resolved against the real rows first: saved as-is it would pin a built-in the operator
+   * may have replaced. A create that cannot read them sends no Workflow, so the daemon
+   * resolves the row itself. An edit cannot: no Workflow there keeps the old kind's, so it
+   * comes back unresolved and the save is refused until the rows can be read.
+   */
+  async function settledWorkflowId(
+    d: DispatchDraft,
+  ): Promise<{ resolved: true; workflowId: DispatchDraft["workflowId"] } | { resolved: false }> {
+    const guess = provisionalWorkflow.current;
+    if (workflowConfig || !guess || guess.kind !== d.kind || guess.workflowId !== d.workflowId) {
+      return { resolved: true, workflowId: d.workflowId };
+    }
+    const config = await workflowRequest<WorkflowConfig>("/api/workflows/config").catch(() => null);
+    if (!config) return editing ? { resolved: false } : { resolved: true, workflowId: undefined };
+    return {
+      resolved: true,
+      workflowId: taskDefaultWorkflowId(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository"),
+    };
+  }
+
   async function submit(dispatchNow: boolean): Promise<void> {
     // Ensemble has no route through here. Its primary action and Cmd/Ctrl+Enter follow
     // Review-then-Launch through `useEnsembleLaunch`; its shelve button is not rendered.
@@ -2430,7 +2541,14 @@ function DispatchModal({
     // field, update sends an explicit null to take an override back off a row that has
     // one. Either way the daemon resolves the default at launch, so a task shelved
     // today runs on the default in force when it is finally picked up.
-    const patch = editing ? taskUpdatePatch(editing, submitted, intent) : null;
+    const settled = await settledWorkflowId(submitted);
+    if (!settled.resolved) {
+      setPending(null);
+      fail(UNRESOLVED_KIND_DEFAULT);
+      return;
+    }
+    const { workflowId } = settled;
+    const patch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher
     // the repo and nothing else, and a Single dispatch posts the form.
@@ -2456,7 +2574,8 @@ function DispatchModal({
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
-          workflowId: submitted.workflowId,
+          personaId: draftPersonaId(submitted) ?? undefined,
+          workflowId,
           ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
@@ -2864,6 +2983,7 @@ function DispatchModal({
         {editing && (
           <PushToSourceBlock
             link={taskLink}
+            parent={taskParent}
             sources={taskSources}
             /* The STORED repo, never `draft.repoRoot`: the daemon compares a source against
                the row it holds, so filtering on an unsaved edit would offer sources for a repo
@@ -3079,9 +3199,16 @@ function DispatchModal({
           )}
         </div>
 
-        {draft.kind === "plan" && (
+        {/* Advanced: settings most tasks leave alone, offered for every kind. The Persona is
+            the one every kind shares; a plan adds where it saves. The tour's fixed dispatcher
+            sends the repository and nothing else, so it offers none of them. */}
+        {!tourDemo && (
           <div className="dispatch-more-wrap">
-            <Tooltip label={advancedOpen ? "Collapse advanced task settings" : "Choose where this task saves its plan"}>
+            <Tooltip label={advancedOpen
+              ? "Collapse advanced task settings"
+              : draft.kind === "plan"
+                ? "Choose this task's Persona and where it saves its plan"
+                : "Choose a Persona for this task's agent"}>
               <button
                 type="button"
                 className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
@@ -3089,25 +3216,39 @@ function DispatchModal({
                 onClick={() => setAdvancedOpen((open) => !open)}
               >
                 <span className="dispatch-more-title">Advanced</span>
-                {!advancedOpen && <span className="dispatch-more-summary">Plan storage: {(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}</span>}
+                {!advancedOpen && (
+                  <span className="dispatch-more-summary">
+                    {dispatchPersonaSummary(personas, draft.kind, draft.personaId)}
+                    {draft.kind === "plan" && ` · Plan storage: ${(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}`}
+                  </span>
+                )}
                 <span className="dispatch-more-chev" aria-hidden>{advancedOpen ? "▴" : "▾"}</span>
               </button>
             </Tooltip>
             {advancedOpen && (
               <div className={`dispatch-more-body${guidedDim}`}>
+                <DispatchPersonaField
+                  personas={personas}
+                  kind={draft.kind}
+                  personaId={draft.personaId}
+                  onChange={(personaId) => update({ personaId })}
+                />
+                {draft.kind === "plan" && (
                 <label className="field">
                   <span className="field-label">Plan storage</span>
                   <Tooltip label="Choose where this task saves its plan. The global default is resolved when saved; existing plan artifacts keep their storage.">
                     <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
                       onChange={(event) => {
                         const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
-                        const previousDefault = taskDefaultWorkflowId("plan", null, draft.planStorage ?? planStorage ?? "repository");
+                        const rows = workflowConfig?.kindWorkflowDefaults ?? {};
+                        const previousDefault = taskDefaultWorkflowId("plan", rows, draft.planStorage ?? planStorage ?? "repository");
                         const savedDefault = editing?.kind === "plan"
-                          && editing.workflowId === taskDefaultWorkflowId("plan", null, editing.planPolicy?.storage ?? "repository");
+                          && editing.workflowId === taskDefaultWorkflowId("plan", rows, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
-                          ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
+                          // A None plan row makes an explicit null look like the default.
+                          ...(draft.workflowId !== null && draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
                             ? undefined
-                            : taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
+                            : taskDefaultWorkflowId("plan", rows, storage ?? planStorage ?? "repository") } : {}) });
                       }}>
                       <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
                       <option value="local">Local plan store</option>
@@ -3118,6 +3259,7 @@ function DispatchModal({
                     {(draft.planStorage ?? planStorage) === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow."}
                   </span>
                 </label>
+                )}
               </div>
             )}
           </div>
@@ -3156,6 +3298,7 @@ function DispatchModal({
                   // Chosen by hand, so a later kind switch must not hand back what scout
                   // put aside and revert this underneath the operator.
                   stashedWorkflowId.current = NO_STASH;
+                  provisionalWorkflow.current = null;
                   update({
                     workflowId:
                       value === "__default"
@@ -3352,7 +3495,7 @@ function DispatchModal({
                       const label = dependencyByKey.get(key)?.label ?? "unavailable";
                       const reason = removalReason(key);
                       const stackable = isStackable(dependency);
-                      const mode = dependency.type === "plan" ? undefined : dependency.mode;
+                      const mode = dependency.type === "task" || dependency.type === "session" ? dependency.mode : undefined;
                       const shown = mode ?? stackingDefault;
                       return (
                         <span key={key} className="dep-entry">
@@ -3489,6 +3632,9 @@ function DispatchModal({
           repoRoots={[draft.repoRoot.trim(), ...attachedRepoRoots(draft)].filter(Boolean)}
           agent={draft.agent}
           storedRuntime={defaults?.sessionRuntime?.[draft.agent]}
+          personaId={draftPersonaId(draft)}
+          kind={draft.kind}
+          pipelineRuntime={draft.kind === "pipeline" ? pipelineLaunchRuntime : null}
         />
 
         {/* The refusal, and - when the daemon named one - the screen that clears it. The door
@@ -3632,6 +3778,18 @@ function DispatchModal({
 }
 
 /**
+ * The short form of an external id beside `sibling`: "#12" for a GitHub "owner/repo#12" in the
+ * same repo as the sibling, and the id as it is otherwise ("other/repo#12", "MC-14").
+ */
+function shortSourceId(externalId: string, sibling: string): string {
+  const hash = externalId.lastIndexOf("#");
+  if (hash < 0) return externalId;
+  return sibling.slice(0, sibling.lastIndexOf("#")) === externalId.slice(0, hash)
+    ? externalId.slice(hash)
+    : externalId;
+}
+
+/**
  * Where a backlog task meets the world outside Mission Control: the item it is linked to, or
  * the one action that creates one.
  *
@@ -3655,6 +3813,7 @@ function DispatchModal({
  */
 export function PushToSourceBlock({
   link,
+  parent = null,
   sources,
   repoRoot,
   selectedSourceId = null,
@@ -3667,6 +3826,11 @@ export function PushToSourceBlock({
 }: {
   /** The item this task is linked to - stored on the row, or minted by a push in this opening. */
   link: TaskSourceRef | null;
+  /**
+   * The item `link` is a sub-issue of, as the source last reported it. Display only: shown
+   * beside the link, and never a dependency.
+   */
+  parent?: TaskSourceRef | null;
   /**
    * The configured sources, or null while the read is out - AND if it never landed.
    *
@@ -3712,7 +3876,23 @@ export function PushToSourceBlock({
                shown as text rather than as a link to nowhere. */
             <strong>{link.externalId}</strong>
           )}
-          . This task stays in the backlog, and that source will not file it back as a new one.
+          .
+          {parent && (
+            <>
+              {" "}Sub-issue of{" "}
+              {parent.url ? (
+                <Tooltip label={`Open ${parent.externalId} in a new tab`}>
+                  <a className="source-provenance-link" href={parent.url} target="_blank" rel="noreferrer">
+                    {shortSourceId(parent.externalId, link.externalId)}
+                  </a>
+                </Tooltip>
+              ) : (
+                <strong>{shortSourceId(parent.externalId, link.externalId)}</strong>
+              )}
+              .
+            </>
+          )}
+          {" "}This task stays in the backlog, and that source will not file it back as a new one.
         </span>
       </div>
     );

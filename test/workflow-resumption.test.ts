@@ -669,6 +669,44 @@ test("a session that is still working, or needs you, is left alone", async () =>
   await h.manager.stop();
 });
 
+test("a blocked session is not handed the next round until its blocker clears", async () => {
+  const h = await personaFeedbackRun("blocked-persona", "v-blocked-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "blocked-persona", h.agentSessionId, h.paneId);
+  const reported = h.registry.reportBlocker("blocked-persona", {
+    kind: "dependency", reason: "Needs #1402 merged", waitingOn: "Platform team",
+    resumeWhen: "#1402 merges", referenceUrl: null, details: null,
+  });
+  assert.equal(reported.ok, true);
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 1, "a blocked session was resubmitted");
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_blocked");
+
+  h.registry.clearBlocker("blocked-persona", "operator");
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 2, "clearing the blocker did not release the round");
+  await h.manager.stop();
+});
+
+test("a blocker reported while the repository is read holds the run, on the unchanged branch too", async () => {
+  const h = await personaFeedbackRun("probe-blocked", "v-probe-blocked", "auto");
+  reportIdle(h, "probe-blocked", h.agentSessionId, h.paneId);
+  // The head does not move, so without the recheck this round would be recorded as
+  // `repository_unchanged` - the branch that can also hand a PR to the Inspector.
+  h.duringProbe.fn = () => {
+    h.registry.reportBlocker("probe-blocked", {
+      kind: "question", reason: "Asked platform", waitingOn: "Dana", resumeWhen: "Dana answers",
+      referenceUrl: null, details: null,
+    });
+  };
+  await h.manager.sweepResumptions(SETTLED());
+  h.duringProbe.fn = null;
+  assert.equal(h.store.listSubmissions(h.runId).length, 1);
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_blocked");
+  assert.ok(!withheldReasons(h, h.runId).includes("repository_unchanged"), "the unchanged branch ran for a blocked session");
+  await h.manager.stop();
+});
+
 test("an undelivered packet is not resumed past", async () => {
   // Preview delivery never types, so the packet sits `prepared` forever. Resuming there would
   // spend the whole repair budget submitting evidence the agent was never asked to change.

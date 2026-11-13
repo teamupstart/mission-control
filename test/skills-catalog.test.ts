@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { frontmatterBlock, parseFrontmatter, parseSkill, readCatalog } from "../src/server/skills/catalog.ts";
+import { artifactKind, conversationArtifacts } from "../src/web/lib/conversationArtifacts.ts";
+import { listSessionFiles } from "../src/server/session-files.ts";
+
+const skillDescription = (id: string): string =>
+  readCatalog().skills.find((skill) => skill.id === id)?.description ?? "";
 
 // The catalog reader. Its frontmatter parser is deliberately narrow - the files are
 // authored in this repo and reviewed with it - so what matters is that anything it
@@ -277,6 +285,183 @@ test("the shipped html-report skill names the path contract the Files tab actual
   assert.match(text, /\.\.\/\.\.\/\.\.\/src\/server\/registry\.ts/);
   // And it must not teach a link form the resolver refuses.
   assert.doesNotMatch(text, /Report: \/|Report: file:/);
+});
+
+test("the shipped mockups skill teaches exactly the presentation the conversation previews", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "mockups");
+  assert.ok(skill, "mockups should be in the catalog");
+  assert.equal(skill.name, "mockups");
+  assert.equal(skill.category, "design");
+  assert.equal(skill.enforcement, "triggered");
+  // The description is the whole trigger, so it carries each spelling people type.
+  for (const phrase of [/mock-ups/, /mockups/, /mock ups/, /wireframes/]) {
+    assert.match(skill.description, phrase);
+  }
+
+  const text = readFileSync(new URL("../skills/mockups/SKILL.md", import.meta.url), "utf8");
+  assert.match(text, /docs\/mockups\/<slug>\//);
+  assert.match(text, /git check-ignore -q/);
+  assert.match(text, /\*\*No JavaScript\.\*\*/);
+  assert.doesNotMatch(text, /Mockup: \/|Mockup: file:|Mockup: ~/);
+
+  // The example block is what an agent copies, so it must be what `conversationArtifacts`
+  // actually previews - not a shape that merely looks right in the skill.
+  const example = text.match(/```\n(Mockup: [^\n]+\n)+```/)?.[0];
+  assert.ok(example, "the skill shows its presentation lines in a fenced example");
+  const lines = example.split("\n").filter((line) => line.startsWith("Mockup: "));
+  const presented = lines.map((line) => line.slice("Mockup: ".length));
+  assert.ok(presented.some((path) => artifactKind(path) === "html"), "an HTML example");
+  assert.ok(presented.some((path) => artifactKind(path) === "image"), "an image example");
+  const listing = new Set(presented);
+  assert.deepEqual(
+    conversationArtifacts(`Both are ready.\n${lines.join("\n")}`, listing).map(({ path }) => path),
+    presented,
+  );
+  const [page] = presented as [string];
+  const linked = text.match(/`\[Two-column layout\]\(([^)]+)\)`/)?.[1];
+  assert.equal(linked, page, "the Markdown-link example names the same file");
+  assert.deepEqual(
+    conversationArtifacts(`- [Two-column layout](${page})`, listing).map(({ path }) => path),
+    [page],
+    "a Markdown link qualifies inside a list, as the skill says",
+  );
+  // And each form the skill says disqualifies a line really does.
+  for (const line of [`Option 2: ${page}`, `- Mockup: ${page}`, `1. ${page}`, `Mockup: \`${page}\``, `Mockup: **${page}**`]) {
+    assert.deepEqual(conversationArtifacts(line, listing), [], line);
+  }
+  assert.deepEqual(
+    conversationArtifacts(`Variant B: ${page}`, listing).map(({ path }) => path),
+    [page],
+  );
+});
+
+test("the mockups skill's own setup command keeps mock-ups out of git and in the Files list", async () => {
+  // The skill's promise is that a mock-up is never committed unless a plan needs it. Run the
+  // command exactly as the skill states it, so the promise cannot drift from what git does.
+  const text = readFileSync(new URL("../skills/mockups/SKILL.md", import.meta.url), "utf8");
+  const setup = text.match(/```sh\n\s*(mkdir -p docs\/mockups[^\n]+)\n\s*```/)?.[1];
+  assert.ok(setup, "the skill states its setup command in a fenced sh block");
+  assert.match(text, /\*\*Never commit a mock-up, unless it is necessary to a plan\.\*\*/);
+  assert.match(text, /beside the plan's `plan\.md` in `docs\/plans\/<name>\/`/);
+  assert.match(skillDescription("mockups"), /never committed unless a plan needs it/);
+
+  const dir = mkdtempSync(join(tmpdir(), "mission-mockups-skill-"));
+  try {
+    execFileSync("git", ["-C", dir, "init", "-q"]);
+    execFileSync("sh", ["-c", setup], { cwd: dir });
+    // Idempotent, and never overwrites a marker that is already there.
+    writeFileSync(join(dir, "docs/mockups/.gitignore"), "*\n# kept\n");
+    execFileSync("sh", ["-c", setup], { cwd: dir });
+    assert.equal(readFileSync(join(dir, "docs/mockups/.gitignore"), "utf8"), "*\n# kept\n");
+
+    mkdirSync(join(dir, "docs/mockups/settings-panel"), { recursive: true });
+    writeFileSync(join(dir, "docs/mockups/settings-panel/two-column.html"), "<h1>Two columns</h1>\n");
+    assert.equal(execFileSync("git", ["-C", dir, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" }), "");
+    execFileSync("git", ["-C", dir, "add", "-A"]);
+    assert.equal(execFileSync("git", ["-C", dir, "diff", "--cached", "--name-only"], { encoding: "utf8" }), "");
+    assert.deepEqual(await listSessionFiles(dir), [{ path: "docs/mockups/settings-panel/two-column.html" }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the mockups skill's fallback ignores a mock-up wherever git can, and says what to do where it cannot", async () => {
+  // An untracked mock-up that git does NOT ignore is exactly what `git add -A` and a workflow
+  // review snapshot sweep into a commit, so "leave it untracked" is no fallback. The skill's
+  // own fallback must leave every writable mock-up path ignored, and send the agent to another
+  // name for the one case git cannot ignore: a path the repository already tracks.
+  const text = readFileSync(new URL("../skills/mockups/SKILL.md", import.meta.url), "utf8");
+  const blocks = [...text.matchAll(/```sh\n\s*([^\n]+)\n\s*```/g)].map((match) => match[1]!);
+  const setup = blocks.find((block) => block.startsWith("mkdir -p docs/mockups"));
+  const fallback = blocks.find((block) => block.includes("--git-path info/exclude"));
+  const handover = blocks.find((block) => block.startsWith("for p in docs/mockups/"));
+  assert.ok(setup && fallback && handover, "the skill states its setup, fallback and hand-over commands in fenced sh blocks");
+  assert.match(text, /\*\*Verify before you hand over\.\*\*/);
+  // The hand-over check covers docs/mockups/ only. A mock-up a plan needs is deliberately
+  // not ignored, so the skill must exempt it and say what to confirm instead, or the two
+  // instructions cannot both be followed.
+  assert.match(text, /check every `docs\/mockups\/` path you are about to name/);
+  assert.match(text, /The one path this check does not cover is a\s+mock-up a plan needs/);
+  assert.match(text, /leave it out of the hand-over check: before you\s+present it, confirm instead that it sits in the plan's own directory and that the plan links\s+it\./);
+  // The hand-over check names exactly the paths the presentation example then presents.
+  const presented = [...text.matchAll(/^Mockup: (\S+)$/gm)].map((match) => match[1]!);
+  assert.deepEqual(handover.match(/docs\/mockups\/\S+\.(?:html|png)/g), presented);
+  const handoverOutput = (dir: string): string =>
+    execFileSync("sh", ["-c", handover], { cwd: dir, encoding: "utf8" });
+  assert.match(text, /If it still prints `not ignored`, the repository tracks that exact file\. Choose another\s+name/);
+  // Scoped to docs/mockups/, with the one exception named beside it: an unqualified "never hand
+  // over an unignored mock-up" contradicts presenting a plan's committed mock-up.
+  assert.match(text, /Never write or hand over a mock-up under `docs\/mockups\/` at a\s+path git does not ignore\./);
+  assert.match(text, /The one mock-up that is handed over from a path git does not\s+ignore is one a plan needs/);
+  assert.doesNotMatch(text, /Never write or hand over a mock-up at a path/);
+  assert.match(text, /## Always: write each mock-up into the checkout, and keep it out of git unless a plan needs it/);
+  assert.doesNotMatch(text, /leave it untracked/i, "an untracked, unignored mock-up is not a safe state");
+
+  const page = "docs/mockups/settings-panel/two-column.html";
+  const git = (dir: string, ...args: string[]): string =>
+    execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const ignored = (dir: string): boolean => {
+    try {
+      execFileSync("git", ["-C", dir, "check-ignore", "-q", page]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const repository = (marker: string, trackPage: boolean): string => {
+    const dir = mkdtempSync(join(tmpdir(), "mission-mockups-fallback-"));
+    git(dir, "init", "-q");
+    git(dir, "config", "user.email", "t@test");
+    git(dir, "config", "user.name", "t");
+    mkdirSync(join(dir, "docs/mockups/settings-panel"), { recursive: true });
+    writeFileSync(join(dir, "docs/mockups/.gitignore"), marker);
+    if (trackPage) {
+      writeFileSync(join(dir, page), "<h1>Tracked</h1>\n");
+      git(dir, "add", "-f", page);
+    }
+    git(dir, "add", "docs/mockups/.gitignore");
+    git(dir, "commit", "-qm", "repository rules");
+    execFileSync("sh", ["-c", setup], { cwd: dir });
+    return dir;
+  };
+
+  for (const [name, marker] of [
+    ["a repository marker with no rule", "# notes\n"],
+    ["a repository marker that re-includes HTML", "!*.html\n"],
+  ] as const) {
+    const dir = repository(marker, false);
+    try {
+      assert.equal(ignored(dir), false, `${name}: the self-ignore alone does not take`);
+      writeFileSync(join(dir, page), "<h1>Two columns</h1>\n");
+      assert.match(handoverOutput(dir), /not ignored: docs\/mockups\/settings-panel\/two-column\.html/, `${name}: hand-over refuses it`);
+      execFileSync("sh", ["-c", fallback], { cwd: dir });
+      execFileSync("sh", ["-c", fallback], { cwd: dir });
+      assert.equal(ignored(dir), true, `${name}: the fallback ignores it`);
+      assert.equal(handoverOutput(dir), "", `${name}: hand-over passes once it is ignored`);
+      assert.equal(git(dir, "status", "--porcelain", "--untracked-files=all", "--", "docs/mockups"), "", name);
+      git(dir, "add", "-A");
+      assert.equal(git(dir, "diff", "--cached", "--name-only"), "", `${name}: git add -A stages nothing`);
+      assert.ok(
+        (await listSessionFiles(dir)).some(({ path }) => path === page),
+        `${name}: Files still lists the mock-up`,
+      );
+      const exclude = readFileSync(join(dir, git(dir, "rev-parse", "--git-path", "info/exclude").trim()), "utf8");
+      assert.equal(exclude.split("\n").filter((line) => line === "docs/mockups/").length, 1, "idempotent");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const tracked = repository("# notes\n", true);
+  try {
+    execFileSync("sh", ["-c", fallback], { cwd: tracked });
+    assert.equal(ignored(tracked), false, "a tracked path cannot be ignored, which is why the skill moves to another name");
+    writeFileSync(join(tracked, page), "<h1>Overwritten</h1>\n");
+    assert.match(handoverOutput(tracked), /not ignored: docs\/mockups\/settings-panel\/two-column\.html/);
+    assert.match(handoverOutput(tracked), / M docs\/mockups\/settings-panel\/two-column\.html/, "git status shows the commit risk too");
+  } finally {
+    rmSync(tracked, { recursive: true, force: true });
+  }
 });
 
 test("the shipped phased-plan skill audits compatibility and schedules direct task dependencies", () => {

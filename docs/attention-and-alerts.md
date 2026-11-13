@@ -16,22 +16,72 @@ obligation:
    [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
    inbox: it deep-links to the session detail, while an ensemble member's live lane in the run
    detail also renders the verified pane dialog in place.
-4. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
+4. **Pipeline lifecycle** - a [Pipeline](pipelines.md) commission whose provider lifecycle needs
+   you: a launch blocked on readiness, a failure, lifecycle evidence that conflicts with the task,
+   a missing workspace, or a held Engineer. **Open Pipeline** opens the commission.
+5. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
    resume on its own. Each row names the feature, the [halt class](pipelines.md#a-halted-pipeline-in-the-inbox)
    and what the engine said stopped it, points at the provider's runbook section for that class,
    and links to the run's own detail. This is the only section with no session behind it: the
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
-   time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
-5. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+   time anybody looks. Nothing here clears a halt: that stays with the engine's own CLI. The
+   row's **Dismiss** only takes it out of the inbox, and the pipeline stays halted.
+6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
-6. **Stuck finalizations** - a promotion that stopped on an error.
+7. **Stuck finalizations** - a promotion that stopped on an error.
 
-The count is **answers owed**, not rows: a session holding three questions is one row and
-three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
-no severity, and is not a second notifier; [Alerts and Away mode](#alerts--away-mode) still own
+The count is the obligations the inbox is showing you, not its rows: a session holding three
+questions is one row and three. A row you dismissed is not in it, even while what it reports is
+still unresolved, so the count can be lower than what is actually owed. It is a rendering of
+state the dashboard already has - it subscribes to nothing, decides no severity, and is not a
+second notifier; [Alerts and Away mode](#alerts--away-mode) still own
 what interrupts you. Escape closes it, like every overlay. Per-session entry points are
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
+
+### Dismiss a row without resolving it
+
+Every row ends its header with **Dismiss**. It takes the row out of the inbox and out of the
+**to answer** count without resolving anything: no answer is sent, the agent keeps waiting, a
+halted pipeline stays halted, and the session keeps its colour on the board. Use it for something
+you have read and cannot or will not act on from here, such as a Pipeline lifecycle problem the
+provider has to clear.
+
+The daemon keeps the dismissal, so the row stays gone after a reload, in every open window and
+across a restart. After a reload the inbox and its **to answer** count wait until the dashboard
+has read your dismissals, so a dismissed row never flashes back while the page loads. It comes
+back only when it reports something new, and what counts as new depends on the row:
+
+| Row | Comes back when |
+| --- | --- |
+| Decisions | never, for that run |
+| Questions from agents | the agent asks a new question; only the new one is shown |
+| Parked on a menu | the menu's question or options change, including the same options renumbered |
+| Pipeline lifecycle | the commission reports a different problem; a reworded detail line does not count |
+| Pipeline halts | the halt's class or reason changes |
+| Waiting on you | the session's state, or what it says it is waiting on, changes |
+| Stuck finalizations | the finalization stops on a different error |
+
+A question's own **Dismiss**, on its card, is a different button: it resolves the question and
+tells the agent it was dismissed. The row's **Dismiss** only hides the questions, however many
+the row holds. A row of more than 5,000 questions goes to the daemon in several requests; if one
+is refused, only its questions come back, with the reason, and **Dismiss** sends them again.
+A dismissed row leaves **to answer** while the session it names may still be blocked, so after
+a dismissal **need you** can read higher than **to answer**, which without one it never does.
+The two count different things - **need you** counts sessions, **to answer** counts each thing the
+inbox is showing, one per question - so the gap between them is not the number of rows you hid.
+Alerts are unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
+
+A dismissal never expires and is never pruned, however many you make or however long ago. A
+row that goes away and later returns saying exactly what it said when you dismissed it stays
+dismissed; the same session asking for the same permission again is one example.
+
+When the same row is dismissed more than once - it came back reporting something new and was
+dismissed again, in this window or another - the newest dismissal is the one kept. A window that
+dismisses a row without having seen a newer dismissal made in another window has its dismissal
+refused, and the newer dismissal stands. If the row is still showing in that window, the reason
+appears beneath it ("another window dismissed this since this one last looked"); if the newer
+dismissal already hides the row there, there is nothing left to show and no message appears.
 
 ## Roundup
 
@@ -84,6 +134,11 @@ in ~10 minutes; a session idle ~20 minutes with a task or queue still open again
 (the "died with work unfinished" case); a session idle that long with a **workflow run
 parked on it**; and a Foreman escalation nobody answered. A stuck session is
 attention-level, so it breaks through even while you're away.
+
+A session standing on a [blocker](sessions.md#blocked-sessions) is exempt from the two idle
+rules (open work and a parked run): it is waiting on someone other than you, and its blocker
+already explains the silence, with its age on the card. A blocker raises no alert of its own,
+a flagged reply is a card pill only, and neither counts as an answer you owe.
 
 The parked-run rule is the backstop for a review loop that quietly stopped. A run
 waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that session's

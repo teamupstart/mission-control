@@ -23,11 +23,24 @@ snapshot; terminal statusLine and SDK usage reports update the same record. Expi
 remain available as explicitly historical UI data and are excluded from current quota. This is
 independent of the usage ledger and never contributes dollars or tokens.
 
+`session_blockers` (schema 25) holds one durable [session blocker](sessions.md#blocked-sessions)
+per note key, the same key that carries notes, goals, invites and standing instructions across
+restarts, with the bound `task_id` recorded for reference. It is created in `migrate()`, so a
+schema 24 database gains an empty table on its next open. The Registry loads it at
+construction, moves a row on every note-key rotation, deletes it when the task it was reported
+for reaches a terminal status, and prunes a key no session has held for the goal pruning window.
+`last_held_at` records when a live session was last seen holding the key, so that window counts
+observed absence and a restart does not reset it.
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See
 [Backup and restore](sqlite-database.html#backup) in the database field guide for the authoritative
 backup, retention, validation, failure-handling, and offline-restore procedure.
+
+Backup status appears in **Settings > Storage**: the interval and counts, Back up now, the last
+success and last failure of each kind, the kept copies with their total size, and a Problems list
+that names a failing capture until a capture of either kind succeeds.
 
 ## Recovering the product database
 

@@ -24,6 +24,7 @@ import {
   canonicalSettingsBackupJson,
   SETTINGS_BACKUP_FORMAT,
   SETTINGS_BACKUP_FORMAT_VERSION,
+  SETTINGS_BACKUP_LIMITS,
   type SettingsBackupEnvelopeBodyV1,
   type SettingsBackupEnvelopeV1,
 } from "../src/shared/settings-backups.ts";
@@ -52,11 +53,13 @@ const { captureSettingsCatalogs, settingsCatalogCounts } =
 const {
   captureSettingsConfig,
   mergeSettingPayload,
+  parseSettingPayload,
 } = await import("../src/server/settings-backups/config-registry.ts");
 const { createSettingsBackupEnvelope } =
   await import("../src/server/settings-backups/format.ts");
 const { migrateSettingsBackupSnapshot, stageSettingsBackupSnapshot } =
   await import("../src/server/settings-backups/restore.ts");
+const { ResidentProfileRevisionSchema } = await import("../src/shared/residents.ts");
 const { SettingsBackupService } = await import("../src/server/settings-backups/service.ts");
 const { SettingsBackupStore } = await import("../src/server/settings-backups/store.ts");
 const {
@@ -160,7 +163,7 @@ function seedBaseline(): void {
   setWorkflowPolicy({
     liveEnabled: true,
     repoAllowlist: ["/secret/allowlist"],
-    defaultWorkflowId: "workflow-one",
+    kindWorkflowDefaults: { ship: "workflow-one" },
     retention: { rawEvidenceDays: 14, completedRunDays: 30, maxCompletedRuns: 100 },
     checksEnabled: true,
   });
@@ -296,7 +299,7 @@ function mutateCurrentState(): void {
   setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: null,
+    kindWorkflowDefaults: { ship: null },
     retention: { rawEvidenceDays: 15, completedRunDays: 31, maxCompletedRuns: 101 },
     checksEnabled: false,
   });
@@ -392,6 +395,74 @@ function dumpExcludedTables(): Record<string, string[]> {
     const rows = db.prepare(`SELECT * FROM "${escaped}"`).all() as unknown[];
     return [table, rows.map((row) => canonicalSettingsBackupJson(row)).sort()];
   }));
+}
+
+test("setting payload records accept the field limit and refuse extra keys before reading values", () => {
+  const entry = APP_CONFIG_ENTRIES.cost;
+  const payload = CostConfigSchema.parse({});
+  const limit = Object.keys(entry.classification.fields).length;
+  assert.equal(Object.keys(payload).length, limit);
+  assert.deepEqual(parseSettingPayload(entry, payload), payload);
+
+  let valueReads = 0;
+  const oversized = {};
+  for (const [key, value] of [...Object.entries(payload), ["extra", null]] as const) {
+    Object.defineProperty(oversized, key, {
+      enumerable: true,
+      get() { valueReads++; return value; },
+    });
+  }
+  assert.equal(Object.keys(oversized).length, limit + 1);
+  assert.throws(() => parseSettingPayload(entry, oversized), (error: unknown) => {
+    assert.ok(error instanceof z.ZodError);
+    assert.deepEqual(error.issues.map(issue => [issue.code, issue.path]), [["too_big", []]]);
+    return true;
+  });
+  assert.equal(valueReads, 0, "the oversized setting payload must not read any value");
+});
+
+for (const [domain, countKey, resultKey] of [
+  ["personas", "personas", "personas"],
+  ["session-actions", "sessionActions", "sessionActions"],
+  ["workflow-commands", "workflowCommands", "workflowCommands"],
+  ["workflow-definitions", "workflowDefinitions", "workflows"],
+  ["workflow-versions", "workflowVersions", "workflowVersions"],
+  ["resident-profiles", "residentProfiles", "residentProfiles"],
+] as const) {
+  test(`restore migration bounds the ${domain} catalog before validating entries`, () => {
+    seedBaseline();
+    const input = snapshot();
+    const catalog = input.domains.find(entry => entry.domain === domain)!;
+    const row: unknown = domain === "resident-profiles" ? {
+      id: "resident-fixture", name: "Resident Fixture", normalizedName: "resident fixture",
+      revision: 1, archivedAt: null, createdAt: 1, updatedAt: 1,
+      settings: ResidentProfileRevisionSchema.parse({
+        identity: { name: "Resident Fixture" },
+        persona: { personaId: "builtin:code-risk-reviewer" },
+        instructions: { markdown: "Review the work." },
+      }),
+    } : (catalog.payload as unknown[])[0];
+    assert.ok(row, "the catalog fixture must contain a valid entry");
+    const max = SETTINGS_BACKUP_LIMITS.entriesPerCatalog;
+    // Exercise the decoded migration input directly. The envelope's recursive JSON
+    // schema must not supply the collection check this test is meant to exercise.
+    catalog.payload = Array.from({ length: max }, () => row);
+    input.counts = { ...input.counts, [countKey]: max };
+    const migrated = migrateSettingsBackupSnapshot(input);
+    assert.equal(migrated[resultKey]?.length, max, "schema-valid entries at the limit are accepted");
+
+    let entryReads = 0;
+    const oversized = Array.from({ length: max + 1 }, () => null);
+    Object.defineProperty(oversized, 0, { get() { entryReads++; return null; } });
+    catalog.payload = oversized;
+    input.counts = { ...input.counts, [countKey]: max + 1 };
+    assert.throws(() => migrateSettingsBackupSnapshot(input), (error: unknown) => {
+      assert.ok(error instanceof z.ZodError);
+      assert.deepEqual(error.issues.map(issue => [issue.code, issue.path]), [["too_big", []]]);
+      return true;
+    });
+    assert.equal(entryReads, 0, "oversized catalog entries are never parsed");
+  });
 }
 
 test("v1 staging is deterministic, applies schema defaults, and generic merge preserves runtime fields", () => {
@@ -637,6 +708,49 @@ test("a node execution override survives capture, signing and restore in draft a
     (restoredVersion as { executionOverride?: unknown }).executionOverride,
     { runner: "codex", model: "gpt-5.6-sol" },
   );
+});
+
+test("a Persona's effort survives capture and restore, and a pre-effort backup restores as unset", async () => {
+  assert.equal(workflowStore.insertPersona({
+    id: "persona-one",
+    name: "Persona One",
+    normalizedName: normalizePersonaName("Persona One"),
+    description: "Original Persona",
+    guidanceMarkdown: "# Judge\n",
+    runner: "claude",
+    model: null,
+    effort: "high",
+    createdAt: 10,
+    updatedAt: 10,
+  }).ok, true);
+
+  const root = join(home, "effort-restore");
+  const store = new SettingsBackupStore(root);
+  const original = snapshot();
+  const captured = original.domains.find((entry) => entry.domain === "personas")!.payload as
+    Array<Record<string, unknown>>;
+  assert.equal(captured[0]?.effort, "high");
+  store.write(original);
+
+  const current = workflowStore.getPersona("persona-one")!;
+  assert.equal(workflowStore.updatePersonaCas("persona-one", current.revision, { effort: "low" }, 100).ok, true);
+  const restored = await service(root, {}, store).restore(original.id, original.digest);
+  assert.equal(restored.status, "restored");
+  assert.equal(workflowStore.getPersona("persona-one")!.effort, "high");
+
+  // A backup written before effort existed has no key at all. It must still parse and restore,
+  // as what that Persona ran at then: the provider default.
+  const legacy = resign(original, (body) => {
+    const rows = body.domains.find((entry) => entry.domain === "personas")!.payload as
+      Array<Record<string, unknown>>;
+    for (const row of rows) delete row.effort;
+  });
+  const legacyRoot = join(home, "effort-restore-legacy");
+  const legacyStore = new SettingsBackupStore(legacyRoot);
+  legacyStore.write(legacy);
+  const legacyRestored = await service(legacyRoot, {}, legacyStore).restore(legacy.id, legacy.digest);
+  assert.equal(legacyRestored.status, "restored");
+  assert.equal(workflowStore.getPersona("persona-one")!.effort, null);
 });
 
 test("restore preview and mutation preserve installed built-in catalog rows", async () => {

@@ -11,6 +11,8 @@ import {
   dropPaneIdentityEnv,
 } from "./agent-subprocess-env.ts";
 import type { LlmImageInput } from "@shared/llm.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
 // from a clean context. Two very different callers share it, which is why it lives
@@ -115,6 +117,8 @@ export { unwrapEnvelope as resultText };
  */
 export interface ClaudeRunOptions {
   model?: string;
+  /** Maps to the harness's own launch flag (`--effort`); omit for the CLI default. */
+  effort?: ThinkingLevel;
   timeoutMs?: number;
   /** Cancels the run and its detached process group. A pre-aborted signal prevents spawning. */
   signal?: AbortSignal;
@@ -250,6 +254,7 @@ async function runClaudeRaw(
     // shape. It cannot connect this fresh invocation to any previous conversation.
     if (opts.schema) args.push("--json-schema", opts.schema);
     if (opts.model) args.push("--model", opts.model);
+    if (opts.effort) args.push(...(capabilitiesFor("claude").effort?.launchArgs(opts.effort) ?? []));
     if (opts.settings) args.push("--settings", opts.settings);
     const env = headlessEnv();
     const child = (() => {

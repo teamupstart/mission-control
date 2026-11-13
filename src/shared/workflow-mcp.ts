@@ -18,7 +18,9 @@ import {
   WorkflowRunActionSchema,
   WorkflowRunStatusSchema,
   ReadWorkflowCommandOutputSchema,
+  WorkflowCommandArgvSchema,
 } from "@shared/protocol.ts";
+import { WORKFLOW_CHECK_SLOTS, WORKFLOW_COMMAND_INTERPRETERS, type WorkflowCheckSlot } from "@shared/workflow.ts";
 
 const id = z.string().trim().min(1).max(500)
   .refine((value) => value !== "." && value !== "..", "An ID cannot be a dot path segment");
@@ -64,6 +66,28 @@ export const ListWorkflowRunsSchema = z.object({
 export const GetWorkflowRunSchema = z.object({ runId: id }).strict();
 export const ReadWorkflowCommandOutputMcpSchema = ReadWorkflowCommandOutputSchema;
 export const WorkflowMcpActionSchema = z.object({ request: WorkflowActionRequestSchema }).strict();
+
+/**
+ * The argv-run slots a session may configure. CodeRabbit is excluded because its repository
+ * rules are typed review tuning rather than an argv, and the Library owns that editor.
+ */
+export const CONFIGURABLE_WORKFLOW_COMMAND_SLOTS = WORKFLOW_CHECK_SLOTS
+  .filter((slot) => WORKFLOW_COMMAND_INTERPRETERS[slot] === "exit_code") as
+  [Exclude<WorkflowCheckSlot, "coderabbit">, ...Exclude<WorkflowCheckSlot, "coderabbit">[]];
+
+/**
+ * Set the Command one slot runs for the repository of the caller's own workflow run.
+ *
+ * Names a run rather than a repository path on purpose: the daemon derives the repository from
+ * the run's binding, so a session can only configure the checkout it is being reviewed in and
+ * can never write the machine-wide default.
+ */
+export const ConfigureWorkflowCommandSchema = z.object({
+  runId: id,
+  slot: z.enum(CONFIGURABLE_WORKFLOW_COMMAND_SLOTS),
+  command: WorkflowCommandArgvSchema,
+}).strict();
+export type ConfigureWorkflowCommand = z.infer<typeof ConfigureWorkflowCommandSchema>;
 
 /** Only known dashboard endpoints, never a caller-supplied URL or arbitrary method. */
 export function workflowActionPath(request: z.infer<typeof WorkflowActionRequestSchema>): string {

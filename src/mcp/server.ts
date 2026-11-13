@@ -1,6 +1,6 @@
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
-import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import { DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -8,6 +8,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ReviewItem, Task } from "@shared/types.ts";
+import { SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
@@ -30,6 +31,7 @@ import {
   readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
+import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -45,6 +47,7 @@ import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
 import {
+  ConfigureWorkflowCommandSchema,
   GetWorkflowRunSchema,
   ListWorkflowRunsSchema,
   ReadWorkflowCommandOutputMcpSchema,
@@ -236,7 +239,13 @@ async function responseResult(res: Response): Promise<{ status: number; body: un
   }
 }
 
-const server = new McpServer({ name: "mission-control", version: "0.1.0" });
+// Server-level instructions reach every session this server is registered with, dispatched or
+// started by hand, on harnesses that read them. The task tools below repeat the same rule in
+// their own descriptions because tool descriptions reach every harness.
+const server = new McpServer(
+  { name: "mission-control", version: "0.1.0" },
+  { instructions: TASK_REFERENCE_RULE },
+);
 
 server.registerTool("list_workflow_runs", {
   description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
@@ -274,6 +283,39 @@ server.registerTool("read_workflow_command_output", {
   }
 });
 
+server.registerTool("configure_workflow_command", {
+  description: "Set the Command one workflow slot (test, lint, typecheck, build, documentation) runs for the repository of YOUR OWN workflow run, as an override in Library > Commands. Use it when a repair packet says the configured Command does not apply to this repository - for example the machine-wide default is `make test` and there is no Makefile - instead of adding files to make that command pass. First inspect how the repository runs that slot and pass the argv you found. This tool then has Mission Control raise a request_input card on your session - naming this run, the slot, the repository and the exact argv - and BLOCKS until the operator answers. Nothing is configured unless they choose Configure this Command. The machine-wide default is never changed. Executions in which the repository did not provide a different argv are returned to the run budget so the corrected command runs on resubmission; then resubmit with trigger_workflow_action (resubmitUnchanged: true when no files changed).",
+  inputSchema: ConfigureWorkflowCommandSchema,
+}, async (input, extra) => {
+  try {
+    const configure = () => http("/mcp/workflows/configure-command", "POST", input, true);
+    const first = await configure();
+    if (first.status !== 403) return textResult(await first.text(), !first.ok);
+    const refusal = await responseResult(first);
+    const card = (refusal.body as { code?: string; confirmationReviewId?: string; confirmation?: {
+      decision: { id: string };
+    } } | null);
+    if (card?.code !== "unconfirmed" || !card.confirmationReviewId || !card.confirmation) {
+      return textResult(JSON.stringify(refusal.body), true);
+    }
+    // The DAEMON raised this card on the session and recorded it on the run; this only waits
+    // for the operator's answer, on the same path request_input waits on.
+    const review = await waitForResolution(card.confirmationReviewId, extra);
+    const chose = review.selections?.find((answer) => answer.decisionId === card.confirmation!.decision.id)?.selected ?? [];
+    if (review.status !== "answered" || chose.length !== 1 || chose[0] !== "configure") {
+      const result = reviewToolResult(review);
+      return textResult(
+        `The operator did not confirm this Command, so nothing was configured. Their answer:\n${result.text}`,
+        false,
+      );
+    }
+    const second = await configure();
+    return textResult(await second.text(), !second.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
 server.registerTool("trigger_workflow_action", {
   description: "Execute your own workflow's dashboard controls: grant repair rounds, cancel, retry, resubmit (resubmitUnchanged explicitly reviews unchanged work), restart, prepare PR, recheck Inspector, toggle nodes, set/remove Persona feedback, recover/retry/override evidence readiness, retry/resolve delivery, submit a binding (also Run again), reattach, or start a session review. Controlling another session's workflows requires the operator's Control other sessions opt-in on YOUR session. Inspect get_workflow_run first. Reuse the same requestId when retrying the same intent after a lost response; use a new id for a new intent. Confirmations, acknowledgedRisk, delivery target identity, limits and dashboard state checks remain enforced. Failures return without automatic retry or fallback.",
   inputSchema: WorkflowMcpActionSchema,
@@ -290,7 +332,7 @@ server.registerTool(
   "read_sessions",
   {
     title: "Inspect sessions for delegated control",
-    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions; supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
     inputSchema: SessionControlReadSchema.shape,
   },
   async (args) => {
@@ -302,7 +344,7 @@ server.registerTool(
   "control_session",
   {
     title: "Steer another session on the operator's behalf",
-    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort and permission mode. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
+    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort, permission mode, and blockers: flag_blocker_reply marks a likely answer without clearing the blocker or messaging the session, and clear_blocker clears it. Pass the blocker id from read_sessions as blockerId on both blocker actions so a replaced blocker is refused. Never clear a blocker without evidence its resumeWhen condition is met; prefer flag_blocker_reply then message. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
     inputSchema: SessionControlRequestSchema.shape,
   },
   async (args) => {
@@ -345,7 +387,8 @@ server.registerTool(
                     .describe("Marks a suggested choice; does not preselect"),
                 }),
               )
-              .min(1),
+              .min(1)
+              .max(PLAN_DECISION_LIMITS.options),
             multiSelect: z
               .boolean()
               .optional()
@@ -356,6 +399,7 @@ server.registerTool(
               .describe("Adds a free-text 'Other' field for an answer outside the options"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.decisions)
         .default([])
         .describe("Open choices; empty is allowed for managed final-bundle approval"),
     },
@@ -411,6 +455,7 @@ function taskConfiguration(task: Task) {
     model: task.model,
     effort: task.effort,
     advisorModel: task.advisorModel,
+    personaId: task.personaId,
     workflowId: task.workflowId,
     planPolicy: task.planPolicy,
     enabled: task.enabled,
@@ -438,7 +483,8 @@ server.registerTool(
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
       "planPrerequisites wait for artifact publication; planInputs pin the readable Markdown revision. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id, saved configuration, and canonical repository set.",
+      "authority later. Returns the new task id, saved configuration, and canonical repository set. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       ...McpTaskConfigurationSchema.shape,
       title: z
@@ -589,7 +635,8 @@ server.registerTool(
       "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
       "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
       "Each task includes saved configuration, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
-      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot.",
+      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpListTasksSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -615,7 +662,8 @@ server.registerTool(
     description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
       "Includes linked sessionId, prUrl and per-repository repoPrs. " +
       "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
-      "Never launches, modifies or reorders work and does not read session-private state.",
+      "Never launches, modifies or reorders work and does not read session-private state. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpGetTaskSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -644,7 +692,8 @@ server.registerTool(
       "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
       "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
       "absolute local checkout path or unique repository directory name. An empty title derives " +
-      "a new title from the intent. Returns the saved task configuration without launching it.",
+      "a new title from the intent. Returns the saved task configuration without launching it. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       taskId: z.string().min(1).describe("Id of the backlog task to edit"),
       ...McpUpdateTaskSchema.shape,
@@ -665,6 +714,36 @@ server.registerTool(
 );
 
 server.registerTool(
+  "dispatch_task",
+  {
+    title: "Dispatch a saved task",
+    description:
+      "Launch a saved Mission Control task by taskId, including work just scheduled with create_task. " +
+      "Uses the dashboard's dispatch rules: dependencies, workflow readiness, task kind, and " +
+      "launch preflights still apply. Disabled backlog work is refused unless overrideDisabled is true. " +
+      "The calling agent may set that override itself; disabled is an autopilot hold, not a human approval boundary. " +
+      "defaultModel fills only an unpinned task's model. Returns the task and its current status; " +
+      "dispatching means launch was accepted, not that the agent is running. Use get_task to check progress. " +
+      "Uses the same daemon-token access as create_task; no Control other sessions opt-in is required.",
+    inputSchema: {
+      taskId: z.string().trim().min(1).describe("Id of the saved task to launch"),
+      ...DispatchBacklogTaskSchema.shape,
+    },
+  },
+  async ({ taskId, ...options }) => {
+    try {
+      const res = await http(`/mcp/tasks/${encodeURIComponent(taskId)}/dispatch`, "POST", options);
+      if (!res.ok) {
+        return textResult(`Could not dispatch task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify(await res.json(), null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
   "delete_task",
   {
     title: "Delete a task",
@@ -672,7 +751,8 @@ server.registerTool(
       "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
       "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
       "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
-      "the task record remains and the error is returned. Returns the deleted task id.",
+      "the task record remains and the error is returned. Returns the deleted task id. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpDeleteTaskSchema,
   },
   async ({ taskId }) => {
@@ -729,6 +809,7 @@ server.registerTool(
               .describe("Marks a suggested choice; does not preselect"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.options)
         .optional()
         .describe("Discrete choices. Omit entirely for a free-text answer."),
       multiSelect: z
@@ -841,6 +922,82 @@ server.registerTool(
     try {
       await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity });
       return textResult("ok");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// The blocked session's own record. Validated here AND in `McpReportBlockerSchema`, the
+// project's rule for MCP arguments (see docs/agent-guides/change-contracts.md).
+const blockerLine = (max: number, what: string) =>
+  z.string().trim().min(1).max(max).refine((v) => !/[\r\n]/.test(v), { message: "must be one line" }).describe(what);
+
+server.registerTool(
+  "report_blocker",
+  {
+    title: "Report that this session is blocked",
+    description:
+      "Use only when you are waiting on someone or something other than the operator. For a " +
+      "decision the operator can make, call request_input instead. Ask your question where its " +
+      "owner will see it first (for example Commonroom), then report the blocker with a link " +
+      "to that question, and end your turn. Mission Control keeps the blocker across turns and " +
+      "restarts and holds automatic completion while it stands. Calling it again updates the " +
+      "blocker and keeps its start time.",
+    inputSchema: {
+      kind: z.enum(SESSION_BLOCKER_KINDS).describe(
+        "question: asked someone else, somewhere else; dependency: waiting on a PR, task or " +
+          "another team; service: a service, environment or credential is unavailable; other.",
+      ),
+      reason: blockerLine(SESSION_BLOCKER_LIMITS.reason, "One line: what you cannot do yet"),
+      waitingOn: blockerLine(SESSION_BLOCKER_LIMITS.waitingOn, "Who owns the answer, e.g. 'Dana (platform) in #data-platform'"),
+      resumeWhen: blockerLine(SESSION_BLOCKER_LIMITS.resumeWhen, "One line: the condition that unblocks you"),
+      referenceUrl: z.string().trim().url().max(SESSION_BLOCKER_LIMITS.url)
+        .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+        .optional()
+        .describe("http(s) link to the question, PR or status page"),
+      details: z.string().trim().max(SESSION_BLOCKER_LIMITS.details).optional()
+        .describe("Markdown for the operator to review: options considered, context"),
+    },
+  },
+  async (input) => {
+    try {
+      const res = await http("/mcp/blocker", "POST", { env: ENV, sessionId: SESSION_ID, ...input });
+      const body = (await res.json()) as { created?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this blocker (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(
+        `${body.created ? "Blocker recorded" : "Blocker updated"}. End your turn now. Mission Control will ` +
+          "not run automatic completion while it stands. When you are told to check again, check: if it " +
+          "is resolved, call clear_blocker and continue the work; otherwise call report_blocker again " +
+          "and end your turn.",
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "clear_blocker",
+  {
+    title: "Clear this session's blocker",
+    description:
+      "Call when what you reported with report_blocker is resolved, then continue the work. " +
+      "Clearing a session with no blocker does nothing.",
+    inputSchema: {
+      resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution, "One line: what resolved it").optional(),
+    },
+  },
+  async ({ resolution }) => {
+    try {
+      const res = await http("/mcp/blocker/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution });
+      const body = (await res.json()) as { cleared?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(body.cleared ? "Blocker cleared. Continue the work." : "There was no blocker to clear.");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
@@ -1161,7 +1318,7 @@ server.registerTool("publish_plan", {
 }, async (input) => managedPlanCall("publish", input));
 server.registerTool("read_plan", {
   description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Catalog reads return {plans, nextCursor}; pass nextCursor as cursor with the same repoSlot until nextCursor is null. Revisions and local previews survive authoring-worktree cleanup.",
-  inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },
+  inputSchema: ReadPlanInputSchema.shape, annotations: { readOnlyHint: true },
 }, async (input) => managedPlanCall("read", input));
 
 // Register workflow evidence without letting the caller select a session, task, or root. The
@@ -1354,13 +1511,20 @@ server.registerTool(
     title: "Submit a scout report",
     description:
       "When your scout report is written, submit it. Mission Control captures the report " +
-      "directory and the additional files you name into a durable local archive that outlives " +
-      "this session, its checkout and its task card. Any session may publish when instructed. " +
+      "files you explicitly select with files, even if Git ignores them, into a durable local archive that outlives " +
+      "this session, its checkout and its task card. Include reportPath in files; only selected files are copied. " +
+      "Omit files for legacy directory capture. Any session may publish when instructed. " +
       "Call once per report using a unique directory. Reusing the directory returns the existing " +
       "immutable report; use a new slug for a revision. Submission does not complete your task. The report must " +
       `be a self-contained static page at ${SCOUT_REPORT_PATH_SHAPE} with no JavaScript and no ` +
       "external requests. Do not open a pull request for the report.",
     inputSchema: {
+      files: z.array(z.object({
+        repoSlot: z.string().describe("An issued repository slot, e.g. repo-01"),
+        path: z.string().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+          .describe("Checkout-relative file path"),
+      })).min(1).max(SCOUT_SUBMISSION_LIMITS.selectedFiles).optional()
+        .describe("Complete explicit selection, including reportPath and each evidence file. Accepts Git-ignored files. No automatic neighbors. Do not combine with supporting."),
       title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional()
         .describe("Optional display title for this report."),
       reportPath: z
@@ -1397,13 +1561,18 @@ server.registerTool(
         ),
     },
   },
-  async ({ title, reportPath, summary, tags, supporting }) => {
+  async ({ title, reportPath, summary, tags, supporting, files }) => {
     try {
       const health = await http("/api/health", "GET");
-      if (!health.ok || !daemonHealthSupports(await health.json(), DAEMON_PROTOCOL_CAPABILITIES.multipleScoutReports)) {
+      const healthBody: unknown = health.ok ? await health.json() : null;
+      if (!daemonHealthSupports(healthBody, DAEMON_PROTOCOL_CAPABILITIES.multipleScoutReports)) {
         return textResult("The running Mission Control daemon does not support multiple scout reports. Update/restart the daemon before submitting; no report was sent.", true);
       }
+      if (files !== undefined && !daemonHealthSupports(healthBody, DAEMON_PROTOCOL_CAPABILITIES.explicitScoutFiles)) {
+        return textResult("The running Mission Control daemon does not support explicit report files. Update/restart the daemon before submitting; no report was sent.", true);
+      }
       const res = await http("/mcp/scouts/submit", "POST", {
+        files,
         title,
         reportPath,
         summary,
@@ -1421,11 +1590,11 @@ server.registerTool(
         replayed?: boolean;
         archive?: { key?: string; artifactCount?: number; captureStatus?: string };
       };
-      const files = body.archive?.artifactCount ?? 0;
+      const fileCount = body.archive?.artifactCount ?? 0;
       return textResult(
         body.replayed
-          ? `Already submitted; the existing immutable archive of ${files} file(s) still stands. Edited source bytes were not republished. Report: #/scouts/${body.archive?.key ?? ""}. Continue the requested work.`
-          : `Submitted. This report and ${Math.max(0, files - 1)} supporting file(s) were archived. Report: #/scouts/${body.archive?.key ?? ""}. This does not complete your task; continue the requested work.`,
+          ? `Already submitted; the existing immutable archive of ${fileCount} file(s) still stands. Edited source bytes were not republished. Report: #/scouts/${body.archive?.key ?? ""}. Continue the requested work.`
+          : `Submitted. This report and ${Math.max(0, fileCount - 1)} supporting file(s) were archived. Report: #/scouts/${body.archive?.key ?? ""}. This does not complete your task; continue the requested work.`,
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

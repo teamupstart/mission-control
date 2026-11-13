@@ -173,6 +173,7 @@ async function startStub(
 function mkSession(cwd: string, over: Partial<Session> = {}): Session {
   const now = Date.now();
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -1492,7 +1493,6 @@ test("work restarting during verification discards the verdict without consuming
   const session = mkSession(repo);
   const completedAt = Date.now() - 120_000;
   let restarted = false;
-  let verifierStartedAt = 0;
   const queue = mkQueue(repo);
 
   const stub = await startStub((req, url) => {
@@ -1536,7 +1536,6 @@ test("work restarting during verification discards the verdict without consuming
       // This read is immediately before the verifier call. Model a hook that starts
       // generation 2 while the verifier is evaluating generation 1.
       restarted = true;
-      verifierStartedAt = Date.now();
       return { status: 200, json: { docs: [], truncated: false } };
     }
     return { status: 200, json: null };
@@ -1547,7 +1546,15 @@ test("work restarting during verification discards the verdict without consuming
     claudeBin: fake.bin,
     claudeLog: fake.log,
     ms: 20_000,
-    until: () => verifierStartedAt !== 0 && Date.now() - verifierStartedAt >= IDLE_SETTLE_MS,
+    // Settle from the verifier's OWN recorded call, not from the `/standards` read before it.
+    // That read precedes spawning `claude -p`, and on a loaded host the spawn alone can outlast
+    // the settle window - the worker was then shut down mid-verify (`claude exited null`) and
+    // the call this test counts was never made. The fake logs once it has read the prompt, so
+    // this waits for the verdict to be in flight and then a full idle cadence past it.
+    until: () => {
+      const calls = claudeCalls(fake.log);
+      return calls.length > 0 && Date.now() - calls[0]! >= IDLE_SETTLE_MS;
+    },
   });
   await stub.close();
 

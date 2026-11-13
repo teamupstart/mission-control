@@ -113,6 +113,19 @@ export function credentialShapedName(name: string): boolean {
  * `PATH` is deliberately replaced by the daemon-owned executable snapshot inside
  * `agentSubprocessEnv`, so checks use the same toolchain search path as every other child.
  */
+/**
+ * GNU make's recursion state, inherited whenever the daemon itself was started under make
+ * (`make start`, `make up`) or a test suite runs under `make test`.
+ *
+ * A Command is a top-level invocation in a fresh checkout, never a sub-make of whatever
+ * launched the daemon. Left in place, `MAKELEVEL` makes every configured `make test` speak as
+ * `make[1]:` - which reads exactly like a sub-make inside a recipe that ran, so a repository
+ * that has no `test` target is reported as a code failure instead of a missing Command - and
+ * `MAKEFLAGS` hands the command the parent's flags and jobserver descriptors, which name pipes
+ * the daemon never owned.
+ */
+export const MAKE_RECURSION_ENV_NAMES = ["MAKELEVEL", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"] as const;
+
 export function scrubCheckEnv(
   env: NodeJS.ProcessEnv,
   daemonToken: string,
@@ -135,6 +148,7 @@ export function scrubCheckEnv(
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;
     if ((STATE_HOME_ENV_NAMES as readonly string[]).includes(name)) continue;
+    if ((MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)) continue;
     if (credentialShapedName(name)) continue;
     // The VALUE rule, which is the only one that removes the daemon's own token by identity
     // rather than by hoping whoever exported it chose a credential-shaped name. `includes`

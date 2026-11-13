@@ -58,12 +58,13 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
-  // On: the Board has always drawn its empty-column stash, so an upgrade moves nothing.
-  assert.equal(config.showEmptyColumnStash, true);
   assert.equal(config.boardSidebarAllSessions, false);
+  assert.equal(config.conversationRailCollapsed, false);
   // The drawer, floating: residents leave the fleet for an install that never chose.
   assert.equal(config.residentPlacement, "drawer");
   assert.equal(config.residentDrawerPinned, false);
+  // The rail every earlier build drew: open.
+  assert.equal(config.sessionRailFolded, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
@@ -82,6 +83,8 @@ test("a written cache round-trips", () => {
     residentDrawerPinned: true,
     conversationView: "chat",
     lineDensity: "expanded",
+    // Off its default, so it cannot round-trip by falling back.
+    lineHidden: true,
     // Not Default, so it cannot round-trip by falling back to the default.
     skin: "daylight",
     // Off on both, so neither round-trips by falling back to its default.
@@ -105,12 +108,14 @@ test("a written cache round-trips", () => {
     // for the one operator who turned it off. Asserting the non-default value is the only way
     // round-tripping this field says anything.
     groupBoardByRepo: false,
-    // FALSE for the same reason: it defaults to true.
-    showEmptyColumnStash: false,
     boardSidebarAllSessions: true,
+    // Off its default, so it cannot round-trip by falling back.
+    conversationRailCollapsed: true,
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
+    // Folded, the non-default, so only a copied field round-trips it.
+    sessionRailFolded: true,
     // Non-empty, both: the shipped bar hides and minimizes nothing.
     hiddenTopbarItems: ["cost", "feedback"],
     compactTopbarItems: ["fleet", "foreman"],
@@ -121,6 +126,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.residentDrawerPinned, true);
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
+  assert.equal(config.lineHidden, true);
   assert.equal(config.skin, "daylight");
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
@@ -134,9 +140,10 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
-  assert.equal(config.showEmptyColumnStash, false);
   assert.equal(config.boardSidebarAllSessions, true);
+  assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
+  assert.equal(config.sessionRailFolded, true);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
 });
@@ -203,12 +210,30 @@ test("a rendering this build does not ship reads as the shipped one", () => {
 });
 
 test("a density this build does not ship reads as the shipped one", () => {
-  // The third member the study drew and held in reserve - `hidden`, at zero height - is
-  // the realistic version of this: a profile that used a build which shipped it must not
-  // paint a strip this build cannot draw, and must not PUT the value back as if it were
-  // real. It falls to the shipped default, which is a strip you can see.
+  // A profile that used a build which shipped some other density must not paint a strip
+  // this build cannot draw, and must not PUT the value back as if it were real. It falls
+  // to the shipped default, which is a strip you can see. `hidden` included: switching the
+  // Line off is `lineHidden`, never a density.
+  for (const lineDensity of ["hairline", "hidden"]) {
+    store.set("mission-control.ui", JSON.stringify({ lineDensity }));
+    assert.equal(readCache().lineDensity, "condensed");
+  }
+});
+
+test("a cached Disabled Line survives a cold paint, and only a real true switches it off", () => {
+  // Dropping it here would draw the strip on the first frame and remove it the moment the
+  // daemon answered, stepping the whole fleet up by a band on every load.
+  store.set("mission-control.ui", JSON.stringify({ lineHidden: true, lineDensity: "expanded" }));
+  assert.equal(readCache().lineHidden, true);
+  assert.equal(readCache().lineDensity, "expanded", "switching off keeps the density to return to");
+  // A cache from the build that stored Disabled as a density still reads as switched off.
   store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
+  assert.equal(readCache().lineHidden, true);
   assert.equal(readCache().lineDensity, "condensed");
+  store.set("mission-control.ui", JSON.stringify({ lineHidden: "yes" }));
+  assert.equal(readCache().lineHidden, false);
+  store.clear();
+  assert.equal(readCache().lineHidden, false);
 });
 
 test("a skin this build does not ship reads as Default, and a cached one paints first", () => {

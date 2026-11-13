@@ -51,6 +51,7 @@ const PERSONA: Persona = {
   guidanceMarkdown: "You watch the fleet and summarize blockers.",
   runner: null,
   model: null,
+  effort: null,
   revision: 1,
   archivedAt: null,
   createdAt: 0,
@@ -1561,4 +1562,60 @@ test("Restart recovers after ending the old run before replacement reservation, 
   assert.equal(h.residents.updateProfile(profile.id, 2, settings({ instructions: "Third brief" })).ok, true);
   assert.equal((await createApp().request(`/api/residents/runs/${replacement.run.id}/restart`, { method: "POST" })).status, 409);
   assert.equal(h.dispatched.length, 1);
+});
+
+test("state survives new runs, profile edits and archive; reset refuses even an ended run with a live runtime", async () => {
+  const { writeFileSync, readFileSync, existsSync } = await import("node:fs");
+  const { residentStateForTask } = await import("../src/server/residents/launch.ts");
+  const { residentStateDir } = await import("../src/server/residents/state.ts");
+  const h = harness();
+  const profile = profileIn(h);
+  const launched = await h.residents.launch(profile.id, { requestId: "state-first", repoRoot: null, instructions: "" });
+  assert.ok(launched.ok);
+  const task = residentTasks(h.registry)[0]!;
+  const directory = await residentStateForTask(task.id);
+  assert.equal(directory, residentStateDir(profile.id));
+  writeFileSync(join(directory!, "MEMORY.md"), "Operator correction");
+  await assert.rejects(() => h.residents.resetState(profile.id), /Complete and close/);
+  const run = store.residentRunForTask(task.id)!.run;
+  h.residents.endRun(run.id);
+  await assert.rejects(() => h.residents.resetState(profile.id), /Complete and close/);
+  const revised = h.residents.updateProfile(profile.id, profile.revision, settings({ name: "Renamed" }));
+  assert.ok(revised.ok);
+  assert.ok((await h.residents.launch(profile.id, { requestId: "state-second", repoRoot: null, instructions: "" })).ok);
+  const next = residentTasks(h.registry).find((t) => t.id !== task.id)!;
+  assert.equal(await residentStateForTask(next.id), directory);
+  assert.equal(readFileSync(join(directory!, "MEMORY.md"), "utf8"), "Operator correction");
+  assert.ok(h.residents.archiveProfile(profile.id, profile.revision + 1).ok);
+  assert.ok(existsSync(directory!));
+});
+
+test("unused profile state can be reset without touching another profile", async () => {
+  const { ensureResidentState } = await import("../src/server/residents/state.ts");
+  const { writeFileSync, existsSync } = await import("node:fs");
+  const h = harness();
+  const a = profileIn(h, { name: "State A" });
+  const b = profileIn(h, { name: "State B" });
+  const pathA = join(ensureResidentState(a.id), "notes.txt");
+  const pathB = join(ensureResidentState(b.id), "notes.txt");
+  writeFileSync(pathA, "a"); writeFileSync(pathB, "b");
+  await h.residents.resetState(a.id);
+  assert.equal(existsSync(pathA), false);
+  assert.equal(existsSync(pathB), true);
+});
+
+test("reset excludes concurrent resets and launch reservations until removal finishes", async () => {
+  const { ensureResidentState } = await import("../src/server/residents/state.ts");
+  const { writeFileSync } = await import("node:fs");
+  const h = harness();
+  const profile = profileIn(h);
+  writeFileSync(join(ensureResidentState(profile.id), "ledger"), "handled");
+  const reset = h.residents.resetState(profile.id);
+  await assert.rejects(() => h.residents.resetState(profile.id), /already in progress/);
+  const launch = await h.residents.launch(profile.id, { requestId: "during-reset", repoRoot: null });
+  assert.equal(launch.ok, false);
+  assert.ok("error" in launch);
+  assert.match(launch.error, /reset is in progress/);
+  await reset;
+  assert.ok((await h.residents.launch(profile.id, { requestId: "after-reset", repoRoot: null })).ok);
 });

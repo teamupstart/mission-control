@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { ResolvedModel } from "@shared/model-choice.ts";
-import type { LlmProviderView } from "@shared/types.ts";
+import type { LlmProviderView, ThinkingLevel } from "@shared/types.ts";
 import {
   WORKFLOW_LIMITS,
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
+  personaEffortLevels,
 } from "@shared/workflow.ts";
 import type {
   PersonaDefaultsView,
@@ -18,6 +19,7 @@ import { FileEditor } from "../components/FileEditor.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { ModelField, ModelSuggestions } from "../components/ModelField.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { EffortSelect } from "./EffortSelect.tsx";
 import {
   LibraryPropertyChip,
   LibraryPropertyChips,
@@ -38,6 +40,8 @@ export interface PersonaDraftSeed {
   /** May carry a newer build's stored id until the operator deliberately changes it. */
   runner: string | null;
   model: string | null;
+  /** Null for the provider default. */
+  effort: ThinkingLevel | null;
 }
 
 function fromPersona(persona: PersonaView): PersonaDraftSeed {
@@ -47,10 +51,11 @@ function fromPersona(persona: PersonaView): PersonaDraftSeed {
     guidanceMarkdown: persona.guidanceMarkdown,
     runner: persona.runner,
     model: persona.model,
+    effort: persona.effort,
   };
 }
 
-const PERSONA_DRAFT_FIELDS = ["name", "description", "guidanceMarkdown", "runner", "model"] as const;
+const PERSONA_DRAFT_FIELDS = ["name", "description", "guidanceMarkdown", "runner", "model", "effort"] as const;
 
 export function reconcilePersonaSave(
   saved: PersonaView,
@@ -71,6 +76,7 @@ export function reconcilePersonaSave(
       : savedDraft.guidanceMarkdown,
     runner: current.runner !== submitted.runner ? current.runner : savedDraft.runner,
     model: current.model !== submitted.model ? current.model : savedDraft.model,
+    effort: current.effort !== submitted.effort ? current.effort : savedDraft.effort,
   };
   return {
     draft,
@@ -456,6 +462,7 @@ export function PersonaEditor({
     guidanceMarkdown: "",
     runner: null,
     model: null,
+    effort: null,
   });
   const draftRef = useRef(draft);
   const editGeneration = useRef(0);
@@ -495,6 +502,10 @@ export function PersonaEditor({
   const effectiveRunner = draftExecution.runner;
   const runnerForControls = selectedRunner ?? effectiveRunner ?? "claude";
   const effectiveModel = draftExecution.model;
+  // Against the STORED choice, exactly as the daemon validates it: an inherited provider is
+  // offered only the levels every provider supports for this model.
+  const effortLevels = personaEffortLevels(selectedRunner, draft.model);
+  const effortUnsupported = draft.effort !== null && !effortLevels.includes(draft.effort);
   const exactBytes = useMemo(() => new TextEncoder().encode(draft.guidanceMarkdown).byteLength, [draft.guidanceMarkdown]);
   const lineSeparator = useMemo(
     () => personaLineSeparator(draft.guidanceMarkdown),
@@ -785,6 +796,27 @@ export function PersonaEditor({
           />
         </LibraryPropertyChip>
         <LibraryPropertyChip
+          name="effort"
+          value={draft.effort ?? "provider default"}
+          state={draft.effort === null ? "inherited" : "overridden"}
+          tone={effortUnsupported ? "danger" : undefined}
+          tooltip={draft.effort === null
+            ? "Runs at the provider's default reasoning effort - open to recommend one for this Persona"
+            : "This Persona recommends a reasoning effort. A workflow can override it for one reviewer node."}
+          controlLabel="Effort override"
+        >
+          <EffortSelect
+            name={draft.name || "this Persona"}
+            levels={effortLevels}
+            value={draft.effort ?? ""}
+            readOnly={readOnly}
+            className="persona-chip-field"
+            flag={false}
+            tooltip="How much reasoning effort this Persona's reviews spend"
+            onChange={(effort) => edit({ effort: effort || null })}
+          />
+        </LibraryPropertyChip>
+        <LibraryPropertyChip
           name="source"
           value={personaRoutingSource(draft, effectiveModel)}
           tooltip="Where the provider and model above were decided"
@@ -808,6 +840,20 @@ export function PersonaEditor({
           Unknown stored provider “{persona.execution.runner.unknown}” fell back.
         </p>
       )}
+      {/* On the face for the unknown provider's reason: a closed chip reading "max" would
+          report a level that will not be saved, or will not run, as if it were the setting. */}
+      {effortUnsupported ? (
+        <p className="lib-props-note" role="status">
+          {draft.effort} effort is not supported by this provider and model, so this Persona
+          cannot be saved with it.
+        </p>
+      ) : persona?.execution.effort?.unsupported && !dirty ? (
+        <p className="lib-props-note" role="status">
+          {persona.execution.runner.id} · {persona.execution.model.id} does not support the
+          stored {persona.execution.effort.unsupported} effort, so reviews run at the provider
+          default.
+        </p>
+      ) : null}
 
       <section className="persona-guidance" aria-label="Persona guidance" ref={tourGuidanceRef}>
         <header className="file-toolbar persona-guidance-toolbar">

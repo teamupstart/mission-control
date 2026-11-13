@@ -1,6 +1,9 @@
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
+import type { KindWorkflowDefaults } from "@shared/task.ts";
+import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
+import type { StorageView } from "@shared/storage-health.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -90,9 +93,13 @@ import type {
   StandingInstructionsView,
   WorktreesConfig,
   WorktreesConfigPatch,
+  AttentionDismissal,
+  AttentionDismissalWrite,
+  InspectorFindingsResponse,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
+  InspectorFindingsResponseSchema,
   StandingInstructionsConflictSchema,
   StandingInstructionsViewSchema,
 } from "@shared/protocol.ts";
@@ -362,6 +369,14 @@ export const executeWorktreeAction = (token: string, acknowledgements: WorktreeR
 export const dismissWorktreeOperation = (id: string) =>
   worktreeRequest<Record<string, never>>(`/api/worktrees/operations/${encodeURIComponent(id)}/dismiss`, "POST", {});
 
+/**
+ * Stop the dependency claim running in a slot. The claim fails and its lease is granted with
+ * the warning, so a dispatch waiting on it continues. The result reaches every card through the
+ * task and worktree events; a 404 means the claim had already finished.
+ */
+export const stopWorktreeClaim = (slotId: string, claimId: string) =>
+  worktreeRequest<Record<string, never>>(`/api/worktrees/${encodeURIComponent(slotId)}/claim/stop`, "POST", { claimId });
+
 export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
   worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });
 /**
@@ -414,6 +429,16 @@ export const fetchInspectorPrs = (adoptedSince?: number) =>
       ? "/api/inspector/prs"
       : `/api/inspector/prs?adoptedSince=${Math.floor(adoptedSince)}`,
   );
+/**
+ * Every GitHub Inspector finding on one pull request, in every status, with whether each
+ * reached GitHub. Parsed through the same schema Foreman's client uses, so the two readers
+ * agree on the shape; null for a failed read, a 400 or 404, or a body that does not parse.
+ */
+export async function fetchInspectorFindings(prKey: string): Promise<InspectorFindingsResponse | null> {
+  const body = await fetchJson<unknown>(`/api/inspector/findings?pr=${encodeURIComponent(prKey)}`);
+  const parsed = InspectorFindingsResponseSchema.safeParse(body);
+  return parsed.success ? parsed.data : null;
+}
 export const fetchInspectorStatus = () => fetchJson<InspectorStatus>("/api/inspector/status");
 /** Which provider the app's offline work uses, and each background job's model override. */
 export const fetchLlmConfig = () => fetchJson<LlmConfig>("/api/llm/config");
@@ -428,6 +453,8 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+/** Settings > Storage: the storage aggregate plus the database backup config. */
+export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
 /** Machine-local roots that feed every repository picker and name resolver. */
 export const fetchRepoIndex = () => fetchJson<RepoIndexView>("/api/repo-index");
 /**
@@ -548,11 +575,19 @@ export const fetchResolvedStandingInstructions = (
   agent: AgentType,
   runtime: SessionRuntime,
   signal?: AbortSignal,
+  launch: {
+    /** The dispatch Persona the form has chosen, appended the way the launch appends it. */
+    personaId?: string | null;
+    /** The task kind, whose launch owner decides what is sent - a Pipeline host gets no rules. */
+    kind?: TaskKind;
+  } = {},
 ) => {
   const q = new URLSearchParams();
   for (const path of repoPaths) q.append("repoPath", path);
   q.set("agent", agent);
   q.set("runtime", runtime);
+  if (launch.personaId) q.set("personaId", launch.personaId);
+  if (launch.kind) q.set("kind", launch.kind);
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
 
@@ -1011,6 +1046,24 @@ export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
     return Array.isArray(data.repoAllowlist) ? (data.repoAllowlist as string[]) : [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * The per-kind dispatch defaults from Settings, or null when the config cannot be read.
+ *
+ * The one read of these rows for surfaces that need nothing else from the workflow config.
+ * Null is "not known", never "none configured": a caller must not resolve a kind against it
+ * as though it were `{}`, which would pass a built-in off as the operator's choice.
+ */
+export async function fetchKindWorkflowDefaults(): Promise<KindWorkflowDefaults | null> {
+  try {
+    const res = await actionFetch("/api/workflows/config");
+    if (!res.ok) return null;
+    const data = (await res.json()) as { kindWorkflowDefaults?: KindWorkflowDefaults };
+    return data.kindWorkflowDefaults ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -1583,6 +1636,8 @@ export interface DispatchInput {
   model?: string;
   /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Library Persona the agent launches with; omitted launches with none. */
+  personaId?: string;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   planStorage?: "repository" | "local" | null;
@@ -1742,6 +1797,14 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/launch`, { backend, payload }),
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
+  /**
+   * Flag a likely answer on this session's blocker. Never clears it, never messages it.
+   * `blockerId` names the blocker on screen, so a stale band cannot act on a newer one.
+   */
+  flagBlockerReply: (id: string, input: { blockerId: string; note?: string; referenceUrl?: string }) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/blocker/reply`, input),
+  clearBlocker: (id: string, blockerId: string, resolution?: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   /**
    * Stop what the session is doing right now and drop what was queued behind it, leaving
@@ -1980,6 +2043,17 @@ export const api = {
   // backlog kind again as the same task, and files a chat again as a new one.
   dismissLaunchFailures: (taskIds: readonly string[]) =>
     post<ActionResult & { dismissed?: number }>(`/api/launch-failures/dismiss`, { taskIds }),
+  // Attention-inbox rows dismissed without resolving them (`src/server/attention-dismissals.ts`).
+  // Null from the read means "not known", never "nothing dismissed".
+  listAttentionDismissals: () =>
+    fetchJsonWithSignal<{ dismissals: AttentionDismissal[] }>("/api/attention/dismissals"),
+  // Refused with 409 and `superseded` when another window dismissed one of these rows since this
+  // window last saw it (see `AttentionDismissalWriteSchema`).
+  dismissAttentionItems: (items: readonly AttentionDismissalWrite[]) =>
+    post<ActionResult & {
+      accepted?: { itemId: string; revision: number }[];
+      superseded?: string[];
+    }>(`/api/attention/dismissals`, { items }),
   reportLaunchFailure: (taskId: string, repoRoot: string) =>
     post<ActionResult & { task?: Task; existing?: boolean }>(`/api/launch-failures/report`, { taskId, repoRoot }),
   retryLaunchFailure: (taskId: string) =>
@@ -2008,6 +2082,12 @@ export const api = {
    * to none. A refusal names the task that stopped it.
    */
   bulkUpdateTasks: (body: BulkUpdateTasksInput) => post(`/api/tasks/bulk-update`, body),
+  /**
+   * Drop one dependency edge from a backlog task. The daemon removes it from the task as it
+   * holds it now, so an edge added after the caller last rendered the task survives.
+   */
+  removeTaskDependency: (id: string, dependency: TaskDependencyInput) =>
+    post(`/api/tasks/bulk-update`, { taskIds: [id], dependencies: { remove: [dependency] } } satisfies BulkUpdateTasksInput),
   /**
    * Delete several backlog tasks. Not atomic (see `TaskManager.bulkRemove`), so a late
    * refusal carries the ids that did and did not go.
@@ -2070,6 +2150,10 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
+  setDatabaseBackupsConfig: (patch: DatabaseBackupsConfigPatch) =>
+    put<ActionResult & { message?: string }>(`/api/storage/backups/config`, patch),
+  /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
+  backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
 
   // --- Repository discovery roots ---
   setRepoIndex: (cfg: RepoIndexConfigPatch) =>

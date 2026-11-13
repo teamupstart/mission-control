@@ -140,7 +140,7 @@ export interface CodexSdkDeps {
     args: readonly string[],
     cwd: string,
     stateHome?: string,
-    options?: { codexHome?: string; traceContext?: AgentTraceContext | null },
+    options?: { residentStateDir?: string; codexHome?: string; traceContext?: AgentTraceContext | null },
   ): Promise<AppServerTransport>;
 }
 
@@ -165,6 +165,7 @@ export const defaultCodexSdkDeps: CodexSdkDeps = {
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
     // environment, not about either harness.
     const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext);
+    if (options?.residentStateDir) env.RESIDENT_STATE_DIR = options.residentStateDir;
     if (options?.codexHome) env.CODEX_HOME = options.codexHome;
     return spawnAppServer(await codexExecutable(), args, cwd, env);
   },

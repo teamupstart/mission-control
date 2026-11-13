@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Mission Control is a local control plane for Claude Code, Codex, and Pi sessions, built with Node.js 24+, TypeScript 5.7, React 19, Vite 6, Electron 43, Hono 4, Zod 3, and SQLite.
+Mission Control is a local control plane for Claude Code, Codex, and Pi sessions, built with Node.js 24+, TypeScript 5.7, React 19, Vite 6, Electron 43, Hono 4, Zod 4, and SQLite.
 
 Read the [documentation index](docs/README.md) for product behavior and setup. Before changing a subsystem, read:
 

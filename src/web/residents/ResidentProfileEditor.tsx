@@ -1,3 +1,4 @@
+import { ResidentState } from "./ResidentState.tsx";
 import { useEffect, useState } from "react";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { resolveLaunchModel } from "@shared/kind-defaults.ts";
@@ -338,6 +339,7 @@ export function ResidentProfileEditor({
           <Body draft={draft} update={update} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
         </section>
       ))}
+      {profile && <ResidentState key={profile.id} profileId={profile.id} />}
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
     </section>
   );

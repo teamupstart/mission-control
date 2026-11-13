@@ -120,6 +120,7 @@ import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
+import { StorageHealthService } from "./storage-health.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import {
   attachSessionTelemetry,
@@ -406,6 +407,8 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+// A task's dispatch Persona: creation, editing and launch all read the Library through this.
+tasks.registerPersonaLookup((id) => personas.store.getPersona(id));
 // Resident profiles and the one resident launch path. It creates its tasks through
 // `TaskManager.create` with the resident capability, and the dispatcher asks it for each
 // resident's standing instructions, so both directions are installed here, after both exist.
@@ -435,6 +438,13 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
+// and the backup loop's startup prune seeds it.
+const storageHealth = new StorageHealthService({
+  backups: databaseBackups,
+  publish: (health) => registry.setStorageHealth(health),
+});
+databaseBackups.onChange(() => storageHealth.recompute());
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -745,6 +755,8 @@ const app = buildApp({
   fileComments,
   fileCommentWalkthrough,
   settingsBackups,
+  databaseBackups,
+  storageHealth,
 });
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -795,6 +807,14 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
+  // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
+  // temporary files can be removed safely.
+  try {
+    databaseBackups.removeLeftoverTemporaries();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
+  }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
@@ -936,6 +956,7 @@ async function shutdown(): Promise<void> {
   noteDaemonShuttingDown();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
+  await databaseBackups.stop();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();
@@ -961,6 +982,10 @@ async function shutdown(): Promise<void> {
   // Kill before awaiting workflow workers, or a 120s Persona timeout becomes a 120s
   // daemon shutdown.
   killLiveLlmRuns();
+  // The same reason, for dependency claims: a claim may run for hours inside a dispatch nobody
+  // awaits, so it is killed here, long before `worktrees.stop()`, and no lease is granted
+  // after this point. Startup marks its slot interrupted.
+  worktrees.stopClaims();
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.

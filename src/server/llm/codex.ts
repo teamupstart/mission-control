@@ -11,6 +11,7 @@ import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { validateLlmImages } from "./images.ts";
 import { ProviderFailure } from "./provider-failure.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 import {
@@ -340,6 +341,8 @@ export const codexRunner: LlmRunner = {
         ];
         if (schema) args.push("--output-schema", schema.path);
         if (opts.model) args.push("--model", opts.model);
+        // The interactive harness's own launch flag, so the two cannot spell effort differently.
+        if (opts.effort) args.push(...(capabilitiesFor("codex").effort?.launchArgs(opts.effort) ?? []));
         for (const image of images) args.push("--image", image.path);
         args.push("-");
         const env = headlessEnv();

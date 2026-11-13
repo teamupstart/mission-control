@@ -106,32 +106,33 @@ export function reviewAnswerVerb(review: ReviewItem): string {
   }
 }
 
-// ---- answering a one-question ask with one press ----
+// ---- naming a pending review on a surface that does not answer it ----
 
 /**
- * The decision a review can be answered with by pressing one option, or null when it needs
- * the full form.
- *
- * Only the simplest ask qualifies: a `request_input` question with exactly one single-select
- * decision and no free-text "Other". Everything else - several decisions, a multi-select, an
- * "Other" box, a plan's decisions with their note, a final bundle's standing approval - keeps
- * `DecisionForm`, because a press cannot carry what those forms collect.
+ * What a surface that only points at a review prints for it: a short kind and one line on what
+ * answering it takes. The Residents drawer's card draws this as a row and opens the review modal
+ * on a click, so the modal stays the one place a resident's review is answered.
  */
-export function quickDecision(review: ReviewItem): PlanDecision | null {
-  if (review.kind !== "input" || review.standingApprovalEligible === true) return null;
+export function reviewAskSummary(review: ReviewItem): { kind: string; detail: string | null } {
   const decisions = reviewDecisions(review);
-  if (decisions?.length !== 1) return null;
-  const [decision] = decisions;
-  if (!decision || decision.multiSelect || decision.allowOther || decision.options.length === 0) return null;
-  return decision;
+  switch (review.kind) {
+    case "input": {
+      if (decisions && decisions.length > 1) return { kind: "input", detail: `${decisions.length} questions` };
+      const options = decisions?.[0]?.options.map((option) => option.label) ?? [];
+      if (options.length > 0) return { kind: "input", detail: options.join(" · ") };
+      return { kind: "input", detail: showsBody(review) ? firstLine(review.body) : "Needs a written answer" };
+    }
+    case "plan-decisions": {
+      const n = decisions?.length ?? 0;
+      return { kind: "decisions", detail: `${n} decision${n === 1 ? "" : "s"} to make` };
+    }
+    case "plan":
+      return { kind: "plan", detail: "Plan to approve" };
+    case "diff":
+      return { kind: "diff", detail: "Changes to review" };
+  }
 }
 
-/**
- * The selections one press sends: the chosen option, or the question moved to chat. The same
- * shape `DecisionForm` submits for that decision, so the agent reads an identical answer.
- */
-export function quickSelections(decision: PlanDecision, choice: { optionId: string } | "chat"): PlanDecisionAnswer[] {
-  return choice === "chat"
-    ? [{ decisionId: decision.id, selected: [], other: null, chat: true }]
-    : [{ decisionId: decision.id, selected: [choice.optionId], other: null }];
+function firstLine(text: string): string | null {
+  return text.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? null;
 }

@@ -10,6 +10,7 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, builtinWorkflowVersionId } from "../src/shared/builtin-workflow.ts";
 import type { PlanIdentity } from "../src/shared/managed-plans.ts";
 import { declaredBlockers } from "../src/shared/backlog.ts";
+import { localSourceContent } from "../src/shared/task-source-sync.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-local-publication-")));
 process.env.MISSION_HOME = join(home, "state");
@@ -27,6 +28,7 @@ const { planAuthority } = await import("../src/server/plans/authority.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
 const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery, taskPlanDependencyRequirements } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const managers: InstanceType<typeof WorkflowManager>[] = [];
 afterEach(async () => { for (const m of managers.splice(0)) await m.stop(); });
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
@@ -192,7 +194,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   const input = { ...f.input, files: ["plan.md", "phase-1.md"] };
   const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Pinned merge", intent: "Read this episode", backlog: true, workflowId: null,
     planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] });
-  assert.equal(dependent.dependencies[0]!.episodeId, oldEpisode);
+  assert.equal((dependent.dependencies[0] as { episodeId: string | null }).episodeId, oldEpisode);
   f.registry.upsertTask({ ...dependent, dependencies: dependent.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) });
   assert.equal(taskPlanInputProblem(f.tasks.get(dependent.id)!), null);
 
@@ -211,7 +213,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   // Stored inputs from before this guard must fail at both delivery boundaries too.
   f.registry.upsertTask({ ...f.tasks.get(dependent.id)!, planInputs: [nextInput] });
   const reloaded = loadActiveTasks().find((task) => task.id === dependent.id)!;
-  assert.equal(reloaded.dependencies[0]!.episodeId, oldEpisode);
+  assert.equal((reloaded.dependencies[0] as { episodeId: string | null }).episodeId, oldEpisode);
   assert.notEqual(reloaded.dependencies[0]!.satisfiedAt, null);
   assert.match(taskPlanInputProblem(reloaded)!, /originating.*episode/);
   for (const result of [await f.tasks.dispatch(dependent.id), await f.tasks.assign(dependent.id, f.id)]) {
@@ -220,7 +222,7 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   }
   const current = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Current episode", intent: "Wait for its merge", backlog: true, workflowId: null,
     planInputs: [nextInput], dependencies: [{ type: "task", taskId: f.task.id }] });
-  assert.equal(current.dependencies[0]!.episodeId, authority.episodeId);
+  assert.equal((current.dependencies[0] as { episodeId: string | null }).episodeId, authority.episodeId);
   assert.match(taskPlanInputProblem(current)!, /waiting/);
   assert.equal(taskPlanInputProblem({ ...current, dependencies: current.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) }), null);
   assert.throws(() => f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Wrong episode", intent: "Cannot substitute the current episode", backlog: true, workflowId: null,
@@ -736,6 +738,40 @@ test("per-task plan storage overrides pin policy, follow compatible defaults, an
   applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
 });
 
+test("a None plan row does not turn a stored None into Local Plan Validation on a storage edit", async (t) => {
+  const f = await fixture();
+  applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
+  setWorkflowPolicy({ kindWorkflowDefaults: { plan: null } });
+  t.after(() => { setWorkflowPolicy({}); });
+  const response = await f.post("/api/tasks", { repoRoot: f.repo, title: "Plan with no review", intent: "Plan it", kind: "plan", backlog: true, workflowId: null });
+  assert.equal(response.status, 200, await response.clone().text());
+  const task = await response.json() as ReturnType<typeof mkTask>;
+  assert.equal(task.workflowId, null);
+  const moved = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(moved.ok, true, moved.error);
+  assert.equal(moved.task?.planPolicy?.storage, "local");
+  assert.equal(moved.task?.workflowId, null);
+});
+
+test("a plan filed on an older row is refused, not silently re-armed, when moved to local storage", async (t) => {
+  const f = await fixture();
+  applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
+  setWorkflowPolicy({ kindWorkflowDefaults: { plan: PLAN_VALIDATION_WORKFLOW_ID } });
+  t.after(() => { setWorkflowPolicy({}); });
+  const response = await f.post("/api/tasks", { repoRoot: f.repo, title: "Plan on the old row", intent: "Plan it", kind: "plan", backlog: true });
+  assert.equal(response.status, 200, await response.clone().text());
+  const task = await response.json() as ReturnType<typeof mkTask>;
+  assert.equal(task.workflowId, PLAN_VALIDATION_WORKFLOW_ID);
+  setWorkflowPolicy({ kindWorkflowDefaults: { plan: null } });
+  // The task does not record that its Workflow came from a row, so it stays an explicit
+  // choice: one that cannot review a local plan is refused rather than swapped out.
+  const moved = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(moved.ok, false);
+  assert.match(moved.error!, /Select Local Plan Validation/);
+  assert.equal(f.tasks.get(task.id)?.planPolicy?.storage ?? "repository", "repository");
+  assert.equal(f.tasks.get(task.id)?.workflowId, PLAN_VALIDATION_WORKFLOW_ID);
+});
+
 for (const committed of [false, true]) test(`legacy plan artifacts lock storage without managed records (committed: ${committed})`, async () => {
   const f = await fixture();
   mkdirSync(join(f.repo, "docs/plans/unrelated"), { recursive: true });
@@ -774,4 +810,27 @@ test("storage edits fail closed when a prior task checkout cannot be inspected",
   assert.match(refused.error!, /Cannot verify existing plan artifacts/);
   assert.deepEqual(f.tasks.get(task.id), before);
   assert.deepEqual(loadActiveTasks().find((saved) => saved.id === task.id), savedBefore);
+});
+
+test("a source sync that would drop a pinned plan input's prerequisite is refused whole", async () => {
+  const f = await fixture(false, "ship");
+  const input = { ...f.input, files: ["plan.md"] };
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Pinned merge", intent: "Read this episode", backlog: true, workflowId: null,
+    planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] });
+  const issue = (externalId: string) => ({ sourceId: "s", externalId, url: `https://github.com/${externalId.replace("#", "/issues/")}` });
+  f.registry.upsertTask({ ...f.tasks.get(f.task.id)!, source: issue("acme/demo#2") });
+  f.registry.upsertTask({ ...f.tasks.get(dependent.id)!, source: issue("acme/demo#1") });
+  const task = f.tasks.get(dependent.id)!;
+  const local = localSourceContent(task, { sourceId: "s", tasks: f.tasks.sourceRelationTasks(task) });
+  assert.deepEqual(local.blockedBy?.map((b) => b.externalId), ["acme/demo#2"]);
+  let persisted = false;
+  const applied = await f.tasks.applySourceContent(task.id, task.source!, local, { ...local, title: "Renamed upstream", blockedBy: [] },
+    () => { persisted = true; }, () => true, true);
+  assert.equal(applied.ok, false);
+  assert.equal(applied.refused, true);
+  assert.equal(applied.cycle, false);
+  assert.match(applied.error!, /originating task\/session work episode/);
+  assert.equal(persisted, false, "a refused update must not advance the sync baseline");
+  assert.deepEqual(f.tasks.get(dependent.id)!.dependencies.map((d) => d.type === "task" ? d.taskId : d.type), [f.task.id]);
+  assert.equal(f.tasks.get(dependent.id)!.title, "Pinned merge");
 });

@@ -244,6 +244,13 @@ function failThenHoldCount(prompt) {
  */
 const ASK_TURN = "ask me which linter to use";
 /**
+ * The prompt this CLI answers by asking PERMISSION for a tool call and blocking on it - the
+ * menu every session can still be parked on, whatever its ask channel. A dispatched task has
+ * `AskUserQuestion` taken away (`ask-channel.ts`), so `ASK_TURN` reaches the native form only
+ * on a launch with no Mission MCP; a permission ask reaches the driver on every launch.
+ */
+const PERMISSION_TURN = "ask permission to run the suite";
+/**
  * The prompt that makes this CLI leave deterministic tool activity in its transcript:
  * one assistant turn carrying prose AND a tool call, then a tool-only turn, then the
  * ordinary echoed reply. That pair of shapes is the whole surface the Observed
@@ -367,6 +374,7 @@ if (recordDir) {
         termProgram: process.env.TERM_PROGRAM ?? null,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
         missionHome: process.env.MISSION_HOME ?? null,
+        residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
         fleetHome: process.env.FLEET_HOME ?? null,
         harnessHome: process.env.HARNESS_HOME ?? null,
         resolvedMissionState,
@@ -565,7 +573,34 @@ function foremanUsageFailure(prompt) {
   return prompt.includes('You are the BACKLOG PLANNER') && prompt.includes('E2E_FOREMAN_USAGE_LIMIT');
 }
 
+/**
+ * A marked backlog planner reply that names tasks by ID in its prose, as a model ignoring
+ * the prompt's title rule would. The first listed task is the foundation; every other one
+ * waits for it. The real `sanitizePlan` then decides what the board shows.
+ */
+function backlogPlannerCitingIds(prompt) {
+  if (!prompt.includes("You are the BACKLOG PLANNER") || !prompt.includes("E2E_PLANNER_CITES_TASK_IDS")) {
+    return null;
+  }
+  const ids = [...prompt.matchAll(/^### id: (.+)$/gm)].map((match) => match[1].trim());
+  const [foundation, ...rest] = ids;
+  // Any other task id the prompt carries - one a task's intent mentions without declaring it
+  // a dependency - is cited too, the way a model repeating what it read would.
+  const mentioned = [...new Set(prompt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g) ?? [])]
+    .filter((id) => !ids.includes(id));
+  return JSON.stringify({
+    tasks: [
+      { id: foundation, dependsOn: [], reason: `Unblocks ${rest.join(", ")}.` },
+      ...rest.map((id) => ({ id, dependsOn: [foundation], reason: `Waits for ${foundation} to land.` })),
+    ],
+    note: `${foundation} goes first; ${rest.join(", ")} build on it.`
+      + (mentioned.length > 0 ? ` See ${mentioned.join(", ")}.` : ""),
+  });
+}
+
 function headlessAnswer(prompt) {
+  const planner = backlogPlannerCitingIds(prompt);
+  if (planner !== null) return planner;
   // Foreman's completion verifier, for a session whose objective carries the marker. Without
   // a verdict the worker can never reach a Workflow claim, so a spec that needs Foreman itself
   // to start a bound Workflow puts this marker in the dispatched request.
@@ -1169,6 +1204,43 @@ const ASK_INPUT = {
 /** Control requests this CLI has sent UP and is waiting on, by request id. */
 const asked = new Map();
 
+/**
+ * The tools this launch removed, as the real CLI reads them: `--disallowedTools a,b`. A
+ * removed `AskUserQuestion` is never raised, so a spec cannot reach the native form on a
+ * launch that took it away.
+ */
+const DISALLOWED_TOOLS = (argvValue("--disallowedTools") ?? "")
+  .split(/[,\s]+/)
+  .filter(Boolean);
+/** What the SDK appended to the system prompt, delivered on `initialize`. */
+let appendedSystemPrompt = "";
+const REQUEST_INPUT_TOOL = "mcp__mission-control__request_input";
+
+/**
+ * `ASK_TURN` on a launch without `AskUserQuestion`: what a model does with what it was told.
+ * Pointed at `request_input`, it asks there and blocks until the human answers. Told
+ * nothing, it asks in prose and ends its turn (arm B in `ask-channel.ts`).
+ */
+function askWithoutBuiltin(prompt) {
+  if (!appendedSystemPrompt.includes(REQUEST_INPUT_TOOL)) {
+    answer([prompt]);
+    return;
+  }
+  const [first] = ASK_INPUT.questions;
+  const args = {
+    question: first.question,
+    options: first.options.map((o) => ({ label: o.label, detail: o.description })),
+  };
+  appendTurn("assistant", [
+    { type: "tool_use", id: `ask-${++turn}`, name: REQUEST_INPUT_TOOL, input: args },
+  ]);
+  beginHeldTurn(withMissionMcp(async (request) => {
+    const called = await request("tools/call", { name: "request_input", arguments: args });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `request_input answered: ${text}`;
+  }));
+}
+
 function ask(prompt) {
   const requestId = `ask-${++turn}`;
   asked.set(requestId, prompt);
@@ -1179,6 +1251,28 @@ function ask(prompt) {
     type: "control_request",
     request_id: requestId,
     request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: ASK_INPUT },
+  });
+}
+
+/** `PERMISSION_TURN`: a `Bash` call the CLI wants approved before it runs. */
+const PERMISSION_INPUT = { command: "npm test", description: "Run the test suite" };
+
+function askPermission(prompt) {
+  const requestId = `ask-${++turn}`;
+  asked.set(requestId, prompt);
+  appendTurn("assistant", [
+    { type: "tool_use", id: requestId, name: "Bash", input: PERMISSION_INPUT },
+  ]);
+  emit({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Bash",
+      input: PERMISSION_INPUT,
+      title: "Claude wants to run npm test",
+      permission_suggestions: [],
+    },
   });
 }
 
@@ -1195,14 +1289,17 @@ function answerAsked(requestId, response) {
   const prompt = asked.get(requestId);
   if (prompt === undefined) return;
   asked.delete(requestId);
-  const picked = response?.updatedInput?.answers ?? {};
+  const picked = response?.updatedInput?.answers;
   appendTurn("user", [
     {
       type: "tool_result",
       tool_use_id: requestId,
-      content: `Your questions have been answered: ${Object.entries(picked)
-        .map(([question, answer]) => `"${question}"="${answer}"`)
-        .join(", ")}.`,
+      // A question carries answers; an approved permission ask carries only the tool's run.
+      content: picked
+        ? `Your questions have been answered: ${Object.entries(picked)
+            .map(([question, answer]) => `"${question}"="${answer}"`)
+            .join(", ")}.`
+        : "ok - 0 failures",
     },
   ]);
   answer([prompt]);
@@ -1379,6 +1476,28 @@ async function withMissionMcp(work) {
   }
 }
 
+/** A conversation delegates work through the real MCP server without a model call. */
+async function runChatTaskScheduling() {
+  return withMissionMcp(async (request) => {
+    const call = async (name, args) => {
+      const called = await request("tools/call", { name, arguments: args });
+      const text = called.result?.content?.map((part) => part.text).join("\n");
+      if (called.error || called.result?.isError) throw new Error(text ?? JSON.stringify(called.error));
+      return JSON.parse(text);
+    };
+    await call("create_task", {
+      title: "Work scheduled from chat", intent: "Keep this separate work parked for later.",
+      workflowId: null, enabled: false,
+    });
+    const launch = await call("create_task", {
+      title: "Work dispatched from chat", intent: "Perform this separate work now.",
+      workflowId: null,
+    });
+    const dispatched = await call("dispatch_task", { taskId: launch.id });
+    return `Scheduled one backlog task and dispatched another from chat (${dispatched.status}).`;
+  });
+}
+
 /** The bug-report scenario waits for the public issue preview's human response. */
 async function runReportBug(prompt) {
   const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
@@ -1399,6 +1518,38 @@ async function runReportBug(prompt) {
     });
     const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
     return `report_product_issue answered: ${text}`;
+  });
+}
+
+/**
+ * The repair packet the DAEMON writes when a workflow Command is one the repository does not
+ * provide (`src/server/workflows/command-fit.ts`). Recognised from the daemon's own words, so
+ * the packet's delivery is part of what a spec proves.
+ */
+const CONFIGURE_COMMAND_MARKER = "Configure the test Command for this repository; do not add files to satisfy it";
+
+/**
+ * What a session does with that packet, without a model: inspect its own checkout for how the
+ * repository runs its tests, call the real `configure_workflow_command` (which waits on the
+ * operator's confirmation card), then resubmit the unchanged work.
+ */
+async function runConfigureCommand(prompt) {
+  const runId = /^Run: (\S+)$/m.exec(prompt)?.[1];
+  let script = null;
+  try {
+    script = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")).scripts?.test ?? null;
+  } catch { /* no manifest: nothing to propose */ }
+  if (!runId || !script || existsSync(join(process.cwd(), "Makefile"))) {
+    return "Inspected the checkout and found no package.json test script to propose.";
+  }
+  return withMissionMcp(async (request) => {
+    const text = (called) => called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    const configured = await request("tools/call", { name: "configure_workflow_command",
+      arguments: { runId, slot: "test", command: ["npm", "test"] } });
+    if (configured.result?.isError || configured.error) return `configure_workflow_command failed: ${text(configured)}`;
+    const resubmitted = await request("tools/call", { name: "trigger_workflow_action", arguments: { request: {
+      action: "resubmit", runId, parameters: { requestId: `e2e-configured-${runId}`, resubmitUnchanged: true } } } });
+    return `configure_workflow_command answered: ${text(configured)}; resubmit answered: ${text(resubmitted)}`;
   });
 }
 
@@ -1484,6 +1635,7 @@ rl.on("line", (line) => {
     // per result) and the driver .catch()es a missing answer, but answering keeps the log
     // clean.
     if (frame.request?.subtype === "initialize") {
+      appendedSystemPrompt = typeof frame.request.appendSystemPrompt === "string" ? frame.request.appendSystemPrompt : "";
       ok(frame.request_id, {
         commands: [], agents: [], output_style: "default", available_output_styles: [],
         account: {},
@@ -1505,6 +1657,12 @@ rl.on("line", (line) => {
     // CLI reports `needs-auth`. A remote entry whose URL does not parse is reported `failed`, as
     // the real CLI cannot connect to it, so a malformed direct entry refuses the launch rather
     // than passing as connected. A server with no URL (stdio, a launcher entry) is connected.
+    //
+    // Without `--strict-mcp-config`, and without `disableClaudeAiConnectors` in its `--settings`,
+    // the real CLI also loads the account's claude.ai connectors and reports them beside what
+    // `--mcp-config` named. Two stand for them: one connected, and one that needs a login, which a
+    // resident on all native sources must start despite - it is Claude Code's to report, not a
+    // server Mission Control put in the set.
     if (frame.request?.subtype === "mcp_status") {
       const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
       const status = (server) => {
@@ -1512,7 +1670,15 @@ rl.on("line", (line) => {
         if (!URL.canParse(server.url)) return { status: "failed", error: "the MCP server URL is not a valid URL" };
         return { status: new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected" };
       };
-      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })) });
+      // `--settings` may also name a file; only inline JSON can carry the switch here.
+      const settings = argvValue("--settings") ?? "{}";
+      const flags = settings.trimStart().startsWith("{") ? JSON.parse(settings) : {};
+      const connectors = process.argv.includes("--strict-mcp-config") || flags.disableClaudeAiConnectors === true
+        ? []
+        : [{ name: "claude.ai Slack", status: "connected" }, { name: "claude.ai Gmail", status: "needs-auth" }];
+      ok(frame.request_id, {
+        mcpServers: [...Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })), ...connectors],
+      });
       return;
     }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});
@@ -1596,8 +1762,13 @@ rl.on("line", (line) => {
 
     // Blocks the turn on a human, which is the whole point: no `result` is emitted until the
     // answer comes back down, so the card stays "waiting on you" for the spec to act on.
+    if (prompt === PERMISSION_TURN) {
+      askPermission(prompt);
+      return;
+    }
     if (prompt === ASK_TURN) {
-      ask(prompt);
+      if (DISALLOWED_TOOLS.includes("AskUserQuestion")) askWithoutBuiltin(prompt);
+      else ask(prompt);
       return;
     }
 
@@ -1617,8 +1788,20 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (prompt.includes("E2E_CHAT_SCHEDULE_TASKS")) {
+      beginHeldTurn(runChatTaskScheduling());
+      return;
+    }
+
     if (prompt.includes(REPORT_BUG_MARKER)) {
       beginHeldTurn(runReportBug(prompt));
+      return;
+    }
+
+    // A workflow repair asking for the repository's own test Command, recognised by the
+    // daemon's packet. Held open while the real tool waits on the operator's card.
+    if (prompt.includes(CONFIGURE_COMMAND_MARKER)) {
+      beginHeldTurn(runConfigureCommand(prompt));
       return;
     }
 

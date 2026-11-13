@@ -11,7 +11,7 @@ import {
   type ResidentMcpCustomServer,
   type ResidentMcpLauncherDefinition,
 } from "@shared/resident-mcp.ts";
-import type { ResidentProfileRevision } from "@shared/residents.ts";
+import type { ResidentMcpNativeSources, ResidentProfileRevision } from "@shared/residents.ts";
 import { STATE_DIR, residentMcpLauncherPath } from "../config.ts";
 import type { ResidentMcpEntry, ResidentMcpLaunch } from "../harness/types.ts";
 import { resolveMissionMcpRuntime } from "../mission-mcp.ts";
@@ -31,7 +31,8 @@ import {
 //    (source, name), refusing collisions and unrepresentable servers before any secret is
 //    bound. The caller writes it as the run's snapshot.
 // 2. `residentMcpLaunchForRun` turns the snapshot into `SdkLaunchOptions.residentMcp`, read at
-//    every launch and resume. Native MCP configuration is never read again.
+//    every launch and resume. Native MCP configuration is never read again, unless the profile
+//    imports all native sources: then the harness reads its own beside the snapshot.
 // 3. Per process start, `forStart()` writes one owner-only credential file per launcher entry,
 //    holding a single-use ticket bound to that run, that server and that start.
 // 4. The scoped launcher reads its file, removes it, and redeems the ticket here
@@ -152,6 +153,11 @@ function resolvedCustom(server: ResidentMcpCustomServer, secrets: ReadonlyMap<st
  *
  * Every check runs before a secret is bound, so each secret belongs to its (source, name).
  * Null when the harness has no measured control, which keeps its native MCP behaviour.
+ *
+ * A profile that imports all native sources snapshots only its custom servers: the harness loads
+ * its global servers itself, so inheritance and a selected global server add nothing, and a
+ * global server residents could not carry no longer refuses the launch. The name check against
+ * the global servers still runs, because both would load under the same name.
  */
 export async function resolveResidentMcpSet(
   settings: ResidentProfileRevision,
@@ -159,12 +165,18 @@ export async function resolveResidentMcpSet(
 ): Promise<ResidentMcpResolution> {
   const agent = settings.execution.agent;
   const label = AGENT_IDENTITY[agent].label;
-  if (capabilitiesFor(agent).mcpSelection === null) {
+  const control = capabilitiesFor(agent).mcpSelection;
+  const importsAll = settings.mcp.nativeSources === "all";
+  if (importsAll && !control?.allNativeSources) {
+    return { ok: false, error: `${label} cannot start a resident on all of its native MCP sources, so this profile's MCP setting cannot launch` };
+  }
+  if (control === null) {
     return settings.mcp.selected.length > 0 || !settings.mcp.inheritDefaults
       ? { ok: false, error: `${label} cannot pin a resident's MCP servers, so this profile's MCP selection cannot launch` }
       : { ok: true, servers: null };
   }
-  const { inheritDefaults, selected } = settings.mcp;
+  const inheritDefaults = settings.mcp.inheritDefaults && !importsAll;
+  const selected = importsAll ? settings.mcp.selected.filter((ref) => ref.source === "custom") : settings.mcp.selected;
   let globals: GlobalMcpRead | null = null;
   if (inheritDefaults || selected.length > 0) {
     globals = await deps.globals(agent);
@@ -317,12 +329,14 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
 /**
  * The run's `SdkLaunchOptions.residentMcp`, from its snapshot alone, or null for a run without
  * one (launched before snapshots existed, or on a harness with no measured control).
+ * `nativeSources` is the run's pinned revision's, so a resume keeps the choice it launched with.
  */
-export function residentMcpLaunchForRun(runId: string): ResidentMcpLaunch | null {
+export function residentMcpLaunchForRun(runId: string, nativeSources: ResidentMcpNativeSources = "pinned"): ResidentMcpLaunch | null {
   if (!runId) return null;
   const snapshot = runMcpSnapshot(runId);
   if (!snapshot) return null;
   return {
+    nativeSources,
     names: snapshot.map((server) => server.name),
     privateDir: residentMcpRunDir(runId),
     forStart: () => {

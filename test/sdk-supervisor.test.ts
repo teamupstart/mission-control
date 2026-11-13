@@ -1,3 +1,4 @@
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -15,6 +16,8 @@ import { join } from "node:path";
 //    task it was running is settled by `session_remove` and by nothing else;
 //  - a session WE stopped on the way down is `suspended`, not `exited`, or every clean
 //    restart reclaims the worktree of work that was merely interrupted.
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-sdk-sup-"));
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
@@ -236,6 +239,10 @@ test("a resident's measured native limit is persisted and replayed by a fresh su
   first.push({ kind: "bound", agentSessionId: "native-thread", transcriptPath: null, modelId: "test-model", pid: null });
   await drain();
   assert.equal(fake.calls[0]?.residentCompaction?.tokenLimit, undefined);
+  const stateDirectory = fake.calls[0]?.residentStateDir;
+  assert.ok(stateDirectory);
+  assert.ok(stateDirectory.endsWith("/residents/profiles/native-profile/state"));
+  assert.ok(existsSync(stateDirectory));
   assert.equal(getSdkSession(session.id)?.residentCompactionTokenLimit, 180880);
   residents.markResidentRunLaunched("native-run", null);
   await original.stopAll();
@@ -243,6 +250,7 @@ test("a resident's measured native limit is persisted and replayed by a fresh su
   t.after(() => restored.stopAll());
   await restored.restore();
   assert.equal(fake.calls[1]?.resume, "native-thread");
+  assert.equal(fake.calls[1]?.residentStateDir, stateDirectory);
   assert.deepEqual(fake.calls[1]?.residentCompaction, { threshold: 70, tokenLimit: 180880 });
   assert.equal(getSdkSession(session.id)?.residentCompactionTokenLimit, 180880);
   assert.equal(residents.getResidentRun("native-run")?.run.endedAt, null);

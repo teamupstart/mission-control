@@ -12,7 +12,7 @@
 
 import { isActiveTask } from "./task-status.ts";
 import type { Session } from "./types.ts";
-import { reportBucket } from "./session.ts";
+import { hasBlocker, reportBucket } from "./session.ts";
 import { workflowRunParkedOnSession } from "./workflow.ts";
 import type { WorkflowRunSummary } from "./workflow.ts";
 import { unpushedClause } from "./unpushed.ts";
@@ -282,7 +282,11 @@ export function detectStall(
   //    failed to move some eighty times, and firing sooner would announce runs it is on the
   //    point of resuming. The runs that will never resume do not wait for this clock at all -
   //    `workflowRunWaitsOnOperator` puts them on the Line the moment they park.
-  const outstanding = reportBucket(s, sessions) === "idle" ? workOutstanding(s, runs) : null;
+  //    A blocked session is exempt: its blocker already explains the silence, and its age is
+  //    on the card. It is not stuck, it is waiting on someone else.
+  const outstanding = reportBucket(s, sessions) === "idle" && !hasBlocker(s)
+    ? workOutstanding(s, runs)
+    : null;
   if (outstanding) {
     const age = now - quietSince(s);
     if (age >= th.unfinishedMs) {

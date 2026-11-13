@@ -16,6 +16,7 @@ const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("har
 /** A minimal Session over `cwd`, with no pane (so `/clear` is a no-op we can assert). */
 function sess(cwd: string | null, branch: string | null = "main"): Session {
   return {
+    blocker: null,
     id: "s1", agent: "claude", name: "work", runtime: "terminal", foremanInvite: null, nameSource: "process", state: "idle",
     cwd, gitBranch: branch, gitRoot: null, repoRoot: null, pid: 1, tty: null,
     permissionMode: null, terminals: [], agentSessionId: null, transcriptPath: null,

@@ -51,11 +51,11 @@ test("the preview redraws as items are toggled, and never navigates", async ({
 
   // Every registry item has a reachable checkbox, and the LAST one is reachable too - the
   // panel is the tallest thing in Display and its final row is the one a layout mistake
-  // would push off the end of the section rather than merely below the fold. Twenty now:
-  // sixteen card items - including both compact progress meters, the jump shortcut, the
-  // workflow-details switch and the resident marker - the console band's two, and the working
-  // indicator's two, which share this panel rather than a second one.
-  await expect(panel.getByRole("checkbox")).toHaveCount(20);
+  // would push off the end of the section rather than merely below the fold. Twenty-five now:
+  // twenty-one card items - including both compact progress meters, the jump shortcut, the
+  // workflow-details switch, the resident marker and the five blocker items - the console
+  // band's two, and the working indicator's two, which share this panel rather than a second one.
+  await expect(panel.getByRole("checkbox")).toHaveCount(25);
   await expect(panel.getByRole("checkbox", { name: "Git branch", exact: true }))
     .toBeVisible();
   await expect(panel.getByRole("checkbox", { name: "Reply box progress bar", exact: true }))

@@ -858,3 +858,43 @@ test("stopping readiness cancels its pending re-checks", async () => {
   r.stop();
   assert.deepEqual(cleared, ["timer-1"]);
 });
+
+test("a blocked prerequisite stamps no dependent until its blocker is cleared", async () => {
+  const blocker = {
+    id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402 merged", waitingOn: "Platform", resumeWhen: "#1402 merges",
+    details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
+  };
+  const w = world();
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", blocker }));
+  const s = script();
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "a parked, blocked episode is not finished");
+  assert.equal(s.reads, 0, "no GitHub read for a prerequisite that is blocked");
+
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", blocker: null }));
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000, "clearing the blocker releases the stamp");
+});
+
+test("a blocker reported while the parent pull request is read stamps nothing", async () => {
+  const w = world();
+  const s = script();
+  // Lands inside the GitHub read, after the first eligibility check has already passed.
+  s.duringRead = () => {
+    w.sessions.set("sA", mkSession({
+      id: "sA", state: "idle",
+      blocker: {
+        id: "blk-fixture", kind: "question", reason: "Asked platform", waitingOn: "Dana", resumeWhen: "Dana answers",
+        details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
+      },
+    }));
+  };
+  readiness(w, s).reconcile();
+  await settle();
+  await settle();
+  assert.equal(s.reads, 1, "the read started before the blocker landed");
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "readiness was stamped for a prerequisite blocked mid-read");
+});

@@ -38,6 +38,9 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "resident-skill-sources", surface: "residents" },
   // Custom MCP server definitions, without their secret values.
   { id: "resident-mcp-servers", surface: "residents" },
+  // Database backup counts and interval, edited in Settings > Storage. Added after format
+  // v1 shipped.
+  { id: "database-backups", surface: "settings" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

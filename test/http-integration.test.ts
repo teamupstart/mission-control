@@ -126,6 +126,7 @@ test("/api/health surfaces the shared runtime identity + package version", async
     "criterion-mapped-workflow-evidence-v1",
     "daemon-executable-environment-v1",
     "multiple-scout-reports-v1",
+    "explicit-scout-files-v1",
     "workflow-coverage-mutations-v1",
   ]);
 });
@@ -300,7 +301,7 @@ test("parseBody rejects a malformed write body with 400 (and never mutates)", as
   });
   assert.equal(res.status, 400);
   const body = (await res.json()) as { error: string };
-  assert.match(body.error, /repoRoot|intent|Required|String must contain/i);
+  assert.match(body.error, /repoRoot|intent|expected string|Too small/i);
 
   const list = await app.request("/api/tasks", { headers: LOOPBACK });
   assert.deepEqual(await list.json(), []); // nothing was created
@@ -472,8 +473,10 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     model: null,
     effort: null,
     advisorModel: null,
+    personaId: null,
     workflowId: null,
     source: null,
+    sourceParent: null,
     pipelineRun: null,
     repoRoot: "/repo",
     baseSha: null,

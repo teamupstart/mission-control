@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { INSPECTOR_LIMITS } from "@shared/inspector.ts";
 import type { InspectorComment, InspectorMode, InspectorSeverity } from "@shared/types.ts";
 import { nullAsAbsent } from "../llm/json-schema.ts";
 import type { CommentableLines } from "./diff-lines.ts";
-import { BODY_ONLY_FINDINGS_MARKER, fingerprint } from "./marker.ts";
+import { BODY_ONLY_FINDINGS_MARKER, fingerprint, reviewHeader } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 
 // What the reviewer is allowed to say, and what we actually do with it.
@@ -114,6 +115,12 @@ export interface PlannedComment {
   severity: InspectorSeverity;
   title: string;
   body: string;
+  /**
+   * A draft from an earlier round that the model neither resolved nor raised again,
+   * offered again by the planner rather than by the model. Only a carried comment can
+   * have a GitHub refusal pinned on it: a finding the model raised this round is new.
+   */
+  carried?: true;
 }
 
 export interface ReviewPlan {
@@ -145,6 +152,17 @@ export interface ReviewPlan {
 
 export interface PlanInput {
   mode: InspectorMode;
+  /**
+   * Whether this round will actually publish: the worker's live posture, which also needs
+   * the repository on the allowlist, and not just `mode`. Only a live round carries drafts.
+   */
+  live: boolean;
+  /**
+   * Fingerprints of the open rows the review prompt listed (`promptedOpenRows`). A draft is
+   * carried only when it is here: the model is asked to resolve a draft the push fixed, and
+   * it cannot do that for one the prompt cut for length.
+   */
+  prompted: ReadonlySet<string>;
   maxComments: number;
   /** The round being planned - stamped into each new row and each marker. */
   round: number;
@@ -210,7 +228,9 @@ function snapToLine(lines: Set<number>, want: number | null): number | null {
  *  - An issue `resolved` earlier and raised again IS posted - that is a regression, and
  *    the ledger's unique index lets the row come back rather than blocking it.
  *  - A `drafted` row is a dry-run preview: still unposted, so switching to live posts
- *    it. Without this, dry-run would permanently swallow everything it previewed.
+ *    it - when the model raises it again, as a new finding, and otherwise as a carried
+ *    draft (`carriedDrafts`). Without this, dry-run would permanently swallow everything
+ *    it previewed.
  *  - Resolution is narrowing only, and never contradicts a live finding: if the model
  *    both closes a fingerprint and raises it again this round, the raise wins. It is
  *    split into the threads to close on GitHub and the rows to close only here
@@ -259,7 +279,15 @@ export function planReview(input: PlanInput): ReviewPlan {
     });
   }
 
-  candidates.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  if (input.live) candidates.push(...carriedDrafts(input, raised));
+
+  // Most severe first, and at equal severity what the model said THIS round before what it
+  // said earlier, so a carried draft never pushes a new finding of its own rank over the cap.
+  candidates.sort(
+    (a, b) =>
+      SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
+      || Number(a.carried ?? false) - Number(b.carried ?? false),
+  );
   const kept = candidates.slice(0, input.maxComments);
   const droppedOverCap = candidates.length - kept.length;
 
@@ -298,6 +326,68 @@ export function planReview(input: PlanInput): ReviewPlan {
 }
 
 /**
+ * Drafts from earlier rounds to offer again in a live round.
+ *
+ * A `drafted` row is a finding that never reached GitHub: drafted in dry run, on a
+ * repository not on the allowlist, or refused. After a switch to live the review prompt
+ * lists it under "Found earlier but never posted" and asks the model only whether this push
+ * fixed it, so posting it falls to this function, deterministically, through the same checks
+ * a new finding gets:
+ *
+ *  - the prompt listed it (`input.prompted`), so the model had the chance to resolve it;
+ *  - the model neither resolved it nor raised it again (a raise is a new finding, posted by
+ *    the loop above, and the refusal cap does not apply to it);
+ *  - `draftOffered` holds: its path is still in this diff (layer 4), GitHub has refused it
+ *    fewer than `INSPECTOR_LIMITS.maxPostRefusals` times, and it has a body to post. A draft
+ *    whose file has left the diff stays drafted and is not posted.
+ *
+ * Its line snaps the way a new finding's does. In a file whose diff only deletes lines there
+ * is nothing to snap to, so like a new finding it goes in the review body (`demoted`).
+ *
+ * Title and body are scrubbed again even though they were scrubbed when first planned: the
+ * check is cheap and it is the outbound boundary. The id and fingerprint are the row's own,
+ * so the posted marker names the row it came from.
+ */
+/**
+ * Whether a live round offers this drafted row again, given the paths in this diff. The one
+ * definition the planner and the review prompt share, so the prompt never promises to post a
+ * draft the planner will leave alone.
+ */
+export function draftOffered(
+  row: Pick<InspectorComment, "status" | "path" | "body" | "postRefusals">,
+  diffPaths: { has(path: string): boolean },
+): boolean {
+  return row.status === "drafted"
+    && row.path !== null
+    && row.body !== null
+    && (row.postRefusals ?? 0) < INSPECTOR_LIMITS.maxPostRefusals
+    && diffPaths.has(row.path);
+}
+
+function carriedDrafts(input: PlanInput, raised: Set<string>): PlannedComment[] {
+  const resolved = new Set(input.verdict.resolved);
+  const out: PlannedComment[] = [];
+  for (const row of input.existing.values()) {
+    if (!draftOffered(row, input.lines)) continue;
+    if (!input.prompted.has(row.fingerprint)) continue;
+    if (raised.has(row.fingerprint) || resolved.has(row.fingerprint)) continue;
+    const fileLines = row.path === null ? undefined : input.lines.get(row.path);
+    if (row.path === null || row.body === null || !fileLines) continue;
+    out.push({
+      id: row.id,
+      fingerprint: row.fingerprint,
+      path: row.path,
+      line: snapToLine(fileLines, row.line),
+      severity: row.severity,
+      title: scrubSecrets(row.title),
+      body: scrubSecrets(row.body),
+      carried: true,
+    });
+  }
+  return out;
+}
+
+/**
  * The review's top-level body: the summary, anything that couldn't be anchored, and -
  * when the cap bit - the fact that it did.
  *
@@ -311,7 +401,7 @@ function reviewBody(
   mode: InspectorMode,
   round: number,
 ): string {
-  const parts = [`**⌕ GitHub Inspector** · round ${round}`, "", summary.trim()];
+  const parts = [reviewHeader(round), "", summary.trim()];
   if (demoted.length) {
     parts.push("", "---", "");
     for (const d of demoted) {

@@ -832,3 +832,8 @@ export function endedResidentWorkspaces(): Array<{ id: string; taskId: string; w
 export function clearResidentWorkspace(id: string): void {
   openDb().prepare("UPDATE resident_runs SET workspace_dir = NULL WHERE id = ? AND ended_at IS NOT NULL").run(id);
 }
+
+export function residentProfileTasks(profileId: string): Array<{ taskId: string; open: boolean }> {
+  return (openDb().prepare("SELECT task_id, ended_at FROM resident_runs WHERE profile_id = ?").all(profileId) as Array<{ task_id: string; ended_at: number | null }>)
+    .map((row) => ({ taskId: row.task_id, open: row.ended_at === null }));
+}

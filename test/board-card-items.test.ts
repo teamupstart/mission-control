@@ -303,6 +303,35 @@ test("hiding an item leaves no trace of it in the preview", async () => {
   assert.ok(!(await cardPreviewWith(["worktree"])).includes(worktreeLeaf));
 });
 
+test("a blocked card keeps its tone and flag, and each blocker item leaves when hidden", async () => {
+  // The red tone and the `Blocked · age` flag are the card's state, not items: no checkbox
+  // removes them. Each of the five blocker items removes exactly its own fact.
+  const blockerIds = ["blockerKind", "blockerReason", "blockerWaitingOn", "blockerLink", "blockerReply"];
+  assert.deepEqual(
+    CARD_ITEMS.map((item) => item.id as string).filter((id) => id.startsWith("blocker")),
+    blockerIds,
+  );
+  const all = await cardPreviewWith([]);
+  const none = await cardPreviewWith(blockerIds);
+  for (const html of [all, none]) {
+    assert.match(html, /class="tile [^"]*is-blocked/);
+    assert.match(html, /class="tile-flag tf-blocked"[^>]*>Blocked · 3h</);
+  }
+  assert.doesNotMatch(none, /class="tile-blocker"/, "an empty blocker row is chrome saying nothing");
+  const facts: Record<string, string> = {
+    blockerKind: '<span class="tile-blocker-kind">Question</span>',
+    blockerReason: '<span class="tile-blocker-reason">Needs the audit-log retention window</span>',
+    blockerWaitingOn: '<span class="tile-blocker-waiting">waiting on Dana (platform)</span>',
+    blockerLink: 'aria-label="Open blocker link"',
+    blockerReply: '<span class="tile-blocker-reply">Reply flagged</span>',
+  };
+  for (const [id, fact] of Object.entries(facts)) {
+    assert.ok(all.includes(fact), `the card draws no ${id}`);
+    const hidden = await cardPreviewWith([id]);
+    assert.ok(!hidden.includes(fact), `hiding ${id} left it on the card`);
+  }
+});
+
 test("the conversation preview draws the band's cells, and drops the band with both off", async () => {
   // The header's preview is the only picture the conversation items have, so each of its
   // checkboxes has to move it - and the band goes whole, as the console's does, when nothing

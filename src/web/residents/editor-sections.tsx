@@ -23,6 +23,7 @@ import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
 import { residentAccentStyle } from "./marker.ts";
+import { McpAllSourcesConfirm } from "./McpAllSourcesConfirm.tsx";
 import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } from "./mcp-catalog.ts";
 
 /** What every section editor is handed. Each writes only its own slice of the draft. */
@@ -333,14 +334,20 @@ function AuthoritySection({ draft, update, disabled }: ResidentEditorSectionProp
 function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
   const { catalog, error } = useResidentMcpCatalog();
   const [choice, setChoice] = useState("");
+  const [confirmingAll, setConfirmingAll] = useState(false);
   const agent = draft.execution.agent;
   const label = AGENT_IDENTITY[agent].label;
   const mcp = draft.mcp;
   const selectable = residentMcpSelectable(catalog, agent);
+  // Whether this harness can start a resident on everything it loads natively. A profile that
+  // chose it on another harness still shows the choice, so the operator can see and undo it.
+  const allSources = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
+  const importsAll = mcp.nativeSources === "all";
   const chosen = new Set(mcp.selected.map(residentMcpRefKey));
   const harness = catalog?.harnesses.find((row) => row.agent === agent) ?? null;
   const options: Array<{ key: string; label: string; ref: ResidentMcpServerRef; group: "global" | "custom"; unavailable: string | null }> = [
-    ...(harness?.servers ?? []).map((server) => ({
+    // With all native sources the harness loads its global servers itself: only custom ones add.
+    ...(importsAll ? [] : harness?.servers ?? []).map((server) => ({
       ref: { source: "global" as const, agent, name: server.name },
       label: server.name,
       group: "global" as const,
@@ -369,24 +376,74 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
           They start with the harness's own servers.
         </p>
       )}
-      <label className="alert-row resident-mcp-inherit">
-        <Tooltip label={`Start with every global MCP server ${label} configures at launch, plus the selection below`}>
-          <input
-            type="checkbox"
-            checked={mcp.inheritDefaults}
-            disabled={locked}
-            onChange={(event) => set({ ...mcp, inheritDefaults: event.target.checked })}
-          />
-        </Tooltip>
-        <span>Inherit harness defaults</span>
-      </label>
-      <p className="field-hint">
-        {mcp.inheritDefaults
-          ? `Every global server ${label} has when the resident launches, plus the selection.`
-          : "Only the selection."}{" "}
-        Mission Control's own server is always attached. A running resident keeps the set it
-        launched with.
-      </p>
+      {(allSources || importsAll) && (
+        <fieldset className="resident-mcp-sources">
+          <legend className="field-label">Server set</legend>
+          <label className="alert-row">
+            <Tooltip label="Start on the exact set this profile resolves at launch, which every resume keeps">
+              <input
+                type="radio"
+                name="resident-mcp-native-sources"
+                checked={!importsAll}
+                disabled={locked}
+                onChange={() => set({ ...mcp, nativeSources: "pinned" })}
+              />
+            </Tooltip>
+            <span>Pinned at launch</span>
+          </label>
+          <label className="alert-row">
+            <Tooltip label={allSources ? `Start on everything ${label} loads natively, read again at every start` : `${label} cannot start a resident on all of its native MCP sources`}>
+              <input
+                type="radio"
+                name="resident-mcp-native-sources"
+                checked={importsAll}
+                disabled={locked || !allSources}
+                // Widening an autonomous resident's reach is confirmed first; the radio stays on
+                // Pinned until the operator says yes.
+                onChange={() => setConfirmingAll(true)}
+              />
+            </Tooltip>
+            <span>All native sources (not pinned)</span>
+          </label>
+        </fieldset>
+      )}
+      {importsAll ? (
+        allSources ? (
+          <p className="field-hint">
+            {label} loads its own {allSources.sources} at every start, as a terminal session does, so
+            the global servers it configures need no inheriting or selecting. Mission Control's own
+            server and the custom servers below are always attached, and only they must connect
+            before the resident starts. The set is not pinned: a native change reaches a running
+            resident at its next start or resume.
+          </p>
+        ) : (
+          <p role="alert" className="field-hint resident-problem resident-mcp-unavailable">
+            {label} cannot start a resident on all of its native MCP sources. Choose Pinned at launch
+            to save this profile.
+          </p>
+        )
+      ) : (
+        <>
+          <label className="alert-row resident-mcp-inherit">
+            <Tooltip label={`Start with every global MCP server ${label} configures at launch, plus the selection below`}>
+              <input
+                type="checkbox"
+                checked={mcp.inheritDefaults}
+                disabled={locked}
+                onChange={(event) => set({ ...mcp, inheritDefaults: event.target.checked })}
+              />
+            </Tooltip>
+            <span>Inherit harness defaults</span>
+          </label>
+          <p className="field-hint">
+            {mcp.inheritDefaults
+              ? `Every global server ${label} has when the resident launches, plus the selection.`
+              : "Only the selection."}{" "}
+            Mission Control's own server is always attached. A running resident keeps the set it
+            launched with.
+          </p>
+        </>
+      )}
       <ul className="resident-mcp-selected" aria-label="Selected MCP servers">
         {mcp.selected.map((ref, index) => {
           const target = residentMcpRefTarget(catalog, ref);
@@ -395,7 +452,7 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
             : catalog && !target
               ? "no longer exists"
               : target?.kind === "global"
-                ? target.server.unavailable
+                ? importsAll ? null : target.server.unavailable
                 : target?.kind === "custom" && !target.server.harnesses.includes(agent)
                   ? `does not apply to ${label}`
                   : null;
@@ -405,6 +462,9 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
               <span className="resident-mcp-name">{name}</span>
               <span className="resident-editor-meta">{ref.source === "global" ? "global" : "custom"}</span>
               {problem && <span className="resident-mcp-unavailable">{problem}</span>}
+              {!problem && importsAll && ref.source === "global" && (
+                <span className="resident-editor-meta">loads natively</span>
+              )}
               <Tooltip label={`Remove ${name} from this profile`}>
                 <button
                   type="button"
@@ -424,16 +484,18 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
       <div className="resident-mcp-add">
         <label className="field">
           <span className="field-label">Add an MCP server</span>
-          <Tooltip label={`A global server ${label} configures, or a custom server that applies to ${label}`}>
+          <Tooltip label={importsAll ? `A custom server that applies to ${label}` : `A global server ${label} configures, or a custom server that applies to ${label}`}>
             <select className="field-input" value={choice} disabled={locked || options.length === 0} onChange={(event) => setChoice(event.target.value)}>
               <option value="">{catalog ? (options.length ? "Choose a server…" : "No more servers") : "Loading…"}</option>
-              <optgroup label={`${label} global`}>
-                {options.filter((option) => option.group === "global").map((option) => (
-                  <option key={option.key} value={option.key} disabled={option.unavailable !== null}>
-                    {option.label}{option.unavailable ? " (unavailable)" : ""}
-                  </option>
-                ))}
-              </optgroup>
+              {!importsAll && (
+                <optgroup label={`${label} global`}>
+                  {options.filter((option) => option.group === "global").map((option) => (
+                    <option key={option.key} value={option.key} disabled={option.unavailable !== null}>
+                      {option.label}{option.unavailable ? " (unavailable)" : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
               <optgroup label="Custom">
                 {options.filter((option) => option.group === "custom").map((option) => (
                   <option key={option.key} value={option.key}>{option.label}</option>
@@ -446,6 +508,17 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
           <button type="button" className="btn" disabled={locked || !choice} onClick={add}>Add</button>
         </Tooltip>
       </div>
+      {confirmingAll && allSources && (
+        <McpAllSourcesConfirm
+          harness={label}
+          sources={allSources.sources}
+          onClose={() => setConfirmingAll(false)}
+          onConfirm={() => {
+            setConfirmingAll(false);
+            set({ ...mcp, nativeSources: "all" });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -539,7 +612,7 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
   {
     id: "mcp",
     title: "MCP servers",
-    blurb: "Which MCP servers the resident starts with, from its harness's global servers and your custom ones.",
+    blurb: "Which MCP servers the resident starts with: a pinned set from its harness's global servers and your custom ones, or, where the harness offers it, everything it loads natively.",
     Body: McpSection,
   },
 ];

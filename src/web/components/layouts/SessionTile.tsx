@@ -14,6 +14,7 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
 import { isDragSelection } from "../../lib/pointer.ts";
 import {
   AgentDot,
@@ -160,6 +161,10 @@ export function SessionTile({
   // review that has already finished.
   const heldBy = heldByRun(workflowRuns, st.tone);
   const held = heldBy !== null;
+  // A durable blocker is the card's state, like `held`: the red tone and the `Blocked · age`
+  // flag are always drawn, and only the blocker's own facts below are card items.
+  const blocker = session.blocker ?? null;
+  const blockerLink = blocker ? blockerHref(blocker.referenceUrl) : null;
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>("see-work:demo-task", session.task?.id);
@@ -296,7 +301,7 @@ export function SessionTile({
       ref={setTileRef}
       className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${
         selected ? " selected" : ""
-      }${held ? " is-held" : ""}${
+      }${held ? " is-held" : ""}${blocker ? " is-blocked" : ""}${
         droppable ? " can-drop" : ""
       }${over ? " drop-over" : ""}${
         workflowVisiblyExpanded ? " workflow-expanded" : ""
@@ -414,6 +419,36 @@ export function SessionTile({
         <span className="tile-goal">{session.goal.text}</span>
       )}
 
+      {blocker && (shown("blockerKind") || shown("blockerReason") || shown("blockerWaitingOn")
+        || (shown("blockerLink") && blockerLink) || (shown("blockerReply") && blocker.reply)) && (
+        <span className="tile-blocker">
+          {shown("blockerKind") && (
+            <span className="tile-blocker-kind">{BLOCKER_KIND_LABELS[blocker.kind]}</span>
+          )}
+          {shown("blockerReason") && <span className="tile-blocker-reason">{blocker.reason}</span>}
+          {shown("blockerWaitingOn") && (
+            <span className="tile-blocker-waiting">waiting on {blocker.waitingOn}</span>
+          )}
+          {shown("blockerLink") && blockerLink && (
+            <Tooltip label={`Open ${blockerLink}`}>
+              <a
+                className="tile-blocker-link"
+                href={blockerLink}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open blocker link"
+                onClick={(e) => e.stopPropagation()}
+              >
+                ↗
+              </a>
+            </Tooltip>
+          )}
+          {shown("blockerReply") && blocker.reply && (
+            <span className="tile-blocker-reply">Reply flagged</span>
+          )}
+        </span>
+      )}
+
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`
           is where the gate's reasoning lives: it answers with the line only while there is
@@ -487,6 +522,11 @@ export function SessionTile({
             The DECISION and the tooltip are shared with the card chip and the rail glyph
             (`RuntimeTileFlag`), so the three cannot drift on what it is called. */}
         <RuntimeTileFlag session={session} />
+        {blocker && (
+          <Tooltip label={blockerFlagTitle(blocker)}>
+            <span className="tile-flag tf-blocked">Blocked · {blockerAge(blocker.startedAt)}</span>
+          </Tooltip>
+        )}
         {session.note && (
           <span className={`tile-flag tf-${session.note.disposition}`}>
             {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}

@@ -185,18 +185,26 @@ export interface ClaudeSdkQueryOptions {
     excludeDynamicSections?: boolean;
   };
   resume?: string;
+  /**
+   * Tool rules the CLI auto-approves (`--allowedTools`). Adds approval, never narrows the
+   * toolset. Present only with the ask channel, so `request_input` raises no permission ask.
+   */
+  allowedTools?: string[];
+  /** Tools removed from the session (`--disallowedTools`). Present only with the ask channel. */
+  disallowedTools?: string[];
   mcpServers?: Record<string, unknown>;
   /**
    * Only `mcpServers` - no user, local, project or plugin MCP configuration. Set for a resident
-   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch.
+   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch,
+   * including a resident whose profile imports all native sources.
    */
   strictMcpConfig?: boolean;
   /**
-   * Launch-scoped flag settings, merged over the operator's. A resident run sets
+   * Launch-scoped flag settings, merged over the operator's. A pinned resident run sets
    * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
    * task's advisor pin sets `advisorModel`. One object carries both when both apply.
    */
-  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string };
+  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string; autoMemoryDirectory?: string; autoMemoryEnabled?: boolean };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,
@@ -235,6 +243,8 @@ export interface ClaudeSdkOneShotQueryOptions {
    */
   maxTurns?: number;
   model?: string;
+  /** The SDK's own `effort` option; omitted for the provider default. */
+  effort?: ThinkingLevel;
   maxBudgetUsd?: number;
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
   stderr?: (data: string) => void;

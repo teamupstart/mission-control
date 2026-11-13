@@ -140,11 +140,13 @@ test("worktree config defaults on, is bounded, and merges repository patches", (
     enabled: false,
     maxSlots: 4,
     setupArgv: ["npm", "install"],
+    claim: null,
   });
   assert.deepEqual(resolveWorktreePolicy("/unknown/.git", next), {
     enabled: true,
     maxSlots: 24,
     setupArgv: null,
+    claim: null,
   });
 
   const cleared = setWorktreesConfig(
@@ -182,8 +184,10 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     }
   };
 
+  // Each observation read retries once; this proves where a twice-unknown read lands.
+  const noPause = async () => {};
   const listed = await new NativeWorktreeGit(async () =>
-    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`)
+    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`), noPause,
   ).list(identity);
   assertUnknown(listed, /git worktree list/);
 
@@ -198,7 +202,7 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     const inspected = await new NativeWorktreeGit(async (_bin, args) => {
       if (args.includes(unknownProbe)) return unknown(unknownProbe === "rev-parse" ? `${sha}\n` : "");
       return known(unknownProbe === "rev-parse" ? "" : `${sha}\n`);
-    }).inspect(clone);
+    }, noPause).inspect(clone);
     assertUnknown(inspected, step);
   }
 

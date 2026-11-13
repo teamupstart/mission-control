@@ -22,6 +22,7 @@ import {
   RESIDENT_PROFILE_SECTION_IDS,
   ResidentProfileRevisionSchema,
   residentLaunchSummary,
+  residentMcpSummary,
   type ResidentProfile,
 } from "../src/shared/residents.ts";
 
@@ -102,6 +103,26 @@ test("a profile without a Persona says so in the rail and the launch summary, no
   const missing = profile("gone", null);
   assert.match(residentProfileFact(missing, []), /^missing Persona · /);
   assert.match(residentLaunchSummary(missing.settings, null, "Claude Code"), /^persona missing · /);
+});
+
+test("the launch summary says plainly when a resident's MCP set is not pinned, naming only what Mission Control adds", () => {
+  const custom = { source: "custom" as const, id: "11111111-1111-4111-8111-111111111111" };
+  const global = { source: "global" as const, agent: "claude" as const, name: "github" };
+  const mcp = (over: Record<string, unknown>) => ResidentProfileRevisionSchema.parse({
+    identity: { name: "S" }, persona: { personaId: "p" }, mcp: over,
+  }).mcp;
+  // Pinned, as before.
+  assert.equal(residentMcpSummary(mcp({})), "MCP: defaults");
+  assert.equal(residentMcpSummary(mcp({ selected: [global, custom] }), ["github", "linear"]), "MCP: defaults + github, linear");
+  assert.equal(residentMcpSummary(mcp({ inheritDefaults: false, selected: [custom] }), ["linear"]), "MCP: only linear");
+  // All native sources: global servers load natively, so only the custom ones are named.
+  assert.equal(residentMcpSummary(mcp({ nativeSources: "all" })), "MCP: all native sources (not pinned)");
+  assert.equal(residentMcpSummary(mcp({ nativeSources: "all", inheritDefaults: false, selected: [global] }), ["github"]), "MCP: all native sources (not pinned)");
+  assert.equal(
+    residentMcpSummary(mcp({ nativeSources: "all", selected: [global, custom] }), ["github", "linear"]),
+    "MCP: all native sources (not pinned) + linear",
+  );
+  assert.equal(residentMcpSummary(mcp({ nativeSources: "all", selected: [global, custom] })), "MCP: all native sources (not pinned) + 1 custom");
 });
 
 test("the Dispatch layer renders Resident mode with the shared three-way toggle and the profile cards", () => {

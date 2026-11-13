@@ -42,6 +42,10 @@ Respond with ONLY a single JSON object - no prose, no markdown fences - of this 
   "note": string                // one line on how you read this backlog overall
 }
 
+"reason" and "note" are shown to the human on the board, where tasks appear only by title. Ids belong
+in "id" and "dependsOn" and nowhere else: whenever a reason or the note mentions a task, name it by its
+title, never by its id.
+
 WHEN ONE TASK DEPENDS ON ANOTHER - only these:
 - It builds directly on something the other task creates (a schema, a route, a component, a config
   key that does not exist yet).
@@ -87,7 +91,11 @@ export function buildBacklogPrompt(tasks: Task[]): string {
     if (declared.length > 0) {
       lines.push(
         `operator dependencies: ${declared
-          .map((dependency) => dependency.type === "task" ? dependency.taskId : dependency.title)
+          // A task edge carries its title too, so a reason that mentions the prerequisite has
+          // the name the operator knows it by.
+          .map((dependency) => dependency.type === "task"
+            ? `${dependency.taskId} (title: ${JSON.stringify(dependency.title)})`
+            : dependency.title)
           .join(", ")}`,
       );
     }

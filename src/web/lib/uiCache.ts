@@ -153,6 +153,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     residentDrawerPinned: raw?.residentDrawerPinned === true,
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
+    // A cache written by the build that stored Disabled as `lineDensity: "hidden"` (#1399)
+    // still means switched off, exactly as the daemon migrates it.
+    lineHidden: raw?.lineHidden === true || (raw?.lineDensity as string | undefined) === "hidden",
     skin: parseSkin(raw?.skin),
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),
@@ -191,14 +194,18 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     // the default - re-grouping the board on every cold paint for the one person who turned it
     // off. The same trap the booleans above avoid the same way.
     groupBoardByRepo: raw?.groupBoardByRepo ?? UI_CONFIG_DEFAULTS.groupBoardByRepo,
-    // `??` for the same reason: a stored `false` is the operator hiding the stash.
-    showEmptyColumnStash: raw?.showEmptyColumnStash ?? UI_CONFIG_DEFAULTS.showEmptyColumnStash,
+    // `??` for the same reason: a stored value is the operator's choice of which state groups
+    // the Board drill-in sidebar lists, and `||` would read a stored `false` as absent.
     boardSidebarAllSessions: raw?.boardSidebarAllSessions ?? UI_CONFIG_DEFAULTS.boardSidebarAllSessions,
+    conversationRailCollapsed: raw?.conversationRailCollapsed === true,
     // A fresh array, like `trustStaged`: the column-width store builds its next patch from
     // what it reads here.
     collapsedBoardColumns: Array.isArray(raw?.collapsedBoardColumns)
       ? raw.collapsedBoardColumns.filter((id): id is string => typeof id === "string")
       : [],
+    // Only a stored `true` folds, as `residentDrawerPinned` reads: anything else is the open
+    // rail every earlier build drew.
+    sessionRailFolded: raw?.sessionRailFolded === true,
     // Fresh arrays, for the reason above: the Top bar panel builds its next patch from what
     // it reads here, and a miss means the shipped bar - nothing hidden, nothing minimized.
     hiddenTopbarItems: Array.isArray(raw?.hiddenTopbarItems)

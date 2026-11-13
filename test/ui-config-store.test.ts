@@ -83,7 +83,7 @@ test("the skin defaults to Default, round-trips, and only a shipped id can be wr
   assert.equal(getUiConfig().skin, "daylight", "a refused skin changed the store");
   // Tolerant on read: a skin written by a newer build (a downgrade) opens as Default, and the
   // rest of the record survives it.
-  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build", layout: "console" });
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build" as never, layout: "console" });
   assert.equal(getUiConfig().skin, "default");
   assert.equal(getUiConfig().layout, "console", "an unknown skin failed the whole ui record");
   assert.equal(UiConfigSchema.parse({ skin: 42 }).skin, "default");
@@ -278,6 +278,73 @@ test("keybindings are replaced whole, so an override can actually be dropped", (
   assert.deepEqual(getUiConfig().keybindings, { select: "shift+Tab" });
   setUiConfig({ keybindings: {} });
   assert.deepEqual(getUiConfig().keybindings, {});
+});
+
+test("Disabled Line is stored as its own key, so a daemon from before it still opens the record", async () => {
+  // A third `lineDensity` member would fail every UI preference on an older daemon - its
+  // `.default()` covers a missing value only - after a downgrade, or a worktree build sharing
+  // this state dir. A separate key is stripped by that daemon instead, and it draws the strip.
+  const { LINE_DENSITIES, UiConfigSchema } = await import("../src/shared/protocol.ts");
+  assert.deepEqual([...LINE_DENSITIES], ["expanded", "condensed"]);
+
+  setUiConfig({ lineDensity: "expanded" });
+  setUiConfig({ lineHidden: true });
+  assert.equal(getUiConfig().lineHidden, true);
+  assert.equal(getUiConfig().lineDensity, "expanded", "switching off kept the density to return to");
+  assert.throws(() => setUiConfig({ lineDensity: "hairline" } as never));
+
+  // What this build wrote, read by the schema of a build that never had `lineHidden`.
+  const written = getAppConfig(APP_CONFIG_ENTRIES.ui);
+  const older = UiConfigSchema.omit({ lineHidden: true }).parse(written);
+  assert.equal(older.lineDensity, "expanded");
+  assert.equal("lineHidden" in older, false);
+});
+
+test("a Disabled Line stored as lineDensity \"hidden\" by #1399 is moved to lineHidden, not refused", () => {
+  openDb()
+    .prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)`)
+    .run("ui", JSON.stringify({ layout: "console", lineDensity: "hidden" }));
+  const config = getUiConfig();
+  assert.equal(config.lineHidden, true);
+  assert.equal(config.lineDensity, UI_CONFIG_DEFAULTS.lineDensity);
+  assert.equal(config.layout, "console", "the rest of the record survived the move");
+  // Persisted, so a daemon from before `lineHidden` reading this state never sees "hidden".
+  const raw = getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>;
+  assert.equal(raw.lineDensity, UI_CONFIG_DEFAULTS.lineDensity);
+  assert.equal(raw.lineHidden, true);
+});
+
+test("a #1399 dashboard's Disabled request is read as lineHidden, and other unknown densities are still refused", async () => {
+  // A tab left open across the upgrade still sends Disabled as a third density. Refusing it
+  // with a 400 would roll that tab's own choice back; it means `lineHidden: true`.
+  const { UiConfigPatchSchema } = await import("../src/shared/protocol.ts");
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "hidden" }), { lineHidden: true });
+  assert.deepEqual(
+    UiConfigPatchSchema.parse({ lineDensity: "hidden", layout: "console" }),
+    { layout: "console", lineHidden: true },
+  );
+  // Switching it back on from that tab sends a density alone, which means "draw the Line".
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "expanded" }), {
+    lineDensity: "expanded",
+    lineHidden: false,
+  });
+  // This build's panel states `lineHidden` itself, and that is left exactly as sent.
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "condensed", lineHidden: true }), {
+    lineDensity: "condensed",
+    lineHidden: true,
+  });
+  assert.deepEqual(UiConfigPatchSchema.parse({ layout: "board" }), { layout: "board" });
+  assert.equal(UiConfigPatchSchema.safeParse({ lineDensity: "hairline" }).success, false);
+  assert.equal(UiConfigPatchSchema.safeParse({}).success, false, "an empty update is still refused");
+
+  setUiConfig({ lineDensity: "expanded" });
+  setUiConfig(UiConfigPatchSchema.parse({ lineDensity: "hidden" }));
+  assert.equal(getUiConfig().lineHidden, true);
+  assert.equal(getUiConfig().lineDensity, "expanded", "the bridged request kept the stored density");
+  // The same old tab switches it back on: a refreshed dashboard must agree that it is on.
+  setUiConfig(UiConfigPatchSchema.parse({ lineDensity: "condensed" }));
+  assert.equal(getUiConfig().lineHidden, false);
+  assert.equal(getUiConfig().lineDensity, "condensed");
 });
 
 test("a stored config with an unknown key still parses (schema defaults fill the rest)", () => {

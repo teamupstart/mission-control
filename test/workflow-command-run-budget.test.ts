@@ -540,3 +540,100 @@ test("a hand-edited budget degrades the field toward running, not the slot towar
   assert.deepEqual(view.defaultCommand, ["npm", "run", "build"], "the slot must still be readable");
   assert.equal(view.maxRuns, WORKFLOW_COMMAND_DEFAULT_MAX_RUNS);
 });
+
+/** A finished check outcome as the run budget reads it: the argv, and whether it was a misfit. */
+function ranOutcome(command: string[], misfit: boolean) {
+  return { status: "failed", slot: command[1] ?? "test", command, exitCode: misfit ? 2 : 1, output: "",
+    truncatedBytes: 0, note: "exited.", misfitSignal: misfit ? `make: *** No rule to make target '${command[1]}'.  Stop.` : null };
+}
+
+test("configuring a Command returns the misfit runs that slot spent, never one in flight", () => {
+  // The misconfigured `make test` spent the run's one allowance proving nothing about the
+  // change. Without forgiveness the corrected command would be skipped as `budget_spent` on
+  // the very resubmission that configured it.
+  const store = new WorkflowStore(db);
+  seedRun(store, "forgive", 1);
+  assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-a", "test", 1, null).granted, true);
+  store.finishAttempt("attempt-forgive-1-a", { state: "completed", output: ranOutcome(["make", "test"], true) }, 10);
+  assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-b", "lint", 1, null).granted, true);
+  store.finishAttempt("attempt-forgive-1-b", { state: "completed", output: ranOutcome(["make", "lint"], true) }, 10);
+  // A sibling execution still running keeps its claim.
+  assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-c", "test", 2, null).granted, true);
+  assert.equal(store.checkRunsSpent("run-forgive", "test", null), 2);
+
+  assert.deepEqual(store.forgiveCheckRuns("run-forgive", "test", ["npm", "test"]), { forgiven: 1, restored: 0 });
+  assert.equal(store.checkRunsSpent("run-forgive", "test", null), 1, "the running claim stays");
+  assert.equal(store.checkRunsSpent("run-forgive", "lint", null), 1, "another slot is untouched");
+  assert.equal(
+    store.reserveCheckRun("run-forgive", "attempt-forgive-1-r1", "test", 2, null).granted,
+    true,
+    "the corrected command can run again in this run",
+  );
+});
+
+test("configuring the command that already ran forgives nothing, so maxRuns still bounds it", () => {
+  // Re-confirming the argv the run already spent its allowance on must not hand that same
+  // command another execution - otherwise repeating the call would run it without limit.
+  const store = new WorkflowStore(db);
+  seedRun(store, "same-argv", 1);
+  assert.equal(store.reserveCheckRun("run-same-argv", "attempt-same-argv-1-a", "test", 1, null).granted, true);
+  store.finishAttempt("attempt-same-argv-1-a", { state: "completed", output: ranOutcome(["npm", "test"], true) }, 10);
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    assert.deepEqual(store.forgiveCheckRuns("run-same-argv", "test", ["npm", "test"]), { forgiven: 0, restored: 0 });
+  }
+  assert.equal(store.checkRunsSpent("run-same-argv", "test", null), 1);
+  assert.deepEqual(
+    store.reserveCheckRun("run-same-argv", "attempt-same-argv-1-b", "test", 1, null),
+    { granted: false, spent: 1 },
+    "the budget is still spent",
+  );
+  // An attempt that recorded no command never reached one, and is left alone too.
+  assert.equal(store.reserveCheckRun("run-same-argv", "attempt-same-argv-1-c", "lint", 1, null).granted, true);
+  store.finishAttempt("attempt-same-argv-1-c", { state: "completed" }, 10);
+  assert.deepEqual(store.forgiveCheckRuns("run-same-argv", "lint", ["npm", "run", "lint"]), { forgiven: 0, restored: 0 });
+});
+
+test("a command that actually ran is never forgiven, whatever is configured next", () => {
+  // `npm test` ran and failed for real. Configuring another argv must not buy a second
+  // execution: only an execution the repository could not provide proved nothing.
+  const store = new WorkflowStore(db);
+  seedRun(store, "real-run", 1);
+  assert.equal(store.reserveCheckRun("run-real-run", "attempt-real-run-1-a", "test", 1, null).granted, true);
+  store.finishAttempt("attempt-real-run-1-a", { state: "completed", output: ranOutcome(["npm", "test"], false) }, 10);
+  assert.deepEqual(store.forgiveCheckRuns("run-real-run", "test", ["pytest", "-q"]), { forgiven: 0, restored: 0 });
+  assert.equal(store.reserveCheckRun("run-real-run", "attempt-real-run-1-b", "test", 1, null).granted, false);
+});
+
+test("switching Commands back and forth never runs either one past maxRuns", () => {
+  // The sequence GitHub Inspector described, with maxRuns 1: run A, configure B, run B,
+  // configure A. A's spending must come back with it, so A cannot run a second time - and
+  // repeating the switch must keep refusing both.
+  const store = new WorkflowStore(db);
+  seedRun(store, "switch", 1);
+  const A = ["make", "test"];
+  const B = ["npm", "test"];
+  let next = 0;
+  const run = (argv: string[], misfit: boolean): boolean => {
+    const id = `attempt-switch-${next++}`;
+    store.insertAttempt({ id, submissionId: "submission-switch-1", nodeId: `gate-${id}`, attempt: 1,
+      state: "running", persona: null, inputFingerprint: "fingerprint", now: 1 });
+    const granted = store.reserveCheckRun("run-switch", id, "test", 1, null).granted;
+    store.finishAttempt(id, { state: "completed", output: granted ? ranOutcome(argv, misfit) : null }, 10);
+    return granted;
+  };
+  // Both A and B are commands the repository does not provide, the case forgiveness exists for.
+  assert.equal(run(A, true), true, "A runs once");
+  assert.deepEqual(store.forgiveCheckRuns("run-switch", "test", B), { forgiven: 1, restored: 0 });
+  assert.equal(run(B, true), true, "B, configured after A proved nothing, runs once");
+  assert.deepEqual(store.forgiveCheckRuns("run-switch", "test", A), { forgiven: 1, restored: 1 });
+  assert.equal(run(A, true), false, "A gets its own spent run back, so it cannot run again");
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    store.forgiveCheckRuns("run-switch", "test", B);
+    assert.equal(run(B, true), false, "B is refused on every return");
+    store.forgiveCheckRuns("run-switch", "test", A);
+    assert.equal(run(A, true), false, "A is refused on every return");
+  }
+  assert.equal(store.checkRunsSpent("run-switch", "test", null), 1, "exactly the configured argv's one run counts");
+});
+
+

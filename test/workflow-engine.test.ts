@@ -34,6 +34,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine, reviewedCommit } = await import("../src/server/workflows/engine.ts");
+const { recordedRoutingLabel, verdictMeta } = await import("../src/web/workflows/run-model.ts");
 const { evidenceTelemetryKey, guidanceDigest } = await import(
   "../src/server/workflows/test-evidence-audit.ts"
 );
@@ -571,6 +572,149 @@ test("a Persona call carries its own timeout rather than inheriting the runner's
   // (two minutes in `claude-cli.ts`), which reads as a model that cannot answer rather than
   // as a budget that was never passed.
   assert.deepEqual(budgets, [600_000]);
+});
+
+test("a node's effort reaches the provider and is recorded on the attempt and its call", async () => {
+  // The override names an effort; the resolver seam (the Persona tier) names a different one,
+  // so a pass here proves the node override won and that the level that RAN is what is stored.
+  const effortGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      {
+        id: "p",
+        kind: "persona",
+        persona: persona("effort", "Effort", "claude", "review"),
+        position: { x: 100, y: 0 },
+        executionOverride: { runner: "claude", model: "claude-opus-5-5", effort: "xhigh" },
+      },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("effort", effortGraph);
+  const efforts: Array<string | undefined> = [];
+  const fake: LlmRunner = {
+    id: "claude",
+    label: "effort",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      efforts.push(opts?.effort);
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => fake,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+      effort: { level: "low", unsupported: null },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-effort");
+  await waitFor(() => store.getRun("run-effort")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual(efforts, ["xhigh"]);
+  const [attempt] = store.listAttemptsForRun("run-effort").filter((item) => item.nodeId === "p");
+  assert.equal(attempt?.model, "claude-opus-5-5");
+  assert.equal(attempt?.effort, "xhigh");
+  const calls = openDb().prepare(
+    `SELECT effort FROM workflow_llm_calls WHERE run_id = 'run-effort'`,
+  ).all() as unknown as Array<{ effort: string | null }>;
+  assert.deepEqual(calls.map((call) => call.effort), ["xhigh"]);
+});
+
+test("an effort the resolved model cannot run is not passed, but is recorded and shown on the run", async () => {
+  // A frozen `max` whose resolved model turned out not to offer it: the call must run at the
+  // provider default (a CLI would reject the flag) and the drop must stay visible.
+  const droppedGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p", kind: "persona", persona: persona("dropped", "Dropped", "codex", "review"), position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("dropped", droppedGraph);
+  const seen: Array<{ hasEffort: boolean }> = [];
+  const fake: LlmRunner = {
+    id: "codex",
+    label: "dropped",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      seen.push({ hasEffort: opts !== undefined && "effort" in opts });
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const logged: string[] = [];
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const capture = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+  console.log = capture;
+  console.warn = capture;
+  try {
+    const engine = new WorkflowEngine(store, () => {}, {
+      runnerFor: () => fake,
+      resolveExecution: () => ({
+        runner: { id: "codex", source: "config", unknown: null },
+        model: { id: "gpt-5.6-luna", source: "config" },
+        effort: { level: null, unsupported: "max" },
+      }),
+    });
+    engine.start();
+    engine.activateSubmission("submission-dropped");
+    await waitFor(() => store.getRun("run-dropped")?.status === "completed");
+    await engine.stop();
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(seen, [{ hasEffort: false }]);
+  const [attempt] = store.listAttemptsForRun("run-dropped").filter((item) => item.nodeId === "p");
+  assert.equal(attempt?.effort, undefined);
+  assert.equal(attempt?.effortUnsupported, "max");
+  assert.equal(
+    recordedRoutingLabel(attempt!),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  assert.equal(
+    recordedRoutingLabel(verdictMeta(attempt!, [])),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  assert.ok(
+    logged.some((line) => line.includes("event=persona_effort_unsupported") && line.includes("effort=max")),
+    `expected an unsupported-effort log line, saw: ${logged.join(" | ")}`,
+  );
 });
 
 test("each structured provider attempt has its own durable LLM call receipt", async () => {
@@ -1312,7 +1456,7 @@ const checkPolicy = (over: Record<string, unknown> = {}) => ({
   skipPassedJudges: true,
   liveEnabled: false,
   repoAllowlist: ["/repo"],
-  defaultWorkflowId: null,
+  kindWorkflowDefaults: { ship: null },
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
   ...over,
@@ -1651,6 +1795,110 @@ test("a failing check returns a repair packet to the Session, citing its own out
   assert.equal(delivery.state, "prepared");
   assert.match(delivery.payload, /## Command · test/);
   assert.match(delivery.payload, /TS2345/);
+  // A repository override was written for this checkout, so no configuration note is added.
+  assert.equal((attempt.output as Record<string, unknown>).commandSource, "override");
+  assert.doesNotMatch(delivery.payload, /configure_workflow_command/);
+});
+
+async function failingDefaultPacket(name: string, output: string, truncatedBytes = 0) {
+  const store = seedSubmission(name, checkGraph);
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: passingRunner,
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowPolicy: () => checkPolicy(),
+      workflowCommand: checkCatalog({}, { test: ["make", "test"] }),
+      checkDeps: () => ({
+        execute: async () => ({ kind: "exited", exitCode: 2, output, truncatedBytes }),
+      }),
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission(`submission-${name}`);
+  await waitFor(() => store.listDeliveries(`run-${name}`).length === 1);
+  await manager.stop();
+  const attempt = store.listAttempts(`submission-${name}`).find((item) => item.nodeId === "gate")!;
+  const change = (attempt.verdict as { requestedChanges: Array<{ title: string; rationale: string }> })
+    .requestedChanges[0]!;
+  return { attempt, change, payload: store.listDeliveries(`run-${name}`)[0]!.payload };
+}
+
+test("a machine-wide default the repository does not provide asks for configuration, never a Makefile", async () => {
+  const { attempt, change, payload } = await failingDefaultPacket(
+    "check-misfit",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+  );
+  assert.equal((attempt.output as Record<string, unknown>).commandSource, "default");
+  assert.equal(change.title, "Configure the test Command for this repository; do not add files to satisfy it");
+  assert.doesNotMatch(change.title, /Fix the failing/);
+  assert.match(change.rationale, /`make test`, which is Mission Control's machine-wide default/);
+  assert.match(change.rationale, /No rule to make target 'test'/);
+  assert.match(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /asks the operator to confirm through a request_input card that Mission Control writes/);
+  assert.match(change.rationale, /configure_workflow_command\(\{ runId: "run-check-misfit", slot: "test"/);
+  assert.match(change.rationale, /resubmitUnchanged: true/);
+  // The procedure reaches the Session intact, ahead of the command output it explains.
+  assert.match(payload, /Configure the test Command for this repository/);
+  assert.match(payload, /configure_workflow_command/);
+  assert.ok(payload.indexOf("request_input") < payload.indexOf("Command output:"));
+});
+
+test("a nested make failing inside a real `make test` target stays an ordinary failure", async () => {
+  // The repository provides `make test`; its recipe runs a sub-make that cannot find its own
+  // target. That is a failure inside a real test command, never a missing workflow Command.
+  const { change } = await failingDefaultPacket(
+    "check-nested-make",
+    "make -C fixtures build\nmake[1]: *** No rule to make target 'build'.  Stop.\nmake: *** [Makefile:4: test] Error 2\n",
+  );
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /make\[1\]: \*\*\* No rule to make target 'build'/);
+});
+
+test("an independent nested make refusing `test` inside a real `make test` recipe stays an ordinary failure", async () => {
+  // Captured from GNU make 3.81: the recipe `cd sub && env -u MAKELEVEL make test` starts a
+  // SEPARATE make, so its refusal speaks as `make:` and names `test` exactly like the outer
+  // make refusing would. The echoed recipe and the outer `*** [test] Error 2` show the
+  // configured target ran, so this is a failure inside the repository's own test command.
+  const { change } = await failingDefaultPacket(
+    "check-independent-make",
+    "cd sub && env -u MAKELEVEL make test\nmake: *** No rule to make target `test'.  Stop.\nmake: *** [test] Error 2\n",
+  );
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /make: \*\*\* \[test\] Error 2/);
+});
+
+test("a refusal in the tail of truncated output stays an ordinary failure", async () => {
+  // A launcher's refusal is a few lines. Output large enough to be truncated came from a
+  // command that ran, so a matching refusal in its retained tail is something that command
+  // ran - never the configured command being missing - whatever the tail happens to hold.
+  const { attempt, change } = await failingDefaultPacket(
+    "check-truncated",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+    50_000,
+  );
+  assert.ok(((attempt.output as Record<string, unknown>).truncatedBytes as number) > 0);
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /No rule to make target 'test'/);
+  // The same bytes untruncated are the configuration repair, so truncation alone decided it.
+  const { change: whole } = await failingDefaultPacket(
+    "check-untruncated",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+  );
+  assert.match(whole.title, /^Configure the test Command for this repository/);
+});
+
+test("an unrecognized failure of a machine-wide default keeps the code repair and adds the configuration note", async () => {
+  const { change } = await failingDefaultPacket("check-default-fail", "1 failing\n  AssertionError: expected 2\n");
+  assert.equal(change.title, "Fix the failing test check");
+  assert.match(change.rationale, /AssertionError/);
+  assert.match(change.rationale, /Note: `make test` is Mission Control's machine-wide default/);
+  assert.match(change.rationale, /do not add files to satisfy it/);
+  assert.match(change.rationale, /configure_workflow_command/);
 });
 
 test("startup recovery retries a persisted Check infrastructure error", async () => {

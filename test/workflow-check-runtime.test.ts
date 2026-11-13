@@ -1153,7 +1153,7 @@ test("engine shutdown refuses a check released after lease acquisition", { skip:
   const engine = new WorkflowEngine(store, () => {}, {
     runnerFor: () => { throw new Error("this check-only workflow must not call a model"); },
     workflowPolicy: () => ({
-      liveEnabled: false, repoAllowlist: [f.repoRoot], defaultWorkflowId: null,
+      liveEnabled: false, repoAllowlist: [f.repoRoot], kindWorkflowDefaults: {},
       retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
       checksEnabled: true, skipPassedJudges: true,
     }),
@@ -1226,7 +1226,7 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
     workflowPolicy: () => ({
       liveEnabled: false,
       repoAllowlist: [repoRoot],
-      defaultWorkflowId: null,
+      kindWorkflowDefaults: { ship: null },
       retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
       checksEnabled: true,
       skipPassedJudges: true,
@@ -1329,11 +1329,14 @@ test("checks require the reviewed publication tree and cannot depend on a local 
   assert.equal(success.kind === "exited" && success.exitCode, 0);
   writeFileSync(join(f.repoRoot, "required-source.ts"), "export {};\n");
   const changed = await captureWorkflowPublication(f.repoRoot);
+  const poolCallsBeforeMismatch = f.pool.calls.length;
   const mismatch = await f.runtime.executorFor(attemptRef())({
     ...request, command: PASSES, publicationTreeOid: changed.publication.treeOid,
   });
   assert.equal(mismatch.kind, "infrastructure");
   assert.match(mismatch.kind === "infrastructure" ? mismatch.reason : "", /Commit the required deliverables/);
+  assert.equal(f.pool.calls.length, poolCallsBeforeMismatch,
+    "a publication mismatch must not acquire a worktree or begin its dependency claim");
 
   // A pre-commit review runs the required source from its publication snapshot. Retained
   // report bytes remain available to Personas, but can never become a Command's fixture.

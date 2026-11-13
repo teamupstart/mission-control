@@ -23,6 +23,7 @@ import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
+import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -50,6 +51,7 @@ import {
   ScheduleOriginChip,
   SessionTitle,
   StateBadge,
+  TaskClaimWarnings,
   TaskRepoPrs,
   WorkflowChips,
   EnsembleChip,
@@ -204,9 +206,16 @@ function useIntent(
 export function ConsoleDetail({
   view,
   session,
+  onBack,
 }: {
   view: SessionViewProps;
   session: Session;
+  /**
+   * The Board's way back, drawn at the head's leading edge. Given only when the rail head's back
+   * button is not on screen to do the job: the Board opened this session with no rail beside it
+   * (its column had no card to list), or the rail beside it is folded to its strip.
+   */
+  onBack?: () => void;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   useEffect(() => {
@@ -543,6 +552,13 @@ export function ConsoleDetail({
         ref={headRef}
         style={kindMark === "tile" ? kindAccentStyle(session.task!.kind) : undefined}
       >
+        {onBack && (
+          <Tooltip label="Back to the board (Esc)">
+            <button className="board-back" aria-label="Back to the board" onClick={onBack}>
+              ‹
+            </button>
+          </Tooltip>
+        )}
         {kindMark === "tile" ? (
           <TaskKindMark kind={session.task!.kind} variant="tile">
             <AgentDot agent={session.agent} />
@@ -762,6 +778,7 @@ export function ConsoleDetail({
           {/* The shared leaf is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}
           <TaskRepoPrs repoPrs={session.task.repoPrs} />
+          <TaskClaimWarnings warnings={session.task.claimWarnings} />
           </>
         )}
       </dl>
@@ -879,7 +896,11 @@ export function ConsoleDetail({
                 conversation its height whether or not anything was running, and that
                 described the present at the top of a pane whose present is at the bottom.
                 Nothing may be added back above `.pane-dialog` here without checking the
-                child combinators that select through this container. */}
+                child combinators that select through this container. The blocker band
+                is the one exception: it takes its natural height up to 40% of the pane
+                and scrolls past that (`.detail-conv > .blocker-band`), so long details
+                cannot push the transcript or the reply box out of view. */}
+            <SessionBlockerBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip

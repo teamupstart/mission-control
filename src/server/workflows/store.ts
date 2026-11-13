@@ -187,7 +187,8 @@ import {
 } from "./intent-fingerprint.ts";
 import { classifyWorkflowGoalProvenance } from "./goal-provenance.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import type { SessionIntentGuard } from "@shared/types.ts";
+import { THINKING_LEVELS } from "@shared/types.ts";
+import type { SessionIntentGuard, ThinkingLevel } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { consumePromptedGeneration, openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
@@ -478,7 +479,7 @@ function rowId(value: unknown): string {
 // absent after they have already been defaulted.
 function parseShape<T>(
   table: (typeof WORKFLOW_TABLES)[number],
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  schema: z.ZodType<T, unknown>,
   value: unknown,
 ): T {
   const parsed = schema.safeParse(value);
@@ -799,7 +800,20 @@ const PersonaRowSchema = z.object({
    * The blob's own contents are validated separately, and tolerantly.
    */
   import_provenance_json: nullableText.optional(),
+  /** Optional on the shape for the same reason: a pre-effort database returns no key. */
+  effort: nullableText.optional(),
 });
+
+/** A stored effort, or null for absent and for a level this build does not know. */
+function readPersonaEffort(value: string | null | undefined): ThinkingLevel | null {
+  return (THINKING_LEVELS as readonly string[]).includes(value ?? "") ? value as ThinkingLevel : null;
+}
+
+/** An attempt's or call's effort as a spread: absent stays absent, like every pre-effort row. */
+function withEffort(value: string | null | undefined): { effort?: ThinkingLevel } {
+  const effort = readPersonaEffort(value);
+  return effort ? { effort } : {};
+}
 
 /**
  * The provenance blob, or null - and null for a blob this build cannot read.
@@ -866,6 +880,7 @@ export function parsePersonaRow(value: unknown): Persona {
     // runner union; Persona resolution is the tolerant boundary that reports the fallback.
     runner: row.runner_id as LlmRunnerId | null,
     model: row.model_id,
+    effort: readPersonaEffort(row.effort),
     revision: row.revision,
     archivedAt: row.archived_at,
     createdAt: row.created_at,
@@ -1989,6 +2004,8 @@ const WorkflowNodeAttemptRowSchema = z.object({
   review_rejections_json: nullableText.optional().default(null),
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
+  effort: nullableText.optional(),
+  effort_unsupported: nullableText.optional(),
   verdict_json: nullableText,
   output_json: nullableText,
   retry_at: nullableInteger,
@@ -2078,6 +2095,10 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
     ) ?? undefined,
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,
+    ...withEffort(row.effort),
+    ...(readPersonaEffort(row.effort_unsupported)
+      ? { effortUnsupported: readPersonaEffort(row.effort_unsupported)! }
+      : {}),
     verdict: parseNullableJson(
       "workflow_node_attempts",
       row.id,
@@ -2250,6 +2271,7 @@ const WorkflowLlmCallRowSchema = z.object({
   purpose: z.enum(WORKFLOW_LLM_PURPOSES),
   runner_id: z.enum(LLM_RUNNER_IDS),
   model_id: nonempty,
+  effort: nullableText.optional(),
   attempt: positive,
   state: z.enum(WORKFLOW_LLM_CALL_STATES),
   started_at: integer,
@@ -2271,6 +2293,7 @@ export function parseWorkflowLlmCallRow(value: unknown): WorkflowLlmCall {
     purpose: row.purpose,
     runner: row.runner_id,
     model: row.model_id,
+    ...withEffort(row.effort),
     attempt: row.attempt,
     state: row.state,
     startedAt: row.started_at,
@@ -2435,7 +2458,9 @@ function transaction<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
-export interface PersonaInsert extends CreatePersona {
+export interface PersonaInsert extends Omit<CreatePersona, "effort"> {
+  /** Optional for the reason `provenance` is: most inserts take the provider default. */
+  effort?: CreatePersona["effort"];
   id: string;
   normalizedName: string;
   createdAt: number;
@@ -3009,6 +3034,12 @@ function restampsEpisode(stamped: string | null, episodeKey: string | null): boo
   return episodeKey !== null && stamped !== episodeKey;
 }
 
+/**
+ * Marks a run-budget reservation a session's Command configuration forgave. Not a slot name,
+ * so the budget's `check_run_slot = <slot>` counts skip it; see `forgiveCheckRuns`.
+ */
+const FORGIVEN_CHECK_RUN_PREFIX = "forgiven:";
+
 export class WorkflowStore {
   /** Publish domain writes before commit, including nested writes in an outer transaction. */
   private mutate<T>(
@@ -3226,9 +3257,9 @@ export class WorkflowStore {
       this.db
         .prepare(
           `INSERT INTO personas (
-             id, name, normalized_name, description, guidance_md, runner_id, model_id,
+             id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
              revision, archived_at, created_at, updated_at, import_provenance_json
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -3238,6 +3269,7 @@ export class WorkflowStore {
           input.guidanceMarkdown,
           input.runner,
           input.model,
+          input.effort ?? null,
           input.createdAt,
           input.updatedAt,
           serializePersonaProvenance(input.provenance ?? null),
@@ -3284,6 +3316,7 @@ export class WorkflowStore {
       if (patch.guidanceMarkdown !== undefined) add("guidance_md", patch.guidanceMarkdown);
       if ("runner" in patch) add("runner_id", patch.runner ?? null);
       if ("model" in patch) add("model_id", patch.model ?? null);
+      if ("effort" in patch) add("effort", patch.effort ?? null);
       // Presence, not truthiness, exactly like the two above: a re-import always names its new
       // provenance, and "no key" is how every other write says it is not touching this column.
       if ("provenance" in patch) {
@@ -3871,13 +3904,13 @@ export class WorkflowStore {
     const stagedPersonaIds = new Set(staged.personas.map((row) => row.id));
     const writePersona = this.db.prepare(
       `INSERT INTO personas (
-         id, name, normalized_name, description, guidance_md, runner_id, model_id,
+         id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
          revision, archived_at, created_at, updated_at, import_provenance_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, normalized_name=excluded.normalized_name,
          description=excluded.description, guidance_md=excluded.guidance_md,
-         runner_id=excluded.runner_id, model_id=excluded.model_id,
+         runner_id=excluded.runner_id, model_id=excluded.model_id, effort=excluded.effort,
          revision=excluded.revision, archived_at=excluded.archived_at,
          updated_at=excluded.updated_at, import_provenance_json=excluded.import_provenance_json`,
     );
@@ -3892,6 +3925,7 @@ export class WorkflowStore {
         row.guidanceMarkdown,
         row.runner,
         row.model,
+        row.effort ?? null,
         revision,
         row.archivedAt,
         current?.createdAt ?? row.createdAt,
@@ -8484,6 +8518,58 @@ export class WorkflowStore {
   }
 
   /**
+   * Re-scope one run's spent executions of one Command after a session configured `command`.
+   *
+   * The run budget bounds re-proving a command, and an execution of an argv the repository
+   * never provided proved nothing about the change. Without this, a session that configures
+   * the right command for its repository resubmits into a gate already skipped as
+   * `budget_spent`, and the command it was asked to fix never runs in this run at all.
+   *
+   * Two rules keep that from becoming a way around `maxRuns`:
+   *
+   * - Only a MISFIT execution is forgiven: one whose outcome recorded `misfitSignal`, the
+   *   launcher refusing a target, script or recipe the repository does not have. A command
+   *   that actually ran is never returned, whatever is configured afterwards.
+   * - Spending stays with the argv that spent it. A forgiven reservation is marked rather than
+   *   erased, and configuring an argv RESTORES its own forgiven reservations. So switching
+   *   A -> B -> A gives A back exactly what it had spent, and re-confirming the command that
+   *   already ran forgives nothing. Each argv gets at most `maxRuns` executions in a run.
+   *
+   * The mark is a `check_run_slot` value no slot can have, so `reserveCheckRun` and
+   * `checkRunsSpent` stop counting it without knowing it exists. Finished attempts only: a
+   * reservation still `running` is an execution in flight.
+   */
+  forgiveCheckRuns(
+    runId: string,
+    slot: string,
+    command: readonly string[],
+  ): { forgiven: number; restored: number } {
+    const forgivenSlot = `${FORGIVEN_CHECK_RUN_PREFIX}${slot}`;
+    const argv = JSON.stringify(command);
+    return transaction(this.db, () => {
+      const inRun = `submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`;
+      const restored = Number(this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET check_run_slot = ?
+          WHERE check_run_slot = ?
+            AND ${inRun}
+            AND json_extract(output_json, '$.command') = json(?)`,
+      ).run(slot, forgivenSlot, runId, argv).changes);
+      const forgiven = Number(this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET check_run_slot = ?
+          WHERE check_run_slot = ?
+            AND state <> 'running'
+            AND ${inRun}
+            AND json_extract(output_json, '$.misfitSignal') IS NOT NULL
+            AND json_extract(output_json, '$.command') IS NOT NULL
+            AND json_extract(output_json, '$.command') <> json(?)`,
+      ).run(forgivenSlot, slot, runId, argv).changes);
+      return { forgiven, restored };
+    });
+  }
+
+  /**
    * Reservations a run has already spent on one Command, for a reader that is not claiming one.
    *
    * Exists for tests and diagnostics. The engine never asks: a caller that counted and then
@@ -8595,6 +8681,10 @@ export class WorkflowStore {
     runner: LlmRunnerId | null,
     model: string | null,
     now = Date.now(),
+    /** Recorded with the model it was resolved for; null is the provider default. */
+    effort: ThinkingLevel | null = null,
+    /** A configured level the model could not run, recorded so the drop stays visible. */
+    effortUnsupported: ThinkingLevel | null = null,
   ): WorkflowNodeAttempt | null {
     return this.mutate(() => {
       const initial = this.getAttempt(id);
@@ -8608,13 +8698,16 @@ export class WorkflowStore {
       }
       const result = this.db.prepare(
         `UPDATE workflow_node_attempts
-            SET state = 'running', runner_id = ?, model_id = ?, started_at = ?,
+            SET state = 'running', runner_id = ?, model_id = ?, effort = ?, effort_unsupported = ?,
+                started_at = ?,
                 updated_at = ?, retry_at = NULL,
                 operator_directive_json = COALESCE(operator_directive_json, ?)
           WHERE id = ? AND state IN ('queued', 'retry_wait')`,
       ).run(
         runner,
         model,
+        effort,
+        effortUnsupported,
         now,
         now,
         snapshot ? JSON.stringify(snapshot) : null,
@@ -10141,13 +10234,13 @@ export class WorkflowStore {
     return this.mutate(() => {
       this.db.prepare(
         `INSERT INTO workflow_llm_calls (
-           id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id,
+           id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id, effort,
            attempt, state, started_at, finished_at, duration_ms, input_bytes, output_bytes,
            cost_usd, error_code
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         call.id, call.runId, call.submissionId, call.nodeAttemptId, call.purpose,
-        call.runner, call.model, call.attempt, call.state, call.startedAt, call.finishedAt,
+        call.runner, call.model, call.effort ?? null, call.attempt, call.state, call.startedAt, call.finishedAt,
         call.durationMs, call.inputBytes, call.outputBytes, call.costUsd, call.errorCode,
       );
       workflowLog("info", {

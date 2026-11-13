@@ -78,6 +78,7 @@ import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
 import { useRichText } from "../lib/rich-text.ts";
+import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
 import { Markdown } from "./Markdown.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import { agentAccentStyle } from "./session-bits.tsx";
@@ -397,9 +398,6 @@ export function TranscriptPanel({
   const { bindings } = useKeybindings();
   const sendChord = formatChord(bindings.send);
   const expandChord = bindings.composerEditor;
-  // Only a session with a checkout and a handler that can open one has any use for the
-  // listing; without both, a path in the prose stays the text the agent typed.
-  const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
   // ConsoleDetail builds `onOpenFile` as a fresh closure every render, and `Markdown` is
   // memoized on its props, including
   // this one, because it must be: a skipped render leaves the rendered anchors calling
@@ -435,6 +433,16 @@ export function TranscriptPanel({
   const [messages, setMessages] = useState<TranscriptMessage[]>(() =>
     flattenHistory(readHistory(sessionId)),
   );
+  // Only a session with a checkout and a handler that can open one has any use for the
+  // listing; without both, a path in the prose stays the text the agent typed. Keyed on the
+  // newest message once the session is between turns, so a file written while you watch
+  // links in the turn that names it - even when the turn was too quick to be seen working.
+  const filePaths = useWorkspacePaths(
+    files,
+    sessionId,
+    Boolean(session.cwd && onOpenFile),
+    session.state === "working" ? null : (messages.at(-1)?.id ?? ""),
+  );
   const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderError, setOlderError] = useState<string | null>(null);
@@ -464,6 +472,8 @@ export function TranscriptPanel({
    * they close it, not be silently returned to Activity.
    */
   const [railTab, setRailTab] = useState<ActivityTab>("activity");
+  /** A per-machine preference rather than local state, so one fold holds for every session. */
+  const railCollapsed = useUiConfig().conversationRailCollapsed;
   /**
    * The turn the "Yours" rail last jumped to.
    *
@@ -1315,6 +1325,8 @@ export function TranscriptPanel({
             }}
             selectedTurnId={jump?.id ?? null}
             onSelectTurn={(id) => setJump((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))}
+            collapsed={railCollapsed}
+            onCollapsed={(next) => void updateUiConfig({ conversationRailCollapsed: next })}
           />
         )}
       </div>

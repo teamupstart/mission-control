@@ -212,8 +212,11 @@ for the operator to fix.
 updates from the latest commit on `main`. It defaults off. Alpha checks about every five
 minutes and on **Check for updates**; stable mode retains its six-hour release checks.
 Both modes require an explicit **Update Now**, followed by **Restart and Install**. Stable selects
-complete signed release assets; alpha pins the exact observed main SHA and reports pending or
-unavailable when its binary is missing. Neither channel requires host Node/npm or compiles locally.
+complete signed release assets; alpha pins the exact observed main SHA. While the newest build is
+still being signed, either channel offers the newest complete build that is still newer than the
+installed app, or reports up to date and names the build in progress. A build that is published
+but cannot update this installation still reports pending or unavailable. Neither channel requires
+host Node/npm or compiles locally.
 A channel change clears an unaccepted offer; an accepted download keeps its immutable identity.
 Cancel waits for owned work to stop before another attempt can start.
 
@@ -248,6 +251,9 @@ derived reload generations, credentials, tokens, and environment secrets.
 
 Skills snapshots include the catalog-wide default and explicit row choices. Restoring an older
 snapshot with no catalog default keeps its previous opt-in meaning, so absent row choices stay off.
+
+Database backup counts and interval (the `database-backups` domain) were added after format v1
+shipped. Restoring a snapshot taken before them leaves the current backup settings unchanged.
 
 The daemon publishes a sibling temporary file atomically, verifies its schema and SHA-256 digest,
 then applies retention. It keeps the newest 90 `daily` files and, independently, the newest 10

@@ -49,7 +49,7 @@ export function LayoutPanel({
   layout: LayoutMode;
   onLayoutChange: (mode: LayoutMode) => void;
 }): React.JSX.Element {
-  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash: showStash, boardSidebarAllSessions } = useUiConfig();
+  const { groupBoardByRepo: groupByRepo, boardSidebarAllSessions } = useUiConfig();
   return (
     <section className="settings-section">
       <div className="settings-section-head">
@@ -163,38 +163,6 @@ export function LayoutPanel({
           </label>
         </>
       )}
-
-      {/* Here for Grouping's reason: which columns the Board draws is arrangement, not a fact
-          on a card. Named explicitly for the same accessible-name reason as the checkbox above. */}
-      <h4 className="settings-subhead" data-anchor="display/board-empty-columns">
-        Empty columns
-      </h4>
-      <label className={`settings-toggle${showStash ? " is-on" : ""}`}>
-        <Tooltip
-          label={
-            showStash
-              ? "Hide the Board's empty-column stash"
-              : "Show the Board's empty-column stash again"
-          }
-        >
-          <input
-            type="checkbox"
-            aria-label="Show the empty-column stash"
-            checked={showStash}
-            onChange={(e) => void updateUiConfig({ showEmptyColumnStash: e.target.checked })}
-          />
-        </Tooltip>
-        <span className="settings-toggle-text">
-          <span className="settings-toggle-label">Show the empty-column stash</span>
-          <span className="settings-toggle-desc">
-            An empty Board column folds into a chip in the "empty" stash beside the last column,
-            and clicking the chip brings the column back. Unchecking this hides the stash, so an
-            empty column simply leaves the board. An empty needs you column is not in the stash:
-            it always stays as a slim all-clear strip and widens in place the moment a session
-            needs you.
-          </span>
-        </span>
-      </label>
     </section>
   );
 }

@@ -54,6 +54,7 @@ const PERSONA: Persona = {
   guidanceMarkdown: "You watch the fleet.",
   runner: null,
   model: null,
+  effort: null,
   revision: 1,
   archivedAt: null,
   createdAt: 0,

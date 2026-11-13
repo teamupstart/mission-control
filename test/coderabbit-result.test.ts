@@ -11,6 +11,19 @@ function parse(events: unknown[], exit = 2, empty = false, paths: CodeRabbitChan
   parser.push(Buffer.from(events.map(e=>JSON.stringify(e)).join("\n")+"\n"));
   return parser.finish(exit, empty);
 }
+test("collection limits refuse oversized CodeRabbit records within the byte budget", () => {
+  const suggestions = Array.from({ length: CODERABBIT_RESULT_LIMITS.suggestions }, () => "suggestion");
+  assert.equal(parse([{ ...finding, suggestions }, complete]).status, "failed");
+  assert.equal(parse([{ ...finding, suggestions: [...suggestions, null] }, complete]).status, "incomplete");
+  const reviewedFiles = Array.from({ length: CODERABBIT_RESULT_LIMITS.reviewedFiles }, (_, i) => `p${i}`);
+  const paths = { required: reviewedFiles, allowed: reviewedFiles };
+  assert.equal(parse([finding, { ...complete, reviewedFiles }], 2, false, paths).status, "failed");
+  const oversized = { ...complete, reviewedFiles: [...reviewedFiles, "extra"] };
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized)) < CODERABBIT_RESULT_LIMITS.recordBytes);
+  const result = parse([finding, oversized], 2, false, { required: oversized.reviewedFiles, allowed: oversized.reviewedFiles });
+  assert.equal(result.status, "incomplete");
+  assert.match(result.diagnostic, /Invalid CodeRabbit completion/);
+});
 test("split UTF-8 findings retain all text, stable ids and advisory severities", () => {
   const parser = new CodeRabbitResultParser("attempt", "major", null);
   const bytes = Buffer.from([finding, {...finding,severity:"info"}, {...complete,findings:2}].map(e=>JSON.stringify(e)).join("\n"));

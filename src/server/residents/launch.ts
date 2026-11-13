@@ -1,8 +1,10 @@
-import { capabilitiesFor, standingInstructionsChannel } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { AgentType, SessionRuntime } from "@shared/types.ts";
 import type { ResidentMcpLaunch } from "../harness/types.ts";
+import { appendStandingSections } from "../instructions/compose.ts";
+import { ensureResidentState, residentStateDir } from "./state.ts";
 import { residentMcpLaunchForRun } from "./mcp-launch.ts";
 
 /**
@@ -62,14 +64,15 @@ export const personaInstructionsContributor: ResidentLaunchContributor = {
 };
 
 /**
- * The run's MCP servers, from the snapshot it took at launch and nothing else, whether its
- * profile inherits the harness defaults or not. Read again at every launch and resume, so no
- * later edit to a profile, a custom server, a secret or the native configuration reaches it.
+ * The run's MCP servers, from the snapshot it took at launch, whether its profile inherits the
+ * harness defaults or not. Read again at every launch and resume, so no later edit to a profile,
+ * a custom server or a secret reaches it - nor the native configuration, unless the pinned
+ * revision imports all native sources, which the harness then reads for itself at every start.
  */
 export const mcpContributor: ResidentLaunchContributor = {
   id: "mcp",
   contribute({ run }) {
-    return { residentMcp: residentMcpLaunchForRun(run.id) };
+    return { residentMcp: residentMcpLaunchForRun(run.id, run.settings.mcp.nativeSources) };
   },
 };
 
@@ -79,6 +82,8 @@ export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] 
   { id: "compaction", contribute: ({ run, agent }) => capabilitiesFor(agent).residentCompaction?.nativeBackstop
     ? { residentCompaction: { threshold: run.settings.loop.contextThreshold } } : {} },
   mcpContributor,
+  { id: "durableState", contribute: ({ run }) => ({ standingInstructions:
+    `### Durable resident state\n\nYour profile state directory is ${residentStateDir(run.profileId)} (RESIDENT_STATE_DIR). Read it at the start of each run. Store notes, corrections, ledgers and already-handled watermarks here. It survives restarts and profile edits; the run workspace is temporary. Concurrent runs of this profile share this directory; coordinate writes.` }) },
 ];
 
 /** The composed resident additions to one launch. */
@@ -107,21 +112,11 @@ export function composeResidentLaunch(
   const contributions = contributors.map((contributor) => contributor.contribute(context));
   const residentMcp = contributions.find((contribution) => contribution.residentMcp)?.residentMcp ?? null;
   const residentCompaction = contributions.find((part) => part.residentCompaction)?.residentCompaction;
-  const sections = contributions
-    .map((part) => part.standingInstructions?.trim() ?? "")
-    .filter((text) => text.length > 0);
-  if (sections.length === 0) return { standing: repository, residentMcp, residentCompaction };
-  const text = [repository.text, ...sections].filter((part) => part.length > 0).join("\n\n");
+  const sections = contributions.map((part) => part.standingInstructions ?? "");
   return {
     residentMcp,
     residentCompaction,
-    standing: {
-      text,
-      mechanism: repository.mechanism === "none"
-        ? standingInstructionsChannel(context.agent, context.runtime) ?? "prompt-prefix"
-        : repository.mechanism,
-      sources: repository.sources,
-    },
+    standing: appendStandingSections(repository, sections, context.agent, context.runtime),
   };
 }
 
@@ -134,4 +129,12 @@ export async function residentNativeCompactionForTask(taskId: string | null, tok
   const settings = RESIDENT_LAUNCH_CONTRIBUTORS.map((part) => part.contribute({ run, agent: run.settings.execution.agent, runtime: "sdk" }))
     .find((part) => part.residentCompaction)?.residentCompaction;
   return settings && tokenLimit !== undefined ? { ...settings, tokenLimit } : settings;
+}
+
+/** Re-derived from durable run ownership for fresh launches and every SDK restore. */
+export async function residentStateForTask(taskId: string | null): Promise<string | undefined> {
+  if (!taskId) return undefined;
+  const { residentRunForTask } = await import("./store.ts");
+  const run = residentRunForTask(taskId)?.run;
+  return run ? ensureResidentState(run.profileId) : undefined;
 }

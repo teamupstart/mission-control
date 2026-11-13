@@ -15,7 +15,7 @@ import { samePlanPublicationContext, type PlanPublicationContext } from "@shared
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
-import { agentActive, reportBucket, settledIdle } from "@shared/session.ts";
+import { agentActive, hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
 import type {
   CreateWorkflow,
@@ -1269,7 +1269,11 @@ export class WorkflowManager {
      */
     try {
       if (input.replaceBindingId) {
+        // The replacement archives every active binding for this note, not only the one named.
+        const running = this.store.activeBindingsForNote(noteKey)
+          .flatMap((binding) => this.runningAttemptIdsForBinding(binding.id));
         const replaced = this.store.replaceBindingAndCancel(input.replaceBindingId, insert);
+        if (replaced) this.engine.stopCheckAttempts(running);
         if (!replaced) return {
           ok: false,
           reason: "conflict",
@@ -1508,7 +1512,9 @@ export class WorkflowManager {
   }
 
   archiveBinding(id: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowBinding> {
+    const running = this.runningAttemptIdsForBinding(id);
     const archived = this.store.archiveBindingAndCancel(id, now);
+    if (archived) this.engine.stopCheckAttempts(running);
     if (archived?.cancelledRunId) this.publishRun(archived.cancelledRunId);
     if (archived) this.publishBinding(archived.binding.id);
     return archived
@@ -2655,10 +2661,28 @@ export class WorkflowManager {
     };
   }
 
+  /**
+   * Read before a cancel, which moves every running attempt to `cancelled`. A running check
+   * attempt may be running a dependency claim, or be on its way to one; the engine aborts it,
+   * the claim stops or never starts, and the attempt's result is recorded as audit-only.
+   */
+  private runningAttemptIds(runId: string): string[] {
+    return this.store.listAttemptsForRun(runId)
+      .filter((attempt) => attempt.state === "running")
+      .map((attempt) => attempt.id);
+  }
+
+  private runningAttemptIdsForBinding(bindingId: string): string[] {
+    const active = this.store.activeRunForBinding(bindingId);
+    return active ? this.runningAttemptIds(active.id) : [];
+  }
+
   cancel(runId: string, requestId: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    const running = this.runningAttemptIds(run.id);
     const cancelled = this.store.cancelRun(run.id, `cancelled:${requestId}`, now) ?? run;
+    if (running.length > 0) this.engine.stopCheckAttempts(running);
     this.publishRun(run.id);
     return { ok: true, value: cancelled, idempotent: run.status === "cancelled" };
   }
@@ -5110,7 +5134,8 @@ export class WorkflowManager {
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : null;
     const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
       && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
-      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you";
+      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
+      && !hasBlocker(session);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
         this.publishRun(runId);
@@ -7822,6 +7847,7 @@ export class WorkflowManager {
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
     if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    if (hasBlocker(session)) return held("session_blocked");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.
     // Resuming there would submit the same evidence back into the same review, which is a
@@ -8130,6 +8156,13 @@ export class WorkflowManager {
     // A settled PR handoff is the explicit exception below because unchanged repository
     // evidence proves it needs a fresh Inspector observation, not another submission.
     const probe = await this.probeRepository(binding, latest);
+    // The session may have reported a blocker while git ran. Both branches below can move the
+    // run (the unchanged one can hand a PR to the Inspector), so ask again before either does.
+    const current = this.registry.getSession(eligible.session.id);
+    if (current && hasBlocker(current)) {
+      this.recordResumptionWithheld(run, latest, "session_blocked", now);
+      return;
+    }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
     if (unchanged) {

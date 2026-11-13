@@ -23,7 +23,7 @@ const refs = ["workflow_id", "version_id", "binding_id", "run_id", "submission_i
   "attempt_id", "persona_id", "persona_revision", "call_id", "delivery_id", "stage_id", "reuse_attempt_id",
   "session_id", "task_id", "segment_id", "conversation_id", "operation_id", "cause_attempt_id"];
 function event<S extends z.ZodRawShape>(name: string, group: TelemetryEventDefinition["group"],
-  question: string, shape: S, duration: string | null = null): TelemetryEventDefinition<z.ZodObject<S & typeof common, "strict">> {
+  question: string, shape: S, duration: string | null = null): TelemetryEventDefinition<z.ZodObject<S & typeof common, z.core.$strict>> {
   const facts = z.object({ ...common, ...shape }).strict();
   return { name: `mission.workflow.${name}`, version: 1, group, priority: "core", question,
     owner: "src/server/telemetry/workflows.ts", audience: AUDIENCE_ALL, facts, refKeys: refs,

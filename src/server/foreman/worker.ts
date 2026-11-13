@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ForemanConfig,
+  InspectorFindingsResponse,
   PromptedCompletionDisposition,
   PromptedRecoveryClaim,
 } from "@shared/protocol.ts";
@@ -95,13 +96,20 @@ import {
 } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
 import {
+  ROUTINE_FOLLOWUP_SKIPS,
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   decideReviewFollowup,
   foremanSettleMs,
   followupPrs,
+  heldFindingsCount,
+  heldSkipReason,
+  reviewFollowupPrs,
+  workflowHoldsReviewFollowup,
+  workflowReleasedFollowupOnly,
 } from "./review-followup.ts";
-import type { FollowupMark, FollowupPr } from "./review-followup.ts";
+import type { AdoptedInspection, FollowupMark, FollowupPr } from "./review-followup.ts";
+import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -939,6 +947,57 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
 const reviewNudged = new Map<string, Map<string, FollowupMark>>();
 
 /**
+ * The reasons already logged for each session's pull request in its current Inspector round, so
+ * a held PR is logged once per round and reason rather than every pass. Keyed by `noteKeyOf`, so
+ * a re-minted session id does not log the same hold again.
+ */
+const heldLogged = new Map<string, Map<string, { round: number; reasons: Set<string> }>>();
+
+/**
+ * Forget departed sessions, and, once the adoption read succeeded, the held PRs no card follows
+ * through on any more. Pruned against every card sharing a note key, because an exited card and
+ * its re-minted successor can follow different PRs, and pruning each alone would erase the
+ * other's history every pass.
+ */
+function pruneHeldLogged(sessions: readonly Session[], adopted: AdoptedInspection[] | null): void {
+  const followed = new Map<string, Set<string>>();
+  for (const session of sessions) {
+    const key = noteKeyOf(session);
+    const prKeys = followed.get(key) ?? new Set<string>();
+    if (adopted) for (const pr of reviewFollowupPrs(session, adopted)) prKeys.add(pr.prKey);
+    followed.set(key, prKeys);
+  }
+  for (const [key, logged] of heldLogged) {
+    const prKeys = followed.get(key);
+    if (!prKeys) {
+      heldLogged.delete(key);
+      continue;
+    }
+    if (!adopted) continue;
+    for (const prKey of logged.keys()) if (!prKeys.has(prKey)) logged.delete(prKey);
+    if (logged.size === 0) heldLogged.delete(key);
+  }
+}
+
+function logHeldFindings(session: Session, pr: FollowupPr, why: string, open: number): void {
+  if (open === 0 || ROUTINE_FOLLOWUP_SKIPS.has(why)) return;
+  const round = pr.inspector?.round ?? 0;
+  const key = noteKeyOf(session);
+  const logged = heldLogged.get(key) ?? new Map<string, { round: number; reasons: Set<string> }>();
+  heldLogged.set(key, logged);
+  let held = logged.get(pr.prKey);
+  // Rounds only advance; a card whose summary lags would otherwise reset the newer history every pass.
+  if (held && round < held.round) return;
+  if (!held || held.round !== round) {
+    held = { round, reasons: new Set() };
+    logged.set(pr.prKey, held);
+  }
+  if (held.reasons.has(why)) return;
+  held.reasons.add(why);
+  log(`${session.name}: holding ${open} GitHub Inspector finding(s) on ${pr.prKey} (round ${round}) - ${why}`);
+}
+
+/**
  * Fold this pass's observation into every one of a session's open pull requests, and forget
  * the ones that are no longer open. Returns the session's marks, which is also what the map
  * now holds for it.
@@ -947,12 +1006,42 @@ const reviewNudged = new Map<string, Map<string, FollowupMark>>();
  * `advanceFollowupMark` gives: a CI recovery seen while the session was working has to be
  * remembered so the next failure re-arms once it parks.
  */
-function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string, FollowupMark> {
+function observeFollowupMarks(
+  sessionId: string,
+  prs: FollowupPr[],
+  keepUnseen = false,
+): Map<string, FollowupMark> {
   const prior = reviewNudged.get(sessionId);
-  const next = new Map<string, FollowupMark>();
+  // An unseen PR is not a closed one when the adoption read failed, and dropping its mark
+  // would relay the same round again once the read recovers.
+  const next = new Map<string, FollowupMark>(keepUnseen ? prior : undefined);
   for (const pr of prs) next.set(pr.prKey, advanceFollowupMark(prior?.get(pr.prKey) ?? null, pr));
   reviewNudged.set(sessionId, next);
   return next;
+}
+
+let adoptedReadFailing = false;
+
+/**
+ * The open pull requests the Inspector adopted, projected for `reviewFollowupPrs`, or null when
+ * either read failed. A failure is logged once per streak, and the pass follows through on
+ * session cards alone.
+ */
+async function readAdoptedInspections(client: ForemanClient): Promise<AdoptedInspection[] | null> {
+  try {
+    const [rows, inspectorCfg] = await Promise.all([client.openInspections(), client.inspectorConfig()]);
+    adoptedReadFailing = false;
+    return rows.map((row) => ({ row, inspector: inspectorSummaryOf(row, inspectorCfg) }));
+  } catch (err) {
+    if (!adoptedReadFailing) {
+      log(
+        `could not read the GitHub Inspector's open pull requests - following through on ` +
+          `session cards only until it recovers (${String(err)})`,
+      );
+    }
+    adoptedReadFailing = true;
+    return null;
+  }
 }
 
 /**
@@ -965,6 +1054,18 @@ function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string,
  * Immediately before each send it re-reads the session and config and repeats the same
  * decision against the fresh fleet.
  *
+ * A nudge that includes findings needs their text, which the snapshot does not carry. That
+ * read happens BEFORE the freshness recheck, never after it: every request between the
+ * recheck and the inject is a window in which the session can start working, need a human,
+ * gain a queue or a workflow, and a gate decided on the older state would not see it. So the
+ * order is read the findings, re-read the fleet, decide once on both, then type. The fresh
+ * decision also refuses findings read for a different Inspector round than the snapshot it
+ * stamps (see `ReviewFollowupInput.findingsRound`).
+ *
+ * A failed findings read is logged and holds: nothing is stamped or typed, and the next pass
+ * reads again. Findings resolved by the time of the read drop out of the decision; with
+ * nothing else new to say it skips, again without stamping.
+ *
  * Returns the ids of the sessions whose pane it claimed this pass - a send that landed,
  * or one that threw but MAY have reached the composer - so the caller can both judge
  * progress (a non-empty set means come straight back) and keep the per-target loop from
@@ -976,9 +1077,10 @@ function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string,
  * cannot spin either, because its marker is kept, so the next pass sees "already nudged"
  * and does nothing.
  */
-async function runReviewFollowup(
+export async function runReviewFollowup(
   client: ForemanClient,
   cfg: ForemanConfig,
+  holdsLease: () => boolean = () => isLeader,
 ): Promise<Set<string>> {
   const nudged = new Set<string>();
 
@@ -988,23 +1090,24 @@ async function runReviewFollowup(
   // Drop markers for sessions that have gone away, so the map tracks the live fleet.
   const liveIds = new Set(sessions.map((s) => s.id));
   for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
-
+  const adopted = await readAdoptedInspections(client);
+  pruneHeldLogged(sessions, adopted);
   const shipping = await client.shippingConfig().catch(() => null);
   const now = Date.now();
   for (const session of sessions) {
     // No open PR anywhere: forget this session's marks - a merged/closed PR is done, and a
     // later new PR starts fresh. Everything below is scoped to pull requests a mark can be
     // keyed to.
-    const prs = followupPrs(session);
+    const prs = reviewFollowupPrs(session, adopted ?? []);
     if (prs.length === 0) {
-      reviewNudged.delete(session.id);
+      if (adopted) reviewNudged.delete(session.id);
       continue;
     }
 
     // Fold this pass's observation (a CI recovery, or a new PR) into every mark and PERSIST
     // them, for EVERY open pull request - not only the one about to be nudged - because that
     // recovery is what re-arms CI once the session parks. See `advanceFollowupMark`.
-    const marks = observeFollowupMarks(session.id, prs);
+    const marks = observeFollowupMarks(session.id, prs, adopted === null);
 
     // A workflow is another writer to this pane and checkout. Failure to read ownership
     // is a reason to hold, never permission to type across an owner we could not observe.
@@ -1026,25 +1129,41 @@ async function runReviewFollowup(
         // this session is driving from one that needs a human.
         bucket: reportBucket(session, sessions),
         mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
-        workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
+        workflowOwnsSession: workflowHoldsReviewFollowup(workflowRuns),
         mark: marks.get(pr.prKey) ?? null,
+        // A session only a released run owns is followed through on without CodeRabbit and
+        // stack prompts, whose inject guards still refuse while any run is open.
         cfg: {
           trackReviewComments: cfg.trackReviewFeedback,
-          codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true,
+          codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true && !workflowReleasedFollowupOnly(workflowRuns),
           trackCiFailures: cfg.trackCiFailures,
-          stackPrompts: true,
+          stackPrompts: !workflowReleasedFollowupOnly(workflowRuns),
           settleMs: SETTLE_MS,
         },
         now,
       });
-      if (decision.kind === "skip") continue;
+      if (decision.kind === "skip") {
+        logHeldFindings(session, pr, decision.why, heldFindingsCount(pr));
+        continue;
+      }
 
-      const [freshCfg, freshSessions, freshShipping] = await Promise.all([
+      // The findings' text, read before the freshness recheck below so that recheck is the
+      // last thing observed before typing. A failed read holds the whole session this pass.
+      let read: InspectorFindingsResponse | null = null;
+      if (decision.kind === "read-findings") {
+        read = await readReviewFindings(client, session, decision.prKey);
+        if (!read) break;
+      }
+
+      // The adopted rows are re-read with the fleet, so an adopted-only PR that closed in the
+      // window is noticed exactly as a card PR would be.
+      const [freshCfg, freshSessions, freshShipping, freshAdopted] = await Promise.all([
         client.getConfig().catch(() => null),
         client.sessions().catch(() => null),
         client.shippingConfig().catch(() => null),
+        readAdoptedInspections(client),
       ]);
-      if (!freshCfg || !freshSessions || !isLeader) break;
+      if (!freshCfg || !freshSessions || !holdsLease()) break;
 
       const fresh = resolveLiveSession(freshSessions, noteKeyOf(session));
       if (!fresh || paneKeyOf(fresh) !== paneKeyOf(session)) break;
@@ -1063,10 +1182,10 @@ async function runReviewFollowup(
         if (carried && !reviewNudged.has(fresh.id)) reviewNudged.set(fresh.id, carried);
         reviewNudged.delete(session.id);
       }
-      const freshPrs = followupPrs(fresh);
+      const freshPrs = reviewFollowupPrs(fresh, freshAdopted ?? []);
       const freshPr = freshPrs.find((candidate) => candidate.prKey === pr.prKey);
       if (!freshPr) break;
-      const freshMarks = observeFollowupMarks(fresh.id, freshPrs);
+      const freshMarks = observeFollowupMarks(fresh.id, freshPrs, freshAdopted === null);
       const freshMark = freshMarks.get(freshPr.prKey) ?? null;
 
       const freshDecision = decideReviewFollowup({
@@ -1074,18 +1193,29 @@ async function runReviewFollowup(
         pr: freshPr,
         bucket: reportBucket(fresh, freshSessions),
         mayActLive: foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot),
-        workflowOwnsSession: activeWorkflowOwnsSession(freshWorkflowRuns),
+        workflowOwnsSession: workflowHoldsReviewFollowup(freshWorkflowRuns),
         mark: freshMark,
         cfg: {
           trackReviewComments: freshCfg.trackReviewFeedback,
-          codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true,
+          codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true && !workflowReleasedFollowupOnly(freshWorkflowRuns),
           trackCiFailures: freshCfg.trackCiFailures,
-          stackPrompts: true,
+          stackPrompts: !workflowReleasedFollowupOnly(freshWorkflowRuns),
           settleMs: SETTLE_MS,
         },
         now: Date.now(),
+        ...(read ? { findings: read.findings, findingsRound: read.pr.round } : {}),
       });
-      if (freshDecision.kind === "skip" || !isLeader) break;
+      // Findings that appeared between the two reads are the next pass's to send: this pass
+      // read none, so it has no text to type.
+      if (freshDecision.kind === "skip") {
+        logHeldFindings(
+          fresh,
+          freshPr,
+          heldSkipReason(freshPr, freshDecision.why, read?.pr.round, freshCfg.trackReviewFeedback),
+          heldFindingsCount(freshPr, read?.findings, read?.pr.round),
+        );
+      }
+      if (freshDecision.kind !== "nudge" || !holdsLease()) break;
 
       // Stamp BEFORE the inject, then retract ONLY on positive evidence nothing landed -
       // the `recentlyActed` discipline. A request whose outcome we never learn keeps the
@@ -1119,6 +1249,26 @@ async function runReviewFollowup(
     }
   }
   return nudged;
+}
+
+/**
+ * One pull request's findings for the relay, or null when the read failed. Logged, so a
+ * held follow-through says why; the caller stamps and types nothing on null.
+ */
+async function readReviewFindings(
+  client: ForemanClient,
+  session: Session,
+  prKey: string,
+): Promise<InspectorFindingsResponse | null> {
+  try {
+    return await client.inspectorFindings(prKey);
+  } catch (err) {
+    log(
+      `${session.name}: could not read GitHub Inspector's findings on ${prKey} - ` +
+        `holding the PR follow-through for the next pass (${String(err)})`,
+    );
+    return null;
+  }
 }
 
 /**

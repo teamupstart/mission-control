@@ -1,4 +1,4 @@
-import type { WorktreesConfig } from "./protocol.ts";
+import type { WorktreeClaim, WorktreesConfig } from "./protocol.ts";
 import type { TerminalBackendId } from "./terminal.ts";
 
 export const WORKTREE_INVENTORY_LIMITS = {
@@ -28,8 +28,20 @@ export type WorktreeRiskKey =
   | "legacy-unverifiable"
   | "foreign";
 
+/**
+ * Who may hold a native slot's lease: the one list the allocator validates against, the slot
+ * row's owner is read back through, and Settings names. `warm` is maintenance holding the slot
+ * for a moment, such as a seed copying from it, and is never a task.
+ */
+export const WORKTREE_OWNER_KINDS = ["task", "check", "manual", "warm"] as const;
+export type WorktreeOwnerKind = (typeof WORKTREE_OWNER_KINDS)[number];
+
+export function isWorktreeOwnerKind(value: unknown): value is WorktreeOwnerKind {
+  return typeof value === "string" && (WORKTREE_OWNER_KINDS as readonly string[]).includes(value);
+}
+
 export interface WorktreeOwnerView {
-  kind: "task" | "check" | "manual";
+  kind: WorktreeOwnerKind;
   key: string;
   label: string;
 }
@@ -41,6 +53,95 @@ export interface WorktreeProcessSummary {
 }
 
 export type WorktreeDefaultRelation = "merged" | "unmerged" | "unknown";
+
+/**
+ * Where a claim variable's value would come from for a step that names it. Never the value.
+ */
+export type WorktreeClaimVariableSource = "daemon" | "loginShell";
+
+export interface WorktreeClaimVariableView {
+  name: string;
+  present: boolean;
+  /** Null when missing: unset or empty in both, or carrying the daemon's own token. */
+  source: WorktreeClaimVariableSource | null;
+}
+
+/**
+ * A slot's dependency state as Settings shows it.
+ *
+ * - `never`: no claim has run in this slot.
+ * - `current`: the last claim succeeded and its fingerprint matches the default branch's (or
+ *   the default could not be read, or the claim lists no fingerprint paths).
+ * - `stale`: the last claim succeeded, but at a fingerprint the last fetched default branch no
+ *   longer has. The next lease runs the steps again.
+ * - `installing`: a claim is running in this slot right now.
+ * - `failed`: the last claim failed, timed out or was stopped.
+ * - `interrupted`: a claim was cut off by a restart. The next claim starts cold.
+ */
+export type WorktreeSlotDependencyState =
+  | "never"
+  | "current"
+  | "stale"
+  | "installing"
+  | "failed"
+  | "interrupted";
+
+/** What every dependency state carries. */
+interface WorktreeSlotDependenciesBase {
+  /** The commit the slot's recorded fingerprint was taken at. */
+  fingerprintSha: string | null;
+  /** When the last claim settled. */
+  claimedAt: number | null;
+}
+
+/**
+ * A failed claim, field by field. The daemon decodes its own record; the browser never parses
+ * prose. Claim variable values are removed from `reason` and `tail` before they are stored.
+ */
+export interface WorktreeClaimFailureView {
+  /** Null, with `stepCount` and `command`, only for a failure an earlier build recorded as text. */
+  step: number | null;
+  stepCount: number | null;
+  command: string | null;
+  reason: string;
+  /** The step's last output. Empty when it printed nothing. */
+  tail: string;
+  /** Output bytes dropped from the front of the tail. */
+  truncatedBytes: number;
+  /**
+   * An earlier build stored this failure's output before values were redacted from it, so the
+   * daemon does not send it at all. `tail` is then empty.
+   */
+  tailWithheld: boolean;
+}
+
+/**
+ * A slot's dependency state. Each state carries exactly its own facts, so a reader switches on
+ * `state` and never has to know which other fields happen to be null alongside it.
+ */
+export type WorktreeSlotDependenciesView =
+  | (WorktreeSlotDependenciesBase & { state: "never" })
+  | (WorktreeSlotDependenciesBase & {
+      state: "current";
+      /** The default-branch commit it was judged against; null when none could be. */
+      defaultSha: string | null;
+    })
+  | (WorktreeSlotDependenciesBase & {
+      state: "stale";
+      /** The fetched default-branch commit whose dependencies differ. */
+      defaultSha: string;
+    })
+  | (WorktreeSlotDependenciesBase & {
+      state: "installing";
+      /** The running claim's own id, which Stop names so it can only ever stop this claim. */
+      claimId: string;
+      /** When this claim began, for its elapsed time. */
+      startedAt: number;
+      /** Null until the first step starts: the fingerprint is still being read. */
+      step: { step: number; stepCount: number; command: string; startedAt: number } | null;
+    })
+  | (WorktreeSlotDependenciesBase & { state: "failed"; failure: WorktreeClaimFailureView })
+  | (WorktreeSlotDependenciesBase & { state: "interrupted" });
 
 export interface NativeWorktreeSlotView {
   id: string;
@@ -60,6 +161,8 @@ export interface NativeWorktreeSlotView {
   quarantineReason: string | null;
   diagnostic: string | null;
   actions: Array<"return" | "destroy">;
+  /** Null when the pool has no dependency claim configured. */
+  dependencies: WorktreeSlotDependenciesView | null;
 }
 
 export interface WorktreeRepositoryView {
@@ -68,7 +171,17 @@ export interface WorktreeRepositoryView {
   root: string;
   commonDirectory: string;
   poolPath: string;
-  policy: { enabled: boolean; maxSlots: number; setupArgv: string[] | null };
+  policy: {
+    enabled: boolean;
+    maxSlots: number;
+    setupArgv: string[] | null;
+    claim: WorktreeClaim | null;
+  };
+  /**
+   * Every variable name the pool's claim lists, once, with whether a step would receive it.
+   * Empty when there is no claim. Values never leave the daemon.
+   */
+  claimVariables: WorktreeClaimVariableView[];
   counts: {
     total: number;
     leased: number;

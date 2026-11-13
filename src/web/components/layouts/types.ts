@@ -107,10 +107,10 @@ export interface SessionViewProps {
   /**
    * Residents drawn as visitor cards: they need you while the Residents drawer is closed. In
    * `sessions` like any fleet member, but a view draws them as `ResidentVisitorCard`, which
-   * opens the drawer through `onOpenResidentDrawer` instead of the detail.
+   * opens the resident's conversation through `onOpenResident`.
    */
   residentVisitors?: ReadonlySet<string>;
-  onOpenResidentDrawer?: (sessionId: string) => void;
+  onOpenResident?: (sessionId: string) => void;
   onOpenReviews: (id: string) => void;
   /** One-shot request to reveal a session's integrated Diff tab, optionally at one fix. */
   diffTabRequest: { sessionId: string; commit: string | null; nonce: number } | null;

@@ -1,5 +1,6 @@
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
-import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
+import type { KindWorkflowDefaults } from "./task.ts";
+import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { PlanPublicationContext } from "./plan-publication.ts";
@@ -12,11 +13,10 @@ import type {
   SessionIntentGuard,
 } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
+import { launchEffortLevels } from "./harness-capabilities.ts";
+import type { ThinkingLevel } from "./types.ts";
 import { repoAllowlisted } from "./allowlist.ts";
-import {
-  NO_MISTAKES_REVIEW_WORKFLOW_ID,
-  parseBuiltinWorkflowVersionId,
-} from "./builtin-workflow.ts";
+import { parseBuiltinWorkflowVersionId } from "./builtin-workflow.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -997,6 +997,11 @@ export interface Persona {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * The reasoning effort this Persona's calls ask for, or null for the provider's default.
+   * One vocabulary with sessions and tasks (`THINKING_LEVELS`); see `personaEffortLevels`.
+   */
+  effort: ThinkingLevel | null;
   revision: number;
   archivedAt: number | null;
   createdAt: number;
@@ -1016,6 +1021,84 @@ export interface Persona {
 export interface PersonaExecutionView {
   runner: ResolvedLlmRunner;
   model: ResolvedModel;
+  /** Absent reads exactly as `{ level: null, unsupported: null }`: the provider default. */
+  effort?: ResolvedPersonaEffort;
+}
+
+/**
+ * The effort one Persona call runs at.
+ *
+ * `level` is what is actually passed to the provider; null means no effort flag at all, so the
+ * provider's own default applies. `unsupported` is a stored level the resolved provider and
+ * model do not offer - reported rather than dropped, so the surface showing the model can say
+ * that the configured effort did not apply. It is only ever non-null when `level` is null.
+ */
+export interface ResolvedPersonaEffort {
+  level: ThinkingLevel | null;
+  unsupported: ThinkingLevel | null;
+}
+
+/**
+ * The effort levels a Persona call may name, for one provider/model choice.
+ *
+ * The launch-time capability table sessions and tasks already use (`launchEffortLevels`), read
+ * through the headless runner id, which names the same provider as the harness of that id. A
+ * Persona that inherits its provider (`runner === null`) can land on any runner, so it is
+ * offered only the levels EVERY runner offers for that model - the same reasoning
+ * `portableEffortLevels` applies to a task that inherits its agent.
+ */
+export function personaEffortLevels(
+  runner: LlmRunnerId | null,
+  model: string | null,
+): readonly ThinkingLevel[] {
+  if (runner !== null) return launchEffortLevels(runner, model);
+  const [first, ...rest] = LLM_RUNNER_IDS;
+  return launchEffortLevels(first, model).filter((level) =>
+    rest.every((id) => launchEffortLevels(id, model).includes(level)));
+}
+
+/**
+ * Resolve a stored effort against the provider and model a call will actually use.
+ *
+ * Capability-checked at run time as well as at write time: a Persona that inherits its
+ * provider was validated against every runner, but an app-wide model environment override can
+ * still narrow the levels after the fact. An effort the call cannot honour is surfaced as
+ * `unsupported` rather than passed to a CLI that would reject it.
+ */
+export function resolvePersonaEffort(
+  runner: LlmRunnerId,
+  model: string | null,
+  effort: ThinkingLevel | null | undefined,
+): ResolvedPersonaEffort {
+  if (!effort) return { level: null, unsupported: null };
+  return launchEffortLevels(runner, model).includes(effort)
+    ? { level: effort, unsupported: null }
+    : { level: null, unsupported: effort };
+}
+
+/**
+ * The effort half of a routing line, or null when the provider default applies by choice.
+ *
+ * Null rather than "default effort" so every routing line written before effort existed reads
+ * exactly as it did. An unsupported level is never null: it is the one case where the
+ * configured effort and the effort that runs differ, and that has to be readable.
+ */
+export function personaEffortLabel(effort: ResolvedPersonaEffort | undefined): string | null {
+  if (effort?.level) return `${effort.level} effort`;
+  if (effort?.unsupported) return `${effort.unsupported} effort unsupported, provider default`;
+  return null;
+}
+
+/** `runner · model`, plus ` · <effort>` when one is configured. One spelling for every surface. */
+export function routingLine(
+  runner: string,
+  model: string,
+  effort: ResolvedPersonaEffort | ThinkingLevel | null | undefined,
+): string {
+  const label = typeof effort === "string" || effort == null
+    ? effort ? `${effort} effort` : null
+    : personaEffortLabel(effort);
+  return label ? `${runner} · ${model} · ${label}` : `${runner} · ${model}`;
 }
 
 export interface PersonaDefaultsView {
@@ -1950,6 +2033,14 @@ export interface WorkflowNodeExecutionOverride {
   runner: LlmRunnerId;
   /** Never empty. An empty box is an INCOMPLETE override, never a silent fallback. */
   model: string;
+  /**
+   * Optional, and part of the pair rather than a third independently inherited field, for the
+   * pair's own reason: which levels exist depends on the provider and model, so an effort
+   * chosen here is validated against THIS runner and model (`personaEffortLevels`). Absent
+   * means the provider's default, never the Persona's effort - the override replaces the
+   * Persona's whole execution choice. Graphs written before the field existed carry no key.
+   */
+  effort?: ThinkingLevel;
 }
 
 export type WorkflowDraftNode =
@@ -1992,6 +2083,11 @@ export interface PersonaSnapshot {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * Frozen with the model. OPTIONAL because every version published before effort existed
+   * carries no key, and absence reads exactly as null: the provider default.
+   */
+  effort?: ThinkingLevel | null;
 }
 
 /**
@@ -2011,6 +2107,9 @@ export function personaSnapshotOf(persona: Persona): PersonaSnapshot {
     guidanceMarkdown: persona.guidanceMarkdown,
     runner: persona.runner,
     model: persona.model,
+    // Spread only when set, so a Persona with no effort freezes byte-identically to a version
+    // published before the field existed.
+    ...(persona.effort ? { effort: persona.effort } : {}),
   };
 }
 
@@ -2200,6 +2299,7 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "archived_session_action",
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
+  "unsupported_effort",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 
@@ -2429,6 +2529,18 @@ export function workflowRunResumesItself(
 export const WORKFLOW_RUN_SPENT_PHASES = ["round_limit", "inspector_round_limit"] as const;
 
 /**
+ * The blocked phases, beside a spent budget, where only the operator or the session can restart
+ * the run, so it stops holding Foreman's PR follow-through (`workflowRunReleasesFollowup`).
+ *
+ * An allowlist on purpose: a blocked phase added later keeps holding the follow-through until
+ * someone decides it belongs here.
+ */
+export const WORKFLOW_FOLLOWUP_RELEASE_PHASES = [
+  "unchanged_evidence_exhausted",
+  "session_disappeared",
+] as const;
+
+/**
  * Has this run given up - stopped in a way that will NEVER clear on its own?
  *
  * The distinction this draws is the whole point of leaving `blocked` non-terminal (see
@@ -2457,6 +2569,25 @@ export function workflowRunGaveUp(run: {
   // step - the existing resume and full-restart moves gate on the same inequality and come
   // back by themselves.
   return workflowRunHasNoRepairsLeft(run);
+}
+
+/**
+ * Has this blocked run stopped where it will deliver nothing until the operator or the session
+ * restarts it, so Foreman's PR follow-through may type into its session again?
+ *
+ * Only the follow-through reads this. The run keeps its Shipping veto and its session
+ * ownership everywhere else; see "Blocked runs are recoverable, not terminal" in
+ * `docs/workflows.md`.
+ */
+export function workflowRunReleasesFollowup(run: {
+  status: WorkflowRunStatus;
+  phase: string;
+  round: number;
+  maxRepairRounds: number;
+}): boolean {
+  if (run.status !== "blocked") return false;
+  return workflowRunGaveUp(run)
+    || (WORKFLOW_FOLLOWUP_RELEASE_PHASES as readonly string[]).includes(run.phase);
 }
 
 /**
@@ -2515,6 +2646,8 @@ export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
   "session_needs_you",
   "packet_undelivered",
   "repository_unchanged",
+  // Appended: the bound session reported a durable blocker (waiting on someone else).
+  "session_blocked",
 ] as const;
 
 export type WorkflowResumptionWithheldReason =
@@ -2552,6 +2685,9 @@ export function workflowResumptionWithheldSentence(
     case "repository_unchanged":
       return `Waiting on the session: the repository has not changed since round ${round}.`
         + " Reviewing it again would return the same verdicts, so no round has been spent.";
+    case "session_blocked":
+      return "The session is blocked on someone other than you, so it has not been handed another"
+        + " round. The next round opens once its blocker is cleared.";
     default:
       return null;
   }
@@ -3179,14 +3315,21 @@ export interface WorkflowPolicy {
   liveEnabled: boolean;
   repoAllowlist: string[];
   /**
-   * Workflow identity preselected for new single-agent dispatches, or null for none.
+   * The after-work Workflow each task kind preselects, overriding
+   * `BUILTIN_KIND_WORKFLOW_DEFAULTS` kind by kind. An absent kind follows the built-in, `null`
+   * is an explicit None, and a string is a workflow identity.
    *
    * The identity is resolved to its then-current immutable published version when the
    * dispatched session is bound. Keeping the workflow id here means publishing a new version
    * updates the default without rewriting machine settings, while each resulting binding still
-   * pins one immutable version.
+   * pins one immutable version. Resolve a kind through `taskDefaultWorkflowId`, never by
+   * reading this map directly.
+   *
+   * Replaced the single `defaultWorkflowId`, which is migrated on read by
+   * `StoredWorkflowPolicySchema`. `PUT /api/workflows/config` still accepts it as a deprecated
+   * alias for the Ship row (`WorkflowConfigSchema`).
    */
-  defaultWorkflowId: WorkflowId | null;
+  kindWorkflowDefaults: KindWorkflowDefaults;
   retention: WorkflowRetentionConfig;
   /**
    * Machine-wide consent for running a configured command from a workflow.
@@ -3252,10 +3395,9 @@ export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
   liveEnabled: true,
   repoAllowlist: [],
-  // Store the stable workflow identity, not today's version. A task resolves it to the
-  // newest immutable shipped version when its session is armed (v5 in this build), while
-  // an explicit null in Settings or the dispatch form remains an opt-out.
-  defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  // Every kind follows its built-in (`BUILTIN_KIND_WORKFLOW_DEFAULTS`) until an operator
+  // sets a row, so an untouched install dispatches exactly as it always has.
+  kindWorkflowDefaults: {},
   retention: {
     rawEvidenceDays: 30,
     completedRunDays: 180,
@@ -3288,9 +3430,15 @@ export interface WorkflowCommandResolution {
    * submission's commit rather than standing in the operator's own directory.
    */
   workingSubpath: string;
-  /** Which rung of the ladder answered. Diagnostic only; execution treats both alike. */
-  source: "override" | "default";
+  /**
+   * Which rung of the ladder answered. Execution treats both alike; the repair packet does
+   * not, because a failing global default may simply not apply to this repository.
+   */
+  source: WorkflowCommandSource;
 }
+
+export const WORKFLOW_COMMAND_SOURCES = ["override", "default"] as const;
+export type WorkflowCommandSource = (typeof WORKFLOW_COMMAND_SOURCES)[number];
 
 /**
  * Resolve one slot for one location: longest matching override, else the global default.
@@ -3558,6 +3706,25 @@ export interface WorkflowCheckOutcome {
    * decide whether the cap is set where they want it.
    */
   command: string[] | null;
+  /**
+   * Which catalog rung supplied `command`: a repository override or the machine-wide default.
+   * Absent on outcomes recorded before it was captured and on every outcome with no command.
+   *
+   * Recorded because the two fail for different reasons. A repository override was written for
+   * this checkout; a global default was not, so its failure may mean the repository runs that
+   * slot some other way, and the repair is to configure the Command rather than to change code.
+   */
+  commandSource?: WorkflowCommandSource | null;
+  /**
+   * The configured launcher's own refusal when a failed command was one the repository does
+   * not provide (no such make target, package script or recipe) - see `command-fit.ts`. Null
+   * or absent for every other outcome, including a failure inside a command that did run.
+   *
+   * Recorded with the outcome because two readers need the same answer: the repair packet,
+   * which asks for configuration instead of a code fix, and the run budget, which returns
+   * only an execution that proved nothing about the change.
+   */
+  misfitSignal?: string | null;
   exitCode: number | null;
   /** Bounded and tail-biased: a failure's last lines are the useful ones. */
   output: string;
@@ -4426,6 +4593,18 @@ export interface WorkflowNodeAttempt {
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * The effort the provider was actually asked for, resolved with the model. Absent when the
+   * call passed none (the provider default), on non-Persona attempts, and on every attempt
+   * recorded before effort existed.
+   */
+  effort?: ThinkingLevel;
+  /**
+   * A configured effort the resolved provider and model could not run, so the call ran at the
+   * provider default instead. Recorded beside `effort` so the drop is visible on the run rather
+   * than silent; only ever present when `effort` is absent.
+   */
+  effortUnsupported?: ThinkingLevel;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
   /** Attempt-owned retained Command bodies, including on infrastructure failures. */
@@ -4484,6 +4663,8 @@ export interface WorkflowLlmCall {
   purpose: WorkflowLlmPurpose;
   runner: LlmRunnerId;
   model: string;
+  /** The effort passed with the model; absent for the provider default. See the attempt's. */
+  effort?: ThinkingLevel;
   attempt: number;
   state: WorkflowLlmCallState;
   startedAt: number;

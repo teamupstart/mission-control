@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import type { LineStageId, LineStageSummary, LineSummary } from "@shared/line.ts";
 import { LINE_STAGES, LINE_STAGE_LABELS, lineStage } from "@shared/line.ts";
 import type { LineDensity } from "@shared/protocol.ts";
-import { lineUrgentReadout, nextLineDensity } from "../lib/line-density.ts";
+import { lineUrgentReadout, nextLineDensity, type LineChoice } from "../lib/line-density.ts";
 import { lineStageHasDrawer } from "../lib/line-targets.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -117,13 +117,14 @@ export function LineStrip({
   stageRef,
   onStage,
   onDensity,
+  preview = false,
 }: {
   /** The daemon's fold, or null before the first snapshot lands. */
   summary: LineSummary | null;
   /**
    * How much the strip says. `expanded` is the two-line strip at 86px; `condensed` drops
    * the sentences and the wires for a single 38.5px row, handing 47.5px to the
-   * conversation below.
+   * conversation below; `hidden` renders nothing at all.
    *
    * Defaulted to `expanded` rather than to the product default, which is `condensed`. The
    * default here is for a CALLER that forgot the prop, and the honest answer to that is
@@ -131,7 +132,7 @@ export function LineStrip({
    * because of a missing prop. The product default lives in `UI_CONFIG_DEFAULTS`, where
    * one line decides it, and `App` passes it in.
    */
-  density?: LineDensity;
+  density?: LineChoice;
   /**
    * Which stage's drawer is showing, or null. The strip does not own this - App does - and
    * it is passed IN rather than held here because the drawer is a sibling of the strip, not
@@ -155,8 +156,18 @@ export function LineStrip({
    * `renderToStaticMarkup` tests and the tour render the strip without wiring a store.
    */
   onDensity?: (next: LineDensity) => void;
-}): React.JSX.Element {
+  /**
+   * A picture of the strip - the Settings preview - rather than the fleet's own. It does not
+   * register as the See work tour's `see-work:line` target: a tour started from Settings
+   * would otherwise find this copy, and lose it when the page changes to the fleet, in place
+   * of the strip the tour is about.
+   */
+  preview?: boolean;
+}): React.JSX.Element | null {
   const tourRef = useTourTargetRef<HTMLElement>("see-work:line");
+  // Switched off in Settings. Nothing at all rather than a zero-height band: an empty `nav`
+  // named "The Line" would still be announced as a landmark that holds nothing.
+  if (density === "hidden") return null;
   const condensed = density === "condensed";
   // Only condensed spends a row on this, and only when a stage is actually asking for a
   // person. Expanded already prints every sentence in full under its own stage.
@@ -169,7 +180,7 @@ export function LineStrip({
 
   return (
     <nav
-      ref={tourRef}
+      ref={preview ? undefined : tourRef}
       className={`line${condensed ? " is-condensed" : ""}`}
       aria-label="The Line"
     >

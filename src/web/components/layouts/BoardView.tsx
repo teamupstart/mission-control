@@ -1,11 +1,13 @@
 import { useState } from "react";
+import { Keycap } from "../Keycap.tsx";
+import { reviewShortcutTarget } from "../../lib/review-shortcut.ts";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { provisioningTasks } from "@shared/session.ts";
 import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
 import { latestLaunchFailure } from "@shared/launch-failure.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
-import { stateDisplay, type Tone } from "../../lib/format.ts";
-import { boardColumnModes } from "../../lib/tone.ts";
+import { stateDisplay } from "../../lib/format.ts";
+import { backlogColumnMode, boardColumnModes } from "../../lib/tone.ts";
 import {
   clusterFallbackLabel,
   fleetRows,
@@ -18,6 +20,7 @@ import {
 import { repoColor } from "../../lib/repo-color.ts";
 import { hiddenSessionIds, toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
+import { useSessionRailFolded } from "../../lib/session-rail.ts";
 import {
   collapsedColumnSessionIds,
   columnWidthOf,
@@ -47,8 +50,10 @@ import {
   EnsembleClusterHead,
   EnsembleRailGroup,
   FleetSectionHead,
+  FoldedSessionRail,
   PipelineClusterHead,
   RepoGroupHead,
+  SessionRailFoldButton,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { useTourTargetRef } from "../../tour/target-context.tsx";
@@ -90,22 +95,12 @@ interface PendingDrop {
  * by a column's height instead of eight badges. In front of them sits the backlog,
  * so the work waiting to start is on the same screen as the agents free to start it.
  *
- * EMPTY COLUMNS. A column with nothing in it is not always the same kind of nothing,
- * so they aren't treated the same:
- *
- *  - "needs you" empty is the single most valuable fact this screen can state, so it
- *    keeps its place rather than leaving a gap you have to notice the absence of. It
- *    keeps almost none of the width, though: it narrows to a slim rail - its swatch, a
- *    tick, its name turned on end and a zero - with the all-clear sentence on hover and
- *    for a screen reader. Staying mounted is what lets it widen IN PLACE the moment a
- *    session needs you, on the same flex transition the drill-in rides, instead of a
- *    column appearing from nowhere and shoving the board sideways.
- *  - every other empty column is noise - four headed boxes reading "nothing here" is
- *    a board reporting on its own schema instead of your fleet. They leave, and the
- *    remaining columns expand into the space. A stash on the right keeps them one
- *    click from coming back, so an empty column is stowed rather than lost - unless
- *    the operator has switched the stash off (`showEmptyColumnStash`), in which case
- *    they simply leave.
+ * EMPTY COLUMNS. An empty column is noise - a headed box reading "nothing here" is a
+ * board reporting on its own schema instead of your fleet, and horizontal room is the
+ * one thing the board never has enough of. So every empty column leaves, the Backlog,
+ * "needs you", "unconfirmed" and "gone" included, and the remaining columns expand into
+ * the space. Nothing is drawn in its place - no chip, no slim rail. A column that fills
+ * comes back in its place in the order.
  *
  * Opening a tile doesn't slide a cramped drawer over the board; it morphs the board
  * INTO the console. The clicked column collapses everything either side of it, slides
@@ -121,10 +116,6 @@ interface PendingDrop {
 export function BoardView(props: SessionViewProps): React.JSX.Element {
   const boardTourRef = useTourTargetRef<HTMLElement>("see-work:board");
   const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
-  // Empty columns the operator pulled back out of the stash. Deliberately local and
-  // un-persisted: it's a "let me look at that for a second", not a setting, and it
-  // should not still be in force tomorrow morning.
-  const [revealed, setRevealed] = useState<ReadonlySet<Tone>>(() => new Set());
   // A refused drop (agent went busy, wrong repo, pane locked). Shown on the board
   // rather than swallowed, because the card silently staying in the backlog looks
   // identical to a drag that simply missed.
@@ -164,7 +155,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // Hoisted into its own const rather than read inline in the call below: a hook buried in an
   // argument list is one refactor away from ending up inside a condition, and the Rules of Hooks
   // violation that follows is not something this file's tests would catch.
-  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash, boardSidebarAllSessions } = useUiConfig();
+  const { groupBoardByRepo: groupByRepo, boardSidebarAllSessions } = useUiConfig();
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -232,12 +223,16 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   });
   const starters = pending.length + failed.length;
 
-  const modes = boardColumnModes(groups, revealed, focusedTone != null, starters);
-  // Hidden stash, empty list: the columns are still stashed (not drawn), there is just no
-  // chip to bring them back from.
-  const stashed = showEmptyColumnStash
-    ? groups.filter((g) => modes.get(g.tone) === "stashed")
-    : [];
+  const modes = boardColumnModes(groups, starters);
+  const backlogMode = backlogColumnMode(props.backlog.length);
+  // The open session's own column has no card in it - a drawer resident, or a session a
+  // fleet filter hides - so no rail is drawn. The detail takes the board, and its head
+  // carries the way back the rail head would have.
+  const railHidden = focusedTone != null && modes.get(focusedTone) === "hidden";
+  // The one rail fold the Console reads too. It only draws while drilled in: the overview's
+  // columns are Board columns, folded with their own width control, not the rail.
+  const [railFolded, setRailFolded] = useSessionRailFolded();
+  const railShape = railHidden ? "none" : focusedTone != null && railFolded ? "folded" : undefined;
 
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
   // beside it are the SAME element with the same props - the frame is a wrapper, never a
@@ -253,7 +248,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       variant={variant}
       selected={s.id === props.selectedId}
       registerEl={props.registerEl}
-      onOpenDrawer={(id) => props.onOpenResidentDrawer?.(id)}
+      onOpen={(id) => props.onOpenResident?.(id)}
     />;
   };
 
@@ -390,9 +385,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       ref={boardTourRef}
       className="board"
       data-focus={focusedTone ?? "none"}
+      data-rail={railShape}
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
-      <BacklogColumn
+      {backlogMode !== "hidden" && <BacklogColumn
         width={columnWidthOf(widths, "backlog")}
         onWidthChange={(width) => setColumnWidth("backlog", width)}
         inert={focusedTone != null}
@@ -413,7 +409,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         sessions={props.sessions}
         workflowSummaries={props.workflowSummaries}
         stackShipping={props.stackShipping}
-      />
+      />}
 
       <RestoringSessionsColumn
         sessions={props.restoringSessions ?? []}
@@ -421,20 +417,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       />
 
       {groups
-        .filter((g) => modes.get(g.tone) !== "stashed")
+        .filter((g) => modes.get(g.tone) !== "hidden")
         .map((g) => {
           const isRail = focusedTone === g.tone;
-          const calm = modes.get(g.tone) === "calm";
-          // Never wide while calm: the width outlives a column emptying (it is the operator's
-          // gesture, kept for when sessions return), and the wide rule outranks the rail's width,
-          // so an all-clear rail would otherwise be drawn as a wide empty column.
           const width = columnWidthOf(widths, g.tone);
-          const wide = width === "wide" && !calm;
-          // Collapsed wins over calm: an empty Needs you the operator collapsed stays the same
-          // strip, so the strip is still mounted to pulse when a session arrives. Never while
-          // this column IS the drill-in rail: the rail is a fixed-width console fixture that has
-          // to show its rows whatever the overview had folded. The fold is kept, so coming back
-          // to the board finds the column as it was left.
+          const wide = width === "wide";
+          // Never while this column IS the drill-in rail: the rail is a fixed-width console
+          // fixture that has to show its rows whatever the overview had folded. The fold is
+          // kept, so coming back to the board finds the column as it was left.
           const collapsed = width === "collapsed" && !isRail;
           const count = g.sessions.length + (g.tone === "working" ? starters : 0);
           if (collapsed) {
@@ -453,26 +443,45 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
               </section>
             );
           }
+          // The drill-in rail folded to its strip: the same strip the Console's rail folds to,
+          // counting only this column, since this column is all the rail lists. Kept as the
+          // `is-rail` section so the morph and the reader's width rules still see a rail.
+          //
+          // One key whatever the tone, so it stays one strip as the open session moves between
+          // columns: when that session starts waiting the rail follows it into Needs you, and a
+          // strip remounted there would take the new count as its baseline and never pulse.
+          // `asking` is the fleet's Needs you count for the same reason - this column's count
+          // is not news just because focus moved into it.
+          if (isRail && railFolded) {
+            return (
+              <section key="folded-session-rail" className={`board-col tone-${g.tone} is-rail is-folded`}>
+                <FoldedSessionRail
+                  label={g.label}
+                  groups={[{ tone: g.tone, label: g.label, count }]}
+                  asking={groups.find((x) => x.tone === "attention")?.sessions.length ?? 0}
+                  onUnfold={() => setRailFolded(false)}
+                />
+              </section>
+            );
+          }
           return (
             <section
               key={g.tone}
-              className={`board-col tone-${g.tone}${isRail ? " is-rail" : ""}${calm ? " is-calm" : ""}${
-                wide ? " is-wide" : ""
-              }`}
+              className={`board-col tone-${g.tone}${isRail ? " is-rail" : ""}${wide ? " is-wide" : ""}`}
               inert={focusedTone != null && !isRail}
             >
               {/* Double-click the head to expand, the gesture asked for. On the HEAD
                   rather than on the title alone: the head is the column's handle, the
                   title is a word inside it, and a 40px target is not one. It sits
-                  beside the toggle rather than instead of it - the same reveal the
-                  `×` restash uses, so neither gesture is the only way in.
+                  beside the width control rather than instead of it, so neither
+                  gesture is the only way in.
 
                   Not while this column IS the drill-in rail: the rail is a fixed-width
                   console fixture, so the gesture would record a width nothing draws and
                   then surprise you with it on the way back to the board. */}
               <header
                 className="board-col-head"
-                onDoubleClick={isRail || calm ? undefined : () => toggleWide(g.tone)}
+                onDoubleClick={isRail ? undefined : () => toggleWide(g.tone)}
               >
                 {isRail && (
                   <Tooltip label="Back to the board (Esc)">
@@ -487,6 +496,13 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 )}
                 <span className="board-swatch" aria-hidden />
                 <h2>{g.label}</h2>
+                {/* The review chord's keycap, on Needs you while pressing it would open a queue:
+                    `e` goes to the first session asking without a card being picked first. The
+                    same rule the chord itself follows, so the keycap is never on a column the
+                    key would leave alone. */}
+                {g.tone === "attention" && reviewShortcutTarget(g.sessions, null) && (
+                  <span className="board-col-key"><Keycap action="review" /></span>
+                )}
                 {/* BEFORE the count, not after it. The count carries `margin-left: auto`
                     and sat flush against the head's right edge; a control placed after it
                     reserves its 22px even while transparent, so every column's count
@@ -495,9 +511,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
 
                     Not while drilled in: the rail is a fixed-width console fixture, and
                     a width control there would offer to move something that cannot. */}
-                {/* Nor on the all-clear rail: it is already slim, and there is nothing in it
-                    to read wider. */}
-                {!isRail && !calm && (
+                {!isRail && (
                   <ColumnWidthControl
                     width={width}
                     label={g.label}
@@ -533,25 +547,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     </Tooltip>
                   </>
                 )}
-                {/* A revealed column can be put back where it came from. Only offered
-                    on empty ones - a column with sessions in it is not stashable. */}
-                {modes.get(g.tone) === "revealed" && revealed.has(g.tone) && (
-                  <Tooltip label={`Hide the empty ${g.label} column again`}>
-                  <button
-                    className="board-restash"
-                    aria-label={`Hide the empty ${g.label} column`}
-                    onClick={() =>
-                      setRevealed((prev) => {
-                        const next = new Set(prev);
-                        next.delete(g.tone);
-                        return next;
-                      })
-                    }
-                  >
-                    ×
-                  </button>
-                  </Tooltip>
-                )}
+                {/* The rail's own fold, where the width control would be: drilled in, the
+                    column stops being a Board column and becomes the session rail. */}
+                {isRail && <SessionRailFoldButton onFold={() => setRailFolded(true)} />}
               </header>
               <div className="board-col-body">
                 {/* Keep the placeholder at the top of Working, and use the rail shape while
@@ -562,23 +560,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 {g.tone === "working" && (
                   <FailedLaunchList groups={failed} variant={isRail ? "rail" : "tile"} />
                 )}
-                {/* The rail's body is this one element, filling it, so hovering anywhere
-                    below the head gives the sentence the rail has no room to print. The
-                    sentence is in the markup too, for a screen reader. */}
-                {calm ? (
-                  <Tooltip label="All clear. Nothing is waiting on you.">
-                    <p className="board-allclear">
-                      <span className="board-allclear-tick" aria-hidden>
-                        ✓
-                      </span>
-                      <span className="sr-only">All clear. Nothing is waiting on you.</span>
-                    </p>
-                  </Tooltip>
-                ) : g.sessions.length === 0 ? (
-                  g.tone === "working" && starters > 0 ? null : (
-                    <p className="board-col-empty">Nothing here</p>
-                  )
-                ) : isRail ? (
+                {/* Only Working is ever drawn with no sessions, and only while it is holding
+                    dispatch placeholders - every other empty column is not rendered. */}
+                {g.sessions.length === 0 ? null : isRail ? (
                   // The clicked column, now a console rail: the same RailRow (and the same
                   // cluster header) the console uses, so opening a column and switching to
                   // the console read alike.
@@ -678,23 +662,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           );
         })}
 
-      {stashed.length > 0 && (
-        <div className="board-stash">
-          <span className="board-stash-label">empty</span>
-          {stashed.map((g) => (
-            <Tooltip key={g.tone} label={`Show the empty ${g.label} column`}>
-              <button
-                className={`board-stash-chip tone-${g.tone}`}
-                onClick={() => setRevealed((prev) => new Set(prev).add(g.tone))}
-              >
-                <span className="board-swatch" aria-hidden />
-                {g.label}
-              </button>
-            </Tooltip>
-          ))}
-        </div>
-      )}
-
       {dropError && (
         <p className="board-drop-error" role="status">
           {dropError}
@@ -730,7 +697,16 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         aria-label={selected ? "Session detail workspace" : undefined}
         aria-hidden={selected == null}
       >
-        {selected && <ConsoleDetail key={selected.id} view={props} session={selected} />}
+        {selected && (
+          <ConsoleDetail
+            key={selected.id}
+            view={props}
+            session={selected}
+            // The rail head's back button is off screen both when no rail is drawn and when
+            // the rail is folded to its strip, so the detail head carries the way back then.
+            onBack={railHidden || railFolded ? props.onDeselect : undefined}
+          />
+        )}
       </aside>
     </main>
   );

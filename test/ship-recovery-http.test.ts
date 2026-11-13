@@ -474,3 +474,31 @@ test("held-round accounting is episode-scoped and legacy predecessors reset safe
   assert.equal(getQueueRow(noteKey)?.promptedDecision?.heldRound, 1);
   assert.equal(getQueueRow(noteKey)?.promptedDecision?.episodeKey, "intent:1:2");
 });
+
+test("a blocked session's ship-recovery claim is refused at the route and at the registry write", async () => {
+  const { sessionId, noteKey, taskId } = seed("-blocked");
+  const identity = {
+    taskId, logicalKey: noteKey, generation: 1, decisionGeneration: null, decisionOutcome: null,
+    reason: "idle_empty" as const, attempt: 1,
+  };
+  const claim = { ...identity, marker: shipRecoveryMarker(identity), payloadSummary: "Resume the bounded implementation task." };
+  const reported = registry.reportBlocker(sessionId, {
+    kind: "dependency", reason: "Needs #1402 merged", waitingOn: "Platform", resumeWhen: "#1402 merges",
+    referenceUrl: null, details: null,
+  });
+  assert.equal(reported.ok, true);
+  const refused = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST", headers, body: JSON.stringify(claim),
+  });
+  assert.equal(refused.status, 409);
+  // The write boundary reads the live session, which is what closes the window in which a
+  // blocker lands while the route awaits the checkout diff.
+  assert.equal(registry.claimPromptedRecovery(sessionId, claim), null, "the registry claimed for a blocked session");
+  assert.equal(getQueueRow(noteKey)?.promptedRecovery ?? null, null, "a refused claim spent an attempt");
+
+  registry.clearBlocker(sessionId, "operator");
+  const accepted = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST", headers, body: JSON.stringify(claim),
+  });
+  assert.equal(accepted.status, 200, await accepted.clone().text());
+});

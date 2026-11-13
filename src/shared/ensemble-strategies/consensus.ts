@@ -114,8 +114,8 @@ export const ConsensusConfigSchema = z
       .array(ConsensusMemberSchema)
       .min(CONSENSUS_MIN_MEMBERS)
       .max(CONSENSUS_MAX_MEMBERS)
-      .default([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
-    evaluator: ConsensusEvaluatorSchema.default({}),
+      .prefault([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
+    evaluator: ConsensusEvaluatorSchema.prefault({}),
     maxConcurrentMembers: z
       .number()
       .int()

@@ -6,7 +6,7 @@ Mission Control's MCP exposes the same workflow runtime controls as the dashboar
 can read and control its own workflow without delegation. Reading or controlling another
 session's workflows requires the operator to enable **Control other sessions** on the calling
 session, using the desktop dashboard. The grant is transient and revocable; the MCP cannot enable it.
-All three tools require a current signed Registry session credential alongside the machine token.
+Every one of these tools requires a current signed Registry session credential alongside the machine token.
 Caller identity comes from that credential, never from a supplied session id or working directory.
 Bindings must match both the current session and its conversation identity. Reattachment checks
 both the source binding and destination; delivery actions also check the packet's original destination.
@@ -21,6 +21,36 @@ Read one stream with
 `read_workflow_command_output({runId, attemptId, artifactId, cursor?, limit?})`, using the
 opaque ids from run detail and following `nextCursor` until it is null. A page is at most 64
 KiB. The same owning-session and **Control other sessions** authorization applies.
+
+`configure_workflow_command({runId, slot, command})` sets the argv one slot (`test`, `lint`,
+`typecheck`, `build`, or `documentation`) runs for the repository of the caller's **own** run. The
+operator confirms it on a `request_input` card that Mission Control itself raises on the session,
+not one the session writes: the card names the run, the slot, the repository, and the argv as a
+JSON array, so arguments that read the same when joined with spaces stay distinct. The daemon
+records the card's review id on the run when it creates it, and only an answer on a card it
+recorded counts, so a session that copies the card into a review of its own authorizes nothing.
+The tool waits on that card until it is answered. The daemon accepts the write only when the human (not Foreman, a standing approval, or a
+controlling session) chose **Configure this Command** on exactly that card, after the run started;
+it recomputes the card from the run, slot, repository, and argv rather than trusting a card the
+session phrased, and the card's title and body must be the daemon's own text too. Each answer
+authorizes one write and is spent by it, so re-proposing an argv after the operator changed the
+override in Library needs a fresh answer; a call naming the argv the override already holds writes
+nothing and needs none. Otherwise it
+refuses with 403 and stores nothing. Like every dashboard answer, this rests on the dashboard
+API's trust boundary: a local process that can answer a card through `/api/reviews` could equally
+write the catalog through `/api/workflow-commands`. It
+writes that repository's override in Library › Commands, replacing any override the repository
+already had, and never touches the machine-wide default. The repository comes from the run's
+binding, not from the request. **Control other sessions** does not extend to it: it changes the
+operator's Command catalog, so only the session that owns the run may call it, and only while the
+run has not finished. While a check for that slot is still running in the run, the call is refused
+until it finishes, because that check's outcome decides whether its run is returned to the budget. After the write it returns to the run budget only the run's finished
+executions of that slot in which the repository did not provide a different argv, so the corrected
+command runs on the next submission instead of being skipped as already spent. A command that
+actually ran is never returned, and spending stays with the argv that spent it: configuring an argv
+gives back whatever it had already spent, so switching from A to B and back to A cannot run A again.
+Each argv runs at most its run budget in one workflow run, and naming the command that already ran
+changes nothing. [Command nodes](#command-nodes) describes when a repair packet asks for it.
 
 `trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
 and `parameters` using the dashboard's existing request body schema:
@@ -74,7 +104,7 @@ rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#gui
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or GitHub Inspector setting. Personas you create or import live in Mission Control's SQLite
-database. Their name, description, optional provider and model overrides, and guidance are
+database. Their name, description, optional provider, model and effort overrides, and guidance are
 revisioned together. Saves use compare-and-swap, so a second tab editing an older revision
 gets an explicit conflict and keeps its local text. Archive is soft: archived Personas are
 read-only, remain addressable for future published history, and continue reserving their
@@ -105,8 +135,23 @@ Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gp
 the other seven on `gpt-5.6-terra`. Versions 21 and 22 use `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
+A Persona can also recommend a reasoning **effort** (`low`, `medium`, `high`, `xhigh` or
+`max`) beside its model, from the **effort** chip in the Persona editor. Unset means no effort
+flag at all, so the provider's own default applies exactly as before. The levels offered are
+the same capability table sessions and tasks launch with, for the Persona's provider and
+model; a Persona that inherits the app provider is offered only the levels every provider
+supports. Saving an effort the provider and model do not offer is refused rather than dropped.
+Published versions freeze the effort with the model, and it is recorded on each attempt and
+model call beside the model and shown wherever that model is shown (`codex · gpt-6-sol · high
+effort`). A configured effort the resolved model turns out not to support (an environment
+model override, say) is flagged as unsupported and the call runs at the provider default. The
+dropped level is recorded on the attempt and logged as `persona_effort_unsupported`, and the
+run detail prints it (`codex · gpt-5.6-luna · max effort unsupported, provider default`), so
+a reviewer never runs shallower than configured without saying so.
+
 A workflow can override that default for one reviewer node, without changing the Persona or
-copying it. See [per-node provider and model](#per-node-provider-and-model).
+copying it. See [per-node provider and model](#per-node-provider-and-model). Built-in
+Personas are read-only, so a node override is how you set effort for one of them.
 
 ### Importing a Persona from a file
 
@@ -404,7 +449,9 @@ affordance off, Archive and Publish are disabled, the settings rail does not tak
 there is a line saying why. **Duplicate** is the way to a version you own - the copy is an
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
-bindable.
+bindable. To have new tasks use your copy, publish it and choose it for each task kind under
+**Settings → Tasks → Dispatch defaults** (see
+[Dispatch an agent](dispatch-and-backlog.md), under **After work**).
 
 The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
 settings rail of both the Pipeline and Graph views, with its own **Save rounds** button. Saving
@@ -558,12 +605,19 @@ until you pick it, nothing is saved and the node keeps running what it was alrea
 Model ids stay free text under the usual conventions - one absent from the suggestion list is
 allowed, and a provider this build cannot spawn is refused when the draft is saved.
 
+The override also carries an optional **Effort**, beside the model. It seeds from the
+Persona's effort when the override is turned on, offers only the levels this provider and
+model support, and is part of the override: an override with no effort runs at the provider
+default, never at a level the Persona chose for a different model. An effort the pair does not
+support (for example after changing the model) stays selected and is flagged, and Publish is
+refused with an `unsupported_effort` diagnostic until it is changed.
+
 Resolution, in one table:
 
 | Node setting | Provider and model used |
 | --- | --- |
-| No override | The existing Persona resolution, unchanged |
-| Explicit override | The node's own provider and model pair |
+| No override | The existing Persona resolution, unchanged, effort included |
+| Explicit override | The node's own provider and model pair, and its effort or the provider default |
 | Override removed in a draft | Live Persona defaults again, app and environment fallbacks included |
 | Published version with no override | The frozen Persona snapshot, with the usual fallbacks where its fields are unset |
 
@@ -866,6 +920,44 @@ without an automatic infrastructure retry, a repair round, or a code-fix packet.
 authorization, executable, platform, or allowance and use the run's Retry action. Both
 policies default to **Skip with a note**, preserving existing Command behavior. An
 unconfigured slot and an operator-disabled node remain skips regardless of these policies.
+
+**A Command the repository does not provide is a configuration repair, not a code one.** A
+global default is repository-neutral, so an operator who sets `make test` once will meet a
+repository with no Makefile, or one whose Makefile has no `test` target. That failure is about the
+workflow's configuration, not the change under review, and the repair packet says so instead of
+asking the session to fix a failing check. Otherwise the cheapest way to turn the gate green is to
+write the missing Makefile, which would force a build file on every repository that runs its tests
+another way.
+
+Each check outcome records whether its command came from a repository override or from the global
+default. The failure is classified against the configured argv, not against the output alone: it
+counts only when the launcher the argv names refuses, at the top level, exactly the target, script,
+recipe, or program the argv asked for, skipping option values such as `pnpm --dir packages/app
+test` or `task -d packages/app lint`. For make only the first goal counts, because make stops at
+the first goal it cannot make before building a later one, and `-k`/`--keep-going` disables the
+classification. That covers GNU or BSD make with no such target or no
+makefile, npm, pnpm or Yarn with no such script, just or go-task with no such recipe, and
+`sh -c '<program> ...'` whose shell cannot find that first program. Every line of the complete
+output must also be something that launcher prints before it starts any work, so a nested command
+that refuses the same name is told apart from the configured one by the evidence that the
+configured one ran: an npm, pnpm or Yarn script banner (`> pkg@1.0.0 test`), an echoed recipe, a
+sub-make's `make[1]:`, an outer make's `*** [test] Error 2`, or any other program's output.
+Truncated output always counts as a command that ran. A repository that provides `make test` or
+`npm test` whose recipe or script runs a nested command that cannot find its own target is
+therefore an ordinary failure. When the refusal matches, the requested change becomes
+**Configure the `<slot>` Command for this repository** and the packet tells the session to:
+
+1. not create a Makefile, script, or any other file to satisfy the command;
+2. inspect the repository to learn how it runs that slot;
+3. call `configure_workflow_command` with the argv it found, which asks the operator to confirm
+   that exact change on a `request_input` card and configures nothing unless they choose
+   **Configure this Command**;
+4. resubmit with `trigger_workflow_action` `resubmit` and `resubmitUnchanged: true`, because a
+   configuration-only repair changes no files and the engine would refuse it as unchanged.
+
+A failed global default whose output is not recognized keeps the ordinary **Fix the failing check**
+request and adds a note naming the default and the same procedure, in case the repository runs that
+slot some other way. A failed repository override with unrecognized output is an ordinary failure.
 
 An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
 give: none of them is a statement about the change under review, so they retry and then block
@@ -2331,6 +2423,15 @@ all - so all three surfaces read one derivation, which answers "which pull reque
 rather than assuming there is one. A run holding no gate is told plainly that cancelling
 clears the run and keeps its history, and nothing more.
 
+A blocked run also keeps its session, with one exception. Foreman's
+[PR follow-through](work-queues.md#keeping-a-pr-on-track) stops waiting on a run that spent its
+repair budget or stopped on `unchanged_evidence_exhausted` or `session_disappeared`, because
+only the operator or the session can restart it and it delivers nothing until then. Unresolved
+GitHub Inspector findings and failing CI reach the session again, while the run keeps
+its Shipping veto and CodeRabbit follow-up keeps waiting for it. The list is
+`WORKFLOW_FOLLOWUP_RELEASE_PHASES` in `src/shared/workflow.ts`, and it is an allowlist: every
+other blocked phase, including one added later, keeps holding the follow-through.
+
 ### One run, one lifecycle state
 
 A run says where it is in three stored columns - its status, its phase, and a free-form detail
@@ -2548,10 +2649,16 @@ an Inspector gate or a Foreman completion claim - most runs have neither and are
 tab. A stat strip carries the gate state, the open and resolved finding counts, the adopted pull
 request with its observed state, and the Inspector's review round; the counts are the ledger rows
 the table under them draws, not the Inspector's own tallies, which keep their own fields in the
-ledger disclosure. Findings are a table - severity, title, `path:line`, round and status - with
-one row each. A finding that is not resolved is why the gate has not passed, so its body is on
-screen rather than behind its row's control; a resolved one opens its body and the fingerprint the
-gate tracks it by on request. The label carries the open-finding count in amber. Findings never
+ledger disclosure. Findings are a table - severity, title, `path:line`, round, status and
+posted - with one row each. The Posted column says whether the finding reached GitHub: **Posted**
+(a link to its comment once GitHub Inspector has recorded one), **Not posted**, **Not posted
+(posted earlier)** linking to the earlier version's comment, **Posting**, or **Unknown** for a row
+recorded before Mission Control tracked posting. A draft GitHub refused reads **Not posted** with
+"GitHub refused it N time(s)" under it, or **Refused** at 3, with GitHub's reason on hover and in
+the finding's detail
+([drafts after a switch to live](inspector-and-shipping.md#drafts-after-a-switch-to-live)). A finding that is not resolved is why the gate
+has not passed, so its body is on screen rather than behind its row's control; a resolved one
+opens its body and the fingerprint the gate tracks it by on request. The label carries the open-finding count in amber. Findings never
 appear in the [review worklist](#the-review-worklist), which is built from Persona verdicts only,
 so this is the one place they are listed. The findings policy, the missing-PR policy and
 **Open GitHub Inspector settings** sit at the foot of the same tab.
@@ -2598,6 +2705,27 @@ Persona. The narrower `inspector_only` policy waits for GitHub Inspector to obse
 head, records an immutable attempt-free bypass submission, and reviews that head normally. It
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
+
+The packet's findings section comes from a pure, shared renderer
+(`src/server/inspector/findings-text.ts`). Foreman's review follow-through relay and the
+daemon-built CodeRabbit follow-up render findings through it as well, so all three describe a
+finding the same way. The renderer imports nothing that reaches the database or the network,
+which is what lets the Foreman worker load it. Each finding carries one posted marker from
+`findingPublication`: posted on GitHub with its comment link, posted in the review summary,
+posted with the link not captured yet, being posted now, not posted and so only in this message,
+or not posted again with a link to the earlier version that was. A draft GitHub refused says how
+many times and GitHub's reason from the first refusal: below the cap of 3 it adds that it is
+offered again on the next push, and at the cap it does not. A draft whose earlier version was
+posted is never called the only copy. Fields still clip at the per-field limit. Past the payload
+limit the packet drops whole findings from the tail, lowest severity first, and ends the section
+with how many it left out. It never cuts a finding part way: when not even the highest-severity
+finding fits whole, none is listed and the section carries the count alone, without promising a
+resend. The finding stays unresolved either way. Room for that count is reserved before the header
+is sized, so a header whose fields together outgrow the payload is clipped instead and the count
+always survives. The findings get every byte the packet really has left: the truncation notice is
+reserved only when the packet will carry it. The packet keeps its own header and closing, and its
+failed count is every unresolved finding, listed or not. A prepared packet keeps the bytes and hash
+it was frozen with: delivery and restart recovery send those stored bytes and never render it again.
 
 If no adopted PR exists, the published policy waits, offers **Prepare PR in session**, or prepares
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate

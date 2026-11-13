@@ -30,17 +30,26 @@ export function parseLineDensity(raw: string | null | undefined): LineDensity {
     : UI_CONFIG_DEFAULTS.lineDensity;
 }
 
-/** One density, as the settings picker offers it. Prose lives here rather than in
+/**
+ * What the settings picker offers: one of the two drawn densities, or the Line switched off.
+ *
+ * A web-only union over TWO stored keys, `lineDensity` and `lineHidden`, and deliberately not
+ * a third `LINE_DENSITIES` member - see that list for why an older daemon must never read one.
+ * Presenting them as one choice is this module's job; storing them apart is the protocol's.
+ */
+export type LineChoice = LineDensity | "hidden";
+
+/** One choice, as the settings picker offers it. Prose lives here rather than in
  *  `@shared/protocol.ts` for the reason `LAYOUTS` does: the daemon shows none of it. */
 export interface LineDensityOption {
-  id: LineDensity;
+  id: LineChoice;
   label: string;
   description: string;
 }
 
 /**
- * In `LINE_DENSITIES` order, which is densest-last, so the picker reads as a fold rather
- * than as two unrelated modes.
+ * Densest-last and then off, so the picker reads as a fold that ends in nothing rather than
+ * as three unrelated modes.
  *
  * The descriptions name what is TRADED, not what is drawn, because that is the whole
  * decision: expanded costs 47.5px of conversation to print six sentences a tooltip already
@@ -61,11 +70,32 @@ export const LINE_DENSITY_OPTIONS: readonly LineDensityOption[] = [
     description:
       "One row: counts and tones only, with whatever needs you promoted onto it. Hands 47.5px back.",
   },
+  {
+    id: "hidden",
+    label: "Disabled",
+    description:
+      "No strip: the fleet starts right under the top bar. Stage counts and drawers are not shown.",
+  },
 ];
 
 /** The next density the caret steps to. Two members, so this is the other one. */
 export function nextLineDensity(current: LineDensity): LineDensity {
   return current === "expanded" ? "condensed" : "expanded";
+}
+
+/** The picker's reading of the two stored keys: switched off wins over any density. */
+export function lineChoice(config: { lineDensity: LineDensity; lineHidden: boolean }): LineChoice {
+  return config.lineHidden ? "hidden" : config.lineDensity;
+}
+
+/**
+ * The patch that stores a choice. Disabled leaves `lineDensity` alone, so switching the Line
+ * back on returns to the density it was switched off from; choosing a density switches it on.
+ */
+export function lineChoicePatch(next: LineChoice): { lineHidden: boolean; lineDensity?: LineDensity } {
+  return next === "hidden"
+    ? { lineHidden: true }
+    : { lineHidden: false, lineDensity: parseLineDensity(next) };
 }
 
 /** The chosen density, stored in the daemon. Mirrors `useLayoutMode`. */
@@ -75,6 +105,15 @@ export function useLineDensity(): [LineDensity, (next: LineDensity) => void] {
     void updateUiConfig({ lineDensity: parseLineDensity(next) });
   }, []);
   return [density, set];
+}
+
+/** The picker's choice, stored in the daemon as `lineHidden` plus `lineDensity`. */
+export function useLineChoice(): [LineChoice, (next: LineChoice) => void] {
+  const config = useUiConfig();
+  const set = useCallback((next: LineChoice) => {
+    void updateUiConfig(lineChoicePatch(next));
+  }, []);
+  return [lineChoice(config), set];
 }
 
 /**
@@ -95,7 +134,11 @@ export function useLineDensity(): [LineDensity, (next: LineDensity) => void] {
  * needs no dependency and there is nothing for a future edit to forget.
  */
 export function toggleLineDensity(): void {
-  void updateUiConfig({ lineDensity: nextLineDensity(uiConfig().lineDensity) });
+  const config = uiConfig();
+  // Switched off is a Settings choice, and a bare letter pressed on the fleet must not undo
+  // it - nor fold a strip nobody can see, which would surprise whoever switches it back on.
+  if (config.lineHidden) return;
+  void updateUiConfig({ lineDensity: nextLineDensity(config.lineDensity) });
 }
 
 /** One amber stage's sentence, kept attributed to the stage it came from. */

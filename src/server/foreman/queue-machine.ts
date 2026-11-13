@@ -8,7 +8,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
-import { reportBucket, settledIdle } from "@shared/session.ts";
+import { hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
@@ -339,6 +339,10 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   //    `in_progress` whose agent is asking something must not be "verified" as
   //    though the silence meant completion.
   if (bucket === "needs-you" && foremanTriageAuthorized(session)) return { kind: "triage" };
+
+  // 2b. A durable blocker holds the queue whole: no next item, no in-flight verdict and no
+  //     wrap-up. Items stay queued exactly as they are until the blocker is cleared.
+  if (hasBlocker(session)) return { kind: "none" };
 
   // 3. No hooks means no pickup signal and no completion signal - the queue has
   //    nothing to gate on, so it can never advance. Say so rather than stalling.

@@ -5,6 +5,7 @@ import type { Task } from "../src/shared/types.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
+  draftPersonaId,
   draftsEqual,
   taskUpdatePatch,
   type DispatchDraft,
@@ -197,6 +198,7 @@ test("every field on the form reaches the patch", () => {
     // The one change the form can make to a pin is clearing one saved before the advisor
     // moved to Settings -> Harnesses, so it is judged against a task that has one.
     advisorModel: "",
+    personaId: "persona-reviewer",
     workflowId: "workflow-review",
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
@@ -227,6 +229,23 @@ test("every field on the form reaches the patch", () => {
     assert.ok(patch, `changing ${field} must produce a patch`);
     assert.equal(Object.keys(patch).length, 1, `changing ${field} must send ${field} alone`);
   }
+});
+
+test("a Persona reads back, is cleared with null, and follows every kind the form offers", () => {
+  const t = mkTask({ personaId: "persona-reviewer" });
+  assert.equal(draftFromTask(t).personaId, "persona-reviewer");
+  assert.equal(draftFromTask(mkTask()).personaId, "", "no Persona is the empty option");
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { personaId: "" }), t.intent), { personaId: null });
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { personaId: "persona-other" }), t.intent), { personaId: "persona-other" });
+  // A harness-launched kind keeps it, so a kind change travels alone.
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { kind: "scout" }), t.intent), { kind: "scout" });
+  // A pipeline carries one to its Engineer host, so that move travels alone too.
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { kind: "pipeline" }), t.intent), { kind: "pipeline" });
+  assert.equal(draftPersonaId({ kind: "pipeline", personaId: "persona-reviewer" }), "persona-reviewer");
+  // The one kind that cannot carry a dispatch Persona never sends the draft's value.
+  assert.equal(draftPersonaId({ kind: "resident", personaId: "persona-reviewer" }), null);
+  assert.equal(draftPersonaId({ kind: "chat", personaId: "persona-reviewer" }), "persona-reviewer");
+  assert.equal(draftPersonaId({ kind: "ship", personaId: "" }), null);
 });
 
 test("a working copy is stale exactly when the row's editable fields moved", () => {

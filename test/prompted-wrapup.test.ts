@@ -64,6 +64,7 @@ const CFG: PromptedConfig = {
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -934,4 +935,15 @@ test("PromptedFailureTracker: strikes are per logical session", () => {
   for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("agent-1", 1);
   assert.equal(t.gaveUp("agent-1", 1), true);
   assert.equal(t.gaveUp("agent-2", 1), false, "one session's broken cycle strands no other");
+});
+
+test("a blocked session is skipped, and the same session is a candidate once the blocker clears", () => {
+  const blocker = {
+    id: "blk-fixture", kind: "question" as const, reason: "Needs the retention window", waitingOn: "Dana", resumeWhen: "Dana answers",
+    details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
+  };
+  const held = decide({ session: mkSession({ blocker }) });
+  assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
+  // A skip consumes nothing, so clearing it leaves the generation to complete normally.
+  assert.equal(decide({ session: mkSession({ blocker: null }) }).kind, "check");
 });

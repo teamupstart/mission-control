@@ -150,7 +150,9 @@ test("concurrent publishers expose only the old or complete .js bundle", async (
   } finally { clearInterval(poll); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("different process builds cannot interleave integration publication", { timeout: 20_000 }, async () => {
+// Two complete source copies precede the two independently bounded child waits below.
+// Allow setup and cleanup under suite contention without relaxing either child deadline.
+test("different process builds cannot interleave integration publication", { timeout: 60_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-build-race-"));
   const output = join(dir, "integration", "extension.js");
   const release = join(dir, "release");

@@ -48,6 +48,7 @@ import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
+import { sdkAskChannel } from "../../ask-channel-prompt.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
 //
@@ -1341,6 +1342,10 @@ function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> 
  * Mission's server, and for a resident run its snapshot under `strictMcpConfig`, so the CLI
  * reads no user, local, project or plugin MCP configuration. Called once per process start,
  * because a resident's launcher entries carry that start's single-use credentials.
+ *
+ * A resident whose profile imports all native sources gives the pin up on purpose
+ * (`allNativeSources: "lift-strict-mcp-config"`): its snapshot is rendered the same way, but
+ * without either switch, so Claude Code also loads its own configuration and connectors.
  */
 function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
   // No prototype, so every server name - whatever a configuration used - is an own entry.
@@ -1348,10 +1353,11 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
   if (opts.mcp) {
     servers[opts.mcp.serverName] = { type: "stdio", command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env };
   }
-  if (!opts.residentMcp) return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
-  for (const entry of opts.residentMcp.forStart()) servers[entry.name] = claudeResidentServer(entry);
+  if (opts.residentMcp) for (const entry of opts.residentMcp.forStart()) servers[entry.name] = claudeResidentServer(entry);
+  const listed = Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
+  if (!opts.residentMcp || opts.residentMcp.nativeSources === "all") return listed;
   return {
-    ...(Object.keys(servers).length > 0 ? { mcpServers: servers } : {}),
+    ...listed,
     strictMcpConfig: true,
     // `strictMcpConfig` names configuration files; claude.ai's cloud connectors are fetched
     // for an account instead, and this is the setting that keeps them out.
@@ -1370,8 +1376,9 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
 function claudeFlagOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
   const mcp = claudeMcpOptions(opts);
   const advisor = opts.advisorModel ? capabilitiesFor("claude").advisor?.sdkSettings(opts.advisorModel) ?? {} : {};
-  if (Object.keys(advisor).length === 0) return mcp;
-  return { ...mcp, settings: { ...mcp.settings, ...advisor } };
+  const memory = opts.residentStateDir ? { autoMemoryDirectory: opts.residentStateDir, autoMemoryEnabled: true } : {};
+  if (Object.keys(advisor).length === 0 && !opts.residentStateDir) return mcp;
+  return { ...mcp, settings: { ...mcp.settings, ...advisor, ...memory } };
 }
 
 /**
@@ -1416,7 +1423,8 @@ const RESIDENT_MCP_POLL_MS = 200;
 /**
  * What is wrong with the servers Claude reports for a resident's start, or null. Every server in
  * the set must be configured and must not have failed, be switched off, or wait on a login: a
- * resident never runs silently without one of its servers.
+ * resident never runs silently without one of its servers. With `exact`, a server outside the set
+ * is wrong too; a resident on all native sources has those by design, and they are not checked.
  *
  * A remote server Claude Code connects to itself presents the operator's stored OAuth login. With
  * no usable login - never signed in, or a token it could not refresh - Claude reports it
@@ -1427,8 +1435,9 @@ const RESIDENT_MCP_POLL_MS = 200;
 function residentMcpStatusProblem(
   statuses: ReadonlyArray<{ name: string; status: string }>,
   allowed: ReadonlySet<string>,
+  exact: boolean,
 ): string | null {
-  const extra = statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled");
+  const extra = exact ? statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled") : undefined;
   if (extra) return `configured the MCP server ${extra.name}, which is not in its snapshot`;
   const reported = new Map(statuses.map((status) => [status.name, status.status]));
   for (const name of allowed) {
@@ -1465,7 +1474,12 @@ async function statusesBefore(query: ClaudeSdkQuery, deadline: number): Promise<
  * status call, a rejected or unanswered one, or a server still starting at the deadline - is a
  * refusal: a resident never starts without knowing it has the servers its profile selected.
  */
-async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySet<string>, settleMs: number): Promise<string | null> {
+async function residentMcpUnconfirmed(
+  query: ClaudeSdkQuery,
+  allowed: ReadonlySet<string>,
+  exact: boolean,
+  settleMs: number,
+): Promise<string | null> {
   if (!query.mcpServerStatus) return "cannot report its MCP servers, so their set cannot be confirmed";
   const whole = Math.max(1, Math.round(settleMs / 1000));
   const seconds = `${whole} second${whole === 1 ? "" : "s"}`;
@@ -1474,7 +1488,7 @@ async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySe
     const answer = await statusesBefore(query, deadline);
     if (answer === "rejected") return "could not report its MCP servers, so their set cannot be confirmed";
     if (answer === "timeout") return `did not report its MCP servers within ${seconds}`;
-    const problem = residentMcpStatusProblem(answer, allowed);
+    const problem = residentMcpStatusProblem(answer, allowed, exact);
     if (problem) return problem;
     const pending = answer.find((status) => allowed.has(status.name) && status.status === "pending");
     if (!pending) return null;
@@ -1487,10 +1501,15 @@ async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySe
  * Confirm the CLI configured exactly Mission's server and the run's snapshot, and that each one
  * connected - the direct check behind `strictMcpConfig`, which also covers sources no fixture can
  * reach, such as managed configuration. A start that cannot be confirmed is refused.
+ *
+ * A resident on all native sources is not pinned, so only what Mission Control put in its set -
+ * its own server and the profile's custom servers - must connect. A native server or connector
+ * that fails or waits on a login is left to Claude Code, as in a terminal session.
  */
 async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions, settleMs: number): Promise<void> {
   const allowed = new Set([...(opts.residentMcp?.names ?? []), ...(opts.mcp ? [opts.mcp.serverName] : [])]);
-  const problem = await residentMcpUnconfirmed(query, allowed, settleMs);
+  const exact = opts.residentMcp?.nativeSources !== "all";
+  const problem = await residentMcpUnconfirmed(query, allowed, exact, settleMs);
   if (!problem) return;
   await query.return(undefined).catch(() => {});
   throw new Error(`this resident's Claude Code session ${problem}`);
@@ -1510,6 +1529,14 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);
       const permissionMode = sdkPermissionMode(opts.permissionMode);
+      // A task asks its human through `request_input`, exactly as a terminal dispatch does,
+      // and only when this launch registers the server that provides it - see `sdkAskChannel`.
+      const askChannel = sdkAskChannel(opts.mcp?.serverName ?? null);
+      // ONE append carrying every contributor, in the terminal path's order: the redirect,
+      // then the operator's standing instructions.
+      const systemPromptAppend = [askChannel?.redirect, opts.standingInstructions]
+        .filter((part): part is string => !!part)
+        .join("\n\n");
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
@@ -1517,25 +1544,25 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // inherited. Claude Code reads it at each interaction span in an SDK session; it
         // needs no `CLAUDE_CODE_PROPAGATE_TRACEPARENT`, which governs OUTBOUND headers.
         env: withAgentTraceContext(
-          withAdvisorEnv(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.advisorModel),
+          withAdvisorEnv(withArtifactTool({ ...deps.env(opts.cwd, opts.stateHome), ...(opts.residentStateDir ? { RESIDENT_STATE_DIR: opts.residentStateDir } : {}) }), opts.advisorModel),
           opts.traceContext,
         ),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
-        // The operator's repository standing instructions, as a NON-DESTRUCTIVE append.
+        // The ask-channel redirect and the operator's repository standing instructions, as
+        // a NON-DESTRUCTIVE append.
         //
         // The preset object is the only form that can do this. A bare `string` here
         // REPLACES Claude Code's own system prompt, which would turn an embedded session
         // into a different agent from the dispatched pane running the same task. Omitted
-        // entirely when there is nothing to send, so an ordinary session's options object
-        // is exactly what it always was.
-        ...(opts.standingInstructions
+        // entirely when there is nothing to send.
+        ...(systemPromptAppend
           ? {
               systemPrompt: {
                 type: "preset" as const,
                 preset: "claude_code" as const,
-                append: opts.standingInstructions,
+                append: systemPromptAppend,
               },
             }
           : {}),
@@ -1546,7 +1573,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // control request requires its argument to be a strict subdirectory of cwd or of
         // a directory named here, so a sibling checkout is unreachable to a session that
         // did not start with it.
-        ...(opts.extraDirs.length > 0 ? { additionalDirectories: [...opts.extraDirs] } : {}),
+        ...((opts.extraDirs.length > 0 || opts.residentStateDir) ? { additionalDirectories: [...opts.extraDirs, ...(opts.residentStateDir ? [opts.residentStateDir] : [])] } : {}),
         // Makes `bypassPermissions` REACHABLE for this session. It does not enter it, and
         // reading it as "skip permissions" is the mistake to avoid: the CLI has two
         // separate flags, and this option compiles to the weaker one.
@@ -1571,11 +1598,11 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...claudeFlagOptions(opts),
-        // The ask channel's disallow + redirect are deliberately NOT rendered here. They
-        // exist because a menu on a child's screen is unreadable to the dashboard; a
-        // driver request IS the dashboard's own control, so the native tool is better
-        // than the MCP stand-in it was approximating. The MCP server still rides along
-        // above, because `report_status` and the rest are not about asking questions.
+        // The ask channel: `AskUserQuestion` removed, `request_input` pre-approved. Tied to
+        // the redirect above and to the Mission MCP registration, all or nothing.
+        ...(askChannel
+          ? { allowedTools: askChannel.allowedTools, disallowedTools: askChannel.disallowedTools }
+          : {}),
         canUseTool: session.canUseTool,
         hooks: session.hooks(),
         // CLAUDE.md, skills and the operator's settings - the same sources an

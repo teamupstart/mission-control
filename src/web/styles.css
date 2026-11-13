@@ -4091,6 +4091,10 @@ body {
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
 .is-desktop .bl-planner-pop,
+/* The backlog Filter menu. It is fixed to the viewport and opens ABOVE its button when there
+   is no room below, clamped to the top of the window - which is the bar. Its rows are the
+   only way to set or clear a backlog filter. */
+.is-desktop .bl-filter-pop,
 /* Foreman's recommendation sidecar. It is offset by `--topbar-h`, so today it starts below
    the bar - which is exactly the "the layout keeps it out of the rectangle" assumption the
    entries above were each added after it failed. It is a scrollable panel whose only control
@@ -7164,6 +7168,88 @@ a.btn {
   .restore-retry .btn { width: 100%; }
   .app-banner-restore { align-items: stretch; }
 }
+/* Settings > Storage. The status tiles and copies table follow Restore's, beside which the
+   category sits; the config row follows the Workflows retention row. */
+.storage-settings h3,
+.storage-problems h3 { margin: 0 0 6px; }
+.storage-config-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.storage-config-row label {
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.storage-config-row input {
+  width: 92px;
+  min-width: 0;
+  padding: 7px 8px;
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.storage-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.storage-status-grid article {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.storage-status-grid span,
+.storage-status-grid strong,
+.storage-status-grid small { display: block; overflow-wrap: anywhere; }
+.storage-status-grid span { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+.storage-status-grid strong { font-size: 14px; }
+.storage-status-grid small { color: var(--muted); font-size: 12px; margin-top: 5px; }
+.storage-status-grid small.storage-failure { color: var(--danger); }
+.storage-primary-action { display: flex; justify-content: flex-end; margin: 12px 0; }
+.storage-copies {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+.storage-copies caption { text-align: left; color: var(--muted); font-size: 12px; padding-bottom: 6px; }
+.storage-copies th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.storage-copies th,
+.storage-copies td { padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.storage-copies tr:last-child td { border-bottom: 0; }
+.storage-problem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.storage-problem-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: 10px;
+}
+.storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
+.storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .storage-status-grid { grid-template-columns: 1fr; }
+  .storage-problem-list li { align-items: stretch; flex-direction: column; }
+}
 /* Queue is a disclosure, not a command: it stays a plain button until the drawer is
    open, then holds the pressed tint for as long as the panel below it is showing -
    so the one control and the thing it opened read as the same object. */
@@ -9242,19 +9328,19 @@ mark.find-hit.is-current {
   outline: 2px solid var(--find);
   outline-offset: -2px;
 }
-.activity-count {
+/* The head's right-hand cluster holds the right edge as one unit, so the count, the narrow
+   caret and the wide fold never have to agree among themselves on which is last. */
+.activity-head-end {
   margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.activity-count {
   font: 500 11.5px/1 var(--mono);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-/* Whichever of the two ends up last holds the head's right edge: the count when there is
-   one, the caret when the tab is empty and the count is not drawn at all. */
-.activity-toggle {
-  margin-left: auto;
-}
-.activity-count + .activity-toggle {
-  margin-left: 0;
 }
 /* The narrow layout's disclosure. Hidden here at rail widths - the list simply shows -
    and added to the head by the container query below. */
@@ -9284,6 +9370,68 @@ mark.find-hit.is-current {
   flex: none;
   font-size: 9px;
   color: var(--dim);
+}
+.activity-collapse {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font: 600 12px/1 var(--sans);
+  color: var(--dim);
+  cursor: pointer;
+}
+.activity-collapse:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.activity-collapse:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
+}
+/* Shown only by the wide `@container` block below, when the fold is on. */
+.activity-strip {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.activity-strip:hover {
+  background: var(--panel-2);
+  color: var(--fg);
+}
+.activity-strip:focus-visible {
+  outline: 2px solid var(--find);
+  outline-offset: -2px;
+  border-radius: 10px;
+}
+.activity-strip-caret {
+  font: 600 12px/1 var(--sans);
+}
+.activity-strip-label {
+  writing-mode: vertical-rl;
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.activity-strip-count {
+  font: 500 10.5px/1 var(--mono);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 /* Its own overflow region, independent of the log's: the two scroll separately, and
    `overscroll-behavior` keeps a rail that has reached its end from scrolling the page
@@ -9489,6 +9637,9 @@ mark.find-hit.is-current {
   .find-split .activity-rail .activity-toggle {
     display: flex;
   }
+  .find-split .activity-rail .activity-collapse {
+    display: none;
+  }
   .find-split .activity-rail[data-open="false"] .activity-body {
     display: none;
   }
@@ -9497,6 +9648,39 @@ mark.find-hit.is-current {
      section was not asked for - the transcript keeps the larger share. */
   .find-split .activity-rail[data-open="true"] {
     max-height: 33%;
+  }
+}
+
+/* The wide fold. Scoped to the containers the narrow block above does NOT match, so the
+   two can never both apply: narrow, the rail is a disclosure row whatever this preference
+   says; wide, the preference folds the 244px column to a 30px strip and the log takes the
+   rest. Find replaces this rail outright while open, so a fold never hides find's results. */
+@container (width > 560px) {
+  .activity-rail[data-collapsed="true"] {
+    width: 30px;
+  }
+  .activity-rail[data-collapsed="true"] > :not(.activity-strip) {
+    display: none;
+  }
+  .activity-rail[data-collapsed="true"] > .activity-strip {
+    display: flex;
+  }
+  /* The terminal legend is pinned to the rail's 244px column so Send shares the rail's
+     edge. Folded, that column is 30px, which no legend fits. Sat beside Send at its own
+     width instead, it is wider than the column it left (one line of it is ~340px), so
+     folding would have NARROWED the box - the opposite of what a fold is for. It takes its
+     own line under Send instead: the box and Send get the whole row, and the legend, which
+     wrapped to two lines in its column, reads as one. Keyed on the rail being mounted AND
+     folded: while find owns the column the rail is unmounted and the legend keeps its 244px
+     under find's rail. */
+  .transcript[data-view="terminal"]:has(.activity-rail[data-collapsed="true"]) .compose-row {
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+  .transcript[data-view="terminal"]:has(.activity-rail[data-collapsed="true"]) .pty-sendkey {
+    flex: 1 0 100%;
+    width: auto;
+    text-align: right;
   }
 }
 
@@ -10036,6 +10220,7 @@ mark.find-hit.is-current {
   background: color-mix(in oklab, var(--panel) 60%, var(--bg-2));
 }
 .transcript[data-view="terminal"] .activity-rail .activity-tab,
+.transcript[data-view="terminal"] .activity-rail .activity-strip-label,
 .transcript[data-view="terminal"] .activity-rail .activity-tool {
   font-family: var(--mono);
 }
@@ -10567,6 +10752,51 @@ span.task-outcome:hover {
    heading, and the alternative was measured: folding `repoPrs` into `taskPillParts`'s
    silence test draws a 14px empty stub above this row. `test/task-pill.test.ts` and
    `e2e/specs/console-header-identity.spec.ts` both pin the headless case. */
+/* A failed dependency claim, on the session's task band: one disclosure per failing tree. */
+.task-claim-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 2px;
+}
+.task-claim-warning {
+  border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--fg);
+}
+.task-claim-warning summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.task-claim-command {
+  display: block;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.task-claim-tail {
+  margin: 6px 0 2px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-claim-note {
+  margin: 6px 0 2px;
+  color: var(--muted);
+}
+
 .task-repo-prs {
   display: flex;
   flex-wrap: wrap;
@@ -12610,33 +12840,18 @@ select:not([multiple]) option:focus-visible {
   overflow: auto;
   padding: 10px 18px 40px;
 }
-/* ---- Residents drawer (right slide-over, or a pinned column) ----
-   The floating drawer is the Sitrep's slide-over shape at 330px; pinned, the same content is a
-   column beside the fleet, so the Board or Console narrows instead of being covered. */
-.modal-backdrop:has(.residents-drawer) {
-  justify-content: flex-end;
-  align-items: stretch;
-  padding: 0;
-}
+/* ---- Residents drawer ----
+   A 330px column beside the Board or Console, pinned or not: the fleet narrows rather than being
+   covered or dimmed. */
 .residents-drawer {
+  flex: none;
   width: min(330px, 100%);
-  height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--border);
-  box-shadow: -24px 0 64px color-mix(in srgb, var(--shadow-ink) calc(128 / 255 * 100%), transparent);
   font-size: 12.5px;
-}
-/* The key handler's wrapper inside the floating panel: transparent to the column layout. */
-.residents-drawer-frame {
-  display: contents;
-}
-.residents-drawer-pinned {
-  flex: none;
-  height: auto;
-  min-height: 0;
-  box-shadow: none;
 }
 .residents-pinned-row {
   flex: 1;
@@ -12673,6 +12888,30 @@ select:not([multiple]) option:focus-visible {
   padding: 2px 9px;
   font-size: 11.5px;
 }
+/* The second row at the top: Manage residents, where it is seen before the cards. One band with
+   the title row above it - no divider between them, and only a few pixels of air - so the
+   button reads as the title's own action rather than a section of its own. */
+.residents-drawer-head:has(+ .residents-drawer-bar) {
+  padding-bottom: 4px;
+  border-bottom: 0;
+}
+.residents-drawer-bar {
+  flex: none;
+  display: flex;
+  padding: 2px 16px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.residents-drawer-manage {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 560;
+  border-radius: 7px;
+}
 .residents-drawer-body {
   flex: 1;
   min-height: 0;
@@ -12692,6 +12931,46 @@ select:not([multiple]) option:focus-visible {
   padding: 0;
   list-style: none;
 }
+/* The Needs you group at the head of the drawer: framed and tinted in the Needs you column's
+   color (`--attention`, which every skin sets), with the review chord's keycap on its heading
+   the way the Board column carries it. The rest of the drawer's cards follow below it. */
+.residents-drawer-group.is-needs-you {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--attention) 6%, transparent);
+}
+.residents-drawer-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+.residents-drawer-group-key {
+  display: inline-flex;
+  align-items: center;
+  /* The heading is uppercase; the keycap prints the key as typed, as the Board column's does. */
+  text-transform: none;
+  letter-spacing: normal;
+}
+.residents-drawer-group-key:empty {
+  display: none;
+}
+.residents-drawer-group-n {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
 .residents-drawer-card {
   display: flex;
   flex-direction: column;
@@ -12708,8 +12987,23 @@ select:not([multiple]) option:focus-visible {
   border-left-color: var(--resident);
   background: color-mix(in oklab, var(--resident) 10%, var(--panel));
 }
-.residents-drawer-card.needs-you:not(.is-selected) {
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--attention) 45%, transparent);
+/* Working and Needs you: the card is edged and tinted in the color of the Board column the
+   session sits in (`--working`, `--attention`), which every skin sets for itself. After the
+   selected rule, so the state's color wins; the selection then shows as a heavier tint and a
+   doubled edge in the same color. */
+.residents-drawer-card.is-working {
+  --card-tone: var(--working);
+}
+.residents-drawer-card.needs-you {
+  --card-tone: var(--attention);
+}
+.residents-drawer-card:is(.is-working, .needs-you) {
+  border-color: var(--card-tone);
+  background: color-mix(in oklab, var(--card-tone) 7%, var(--panel));
+}
+.residents-drawer-card:is(.is-working, .needs-you).is-selected {
+  background: color-mix(in oklab, var(--card-tone) 12%, var(--panel));
+  box-shadow: 0 0 0 1px var(--card-tone);
 }
 .residents-drawer-card-head {
   display: flex;
@@ -12754,10 +13048,54 @@ select:not([multiple]) option:focus-visible {
   font-size: 10.5px;
   color: var(--muted);
 }
+/* The fold caret, the Board repository head's own (`.brh-chevron`), turned by the button's
+   `aria-expanded`. The name already takes the free width, so it needs no auto margin here. */
+.residents-drawer-card-head .brh-chevron {
+  margin-left: 0;
+}
+.residents-drawer-card-head:hover:not(:disabled) .brh-chevron {
+  color: var(--muted);
+}
 .residents-drawer-card-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+}
+/* Everything between the title and the actions: the loop facts, then what the resident is
+   asking or last said. With the gap under it, one target: a click anywhere above the actions
+   opens the conversation, so the body is the pointer and the actions are not. */
+.residents-drawer-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.residents-drawer-card-body.is-openable {
+  cursor: pointer;
+}
+.residents-drawer-card-body.is-openable > :not(.residents-drawer-card-main) {
+  cursor: default;
+}
+.residents-drawer-card-body.is-openable > .residents-drawer-card-main {
+  border-radius: 6px;
+  margin-inline: -4px;
+  padding-inline: 4px;
+}
+/* Lit while the pointer is anywhere it would open the conversation: over the region or the gap
+   under it, never over the actions. */
+.residents-drawer-card-body.is-openable:hover:not(:has(> :not(.residents-drawer-card-main):hover)) > .residents-drawer-card-main {
+  background: color-mix(in oklab, var(--card-tone, var(--resident)) 8%, transparent);
+}
+.residents-drawer-card-body.is-openable:hover:not(:has(> :not(.residents-drawer-card-main):hover)) .residents-drawer-latest {
+  color: var(--fg);
+}
+/* What the resident says, ruled off from the loop facts above it. */
+.residents-drawer-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
   padding-top: 6px;
   border-top: 1px solid color-mix(in oklab, var(--resident) 18%, var(--border-soft));
 }
@@ -12780,7 +13118,7 @@ select:not([multiple]) option:focus-visible {
   font-size: 11px;
   overflow-wrap: anywhere;
 }
-/* The selected card's latest message: at most three lines, the rest a click away in Open. */
+/* The card's latest message: at most three lines, the rest a click away in its conversation. */
 .residents-drawer-latest {
   margin: 0;
   color: var(--muted);
@@ -12793,113 +13131,93 @@ select:not([multiple]) option:focus-visible {
   -webkit-line-clamp: 3;
   overflow: hidden;
 }
-/* The open question, drawn by `ReviewCard` or `PaneDialogPrompt` at the card's width. They are
-   sized for a modal and the Conversation; inside a 330px card they take less air. */
+/* Compressed: one line of what the resident is doing, then its controls. */
+.residents-drawer-card-body.is-compressed {
+  gap: 5px;
+}
+.residents-drawer-card-body.is-compressed .residents-drawer-card-text {
+  padding-top: 5px;
+}
+.residents-drawer-latest.is-compressed {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* What the resident is asking, one row per pending review (or the menu it is parked on), in the
+   Needs you color. A row only names the question; a click opens where it is answered. */
+.residents-drawer-asks {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .residents-drawer-ask {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.residents-drawer-ask .review {
-  padding: 2px 0 6px;
-}
-.residents-drawer-ask .review-head {
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.residents-drawer-ask .review-head h3 {
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
-}
-.residents-drawer-ask .answer-box,
-.residents-drawer-ask .note-input {
-  min-width: 0;
-}
-.residents-drawer-ask .pane-dialog {
-  margin-top: 0;
-}
-/* A one-question ask answered by one press (`QuickDecisionButtons`): the options as buttons,
-   then Dismiss and Chat about it. */
-.review-quick {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.review-quick-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.review-quick-option {
-  max-width: 100%;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 560;
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
-}
-.review-quick-option.is-recommended,
-.review-quick-option.is-foreman-pick {
-  border-color: var(--attention);
-}
-.review-quick-actions {
-  display: flex;
   align-items: center;
-  gap: 5px;
-}
-.review-quick-actions .btn {
-  padding: 2px 8px;
-  font-size: 11.5px;
-}
-/* The reply box: one line until it is given more, `⌘⏎` sends. */
-.residents-drawer-reply {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 4px 6px;
-}
-.residents-drawer-reply-input {
-  flex: 1 1 0;
+  gap: 8px;
+  width: 100%;
   min-width: 0;
-  max-height: 120px;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.4;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--attention) 10%, var(--panel));
   color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 5px 8px;
-  outline: none;
-  resize: vertical;
-  field-sizing: content;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.residents-drawer-reply-input:focus {
-  border-color: color-mix(in oklab, var(--resident) 55%, var(--border));
+.residents-drawer-ask:hover:not(:disabled) {
+  border-color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 18%, var(--panel));
 }
-.residents-drawer-reply-send {
+.residents-drawer-ask:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.residents-drawer-ask:disabled {
+  cursor: default;
+}
+.residents-drawer-ask-kind {
   flex: none;
-  padding: 3px 9px;
-  font-size: 11.5px;
-  border-radius: 7px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--attention) 16%, transparent);
+  color: var(--attention);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
 }
-.residents-drawer-reply-key {
-  margin-left: 3px;
-  font-size: 10.5px;
-  opacity: 0.75;
+.residents-drawer-ask-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
-.residents-drawer-reply-flash {
-  flex-basis: 100%;
-  margin: 0;
-  font-size: 11px;
+.residents-drawer-ask-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.residents-drawer-ask-detail {
+  overflow: hidden;
   color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.residents-drawer-reply-flash.is-error {
-  color: var(--danger);
+.residents-drawer-ask-go {
+  flex: none;
+  color: var(--attention);
 }
 .residents-drawer-foot {
   flex: none;
@@ -12920,8 +13238,8 @@ select:not([multiple]) option:focus-visible {
   text-transform: uppercase;
   color: var(--muted);
 }
-/* The drawer's handle on the window's right edge while it is closed. Amber while a resident
-   needs you, the same `--attention` the Needs you column wears. */
+/* The drawer's handle on the window's right edge while it is closed. It lights in the colors of
+   the Board columns its residents sit in, `--working` and `--attention`, which every skin sets. */
 .residents-edge-tab {
   /* A floating layer: in the desktop shell it must take its own clicks back from the title
      bar's drag region (see test/desktop-drag-region.test.ts). */
@@ -12954,13 +13272,31 @@ select:not([multiple]) option:focus-visible {
   font-size: 10.5px;
   font-weight: 640;
 }
+.residents-edge-tab:is(.is-working, .needs-you) {
+  color: var(--tab-tone);
+  border-color: var(--tab-tone);
+  background: color-mix(in oklab, var(--tab-tone) 14%, var(--panel-2));
+  box-shadow: 0 0 10px color-mix(in oklab, var(--tab-tone) 45%, transparent), var(--shadow);
+}
+.residents-edge-tab.is-working {
+  --tab-tone: var(--working);
+}
+/* Needs you outranks Working: it takes the tab's own edge and glyph. */
 .residents-edge-tab.needs-you {
-  color: var(--attention);
-  border-color: color-mix(in oklab, var(--attention) 60%, var(--border));
-  background: color-mix(in oklab, var(--attention) 14%, var(--panel-2));
+  --tab-tone: var(--attention);
+}
+/* Both at once: Working stays on as a second edge, a ring just outside the first. */
+.residents-edge-tab.needs-you.is-working {
+  box-shadow:
+    0 0 0 2px var(--working),
+    0 0 12px color-mix(in oklab, var(--attention) 45%, transparent),
+    var(--shadow);
+}
+.residents-edge-tab:is(.is-working, .needs-you) > [aria-hidden]:first-child {
+  text-shadow: 0 0 6px color-mix(in oklab, var(--tab-tone) 70%, transparent);
 }
 /* A resident that needs you, standing in Needs you while the drawer is closed: a dashed
-   outline in its marker color. A doorway to the drawer, not a session card. */
+   outline in its marker color. A doorway to the resident's conversation, not a session card. */
 .resident-visitor-tile {
   position: relative;
   display: flex;
@@ -23165,13 +23501,18 @@ select.foreman-model-input {
 .wf-judge-passes input {
   accent-color: var(--working);
 }
+.wf-default-rows {
+  display: grid;
+  gap: 6px;
+}
 .wf-default-row {
   display: flex;
   align-items: center;
   gap: 9px;
 }
-.wf-default-flow {
+.wf-default-kind {
   flex: none;
+  width: 56px;
   color: color-mix(in oklab, var(--working) 72%, var(--muted));
   font: 10px var(--mono);
   letter-spacing: 0.02em;
@@ -24041,13 +24382,13 @@ button.sc-row:focus-visible {
   border-left: 2px solid var(--border);
   background: var(--panel-2);
 }
-/* The resolve column is 62px, measured against its own longest real value rather than
-   rounded up: the cell holds one text button reading `Resolve`, or `Resolving…` for the
-   moment a request is in flight, and both fit at the row's 12px. It comes out of the pull
-   request's flexible track, which can afford it - that cell holds `repo#123`, the shortest
-   real value in the table, while every other track here is already measured. */
+/* The actions column is 124px, measured against its longest real value rather than rounded
+   up: `Findings` beside `Resolving…`, the moment a resolve is in flight, with the cell's 10px
+   gap, at the cell's 11px. It comes out of the pull request's flexible track, which can
+   afford it - that cell holds `repo#123`, the shortest real value in the table, while every
+   other track here is already measured. */
 .sc-table-inspector .sc-row {
-  grid-template-columns: minmax(0, 1fr) 148px 74px 104px 62px;
+  grid-template-columns: minmax(0, 1fr) 148px 74px 104px 124px;
 }
 .sc-table-shipping .sc-row {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
@@ -24245,13 +24586,77 @@ button.sc-row:focus-visible {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-/* The operator's way out of a stuck finding. Right-aligned to the row's edge like every
-   other trailing cell here, and 11px to sit with `Fixed` rather than to compete with the
-   verdict - it is a repair for an uncommon state, not the row's headline. */
+/* Findings and Resolve, the row's actions. Right-aligned to the row's edge like every
+   other trailing cell here, and 11px to sit with `Closed` rather than to compete with the
+   verdict - they are not the row's headline. */
 .sc-act {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
   font-size: 11px;
+}
+
+/* ---- Settings > GitHub Inspector's Findings modal ----
+   The summary sits in the shell's inset. The table band bleeds because it is its own
+   scrollport, so it re-applies the inset as its own padding. */
+.inspector-findings-summary {
+  padding-block: 12px 4px;
+  font-size: 12px;
+}
+.inspector-findings-summary p {
+  margin: 0 0 8px;
+}
+.inspector-findings-pr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+}
+.inspector-findings-pr a {
+  color: var(--fg);
+  font-weight: 600;
+}
+.inspector-findings-sep {
+  color: var(--dim);
+}
+.inspector-findings-mode {
+  color: var(--attention);
+}
+.inspector-findings-record {
+  color: var(--muted);
+}
+.inspector-findings-body {
+  padding: 0 var(--modal-inset, 18px) 14px;
+  max-height: 64vh;
+  overflow: auto;
+}
+/* The column names stay in view while a long list scrolls inside the band. The band is the
+   one scrollport, so the table's own horizontal scroller is turned off here or the sticky
+   header would stick to it instead. */
+.inspector-findings-body .wf-run-table {
+  overflow: visible;
+}
+.inspector-findings-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+}
+/* Separate borders, so each cell paints its own: collapsed borders are painted by the table
+   above a sticky header, and the severity rail would show through it as rows scroll under. */
+.inspector-findings-body table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+/* The Posted cell's second line on a draft GitHub refused, in every view the shared findings
+   table is drawn in. Attention rather than danger: the draft is still a finding to act on,
+   and the refusal is GitHub's answer about where it can be anchored, not a failure. */
+.inspector-finding-refusals {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--attention);
 }
 
 /* ---- the Foreman ledger's own cells ----
@@ -26211,6 +26616,26 @@ button.sc-row:focus-visible {
   background: var(--danger);
 }
 
+/* A dispatch waiting on a pool's dependency claim: the step, its elapsed time, and Stop. It
+   takes the skeleton bars' place on the tile and a third line on the rail row. */
+.pend-claim {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pend-rail .pend-claim {
+  grid-column: 2 / span 2;
+}
+.pend-claim-step {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pend-seg.is-live {
     animation: none;
@@ -27698,7 +28123,31 @@ span.line-run-prov {
 .board-all-sessions > .console {
   min-width: 0;
 }
+/* The rail folded to its strip: the same 40px a folded Board column takes, and every other
+   pixel goes to the detail - the conversation, its terminal and the composer all widen with it,
+   because each sizes itself to `.console-detail`. */
+.console[data-rail="folded"] {
+  grid-template-columns: var(--board-col-collapsed) 1fr;
+}
+/* A head that stays put over rows that scroll: the fold control (and, drilled in from the
+   Board, the way back) is never scrolled out of reach. */
 .console-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  /* The containing block for every absolutely positioned descendant, above all Tooltip's 1px
+     `.tt-desc` - the head's controls carry one too. See `.console-rail-rows`. */
+  position: relative;
+  border-right: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.console-rail-head {
+  flex: none;
+}
+.console-rail-rows {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   /* The containing block for every absolutely positioned row descendant, above all
      Tooltip's 1px `.tt-desc`. Unpositioned, those resolved to the nearest positioned
@@ -27707,8 +28156,84 @@ span.line-run-prov {
      Board computes its vertical overflow to `auto`, so that drew a second, useless
      scrollbar beside the session detail (#1393). */
   position: relative;
-  border-right: 1px solid var(--border-soft);
-  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+/* The fold control, at the right of whichever head the rail has. Drawn like the head's back
+   button so the two read as one pair of controls. */
+.session-rail-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* A count already holds the auto margin in a Board rail head, so the fold sits after it. */
+.board-col-n ~ .session-rail-fold {
+  margin-left: 2px;
+}
+.session-rail-fold:hover {
+  color: var(--fg);
+  background: var(--panel);
+  border-color: var(--border);
+}
+.session-rail-fold:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* The folded rail: one button, the whole strip, in a folded Board column's register - a glyph
+   that says which way it opens, a count per state group in that group's colour, and the
+   rail's name set vertically. */
+.session-rail-strip {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 0;
+  padding: 11px 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.session-rail-strip:hover {
+  background: color-mix(in oklab, var(--neutral) 7%, transparent);
+}
+.session-rail-strip:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -3px;
+}
+.session-rail-strip-glyph {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+}
+.session-rail-strip:hover .session-rail-strip-glyph {
+  color: var(--fg);
+}
+.session-rail-strip .session-rail-strip-n {
+  margin-left: 0;
+  padding: 1px 6px;
+  color: var(--tone-color, var(--dim));
+  border-color: color-mix(in oklab, var(--tone-color, var(--border)) 45%, var(--border));
+  background: color-mix(in oklab, var(--tone-color, var(--panel)) 12%, var(--panel));
+}
+@media (prefers-reduced-motion: no-preference) {
+  .session-rail-strip-n.is-pulsing {
+    animation: board-strip-pulse 0.9s ease-out 2;
+  }
 }
 .rail-group {
   position: sticky;
@@ -28540,6 +29065,181 @@ span.line-run-prov {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+/* The session blocker band (SessionBlockerBand.tsx): the launch-failure danger treatment.
+
+   It does not shrink. It used to be `flex: 0 1 auto` beside a transcript that is also allowed
+   to shrink, and flexbox shares shrinkage in proportion to each item's natural height - so a
+   transcript thousands of pixels tall took nearly all of the band's share, leaving only its
+   header row and scrolling the reason and both controls out of sight. Collapsed, the band is
+   one row and costs little. Expanded, it is capped like `.pane-dialog` above, because the
+   details can be four thousand characters and an uncapped band would push the transcript and
+   the reply box out of `.detail-body`; past the cap it scrolls on its own, and its row is
+   sticky so the controls never scroll away with the details. */
+.detail-conv > .blocker-band {
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.blocker-band {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, var(--border));
+  border-left: 3px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+  font-size: 12.5px;
+}
+/* The row is the band's whole collapsed face: kind, reason, age and both controls. The
+   toggle's 22rem basis decides when the controls wrap under it: about 180px of reason
+   survives beside the controls, and a pane narrower than that moves the age and controls to
+   a second line, right-aligned, rather than cutting the reason to a word or two.
+   The reason never wraps here, open or not, so the sticky row's height is bounded by its
+   controls rather than by up to 200 characters of text; the expanded facts carry it whole. */
+.blocker-band-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 10px 7px 12px;
+  background: inherit;
+}
+.blocker-band-toggle {
+  flex: 1 1 22rem;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 4px;
+  margin: 0 0 0 -4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.blocker-band-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.blocker-band-flag {
+  flex: none;
+  font-weight: 750;
+  color: var(--danger);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-size: 11px;
+}
+.blocker-band-kind {
+  flex: none;
+  font-weight: 650;
+}
+.blocker-band-reason {
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The shared dropdown chevron, so the toggle reads as the same kind of thing as a select. */
+.blocker-band-chevron {
+  flex: none;
+  align-self: center;
+  width: 10px;
+  height: 6px;
+  margin-left: 2px;
+  background: var(--select-chevron) no-repeat center;
+  transition: transform 120ms ease;
+}
+.blocker-band.is-open .blocker-band-chevron {
+  transform: rotate(180deg);
+}
+.blocker-band-since {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Everything under the row: the expanded facts, a flagged reply, the flag form, an error. */
+.blocker-band-more {
+  margin: 0;
+  padding: 9px 14px 11px;
+  border-top: 1px dashed color-mix(in srgb, var(--danger) 30%, var(--border));
+}
+/* Open, the divider belongs to the sticky row, so it still separates the row from details
+   scrolling up beneath it. */
+.blocker-band.is-open .blocker-band-row {
+  border-bottom: 1px dashed color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: 7px 7px 0 0;
+}
+.blocker-band.is-open .blocker-band-facts-wrap {
+  border-top: 0;
+}
+.blocker-band-facts-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.blocker-band-facts-wrap[hidden] {
+  display: none;
+}
+.blocker-band-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 12px;
+  margin: 0;
+}
+.blocker-band-facts dt {
+  color: var(--muted);
+}
+.blocker-band-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.blocker-band-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.blocker-band-reply-pill {
+  padding: 1px 6px;
+  font-size: 10.5px;
+  font-weight: 650;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+}
+.blocker-band-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+.blocker-band-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 200px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.blocker-band-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+/* Wrapped onto a line of their own in a narrow pane, the controls keep to the right edge,
+   where they sit on one line. */
+.blocker-band-row > .blocker-band-actions {
+  margin-left: auto;
+}
+.blocker-band-error {
+  color: var(--danger);
+}
 .detail-conv > .transcript {
   flex: 1 1 auto;
   min-height: 120px;
@@ -29111,6 +29811,8 @@ span.line-run-prov {
    flex-grow / min-width / opacity move (all numbers or px), so it interpolates cleanly
    both ways with no measuring - see `.board:not([data-focus="none"])` below. */
 .board {
+  --board-rail-width: 320px;
+  container-type: inline-size;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -29130,6 +29832,8 @@ span.line-run-prov {
 .board:not([data-focus="none"]) {
   padding: 0;
   overflow-x: hidden;
+  /* Establish the reading width immediately; only the outer tracks morph. */
+  transition: none;
 }
 /* Collapsed columns and the rail sit flush against the detail pane. */
 .board:not([data-focus="none"]) .board-col + .board-col {
@@ -29154,9 +29858,9 @@ span.line-run-prov {
    survives to hold a gap between the rail and the detail. */
 .board:not([data-focus="none"]) .board-col {
   flex-grow: 0;
-  /* flex-basis too, not just min-width: the backlog and an all-clear column are sized
-     by basis rather than by grow, so clearing min-width alone would leave them holding
-     232px / 250px of the rail's space open. */
+  /* flex-basis too, not just min-width: the backlog is sized by basis rather than by
+     grow, so clearing min-width alone would leave it holding 232px of the rail's space
+     open. */
   flex-basis: 0;
   min-width: 0;
   opacity: 0;
@@ -29166,7 +29870,7 @@ span.line-run-prov {
    rows, and only the divider border the console rail carries. */
 .board:not([data-focus="none"]) .board-col.is-rail {
   flex-grow: 0;
-  min-width: 320px;
+  min-width: var(--board-rail-width);
   opacity: 1;
   border-radius: 0;
   border-color: transparent;
@@ -29268,8 +29972,7 @@ span.line-run-prov {
 /* ---- a collapsed column ----
    Folded down to a strip that still says what the column is and how much it holds (see
    `CollapsedColumnStrip`). A fixed track, not a share: `flex: 0 0` with the width in the basis
-   AND the floor, because the Backlog and an all-clear column are sized by basis and would
-   otherwise keep theirs. Same three properties the morph animates, so folding rides the
+   AND the floor, because the Backlog is sized by basis and would otherwise keep its own. Same three properties the morph animates, so folding rides the
    existing transition, and scoped to `[data-focus="none"]` like `.is-wide` so a drill-in still
    collapses every non-rail column to nothing, strip included. */
 .board[data-focus="none"] .board-col.is-collapsed {
@@ -29435,6 +30138,51 @@ span.line-run-prov {
   flex-grow: 1;
   min-width: 440px;
 }
+/* Lay out the reader at its destination width while the outer track reveals it.
+   Measuring a transcript inside the growing track starts at almost zero width, then
+   crosses the activity-rail breakpoint. That rewraps the cached history after its
+   initial tail positioning and browser anchoring can strand it far above the bottom.
+   Query the Board, not the viewport, so a pinned Residents drawer is accounted for.
+   No scroll correction is needed, and intentional scrollback remains untouched. */
+.board-detail > .cdetail {
+  width: max(440px, calc(100cqw - var(--board-rail-width)));
+  align-self: flex-start;
+}
+/* A Board too narrow for the rail beside a 440px reader - a Residents drawer column takes 330px
+   of the window, so this starts below about 1090px - must not clip the reader: the focused
+   Board hides its horizontal overflow. The rail gives way first, down to 200px, so the reader
+   keeps its 440px; past that the reader takes what is left rather than running off the edge.
+   Redefined on the tracks rather than on `.board`, because a container query cannot style the
+   container it measures; `100cqw` here is still the Board's width. */
+@container (max-width: 759.98px) {
+  .board-col,
+  .board-detail {
+    --board-rail-width: max(200px, calc(100cqw - 440px));
+  }
+  .board:not([data-focus="none"]) .board-detail {
+    min-width: calc(100cqw - var(--board-rail-width));
+  }
+  .board-detail > .cdetail {
+    width: calc(100cqw - var(--board-rail-width));
+  }
+}
+/* The drill-in rail folded to its strip (`UiConfig.sessionRailFolded`): the rail track and the
+   reader's width both read the strip's 40px instead of the rail's. After the container query
+   above and more specific than its rule, so a narrow Board folds to the strip too rather than
+   holding the rail's 200px floor open. */
+.board[data-rail="folded"] .board-col,
+.board[data-rail="folded"] .board-detail {
+  --board-rail-width: var(--board-col-collapsed);
+}
+/* The open session's column had no card, so no rail is drawn (BoardView's `railHidden`): the
+   reader takes the whole Board instead of the Board less a rail that is not there. After the
+   container query above, and more specific than its rule, so it wins at every width. */
+.board[data-rail="none"] .board-detail > .cdetail {
+  width: 100cqw;
+}
+.board[data-rail="none"]:not([data-focus="none"]) .board-detail {
+  min-width: 100cqw;
+}
 @media (prefers-reduced-motion: no-preference) {
   .board {
     transition: padding 0.34s ease;
@@ -29477,6 +30225,15 @@ span.line-run-prov {
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--tone-color, var(--muted));
+}
+/* The review chord beside "Needs you". The Keycap renders nothing while keycaps are off, so
+   the wrapper is empty then and takes no room. */
+.board-col-key {
+  display: inline-flex;
+  align-items: center;
+}
+.board-col-key:empty {
+  display: none;
 }
 .board-col-n {
   margin-left: auto;
@@ -29974,142 +30731,11 @@ span.line-run-prov {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- empty columns: all-clear, and the stash the rest fold into ----
-   An empty "needs you" keeps its PLACE but not its width: it narrows to a slim rail - the
-   swatch, its name turned on end, a tick and a zero - and says "all clear" on hover and to a
-   screen reader. It stays mounted and sized on the same `flex-*` / `min-width` properties the
-   drill-in animates, so the moment a session needs you it widens in place on that transition
-   rather than arriving from nowhere and shoving every column sideways. Its width sits at
-   `.board-col`'s own specificity on purpose: the drill-in's collapse rule outranks it, so a
-   drill-in still folds this rail to nothing like any other column.
-
-   Everything else that empties leaves the board entirely (BoardView simply stops rendering
-   it) and reappears as a chip in the stash, unless the stash is switched off in Settings. */
-.board-col.is-calm {
-  flex-grow: 0;
-  flex-basis: var(--board-calm-rail);
-  min-width: var(--board-calm-rail);
-  align-items: center;
-  padding: 10px 0 9px;
-  gap: 10px;
-  --board-calm-rail: 34px;
-}
-/* The head and body boxes dissolve, so their leaves line up down the rail as one column.
-   The head's rule and padding belong to a head that runs across a column; a 34px rail has
-   no across. */
-.board-col.is-calm > .board-col-head,
-.board-col.is-calm > .board-col-body {
-  display: contents;
-}
-.board-col.is-calm .board-col-head h2 {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  font-size: 10px;
-  letter-spacing: 0.9px;
-  color: var(--dim);
-  white-space: nowrap;
-}
-/* The swatch dims and loses its glow: an amber beacon on a column with nothing in it is the
-   one thing an all-clear must not look like. */
-.board-col.is-calm .board-swatch {
-  opacity: 0.6;
-  box-shadow: none;
-}
-/* The zero sits at the foot, bare: a pill 34px wide would touch both borders. */
-.board-col.is-calm .board-col-n {
-  order: 2;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-}
-/* The tick, and the hover target for the sentence: it takes the rail's spare height between
-   the name and the zero, so pointing anywhere down the rail explains it. It is the flex item
-   itself - `Tooltip` merges its handlers onto this element rather than wrapping it. */
-.board-allclear {
-  order: 1;
-  flex: 1;
-  align-self: stretch;
-  display: flex;
-  justify-content: center;
-  /* The tick keeps its own height at the top; stretched, its box would run to the count. */
-  align-items: flex-start;
-  margin: 0;
-  padding: 0;
-}
-.board-allclear-tick {
-  font-size: 13px;
-  line-height: 1;
-  color: var(--idle);
-}
-/* Put a revealed column back. Sits where the count does on a column that has one. */
-.board-restash {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--dim);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  cursor: pointer;
-}
-.board-restash:hover {
-  color: var(--fg);
-  border-color: var(--border);
-  background: var(--panel);
-}
-.board-stash {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-left: 14px;
-  padding-top: 2px;
-}
-.board-stash-label {
-  font-size: 9.5px;
-  font-weight: 800;
-  letter-spacing: 0.7px;
-  text-transform: uppercase;
-  color: var(--dim);
-  text-align: center;
-}
-.board-stash-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  font: inherit;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--dim);
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.board-stash-chip:hover {
-  color: var(--muted);
-  border-style: solid;
-  background: var(--panel);
-}
-.board-stash-chip .board-swatch {
-  opacity: 0.55;
-  box-shadow: none;
-}
-
 /* ---- backlog column ----
    Dashed and off-palette because it holds TASKS, not sessions: nothing in it is a
-   live agent, and it should never be mistaken for a sixth state. Never shrinks or
-   hides when empty - it is a drop target and an inbox, and one that vanishes when
-   empty is one you cannot drop into. */
+   live agent, and it should never be mistaken for a sixth state. Like the tone columns
+   it leaves the board when empty: it only takes drops of its own cards, so an empty
+   Backlog has nothing to receive. */
 .board-backlog {
   flex-grow: 0;
   flex-basis: 232px;
@@ -30964,6 +31590,15 @@ span.line-run-prov {
   color: var(--fg);
   overflow-wrap: anywhere;
 }
+/* The tracker id of an external prerequisite, beside its title. */
+.bl-deadblock-ref {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+.bl-deadblock-name a {
+  color: inherit;
+}
 .bl-deadblock-state {
   flex: none;
   padding: 0 6px;
@@ -31158,6 +31793,61 @@ span.line-run-prov {
   border-color: color-mix(in oklab, var(--held) 30%, var(--border));
   background: linear-gradient(color-mix(in oklab, var(--held) 7%, var(--panel)), var(--panel-2));
 }
+/* A tile standing on a durable session blocker: waiting on someone other than you. The
+   launch-failure tile's danger treatment (`.lf-tile`), so no new colour token: every skin
+   already defines `--danger`. Declared after `.is-held` so blocked wins the spine. */
+.tile.is-blocked {
+  --tone-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: linear-gradient(color-mix(in srgb, var(--danger) 7%, var(--panel)), var(--panel-2));
+}
+.tile-flag.tf-blocked {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  background: color-mix(in srgb, var(--danger) 13%, transparent);
+  color: var(--danger);
+  cursor: help;
+}
+.tile-blocker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  font-size: 11.5px;
+  color: var(--fg);
+  min-width: 0;
+}
+.tile-blocker-kind {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.tile-blocker-reason {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-blocker-waiting {
+  color: var(--muted);
+}
+.tile-blocker-link {
+  position: relative;
+  z-index: 1;
+  color: var(--danger);
+  text-decoration: none;
+}
+.tile-blocker-reply {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 650;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+}
+
 /* `.is-held.can-drop` has no rule because the combination cannot arise: `canAcceptTask`
    (BacklogColumn.tsx) takes the tile's workflow run and refuses a session an open run holds,
    so a held tile never lights up, never hints, and never accepts a backlog drop. The drop is
@@ -32515,7 +33205,8 @@ span.line-run-prov {
    the margin separates a later heading from the rows above it, and `:first-child` keeps a
    heading that opens its block tight to the top. */
 .board-card-group-head .settings-subhead,
-.board-card-checklist .settings-subhead {
+.board-card-checklist .settings-subhead,
+.topbar-line-setting .settings-subhead {
   margin: 16px 0 0;
   font-size: 10px;
   font-weight: 620;
@@ -32528,7 +33219,8 @@ span.line-run-prov {
   margin-top: 0;
 }
 .board-card-group-head .settings-blurb,
-.board-card-checklist .settings-blurb {
+.board-card-checklist .settings-blurb,
+.topbar-line-setting .settings-blurb {
   margin: 0 0 2px;
 }
 .board-card-preview {
@@ -32592,6 +33284,48 @@ span.line-run-prov {
 .topbar-preview-stage .topbar-preview,
 .topbar-preview-stage .topbar-preview * {
   cursor: default;
+}
+/* Display > Top bar's Line block sits under the bar's two lists, divided from them like a
+   second group of the same section. */
+.topbar-line-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 22px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+/* Display > Top bar > The Line's preview: the real strip, laid out at a fleet window's width and
+   zoomed into the stage by `LinePreview`. Its page margin is the gap above the board, which
+   inside a framed stage is just a lopsided border. Disabled has no strip to draw, so the
+   stage holds a dashed band the height of a condensed strip and says what is missing. */
+.line-preview-stage {
+  overflow: hidden;
+  margin-bottom: 12px;
+  /* The card and bar previews' stage, restated rather than borrowed: specs reach those
+     previews through `.board-card-preview-stage`, and a third match would be ambiguous. */
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.line-preview-stage .line {
+  margin: 0;
+}
+.line-preview-stage .line-stage,
+.line-preview-stage .line-stage * {
+  cursor: default;
+}
+.line-preview-off {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  margin: 0;
+  border: 1px dashed var(--border-soft);
+  border-radius: 8px;
+  color: var(--dim);
+  font-size: 12px;
 }
 .topbar-customizer {
   display: grid;
@@ -32688,7 +33422,10 @@ span.line-run-prov {
 /* Below this the console's rail and the board's columns stop being a layout and start
    being a squeeze. Both collapse to one column rather than pretending. */
 @media (max-width: 760px) {
-  .console {
+  /* The folded Console too: its 40px strip track is more specific than `.console` and would
+     otherwise survive here, leaving the detail in a 40px column beside a hidden rail. */
+  .console,
+  .console[data-rail="folded"] {
     grid-template-columns: 1fr;
   }
   .console-rail {
@@ -37586,6 +38323,19 @@ body.foreman-sidecar-open .modal-backdrop {
   border-radius: 6px;
 }
 
+/* An image artifact keeps the page card's reserved height, so a mock-up loading never
+   shifts the log. `scale-down` fits a large image whole and leaves a small one at its own
+   pixels rather than enlarging it into a blur. */
+.artifact-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: scale-down;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 .artifact-loading {
   position: absolute;
   inset: 50% 16px auto;
@@ -38290,3 +39040,248 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-mcp-selected > li > button { margin-left: auto; }
 .resident-mcp-add { display: flex; gap: 12px; align-items: end; }
 .resident-mcp-add .field { flex: 1; min-width: 0; }
+/* Pinned at launch or all native sources: a bare fieldset, so the two radios read as the
+   section's other checkbox rows do. */
+.resident-mcp-sources { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.resident-mcp-sources > legend { margin-bottom: 4px; padding: 0; }
+.resident-mcp-sources input[type="radio"] { accent-color: var(--working); }
+.resident-mcp-all-confirm { width: min(520px, 100%); }
+.resident-mcp-all-body p { margin: 8px 0 0; font-size: 12.5px; line-height: 1.55; }
+.resident-mcp-all-body ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.resident-mcp-all-body strong { color: var(--fg); font-weight: 600; }
+
+.resident-state { font-size: 12px; }
+.resident-state-path { overflow-wrap: anywhere; }
+.resident-state pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.resident-state ul { max-height: 240px; overflow: auto; }
+
+/* ---- backlog search and filters ----
+
+   Shared by the Board's Backlog column and the Line's Backlog drawer (BacklogFilterControls).
+   The buttons sit in the host's header so its height does not change while nothing is
+   filtered; the strip below the header appears only while a search or filter is on. The menu
+   is fixed to the viewport because both hosts clip their own overflow. */
+.bl-filter-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* The Backlog head wraps rather than clipping: its width control keeps its space while
+   invisible, so a minimum-width column has no room for the filter buttons beside the count.
+   They come last, so they are what moves to a second line. */
+.board-backlog > .board-col-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.bl-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 600 11px var(--sans);
+  cursor: pointer;
+}
+.bl-filter-btn:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.bl-filter-btn.is-on {
+  color: var(--fg);
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 16%, var(--panel));
+}
+.bl-filter-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.bl-filter-badge {
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--working);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+.bl-filter-pop {
+  position: fixed;
+  z-index: 60;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-deep);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent);
+}
+.bl-filter-head {
+  margin: 4px 6px 2px;
+  color: var(--dim);
+  font: 700 10px var(--sans);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.bl-filter-row,
+.bl-filter-reset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: 12px var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.bl-filter-row:hover,
+.bl-filter-row:focus-visible,
+.bl-filter-reset:hover,
+.bl-filter-reset:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+.bl-filter-box {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+}
+.bl-filter-row.is-on .bl-filter-box {
+  border-color: var(--working);
+  background: var(--working);
+  box-shadow: inset 0 0 0 2px var(--panel-deep);
+}
+.bl-filter-label {
+  flex: 1;
+}
+.bl-filter-count {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.bl-filter-reset {
+  margin-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0 0 6px 6px;
+  color: var(--working);
+}
+.bl-filter-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.bl-filter-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--dim);
+}
+.bl-filter-search:focus-within {
+  border-color: var(--working);
+  /* The input drops its own outline, so the field draws the keyboard focus ring instead. */
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 28%, transparent);
+}
+.bl-filter-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: 12px var(--sans);
+  outline: none;
+}
+.bl-filter-search input::placeholder {
+  color: var(--dim);
+}
+.bl-filter-x {
+  padding: 2px 5px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.bl-filter-x:hover {
+  color: var(--fg);
+}
+.bl-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.bl-filter-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--working);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 14%, var(--panel));
+  color: var(--fg);
+  font: 11.5px var(--sans);
+  cursor: pointer;
+}
+.bl-filter-chip span {
+  margin-left: 3px;
+  color: var(--muted);
+}
+.bl-filter-hidden {
+  margin: 2px 0 0;
+  padding: 7px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--dim);
+  font-size: 11.5px;
+  text-align: center;
+}
+.bl-filter-hidden.line-bl-hidden {
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  border-color: var(--border-soft);
+}
+.bl-filter-clear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--working);
+  font: inherit;
+  cursor: pointer;
+}
+.bl-hit {
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--find) 40%, transparent);
+  color: inherit;
+}
+
+/* Stop for a running dependency claim, on the slot card and on the waiting task's card. */
+.claim-stop {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+}
+.claim-stop-btn {
+  padding: 2px 9px;
+  font-size: 11px;
+}
+.claim-stop-error {
+  color: var(--danger);
+  font-size: 11px;
+}

@@ -522,6 +522,26 @@ records `null`.
 | Claude Code | `strict-mcp-config` | The SDK's `strictMcpConfig`, with Mission's server and the snapshot in `mcpServers`, plus `disableClaudeAiConnectors` in launch-scoped settings. The CLI reads no user, local, project or plugin MCP configuration for the run. A global remote server with no header, query, fragment or key-shaped path segment, on `https` or loopback `http`, is in `mcpServers` as configured (name, `type`, `url`, `headers: {}`), so Claude Code's own transport presents any OAuth login it holds for it; every other usable global server is a scoped-launcher entry. After start, `mcpServerStatus` is checked against the set: every server in it must be configured and connect, and one reported failed, disabled or needing a login refuses the start. So does a set Claude cannot confirm within 60 seconds: a status call that fails or goes unanswered, or a server still starting. The same check runs on the relaunch after an authentication failure. |
 | Codex | `codex-home-overlay` | A per-run `CODEX_HOME` that links every entry of the operator's Codex home except `config.toml`, which it generates on every start: the operator's file with every MCP statement removed byte for byte, `sqlite_home` pointed at the operator's home, and the snapshot under quoted keys. Before `thread/start` or `thread/resume`, `config/read` with layers is checked. |
 
+A profile on [all native sources](residents.md#all-native-sources) opts out of this table on
+purpose, and only where `mcpSelection.allNativeSources` is set. On Claude Code its mechanism is
+`lift-strict-mcp-config`: the launch renders Mission's server and the snapshot (custom servers only)
+in `mcpServers` exactly as above, but without `strictMcpConfig` or `disableClaudeAiConnectors`, so
+Claude Code also loads its user, local, project and plugin servers and the account's claude.ai
+connectors at every start. That is the MCP launch every other Agent SDK session makes, so there is
+no isolation to probe. The post-start `mcpServerStatus` check still requires Mission's server and
+every snapshot server to connect, and no longer refuses a server outside the snapshot. Codex
+records `null`: lifting its overlay would load a trusted project's servers without the layer check
+below, and it has no account connectors.
+
+Checked on 2026-11-09 against Claude Code 2.1.319 and a real account's configuration, through the
+production driver and without sending a prompt: a pinned launch reported only Mission's server.
+The same launch on all native sources first reported a user-scope server and a plugin server, both
+still pending; once settled it reported the user-scope server and the account's claude.ai
+connectors (Slack among them), all connected, and no longer listed the plugin server. Mission's server,
+passed in `mcpServers`, was the one that started (scope `dynamic`) even though the user scope also
+defined a server named `mission-control`. The output is workflow evidence, not part of the
+repository.
+
 An overlay alone is not an exact set. Measured on Codex 0.160.0, a trusted project's
 `.codex/config.toml` both adds servers and merges fields into a server of the same name, and
 thread-level `config` overrides split keys on every dot, so they cannot address a server named

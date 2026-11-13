@@ -3987,6 +3987,21 @@ export const TaskKindCardStyleSchema = z.enum(TASK_KIND_CARD_STYLES);
 export type TaskKindCardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
 
 /**
+ * How a session shows the sub-agents it launched in the background, on its board card and in
+ * its conversation together: `nested` hangs sub-cards beneath the card and docks a Background
+ * agents tray above the reply box; `chip` puts one chip in the card's flags that opens the
+ * agent list, and gives the conversation rail an Agents tab. One value covers both halves,
+ * because each was decided as a pair (`docs/plans/background-subagent-visibility/plan.md`).
+ *
+ * There is no `off`: the decision was one treatment or the other. Persisted on operators'
+ * machines, so append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the
+ * picker's order.
+ */
+export const BACKGROUND_AGENTS_STYLES = ["nested", "chip"] as const;
+export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
+export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
+
+/**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
  * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
@@ -4178,6 +4193,8 @@ export const UI_CONFIG_DEFAULTS = {
   skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
   taskKindCard: "tab",
+  /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
+  backgroundAgentsStyle: "nested",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -4315,6 +4332,14 @@ export const UiConfigSchema = z.object({
   skin: SkinIdSchema.default(UI_CONFIG_DEFAULTS.skin).catch(UI_CONFIG_DEFAULTS.skin),
   taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
   taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
+  /**
+   * Which background sub-agent treatment the board and the conversation draw. `.catch` like
+   * `skin`, so a value a newer build added reads as Nested sub-cards after a downgrade rather
+   * than failing the whole `ui` record. The patch schema below is strict.
+   */
+  backgroundAgentsStyle: BackgroundAgentsStyleSchema
+    .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
+    .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -4517,6 +4542,8 @@ export const UiConfigPatchSchema = z.preprocess(
     // Strict for the same reason: a `.partial()` of the stored `.catch` would store the default
     // for a placement this build does not know.
     blockedPlacement: BlockedPlacementSchema.optional(),
+    // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
+    backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
   }).refine(
     (o) => Object.keys(o).length > 0,
     { message: "empty config update" },

@@ -136,6 +136,13 @@ test("only the Overlay primitive renders a backdrop", () => {
  * only controls are Close and the form behind it - so a shortcut reaching through it reaches
  * the review it is already about.
  *
+ * `components/layouts/SubagentChip.tsx` is the background sub-agents popover a board card's
+ * chip opens under Chip and popover, and it joins for SpendChip's reason: anchored to its chip
+ * rather than owning the screen, and a backdrop would give a list a modal posture it should
+ * not have. It owns its Escape (stopped before the board sees it) and outside-click, and it is
+ * READ-ONLY - it lists agents and controls nothing - so a shortcut reaching through it hits
+ * the same selected session it would have hit with the popover shut.
+ *
  * `residents/ResidentsDock.tsx` is the Residents dock beside Foreman - the fifth topbar
  * popover, and it joins for ForemanBar's reason: anchored to its button rather than owning the
  * screen, its Escape and outside-click dismissal pinned by `topbar-popover-dismiss.test.ts`,
@@ -149,6 +156,7 @@ const UNREGISTERED_DIALOGS = [
   "components/ForemanRecommendation.tsx",
   "components/KeepAwakeControl.tsx",
   "components/SpendChip.tsx",
+  "components/layouts/SubagentChip.tsx",
   "components/line/NextUpPlanner.tsx",
   "components/session-bits.tsx",
   "residents/ResidentsDock.tsx",

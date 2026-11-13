@@ -948,7 +948,10 @@ available:
   on the Session display checklist. Today this covers sessions on the Claude Agent SDK
   runtime, which includes dispatched tasks and residents; see
   [Background sub-agents](sessions.md#background-sub-agents). The open conversation lists the
-  same agents in its [Background agents tray](#background-agents-in-a-conversation).
+  same agents in its [Background agents tray](#background-agents-in-a-conversation). This is
+  the default treatment, **Nested sub-cards**; **Settings → Display → Board card → Background
+  sub-agents** offers **Chip and popover** instead, which keeps every card at its own height
+  (see [Chip and popover](#chip-and-popover)).
 - **A blocked session is red.** A session waiting on someone other than you records a
   [blocker](sessions.md#blocked-sessions), and its card takes the danger tone on its spine
   and border with a **Blocked · 3h** flag among the attention flags. Like the **held** tag,
@@ -1248,12 +1251,16 @@ reply box behave identically in either. See
 
 ## Background agents in a conversation
 
-A session that launched sub-agents in the background docks a **Background agents** tray
-above its reply box. It sits between the conversation and the box, outside both, so it stays
-in view whatever the rail beside the log is showing and wherever the log is scrolled. It is
-the conversation half of the sub-agents that
-[hang beneath the board card](#layout-console-or-board-in-settings), and it reads the same
-summary, so the two never disagree.
+Under the default **Nested sub-cards** treatment, a session that launched sub-agents in the
+background docks a **Background agents** tray above its reply box. The tray sits between the
+conversation and the box, outside both, so it stays in view whatever the rail beside the log
+is showing and wherever the log is scrolled. The tray is the conversation half of the
+sub-agents that [hang beneath the board card](#layout-console-or-board-in-settings), and it
+reads the same summary, so the two never disagree.
+
+Under **Chip and popover** there is no tray: the same agents are listed on the rail's
+**Agents** tab instead, from the same summary (see [Chip and popover](#chip-and-popover)).
+The rest of this section describes the tray.
 
 The header, **⑂ Background agents · 2 running · 1 done**, folds the list. Each row gives the
 agent's state, type and description, how long it has run, how many tools it has used and the
@@ -1279,6 +1286,39 @@ including in a conversation that was open while the agent launched. A descriptio
 of the tray leaves its call behind, so a description could land on another agent's launch. An agent no call in the transcript is
 recorded as launching reads **Launch not in transcript**. A search reads as far back as the
 transcript goes; it stops early only if loading older messages fails or stops moving back through the file.
+
+## Chip and popover
+
+**Settings → Display → Board card → Background sub-agents** chooses how a session shows the
+sub-agents it launched in the background, and the one choice switches the board card and the
+conversation together. It has exactly two values. **Nested sub-cards**, the default for a new
+install and for one upgrading with nothing stored, hangs the agents under the card and docks
+the [Background agents tray](#background-agents-in-a-conversation) above the reply box. **Chip
+and popover** keeps both surfaces at their own size:
+
+- **On the card**, one chip joins the attention flags beside the pull request: **⑂ 3 agents**,
+  with a status pip per agent in the board's own hues (running blue, done green, failed red,
+  stopped grey). It reads **12+ agents** when a full list may have been cut short. Clicking it
+  opens a **Background agents** popover over the board with the same rows the sub-cards draw,
+  and does not open the session. Escape, a click outside it or the chip again closes it, and
+  Escape hands focus back to the chip. The card gains no height and nothing hangs beneath it.
+  A resident that needs you, standing in **Needs you** as a visitor card while the Residents
+  drawer is closed, carries the same chip; under Nested sub-cards its agents hang beneath that
+  card instead.
+- **In the conversation**, the rail beside the log gains a third tab, **Agents 3**, beside
+  **Activity** and **Yours**, and there is no tray. Each row gives the agent's state, type and
+  description, how long it has run, its last tool and its tokens; a value the source did not
+  report is left out, so a terminal-hook agent reads its elapsed time alone. With three tabs
+  the head drops the count it prints for Activity and Yours, because the three need the
+  rail's width; the folded strip still counts whichever tab is up.
+
+The Agents tab exists only while the session has background agents to list, exactly as the
+tray does. Switching to **Nested sub-cards** while the rail is on Agents puts it back on
+Activity. Either way, a session with no background agents looks exactly as it did before. The
+panel's preview card carries sample agents, so switching the radio redraws its sub-cards or its
+chip before you leave Settings. The choice applies to every card and the open conversation at
+once, with no reload, and is stored through the daemon like every Display preference; an
+unknown stored value reads as Nested sub-cards.
 
 ## Skins
 

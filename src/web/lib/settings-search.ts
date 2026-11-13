@@ -227,7 +227,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "board-card",
     label: "Board card",
-    description: "Choose which items a session card draws in every Board column.",
+    description: "Choose which items a session card draws in every Board column, and how a session shows its background sub-agents.",
     category: "display",
     anchor: "display/board-card",
     // "hide"/"show"/"customize" are what an operator types who wants the panel and has not
@@ -270,6 +270,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "task type",
       "task kind",
       "kind",
+      // The Background sub-agents picker: what the operator saw, or wants to see, under or on
+      // a card while a session's agents run.
+      "sub-agents",
+      "subagents",
+      "background agents",
+      "agents",
+      "sub-cards",
+      "nested",
+      "agent chip",
+      "popover",
     ],
     kind: "jump",
     backup: backupDomains("ui"),
@@ -342,6 +352,12 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "task kind",
       "kind",
       "badge",
+      // The same Background sub-agents picker, by the conversation half it switches: the tray
+      // above the reply box, or the rail's Agents tab.
+      "sub-agents",
+      "background agents",
+      "agents tab",
+      "tray",
     ],
     kind: "jump",
     backup: backupDomains("ui"),

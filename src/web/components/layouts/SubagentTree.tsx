@@ -30,6 +30,28 @@ export function subagentRowDetail(agent: SubagentEntry, now: number): string {
 }
 
 /**
+ * One agent as a row: status pip, type and description, an end label once it has ended, and
+ * the detail line. Shared by the tree beneath a card and the chip's popover, so the two
+ * treatments cannot describe the same agent differently.
+ */
+export function SubagentRow({ agent, now }: { agent: SubagentEntry; now: number }): React.JSX.Element {
+  return (
+    <li className={`st-row is-${agent.state}`}>
+      <span className="st-pip" aria-hidden />
+      <span className="st-body">
+        <span className="st-title">
+          {agent.type && <span className="st-type">{agent.type}</span>}
+          {agent.type && agent.description && <span className="st-sep" aria-hidden> · </span>}
+          {agent.description && <span className="st-desc">{agent.description}</span>}
+          {agent.state !== "running" && <span className="st-end">{END_LABEL[agent.state]}</span>}
+        </span>
+        <span className="st-detail">{subagentRowDetail(agent, now)}</span>
+      </span>
+    </li>
+  );
+}
+
+/**
  * A session's background sub-agents, hung beneath its board tile on a tree spine.
  *
  * Drawn OUTSIDE the tile, as its sibling, so the tile keeps its border, its click target and
@@ -72,20 +94,7 @@ export function SubagentTree({ session }: { session: Session }): React.JSX.Eleme
       </Tooltip>
       {open && (
         <ul className="st-list">
-          {shown.map((agent) => (
-            <li key={agent.id} className={`st-row is-${agent.state}`}>
-              <span className="st-pip" aria-hidden />
-              <span className="st-body">
-                <span className="st-title">
-                  {agent.type && <span className="st-type">{agent.type}</span>}
-                  {agent.type && agent.description && <span className="st-sep" aria-hidden> · </span>}
-                  {agent.description && <span className="st-desc">{agent.description}</span>}
-                  {agent.state !== "running" && <span className="st-end">{END_LABEL[agent.state]}</span>}
-                </span>
-                <span className="st-detail">{subagentRowDetail(agent, now)}</span>
-              </span>
-            </li>
-          ))}
+          {shown.map((agent) => <SubagentRow key={agent.id} agent={agent} now={now} />)}
           {hidden > 0 && (
             <li className="st-row st-more-row">
               <Tooltip label={`Show ${plural(hidden, "more sub-agent", "more sub-agents")}`}>

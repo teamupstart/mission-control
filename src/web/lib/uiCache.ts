@@ -6,6 +6,7 @@ import {
   BLOCKED_PLACEMENTS,
   seedHiddenDisplayItems,
   TASK_KIND_CARD_STYLES,
+  BACKGROUND_AGENTS_STYLES,
   TASK_KIND_HEADER_STYLES,
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
@@ -17,6 +18,7 @@ import type {
   ResidentPlacement,
   BlockedPlacement,
   TaskKindCardStyle,
+  BackgroundAgentsStyle,
   TaskKindHeaderStyle,
   UiConfig,
 } from "@shared/protocol.ts";
@@ -140,6 +142,13 @@ function parseTaskKindCard(raw: string | undefined): TaskKindCardStyle {
     : UI_CONFIG_DEFAULTS.taskKindCard;
 }
 
+/** An unknown or missing treatment is Nested sub-cards, exactly as `UiConfigSchema` reads it. */
+function parseBackgroundAgentsStyle(raw: string | undefined): BackgroundAgentsStyle {
+  return (BACKGROUND_AGENTS_STYLES as readonly string[]).includes(raw ?? "")
+    ? (raw as BackgroundAgentsStyle)
+    : UI_CONFIG_DEFAULTS.backgroundAgentsStyle;
+}
+
 /** An unknown or missing placement is the drawer, exactly as `UiConfigSchema` reads it. */
 function parseResidentPlacement(raw: string | undefined): ResidentPlacement {
   return (RESIDENT_PLACEMENTS as readonly string[]).includes(raw ?? "")
@@ -171,6 +180,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     skin: parseSkin(raw?.skin),
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),
+    backgroundAgentsStyle: parseBackgroundAgentsStyle(raw?.backgroundAgentsStyle),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,

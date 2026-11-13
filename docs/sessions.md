@@ -1044,8 +1044,13 @@ picker. When the pane cannot be written the chip stays read-only.
 A session can launch sub-agents: Claude through its Agent tool, Codex through its
 collaboration tools. One launched in the background keeps running after the parent's turn ends, so the parent can read as idle while
 agents are still reading, editing and spending tokens under it. The board shows them beneath
-the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), and the
-parent's activity line reads **idle · N agents still running**.
+the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), the parent's
+conversation docks them in a tray above its reply box with a **Jump to launch** link per agent
+(see [Background agents in a conversation](ui.md#background-agents-in-a-conversation)), and the
+parent's activity line reads **idle · N agents still running**. That is the default treatment;
+**Settings → Display → Board card → Background sub-agents → Chip and popover** shows the same
+summary as a chip on the card and an **Agents** tab on the conversation rail instead (see
+[Chip and popover](ui.md#chip-and-popover)).
 
 Each source reduces its own sub-agent signal into one bounded summary on the session,
 `Session.subagents`. An SDK driver sends it to the daemon whole as an `SdkEvent` of kind
@@ -1091,6 +1096,31 @@ counts only once it is moved to the background. Finished agents fold on the next
 send, not on a turn the agent starts for itself, because a finished agent's notification can
 start one. A change to who is running or how one ended reaches the board at once; a change
 that moves only counters is sent at most once every five seconds per session.
+
+Each agent's `launchTurnId` is the id of the parent's tool call that launched it (Claude's
+`tool_use` id), not a transcript record id: the SDK stream and the transcript file do not share
+record ids, and the call id is the one both carry. The transcript reader keeps that id on each
+`ToolCall`, and the browser finds the turn that made the call among the turns it has loaded,
+paging older ones in when it is not there yet. An agent whose `launchTurnId` is null is found
+by identity too. Claude Code answers an `Agent` call that went to the background with a tool
+result naming the agent (`agentId`, in the result text and in the record's `toolUseResult`),
+and that id is the task id the SDK reports, so `SubagentEntry.id`. The browser asks
+`GET /api/sessions/:id/subagents/:agentId/launch`, and the harness's
+`TranscriptSpec.subagentLaunch` reads the transcript FILE for the result naming that agent and
+returns its `tool_use_id`; the browser then searches for that call id like any other. The read
+is asynchronous and incremental: each file's launch results are indexed in awaited chunks, so a
+long resident's transcript never holds the daemon's event loop, and a later lookup reads only
+what was appended since. A file that shrinks, is replaced, or is rewritten in place (its last
+indexed bytes changed, checked only when the file changed) is indexed again, and at most 32
+files' indexes are kept. The file answers rather than the turns the browser holds because the
+call and its result are written apart, so a live conversation receives them in separate appends
+and paging can split them, while the file holds both once the result is written. Until then the
+file names no call for the agent: the route answers `{ toolUseId: null }`, the link reports the
+launch as not in the transcript, and a later click asks again. A description is never used to claim
+a launch: agents can share one, and a folded agent's call stays behind. No page count limits a
+search; it ends at the start, on a failed page, or when a page arrives without moving the
+paging cursor back. A page that moves it while adding no turn, such as a stretch of pure tool
+output, is progress and the search continues.
 
 Claude and Codex terminal sessions have no driver, so their sub-agents are read from their
 hooks, and only for the terminal runtime: an SDK session's hooks fire too, and are ignored

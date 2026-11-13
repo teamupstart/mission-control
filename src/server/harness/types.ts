@@ -378,6 +378,20 @@ export interface TranscriptSpec {
    * poller growing a per-vendor cache - which is where that cache started.
    */
   retain: ((live: ReadonlySet<string>) => void) | null;
+  /**
+   * The id of the tool call that launched the background sub-agent `agentId`, as this file
+   * records it, or null when it records none; `null` for a harness whose transcript does not
+   * tie a launching call to the agent it started.
+   *
+   * Read from the FILE on request, not from any batch of turns the dashboard holds: a launch
+   * and the record naming its agent are written apart, so they can arrive in separate streamed
+   * appends or fall either side of a page edge, and only the file always holds both. It is how
+   * "Jump to launch" finds an agent whose source did not name its launching call.
+   *
+   * Asynchronous, and it must not hold the event loop for a whole file: it is asked on a
+   * request path, and a long-running resident's transcript can be large.
+   */
+  subagentLaunch: ((path: string, agentId: string) => Promise<string | null>) | null;
 }
 
 /** What one ingested hook event says about the session that fired it. */

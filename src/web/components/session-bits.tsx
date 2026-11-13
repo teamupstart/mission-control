@@ -680,7 +680,9 @@ export function RepoGroupHead({
  */
 export function RepoGroupCaret(): React.JSX.Element {
   return (
-    <svg className="brh-chevron" viewBox="0 0 12 12" aria-hidden focusable="false">
+    // Sized on the element as well as in CSS (12px, `.brh-chevron`), so it stays a small glyph
+    // wherever it is drawn - Settings' preview card included - even before a rule reaches it.
+    <svg className="brh-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden focusable="false">
       <path
         d="M2.8 4.4 6 7.8l3.2-3.4"
         fill="none"

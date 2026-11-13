@@ -229,11 +229,46 @@ test("at most 64 ended ids are remembered; the 65th forgets the oldest", () => {
 });
 
 test("signals that change nothing return the same state", () => {
-  const state = run([[launched("a"), 1]]);
-  assert.equal(reduceHookSubagents(state, [], 2), state);
-  assert.equal(reduceHookSubagents(state, [launched("a")], 2), state);
-  assert.equal(reduceHookSubagents(state, [{ kind: "live", agents: [{ id: "a", type: "Explore", description: null }] }], 2), state);
+  const live: Signal = { kind: "live", agents: [{ id: "a", type: "Explore", description: null }] };
+  // The first complete live set is remembered; the same set again changes nothing.
+  const state = run([[launched("a"), 1], [live, 2]]);
+  assert.equal(reduceHookSubagents(state, [], 3), state);
+  assert.equal(reduceHookSubagents(state, [launched("a")], 3), state);
+  assert.equal(reduceHookSubagents(state, [live], 2), state);
   assert.equal(reduceHookSubagents(emptyHookSubagents(), [{ kind: "fold" }], 2), emptyHookSubagents());
+});
+
+test("a SubagentStart that lands after its launch moves the start earlier, not the count time", () => {
+  let state = run([[launched("a", null), 200]]);
+  state = reduceHookSubagents(state, [{ kind: "started", id: "a", type: "Explore" }], 100);
+  const [row] = hookSubagentSummary(state)!.agents;
+  assert.deepEqual([row?.startedAt, row?.type], [100, "Explore"]);
+  // A later start never moves it forward.
+  state = reduceHookSubagents(state, [{ kind: "started", id: "a", type: "Explore" }], 300);
+  assert.equal(hookSubagentSummary(state)!.agents[0]?.startedAt, 100);
+  // Live sets still compare against when it was counted (200): a set taken at 150 says nothing
+  // about it, so it stays running.
+  state = reduceHookSubagents(state, [{ kind: "live", agents: [] }], 150);
+  assert.equal(hookSubagentSummary(state)!.agents[0]?.state, "running");
+});
+
+test("a newer complete live set outranks a delayed launch or an older live set", () => {
+  // The set taken at 300 is empty; a launch from 200 arriving afterwards is not running now.
+  let state = run([[{ kind: "live", agents: [] }, 300], [launched("late"), 200]]);
+  assert.equal(hookSubagentSummary(state), null);
+  // Nor can an older complete or partial set bring it in.
+  const stale: Signal = { kind: "live", agents: [{ id: "late", type: "Explore", description: null }] };
+  state = reduceHookSubagents(state, [stale], 250);
+  state = reduceHookSubagents(state, [{ ...stale, partial: true } as Signal], 260);
+  assert.equal(hookSubagentSummary(state), null);
+  // A launch the newer set DID name, or one newer than it, still counts.
+  state = run([[{ kind: "live", agents: [{ id: "named", type: null, description: null }] }, 300], [launched("named"), 200]]);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["named"]);
+  state = reduceHookSubagents(state, [launched("fresh")], 400);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id).sort(), ["fresh", "named"]);
+  // A reset forgets the remembered set.
+  state = reduceHookSubagents(state, [{ kind: "reset" }, launched("old")], 100);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["old"]);
 });
 
 // --- each harness's reading ----------------------------------------------------------------

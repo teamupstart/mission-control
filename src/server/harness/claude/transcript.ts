@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ToolCall, TranscriptAdvisor, TranscriptMessage } from "@shared/types.ts";
@@ -78,6 +79,9 @@ export const TOOL_INPUT_CAP = 1800;
  */
 function toolCall(block: Record<string, unknown>): ToolCall {
   const name = String(block.name ?? "tool");
+  // The block's own id, which is how the Agent SDK names the call that launched a background
+  // sub-agent. Kept only when it is a real string, so a fixture without ids reads as before.
+  const id = typeof block.id === "string" && block.id.length > 0 ? { id: block.id } : {};
   let json: string | undefined;
   try {
     // A tool input is plain JSON off disk, but stringify still throws on a cycle and
@@ -85,10 +89,10 @@ function toolCall(block: Record<string, unknown>): ToolCall {
     // whole window down with it.
     json = JSON.stringify(block.input);
   } catch {
-    return { name };
+    return { name, ...id };
   }
-  if (!json || json === "{}" || json === "null") return { name };
-  return { name, input: json.length > TOOL_INPUT_CAP ? `${json.slice(0, TOOL_INPUT_CAP)}…` : json };
+  if (!json || json === "{}" || json === "null") return { name, ...id };
+  return { name, input: json.length > TOOL_INPUT_CAP ? `${json.slice(0, TOOL_INPUT_CAP)}…` : json, ...id };
 }
 
 /**
@@ -303,6 +307,239 @@ export function readCurrentTodo(path: string): string | null {
   return latestTodoNarration(text ? text.split("\n") : []);
 }
 
+/** `agentId: <id>` as the CLI writes it into an async launch's tool result text. */
+const AGENT_ID_LINE = /^agentId: ([^\s(]+)/m;
+/**
+ * The sentence that opens that result. Required beside the id line, so a result that only
+ * mentions an agent - continuing one, say - is never read as launching it.
+ */
+const ASYNC_LAUNCHED = "Async agent launched successfully.";
+
+/**
+ * The background agents a record's tool results report launched, as `[tool_use_id, agentId]`.
+ *
+ * Claude Code answers an `Agent` call that went to the background with a tool result naming
+ * the agent: `toolUseResult` carries `{ status: "async_launched", agentId }` beside the
+ * record, and the result text opens "Async agent launched successfully." and carries an
+ * `agentId: <id>` line. That agent id is the key of the
+ * CLI's task registry - the `task_id` its SDK stream reports - so it joins a launching call to
+ * the agent it started by identity. Read from both places, the structured field first; a
+ * record naming none yields nothing.
+ */
+function launchedAgents(o: unknown): Array<[string, string]> {
+  if (!o || typeof o !== "object") return [];
+  const rec = o as Record<string, unknown>;
+  if (rec.type !== "user") return [];
+  const content = (rec.message as Record<string, unknown> | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const results = content.filter(
+    (b): b is Record<string, unknown> =>
+      !!b && typeof b === "object" && (b as Record<string, unknown>).type === "tool_result" &&
+      typeof (b as Record<string, unknown>).tool_use_id === "string",
+  );
+  const structured = rec.toolUseResult as Record<string, unknown> | undefined;
+  const out: Array<[string, string]> = [];
+  for (const block of results) {
+    let agentId: string | null = null;
+    // The structured result describes the record's one tool result, never one of several.
+    if (results.length === 1 && structured?.status === "async_launched" && typeof structured.agentId === "string") {
+      agentId = structured.agentId;
+    } else {
+      const text = typeof block.content === "string"
+        ? block.content
+        : Array.isArray(block.content)
+          ? block.content.map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).join("\n")
+          : "";
+      agentId = text.includes(ASYNC_LAUNCHED) ? (AGENT_ID_LINE.exec(text)?.[1] ?? null) : null;
+    }
+    if (agentId) out.push([block.tool_use_id as string, agentId]);
+  }
+  return out;
+}
+
+/**
+ * What one transcript file records about background launches, as far as it has been read.
+ *
+ * `size` is the byte offset just past the last COMPLETE line indexed; a line still being
+ * written is left for the next read to finish. `launches` maps each agent id a launch result
+ * named to the call that launched it.
+ */
+interface LaunchIndex {
+  size: number;
+  launches: Map<string, string>;
+  /** The index's identity: a file replaced under the same path starts a new one. */
+  ino: number;
+  /** The file's modification time when last read, so an untouched file costs no check. */
+  mtimeMs: number;
+  /**
+   * The last bytes indexed (up to `LAUNCH_TAIL_BYTES`, ending at `size`). A file truncated and
+   * rewritten in place keeps its inode and can come back as long as before, so neither tells
+   * a rewrite from an append; these bytes do, since an append leaves them where they were.
+   */
+  tail: Buffer;
+}
+
+/** Bytes kept from the end of what was indexed, to recognise the same file on the next read. */
+const LAUNCH_TAIL_BYTES = 512;
+
+/** Files whose launch index is kept. Past this the least recently used is dropped. */
+const LAUNCH_INDEX_FILES = 32;
+/** Bytes read per step. Each step is one awaited read, so the daemon serves others between. */
+const LAUNCH_SCAN_CHUNK = 1 << 20;
+
+const launchIndexes = new Map<string, LaunchIndex>();
+const launchScans = new Map<string, Promise<LaunchIndex | null>>();
+/**
+ * What the index has cost since the last reset: scans started (one per `indexLaunches` run
+ * that found anything new to read) and bytes read. Kept so the efficiency the lookup claims -
+ * appended bytes only, one scan per file at a time - is something a test can measure.
+ */
+const launchScanCost = { scans: 0, bytes: 0, checked: 0 };
+
+/** The agent-id needle a launch line always carries, checked before any JSON is parsed. */
+const AGENT_ID_KEY = Buffer.from("agentId");
+
+/**
+ * Bring `path`'s launch index up to the end of the file, reading only what was appended since
+ * it was last read - the whole file once, then a few bytes per lookup.
+ *
+ * Asynchronous by construction: the file is read in `chunkBytes` steps, each one awaited, so
+ * a first lookup on a long resident's transcript never holds the daemon's event loop for the
+ * whole file, and two lookups on one file share one scan. A file that shrank, was replaced
+ * (a new inode), or was rewritten in place (its last indexed bytes changed) is indexed again
+ * from its start. That last check reads `LAUNCH_TAIL_BYTES` at most, and only when the file
+ * changed since it was indexed.
+ */
+async function indexLaunches(path: string, chunkBytes: number): Promise<LaunchIndex | null> {
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await stat(path);
+  } catch {
+    return null;
+  }
+  const known = launchIndexes.get(path);
+  const untouched = known && known.ino === info.ino && known.size === info.size && known.mtimeMs === info.mtimeMs;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let index: LaunchIndex | undefined = untouched ? known : undefined;
+  if (!index) {
+    try {
+      handle = await open(path, "r");
+    } catch {
+      return null;
+    }
+    // The same file, unless its last indexed bytes now say otherwise.
+    if (known && known.ino === info.ino && known.size <= info.size && known.tail.length > 0) {
+      const now = Buffer.alloc(known.tail.length);
+      const { bytesRead } = await handle.read(now, 0, now.length, known.size - known.tail.length);
+      launchScanCost.checked += bytesRead;
+      if (bytesRead === now.length && now.equals(known.tail)) index = known;
+    } else if (known && known.ino === info.ino && known.size === 0) {
+      index = known;
+    }
+    index ??= { size: 0, launches: new Map(), ino: info.ino, mtimeMs: 0, tail: Buffer.alloc(0) };
+  }
+  if (index.size < info.size) {
+    launchScanCost.scans += 1;
+    if (!handle) {
+      try {
+        handle = await open(path, "r");
+      } catch {
+        return null;
+      }
+    }
+    try {
+      let pos = index.size;
+      let carry = Buffer.alloc(0);
+      while (pos < info.size) {
+        const length = Math.min(chunkBytes, info.size - pos);
+        const chunk = Buffer.alloc(length);
+        const { bytesRead } = await handle.read(chunk, 0, length, pos);
+        if (bytesRead <= 0) break;
+        launchScanCost.bytes += bytesRead;
+        pos += bytesRead;
+        const joined = Buffer.concat([carry, chunk.subarray(0, bytesRead)]);
+        let lineStart = 0;
+        for (let nl = joined.indexOf(0x0a); nl >= 0; nl = joined.indexOf(0x0a, lineStart)) {
+          const line = joined.subarray(lineStart, nl);
+          lineStart = nl + 1;
+          if (!line.includes(AGENT_ID_KEY)) continue;
+          let record: unknown;
+          try {
+            record = JSON.parse(line.toString("utf8"));
+          } catch {
+            continue;
+          }
+          for (const [toolUseId, agentId] of launchedAgents(record)) index.launches.set(agentId, toolUseId);
+        }
+        carry = joined.subarray(lineStart);
+        // Only complete lines are indexed; the next read resumes at the unfinished one.
+        const indexedEnd = pos - carry.length;
+        if (indexedEnd > index.size) {
+          const done = joined.subarray(0, lineStart);
+          index.tail = Buffer.concat([index.tail, done]).subarray(-LAUNCH_TAIL_BYTES);
+          index.tail = Buffer.from(index.tail);
+        }
+        index.size = indexedEnd;
+      }
+    } finally {
+      await handle.close();
+      handle = null;
+    }
+  }
+  if (handle) await handle.close();
+  index.mtimeMs = info.mtimeMs;
+  launchIndexes.delete(path);
+  launchIndexes.set(path, index);
+  while (launchIndexes.size > LAUNCH_INDEX_FILES) {
+    const oldest = launchIndexes.keys().next().value;
+    if (oldest === undefined) break;
+    launchIndexes.delete(oldest);
+  }
+  return index;
+}
+
+/**
+ * The tool call that launched background agent `agentId`, as the transcript file records it.
+ *
+ * The launch's tool result names the agent (`launchedAgents`), and its `tool_use_id` is the
+ * call. Read from the file rather than from any batch of turns: the call and its result are
+ * written apart, so a live conversation receives them in separate appends and paging can
+ * split them, but the file always holds both. The file is indexed incrementally and without
+ * blocking (`indexLaunches`), so a lookup for an agent no record names - which must read to
+ * the end to say so - costs the bytes appended since the last lookup, not the whole file.
+ */
+export async function claudeSubagentLaunch(
+  path: string,
+  agentId: string,
+  chunkBytes = LAUNCH_SCAN_CHUNK,
+): Promise<string | null> {
+  if (!agentId) return null;
+  let scan = launchScans.get(path);
+  if (!scan) {
+    scan = indexLaunches(path, chunkBytes).finally(() => launchScans.delete(path));
+    launchScans.set(path, scan);
+  }
+  const index = await scan;
+  return index?.launches.get(agentId) ?? null;
+}
+
+/** Forget every launch index and zero its cost. For tests. */
+export function resetLaunchIndexes(): void {
+  launchIndexes.clear();
+  launchScans.clear();
+  launchScanCost.scans = 0;
+  launchScanCost.bytes = 0;
+  launchScanCost.checked = 0;
+}
+
+/**
+ * Scans started and bytes read by the launch index since the last reset, and separately the
+ * bytes read to check that a changed file is still the one indexed. For tests.
+ */
+export function launchScanCostSoFar(): { scans: number; bytes: number; checked: number } {
+  return { ...launchScanCost };
+}
+
 /** Claude Code's transcript capability: a located JSONL file, read as messages and as meta. */
 export const claudeTranscript: TranscriptSpec = {
   metaSource: "transcript",
@@ -312,4 +549,5 @@ export const claudeTranscript: TranscriptSpec = {
   // Locating is two `existsSync` calls off fields the session already carries, so there
   // is nothing worth caching and nothing to prune.
   retain: null,
+  subagentLaunch: claudeSubagentLaunch,
 };

@@ -1,6 +1,6 @@
 import { useCallback } from "react";
-import { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
-import type { TaskKindCardStyle, TaskKindHeaderStyle, UiConfig } from "@shared/protocol.ts";
+import { BACKGROUND_AGENTS_STYLES, TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
+import type { BackgroundAgentsStyle, TaskKindCardStyle, TaskKindHeaderStyle, UiConfig } from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
@@ -382,11 +382,12 @@ export function setDisplayItemShown(
  * Kept beside `DISPLAY_ITEMS` and keyed by the same groups, so the panel renders each one in
  * the section for the surface it governs, but a separate list: an item is one boolean in
  * `hiddenDisplayItems`, while a choice is its own `UiConfig` key holding one of a fixed set of
- * values, `off` among them. Folding these into the item list would make "hidden" a sixth
+ * values, often with `off` among them. Folding these into the item list would make "hidden" a sixth
  * style of a five-way choice and leave two places that can each turn the mark off.
  *
  * Each option's copy is a `Record` over the persisted style list, so a style added to
- * `TASK_KIND_*_STYLES` does not compile until it says how it is offered.
+ * `TASK_KIND_*_STYLES` or `BACKGROUND_AGENTS_STYLES` does not compile until it says how it is
+ * offered.
  */
 export interface DisplayChoiceOption<V extends string> {
   id: V;
@@ -441,10 +442,27 @@ const TASK_KIND_CARD_COPY: Record<TaskKindCardStyle, Omit<DisplayChoiceOption<Ta
 };
 
 /**
+ * The background sub-agent treatments, each named for what the board card does and saying
+ * what the conversation does with it, because one value switches both halves.
+ */
+const BACKGROUND_AGENTS_COPY: Record<BackgroundAgentsStyle, Omit<DisplayChoiceOption<BackgroundAgentsStyle>, "id">> = {
+  nested: {
+    label: "Nested sub-cards",
+    description:
+      "Each agent hangs under its card, and a tray above the reply box lists them. Cards grow while agents run.",
+  },
+  chip: {
+    label: "Chip and popover",
+    description:
+      "A chip in the card's flags opens the list, and the conversation rail gains an Agents tab. Cards keep their height.",
+  },
+};
+
+/**
  * Each choice's `UiConfig` key with the values that key stores, so a key and its styles travel
  * together: the board card's key accepts only card styles, and the header's only header styles.
  */
-export type DisplayChoiceValues = Pick<UiConfig, "taskKindHeader" | "taskKindCard">;
+export type DisplayChoiceValues = Pick<UiConfig, "taskKindHeader" | "taskKindCard" | "backgroundAgentsStyle">;
 export type DisplayChoiceKey = keyof DisplayChoiceValues;
 
 export interface DisplayChoice<K extends DisplayChoiceKey = DisplayChoiceKey> {
@@ -470,6 +488,15 @@ export const DISPLAY_CHOICES: readonly AnyDisplayChoice[] = [
     description:
       "How a card marks what kind of task it came from - ship, bugfix, scout, plan, pipeline, chat or document. Every kind is marked, ship included.",
     options: TASK_KIND_CARD_STYLES.map((id) => ({ id, ...TASK_KIND_CARD_COPY[id] })),
+  },
+  {
+    // In the Board card group, after Task type, although it governs the conversation too: the
+    // operator decides it by the card, and the card is what this group's preview draws.
+    key: "backgroundAgentsStyle",
+    group: "card",
+    label: "Background sub-agents",
+    description: "How a session shows the sub-agents it launched in the background, on its card and in its conversation.",
+    options: BACKGROUND_AGENTS_STYLES.map((id) => ({ id, ...BACKGROUND_AGENTS_COPY[id] })),
   },
   {
     key: "taskKindHeader",

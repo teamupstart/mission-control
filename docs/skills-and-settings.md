@@ -375,6 +375,15 @@ Settings: the card's for **Board card**, and a console header for **Conversation
 preview sits beside its group's controls, or under the group's heading when Settings is too
 narrow to hold it beside them.
 
+**Board card** also holds **Background sub-agents**, after its Task type picker: **Nested
+sub-cards** (the default) or **Chip and popover**, and nothing else. It decides how a session
+shows the sub-agents it launched in the background on its card and in its conversation
+together: sub-cards under the card and a tray above the reply box, or one chip in the card's
+flags that opens the list and an **Agents** tab on the conversation rail. The preview card
+carries sample agents, so it draws whichever you pick. Searching Settings for "sub-agents",
+"background agents", "agents tab" or "popover" lands on this panel. See
+[Chip and popover](ui.md#chip-and-popover).
+
 Display's last panel is **Top bar**, which chooses what the bar across the top of every page
 draws. A live preview of the real bar sits above its two lists and redraws as you change them.
 

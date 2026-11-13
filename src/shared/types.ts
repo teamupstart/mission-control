@@ -3941,6 +3941,13 @@ export interface ToolCall {
    * reviewer through here or not at all.
    */
   input?: string;
+  /**
+   * The harness's own id for this call (Claude's `tool_use` block id), when the transcript
+   * records one. It is the id the Agent SDK names a background sub-agent's launch by
+   * (`SubagentEntry.launchTurnId`), so the conversation can find the turn that launched an
+   * agent. Display-only: Foreman's window never reads it.
+   */
+  id?: string;
 }
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */

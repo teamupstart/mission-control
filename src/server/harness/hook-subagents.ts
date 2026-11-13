@@ -25,7 +25,9 @@ import { SUBAGENT_LIMIT } from "@shared/subagents.ts";
 // Each hook is its own process POSTing on its own, so two events of one agent can land in
 // either order. Three rules keep that from showing: an ended agent is remembered (bounded) so a
 // late launch or a late live set cannot bring it back as running; a live set only stops agents
-// counted before it was taken; and a real stop overrides a stop that was only inferred.
+// counted before it was taken; and a real stop overrides a stop that was only inferred. The
+// newest complete live set is also remembered: a launch or a live set older than it cannot add
+// an agent that set left out, and a late `started` can still move a start time earlier.
 
 /** What one hook says about a session's sub-agents, in harness-neutral terms. */
 export type HookSubagentSignal =
@@ -72,6 +74,11 @@ export interface HookSubagentState {
   /** Ended ids, newest last, so a late signal cannot revive one. */
   readonly ended: ReadonlySet<string>;
   readonly finishedFolded: number;
+  /**
+   * The newest COMPLETE live set: when it was taken and which agents it named. Anything older
+   * that would add an agent it left out is stale. Bounded by the bridge's in-flight bound.
+   */
+  readonly lastLive: { readonly at: number; readonly ids: ReadonlySet<string> } | null;
 }
 
 /**
@@ -82,7 +89,13 @@ const STARTED_MAX = 32;
 const ENDED_MAX = 64;
 const RUNNING_MAX = 64;
 
-const EMPTY: HookSubagentState = { agents: new Map(), started: new Map(), ended: new Set(), finishedFolded: 0 };
+const EMPTY: HookSubagentState = {
+  agents: new Map(),
+  started: new Map(),
+  ended: new Set(),
+  finishedFolded: 0,
+  lastLive: null,
+};
 
 export function emptyHookSubagents(): HookSubagentState {
   return EMPTY;
@@ -124,6 +137,7 @@ class Draft {
   started: Map<string, { at: number; type: string | null }>;
   ended: Set<string>;
   finishedFolded: number;
+  lastLive: HookSubagentState["lastLive"];
   changed = false;
 
   constructor(state: HookSubagentState) {
@@ -131,6 +145,12 @@ class Draft {
     this.started = new Map(state.started);
     this.ended = new Set(state.ended);
     this.finishedFolded = state.finishedFolded;
+    this.lastLive = state.lastLive;
+  }
+
+  /** Whether a newer complete live set already said `id` was not in flight at `at`. */
+  private contradicted(id: string, at: number): boolean {
+    return this.lastLive !== null && at < this.lastLive.at && !this.lastLive.ids.has(id);
   }
 
   private end(id: string): void {
@@ -156,8 +176,12 @@ class Draft {
         if (this.ended.has(signal.id)) return;
         const known = this.agents.get(signal.id);
         if (known) {
-          if (known.entry.type === null && signal.type) {
-            this.agents.set(signal.id, { ...known, entry: { ...known.entry, type: signal.type } });
+          // A start that lands after the launch still says when the agent began; `countedAt`, which
+          // live sets are compared against, stays when it was counted.
+          const type = known.entry.type ?? signal.type;
+          const startedAt = Math.min(known.entry.startedAt, at);
+          if (type !== known.entry.type || startedAt !== known.entry.startedAt) {
+            this.agents.set(signal.id, { ...known, entry: { ...known.entry, type, startedAt } });
             this.changed = true;
           }
           return;
@@ -181,6 +205,9 @@ class Draft {
           }
           return;
         }
+        // A delayed launch for an agent a newer complete live set left out: it was no longer
+        // running by then, so it is not added as running now.
+        if (this.contradicted(signal.id, at)) return;
         this.count(signal.id, at, signal.type, signal.description);
         return;
       }
@@ -211,7 +238,7 @@ class Draft {
           if (this.ended.has(agent.id)) continue;
           const known = this.agents.get(agent.id);
           if (!known) {
-            this.count(agent.id, at, agent.type, agent.description);
+            if (!this.contradicted(agent.id, at)) this.count(agent.id, at, agent.type, agent.description);
           } else if (
             (known.entry.type === null && agent.type) ||
             (known.entry.description === null && agent.description)
@@ -227,8 +254,15 @@ class Draft {
             this.changed = true;
           }
         }
-        // A cut-short set cannot say who is missing from it.
-        if (signal.partial) return;
+        // A cut-short set cannot say who is missing from it, and an older set than the newest
+        // complete one is superseded by it.
+        if (signal.partial || (this.lastLive !== null && at < this.lastLive.at)) return;
+        const same = this.lastLive !== null && this.lastLive.at === at && this.lastLive.ids.size === listed.size &&
+          [...listed].every((id) => this.lastLive!.ids.has(id));
+        if (!same) {
+          this.lastLive = { at, ids: listed };
+          this.changed = true;
+        }
         for (const [id, known] of this.agents) {
           // Only an agent counted before this set was taken can be missing from it; one counted
           // after is newer than the reading and says nothing about it.
@@ -253,11 +287,15 @@ class Draft {
         return;
       }
       case "reset": {
-        if (this.agents.size > 0 || this.started.size > 0 || this.ended.size > 0 || this.finishedFolded > 0) {
+        if (
+          this.agents.size > 0 || this.started.size > 0 || this.ended.size > 0 || this.finishedFolded > 0 ||
+          this.lastLive !== null
+        ) {
           this.agents = new Map();
           this.started = new Map();
           this.ended = new Set();
           this.finishedFolded = 0;
+          this.lastLive = null;
           this.changed = true;
         }
         return;
@@ -284,7 +322,13 @@ class Draft {
 
   freeze(prior: HookSubagentState): HookSubagentState {
     if (!this.changed) return prior;
-    return { agents: this.agents, started: this.started, ended: this.ended, finishedFolded: this.finishedFolded };
+    return {
+      agents: this.agents,
+      started: this.started,
+      ended: this.ended,
+      finishedFolded: this.finishedFolded,
+      lastLive: this.lastLive,
+    };
   }
 }
 

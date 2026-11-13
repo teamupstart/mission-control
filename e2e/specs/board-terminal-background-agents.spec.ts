@@ -23,9 +23,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * What a hook cannot say is part of the claim: no token count, tool count or last tool, so each
  * row shows type, description, state and elapsed time and never a placeholder number.
  *
- * The board only. The conversation's Background agents tray is Phase 2's, which this branch does
- * not have; once it lands, its spec opens this same kind of session and asserts the agent in the
- * tray (see `docs/plans/background-subagent-visibility/phase-2-conversation-tray.md`).
+ * The Claude case also opens the session's conversation and finds the same agent in the
+ * Background agents tray, which reads the same `Session.subagents` summary as the board.
  *
  * Discovery is on for this file's daemon only, and the spec addresses its own card by the tmux
  * session name it generated, for the reason `session-interrupt-terminal.spec.ts` gives.
@@ -206,6 +205,19 @@ test.describe("terminal-session background sub-agents", () => {
     await expect(tree.getByText("1 finished")).toBeVisible();
     await expect(rows.filter({ hasText: "Convert billing queries" })).toHaveCount(0);
     await shoot(tree, "02-terminal-finished-folded");
+
+    // The conversation reads the same summary: opening the terminal session docks the Background
+    // agents tray above its reply box, listing the hook-reported agent with no counters. The prompt
+    // above moved the card to the working column, so it is opened wherever it now sits.
+    await tile.click();
+    const tray = dashboard.getByRole("region", { name: "Background agents" });
+    await expect(tray).toBeVisible();
+    await expect(tray.getByRole("button", { name: "Background agents · 1 running" })).toBeVisible();
+    const trayRow = tray.getByRole("listitem").filter({ hasText: "Map offset call sites" });
+    await expect(trayRow).toContainText("Explore");
+    await expect(tray).not.toContainText("tools");
+    await expect(tray).toContainText("1 finished");
+    await shoot(tray, "04-terminal-conversation-tray");
   });
 
   test("a Codex terminal session's children hang beneath its card, from SubagentStart to SubagentStop", async ({

@@ -5,6 +5,7 @@ import { reportBucket } from "@shared/session.ts";
 import {
   buildStackPrompt,
   deriveStackState,
+  isStackPromptKind,
   stackActions,
   stackBrokenReason,
   stackLifecycleLabel,
@@ -16,7 +17,7 @@ import {
   type StackPromptStatus,
   type StackStanding,
 } from "@shared/stacking.ts";
-import { latestStackedPr, readStackPromptClaim } from "../db.ts";
+import { latestStackedPr, latestStackedPrForTask, readStackPromptClaim } from "../db.ts";
 import type { StackGitHub } from "./github.ts";
 import type { PrRefs } from "../inspector/github.ts";
 import { activeWorkflowOwnsSession, followupPrs, followupSessionBlocker, followupStableBlocker, foremanSettleMs } from "../foreman/review-followup.ts";
@@ -86,11 +87,30 @@ export function stackStandingFor(
   const state = deriveStackState({ observation: o, releasedHeadSha: lineage.releasedHeadSha });
   const owners = stackOwners(sessions, row);
   const owner = owners.length === 1 ? owners[0]! : null;
-  const need = row.state === "open" ? stackPromptNeed(state, o) : null;
+  const brokenReason = state === "broken" && o ? stackBrokenReason(o) : null;
+  // A closed child that a later pull request of the same task and episode has replaced (the
+  // *Move onto main* or *Reopen against main* result, which inherited this row's lineage) is
+  // history: nothing is offered on it, and it says what replaced it. A child merged into its
+  // parent's branch is replaced by the recovery pull request its session opens, from a new
+  // branch and so in a new work episode: any later stacked pull request of the task counts.
+  const latest = row.state === "open"
+    ? null
+    : brokenReason === "merged-into-parent" || brokenReason === "merged-off-default"
+    ? latestStackedPrForTask(lineage.taskId, row.owner, row.repo, row.key)
+    : latestStackedPr(lineage.taskId, row.owner, row.repo, lineage.episode);
+  const replacedBy = latest && latest.key !== row.key && latest.stack && latest.stack.adoptedAt >= lineage.adoptedAt ? latest : null;
+  // Prompts go to open children only, except the recovery: the child it answers has merged.
+  const candidate = replacedBy ? null : stackPromptNeed(state, o);
+  const need = candidate && (row.state === "open" || candidate.kind === "recover-merge") ? candidate : null;
   let prompt: StackStanding["prompt"] = null;
   if (need) {
     const claim = readStackPromptClaim(row.key, need.kind, need.tip);
-    const blocker = owner ? foremanBlocker(foreman, owner) : null;
+    // Foreman's follow-up finds a pull request through the session's card. A merged child is
+    // still on it (the poller records no merge that missed the default branch), but a card
+    // rebuilt since, by a restart, may not carry it: then only the operator's send can reach it.
+    const unseen = need.kind === "recover-merge" && owner
+      && !followupPrs(owner).some((pr) => pr.url.toLowerCase() === row.url.toLowerCase());
+    const blocker = owner ? foremanBlocker(foreman, owner) ?? (unseen ? "the session's card no longer shows this pull request" : null) : null;
     // A delivered prompt is "sent" only while the session it was typed into still owns the
     // child. Once that session is gone it waits for an owner (Resume), and a resumed session is
     // offered the prompt again - by the operator, never by Foreman's automatic retry.
@@ -113,12 +133,6 @@ export function stackStandingFor(
   const parentUrl = lineage.parentPrUrl;
   const parentNumber = stackPrNumber(lineage.parentPrUrl);
   const retargetError = row.state === "open" ? o?.retargetError ?? null : null;
-  const brokenReason = state === "broken" && o ? stackBrokenReason(o) : null;
-  // A closed child that a later pull request of the same task and episode has replaced (the
-  // *Move onto main* or *Reopen against main* result, which inherited this row's lineage) is
-  // history: nothing is offered on it, and it says what replaced it.
-  const latest = row.state === "open" ? null : latestStackedPr(lineage.taskId, row.owner, row.repo, lineage.episode);
-  const replacedBy = latest && latest.key !== row.key && latest.stack && latest.stack.adoptedAt >= lineage.adoptedAt ? latest : null;
   const actions = replacedBy
     ? []
     : stackActions(state, o).filter((action) => action !== "await-replacement" || !lineage.awaitReplacementAt);
@@ -164,6 +178,8 @@ export function stackStandingFor(
       parentUrl: lineage.parentPrUrl,
       parentHeadRefName: o?.parentHeadRefName ?? null,
       defaultBranch: o?.defaultBranch ?? null,
+      mergedIntoRefName: o?.childState === "MERGED" ? o.baseRefName : null,
+      mergeCommitSha: o?.childMergeCommitSha ?? null,
     },
   };
 }
@@ -263,7 +279,7 @@ export function stackPromptCandidate(
   if (!standing) return { error: "That pull request is not stacked" };
   if (standing.sessionId !== sessionId) return { error: "The stacked pull request's owning session is unknown or changed" };
   let claim: { kind: StackPromptRequest["kind"]; tip: string };
-  if (request.kind === "catch-up" || request.kind === "restack") {
+  if (isStackPromptKind(request.kind)) {
     const prompt = standing.prompt;
     if (!prompt || prompt.kind !== request.kind || prompt.tip !== request.tip) {
       return { error: "That stack prompt is no longer needed" };

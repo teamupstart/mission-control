@@ -292,6 +292,13 @@ verified preview plus the exact final confirmation text. A successful restore re
 window that submitted it. Every other open window keeps its unsaved drafts and offers
 **Reload now** in a persistent notice.
 
+**Storage**, just above Restore, holds full-database backups: the interval and how many
+scheduled and pre-migration copies are kept, **Back up now**, the last success and failure of
+each kind, the kept copies and their total size, and a **Problems** list whose rows link to
+where each is fixed. It updates live from the `storage_health` event, and a config saved in
+another window reaches it through `storage_config_changed`. See
+[Backup and restore](sqlite-database.html#backup).
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
@@ -299,7 +306,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Tasks**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -477,6 +484,14 @@ promising it changes what the daemon does, for sessions this page never opened. 
 costs less than a badge that overclaims. What the row buys is the thing the header switch
 could not: the preference is now in ⌘K by name, flippable from a search result without
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
+
+**Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
+with when nothing names its own choice. Its **Dispatch defaults** card is the per-kind
+after-work Workflow rows (see [Dispatch an agent](dispatch-and-backlog.md), under **After
+work**). They replace the single **Dispatch default** that **Settings → Workflows** used to
+hold, because they describe a task kind rather than the Workflow subsystem's policy. They are
+daemon-backed, so they reach tasks from the API, task sources and recurring missions as well as
+the dispatch form.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the

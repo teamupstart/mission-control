@@ -827,6 +827,8 @@ export interface SdkLaunchOptions {
   permissionMode: PermissionMode | null;
   /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */
   mcp: MissionMcpDescriptor | null;
+  /** Task-backed extension harnesses must retain healthy Mission tools through replacement. */
+  missionToolsRequired?: boolean;
   /**
    * A resident run's pinned MCP set, or absent for every other launch, which keeps the
    * harness's native MCP behaviour. When present the driver starts exactly `mcp` plus these.

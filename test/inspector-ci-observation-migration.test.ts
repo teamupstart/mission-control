@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// A database stamped 27 predates `observed_ci_json`, so opening it must take a recovery point
+// A database stamped 28 predates `observed_ci_json`, so opening it must take a recovery point
 // before the column is added; without the version bump it would be added with no backup.
 
 const home = mkdtempSync(join(tmpdir(), "mission-inspector-ci-observation-migration-"));
@@ -19,7 +19,7 @@ raw.exec(`
   );
   INSERT INTO inspector_prs (key, url, owner, repo, number, source, state)
     VALUES ('owner/repo#7', 'https://github.com/owner/repo/pull/7', 'owner', 'repo', 7, 'manual', 'watching');
-  PRAGMA user_version = 27;
+  PRAGMA user_version = 28;
 `);
 raw.close();
 
@@ -30,20 +30,20 @@ const backupRoot = join(home, "backups", "database");
 const recoveryPoints = () =>
   existsSync(backupRoot) ? readdirSync(backupRoot).filter((name) => name.startsWith("pre-migration-")) : [];
 
-test("a schema 27 database takes a recovery point, then gains a NULL observed_ci_json", () => {
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 28);
+test("a schema 28 database takes a recovery point, then gains a NULL observed_ci_json", () => {
+  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 29);
   const d = openDb();
   const backups = recoveryPoints();
   assert.equal(backups.length, 1);
   const recovery = new DatabaseSync(join(backupRoot, backups[0]!), { readOnly: true });
   try {
-    assert.equal((recovery.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 27);
+    assert.equal((recovery.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 28);
   } finally {
     recovery.close();
   }
   const columns = (d.prepare("PRAGMA table_info(inspector_prs)").all() as { name: string }[]).map((c) => c.name);
   assert.ok(columns.includes("observed_ci_json"));
-  assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 28);
+  assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 29);
   const row = d.prepare("SELECT observed_ci_json FROM inspector_prs WHERE key = 'owner/repo#7'").get() as {
     observed_ci_json: string | null;
   };

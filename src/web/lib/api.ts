@@ -1,6 +1,9 @@
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
+import type { KindWorkflowDefaults } from "@shared/task.ts";
+import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
+import type { StorageView } from "@shared/storage-health.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -366,6 +369,14 @@ export const executeWorktreeAction = (token: string, acknowledgements: WorktreeR
 export const dismissWorktreeOperation = (id: string) =>
   worktreeRequest<Record<string, never>>(`/api/worktrees/operations/${encodeURIComponent(id)}/dismiss`, "POST", {});
 
+/**
+ * Stop the dependency claim running in a slot. The claim fails and its lease is granted with
+ * the warning, so a dispatch waiting on it continues. The result reaches every card through the
+ * task and worktree events; a 404 means the claim had already finished.
+ */
+export const stopWorktreeClaim = (slotId: string, claimId: string) =>
+  worktreeRequest<Record<string, never>>(`/api/worktrees/${encodeURIComponent(slotId)}/claim/stop`, "POST", { claimId });
+
 export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
   worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });
 /**
@@ -442,6 +453,8 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+/** Settings > Storage: the storage aggregate plus the database backup config. */
+export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
 /** Machine-local roots that feed every repository picker and name resolver. */
 export const fetchRepoIndex = () => fetchJson<RepoIndexView>("/api/repo-index");
 /**
@@ -1033,6 +1046,24 @@ export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
     return Array.isArray(data.repoAllowlist) ? (data.repoAllowlist as string[]) : [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * The per-kind dispatch defaults from Settings, or null when the config cannot be read.
+ *
+ * The one read of these rows for surfaces that need nothing else from the workflow config.
+ * Null is "not known", never "none configured": a caller must not resolve a kind against it
+ * as though it were `{}`, which would pass a built-in off as the operator's choice.
+ */
+export async function fetchKindWorkflowDefaults(): Promise<KindWorkflowDefaults | null> {
+  try {
+    const res = await actionFetch("/api/workflows/config");
+    if (!res.ok) return null;
+    const data = (await res.json()) as { kindWorkflowDefaults?: KindWorkflowDefaults };
+    return data.kindWorkflowDefaults ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -2119,6 +2150,10 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
+  setDatabaseBackupsConfig: (patch: DatabaseBackupsConfigPatch) =>
+    put<ActionResult & { message?: string }>(`/api/storage/backups/config`, patch),
+  /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
+  backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
 
   // --- Repository discovery roots ---
   setRepoIndex: (cfg: RepoIndexConfigPatch) =>

@@ -1,14 +1,19 @@
 import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
 import { codeRabbitChangedPaths } from "./coderabbit.ts";
 import type { DatabaseSync } from "node:sqlite";
-import type { WorkflowCommandArtifactDescriptor } from "@shared/workflow.ts";
+import { WORKFLOW_COMMAND_INTERPRETERS, type WorkflowCommandArtifactDescriptor } from "@shared/workflow.ts";
 import type {
   CheckExecutionRequest,
   CheckExecutionResult,
   CheckExecutor,
+  CheckSlot,
 } from "./checks.ts";
+import { mergeBaseWithSource } from "../diff.ts";
+import { changedFingerprintInputs, readTreeBlobs, renderClaimArgv } from "../worktrees/claim.ts";
 import {
+  CheckDependencyClaimError,
   CheckLeaseStore,
+  type CheckClaimFailure,
   type CheckGroupRecovery,
   type CheckLeaseManager,
   type CheckLeaseRelease,
@@ -76,6 +81,43 @@ export interface CheckAttemptRef {
   attemptId: string;
   submissionId: string;
   nodeId: string;
+  /**
+   * The check-concurrency slot this attempt holds. Released while a dependency claim runs, and
+   * taken again before the Command spawns, so a long install never keeps another check queued.
+   * Absent means the attempt keeps whatever its caller holds throughout.
+   */
+  checkSlot?: CheckSlot;
+  /**
+   * Aborted when this attempt's run is cancelled. The dependency claim follows it, so a cancel
+   * stops a claim that is running and one that has not started yet alike.
+   */
+  signal?: AbortSignal;
+}
+
+/** Which of a claim's fingerprint inputs a change touched, or why that could not be read. */
+export type ClaimInputsChanged =
+  | { ok: true; changed: string[] }
+  | { ok: false; reason: string };
+
+/**
+ * The fingerprint inputs whose blob differs between `headSha` and its merge base with origin's
+ * default branch, read from objects in the main checkout, never from a worktree: the attempt's tree has
+ * already been handed back when this is asked.
+ */
+export async function claimInputsChangedSinceMergeBase(input: {
+  repoRoot: string;
+  headSha: string;
+  fingerprintPaths: readonly string[];
+}): Promise<ClaimInputsChanged> {
+  const base = await mergeBaseWithSource(input.repoRoot, input.headSha);
+  if (!base.ok) return base;
+  const [head, merged] = await Promise.all([
+    readTreeBlobs(input.repoRoot, input.headSha),
+    readTreeBlobs(input.repoRoot, base.base),
+  ]);
+  if (!head.ok) return { ok: false, reason: head.reason };
+  if (!merged.ok) return { ok: false, reason: merged.reason };
+  return { ok: true, changed: changedFingerprintInputs(input.fingerprintPaths, head.value, merged.value) };
 }
 
 /** Test suites get the larger budget; faster check slots keep the supervisor default. */
@@ -110,6 +152,8 @@ export interface CheckRuntimeDeps {
   /** Defaults to asking git. See `codeRabbitChangedPaths`. */
   changedPaths?: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
   artifacts?: WorkflowCommandArtifactService;
+  /** Defaults to `claimInputsChangedSinceMergeBase`. Asked only after a failed dependency claim. */
+  claimInputsChanged?: typeof claimInputsChangedSinceMergeBase;
 }
 
 /**
@@ -126,6 +170,7 @@ export class CheckRuntime {
   private readonly resolveCommit: (repoRoot: string, headSha: string) => Promise<string>;
   private readonly changedPaths: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
   private readonly artifacts: WorkflowCommandArtifactService;
+  private readonly claimInputsChanged: typeof claimInputsChangedSinceMergeBase;
 
   /**
    * Phase 3's answer to the lease manager's open question, ready to inject.
@@ -149,6 +194,7 @@ export class CheckRuntime {
     this.resolveCommit = deps.resolveCommit ?? resolveCapturedCommit;
     this.changedPaths = deps.changedPaths ?? codeRabbitChangedPaths;
     this.artifacts = deps.artifacts ?? new WorkflowCommandArtifactService(deps.db);
+    this.claimInputsChanged = deps.claimInputsChanged ?? claimInputsChangedSinceMergeBase;
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
     const lookup: CheckSupervisorLookup = (attemptId) => {
       const row = store.get(attemptId);
@@ -217,23 +263,64 @@ export class CheckRuntime {
     // check the dispatcher uses, and unwinds its own lease on any pin failure - so a commit
     // this repository does not have costs an error rather than a pool slot. Every failure it
     // can produce is infrastructure and never a verdict.
+    //
+    // The repository's dependency claim runs inside that acquisition. While it runs, this
+    // attempt gives up its check slot: an install is not a build, and a claim may run for hours.
+    // The budget reservation was taken before any of this, so it does not move. The Command's
+    // own timeout starts at spawn, below, so claim time never
+    // counts against it: a slow install ends under the claim's own limit, as a dependency
+    // failure. A CodeRabbit review installs and runs nothing from the tree, so it takes its tree
+    // without a claim at all.
     let leasePath: string;
+    let headSha: string | null = null;
+    let slotReleased = false;
+    const slot = attempt.checkSlot;
     try {
+      // The capture records an abbreviation and a pin takes a full id, so this is the step
+      // that turns one into the other. See `resolveCapturedCommit`: without it every check on
+      // every real submission failed here, before a tree was ever leased.
+      headSha = await this.resolveCommit(request.repoRoot, request.headSha);
       leasePath = await this.leases.acquireForAttempt({
         attemptId: attempt.attemptId,
         submissionId: attempt.submissionId,
         nodeId: attempt.nodeId,
         repoRoot: request.repoRoot,
-        // The capture records an abbreviation and a pin takes a full id, so this is the step
-        // that turns one into the other. See `resolveCapturedCommit`: without it every check on
-        // every real submission failed here, before a tree was ever leased.
-        headSha: await this.resolveCommit(request.repoRoot, request.headSha),
+        headSha,
+        runClaim: WORKFLOW_COMMAND_INTERPRETERS[request.slot] !== "coderabbit",
+        ...(attempt.signal ? { signal: attempt.signal } : {}),
+        ...(slot
+          ? {
+              onClaimStart: () => {
+                slotReleased = true;
+                slot.release();
+              },
+            }
+          : {}),
       });
     } catch (err) {
+      // The tree is already back: `acquireForAttempt` throws this only after its return is
+      // confirmed. Nothing ran, so this attempt never retakes the slot it gave up.
+      if (err instanceof CheckDependencyClaimError && headSha) {
+        return await this.dependencyFailure(request, headSha, err.failure);
+      }
       return {
         kind: "infrastructure",
         started: false,
         reason: `a worktree for the ${request.slot} check could not be prepared: ${message(err)}`,
+      };
+    }
+    // Taken again before anything else runs in the tree, so the spawn runs under a check slot,
+    // exactly as it did before claims existed.
+    if (slotReleased && slot) await slot.reacquire();
+    // The reacquire can wait behind other checks, and a run cancelled meanwhile must not start
+    // a Command whose result nobody will read.
+    if (attempt.signal?.aborted) {
+      await this.settle(attempt.attemptId, "empty");
+      return {
+        kind: "infrastructure",
+        started: false,
+        reason: `the ${request.slot} check was cancelled before its Command started`,
+        ranNothing: true,
       };
     }
 
@@ -359,6 +446,65 @@ export class CheckRuntime {
   }
 
   /**
+   * A failed dependency claim, as a check result. The Command did not run.
+   *
+   * The change owns the failure only when it changed one of the claim's fingerprint inputs
+   * against its merge base with the base branch: a lockfile the branch broke fails the check,
+   * with the claim's output tail as the check's output. Otherwise the failure is the machine's,
+   * a registry or a token, and it is infrastructure: the engine retries it as the same
+   * execution, up to its infrastructure cap, with the run budget handed back. A claim with no
+   * fingerprint paths cannot tell the two apart, and neither can a merge base that cannot be
+   * read, so both are infrastructure: a failure is never blamed on a change on a guess.
+   */
+  private async dependencyFailure(
+    request: CheckExecutionRequest,
+    headSha: string,
+    failure: CheckClaimFailure,
+  ): Promise<CheckExecutionResult> {
+    const { warning } = failure;
+    const what = `the dependency claim failed at step ${warning.step} of ${warning.stepCount} `
+      + `(${renderClaimArgv(warning.argv)}) ${warning.reason}`;
+    let changed: ClaimInputsChanged = { ok: true, changed: [] };
+    let why: string;
+    if (failure.fingerprintPaths.length === 0) {
+      why = "the claim lists no fingerprint paths, so the failure cannot be traced to this change";
+    } else {
+      try {
+        changed = await this.claimInputsChanged({
+          repoRoot: request.repoRoot,
+          headSha,
+          fingerprintPaths: failure.fingerprintPaths,
+        });
+      } catch (err) {
+        changed = { ok: false, reason: message(err) };
+      }
+      why = changed.ok
+        ? "none of its fingerprint inputs changed against the merge base"
+        : `whether this change touched its fingerprint inputs could not be read (${changed.reason})`;
+    }
+    if (changed.ok && changed.changed.length > 0) {
+      const named = changed.changed.slice(0, 5).join(", ")
+        + (changed.changed.length > 5 ? ` and ${changed.changed.length - 5} more` : "");
+      return {
+        kind: "decided",
+        status: "failed",
+        note: `${capitalize(what)}, and this change modified its inputs (${named}), so the failure `
+          + `is the change's. The ${request.slot} Command did not run.`,
+        exitCode: null,
+        output: warning.tail,
+        truncatedBytes: warning.truncatedBytes,
+      };
+    }
+    return {
+      kind: "infrastructure",
+      reason: `${what}; ${why}, so it is treated as infrastructure and the ${request.slot} Command `
+        + "did not run."
+        + (warning.tail ? `\nClaim output:\n${warning.tail}` : ""),
+      ranNothing: true,
+    };
+  }
+
+  /**
    * Resolve the lease against what the supervisor could PROVE, not against how the command
    * exited, and say whether the resource ended up accounted for.
    *
@@ -421,7 +567,12 @@ type CheckCleanup = { ok: true } | { ok: false; reason: string };
 function describeResult(result: CheckExecutionResult): string {
   if (result.kind === "exited") return `exited ${result.exitCode}`;
   if (result.kind === "unavailable") return "reported that its command was not found";
+  if (result.kind === "decided") return `was decided ${result.status} before its command ran`;
   return `could not be run (${result.reason})`;
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function message(err: unknown): string {

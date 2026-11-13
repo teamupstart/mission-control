@@ -252,6 +252,9 @@ derived reload generations, credentials, tokens, and environment secrets.
 Skills snapshots include the catalog-wide default and explicit row choices. Restoring an older
 snapshot with no catalog default keeps its previous opt-in meaning, so absent row choices stay off.
 
+Database backup counts and interval (the `database-backups` domain) were added after format v1
+shipped. Restoring a snapshot taken before them leaves the current backup settings unchanged.
+
 The daemon publishes a sibling temporary file atomically, verifies its schema and SHA-256 digest,
 then applies retention. It keeps the newest 90 `daily` files and, independently, the newest 10
 `pre_restore` safety files.

@@ -262,7 +262,7 @@ function shimRuntime(): { command: string; env: NodeJS.ProcessEnv } {
  * representing arbitrary bytes as text - no counting scheme avoids it - so it is stated here
  * rather than papered over, and all three cases are pinned by test.
  */
-class TailRing {
+export class TailRing {
   private buf = Buffer.alloc(0);
   private total = 0;
 

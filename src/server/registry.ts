@@ -50,6 +50,7 @@ import type {
   SessionQueueSummary,
   SessionState,
   Task,
+  TaskProvisioning,
   TaskSummary,
   ThinkingLevel,
   WorkItem,
@@ -64,6 +65,7 @@ import type {
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { residentRunSummary, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -621,6 +623,7 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "harnesses_config_changed",
   // Deliberately absent: worktree inventory and policy do not feed the Line's execution
   // fold. Its content-free event only tells an open Settings panel to re-observe.
+  // `storage_config_changed` is absent for the same reason: backup counts are no Line input.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -1156,6 +1159,12 @@ export class Registry extends EventEmitter {
     since: null,
     error: null,
   };
+  /**
+   * The storage aggregate, held for the snapshot. `StorageHealthService` computes it and pushes
+   * only changed values here. Null until it does: an empty placeholder would read as "no copies
+   * and no problems" and hide the real answer the Storage panel reads from its route.
+   */
+  private storageHealth: StorageHealth | null = null;
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -1250,6 +1259,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
     return {
@@ -1294,8 +1304,15 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      storageHealth: this.storageHealth,
       latestSettingsRestore: this.latestSettingsRestore,
     };
+  }
+
+  /** Adopt a recomputed storage aggregate. The service already dropped unchanged ones. */
+  setStorageHealth(health: StorageHealth): void {
+    this.storageHealth = health;
+    this.emitEvent({ type: "storage_health", health });
   }
 
   /**
@@ -1371,6 +1388,11 @@ export class Registry extends EventEmitter {
   /** Announce that the bounded Worktrees route should be re-observed. */
   emitWorktreesChanged(): void {
     this.emitEvent({ type: "worktrees_changed" });
+  }
+
+  /** Announce a saved database backup config, so every open Storage panel re-reads it. */
+  emitStorageConfigChanged(): void {
+    this.emitEvent({ type: "storage_config_changed" });
   }
 
   /** Announce that the attention-inbox dismissals changed, so every dashboard re-reads them. */
@@ -7082,6 +7104,47 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Where a dispatching task's `provisioning` comes from; null until a dispatcher sets one.
+   */
+  private taskProvisioningSource: ((task: Task) => TaskProvisioning | null) | null = null;
+
+  /**
+   * Name what a dispatching task's `provisioning` is derived from: the worktree manager's
+   * claim registry, as the dispatcher reads it. The registry never imports the manager.
+   */
+  setTaskProvisioningSource(source: (task: Task) => TaskProvisioning | null): void {
+    this.taskProvisioningSource = source;
+  }
+
+  /**
+   * A task with its derived `provisioning` recomputed. Only a dispatching task can be waiting
+   * on a claim, and a task that is not carries no `provisioning` key at all, so every other
+   * task's payload is exactly what it was. A value carried in by spreading an earlier snapshot
+   * is never trusted: it is read again here, on every publish.
+   */
+  private withProvisioning(task: Task): Task {
+    const provisioning = task.status === "dispatching" ? this.taskProvisioningSource?.(task) ?? null : null;
+    if (provisioning) return { ...task, provisioning };
+    if (task.provisioning === undefined) return task;
+    const { provisioning: _dropped, ...rest } = task;
+    return rest;
+  }
+
+  /**
+   * Re-derive and re-send one in-memory task's `provisioning`, when the claim it waits on
+   * starts a step or ends. Silent when nothing a dashboard draws changed. A task outside the
+   * in-memory board is skipped: nothing is drawing it, and it cannot be dispatching.
+   */
+  refreshTaskProvisioning(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const next = this.withProvisioning(current);
+    if (JSON.stringify(next.provisioning ?? null) === JSON.stringify(current.provisioning ?? null)) return;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  /**
    * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
    *
    * Called by the retention service after it moves the ledger, and it re-reads rather than
@@ -7124,9 +7187,10 @@ export class Registry extends EventEmitter {
     // Re-derived on every resident write rather than trusted from the caller. A writer that
     // built its row from a copy taken before Restart ended the run would otherwise broadcast it
     // without the record, and the replaced session would silently lose its Complete offer.
-    const task: Task = written.kind === "resident"
+    const published: Task = written.kind === "resident"
       ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
       : written;
+    const task = this.withProvisioning(published);
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -7392,6 +7456,7 @@ export class Registry extends EventEmitter {
               ? []
               : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
+          ...(t.claimWarnings && t.claimWarnings.length > 0 ? { claimWarnings: t.claimWarnings } : {}),
         }
       : null;
   }

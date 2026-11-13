@@ -59,9 +59,12 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
   assert.equal(config.boardSidebarAllSessions, false);
+  assert.equal(config.conversationRailCollapsed, false);
   // The drawer, floating: residents leave the fleet for an install that never chose.
   assert.equal(config.residentPlacement, "drawer");
   assert.equal(config.residentDrawerPinned, false);
+  // The rail every earlier build drew: open.
+  assert.equal(config.sessionRailFolded, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
@@ -106,9 +109,13 @@ test("a written cache round-trips", () => {
     // round-tripping this field says anything.
     groupBoardByRepo: false,
     boardSidebarAllSessions: true,
+    // Off its default, so it cannot round-trip by falling back.
+    conversationRailCollapsed: true,
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
+    // Folded, the non-default, so only a copied field round-trips it.
+    sessionRailFolded: true,
     // Non-empty, both: the shipped bar hides and minimizes nothing.
     hiddenTopbarItems: ["cost", "feedback"],
     compactTopbarItems: ["fleet", "foreman"],
@@ -134,7 +141,9 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
   assert.equal(config.boardSidebarAllSessions, true);
+  assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
+  assert.equal(config.sessionRailFolded, true);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
 });

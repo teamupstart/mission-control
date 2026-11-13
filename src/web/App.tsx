@@ -90,6 +90,7 @@ import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
+import { toggleSessionRail } from "./lib/session-rail.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -333,8 +334,10 @@ export function App(): React.JSX.Element {
     lineSummary,
     settingsStatus,
     keepAwakeStatus,
+    storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
     attentionDismissalsRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
@@ -781,7 +784,11 @@ export function App(): React.JSX.Element {
     const active = document.activeElement as HTMLElement | null;
     const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
     if (activeEditor && !active?.closest(".cdetail")) return;
-    sessionEls.current.get(id)?.focus({ preventScroll: true });
+    // A folded rail draws no rows, so no row is registered for the id. The strip that stands
+    // in for them takes the keyboard instead: leaving the reader must still leave it, or every
+    // Escape would land back inside the reader and the next one could never peel further.
+    (sessionEls.current.get(id) ?? document.querySelector<HTMLElement>(".session-rail-strip"))
+      ?.focus({ preventScroll: true });
   }, []);
 
   const focusReaderBody = useCallback(() => {
@@ -3539,6 +3546,16 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // Fold or unfold the session rail, a bare key for the reason the Line's is. Only while a
+      // rail is actually beside a detail - the Console, or a Board drill-in. On the Board
+      // overview there is no rail to fold, and flipping a preference nobody can see would
+      // surprise whoever opens a card next.
+      if (!typing && chord === bindings.sessionRail && (layout === "console" || boardDetailOpen)) {
+        e.preventDefault();
+        toggleSessionRail();
+        return;
+      }
+
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
       // strip that opened it.
       //
@@ -4517,6 +4534,8 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              storageHealth={storageHealth}
+              storageConfigRevision={storageConfigRevision}
               harnessesRevision={harnessesRevision}
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}

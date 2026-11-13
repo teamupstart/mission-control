@@ -53,7 +53,16 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { TASK_KIND_BEHAVIOR, taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
+import {
+  HARNESS_LAUNCHED_TASK_KINDS,
+  TASK_KIND_BEHAVIOR,
+  TASK_KIND_INFO,
+  isShippingTaskKind,
+  kindsDefaultingToWorkflow,
+  taskHasRepository,
+  taskKindAllowsBacklog,
+  taskKindCreator,
+} from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
 import {
   dismissLaunchFailures,
@@ -152,6 +161,7 @@ import {
   ManualWorktreeAcquireSchema,
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
+  StopWorktreeClaimSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -358,6 +368,7 @@ import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./ins
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { taskTitlePresenter } from "./task-titles.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
@@ -389,6 +400,11 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
+import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
+import type { DatabaseBackupService } from "./database-backups/service.ts";
+import type { StorageHealthService } from "./storage-health.ts";
+import type { StorageView } from "@shared/storage-health.ts";
+import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -1339,6 +1355,10 @@ export interface RouteDeps {
   fileCommentWalkthrough?: FileCommentWalkthrough;
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
   settingsBackups?: SettingsBackupService;
+  /** The daemon's full-database backup owner. Its routes return 503 without it. */
+  databaseBackups?: DatabaseBackupService;
+  /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
+  storageHealth?: StorageHealthService;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1394,6 +1414,8 @@ export const ROUTE_DEP_NAMES = [
   "fileComments",
   "fileCommentWalkthrough",
   "settingsBackups",
+  "databaseBackups",
+  "storageHealth",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1687,6 +1709,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     fileComments,
     fileCommentWalkthrough,
     settingsBackups,
+    databaseBackups,
+    storageHealth,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -1869,10 +1893,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
     }
     const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const owner = { kind: "manual", key: ownerKey } as const;
+    // A claim may run far longer than one HTTP request, and a caller that gave up would leave
+    // the lease granted to nobody. So a pool with a claim is acquired in the background and
+    // polled for. A pool without one answers synchronously, exactly as before, which keeps an
+    // older `make session` working against this daemon.
+    if (worktrees.poolClaim(parsed.data.repositoryPath)) {
+      const requestId = worktrees.manualRequests.start({
+        repositoryPath: parsed.data.repositoryPath,
+        baseSha,
+        owner,
+      });
+      return c.json({ requestId, baseSha }, 202);
+    }
     const acquired = await worktrees.acquire({
       repositoryPath: parsed.data.repositoryPath,
       baseSha,
-      owner: { kind: "manual", key: ownerKey },
+      owner,
     });
     if (acquired.outcome === "acquired") {
       return c.json({
@@ -1885,6 +1922,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       { error: acquired.reason, outcome: acquired.outcome },
       acquired.outcome === "outcomeUnknown" ? 503 : 409,
     );
+  });
+
+  app.get("/api/worktrees/manual/requests/:requestId", (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const view = worktrees.manualRequests.view(c.req.param("requestId"));
+    // Requests live in daemon memory, so one this daemon does not know was accepted by a daemon
+    // that has since restarted, or never existed.
+    if (!view) return c.json({ error: "manual acquire request was not found" }, 404);
+    return c.json(view);
   });
 
   app.post("/api/worktrees/manual/return", async (c) => {
@@ -1999,6 +2045,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return worktreeOperations.dismiss(c.req.param("id"))
       ? c.json({ ok: true })
       : c.json({ error: "no failed worktree operation has that id" }, 404);
+  });
+
+  // Stop a running dependency claim, from its slot card or from the task card of the dispatch
+  // waiting on it. Found through the claim registry by slot and claim id; the step's process
+  // group is killed and the claim fails, so its lease is granted with the warning and the
+  // dispatch continues. 404 when that claim is no longer running.
+  app.post("/api/worktrees/:slotId/claim/stop", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, StopWorktreeClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const stopped = worktreeOperations.manager.stopClaim(c.req.param("slotId"), parsed.data.claimId);
+    return stopped
+      ? c.json({ ok: true })
+      : c.json({ error: "that dependency claim is no longer running" }, 404);
   });
 
   app.post("/api/worktrees/:slotId/open", async (c) => {
@@ -2490,6 +2550,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.list(raw === "true"));
   });
   const workflowCommandManager = (): WorkflowCommandManager | null => workflowCommands ?? null;
+  /** The kinds whose dispatch default names this workflow, as copy, or null for none. */
+  const kindDefaultsNaming = (workflowId: string): string | null => {
+    const kinds = kindsDefaultingToWorkflow(workflowId, getWorkflowPolicy().kindWorkflowDefaults);
+    return kinds.length > 0 ? kinds.map((kind) => TASK_KIND_INFO[kind].label).join(", ") : null;
+  };
   /**
    * The legacy config shape, COMPOSED rather than stored.
    *
@@ -2526,14 +2591,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
-    if (parsed.data.defaultWorkflowId) {
-      const detail = workflowManager()?.get(parsed.data.defaultWorkflowId) ?? null;
+    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+      const workflowId = parsed.data.kindWorkflowDefaults[kind];
+      if (!workflowId) continue;
+      const detail = workflowManager()?.get(workflowId) ?? null;
       if (
         !detail
         || detail.workflow.archivedAt !== null
         || detail.workflow.currentVersionId === null
       ) {
-        return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
+        return c.json({
+          error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
+        }, 409);
       }
     }
     // ONE transaction over both halves, because the old route's contract is that its body is
@@ -2670,9 +2739,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before archiving this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before archiving this workflow`,
       }, 409);
     }
     const result = manager.archive(id, parsed.data.expectedDraftRevision);
@@ -2697,9 +2767,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const selected = manager.get(id)?.workflow ?? null;
-    if (selected && !selected.builtin && getWorkflowPolicy().defaultWorkflowId === id) {
+    const defaultFor = selected && !selected.builtin ? kindDefaultsNaming(id) : null;
+    if (defaultFor) {
       return c.json({
-        error: "Choose another dispatch default before deleting this workflow",
+        error: `Used as the dispatch default for ${defaultFor}. Choose another dispatch default before deleting this workflow`,
       }, 409);
     }
     const result = manager.remove(id, parsed.data.expectedDraftRevision);
@@ -4190,8 +4261,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
-  app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
-  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
+  // Read by a person, so built from the snapshot as the dashboard sees it: agent-written
+  // lines with task ids shown as titles (`task-titles.ts`).
+  const reportSnapshot = () => taskTitlePresenter(registry).snapshot(registry.snapshot());
+  app.get("/api/report", (c) => c.json(buildReport(reportSnapshot())));
+  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(reportSnapshot()))));
 
   const backupUnavailable = (c: Context) => c.json({
     error: "service_unavailable" as const,
@@ -4401,13 +4475,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // enough to reach the launch turn must not make it reappear in full.
       return c.json({
         ...page,
-        messages: attributeTranscript(
+        // The same task-title projection the live stream applies (`task-titles.ts`).
+        messages: taskTitlePresenter(registry).transcript(attributeTranscript(
           session.id,
           page.messages,
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
           { key: noteKeyFor(session), transcript: t },
-        ),
+        )),
       });
     }
     const since = Number(c.req.query("since"));
@@ -5124,6 +5199,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const r = await tasks.remove(parsed.data.taskId);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  // Same task authority as creation/update. The dashboard and MCP share every launch gate.
+  app.post("/mcp/tasks/:id/dispatch", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    return dispatchSavedTask(c, c.req.param("id"));
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -7226,7 +7307,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Written by the worker (which never touches the DB) and read by the board. `null`
   // rather than a 404 for "no plan yet": the absence of a plan is the ordinary starting
   // state, not an error, and both readers already branch on it.
-  app.get("/api/backlog/plan", (c) => c.json(getBacklogPlan()));
+  // The reasons and note are model prose the board prints, so they are served with every task
+  // id shown as its title (`task-titles.ts`). The stored plan keeps the model's own words; the
+  // worker reads only its ids and logs the note.
+  app.get("/api/backlog/plan", (c) => c.json(taskTitlePresenter(registry).plan(getBacklogPlan())));
   app.put("/api/backlog/plan", async (c) => {
     const parsed = await parseBody(c, BacklogPlanSchema);
     if (!parsed.ok) return parsed.res;
@@ -8448,6 +8532,59 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(setTerminalsConfig(parsed.data));
   });
 
+  // --- Database backups: how many full recovery points of each kind are kept ---
+  //
+  // Saving prunes at once, so a lowered count frees its copies on save.
+  const databaseBackupsUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Database backup service is unavailable",
+  }, 503);
+  // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
+  // and reaches every open dashboard through the same `storage_health` event.
+  app.get("/api/storage", (c) => {
+    if (!storageHealth) {
+      return c.json({
+        error: "service_unavailable" as const,
+        message: "Storage health service is unavailable",
+      }, 503);
+    }
+    const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
+    return c.json(view);
+  });
+  app.put("/api/storage/backups/config", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    let saved;
+    try {
+      saved = setDatabaseBackupsConfig(parsed.data, databaseBackups);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
+    registry.emitStorageConfigChanged();
+    return c.json(saved);
+  });
+
+  // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
+  // It is never refused by the scheduled backoff; the service records its outcome either way.
+  app.post("/api/storage/backups", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    try {
+      const { kind, filename, createdAt } = await databaseBackups.captureManual();
+      return c.json({ kind, filename, createdAt }, 201);
+    } catch (error) {
+      return c.json({
+        error: "backup_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+  });
+
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---
   //
   // Always 200, carrying its own result - the shape `POST /api/ensembles/preview` uses: "your
@@ -9208,10 +9345,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  app.post("/api/tasks/:id/dispatch", async (c) => {
+  async function dispatchSavedTask(c: Context, id: string) {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const id = c.req.param("id");
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
     const r = await tasks.dispatch(id, parsed.data);
@@ -9219,7 +9355,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
-  });
+  }
+
+  app.post("/api/tasks/:id/dispatch", (c) => dispatchSavedTask(c, c.req.param("id")));
 
   app.post("/api/tasks/:id/pipeline/readiness", async (c) => {
     const r = await tasks.recheckPipelineReadiness(c.req.param("id"));

@@ -419,6 +419,16 @@ export async function createRuntime(
   // clear replaces them, rather than closing over the one this launch happened to build.
   let services: AgentSessionServices | null = null;
   const factory: CreateAgentSessionRuntimeFactory = async (target) => {
+    // Keep machine/state resolution out of this adapter's import graph: pure server
+    // policies also import the harness registry before a state home has been selected.
+    const { piExtensionHealthyForDispatch, piExtensionLinkPath } = await import("../../environment/pi-extension.ts");
+    // A custom Mission home owns an extension link outside Pi's normal discovery tree.
+    // Add only the checked integration, and keep Pi's ordinary discovery and trust rules.
+    // Re-entering this factory on /new must load the integration again too.
+    const missionExtension = await piExtensionHealthyForDispatch() ? piExtensionLinkPath() : null;
+    if (!missionExtension && options.missionToolsRequired) {
+      throw new PiSdkError("provider-error", "Pi requires a healthy Mission Control extension for this task. Repair the integration in Settings > Setup before retrying.");
+    }
     const created = await pi.createAgentSessionServices({
       cwd: target.cwd,
       agentDir: target.agentDir,
@@ -432,6 +442,7 @@ export async function createRuntime(
         return trusted;
       } },
       resourceLoaderOptions: {
+        ...(missionExtension ? { additionalExtensionPaths: [missionExtension] } : {}),
         // The operator's standing instructions, through the option `--append-system-prompt`
         // itself routes into (`main.ts` hands the flag straight to this field). Passed on
         // EVERY runtime creation rather than only the first, so the rules survive a clear:

@@ -18,6 +18,7 @@ import type {
   WorkflowDraftGraph,
   WorkflowDraftNode,
 } from "../src/shared/workflow.ts";
+import { taskDefaultWorkflowId } from "../src/shared/task.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
 import { compileStages, projectStages, stageBlockers } from "../src/shared/workflow-stages.ts";
 import type { EvaluationStage, Stage } from "../src/shared/workflow-stages.ts";
@@ -239,7 +240,7 @@ const noMistakesReview = () => {
 
 test("new tasks default to the newest immutable No-Mistakes Review version", () => {
   const builtin = noMistakesReview();
-  assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, builtin.definition.id);
+  assert.equal(taskDefaultWorkflowId("ship", DEFAULT_WORKFLOW_CONFIG.kindWorkflowDefaults), builtin.definition.id);
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,

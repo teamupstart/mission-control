@@ -131,6 +131,9 @@ import type {
   PipelineEngineerRunSnapshot,
 } from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
+import { claimWarningsBlock, type WorktreeClaimWarning } from "./worktrees/claim.ts";
+import { taskOwner } from "./worktrees/owners.ts";
+import { taskClaimWarning, taskProvisioningView } from "./task-claims.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
@@ -393,6 +396,16 @@ export class Dispatcher {
     } = {},
   ) {
     this.worktrees = deps.worktrees ?? new WorktreeManager();
+    // A dispatch waiting on a dependency claim says so on its task: "Installing dependencies",
+    // with the step and how long it has run. Derived from the claim registry on every publish,
+    // and re-sent as the claim starts a step or ends, so it rides the ordinary `task_upsert`.
+    const worktrees = this.worktrees;
+    registry.setTaskProvisioningSource((task) => taskProvisioningView(task, worktrees.runningTaskClaim(task.id)));
+    worktrees.onClaimChange((claim) => {
+      if (claim.owner.kind !== "task") return;
+      const owner = taskOwner(claim.owner.key);
+      if (owner) registry.refreshTaskProvisioning(owner.taskId);
+    });
     this.legacy = deps.legacy ?? new LegacyTreehouseService();
     this.teardown = teardown ?? ((task, legacy, priority) =>
       teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees));
@@ -421,6 +434,8 @@ export class Dispatcher {
       // A new attempt: whatever the last one failed of is no longer this task's state, and a
       // failure of this one writes its own record below.
       launchFailure: null,
+      // A prior attempt's failed claims describe trees this attempt does not have.
+      ...(task.claimWarnings?.length ? { claimWarnings: [] } : {}),
       dispatchedAt: task.dispatchedAt ?? Date.now(),
       // A retry must prove its new provider run instead of inheriting the prior attempt's
       // slug and completing against a projection it did not launch.
@@ -568,13 +583,14 @@ export class Dispatcher {
       // its harness capability does not pay for a network round trip first.
       let wt: DispatchWorkspace = { path: task.repoRoot, branch: null, provider: null, leaseId: null, baseSha: null };
       let extras: Task["extraRepos"] = [];
+      let claimWarnings: Array<{ repoRoot: string; path: string; warning: WorktreeClaimWarning }> = [];
       if (taskHasRepository(task)) {
         backlogRecoveryEligible = true;
         const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
           { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
           baseSha,
         );
-        ({ primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases));
+        ({ primary: wt, extras, claimWarnings } = await this.provisionAll(task, taskId, slug, shortId, bases));
         backlogRecoveryEligible = false;
         // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
         // The collection lands in the SAME patch so every durable native owner becomes visible
@@ -587,6 +603,11 @@ export class Dispatcher {
             worktreeLeaseId: wt.leaseId,
             baseSha: wt.baseSha,
             extraRepos: extras,
+            // The trees were handed over even though a claim failed in them; the task card says
+            // which, beside the note the agent's launch prompt carries.
+            ...(claimWarnings.length > 0
+              ? { claimWarnings: claimWarnings.map(({ repoRoot, warning }) => taskClaimWarning(repoRoot, warning)) }
+              : {}),
           });
         } catch (recordError) {
           const paths = [wt.path, ...extras.flatMap((entry) => entry.worktreePath ?? [])];
@@ -678,10 +699,14 @@ export class Dispatcher {
       // something the operator only said once. `standingInstructionsChannel` is the single
       // reading of which case this is, via the mechanism the composer already recorded.
       const standingPrefix = standing.mechanism === "prompt-prefix" ? standing.text : "";
+      // A failed dependency claim leads, ahead of the manifest: it is context about the trees
+      // themselves, and empty unless a claim actually failed, so every other launch is unchanged.
+      const claimNote = claimWarningsBlock(claimWarnings);
       const planDiscovery = await taskPlanDiscovery(provisioned);
       const inputProblemAtDelivery = taskPlanInputProblem(provisioned);
       if (inputProblemAtDelivery) throw new Error(inputProblemAtDelivery);
       const composeTurnOne = (standingBlock: string) =>
+        claimNote +
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,
@@ -1907,10 +1932,15 @@ export class Dispatcher {
     const mcp = harnessMcp
       ? await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(wt.path, stateHome)
       : null;
+    // Installed-extension harnesses already passed missionToolsAvailability before
+    // provisioning. Pi's inspectMissionMcpTools handshake requires every MISSION_MCP_TOOLS
+    // entry, including plan/scout tools, so this covers every kind without an MCP descriptor.
+    const extensionProvidesMissionTools =
+      capabilitiesFor(task.agent).missionTools?.mechanism === "installed-extension";
     // Same rule the terminal path applies to its argv, asked of the thing that actually
     // reaches the child: a caller passing `missionMcp` declared those tools REQUIRED, and a
     // session that cannot call them would run to completion unable to report it.
-    if (missionMcp && !mcp) {
+    if (missionMcp && !extensionProvidesMissionTools && !mcp) {
       throw new Error(
         `the launch could not carry the required Mission MCP tools ` +
           `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
@@ -1921,7 +1951,7 @@ export class Dispatcher {
     // embedded session reaches our MCP server through the descriptor rather than an argv, but
     // a descriptor pointing at a stale bundle publishes exactly as little. See the sibling
     // guard in `dispatch` for what drifts and why the existence check cannot see it.
-    if (missionMcp) {
+    if (missionMcp && !extensionProvidesMissionTools) {
       const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
         missionMcp.tools,
         mcp,
@@ -2183,6 +2213,11 @@ export class Dispatcher {
     return this.registry.getTask(taskId)?.status === "dispatching";
   }
 
+  /** The condition under which task cancel stops this task's claims, asked as one registers. */
+  private taskCancelled(taskId: string): boolean {
+    return this.registry.getTask(taskId)?.status === "cancelled";
+  }
+
   /**
    * Checkpoint between dispatch steps: if a cancel/complete settled the task in
    * flight, tear down whatever this dispatch already created (it may have run
@@ -2223,7 +2258,12 @@ export class Dispatcher {
     slug: string,
     shortId: string,
     bases: TaskDispatchBases,
-  ): Promise<{ primary: ProvisionedWorktree; extras: TaskRepoEntry[] }> {
+  ): Promise<{
+    primary: ProvisionedWorktree;
+    extras: TaskRepoEntry[];
+    /** Every tree whose dependency claim failed, primary first, for the launch prompt. */
+    claimWarnings: Array<{ repoRoot: string; path: string; warning: WorktreeClaimWarning }>;
+  }> {
     const primary = await provisionWorktree(
       task.repoRoot,
       taskId,
@@ -2232,6 +2272,7 @@ export class Dispatcher {
       bases.primary,
       0,
       this.worktrees,
+      () => this.taskCancelled(taskId),
     );
     const taken: Array<{ repoRoot: string; position: number; wt: ProvisionedWorktree }> = [
       { repoRoot: task.repoRoot, position: 0, wt: primary },
@@ -2239,6 +2280,13 @@ export class Dispatcher {
     const extras: TaskRepoEntry[] = [];
     try {
       for (const [index, entry] of task.extraRepos.entries()) {
+        // A cancel that landed while an earlier tree was claiming stopped that claim; the
+        // next repository's claim must not start in its place. The rest stay unprovisioned,
+        // and `abortIfSettled` tears down what was taken, exactly as for any cancel it sees.
+        if (!this.stillDispatching(taskId)) {
+          extras.push(...task.extraRepos.slice(index));
+          break;
+        }
         // Slot is the entry's position in `task_repos`, offset by one for the primary at
         // slot 0. Its base was frozen alongside every other repository's before this loop
         // started - a pin means nothing in another repository, so a secondary took its own
@@ -2251,6 +2299,7 @@ export class Dispatcher {
           bases.extras[index] ?? null,
           index + 1,
           this.worktrees,
+          () => this.taskCancelled(taskId),
         );
         taken.push({ repoRoot: entry.repoRoot, position: index + 1, wt });
         extras.push({
@@ -2284,7 +2333,10 @@ export class Dispatcher {
       }
       throw err;
     }
-    return { primary, extras };
+    const claimWarnings = taken.flatMap(({ repoRoot, wt }) =>
+      wt.claimWarning ? [{ repoRoot, path: wt.path, warning: wt.claimWarning }] : [],
+    );
+    return { primary, extras, claimWarnings };
   }
 
   private async teardownTaskResources(
@@ -2393,6 +2445,11 @@ export interface ProvisionedWorktree {
    * against to decide whether a repo changed at all.
    */
   baseSha: string | null;
+  /**
+   * The pool's dependency claim ran in this tree and failed. The tree is still handed over;
+   * the agent's launch prompt names the failing step and its output tail.
+   */
+  claimWarning?: WorktreeClaimWarning;
 }
 
 /**
@@ -2590,6 +2647,7 @@ export async function provisionWorktree(
    */
   slot = 0,
   manager?: WorktreeManager,
+  abandoned?: () => boolean,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree", "--is-bare-repository"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -2612,6 +2670,8 @@ export async function provisionWorktree(
       baseSha: exactBase,
       owner: { kind: "task", key: `${taskId}:${slot}` },
       awaitingDomainRecord: true,
+      runClaim: true,
+      ...(abandoned ? { abandoned } : {}),
     });
     if (acquired.outcome === "acquired") {
       return {
@@ -2620,6 +2680,7 @@ export async function provisionWorktree(
         provider: "mission",
         leaseId: acquired.lease.leaseId,
         baseSha: acquired.lease.baseSha,
+        ...(acquired.claimWarning ? { claimWarning: acquired.claimWarning } : {}),
       };
     }
     if (acquired.outcome === "outcomeUnknown") {

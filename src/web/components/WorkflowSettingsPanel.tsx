@@ -60,8 +60,9 @@ const COMMANDS_LIBRARY_HASH = missionRouteHash({ page: "library", shelf: "comman
 //
 // So the two halves are split by how often what is in them CHANGES:
 //
-//   - Left, `.sc-controls`: set-once authorization. The dispatch default, the two switches
-//     that act outside this panel, the Trust grant summary, and where Commands are authored.
+//   - Left, `.sc-controls`: set-once authorization. Judge passes, the two switches that act
+//     outside this panel, the Trust grant summary, and where Commands are authored. The
+//     per-kind dispatch defaults live under Settings › Tasks (`TaskSettingsPanel.tsx`).
 //   - Right, `.wf-readings`: everything carrying a live number - the escalation strip, the
 //     health counters, and the Test Evidence Auditor's rates.
 //
@@ -314,15 +315,12 @@ export function workflowStripLinks(status: WorkflowStatus): ConsoleLink[] {
 export function WorkflowSettingsPanel({
   state,
   workflows = [],
-  foremanEnabled = false,
   onNavigate,
   onOpenRuns,
 }: {
   state: WorkflowSettingsState;
-  /** Live catalog; only active published workflows are valid dispatch defaults. */
+  /** Live catalog, for the Test Evidence Auditor's readiness card. */
   workflows?: WorkflowSummary[];
-  /** The completion detector that turns the default into an automatic run. */
-  foremanEnabled?: boolean;
   /**
    * Deep-link into Trust, for the grant summary that replaced this panel's repo editor.
    * The same prop Foreman, the Inspector and Shipping take for the same reason.
@@ -361,9 +359,6 @@ export function WorkflowSettingsPanel({
   const liveEnabled = config?.liveEnabled ?? false;
   const allowlist = config?.repoAllowlist ?? [];
   const checksEnabled = config?.checksEnabled ?? false;
-  const publishedWorkflows = workflows.filter(
-    (workflow) => workflow.archivedAt === null && workflow.currentVersionId !== null,
-  );
 
   const save = async (next: WorkflowConfig): Promise<void> => {
     setBusy(true);
@@ -643,58 +638,6 @@ export function WorkflowSettingsPanel({
           <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
         </div>
         <div className="sc-controls">
-          <ConsoleCard title="Dispatch default" anchor="workflows/dispatch-default">
-            <p className="settings-hint">
-              Arm every new single-agent dispatch with a published Workflow. The dispatch form
-              shows this choice inline and can override it per task.
-            </p>
-            <div className="wf-default-row">
-              <span className="wf-default-flow" aria-hidden>task → workflow</span>
-              <Tooltip label="Workflow preselected for every new single-agent dispatch">
-                <select
-                  className="field-input wf-default-select"
-                  value={config?.defaultWorkflowId ?? ""}
-                  disabled={!config || busy}
-                  aria-label="Default after-work Workflow for dispatched tasks"
-                  onChange={(event) => {
-                    if (!config) return;
-                    void save({
-                      ...config,
-                      defaultWorkflowId: event.target.value || null,
-                    });
-                  }}
-                >
-                  <option value="">None</option>
-                  {publishedWorkflows.map((workflow) => (
-                    <option key={workflow.id} value={workflow.id}>
-                      {workflow.name} · v{workflow.publishedVersion}
-                    </option>
-                  ))}
-                  {config?.defaultWorkflowId
-                    && !publishedWorkflows.some(
-                      (workflow) => workflow.id === config.defaultWorkflowId,
-                    )
-                    && (
-                      <option value={config.defaultWorkflowId}>
-                        Unavailable Workflow
-                      </option>
-                    )}
-                </select>
-              </Tooltip>
-            </div>
-            {config?.defaultWorkflowId && !foremanEnabled && (
-              <p className="settings-warn wf-default-warning">
-                Foreman is off. Turn it on before dispatching with this default, or choose None
-                in the dispatch form.
-              </p>
-            )}
-            {publishedWorkflows.length === 0 && (
-              <p className="settings-hint wf-settings-empty">
-                Publish a Workflow before choosing a dispatch default.
-              </p>
-            )}
-          </ConsoleCard>
-
           <ConsoleCard title="Judge passes" anchor="workflows/judge-passes">
             <Tooltip label="Keep earned judge passes across repair rounds. Turn off to review every judge again.">
               <label className="wf-judge-passes">

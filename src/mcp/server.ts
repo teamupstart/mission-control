@@ -1,6 +1,6 @@
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
-import { PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import { DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -31,6 +31,7 @@ import {
   readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
+import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
   productIssueClientFromEnvironment,
@@ -238,7 +239,13 @@ async function responseResult(res: Response): Promise<{ status: number; body: un
   }
 }
 
-const server = new McpServer({ name: "mission-control", version: "0.1.0" });
+// Server-level instructions reach every session this server is registered with, dispatched or
+// started by hand, on harnesses that read them. The task tools below repeat the same rule in
+// their own descriptions because tool descriptions reach every harness.
+const server = new McpServer(
+  { name: "mission-control", version: "0.1.0" },
+  { instructions: TASK_REFERENCE_RULE },
+);
 
 server.registerTool("list_workflow_runs", {
   description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
@@ -476,7 +483,8 @@ server.registerTool(
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
       "planPrerequisites wait for artifact publication; planInputs pin the readable Markdown revision. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id, saved configuration, and canonical repository set.",
+      "authority later. Returns the new task id, saved configuration, and canonical repository set. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       ...McpTaskConfigurationSchema.shape,
       title: z
@@ -627,7 +635,8 @@ server.registerTool(
       "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
       "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
       "Each task includes saved configuration, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
-      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot.",
+      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpListTasksSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -653,7 +662,8 @@ server.registerTool(
     description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
       "Includes linked sessionId, prUrl and per-repository repoPrs. " +
       "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
-      "Never launches, modifies or reorders work and does not read session-private state.",
+      "Never launches, modifies or reorders work and does not read session-private state. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpGetTaskSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -682,7 +692,8 @@ server.registerTool(
       "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
       "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
       "absolute local checkout path or unique repository directory name. An empty title derives " +
-      "a new title from the intent. Returns the saved task configuration without launching it.",
+      "a new title from the intent. Returns the saved task configuration without launching it. " +
+      TASK_REFERENCE_RULE,
     inputSchema: {
       taskId: z.string().min(1).describe("Id of the backlog task to edit"),
       ...McpUpdateTaskSchema.shape,
@@ -703,6 +714,36 @@ server.registerTool(
 );
 
 server.registerTool(
+  "dispatch_task",
+  {
+    title: "Dispatch a saved task",
+    description:
+      "Launch a saved Mission Control task by taskId, including work just scheduled with create_task. " +
+      "Uses the dashboard's dispatch rules: dependencies, workflow readiness, task kind, and " +
+      "launch preflights still apply. Disabled backlog work is refused unless overrideDisabled is true. " +
+      "The calling agent may set that override itself; disabled is an autopilot hold, not a human approval boundary. " +
+      "defaultModel fills only an unpinned task's model. Returns the task and its current status; " +
+      "dispatching means launch was accepted, not that the agent is running. Use get_task to check progress. " +
+      "Uses the same daemon-token access as create_task; no Control other sessions opt-in is required.",
+    inputSchema: {
+      taskId: z.string().trim().min(1).describe("Id of the saved task to launch"),
+      ...DispatchBacklogTaskSchema.shape,
+    },
+  },
+  async ({ taskId, ...options }) => {
+    try {
+      const res = await http(`/mcp/tasks/${encodeURIComponent(taskId)}/dispatch`, "POST", options);
+      if (!res.ok) {
+        return textResult(`Could not dispatch task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify(await res.json(), null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
   "delete_task",
   {
     title: "Delete a task",
@@ -710,7 +751,8 @@ server.registerTool(
       "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
       "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
       "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
-      "the task record remains and the error is returned. Returns the deleted task id.",
+      "the task record remains and the error is returned. Returns the deleted task id. " +
+      TASK_REFERENCE_RULE,
     inputSchema: McpDeleteTaskSchema,
   },
   async ({ taskId }) => {

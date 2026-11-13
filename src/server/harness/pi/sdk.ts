@@ -649,6 +649,7 @@ export function piSdkSpec(deps: PiSdkDeps = defaultPiSdkDeps): SdkSpec {
             sessionPath,
             model: ref,
             thinkingLevel: piThinkingLevel(opts.effort),
+            ...(opts.missionToolsRequired ? { missionToolsRequired: true } : {}),
             projectTrust: resolveTrust,
             signal,
             appendSystemPrompt: opts.standingInstructions ? [opts.standingInstructions] : [],

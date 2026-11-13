@@ -4,6 +4,7 @@ import type { ServerEvent } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { unref } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
+import { taskTitlePresenter } from "./task-titles.ts";
 
 const HEARTBEAT_MS = 15000;
 
@@ -54,7 +55,10 @@ export async function streamRegistryEvents(
   });
 
   try {
-    const snapshot = registry.snapshot();
+    // Agent-written lines reach the browser with task ids shown as titles (`task-titles.ts`).
+    // The registry's own objects are never touched; the presenter copies what it changes.
+    const titled = taskTitlePresenter(registry);
+    const snapshot = titled.snapshot(registry.snapshot());
     await stream.writeSSE({
       data: JSON.stringify({ type: "snapshot", ...snapshot } satisfies ServerEvent),
     });
@@ -74,7 +78,7 @@ export async function streamRegistryEvents(
       }
       while (queue.length > 0 && !stream.aborted) {
         const event = queue.shift()!;
-        await stream.writeSSE({ data: JSON.stringify(event) });
+        await stream.writeSSE({ data: JSON.stringify(titled.event(event)) });
       }
     }
   } finally {

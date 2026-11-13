@@ -163,7 +163,7 @@ function seedBaseline(): void {
   setWorkflowPolicy({
     liveEnabled: true,
     repoAllowlist: ["/secret/allowlist"],
-    defaultWorkflowId: "workflow-one",
+    kindWorkflowDefaults: { ship: "workflow-one" },
     retention: { rawEvidenceDays: 14, completedRunDays: 30, maxCompletedRuns: 100 },
     checksEnabled: true,
   });
@@ -299,7 +299,7 @@ function mutateCurrentState(): void {
   setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
-    defaultWorkflowId: null,
+    kindWorkflowDefaults: { ship: null },
     retention: { rawEvidenceDays: 15, completedRunDays: 31, maxCompletedRuns: 101 },
     checksEnabled: false,
   });

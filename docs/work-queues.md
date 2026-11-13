@@ -469,7 +469,10 @@ click **launch new agent** yourself. Dry-run means dry-run.
 tool-less call through the effective Foreman Provider sees every planning
 item's title and intent and returns, for each item, what it must wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
 self-references are dropped, **only the edges that close a cycle** are cut, and any item
-the model forgot is appended unblocked. A cycle would deadlock two cards forever and look
+the model forgot is appended unblocked. The planner is told to name tasks by title in each
+`reason` and the `note`, since the board shows them verbatim and never shows a task id. Any id a
+reply still carries there - a backlog task's, or any other saved task's that an intent mentions -
+is served to the board as that task's title, while the stored plan keeps the reply's own words. A cycle would deadlock two cards forever and look
 exactly like two cards waiting their turn;
 a forgotten item would leave the plan permanently stale, which is an unbounded replanning
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed

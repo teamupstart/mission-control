@@ -1,5 +1,6 @@
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
 import { ModelIdSchema } from "./model-id.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
@@ -3274,12 +3275,144 @@ export const WORKTREES_CONFIG_LIMITS = {
   maxCommonDirectoryBytes: 4096,
   maxSetupArgs: 32,
   maxSetupArgBytes: 4096,
+  maxClaimSteps: 16,
+  maxClaimStepVariables: 32,
+  maxClaimVariableNameBytes: 128,
+  maxClaimFingerprintPaths: 64,
+  maxClaimFingerprintPathBytes: 1024,
+  defaultClaimTimeoutMinutes: 10,
+  maxClaimTimeoutMinutes: 240,
+  maxClaimSeedPaths: 64,
+  maxClaimSeedExcludes: 64,
 } as const;
 
 const WorktreeSetupArgvSchema = z
   .array(z.string().min(1).max(WORKTREES_CONFIG_LIMITS.maxSetupArgBytes))
   .min(1)
   .max(WORKTREES_CONFIG_LIMITS.maxSetupArgs);
+
+/**
+ * Names a claim step may not ask for. `PATH` is the daemon's executable snapshot, and the
+ * `MISSION_`/`FLEET_`/`HARNESS_` prefixes are the daemon's own configuration, its state-home
+ * override and its admission token among them. A step that needs one of those is asking for the
+ * daemon, not for a dependency install.
+ */
+const RESERVED_CLAIM_VARIABLE = /^(PATH|(MISSION|FLEET|HARNESS)_.*)$/;
+
+const WorktreeClaimVariableNameSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimVariableNameBytes)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "a variable name is letters, digits and underscores")
+  .refine((name) => !RESERVED_CLAIM_VARIABLE.test(name), "PATH and MISSION_/FLEET_/HARNESS_ names are reserved");
+
+/**
+ * One glob matched against Git's repository-relative tree paths (`apps/web/package.json`).
+ * Anything that cannot be such a path is refused rather than silently matching nothing: an
+ * absolute path, a `.` or `..` segment, an empty segment, or a backslash.
+ */
+function repositoryRelativeGlob(glob: string): boolean {
+  return !glob.startsWith("/") &&
+    !glob.includes("\\") &&
+    glob.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+const WorktreeClaimFingerprintPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a fingerprint path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
+/**
+ * One seed path: a repository-relative glob matched level by level in a sibling slot, so each
+ * segment is a literal name or a one-level pattern. `**` is refused, because matching it would
+ * mean walking every installed dependency tree to find the paths to clone.
+ */
+const WorktreeClaimSeedPathSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed path is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  )
+  .refine(
+    (glob) => glob.split("/").every((segment) => !segment.includes("**")),
+    "a seed path cannot use **; name each directory level, with * for one level",
+  )
+  // In any letter case: on a case-insensitive disk `.Git` is the worktree's own `.git`, and a
+  // seed must never replace a checkout's Git administrative pointer.
+  .refine(
+    (glob) => glob.split("/").every((segment) => segment.toLowerCase() !== ".git"),
+    "a seed path cannot name .git",
+  );
+
+/** A path removed from a seed's clone before it is placed. `**` is allowed here. */
+const WorktreeClaimSeedExcludeSchema = z
+  .string()
+  .min(1)
+  .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPathBytes)
+  .refine(
+    repositoryRelativeGlob,
+    "a seed exclusion is a repository-relative glob, with no leading slash, empty, . or .. segment, or backslash",
+  );
+
+/**
+ * Which ignored dependency trees a cold slot clones copy-on-write from an idle sibling before
+ * its steps run, and what to leave out of the clone.
+ */
+const WorktreeClaimSeedSchema = z
+  .object({
+    paths: z.array(WorktreeClaimSeedPathSchema).min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedPaths),
+    exclude: z.array(WorktreeClaimSeedExcludeSchema).max(WORKTREES_CONFIG_LIMITS.maxClaimSeedExcludes).default([]),
+  })
+  .strict();
+export type WorktreeClaimSeed = z.infer<typeof WorktreeClaimSeedSchema>;
+
+const WorktreeClaimStepSchema = z
+  .object({
+    /** Operator-authored argv, never a shell string. */
+    argv: WorktreeSetupArgvSchema,
+    /** Variable NAMES this step receives on top of the scrubbed check base. Never values. */
+    env: z
+      .array(WorktreeClaimVariableNameSchema)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimStepVariables)
+      .refine((names) => new Set(names).size === names.length, "a step names each variable once")
+      .default([]),
+  })
+  .strict();
+
+/**
+ * The pool's dependency claim: ordered steps run inside a task lease after reset or add and
+ * setup, and before the final proof. Stored beside `setupArgv`, so settings backups capture it
+ * with the rest of the repository override.
+ */
+export const WorktreeClaimSchema = z
+  .object({
+    steps: z.array(WorktreeClaimStepSchema).min(1).max(WORKTREES_CONFIG_LIMITS.maxClaimSteps),
+    /** Covers the whole claim, every step together. */
+    timeoutMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimTimeoutMinutes)
+      .default(WORKTREES_CONFIG_LIMITS.defaultClaimTimeoutMinutes),
+    /** Repository-relative globs whose blob ids decide whether a slot's claim is current. */
+    fingerprintPaths: z
+      .array(WorktreeClaimFingerprintPathSchema)
+      .max(WORKTREES_CONFIG_LIMITS.maxClaimFingerprintPaths)
+      .default([]),
+    /**
+     * Seeding. Not a fingerprint input: what a seed copies changes how a cold slot gets its
+     * dependencies, never which dependencies a commit needs.
+     */
+    seed: WorktreeClaimSeedSchema.optional(),
+  })
+  .strict();
+export type WorktreeClaim = z.infer<typeof WorktreeClaimSchema>;
 
 const WorktreeRepositoryConfigSchema = z
   .object({
@@ -3292,6 +3425,8 @@ const WorktreeRepositoryConfigSchema = z
       .optional(),
     /** Operator-authored argv. It is never read from a repository-controlled file. */
     setupArgv: WorktreeSetupArgvSchema.optional(),
+    /** Operator-authored dependency claim. Also never read from the repository. */
+    claim: WorktreeClaimSchema.optional(),
   })
   .strict();
 
@@ -3338,6 +3473,8 @@ const WorktreeRepositoryConfigPatchSchema = z
       .optional(),
     /** Null removes an existing operator-authored setup command. */
     setupArgv: WorktreeSetupArgvSchema.nullable().optional(),
+    /** Replaces the whole claim. Null removes it. */
+    claim: WorktreeClaimSchema.nullable().optional(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, "repository patch must change at least one field");
@@ -3445,6 +3582,15 @@ export const WorktreeActionExecuteSchema = z
 
 export const OpenWorktreeSchema = z
   .object({ backend: z.enum(TERMINAL_BACKEND_IDS) })
+  .strict();
+
+/**
+ * Stop the dependency claim running in a slot. `claimId` is the running claim's own id, as the
+ * slot card and the task card were shown it, so a Stop can never land on a later claim in the
+ * same slot.
+ */
+export const StopWorktreeClaimSchema = z
+  .object({ claimId: z.string().min(1).max(128) })
   .strict();
 
 /**
@@ -4098,8 +4244,11 @@ export const UI_CONFIG_DEFAULTS = {
   groupBoardByRepo: true,
   /** Show every state group in the Board drill-in sidebar. */
   boardSidebarAllSessions: false,
+  conversationRailCollapsed: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /** The session rail starts open, as every build before the fold drew it. */
+  sessionRailFolded: false,
   /**
    * Empty, both of them: the bar ships the way its predecessor drew it - every item present
    * and every control at full size, with the measured ladder still shedding labels when the
@@ -4268,6 +4417,7 @@ export const UiConfigSchema = z.object({
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
+  conversationRailCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.conversationRailCollapsed),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *
@@ -4280,6 +4430,17 @@ export const UiConfigSchema = z.object({
    * failing the whole config. An unknown id simply matches no column.
    */
   collapsedBoardColumns: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([]),
+  /**
+   * Whether the session rail beside an open session's detail is folded down to a strip, so
+   * the conversation and terminal take the width it held.
+   *
+   * One flag for every rail the dashboard draws there - the Console's, and the Board drill-in's
+   * in both of its shapes - because they are one surface: the Board's focused column BECOMES
+   * that rail, and a fold that held on one side of the morph and not the other would read as
+   * the rail reopening by itself. Saved, like `collapsedBoardColumns`: how wide someone wants
+   * their reader is a way of working, not a gesture. See `src/web/lib/session-rail.ts`.
+   */
+  sessionRailFolded: z.boolean().default(UI_CONFIG_DEFAULTS.sessionRailFolded),
   /**
    * The topbar's optional items the operator has hidden - the session counts, search, the cost
    * estimate, product feedback, and alerts and away mode.
@@ -7230,6 +7391,20 @@ export const UpdateWorkflowCommandSchema = z.object({
 export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
 
 /**
+ * One row per kind this app launches (`HARNESS_LAUNCHED_TASK_KINDS`). An absent key follows
+ * the kind's built-in, `null` is an explicit None, and a string names a workflow identity.
+ * `pipeline` has no key: Conductor owns what runs after its work.
+ *
+ * Not `.strict()`: the tolerant read below falls back to the COMPLETE default on any parse
+ * failure, so a key a newer build added would otherwise cost the operator their allowlist.
+ */
+const KindWorkflowDefaultsSchema = z.object(
+  Object.fromEntries(
+    HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, z.string().min(1).max(500).nullable().optional()]),
+  ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<z.ZodNullable<z.ZodString>>>,
+);
+
+/**
  * The STRICT policy schema: everything about workflows that is still stored in `app_config`.
  *
  * No `.catch()` anywhere in it, deliberately: this is a write path, and `.catch()` on a
@@ -7242,8 +7417,8 @@ export const WorkflowPolicySchema = z.object({
   skipPassedJudges: z.boolean().default(DEFAULT_WORKFLOW_POLICY.skipPassedJudges),
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
-  defaultWorkflowId: z.string().min(1).max(500).nullable()
-    .default(DEFAULT_WORKFLOW_POLICY.defaultWorkflowId),
+  kindWorkflowDefaults: KindWorkflowDefaultsSchema
+    .default(DEFAULT_WORKFLOW_POLICY.kindWorkflowDefaults),
   retention: z.object({
     rawEvidenceDays: z.number().int().min(1).max(365)
       .default(DEFAULT_WORKFLOW_POLICY.retention.rawEvidenceDays),
@@ -7257,6 +7432,51 @@ export const WorkflowPolicySchema = z.object({
 export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
 
 /**
+ * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.
+ *
+ * The old single `defaultWorkflowId` was Ship's dispatch default. Every save wrote it, so it
+ * cannot tell "chose No-Mistakes" from "never touched it"; both read as the built-in, which
+ * behaves identically and lets an untouched install follow a later change to it. Any other
+ * value, `null` included, becomes an explicit Ship row. A blob that already has the map
+ * keeps it and the legacy key is dropped.
+ *
+ * Read-time, like `keepPreFieldCommandConsent`: a save writes the map, plus the legacy key as
+ * a rollback mirror of the Ship row that this read then drops. Old settings backups restore
+ * through this same schema, so they need no translation of their own.
+ */
+function migrateLegacyDefaultWorkflowId(blob: unknown): unknown {
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return blob;
+  if (!Object.prototype.hasOwnProperty.call(blob, "defaultWorkflowId")) return blob;
+  const { defaultWorkflowId: legacy, ...rest } = blob as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(rest, "kindWorkflowDefaults")) return rest;
+  if (legacy === NO_MISTAKES_REVIEW_WORKFLOW_ID || legacy === undefined) return rest;
+  return { ...rest, kindWorkflowDefaults: { ship: legacy } };
+}
+
+/**
+ * `PUT /api/workflows/config`'s deprecated alias: a `defaultWorkflowId` in the body sets the
+ * Ship row, by the same rule the stored read applies.
+ *
+ * A write that names the old field means to set Ship's default, so it wins over a Ship key
+ * in the same body's map: a client that read the config, changed `defaultWorkflowId` and
+ * wrote it all back would otherwise be a silent no-op. Every other row in the map stands.
+ */
+function aliasLegacyDefaultWorkflowId(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  if (!Object.prototype.hasOwnProperty.call(body, "defaultWorkflowId")) return body;
+  const { defaultWorkflowId: legacy, ...rest } = body as Record<string, unknown>;
+  if (legacy === undefined) return rest;
+  const rows = rest.kindWorkflowDefaults ?? {};
+  // Not a map, so there is no Ship row to set; the schema refuses the body as it stands.
+  if (!rows || typeof rows !== "object" || Array.isArray(rows)) return rest;
+  const { ship: _replaced, ...others } = rows as Record<string, unknown>;
+  return {
+    ...rest,
+    kindWorkflowDefaults: legacy === NO_MISTAKES_REVIEW_WORKFLOW_ID ? others : { ...others, ship: legacy },
+  };
+}
+
+/**
  * Policy PLUS the legacy flat command list: the complete body `PUT /api/workflows/config`
  * still accepts.
  *
@@ -7265,7 +7485,7 @@ export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
  * schema is what lets the existing Settings form keep saving through one request while the
  * durable owner changes underneath it.
  */
-export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
+export const WorkflowConfigSchema = z.preprocess(aliasLegacyDefaultWorkflowId, WorkflowPolicySchema.extend({
   checkCommands: z
     .array(WorkflowCheckCommandSchema)
     .max(WORKFLOW_LIMITS.checkCommands)
@@ -7285,7 +7505,7 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
       { message: "Each repository may configure a slot only once" },
     )
     .default([]),
-});
+}));
 
 /**
  * The policy read back off `app_config`, where a value this build cannot parse must not
@@ -7312,7 +7532,9 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
  * longer takes an operator's configured commands with it: those live in their own table with
  * their own revisions, and a preference this build cannot parse says nothing about them.
  */
-export const StoredWorkflowPolicySchema = WorkflowPolicySchema.catch(DEFAULT_WORKFLOW_POLICY);
+export const StoredWorkflowPolicySchema = z
+  .preprocess(migrateLegacyDefaultWorkflowId, WorkflowPolicySchema)
+  .catch(DEFAULT_WORKFLOW_POLICY);
 
 export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,

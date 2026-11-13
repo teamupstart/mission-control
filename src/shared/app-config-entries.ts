@@ -39,6 +39,11 @@ import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
 import { TelemetryConfigSchema } from "./telemetry.ts";
 import { TelemetryOrganizationRecordSchema } from "./organizations.ts";
+import {
+  DatabaseBackupsConfigSchema,
+  DatabaseBackupStatusSchema,
+  type DatabaseBackupsConfig,
+} from "./database-backups.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -76,6 +81,12 @@ export interface AppConfigFieldsEntry<
   classification: {
     kind: "fields";
     fields: Record<keyof z.output<Schema>, AppConfigValueClass>;
+    /**
+     * Setting fields a backup written by an older build may still carry, which the entry's
+     * own schema migrates on read. A restore accepts them instead of refusing the snapshot
+     * as holding unexpected fields; they are never written back.
+     */
+    legacyFields?: readonly string[];
   };
   backupDomain: SettingsBackupDomainId;
 }
@@ -91,13 +102,16 @@ function fieldsEntry<
   backupDomain: SettingsBackupDomainId,
   fields: Record<keyof z.output<Schema>, AppConfigValueClass>,
   capture: AppConfigCaptureKind = "generic",
+  legacyFields: readonly string[] = [],
 ): AppConfigFieldsEntry<Key, Schema> {
   return {
     key,
     schema,
     snapshotVersion: 1,
     backupDomain,
-    classification: { kind: "fields", fields },
+    classification: legacyFields.length > 0
+      ? { kind: "fields", fields, legacyFields }
+      : { kind: "fields", fields },
     capture,
   };
 }
@@ -193,7 +207,7 @@ const foremanFields = {
 const workflowFields = {
   liveEnabled: "setting",
   repoAllowlist: "setting",
-  defaultWorkflowId: "setting",
+  kindWorkflowDefaults: "setting",
   retention: "setting",
   checksEnabled: "setting",
   skipPassedJudges: "setting",
@@ -272,9 +286,11 @@ const uiFields = {
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
   boardSidebarAllSessions: "setting",
+  conversationRailCollapsed: "setting",
   residentPlacement: "setting",
   residentDrawerPinned: "setting",
   collapsedBoardColumns: "setting",
+  sessionRailFolded: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
@@ -282,6 +298,12 @@ const uiFields = {
 const repoIndexFields = {
   directories: "setting",
 } satisfies Record<keyof RepoIndexConfig, AppConfigValueClass>;
+
+const backupsFields = {
+  scheduledCount: "setting",
+  preMigrationCount: "setting",
+  intervalHours: "setting",
+} satisfies Record<keyof DatabaseBackupsConfig, AppConfigValueClass>;
 
 const ForemanLeaseSchema = z.object({
   workerId: z.string(),
@@ -321,7 +343,9 @@ export const APP_CONFIG_ENTRIES = {
     "foreman-instructions",
   ),
   workflows: fieldsEntry(
-    "workflows", StoredWorkflowPolicySchema, "workflow-policy", workflowFields,
+    "workflows", StoredWorkflowPolicySchema, "workflow-policy", workflowFields, "generic",
+    // Ship's dispatch default before per-kind defaults; migrated by the schema.
+    ["defaultWorkflowId"],
   ),
   taskSources: fieldsEntry(
     "taskSources", TaskSourcesConfigSchema, "task-sources", taskSourcesFields,
@@ -352,6 +376,22 @@ export const APP_CONFIG_ENTRIES = {
     "repoIndex", RepoIndexConfigSchema, "repo-index", repoIndexFields,
   ),
   terminals: fieldsEntry("terminals", TerminalsConfigSchema, "terminals", terminalsFields),
+  /**
+   * Full-database backup counts and cadence. `openDb` reads this row straight through its own
+   * handle before migrations run (`src/server/database-backups/service.ts`), so the key and
+   * schema must stay readable on a database that has not been upgraded yet.
+   */
+  backups: {
+    ...fieldsEntry("backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields),
+    optionalInSnapshot: true,
+  },
+  /**
+   * What the full-database backup captures last did: attempts, successes and the current
+   * failure streak per kind. The daemon writes it through the same raw handle as the backup
+   * service reads `backups`. `operational` with no backup domain: it describes this machine's
+   * disk, and restored onto another installation it would report captures that never ran there.
+   */
+  backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
   /**
    * General telemetry collection and export.
    *

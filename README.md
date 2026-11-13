@@ -122,6 +122,9 @@ change permission posture, interrupt a turn, and drop images directly into the c
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
 
+Chat tasks can delegate separate work with Mission MCP's `create_task` and `dispatch_task`,
+using the same backlog and launch checks as the dashboard while the conversation stays open.
+
 Managed terminal resumes [verify Mission tools before stopping the SDK](docs/harnesses-and-terminals.md#managed-terminal-resumes),
 preserve permission posture and attached checkout scope, and retain their prepared environment
 while a terminal launch is uncertain. Durable task and Workflow handoff continuity remains the

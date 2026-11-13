@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -8,6 +8,33 @@ import { settled } from "../fixtures/settle.ts";
 
 const OPENER = "Help me reason through the session lifecycle";
 const LATER_TURN = "How does eviction change that answer?";
+
+test("a chat agent can schedule backlog work and dispatch a separate task through MCP", async ({ dashboard, daemon }) => {
+  const dialog = await openDispatch(dashboard);
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("chat");
+  await dialog.getByRole("textbox", { name: "What would you like to talk about?" })
+    .fill("E2E_CHAT_SCHEDULE_TASKS: schedule work for later and launch separate work now.");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect.poll(async () => {
+    const tasks = await api<Array<{ title: string; status: string }>>(daemon, "/api/tasks");
+    return tasks.find((task) => task.title === "Work dispatched from chat")?.status;
+  }, { timeout: 60_000 }).toBe("running");
+  const tasks = await api<Array<{ kind: string; title: string; status: string; sessionId: string }>>(daemon, "/api/tasks");
+  expect(tasks.find((task) => task.title === "Work scheduled from chat")?.status).toBe("backlog");
+  const chat = tasks.find((task) => task.kind === "chat")!;
+  expect(chat.status).toBe("running");
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")
+    .filter({ hasText: "E2E_CHAT_SCHEDULE_TASKS" }).click();
+  await expect(dashboard.locator(".console-detail")).toContainText("Scheduled one backlog task and dispatched another from chat");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/chat-task-scheduling", { recursive: true });
+    await dashboard.screenshot({ path: "e2e/.artifacts/chat-task-scheduling/chat-dispatch.png" });
+  }
+});
 
 async function api<T>(
   daemon: DaemonHandle,

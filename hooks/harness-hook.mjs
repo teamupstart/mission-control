@@ -97,6 +97,9 @@ function toIngest(payload, event) {
     prUrl: prUrls?.[0],
     prUrls,
     prCreated: sniffPrCreated(payload, event),
+    // Present only on a hook a sub-agent's own work raised. The daemon keeps such a hook
+    // from moving the parent's state, so a background agent cannot re-arm an idle card.
+    agentId: typeof payload.agent_id === "string" && payload.agent_id ? payload.agent_id : undefined,
   };
 }
 

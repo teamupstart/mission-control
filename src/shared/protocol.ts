@@ -307,6 +307,13 @@ export const HookIngestSchema = z.object({
   //
   // Absent (not `false`) when it doesn't match, and absent on every non-Bash event.
   prCreated: z.boolean().optional(),
+  // The sub-agent this hook fired inside, when it did. Claude stamps `agent_id` on every hook
+  // a sub-agent's own tool calls raise, and those describe the sub-agent, not its parent: a
+  // background agent's `PreToolUse` must not flip an idle parent back to working. The daemon
+  // reads its presence and nothing else, so the value is a free string.
+  //
+  // Optional so a hook installed before this field existed keeps ingesting unchanged.
+  agentId: z.string().min(1).max(200).optional(),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;

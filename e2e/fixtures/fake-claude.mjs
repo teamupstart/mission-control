@@ -285,6 +285,35 @@ const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
  * advisor plan relies on this output; extend it, do not change it.
  */
 const ADVISOR_TURN = "E2E_ADVISOR_CALLS";
+/**
+ * The prompt that launches three BACKGROUND sub-agents and ends its turn with them still
+ * running, in the frame shapes Claude Code's SDK stream uses: an `Agent` tool_use in the
+ * transcript, `background_tasks_changed` (the live set), `task_started` and `task_progress`
+ * per agent, then the turn's `result`. About a second later the third agent finishes
+ * (`task_updated`, `task_notification`, and a level without it).
+ *
+ * Alongside them, everything that must NOT count: a foreground agent that starts and ends
+ * inside the turn, an ambient housekeeping agent, and a background shell. After the result a
+ * sub-agent's own assistant frame arrives, which must not re-arm the idle parent. Matched by
+ * `includes` so a dispatch can carry it in its task text. Later phases rely on this output;
+ * extend it, do not change it.
+ */
+const BACKGROUND_AGENTS_TURN = "E2E_BACKGROUND_AGENTS";
+const BACKGROUND_AGENTS = [
+  { id: "bg-agent-1", type: "Explore", description: "Map every offset-pagination call site", tools: 18, tokens: 41_000, last: "Grep" },
+  { id: "bg-agent-2", type: "general-purpose", description: "Convert billing report queries", tools: 6, tokens: 12_000, last: "Edit" },
+  { id: "bg-agent-3", type: "Explore", description: "Find contract tests for /ledger", tools: 9, tokens: 22_000, last: "Read" },
+];
+const BACKGROUND_AGENTS_FINISH_MS = 1_000;
+/**
+ * Five background agents, all left running: more than the board draws before folding the
+ * rest behind "+N more". The same frame shapes as `BACKGROUND_AGENTS_TURN`, with no extras
+ * and nothing finishing. Distinct by its prefix, so neither sentinel contains the other.
+ */
+const MANY_BACKGROUND_AGENTS_TURN = "E2E_MANY_BACKGROUND_AGENTS";
+const MANY_BACKGROUND_AGENTS = Array.from({ length: 5 }, (_, i) => ({
+  id: `many-agent-${i + 1}`, type: "Explore", description: `Survey area ${i + 1}`, tools: i + 1, tokens: 1_000, last: "Read",
+}));
 const ADVISOR_MODEL = "claude-opus-5-5";
 const ADVISOR_TEXT = "E2E advisor guidance: check the empty input before the loop.";
 
@@ -1411,6 +1440,108 @@ function answerAuthenticationFailure() {
   });
 }
 
+/** The `MANY_BACKGROUND_AGENTS_TURN` script: launch five, end the turn, leave them running. */
+function runManyBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  appendTurn("assistant", [
+    { type: "text", text: "Launching many background agents" },
+    ...MANY_BACKGROUND_AGENTS.map((agent) => ({
+      type: "tool_use", id: `toolu_${agent.id}`, name: "Agent",
+      input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+    })),
+  ]);
+  emit({
+    type: "assistant", session_id: SESSION_ID, parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching many background agents" }] },
+  });
+  system("background_tasks_changed", {
+    tasks: MANY_BACKGROUND_AGENTS.map((agent) => ({
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+    })),
+  });
+  for (const agent of MANY_BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: `toolu_${agent.id}`,
+    });
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 1_000 },
+    });
+  }
+  answer([prompt]);
+}
+
+/** The `BACKGROUND_AGENTS_TURN` script. See that constant for what it proves. */
+function runBackgroundAgents(prompt) {
+  const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
+  const toolUse = (agent) => `toolu_${agent.id}`;
+  const levelEntry = (agent) => ({
+    task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+  });
+  const shell = { task_id: "bg-shell-1", task_type: "local_bash", description: "npm run watch" };
+  const ambient = { ...levelEntry({ id: "bg-ambient-1", type: "general-purpose", description: "Housekeeping" }), ambient: true };
+
+  appendTurn("assistant", [
+    { type: "text", text: "Launching background agents" },
+    ...BACKGROUND_AGENTS.map((agent) => ({
+      type: "tool_use",
+      id: toolUse(agent),
+      name: "Agent",
+      input: { subagent_type: agent.type, description: agent.description, prompt: agent.description, run_in_background: true },
+    })),
+  ]);
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "Launching background agents" }] },
+  });
+
+  // A foreground agent: it blocks the turn, so it never counts.
+  system("task_started", {
+    task_id: "fg-agent-1", task_type: "local_agent", subagent_type: "Plan", description: "Foreground planning",
+    is_backgrounded: false, tool_use_id: "toolu_fg-agent-1",
+  });
+  system("task_notification", { task_id: "fg-agent-1", status: "completed", output_file: "", summary: "planned" });
+
+  // The live set joins before each task_started, as the real CLI orders it.
+  system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.map(levelEntry), shell, ambient] });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_started", {
+      task_id: agent.id, task_type: "local_agent", subagent_type: agent.type, description: agent.description,
+      is_backgrounded: true, spawn_depth: 1, tool_use_id: toolUse(agent),
+    });
+  }
+  system("task_started", { task_id: shell.task_id, task_type: "local_bash", description: shell.description, is_backgrounded: true });
+  system("task_started", { ...ambient, is_backgrounded: true, skip_transcript: true });
+  for (const agent of BACKGROUND_AGENTS) {
+    system("task_progress", {
+      task_id: agent.id, description: agent.description, subagent_type: agent.type, last_tool_name: agent.last,
+      usage: { total_tokens: agent.tokens, tool_uses: agent.tools, duration_ms: 5_000 },
+    });
+  }
+  answer([prompt]);
+
+  // A background agent keeps talking after the parent's turn ended.
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: toolUse(BACKGROUND_AGENTS[0]),
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_inner_grep", name: "Grep", input: { pattern: "offset" } }] },
+  });
+
+  setTimeout(() => {
+    const done = BACKGROUND_AGENTS[2];
+    system("task_updated", { task_id: done.id, patch: { status: "completed", end_time: Date.now() } });
+    system("task_notification", {
+      task_id: done.id, tool_use_id: toolUse(done), status: "completed", output_file: "", summary: "Found 4 contract tests",
+      usage: { total_tokens: done.tokens + 1_000, tool_uses: done.tools + 1, duration_ms: 6_000 },
+    });
+    system("background_tasks_changed", { tasks: [...BACKGROUND_AGENTS.slice(0, 2).map(levelEntry), shell, ambient] });
+  }, BACKGROUND_AGENTS_FINISH_MS);
+}
+
 /** Run the fake scout's file write and real submission while its SDK turn stays open. */
 function beginScoutTurn(prompt) {
   beginHeldTurn(runScout(prompt));
@@ -1847,6 +1978,15 @@ rl.on("line", (line) => {
         { type: "tool_use", id: `run-${turn}-c`, name: "Read", input: { file_path: "src/server/registry.ts" } },
       ]);
       answer([prompt]);
+      return;
+    }
+
+    if (prompt.includes(MANY_BACKGROUND_AGENTS_TURN)) {
+      runManyBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(BACKGROUND_AGENTS_TURN)) {
+      runBackgroundAgents(prompt);
       return;
     }
 

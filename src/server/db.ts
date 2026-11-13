@@ -230,7 +230,9 @@ let db: DatabaseSync | undefined;
 // 28: dependency claims (`worktree_slots.deps_state`, `deps_fingerprint`, `deps_fingerprint_sha`,
 //     `deps_claimed_at`, `deps_last_error`, and `tasks.claim_warnings`), nullable with no
 //     backfill: no slot was claimed and no task warned before these existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 28;
+// 29: resident instruction proposals (`resident_instruction_proposals`), a new empty table: no
+//     resident proposed a change to its own instructions before this existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 29;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3478,6 +3480,27 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_iterations", "conversation_key", "TEXT");
   addColumn(d, "resident_iterations", "message_id", "TEXT");
   addColumn(d, "resident_iterations", "message_ts", "INTEGER");
+  // A resident's proposed instruction changes, bound to the review that shows them. The review
+  // is what the human answers; this row is what the answer applies, so a proposal survives a
+  // daemon restart exactly as long as its review does. `outcome` is written in the same
+  // transaction as the review's resolution and never rewritten.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS resident_instruction_proposals (
+      review_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      profile_revision INTEGER NOT NULL,
+      persona_id TEXT,
+      persona_revision INTEGER,
+      proposal TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      outcome TEXT,
+      settled_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_resident_instruction_proposals_profile
+      ON resident_instruction_proposals(profile_id, created_at);
+  `);
 
   // Nullable with no default: a run launched before these existed reads as never granted.
   addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");

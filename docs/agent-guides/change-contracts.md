@@ -308,8 +308,13 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   (`RESIDENT_LAUNCH_STATES` in `src/shared/residents.ts`, written into
   `resident_runs.launch_state`), the profile section keys (`RESIDENT_PROFILE_SECTIONS`, the JSON
   keys every stored revision carries), the `resident-profiles` and `resident-mcp-servers`
-  settings-backup domains, the MCP server reference sources (`global`, `custom`) and the secret
-  field kinds (`env:`, `header:`, `query:`). Append, never rename or reorder. See
+  settings-backup domains, the MCP server reference sources (`global`, `custom`), the secret
+  field kinds (`env:`, `header:`, `query:`), and an instruction proposal's vocabulary in
+  `src/shared/resident-instructions.ts`: its targets (`RESIDENT_INSTRUCTION_TARGETS`) and its
+  outcome statuses (`RESIDENT_INSTRUCTION_OUTCOME_STATUSES`), stored in
+  `resident_instruction_proposals`. Its answer is read through the `request_input` decision and
+  option ids (`REQUEST_INPUT_DECISION_ID`, `o<n>` in `src/shared/request-input.ts`), which every
+  answered `request_input` review row stores. Append, never rename or reorder. See
   [Resident profiles](#resident-profiles)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
@@ -1341,6 +1346,16 @@ These rules hold across phases:
    sentinel, so an operator profile that already held the name keeps it, and both are listed.
    Every surface that offers profiles as choices names a built-in through
    `residentProfileChoiceName`, so the two stay distinguishable. Nothing hides a built-in.
+
+8. **Only an operator's answer edits a profile or Persona from a resident's conversation.**
+   `propose_resident_instruction_changes` asks a `request_input` question, built by
+   `requestInputReview` exactly as the `request_input` tool builds one, and stores the proposal
+   beside that review; it writes nothing. `ResidentInstructionChanges.resolution` is the one path that applies one, and
+   only for a `human` answer, through `updateResidentProfile` and the Persona store's
+   compare-and-set against the revisions the proposal was made against, in the review's own
+   transaction. Foreman and `session:` actors are refused before the answer settles. Never add an
+   agent-facing route or tool that writes `resident_profile_revisions` or a Persona's guidance
+   directly; a live run still reads only its pinned revision (rule 2).
 
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null

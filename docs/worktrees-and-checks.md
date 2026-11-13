@@ -569,7 +569,16 @@ The operations have deliberately narrow meanings:
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
-  only states whose result is positively proven and keeps uncertainty quarantined.
+  only states whose result is positively proven and keeps uncertainty quarantined. A quarantined
+  slot returns to available only when its pool identity, marker, exact path, Git registration,
+  repository, cleanliness, merge into the observed remote default, and empty process occupancy
+  are proven again. It must carry no active lease identity, and any last-released lease must be
+  complete and no longer referenced by its owner. Startup and maintenance use the same recovery.
+  Recovery clears the old quarantine diagnostic without resetting or deleting files, preserves
+  release history, and leaves active, dirty, unmerged, missing, or unverifiable slots protected.
+  After **Reconcile**, use **Preview safe prune** to review recovered slots; removal still checks
+  safety again at execution. A new blocker appears in the pool's reconciliation diagnostic while
+  the slot retains its original quarantine reason until recovery succeeds.
 - **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
   a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
   every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly

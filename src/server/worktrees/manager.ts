@@ -2177,7 +2177,64 @@ export class WorktreeManager {
         }
 
         if (slot.state === "quarantined") {
+          // Quarantine records failed proof, not permanent ineligibility. Re-prove every
+          // boundary before making an unleased slot available; never release a domain lease
+          // here, reset files, or infer safety from the old reason or inventory projection.
           this.store.updateObserved(slot.id, inspection.value.head, slot.lastError, now);
+          const active = activeReference(slot);
+          if (active !== null) {
+            reject(active === "invalid"
+              ? "quarantined slot has incomplete active lease identity"
+              : "quarantined slot still carries active lease identity");
+            continue;
+          }
+          const prior = lastReference(slot);
+          if (prior === "invalid") {
+            reject("last-released lease identity is incomplete");
+            continue;
+          }
+          if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
+            reject("quarantined slot is occupied or dirty");
+            continue;
+          }
+          try {
+            if (prior && await this.ownerReferenced(prior)) {
+              reject("domain owner still references this lease");
+              continue;
+            }
+          } catch (error) {
+            reject("last-released domain ownership is unknown", String(error));
+            continue;
+          }
+          try {
+            const target = await this.deps.git.observedDefaultSha(identity);
+            if (!target.ok) {
+              reject("remote default branch is unknown", target.reason);
+              continue;
+            }
+            const merged = await this.deps.git.mergedInto(slot.path, target.value);
+            if (!merged.ok || !merged.value) {
+              reject(merged.ok
+                ? "slot HEAD is not merged into the observed remote default"
+                : "slot merge relationship is unknown", merged.ok ? null : merged.reason);
+              continue;
+            }
+          } catch (error) {
+            reject("slot merge relationship is unknown", String(error));
+            continue;
+          }
+          // The pool scan predates the slot lock and Git reads. Check again at the transition,
+          // using the same observation serialization as return and removal.
+          const blocker = await this.occupancyBlocker(slot.path);
+          if (blocker) {
+            reject(blocker);
+            continue;
+          }
+          if (this.store.recoverQuarantined(slot.id, slot.version, inspection.value.head, now)) {
+            this.publish();
+          } else {
+            errors.push(`slot ${slot.ordinal}: quarantine recovery raced`);
+          }
           continue;
         }
         if (slot.state === "provisioning") {

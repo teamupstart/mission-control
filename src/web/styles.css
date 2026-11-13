@@ -39116,6 +39116,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-tag-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .resident-loop-tag { font-size: 10.5px; line-height: 16px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
 .resident-loop-tag.is-paused { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+.resident-loop-tag.is-queued { color: var(--working); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); }
 .resident-loop-reason { color: var(--muted); }
 .resident-loop-tags > .resident-compaction-layers { margin-top: 0; color: var(--dim); }
 .resident-loop-tags > .resident-compaction-layers b { font-weight: 550; color: var(--muted); }

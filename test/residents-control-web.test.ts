@@ -33,7 +33,7 @@ function run(controlOtherSessions: boolean): ResidentRunSummary {
     launchState: "launched",
     personaName: "Fleet Triage",
     compaction: { betweenIterations: true, nativeBackstop: false },
-    loopState: "waiting", iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    loopState: "waiting", iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
     settings: { identity: settings.identity, board: settings.board, authority: settings.authority, loop: settings.loop },
     createdAt: 1,
   };
@@ -64,7 +64,7 @@ test("Control other sessions is off by default, and a revision from before it re
 
 test("a launched run says whether its grant applied, only when its pinned revision asks", () => {
   const base = {
-    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
     id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", workspaceDir: null,
     launchState: "launched" as const,
     launchError: null, persona: { personaId: "x", name: "X", guidanceMarkdown: "" }, runInstructions: "",
@@ -84,7 +84,7 @@ test("a launched run says whether its grant applied, only when its pinned revisi
 
 test("a launch surface reports a pending grant always, and an ungranted run unless it said so before launch", () => {
   const base = {
-    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
     id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", workspaceDir: null,
     launchState: "launched" as const, launchError: null, persona: { personaId: "x", name: "X", guidanceMarkdown: "" },
     runInstructions: "", createdAt: 1, endedAt: null,
@@ -118,6 +118,15 @@ test("the band says control granted, or control not granted beside the existing 
   const off = residentSessionMark(run(false), null);
   assert.doesNotMatch(renderToStaticMarkup(createElement(ResidentBand, { mark: off, session: session(false) })), /control (not )?granted/);
   assert.match(renderToStaticMarkup(createElement(ResidentBand, { mark: off, session: session(true) })), />control granted</);
+});
+
+test("a queued Run now reads as queued and offers Cancel queued run in place of Run now", () => {
+  const idle = renderToStaticMarkup(createElement(ResidentBand, { mark: residentSessionMark(run(false), null), session: session(false) }));
+  assert.match(idle, />Run now</); assert.doesNotMatch(idle, /run queued|Cancel queued run/);
+  const queued = renderToStaticMarkup(createElement(ResidentBand, { mark: residentSessionMark({ ...run(false), runRequestedAt: 5 }, null), session: session(false) }));
+  assert.match(queued, /run queued/);
+  assert.match(queued, />Cancel queued run</);
+  assert.doesNotMatch(queued, />Run now</);
 });
 
 test("the dock's live card carries the same status, as a footer badge, beside the same menu", () => {

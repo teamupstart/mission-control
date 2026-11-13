@@ -64,7 +64,7 @@ export function backlogFacetCount(filter: BacklogFilter): number {
 /**
  * Everything a backlog card says about its task, as searchable text: the title, the intent,
  * the labels, every repository it spans, the agent, the kind, the priority, the model and
- * effort it will dispatch with, its status, its autopilot switch ("autopilot on"/"autopilot off") and the
+ * effort it will dispatch with, its status, its autopilot switch ("on"/"off", and the single-word "autopilot-on"/"autopilot-off") and the
  * "autopilot will skip this" line a parked card prints, and how long ago it was added. Repositories
  * match by their name and by the full path the card's repository tooltip shows.
  */
@@ -84,8 +84,11 @@ export function backlogSearchFields(task: Task): (string | null | undefined)[] {
     task.model,
     task.effort,
     task.status,
-    // The switch prints a bare ON/OFF; labelled here so "autopilot on" can find enabled cards.
-    task.enabled ? "autopilot on" : "autopilot off",
+    // The switch prints a bare ON/OFF. Indexed as ONE hyphenated word, because query words
+    // match independently: a two-word "autopilot on" would let "on" land in any other field
+    // ("mission-control", "production"), so a parked card would answer "autopilot on" too.
+    // Neither token is a substring of the other, and neither occurs in ordinary card text.
+    task.enabled ? "on\nautopilot-on" : "off\nautopilot-off",
     task.enabled ? null : "autopilot will skip this",
     relativeTime(task.createdAt),
   ];

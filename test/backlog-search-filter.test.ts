@@ -72,11 +72,24 @@ test("search matches the autopilot switch and a parked card's skip line", () => 
   const live = mkTask({ title: "Live", enabled: true });
 
   assert.equal(matchesBacklogSearch(parked, "off"), true);
-  assert.equal(matchesBacklogSearch(parked, "autopilot off"), true);
-  assert.equal(matchesBacklogSearch(live, "autopilot on"), true);
-  assert.equal(matchesBacklogSearch(parked, "autopilot on"), false, "a parked card is not autopilot on");
+  assert.equal(matchesBacklogSearch(parked, "autopilot-off"), true);
+  assert.equal(matchesBacklogSearch(live, "autopilot-on"), true);
+  assert.equal(matchesBacklogSearch(live, "autopilot-off"), false);
+  assert.equal(matchesBacklogSearch(parked, "autopilot-on"), false, "a parked card is not autopilot-on");
   assert.equal(matchesBacklogSearch(parked, "autopilot will skip"), true);
   assert.equal(matchesBacklogSearch(live, "skip"), false, "only a parked card prints the skip line");
+});
+
+test("a parked card whose other fields contain \"on\" does not answer autopilot-on", () => {
+  const parked = mkTask({
+    title: "Production deploy",
+    labels: ["production"],
+    repoRoot: "/w/mission-control",
+    enabled: false,
+  });
+
+  assert.equal(matchesBacklogSearch(parked, "autopilot-on"), false);
+  assert.equal(matchesBacklogSearch(parked, "autopilot-off"), true);
 });
 
 test("facets OR within a facet and AND across facets", () => {

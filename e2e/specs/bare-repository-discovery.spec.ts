@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { openRepositorySetup } from "../fixtures/setup-panel.ts";
 
 test.use({ daemonEnv: { MC_E2E_USE_REPO_INDEX_DEFAULTS: "1" } });
 
@@ -17,7 +18,7 @@ test("deep bare and ordinary clones appear in Settings and can be added to Trust
   execFileSync("git", ["clone", "--bare", "-q", daemon.repo, invalidBare]);
   writeFileSync(join(invalidBare, "config"), "[core]\n bare = invalid\n");
 
-  await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+  await openRepositorySetup(dashboard, daemon.baseURL);
   await dashboard.getByRole("button", { name: "Rescan now" }).click();
   const root = dashboard.locator(".ri-row").filter({ has: dashboard.getByText("~/workspace", { exact: true }) });
   await expect(root).toContainText("4 repositories");

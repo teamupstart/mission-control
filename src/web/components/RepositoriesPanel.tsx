@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { IndexedDirectoryView } from "@shared/repo-index.ts";
+import { SETUP_REPOSITORY_ANCHORS } from "@shared/setup-catalog.ts";
 import type { RepoIndexState } from "../useRepoIndex.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -71,22 +72,40 @@ function scanAge(scannedAt: number): string {
   return `${minutes}m ago`;
 }
 
-/** Which directories the daemon walks for repository pickers and name resolution. */
-export function RepositoriesPanel({ state }: { state: RepoIndexState }): React.JSX.Element {
+/**
+ * Which directories the daemon walks for repository pickers and name resolution.
+ *
+ * Rendered inside Setup's Repositories family, under the row that requires at least one
+ * detected repository. `onChanged` runs after every write the daemon accepted, so that row
+ * re-reads the index instead of reporting the count from before the edit that repaired it.
+ */
+export function RepositoriesPanel({
+  state,
+  onChanged,
+}: {
+  state: RepoIndexState;
+  onChanged?: () => void;
+}): React.JSX.Element {
   const { view, error, writing } = state;
   const [path, setPath] = useState("");
   const environment = view?.managedBy === "environment";
   const editable = view !== null && !environment;
 
+  const settle = async (write: Promise<boolean>): Promise<boolean> => {
+    const ok = await write;
+    if (ok) onChanged?.();
+    return ok;
+  };
+
   const add = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault();
     const next = path.trim();
     if (!next) return;
-    if (await state.addDirectory(next)) setPath("");
+    if (await settle(state.addDirectory(next))) setPath("");
   };
 
   return (
-    <section className="settings-section ri-panel">
+    <div className="ri-panel setup-repositories">
       <p className="settings-hint settings-blurb">
         The directories this daemon walks looking for git checkouts. The dispatch repo picker,
         tasks filed by repository name through MCP, and Conductor install candidates all read
@@ -110,7 +129,7 @@ export function RepositoriesPanel({ state }: { state: RepoIndexState }): React.J
         </p>
       </div>
 
-      <div data-anchor="repositories/directories">
+      <div data-anchor={SETUP_REPOSITORY_ANCHORS.directories}>
         {view === null ? (
           <div className="ri-empty">
             <strong>Reading this machine...</strong>
@@ -132,7 +151,7 @@ export function RepositoriesPanel({ state }: { state: RepoIndexState }): React.J
                 row={row}
                 environment={environment}
                 disabled={writing}
-                onRemove={editable ? () => void state.removeDirectory(row.path) : undefined}
+                onRemove={editable ? () => void settle(state.removeDirectory(row.path)) : undefined}
               />
             ))}
           </ul>
@@ -161,7 +180,7 @@ export function RepositoriesPanel({ state }: { state: RepoIndexState }): React.J
             value={path}
             placeholder="~/another-directory"
             aria-label="Directory to index"
-            data-anchor="repositories/add"
+            data-anchor={SETUP_REPOSITORY_ANCHORS.add}
             disabled={!editable || writing}
             onChange={(event) => setPath(event.target.value)}
           />
@@ -187,16 +206,16 @@ export function RepositoriesPanel({ state }: { state: RepoIndexState }): React.J
           <button
             className="btn"
             type="button"
-            data-anchor="repositories/rescan"
+            data-anchor={SETUP_REPOSITORY_ANCHORS.rescan}
             disabled={view === null || writing}
-            onClick={() => void state.rescan()}
+            onClick={() => void settle(state.rescan())}
           >
             Rescan now
           </button>
         </Tooltip>
         {editable && view.defaultsMissing.length > 0 && (
           <Tooltip label="Add back missing seeded directories without removing your own">
-            <button className="btn" type="button" disabled={writing} onClick={() => void state.restoreDefaults()}>
+            <button className="btn" type="button" disabled={writing} onClick={() => void settle(state.restoreDefaults())}>
               Restore defaults
             </button>
           </Tooltip>
@@ -218,6 +237,6 @@ export function RepositoriesPanel({ state }: { state: RepoIndexState }): React.J
           </span>
         </p>
       )}
-    </section>
+    </div>
   );
 }

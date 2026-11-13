@@ -695,3 +695,34 @@ for (const change of ["HEAD", "dirty work", "unknown inspection", "thrown inspec
     if (change === "dirty work") assert.equal(existsSync(`${lease.path}/late.txt`), true);
   });
 }
+
+test("quarantine recovery proves the inspected commit even when HEAD changes away and back", async () => {
+  const repository = repo("mission-reconcile-pinned-merge-");
+  const git = new NativeWorktreeGit();
+  const manager = harness({ git });
+  const lease = acquired(await manager.acquire({
+    repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "pinned-merge" },
+  }));
+  assert.equal((await manager.release(lease)).outcome, "released");
+  gitIn(lease.path, "commit", "--allow-empty", "-qm", "unmerged commit A");
+  const unmerged = gitIn(lease.path, "rev-parse", "HEAD");
+  const slot = manager.store.slot(lease.slotId)!;
+  manager.store.quarantine(slot.id, "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+  const mergedInto = git.mergedInto.bind(git);
+  git.mergedInto = async (...args) => {
+    // Inspection saw A. A concurrent checkout temporarily exposes merged B while the
+    // ancestry command runs, then puts A back before the final inspection can see it.
+    gitIn(lease.path, "checkout", "--detach", repository.sha);
+    try {
+      return await mergedInto(...args);
+    } finally {
+      gitIn(lease.path, "checkout", "--detach", unmerged);
+    }
+  };
+
+  await manager.reconcile();
+  assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
+  assert.match(manager.store.pool(lease.poolId)?.reconciliationError ?? "", /not merged/);
+  assert.equal(gitIn(lease.path, "rev-parse", "HEAD"), unmerged);
+});

@@ -2212,7 +2212,7 @@ export class WorktreeManager {
               reject("remote default branch is unknown", target.reason);
               continue;
             }
-            const merged = await this.deps.git.mergedInto(slot.path, target.value);
+            const merged = await this.deps.git.mergedInto(slot.path, target.value, inspection.value.head);
             if (!merged.ok || !merged.value) {
               reject(merged.ok
                 ? "slot HEAD is not merged into the observed remote default"

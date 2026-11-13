@@ -32,12 +32,10 @@ function agentState(status: CollabAgentStatus): SubagentState | null {
 export class CodexSubagents {
   private readonly agents = new Map<string, Tracked>();
   private readonly waits = new Map<string, Wait>();
-  private finishedFolded = 0;
 
   clear(): void {
     this.agents.clear();
     this.waits.clear();
-    this.finishedFolded = 0;
   }
 
   /** Called only after the driver has learned the frame's parent edges. */
@@ -96,7 +94,6 @@ export class CodexSubagents {
       toolUses: null, tokens: null, lastTool: null, summary: null, launchTurnId: null,
     };
     const restarting = prior && prior.state !== "running" && patch.state === "running";
-    if (restarting && known?.counted) this.finishedFolded--;
     this.agents.set(id, {
       entry: {
         ...entry,
@@ -124,10 +121,8 @@ export class CodexSubagents {
       if (!t || t.folded || t.entry.state === "running") continue;
       t.folded = true;
       t.counted = true;
-      this.finishedFolded++;
     }
     if (![...this.agents.values()].some((t) => t.entry.state === "running")) {
-      this.finishedFolded = 0;
       for (const t of this.agents.values()) t.counted = false;
     }
   }
@@ -144,10 +139,12 @@ export class CodexSubagents {
       if (t.entry.state !== "running") {
         t.folded = true;
         t.counted = true;
-        this.finishedFolded++;
       }
     }
     const agents = visible.slice(0, SUBAGENT_LIMIT).map((t) => t.entry);
-    return agents.length || this.finishedFolded ? { agents, finishedFolded: this.finishedFolded } : null;
+    // Count only retained identities: cap eviction and ownership pruning must forget their
+    // contribution too, or a later frame can list the same child as both running and folded.
+    const finishedFolded = [...this.agents.values()].filter((t) => t.counted).length;
+    return agents.length || finishedFolded ? { agents, finishedFolded } : null;
   }
 }

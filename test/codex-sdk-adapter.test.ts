@@ -2307,3 +2307,30 @@ test("a resumed Codex identity whose folded count was cleared cannot subtract an
   assert.equal(children.summary()?.finishedFolded, 0);
   assert.equal(children.summary()?.agents.find((a) => a.id === "recent")?.summary, "new run detail");
 });
+
+for (const removal of ["cap eviction", "ownership pruning"] as const) {
+  test(`Codex ${removal} removes only the forgotten child's folded contribution`, () => {
+    const children = new CodexSubagents();
+    const report = (id: string, status: string) => children.observe("item/completed",
+      collabFrame(`report-${id}`, [id], { tool: "resumeAgent", agentsStates: { [id]: { status, message: null } } }),
+      () => true, 1);
+    report("forgotten", "completed");
+    report("retained", "completed");
+    report("running", "running");
+    children.fold(children.finishedIds());
+    assert.equal(children.summary()?.finishedFolded, 2);
+
+    if (removal === "cap eviction") {
+      for (let i = 0; i < 510; i++) report(`extra-${i}`, "running");
+    } else {
+      children.observe("unrelated", {}, (id) => id !== "forgotten", 2);
+    }
+    assert.equal(children.summary()?.finishedFolded, 1, "the retained child's finish still counts");
+    // Drop cap-test filler so the returning child's row fits inside the wire limit.
+    children.observe("unrelated", {}, (id) => id === "retained" || id === "running", 3);
+    report("forgotten", "running");
+    const summary = children.summary()!;
+    assert.equal(summary.agents.find((a) => a.id === "forgotten")?.state, "running");
+    assert.equal(summary.finishedFolded, 1, "the returning child is not counted as both running and finished");
+  });
+}

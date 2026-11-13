@@ -21,7 +21,7 @@ const { GRILL_SKILL } = await import("../src/shared/skills.ts");
 const { SkillsConfigPatchSchema } = await import("../src/shared/protocol.ts");
 const { PLAN_APPENDIX_MARKER, planContractAppendix } = await import("../src/server/plans/prompt.ts");
 const { PLAN_DECISIONS_TOOL } = await import("../src/server/plans/tools.ts");
-const { kindMissionMcpRequirement } = await import("../src/server/mission-mcp.ts");
+const { grillFirstMissionMcpTools, kindMissionMcpRequirement } = await import("../src/server/mission-mcp.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { GRILL_FIRST_HEADING, grillAction, grillFirstAppendix, grillFirstDispatchBlock } =
   await import("../src/server/grill-first.ts");
@@ -56,10 +56,16 @@ test("Grill is a built-in session action, editable in place, requiring the grill
   assert.equal(grill.requiredSkillId, GRILL_SKILL);
   assert.deepEqual(grill.completion, { kind: "session_turn" });
   assert.equal(grill.editable, true);
+  assert.equal(grill.workflowStage, false, "never a Workflow stage, a property apart from editability");
   assert.match(grill.promptMarkdown, /`request_plan_decisions` form/);
   assert.match(grill.promptMarkdown, /may open with nothing selected/);
   assert.match(grill.promptMarkdown, /A dismissed\nround ends the work/);
   assert.equal(BUILTIN_SESSION_ACTIONS.find((action) => action.id === RETRO_SESSION_ACTION_ID)?.editable, undefined);
+  assert.deepEqual(
+    BUILTIN_SESSION_ACTIONS.filter((action) => action.workflowStage === false).map((action) => action.id),
+    [GRILL_SESSION_ACTION_ID],
+    "Grill is the only built-in kept off Workflow stages",
+  );
 });
 
 test("every kind this app launches offers it, and only a task pinned on grills", () => {
@@ -122,6 +128,12 @@ test("a grill-first launch pre-approves request_plan_decisions, whatever its kin
   const ship = mkTask({ kind: "ship", grillFirst: true });
   assert.deepEqual(kindMissionMcpRequirement(ship, null)?.tools, [PLAN_DECISIONS_TOOL]);
   assert.equal(kindMissionMcpRequirement(mkTask({ kind: "ship", grillFirst: false }), null), null, "off, unchanged");
+  // One rule for both launch paths: the fresh launch's requirement and a live assignment's probe
+  // both read it, so changing the interview's tool changes it for each.
+  for (const kind of GRILL_FIRST_TASK_KINDS) {
+    assert.deepEqual(grillFirstMissionMcpTools(mkTask({ kind, grillFirst: true })), [PLAN_DECISIONS_TOOL], kind);
+    assert.deepEqual(grillFirstMissionMcpTools(mkTask({ kind, grillFirst: false })), [], kind);
+  }
 });
 
 test("the per-kind defaults a request may set are bounded by the kinds that offer it", () => {

@@ -1436,6 +1436,13 @@ export interface SessionAction {
    * operator chose. Absent on every other action.
    */
   editable?: boolean;
+  /**
+   * False for an action a Workflow stage may never run: the Grill action, which runs ahead of a
+   * task through Grill me first and, bound after the work, would tell the agent to start that
+   * finished task over. Absent on every other action. Independent of `editable`, which says who
+   * may change the instruction, not where it may run.
+   */
+  workflowStage?: false;
   /** An editable built-in whose instruction is the operator's rather than the shipped text. */
   customized?: boolean;
 }
@@ -1484,20 +1491,16 @@ export function sessionActionsForDisplay<
  * honest "nothing is addable yet" rather than a silent fallback to everything.
  */
 export function addableSessionActions<
-  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName" | "editable">,
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName" | "workflowStage">,
 >(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
   return sessionActionsForDisplay(actions)
     .filter((action) =>
       action.archivedAt === null && available.has(action.completion.kind) && sessionActionIsStage(action));
 }
 
-/**
- * Whether a Workflow stage may run this action. An editable built-in (Grill) is written to
- * run ahead of a task through its own feature, and bound after the work it would tell the
- * agent to start that finished task over.
- */
-export function sessionActionIsStage(action: Pick<SessionAction, "editable">): boolean {
-  return action.editable !== true;
+/** Whether a Workflow stage may run this action. See `SessionAction.workflowStage`. */
+export function sessionActionIsStage(action: Pick<SessionAction, "workflowStage">): boolean {
+  return action.workflowStage !== false;
 }
 
 /**

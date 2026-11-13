@@ -185,8 +185,8 @@ test("a missing or archived action reference is conditional on the catalog being
     item.code === "archived_session_action" && item.nodeId === "act"));
 });
 
-test("an editable built-in (Grill) is refused as a stage and never offered as one", () => {
-  const grill = actions.map((action) => ({ ...action, builtin: true, editable: true }));
+test("an action marked not a Workflow stage (Grill) is refused as one and never offered as one", () => {
+  const grill = actions.map((action) => ({ ...action, builtin: true, editable: true, workflowStage: false as const }));
   const refused = validateWorkflowGraph({
     graph: graph(),
     personas,
@@ -198,10 +198,16 @@ test("an editable built-in (Grill) is refused as a stage and never offered as on
 
   const allowed = validateWorkflowGraph({ graph: graph(), personas, sessionActions: actions, completionPolicy: { kind: "none" } });
   assert.equal(allowed.diagnostics.some((item) => item.code === "session_action_not_a_stage"), false);
+  // Editable says who may change the instruction, not where it may run: an editable built-in
+  // that is not marked off stages is still one.
+  const editableStage = actions.map((action) => ({ ...action, builtin: true, editable: true }));
+  const editableAllowed = validateWorkflowGraph({ graph: graph(), personas, sessionActions: editableStage, completionPolicy: { kind: "none" } });
+  assert.equal(editableAllowed.diagnostics.some((item) => item.code === "session_action_not_a_stage"), false);
 
   const every = new Set(Object.keys(SESSION_ACTION_COMPLETION_CAPABILITIES) as Array<keyof typeof SESSION_ACTION_COMPLETION_CAPABILITIES>);
   assert.deepEqual(addableSessionActions(grill, every), []);
   assert.deepEqual(addableSessionActions(actions, every).map((action) => action.id), actions.map((action) => action.id));
+  assert.deepEqual(addableSessionActions(editableStage, every).map((action) => action.id), actions.map((action) => action.id));
 });
 
 test("an action participates in reachability and cycle rules like any other node", () => {

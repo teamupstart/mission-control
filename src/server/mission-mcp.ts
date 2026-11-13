@@ -153,6 +153,19 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
 };
 
 /**
+ * The Mission tools Grill me first needs, whatever the task's kind: the interview asks every
+ * round with `request_plan_decisions`. THE one statement of that rule - a fresh launch reads it
+ * through `kindMissionMcpRequirement`, and assigning to a live session asks that session's
+ * bundle for the same list - so the two paths cannot disagree about what the interview needs.
+ * Empty for a task that does not grill first.
+ */
+export function grillFirstMissionMcpTools(
+  task: Pick<Task, "kind" | "grillFirst">,
+): readonly MissionMcpTool[] {
+  return taskGrillsFirst(task) ? [PLAN_DECISIONS_TOOL] : [];
+}
+
+/**
  * The requirement a task's KIND imposes, unioned with whatever its caller asked for.
  *
  * Derived from the durable `Task.kind` here, once, rather than left to whichever caller
@@ -168,12 +181,11 @@ export function kindMissionMcpRequirement(
   workflowEvidence = false,
 ): MissionMcpRequirement | null {
   const required = KIND_MISSION_MCP_TOOLS[task.kind];
-  // Grill me first asks every round with `request_plan_decisions`, whatever the kind.
-  const grillFirst = taskGrillsFirst(task);
-  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length && !grillFirst) return requested;
+  const grillFirst = grillFirstMissionMcpTools(task);
+  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length && grillFirst.length === 0) return requested;
   const tools = new Set<MissionMcpTool>(requested?.tools ?? []);
   for (const tool of required) tools.add(tool);
-  if (grillFirst) tools.add(PLAN_DECISIONS_TOOL);
+  for (const tool of grillFirst) tools.add(tool);
   if (workflowEvidence) tools.add(SUBMIT_WORKFLOW_EVIDENCE_TOOL);
   if (task.planInputs?.length) tools.add(PLAN_READ_TOOL);
   return { tools: [...tools] };

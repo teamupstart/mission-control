@@ -38,7 +38,12 @@ export function builtinSessionActionId(slug: string): string {
  */
 const BUILTIN_SESSION_ACTION_CONTRACTS: Record<
   string,
-  { requiredSkillId: string | null; completion: SessionActionCompletion }
+  {
+    requiredSkillId: string | null;
+    completion: SessionActionCompletion;
+    /** False when no Workflow stage may run it. See `SessionAction.workflowStage`. */
+    workflowStage?: false;
+  }
 > = {
   "pull-request": {
     requiredSkillId: PULL_REQUEST_SKILL,
@@ -56,6 +61,8 @@ const BUILTIN_SESSION_ACTION_CONTRACTS: Record<
   grill: {
     requiredSkillId: GRILL_SKILL,
     completion: { kind: "session_turn" },
+    // Run after the work, its instruction would have the agent start that work over.
+    workflowStage: false,
   },
 };
 
@@ -90,6 +97,7 @@ function builtinSessionAction(source: { slug: string; promptMarkdown: string }):
     updatedAt: 0,
     builtin: true,
     ...(EDITABLE_BUILTIN_SESSION_ACTION_IDS.has(builtinSessionActionId(source.slug)) ? { editable: true } : {}),
+    ...(contract.workflowStage === false ? { workflowStage: false as const } : {}),
   };
 }
 

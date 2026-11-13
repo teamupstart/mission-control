@@ -34,7 +34,7 @@ export interface WorkflowGraphValidationInput {
    * down. Without it the validator would have to assume, and assuming available is how a
    * version naming an unrunnable adapter gets published.
    */
-  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt" | "completion" | "editable">[];
+  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt" | "completion" | "workflowStage">[];
   completionPolicy?: WorkflowCompletionPolicy;
   /**
    * Which completion adapters the CALLER's build can execute. Defaults to this build's answer.

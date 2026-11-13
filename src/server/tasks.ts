@@ -136,12 +136,12 @@ import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
 import { describeWorktreeOccupants, inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
 import { gitInfo } from "./util/git.ts";
 import {
+  grillFirstMissionMcpTools,
   kindMissionMcpRequirement,
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
 } from "./mission-mcp.ts";
 import { isPlanTask } from "./plans/prompt.ts";
-import { PLAN_DECISIONS_TOOL } from "./plans/tools.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { grillAction, grillFirstDispatchBlock, grillFirstForSession } from "./grill-first.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
@@ -4910,7 +4910,7 @@ export class TaskManager {
             ...(t.kind === "scout" ? [SUBMIT_SCOUT_ARTIFACTS_TOOL] : []),
             ...(t.planInputs?.length ? ["read_plan" as const] : []),
             ...(workflowEvidence ? [SUBMIT_WORKFLOW_EVIDENCE_TOOL] : []),
-            ...(grillsFirst ? [PLAN_DECISIONS_TOOL] : []),
+            ...grillFirstMissionMcpTools(t),
           ],
           s.startedAt,
           mcpDescriptor,

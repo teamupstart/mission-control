@@ -396,3 +396,92 @@ test("a stacked merge GitHub cannot place yet leaves a session's card exactly as
   assert.equal(f.episode().prUrl, null);
   assert.equal(f.registry.getTask(f.taskId)!.status, "running");
 });
+
+// ---- the gate on a completed task's merge evidence ----
+
+/**
+ * A task completed by hand whose session is gone, with a dependent bound to its episode and no
+ * pull request recorded yet: the poller's completed-dependency branch search is the only thing
+ * that can still find its merge and release the dependent.
+ */
+async function completedPrerequisite(id: string) {
+  const f = fleet(id, STACKED);
+  const episode = f.episode();
+  f.registry.upsertTask(baseTask({ id: `bound-dependent-of-${id}`, title: "Phase 3", status: "backlog", dependencies: [{
+    type: "task", taskId: f.taskId, title: "Phase 2", sessionId: f.id, episodeId: episode.episodeId,
+    agentSessionId: episode.agentSessionId, branch: "feat/phase-2", prUrl: null, selectedAt: 1, satisfiedAt: null,
+  }] }));
+  await f.tasks.complete(f.taskId, "completed");
+  f.registry.applyDiscovery([]);
+  f.registry.emit("event", { type: "session_remove", id: f.id });
+  const edge = () => f.registry.getTask(`bound-dependent-of-${id}`)!.dependencies[0]!;
+  return { f, episode, edge };
+}
+
+for (const [base, released] of [["feat/phase-1", false], ["main", true]] as const) {
+  test(`a completed task's stacked pull request merged into ${base} ${released ? "releases" : "does not release"} its dependent`, async () => {
+    const { f, episode, edge } = await completedPrerequisite(`completed-${released ? "landed" : "stray"}`);
+    const url = `https://github.com/example/repo/pull/${released ? 1471 : 1470}`;
+    const gh = github({ [url]: { baseRefName: base } });
+    const asked: string[] = [];
+    await pollAndReconcilePrs(f.registry, async (cwd, branch, search) => {
+      asked.push(`${cwd} ${branch} ${search ? "episode" : "live"}`);
+      return { url, number: Number(url.split("/").at(-1)), state: "merged", checks: "passing", createdAt: episode.startedAt,
+        mergedAt: Date.now(), headSha: "merged-head", worktreeHeadSha: null };
+    }, async () => null, undefined, NOW, async () => null, () => [], new StackMergeWatch());
+    // Only the completed-dependency branch search runs: there is no live session and no URL yet.
+    assert.ok(asked.length > 0 && asked.every((call) => call === "/repo feat/phase-2 episode"), `unexpected lookups: ${asked.join(", ")}`);
+    assert.ok(gh.reads.includes(url), "the gate did not read where the merge landed");
+    const after = edge();
+    assert.equal(after.type === "task" && after.satisfiedAt !== null, released);
+    if (!released) {
+      assert.equal(after.type === "task" ? after.prUrl : "?", null, "a stray merge was recorded as the task's pull request");
+      assert.equal(f.registry.workEpisodeForTask(f.taskId)?.mergedAt ?? null, null);
+    }
+  });
+}
+
+// ---- the default branch is GitHub's, not `main` ----
+
+test("in a repository whose default branch is develop, a merge into develop completes and one into main is held", async () => {
+  const intoDevelop = fleet("default-develop", STACKED);
+  const landed = "https://github.com/example/repo/pull/1480";
+  github({ [landed]: { baseRefName: "develop", defaultBranch: "develop" } });
+  const watch = new StackMergeWatch();
+  await poll(intoDevelop, onBranch(intoDevelop, landed, "open"), watch);
+  await poll(intoDevelop, onBranch(intoDevelop, landed, "merged"), watch);
+  assert.equal(intoDevelop.registry.getTask(intoDevelop.taskId)!.status, "done");
+  assert.equal(edgeSatisfied(intoDevelop), true);
+  restoreGitHub?.();
+
+  const intoMain = fleet("default-develop-main", STACKED);
+  const stray = "https://github.com/example/repo/pull/1481";
+  github({ [stray]: { baseRefName: "main", defaultBranch: "develop" } });
+  await poll(intoMain, onBranch(intoMain, stray, "open"), watch);
+  await poll(intoMain, onBranch(intoMain, stray, "merged"), watch);
+  assert.equal(intoMain.registry.getTask(intoMain.taskId)!.status, "running", "a merge into main completed a develop-default task");
+  assert.equal(intoMain.episode().mergedAt, null);
+  assert.equal(edgeSatisfied(intoMain), false);
+});
+
+// ---- every child of the merged parent, and no other ----
+
+test("the poller retargets every open child of the merged parent, and leaves another parent's child alone", async () => {
+  const f = fleet("retarget-many");
+  const parent = "https://github.com/example/repo/pull/1600";
+  const other = "https://github.com/example/repo/pull/1610";
+  adoptStackedChild("https://github.com/example/repo/pull/1601", parent, "task-many-a");
+  adoptStackedChild("https://github.com/example/repo/pull/1602", parent, "task-many-b");
+  adoptStackedChild("https://github.com/example/repo/pull/1611", other, "task-many-c");
+  const gh = github({
+    [parent]: { state: "MERGED", headRefName: "feat/phase-1", mergeCommitSha: "e".repeat(40) },
+    [other]: { state: "OPEN", headRefName: "feat/other" },
+    "https://github.com/example/repo/pull/1601": { state: "OPEN", baseRefName: "feat/phase-1" },
+    "https://github.com/example/repo/pull/1602": { state: "OPEN", baseRefName: "feat/phase-1" },
+    "https://github.com/example/repo/pull/1611": { state: "OPEN", baseRefName: "feat/other" },
+  });
+  const byUrl = async (url: string) => (url === parent ? { state: "merged" as const, mergedAt: NOW } : url === other ? { state: "open" as const, mergedAt: null } : null);
+  await poll(f, async () => null, new StackMergeWatch(), byUrl, () => [parent, other]);
+  assert.deepEqual([...gh.retargets].sort((a, b) => a.number - b.number), [{ number: 1601, base: "main" }, { number: 1602, base: "main" }]);
+  assert.ok(!gh.reads.includes("https://github.com/example/repo/pull/1611"), "an unrelated child was read for a retarget");
+});

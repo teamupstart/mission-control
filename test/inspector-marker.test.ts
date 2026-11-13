@@ -283,6 +283,7 @@ function snapshot(threads: ThreadSnapshot[]): PrSnapshot {
     mergeable: "UNKNOWN",
     reviewDecision: null,
     checks: "none",
+    ci: null,
     threads,
     reviews: [],
     reviewsPageInfo: { hasPreviousPage: false, startCursor: null },

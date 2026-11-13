@@ -32,12 +32,15 @@ const {
   openDb,
   primaryRepoPrForTask,
   recordCodeRabbit,
+  recordInspectorCiObservation,
   taskReposFor,
   updateInspectorPr,
   upsertInspectorComment,
   workEpisodeRepoPrsForTask,
 } = await import("../src/server/db.ts");
+const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { inspectorSummaryOf } = await import("../src/shared/inspector.ts");
+const { InspectorInspectionSchema } = await import("../src/shared/protocol.ts");
 const { adoptPr } = await import("../src/server/inspector/worker.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -658,6 +661,61 @@ test("the Inspector's findings reach the repository they were left on", () => {
   assert.equal(summary?.postedOpen, 0);
 });
 
+test("the Inspector summary carries a compact CI projection and never the check list", () => {
+  // What Foreman's "Which failures count" reads. Derived from the stored snapshot beside
+  // `codeRabbit`, with whether the Inspector is on read when it is resolved.
+  const f = fixture("live-inspector-ci");
+  f.registry.reconcileRepoPrs(new Map([repoMatch(f, "/other")]), new Set());
+  adoptPr(PR_B, { sessionId: f.id, cwd: "/wt/live-inspector-ci-1", repoRoot: "/other" }, "hook", 1);
+  f.registry.refreshInspections();
+  const ci = () => repoPrLines(f).get("/other")?.feedback?.inspector?.ci;
+  assert.deepEqual(ci(), { headSha: null, required: null, inspectorEnabled: false }, "no snapshot yet");
+
+  const run = (name: string, state: "passing" | "failing" | "pending", required?: boolean) => ({
+    name, state, conclusion: state === "failing" ? "FAILURE" : null, detailsUrl: null, title: null, summary: null,
+    ...(required === undefined ? {} : { required }),
+  });
+  const observe = (checkRuns: ReturnType<typeof run>[], totalCount = checkRuns.length) => {
+    recordInspectorCiObservation("example/other#20", { headSha: "head-20", observedAt: 5_000, checkRuns, totalCount });
+    f.registry.refreshInspections();
+  };
+
+  observe([run("lint", "failing"), run("build", "passing", true)]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "passing", inspectorEnabled: false });
+  observe([run("lint", "passing"), run("build", "failing", true)]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false });
+  observe([run("lint", "failing"), run("build", "passing")]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "nothing marked");
+
+  // GitHub reported more checks than were read: Wait for CI's truncation rule. A required
+  // failure among those read still decides; a pass cannot be confirmed, so every check counts.
+  observe([run("lint", "failing"), run("build", "passing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "truncated pass");
+  observe([run("lint", "passing"), run("build", "failing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false }, "truncated failure");
+  // A node the read skipped (null, or an unknown shape) under 100 checks is not truncation, as
+  // Wait for CI judges it, so the required checks still decide.
+  observe([run("lint", "failing"), run("build", "passing", true)], 3);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "passing", inspectorEnabled: false }, "skipped node");
+
+  // Switching the Inspector on changes no ledger row, so the flag is read at resolution.
+  setInspectorConfig({ enabled: true });
+  try {
+    f.registry.refreshInspections();
+    assert.equal(ci()?.inspectorEnabled, true);
+  } finally {
+    setInspectorConfig({ enabled: false });
+  }
+  assert.doesNotMatch(JSON.stringify(f.registry.getSession(f.id)), /"lint"|checkRuns/);
+
+  // Foreman finds adopted pull requests over `/api/inspector/prs`, parsed by this schema: the
+  // projection must survive the parse, or Required mode would count every check for them.
+  const wire = InspectorInspectionSchema.parse(JSON.parse(JSON.stringify(getInspectorInspection("example/other#20"))));
+  assert.deepEqual(wire.ci, { headSha: "head-20", required: "passing" });
+  assert.deepEqual(inspectorSummaryOf(wire, { mode: "dry-run", enabled: true }).ci,
+    { headSha: "head-20", required: "passing", inspectorEnabled: true });
+});
+
 test("the session card's Inspector summary is the shared projection, CodeRabbit included", () => {
   const f = fixture("card-summary", []);
   const key = "example/repo#10";
@@ -695,10 +753,11 @@ test("the session card's Inspector summary is the shared projection, CodeRabbit 
     reviewedHeadSha: null,
     observedHeadSha: "head-10",
     cleanReviewHeadSha: null,
+    ci: { headSha: null, required: null, inspectorEnabled: false },
   });
   assert.equal(codeRabbit?.unresolved, 1);
   assert.deepEqual(
-    inspectorSummaryOf(getInspectorInspection(key)!, { mode: "dry-run" }, codeRabbit),
+    inspectorSummaryOf(getInspectorInspection(key)!, { mode: "dry-run", enabled: false }, codeRabbit),
     { ...summary, codeRabbit },
     "the worker's projection of the same row matches the card",
   );

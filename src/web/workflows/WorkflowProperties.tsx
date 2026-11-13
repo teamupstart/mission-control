@@ -1,3 +1,4 @@
+import { WAIT_FOR_CI_EXPLANATION, WaitForCiNodeFieldset } from "./WaitForCiFields.tsx";
 import type {
   PersonaView,
   SessionAction,
@@ -532,6 +533,16 @@ export function WorkflowProperties({
                   ? CODERABBIT_COMMAND_STATUS_NOTE
                   : "An unconfigured or unauthorized Command, or one this build cannot run, passes with a note saying which."}
               </p>
+            </>
+          )}
+          {selectedNode.kind === "wait_for_ci" && (
+            <>
+              <WaitForCiNodeFieldset
+                node={selectedNode}
+                readOnly={readOnly}
+                onChange={(fields) => replaceNode({ ...selectedNode, ...fields })}
+              />
+              <p>{WAIT_FOR_CI_EXPLANATION} Connect it only after a Pull Request action's complete route.</p>
             </>
           )}
           {selectedNode.kind === "session" && <p>Session is the one submission and repair boundary. It cannot be deleted.</p>}

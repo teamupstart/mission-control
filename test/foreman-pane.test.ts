@@ -204,6 +204,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     skipScoutWrapup: true, skipReviewArtifactWrapup: true,
     wrapupTriggers: ["drain"], wrapup: "ask", trackReviewFeedback: true,
     trackCiFailures: true,
+    ciStrictness: "all",
     keepShipTasksMoving: true, shipRecoveryMinutes: 20,
     autoBacklog: false, maxSessions: 3, backlogRespectOpenPrs: true,
     backlogDefaultModel: { claude: null, codex: null, pi: null },

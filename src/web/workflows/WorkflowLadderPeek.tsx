@@ -18,7 +18,6 @@ import {
   carriedStageStatus,
   carriedStatus,
   checkOutcomeOf,
-  checkStatus,
   checkStatusView,
   deliveryStateView,
   endStatus,
@@ -29,10 +28,9 @@ import {
   latestAttemptsFor,
   newestInheritedSource,
   nodeStatusesForSubmission,
-  reviewerStatus,
+  memberPipelineStatus,
   selectedSubmission,
   sessionActionProgress,
-  sessionActionStatus,
   shortSha,
   stageStatus,
   spentInspectorGateStatus,
@@ -146,11 +144,10 @@ function projectWorkflowLadderStages(
         : null;
       const status = carried
         ? carriedStatus(carried.roundLabel)
-        : member.kind === "session_action"
-          ? sessionActionStatus(nodeId ? statuses[nodeId] : undefined, actionState?.wait ?? null)
-          : member.kind === "check"
-            ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-            : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
+        : memberPipelineStatus(member.kind, nodeId ? statuses[nodeId] : undefined, {
+          checkOutcome: outcome?.status ?? null,
+          actionWait: actionState?.wait ?? null,
+        });
       const name = node
         ? nodeLabel(graph, node, personaNames, actionNames)
         : member.kind === "check"

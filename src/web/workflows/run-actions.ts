@@ -7,6 +7,7 @@ import {
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
 import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
+import { WAIT_FOR_CI_BLOCK_CODES } from "@shared/wait-for-ci.ts";
 // One-directional: this module reads `run-model`'s derivations at runtime, and `run-model` takes
 // only a TYPE from here, so there is no cycle to resolve at load.
 import {
@@ -402,11 +403,16 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
   }
 
   if (primary === "retry") {
+    // A Wait for CI block is retried the same way, but what is retried is the wait, and the
+    // operator fixes CI first.
+    const ciBlock = (WAIT_FOR_CI_BLOCK_CODES as readonly string[]).includes(detail.run.currentPhase);
     return {
       id: "retry",
       kind: "retry",
-      label: "Retry the failed call",
-      tooltip: "The provider call failed rather than the review - try it again",
+      label: ciBlock ? "Wait for CI again" : "Retry the failed call",
+      tooltip: ciBlock
+        ? "Once CI is fixed or rerun on the pull request, wait for it again on the same head"
+        : "The provider call failed rather than the review - try it again",
       path: runPath(detail, "retry"),
       body: {},
       confirm: null,

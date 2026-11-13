@@ -109,6 +109,7 @@ import {
   workflowReleasedFollowupOnly,
 } from "./review-followup.ts";
 import type { AdoptedInspection, FollowupMark, FollowupPr } from "./review-followup.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
@@ -1009,13 +1010,16 @@ function logHeldFindings(session: Session, pr: FollowupPr, why: string, open: nu
 function observeFollowupMarks(
   sessionId: string,
   prs: FollowupPr[],
+  ciStrictness: CiStrictness,
   keepUnseen = false,
 ): Map<string, FollowupMark> {
   const prior = reviewNudged.get(sessionId);
   // An unseen PR is not a closed one when the adoption read failed, and dropping its mark
   // would relay the same round again once the read recovers.
   const next = new Map<string, FollowupMark>(keepUnseen ? prior : undefined);
-  for (const pr of prs) next.set(pr.prKey, advanceFollowupMark(prior?.get(pr.prKey) ?? null, pr));
+  for (const pr of prs) {
+    next.set(pr.prKey, advanceFollowupMark(prior?.get(pr.prKey) ?? null, pr, ciStrictness));
+  }
   reviewNudged.set(sessionId, next);
   return next;
 }
@@ -1107,7 +1111,7 @@ export async function runReviewFollowup(
     // Fold this pass's observation (a CI recovery, or a new PR) into every mark and PERSIST
     // them, for EVERY open pull request - not only the one about to be nudged - because that
     // recovery is what re-arms CI once the session parks. See `advanceFollowupMark`.
-    const marks = observeFollowupMarks(session.id, prs, adopted === null);
+    const marks = observeFollowupMarks(session.id, prs, cfg.ciStrictness, adopted === null);
 
     // A workflow is another writer to this pane and checkout. Failure to read ownership
     // is a reason to hold, never permission to type across an owner we could not observe.
@@ -1137,6 +1141,7 @@ export async function runReviewFollowup(
           trackReviewComments: cfg.trackReviewFeedback,
           codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true && !workflowReleasedFollowupOnly(workflowRuns),
           trackCiFailures: cfg.trackCiFailures,
+          ciStrictness: cfg.ciStrictness,
           stackPrompts: !workflowReleasedFollowupOnly(workflowRuns),
           settleMs: SETTLE_MS,
         },
@@ -1185,7 +1190,7 @@ export async function runReviewFollowup(
       const freshPrs = reviewFollowupPrs(fresh, freshAdopted ?? []);
       const freshPr = freshPrs.find((candidate) => candidate.prKey === pr.prKey);
       if (!freshPr) break;
-      const freshMarks = observeFollowupMarks(fresh.id, freshPrs, freshAdopted === null);
+      const freshMarks = observeFollowupMarks(fresh.id, freshPrs, freshCfg.ciStrictness, freshAdopted === null);
       const freshMark = freshMarks.get(freshPr.prKey) ?? null;
 
       const freshDecision = decideReviewFollowup({
@@ -1199,6 +1204,7 @@ export async function runReviewFollowup(
           trackReviewComments: freshCfg.trackReviewFeedback,
           codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true && !workflowReleasedFollowupOnly(freshWorkflowRuns),
           trackCiFailures: freshCfg.trackCiFailures,
+          ciStrictness: freshCfg.ciStrictness,
           stackPrompts: !workflowReleasedFollowupOnly(freshWorkflowRuns),
           settleMs: SETTLE_MS,
         },

@@ -12,6 +12,7 @@ import {
   type WorkflowSubmission,
 } from "@shared/workflow.ts";
 import { workflowRunPhaseRecognized, type WorkflowRunPhase } from "@shared/workflow-lifecycle.ts";
+import { WAIT_FOR_CI_BLOCK_CODES, type WaitForCiBlockCode } from "@shared/wait-for-ci.ts";
 
 type PhaseRecovery = "resume" | "decision" | "snapshot" | "repository" | "retry" | "dismiss";
 
@@ -73,6 +74,15 @@ export const WORKFLOW_PHASE_RECOVERY = {
   inspector_unadopted_pr: "resume",
   inspector_working_tree_not_pushed: "resume",
   evidence_reconciliation_error: "resume",
+  // A CI block is fixed outside the run - CI configured, rerun or repaired - and then the
+  // operator retries the node, which waits on the same head again.
+  ci_missing: "retry",
+  ci_timeout: "retry",
+  ci_pull_request_unknown: "resume",
+  // An expected check the operator makes appear, or names correctly in a new version.
+  ci_expected_missing: "retry",
+  // The operator checks the rest on GitHub, then disables the node for the run to pass it.
+  ci_checks_truncated: "retry",
 } satisfies Record<WorkflowRunPhase, PhaseRecovery>;
 
 export interface WorkflowRecoveryContext {
@@ -102,13 +112,23 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
     || (run.status === "blocked" && run.phase === "inspector_disabled");
 }
 
+/**
+ * Whether this phase is a Wait for CI block the operator clears by retrying the node. Read off
+ * `WORKFLOW_PHASE_RECOVERY`'s own "retry" tag, so which blocks retry is stated once, there.
+ */
+export function waitForCiRetryPhase(phase: string): boolean {
+  return (WAIT_FOR_CI_BLOCK_CODES as readonly string[]).includes(phase)
+    && WORKFLOW_PHASE_RECOVERY[phase as WaitForCiBlockCode] === "retry";
+}
+
 export function infrastructureRecoveryAvailable(
   run: Pick<WorkflowRecoveryContext, "status" | "phase">,
   submission: WorkflowRecoveryContext["latest"],
   hasFailedAttempt: boolean,
 ): boolean {
   return run.status === "blocked"
-    && (run.phase === "infrastructure_error" || run.phase === "command_action_required")
+    && (run.phase === "infrastructure_error" || run.phase === "command_action_required"
+      || waitForCiRetryPhase(run.phase))
     && submission?.status === "failed" && hasFailedAttempt;
 }
 
@@ -156,7 +176,9 @@ export function projectWorkflowRecovery(c: WorkflowRecoveryContext): WorkflowRun
     recovery.operations.push("retry");
     recovery.primary = "retry";
     recovery.triage = "retry";
-    return recovery;
+    // A CI block's retry waits on the same head. When the fix needs a new commit (a change to
+    // CI itself, say), a new round is the way on, so it is described as well.
+    if (!waitForCiRetryPhase(c.phase)) return recovery;
   }
   if (workflowRunGaveUp(c) && c.latest && active && (inspectorOnly || !c.external)
     && c.maxRepairRounds < WORKFLOW_LIMITS.repairRoundsMax) {

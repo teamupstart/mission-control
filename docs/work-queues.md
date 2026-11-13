@@ -255,7 +255,8 @@ queue that has never moved is exactly where you go looking for the reason.
 
 Once work has an **open pull request**, its session can park while the
 [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews it or CI goes red. The Foreman
-popover's **Pull requests** section has two independent, default-on controls:
+popover's **Pull requests** section has two independent, default-on controls, and a choice of
+which CI failures count:
 
 - **Keep sessions on track with GitHub Inspector findings** (`trackReviewFeedback`) nudges the
   parked session to address every unresolved GitHub Inspector finding on its PR, including
@@ -266,9 +267,24 @@ popover's **Pull requests** section has two independent, default-on controls:
   PR's branch. It also adds CI follow-through instructions when a workflow prepares a Pull
   Request action: wait for checks, make scoped repairs with focused tests, push to the same
   branch, and verify CI for the new head before ending the turn.
+- **Which failures count** (`ciStrictness`), under the CI control and disabled while it is off,
+  chooses **All checks** (the default) or **Required checks**. All checks nudges on GitHub's whole
+  rollup, as the PR card's CI chip shows it. Required checks nudges only when a check GitHub
+  marks required on the PR is failing, read from the
+  [GitHub Inspector's stored CI snapshot](inspector-and-shipping.md#ci-on-the-head-commit) rather
+  than a new poll, and the nudge points at `gh pr checks --required`. Every check counts instead
+  when the Inspector is off (even if CodeRabbit follow-up keeps the snapshot fresh), when it never
+  adopted the PR, or when no check on the head is marked required. A head with more checks than
+  the snapshot holds (over 100) counts every check unless a required one among those read is
+  failing. Until the Inspector has stored a snapshot for the PR, Foreman holds: it neither nudges
+  nor treats the failure as over. The snapshot is the Inspector's own read of the head, so it can
+  be one Inspector poll behind a push; CI that counts as failing on the next head it reads is a
+  new episode, whichever rule counted it. The PR card's CI chip is unchanged and still shows
+  every check.
 
-Workflow PR instructions read the CI preference at packet preparation, independently of the
-findings preference and the Foreman worker's mode or enabled state. The workflow's own
+Workflow PR instructions read the CI preference, and which failures count, at packet
+preparation, independently of the findings preference and the Foreman worker's mode or enabled
+state. With Required checks they ask the session to watch and fix the required checks. The workflow's own
 delivery authorization still controls whether the packet may be sent. Prepared and delivered
 packets keep their exact instructions across setting changes and retries; the next newly
 prepared action uses the new setting. Other action completion kinds receive no CI policy.
@@ -295,7 +311,7 @@ session's current branch, has its unresolved findings relayed even when the card
 "Under that session" means the same session id, or the agent id recorded when the PR was
 adopted, which survives a restart that re-mints the session id. A PR adopted before the
 session's agent id was known matches on the session id alone. Such a PR carries only its
-findings. CI, CodeRabbit and stacked pull request follow-through stay
+findings, whichever failures count. CI, CodeRabbit and stacked pull request follow-through stay
 with the card's PR.
 
 Each nudge is typed into the session's pane, so it carries the usual gates and one more:

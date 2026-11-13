@@ -653,7 +653,8 @@ test("what may be authored is derived from what can be delivered, not chosen bes
       workflowEvidence: true,
       workflowContinuation: true,
     }), "utf8")
-    + Buffer.byteLength(workflowPullRequestCiContract(), "utf8")
+    + Math.max(...(["all", "required"] as const).map((strictness) =>
+      Buffer.byteLength(workflowPullRequestCiContract(strictness), "utf8")))
     + 200; // run id, version, labels and newlines
   assert.ok(
     envelope < WORKFLOW_LIMITS.sessionActionEnvelopeBytes,

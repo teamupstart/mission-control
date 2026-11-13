@@ -117,6 +117,7 @@ const LIVE_CFG: ForemanConfig = {
   wrapup: "ask",
   trackReviewFeedback: true,
   trackCiFailures: true,
+  ciStrictness: "all",
   keepShipTasksMoving: true,
   shipRecoveryMinutes: 20,
   triage: "off",

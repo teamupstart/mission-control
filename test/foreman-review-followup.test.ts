@@ -10,6 +10,7 @@ import {
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   buildPayload,
+  ciFollowup,
   decideReviewFollowup,
   followupPrs,
   reviewFollowupPrs,
@@ -23,6 +24,7 @@ import type {
   ReviewFollowupInput,
 } from "../src/server/foreman/review-followup.ts";
 import type {
+  InspectorCiSummary,
   InspectorComment,
   InspectorInspection,
   InspectorSummary,
@@ -395,7 +397,7 @@ const ADOPTED_URL = "https://github.com/owner/repo/pull/9";
 
 function adoptedRow(over: Partial<InspectorInspection> = {}): AdoptedInspection {
   const row = mkInspection({ key: ADOPTED_KEY, url: ADOPTED_URL, number: 9, ...over });
-  return { row, inspector: inspectorSummaryOf(row, { mode: "dry-run" }) };
+  return { row, inspector: inspectorSummaryOf(row, { mode: "dry-run", enabled: false }) };
 }
 
 /** The live example: the card shows no PR while the checkout sits on an adopted PR's branch. */
@@ -413,6 +415,7 @@ test("reviewFollowupPrs keeps the card's PR first and appends an adopted PR on t
     repoRoot: null,
     inspector: adoptedRow().inspector,
     checks: null,
+    ciTracked: false,
   });
 });
 
@@ -481,6 +484,29 @@ test("an adopted-only PR with unresolved findings asks for them, and with none i
     kind: "skip",
     why: "no enabled review comments or failing CI",
   });
+});
+
+test("an adopted-only PR with a failing required check gets no CI nudge in Required mode", () => {
+  // `checks: null` cannot mark these entries: a card PR whose rollup is unknown reads the same.
+  const requiredRed = (over: Partial<InspectorInspection> = {}): AdoptedInspection => {
+    const row = mkInspection({ key: ADOPTED_KEY, url: ADOPTED_URL, number: 9, ci: { headSha: HEAD, required: "failing" }, ...over });
+    return { row, inspector: inspectorSummaryOf(row, { mode: "dry-run", enabled: true }) };
+  };
+  const session = detached();
+  const required = { trackReviewComments: true, trackCiFailures: true, ciStrictness: "required" as const, settleMs: SETTLE };
+
+  const [quiet] = reviewFollowupPrs(session, [requiredRed({ openFindings: 0 })]);
+  assert.equal(quiet?.ciTracked, false);
+  assert.deepEqual(ciFollowup(quiet!, "required"), { failing: false, required: true });
+  assert.deepEqual(decide({ session, pr: quiet!, cfg: required }), NOTHING_OPEN);
+
+  // Its findings are still relayed, and the closing line still names the required checks.
+  const [withFindings] = reviewFollowupPrs(session, [requiredRed()]);
+  const d = decide({ session, pr: withFindings!, cfg: required });
+  assert.equal(d.kind, "nudge");
+  if (d.kind !== "nudge") return;
+  assert.doesNotMatch(d.payload, /CI checks are failing|gh pr checks/);
+  assert.match(d.payload, /until the required checks are green/);
 });
 
 test("a clean open PR - no findings, CI not red - is left alone", () => {
@@ -1128,7 +1154,7 @@ test("a mark advances on its own pull request's CI, not a sibling's", () => {
     inspector: null,
     checks: "failing",
   };
-  const nudged = advanceFollowupMark({ prKey: failing.prKey, findingsRound: null, ciNudged: true }, failing);
+  const nudged = advanceFollowupMark({ prKey: failing.prKey, findingsRound: null, ciNudged: true, ciHead: null }, failing);
   assert.equal(nudged.ciNudged, true, "still the same failing episode");
   const recovered = advanceFollowupMark(nudged, { ...failing, checks: "passing" });
   assert.equal(recovered.ciNudged, false, "this pull request's own checks recovered");
@@ -1158,4 +1184,225 @@ test("a blocked session is not nudged about review feedback until the blocker cl
   const held = decide({ session: mkSession({ blocker, inspector: inspector({ open: 2 }) }) });
   assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
   assert.equal(decide({ session: mkSession({ inspector: inspector({ open: 2 }) }) }).kind, "nudge");
+});
+
+// ---- which failures count ----
+//
+// `ciStrictness: "required"` counts only the checks GitHub marks required, read from the
+// GitHub Inspector's stored snapshot through `InspectorSummary.ci`. Every way that snapshot
+// cannot answer falls back to the whole rollup (Foreman nudges more, never less), except a
+// snapshot the Inspector, while on, has not stored yet: that holds.
+
+const HEAD = "head-2";
+const REQUIRED_CFG = {
+  trackReviewComments: false,
+  trackCiFailures: true,
+  ciStrictness: "required",
+  settleMs: SETTLE,
+} as const;
+const NOTHING_OPEN = { kind: "skip", why: "no enabled review comments or failing CI" } as const;
+
+function ciProjection(over: Partial<InspectorCiSummary> = {}): InspectorCiSummary {
+  return { headSha: HEAD, required: "passing", inspectorEnabled: true, ...over };
+}
+
+/** A PR whose whole rollup reads `checks`; `ci: null` means never adopted. */
+function ciSession(checks: Session["prChecks"], ci: InspectorCiSummary | null): Session {
+  return mkSession({ prChecks: checks, inspector: ci ? inspector({ ci }) : null });
+}
+
+test("the five-row table decides which failures count", () => {
+  const rows: Array<[string, "all" | "required", Session, ReturnType<typeof ciFollowup>]> = [
+    // all: today's rule, whatever the required checks say.
+    ["all, rollup failing", "all", ciSession("failing", ciProjection()), { failing: true, required: false }],
+    ["all, only a required check failing", "all",
+      ciSession("passing", ciProjection({ required: "failing" })), { failing: false, required: false }],
+    // required, fallback: the Inspector never adopted the PR.
+    ["required, never adopted", "required", ciSession("failing", null), { failing: true, required: false }],
+    // required, fallback: adopted, then the Inspector was switched off. A stored snapshot is
+    // ignored, because CodeRabbit's poll can keep it fresh with the Inspector off.
+    ["required, Inspector off", "required",
+      ciSession("failing", ciProjection({ inspectorEnabled: false })), { failing: true, required: false }],
+    // required, held: adopted and on, but no snapshot is stored yet.
+    ["required, no snapshot yet", "required",
+      ciSession("failing", ciProjection({ headSha: null, required: null })), "held"],
+    // required, fallback: a snapshot is stored but nothing is marked required.
+    ["required, nothing marked", "required",
+      ciSession("failing", ciProjection({ required: null })), { failing: true, required: false }],
+    // required, decided by the required checks alone.
+    ["required, a required check failing", "required",
+      ciSession("failing", ciProjection({ required: "failing" })), { failing: true, required: true }],
+    ["required, only a non-required check failing", "required",
+      ciSession("failing", ciProjection({ required: "passing" })), { failing: false, required: true }],
+  ];
+  for (const [name, strictness, session, expected] of rows) {
+    assert.deepEqual(ciFollowup(onlyPr(session), strictness), expected, name);
+  }
+});
+
+test("Required mode nudges only on a failing required check, and names the required checks", () => {
+  const required = decide({ session: ciSession("failing", ciProjection({ required: "failing" })), cfg: REQUIRED_CFG });
+  assert.equal(required.kind, "nudge");
+  if (required.kind !== "nudge") return;
+  assert.match(required.payload, /PR #7 needs follow-through: its required CI checks are failing\./);
+  assert.match(
+    required.payload,
+    /Look at the failing required checks \(`gh pr checks 7 --required`\), reproduce them locally, and fix them\./,
+  );
+  assert.match(required.payload, /until the required checks are green/);
+  assert.equal(required.reason, "required CI failing");
+
+  const notRequired = decide({ session: ciSession("failing", ciProjection({ required: "passing" })), cfg: REQUIRED_CFG });
+  assert.deepEqual(notRequired, NOTHING_OPEN);
+});
+
+test("a findings nudge in Required mode never asks for a non-required check to go green", () => {
+  // The required checks pass and only a non-required one is red, so CI is not relayed; the
+  // findings are, and their closing line must not steer the agent at the uncounted failure.
+  const session = mkSession({
+    prChecks: "failing",
+    inspector: inspector({ open: 1, ci: ciProjection({ required: "passing" }) }),
+  });
+  const d = decide({ session, cfg: { ...REQUIRED_CFG, trackReviewComments: true } });
+  assert.equal(d.kind, "nudge");
+  if (d.kind !== "nudge") return;
+  assert.match(d.payload, /^PR #7 needs follow-through: GitHub Inspector has 1 unresolved finding on it/);
+  assert.doesNotMatch(d.payload, /CI checks are failing|gh pr checks/);
+  assert.match(d.payload, /until the required checks are green/);
+  assert.doesNotMatch(d.payload, /until CI is green/);
+
+  // Held, no snapshot stored yet, is still Required mode: CI is not relayed, and the closing
+  // line must not ask for every check to go green either.
+  const held = decide({
+    session: mkSession({ ...session, inspector: inspector({ open: 1, ci: ciProjection({ headSha: null, required: null }) }) }),
+    cfg: { ...REQUIRED_CFG, trackReviewComments: true },
+  });
+  assert.equal(held.kind, "nudge");
+  if (held.kind === "nudge") {
+    assert.doesNotMatch(held.payload, /CI checks are failing|gh pr checks/);
+    assert.match(held.payload, /until the required checks are green/);
+  }
+
+  // A fallback has no required checks to name, so it keeps today's closing line.
+  const fallback = decide({
+    session: mkSession({ ...session, inspector: inspector({ open: 1, ci: ciProjection({ required: null }) }) }),
+    cfg: { ...REQUIRED_CFG, trackReviewComments: true },
+  });
+  assert.equal(fallback.kind, "nudge");
+  if (fallback.kind === "nudge") assert.match(fallback.payload, /until CI is green/);
+});
+
+test("a fallback and All mode keep today's nudge wording", () => {
+  const today = decide({
+    session: ciSession("failing", null),
+    cfg: { ...REQUIRED_CFG, ciStrictness: "all" },
+  });
+  assert.equal(today.kind, "nudge");
+  if (today.kind !== "nudge") return;
+  for (const [name, session] of [
+    ["never adopted", ciSession("failing", null)],
+    ["Inspector off", ciSession("failing", ciProjection({ inspectorEnabled: false, required: "failing" }))],
+    ["nothing marked", ciSession("failing", ciProjection({ required: null }))],
+  ] as const) {
+    const d = decide({ session, cfg: REQUIRED_CFG });
+    assert.equal(d.kind, "nudge", name);
+    if (d.kind !== "nudge") continue;
+    assert.equal(d.payload, today.payload, name);
+    assert.match(d.payload, /its CI checks are failing/, name);
+    assert.doesNotMatch(d.payload, /--required|required checks/, name);
+  }
+});
+
+test("the Inspector off counts every check even while CodeRabbit keeps the snapshot fresh", () => {
+  const d = decide({
+    session: ciSession("failing", ciProjection({ inspectorEnabled: false, required: "passing" })),
+    cfg: { ...REQUIRED_CFG, codeRabbitAutoResolve: true },
+  });
+  assert.equal(d.kind, "nudge");
+  if (d.kind === "nudge") assert.match(d.payload, /its CI checks are failing/);
+});
+
+test("a held snapshot neither nudges nor re-arms", () => {
+  const failing = ciSession("failing", ciProjection({ required: "failing" }));
+  const first = decide({ session: failing, cfg: REQUIRED_CFG });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+  assert.equal(first.mark.ciNudged, true);
+  assert.equal(first.mark.ciHead, HEAD, "the episode is keyed to the snapshot's head");
+
+  // The PR poller saw a green rollup, but no snapshot answers for the required checks.
+  const unknown = ciSession("passing", ciProjection({ headSha: null, required: null }));
+  const held = advanceFollowupMark(first.mark, onlyPr(unknown), "required");
+  assert.equal(held.ciNudged, true, "a held snapshot must not re-arm the episode");
+  const stillFailing = mkSession({ ...unknown, prChecks: "failing" });
+  assert.deepEqual(
+    decide({ session: stillFailing, cfg: REQUIRED_CFG, mark: advanceFollowupMark(held, onlyPr(stillFailing), "required") }),
+    NOTHING_OPEN,
+    "a held snapshot must not nudge",
+  );
+
+  // In All mode the same observation is decided by the rollup, and re-arms as it always has.
+  assert.equal(advanceFollowupMark(first.mark, onlyPr(unknown), "all").ciNudged, false);
+});
+
+test("a Required-mode episode re-arms once the snapshot decides another head", () => {
+  const first = decide({ session: ciSession("failing", ciProjection({ required: "failing" })), cfg: REQUIRED_CFG });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+
+  // The same head, still failing, is the episode already relayed.
+  const same = ciSession("failing", ciProjection({ required: "failing" }));
+  assert.deepEqual(
+    decide({ session: same, cfg: REQUIRED_CFG, mark: advanceFollowupMark(first.mark, onlyPr(same), "required") }),
+    { kind: "skip", why: "already nudged this round of feedback" },
+  );
+
+  // The agent pushed and the Inspector's snapshot moved to the new head, its required check
+  // failing again. Whatever recovery happened between was never decided, so it re-arms.
+  const refailed = ciSession("failing", ciProjection({ headSha: "head-3", required: "failing" }));
+  const rearmed = advanceFollowupMark(first.mark, onlyPr(refailed), "required");
+  assert.equal(rearmed.ciNudged, false, "a decided failure for another head starts a new episode");
+  const second = decide({ session: refailed, cfg: REQUIRED_CFG, mark: rearmed });
+  assert.equal(second.kind, "nudge");
+  if (second.kind !== "nudge") return;
+  assert.match(second.payload, /its required CI checks are failing/);
+  assert.equal(second.mark.ciHead, "head-3");
+
+  // A nudge recorded before the snapshot existed has no head, so only a recovery re-arms it.
+  const headless = { ...first.mark, ciHead: null };
+  assert.equal(advanceFollowupMark(headless, onlyPr(refailed), "required").ciNudged, true);
+});
+
+test("All mode keeps today's re-arm rule: only an observed recovery re-arms", () => {
+  const session = ciSession("failing", ciProjection({ required: "failing" }));
+  const first = decide({ session, cfg: { ...REQUIRED_CFG, ciStrictness: "all" } });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+  const movedStillRed = ciSession("failing", ciProjection({ headSha: "head-9", required: "failing" }));
+  assert.equal(advanceFollowupMark(first.mark, onlyPr(movedStillRed), "all").ciNudged, true);
+  const recovered = ciSession("pending", ciProjection({ headSha: "head-9", required: "failing" }));
+  assert.equal(advanceFollowupMark(first.mark, onlyPr(recovered), "all").ciNudged, false);
+});
+
+test("Required mode re-arms on the required rollup, not the whole one", () => {
+  const failing = ciSession("failing", ciProjection({ required: "failing" }));
+  const first = decide({ session: failing, cfg: REQUIRED_CFG });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+
+  // The required checks recovered; a non-required one is still red, so the rollup stays failing.
+  const recovered = ciSession("failing", ciProjection({ required: "passing" }));
+  assert.equal(advanceFollowupMark(first.mark, onlyPr(recovered), "all").ciNudged, true);
+  const rearmed = advanceFollowupMark(first.mark, onlyPr(recovered), "required");
+  assert.equal(rearmed.ciNudged, false, "the required episode is over");
+
+  const again = decide({ session: failing, cfg: REQUIRED_CFG, mark: advanceFollowupMark(rearmed, onlyPr(failing), "required") });
+  assert.equal(again.kind, "nudge", "a new required failure is a new episode");
+});
+
+test("a config without ciStrictness counts every check", () => {
+  const { ciStrictness: _, ...legacy } = REQUIRED_CFG;
+  const d = decide({ session: ciSession("failing", ciProjection({ required: "passing" })), cfg: legacy });
+  assert.equal(d.kind, "nudge");
+  assert.deepEqual(ciFollowup(onlyPr(ciSession("failing", ciProjection({ headSha: null })))), { failing: true, required: false });
 });

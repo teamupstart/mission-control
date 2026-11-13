@@ -15,7 +15,7 @@ const thread = (id = "one", author = "coderabbitai", actorType: string | null = 
 function input(threads: ThreadSnapshot[], hasNextPage = false, endCursor: string | null = null) {
   return { cwd: null, owner: "a", repo: "b", number: 1, snapshot: {
     state: "OPEN", headSha: "head", headRefName: "fix", title: "Fix", body: "", isDraft: false,
-    createdAt: null, mergeable: "UNKNOWN", reviewDecision: null, checks: "none", reviews: [],
+    createdAt: null, mergeable: "UNKNOWN", reviewDecision: null, checks: "none", ci: null, reviews: [],
     reviewsPageInfo: { hasPreviousPage: false, startCursor: null },
     threads, threadsPageInfo: { hasNextPage, endCursor },
     issueComments: { comments: [], pageInfo: { hasNextPage: false, endCursor: null } },

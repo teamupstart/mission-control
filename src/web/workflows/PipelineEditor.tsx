@@ -22,6 +22,7 @@ import type {
   WorkflowNodeExecutionOverride,
 } from "@shared/workflow.ts";
 import {
+  WAIT_FOR_CI_LABEL,
   checkLabel,
   compileStages,
   projectStages,
@@ -35,6 +36,9 @@ import {
   type StageMember,
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
+import { WAIT_FOR_CI_TIMEOUT_MINUTES, newWaitForCiNodeSettings } from "@shared/wait-for-ci.ts";
+import { WaitForCiNodeFieldset, waitForCiSummary, type WaitForCiNodeFields } from "./WaitForCiFields.tsx";
+import { waitForCiMayFollow } from "@shared/workflow-graph.ts";
 import {
   InspectorFooter,
   PipelineFrame,
@@ -98,14 +102,33 @@ export type StageMemberSeed =
  */
 export type StageSeed =
   | StageMemberSeed
-  | { kind: "session_action"; sessionActionId: SessionActionId };
+  | { kind: "session_action"; sessionActionId: SessionActionId }
+  // A stage of its own, never a member added beside others: Wait for CI runs alone, right
+  // after a Pull Request action.
+  | { kind: "wait_for_ci" };
 
 const seeded = (seed: StageMemberSeed): StageMember => ({ ...seed, nodeId: null });
 
 /** The stage a seed means, with no identity yet - `compileStages` is still the only minter. */
 const seededStage = (seed: StageSeed): Stage => seed.kind === "session_action"
   ? { kind: "session_action", member: { nodeId: null, ...seed } }
-  : { kind: "evaluation", joinId: null, members: [seeded(seed)] };
+  : seed.kind === "wait_for_ci"
+    ? {
+        kind: "evaluation",
+        joinId: null,
+        members: [{
+          nodeId: null,
+          kind: "wait_for_ci",
+          timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default,
+          ...newWaitForCiNodeSettings(),
+        }],
+      }
+    : { kind: "evaluation", joinId: null, members: [seeded(seed)] };
+
+/** Whether a stage is the Wait for CI stage, which holds that node and nothing else. */
+export function isWaitForCiStage(stage: Stage | undefined): boolean {
+  return stage?.kind === "evaluation" && stage.members.some((member) => member.kind === "wait_for_ci");
+}
 
 const withStages = (pipeline: StagePipeline, stages: Stage[]): StagePipeline =>
   ({ ...pipeline, stages });
@@ -214,6 +237,26 @@ export function setMemberExecutionOverride(
     : stage));
 }
 
+/**
+ * Set one Wait for CI member's timeout and settings. The editor hands back all of them on any
+ * edit, so a legacy member's absent settings are written together on its first edit.
+ */
+export function setWaitForCiMember(
+  pipeline: StagePipeline,
+  ref: MemberRef,
+  fields: WaitForCiNodeFields,
+): StagePipeline {
+  const target = evaluationStage(pipeline, ref.stage);
+  const member = target?.members[ref.member];
+  if (!target || member?.kind !== "wait_for_ci") return pipeline;
+  const next = { ...member, ...fields };
+  if (JSON.stringify(next) === JSON.stringify(member)) return pipeline;
+  return withStages(pipeline, pipeline.stages.map((stage, index) => index === ref.stage
+    ? { ...target, members: target.members.map((candidate, position) =>
+        position === ref.member ? next : candidate) }
+      : stage));
+}
+
 export function setMemberRecheckAfterRepair(
   pipeline: StagePipeline,
   ref: MemberRef,
@@ -283,6 +326,8 @@ export function moveMember(
   // exist. This refusal is permanent - it is the singleton rule, not a phase gate.
   const target = evaluationStage(pipeline, to.stage);
   if (!source || !moved || !target) return pipeline;
+  // Wait for CI stays alone in its own stage, so nothing moves into or out of that stage.
+  if (isWaitForCiStage(source) || isWaitForCiStage(target)) return pipeline;
   if (from.stage === to.stage) {
     if (to.member < 0 || to.member >= source.members.length || to.member === from.member) {
       return pipeline;
@@ -387,12 +432,14 @@ export function parseMemberOption(value: string): StageMemberSeed | null {
 
 /** The same encoding widened to whole stages, so one `<select>` can offer all three. */
 export function stageOptionValue(seed: StageSeed): string {
+  if (seed.kind === "wait_for_ci") return "wait_for_ci";
   return seed.kind === "session_action"
     ? `session_action:${seed.sessionActionId}`
     : memberOptionValue(seed);
 }
 
 export function parseStageOption(value: string): StageSeed | null {
+  if (value === "wait_for_ci") return { kind: "wait_for_ci" };
   if (value.startsWith("session_action:")) {
     const sessionActionId = value.slice("session_action:".length);
     return sessionActionId ? { kind: "session_action", sessionActionId } : null;
@@ -409,6 +456,7 @@ export function parseStageOption(value: string): StageSeed | null {
  */
 export function stageSeedNoun(seed: StageSeed): string {
   if (seed.kind === "session_action") return "session action";
+  if (seed.kind === "wait_for_ci") return "CI gate";
   return seed.kind === "check" ? "check" : "reviewer";
 }
 
@@ -506,10 +554,12 @@ export function PipelineEditor({
    * gets described as itself instead of as a missing Persona.
    */
   const labelOfMember = (member: StageMember): string =>
-    member.kind === "check" ? checkLabel(member.slot) : nameOf(member.personaId);
+    member.kind === "check" ? checkLabel(member.slot)
+      : member.kind === "wait_for_ci" ? WAIT_FOR_CI_LABEL
+      : nameOf(member.personaId);
   /** What a member IS, for the sentences that need the noun rather than the name. */
   const nounOfMember = (member: StageMember): string =>
-    member.kind === "check" ? "Command" : "reviewer";
+    member.kind === "check" ? "Command" : member.kind === "wait_for_ci" ? "CI gate" : "reviewer";
   const actionById = new Map(sessionActions.map((action) => [action.id, action]));
   /**
    * What an action row says about itself: what it needs, and what proves it finished.
@@ -634,6 +684,7 @@ export function PipelineEditor({
   /** The name a seed will carry once it is a stage, for the announcement that says so. */
   const labelOfSeed = (seed: StageSeed): string => seed.kind === "session_action"
     ? nameOfAction(seed.sessionActionId)
+    : seed.kind === "wait_for_ci" ? WAIT_FOR_CI_LABEL
     : labelOfMember(seeded(seed));
 
   const insert = (at: number, value: string): void => {
@@ -706,11 +757,9 @@ export function PipelineEditor({
     event.stopPropagation();
     if (!dragging || dragging.kind !== "member") return endDrag();
     const moved = evaluationStage(pipeline, dragging.ref.stage)?.members[dragging.ref.member];
-    if (moved) {
-      apply(
-        moveMember(pipeline, dragging.ref, to),
-        `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
-      );
+    const next = moveMember(pipeline, dragging.ref, to);
+    if (moved && next !== pipeline) {
+      apply(next, `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`);
     }
     endDrag();
   };
@@ -724,11 +773,9 @@ export function PipelineEditor({
         stage: stageIndex,
         member: evaluationStage(pipeline, stageIndex)?.members.length ?? 0,
       };
-      if (moved && dragging.ref.stage !== stageIndex) {
-        apply(
-          moveMember(pipeline, dragging.ref, to),
-          `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
-        );
+      const next = moveMember(pipeline, dragging.ref, to);
+      if (moved && dragging.ref.stage !== stageIndex && next !== pipeline) {
+        apply(next, `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`);
       }
     }
     endDrag();
@@ -798,6 +845,27 @@ export function PipelineEditor({
    * runnable adapter, or the catalog may be empty - because a group of options that all
    * refuse reads as a broken control rather than as a rule.
    */
+  /**
+   * Wait for CI is offered only at a seam right after a Pull Request action, which is the one
+   * place graph validation accepts it, and never twice in a row.
+   */
+  const waitForCiInsertable = (at: number): boolean => {
+    const before = pipeline.stages[at - 1];
+    const kind = before?.kind === "session_action"
+      ? actionById.get(before.member.sessionActionId)?.completion.kind
+      : undefined;
+    return kind !== undefined && waitForCiMayFollow(kind) && !isWaitForCiStage(pipeline.stages[at]);
+  };
+  const stageOptionsAt = (at: number): React.JSX.Element => (
+    <>
+      {stageOptions}
+      {waitForCiInsertable(at) && (
+        <optgroup label="Pull request">
+          <option value={stageOptionValue({ kind: "wait_for_ci" })}>{WAIT_FOR_CI_LABEL}</option>
+        </optgroup>
+      )}
+    </>
+  );
   const stageOptions = (
     <>
       {memberOptions}
@@ -902,7 +970,7 @@ export function PipelineEditor({
             onChange={(event) => insert(at, event.target.value)}
           >
             <option value="">Choose what this stage does…</option>
-            {stageOptions}
+            {stageOptionsAt(at)}
           </select>
         </label>
       </Tooltip>
@@ -1100,6 +1168,8 @@ export function PipelineEditor({
                     // provider and model alone no longer identify where that came from.
                     const meta = member.kind === "check"
                       ? "Deterministic gate · passes when no command is configured here"
+                      : member.kind === "wait_for_ci"
+                        ? waitForCiSummary(member)
                       : persona
                         ? `${nodeRoutingLabel(override, personaRoutingLabel(persona))}${persona.archivedAt === null ? "" : " · archived"}`
                         : override
@@ -1135,7 +1205,7 @@ export function PipelineEditor({
                           tabIndex: current === key ? 0 : -1,
                           focusKey: key,
                           ariaLabel: memberRef,
-                          draggable: !readOnly,
+                          draggable: !readOnly && member.kind !== "wait_for_ci",
                           onFocus: () => setFocusKey(key),
                           onDragStart: (event) => {
                             beginDrag(event, "member");
@@ -1191,7 +1261,16 @@ export function PipelineEditor({
                             )}
                           </>
                         )}
-                        panel={routingOpen && member.kind === "persona" && (
+                        panel={member.kind === "wait_for_ci" ? (
+                          <WaitForCiNodeFieldset
+                            node={member}
+                            readOnly={readOnly}
+                            onChange={(fields) => apply(
+                              setWaitForCiMember(pipeline, ref, fields),
+                              `${label}: ${waitForCiSummary(fields)}`,
+                            )}
+                          />
+                        ) : routingOpen && member.kind === "persona" && (
                           <>
                             <NodeReviewPolicyEditor
                               name={memberRef}
@@ -1231,7 +1310,7 @@ export function PipelineEditor({
                 <div className="wf-pipeline-stage-foot">
                   {stage.kind === "session_action"
                     ? actionPicker(index, stage.member.sessionActionId, stageRef)
-                    : addPicker(index, stageRef)}
+                    : isWaitForCiStage(stage) ? null : addPicker(index, stageRef)}
                 </div>
               </StageCard>
 

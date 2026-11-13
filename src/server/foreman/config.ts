@@ -28,6 +28,7 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 import { getBacklogPlan } from "../backlog.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
 import { activeAgentCount } from "./backlog-machine.ts";
+import type { WorkflowManagerOptions } from "../workflows/manager.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
@@ -132,6 +133,21 @@ export function getForemanConfig(): ForemanConfig {
   return ForemanConfigSchema.parse(
     migrateStoredForemanConfig(getAppConfig(CONFIG_ENTRY) ?? {}),
   );
+}
+
+/**
+ * The Foreman preferences a workflow's Pull Request action packet reads when it is prepared,
+ * exactly as the daemon hands them to `WorkflowManager`. Each is read live on every call and
+ * frozen into the packet by the manager. One owner, so a test can drive the daemon's own wiring
+ * rather than a copy of it.
+ */
+export function foremanPullRequestPacketPreferences(): Required<
+  Pick<WorkflowManagerOptions, "trackCiFailures" | "ciStrictness">
+> {
+  return {
+    trackCiFailures: () => getForemanConfig().trackCiFailures,
+    ciStrictness: () => getForemanConfig().ciStrictness,
+  };
 }
 
 /**

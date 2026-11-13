@@ -763,7 +763,12 @@ branch using focused tests, push, and verify the newly pushed head. It extends a
 instruction that says to stop immediately after opening the PR without rewriting that frozen
 instruction. With the preference off, no CI follow-through policy is added.
 
-The preference is read once per newly prepared packet. Preview, retries, and restart retain
+The wording follows Foreman's **Which failures count** picker. With **All checks** the session
+follows every check. With **Required checks** it watches the checks GitHub marks required
+(`gh pr checks <url> --required`), repairs failures of those, and leaves a failing check that is
+not required alone unless the task asks; if no check is marked required, it follows every check.
+
+The preference and the picker are read once per newly prepared packet. Preview, retries, and restart retain
 the recorded payload even if the setting later changes. Foreman's enabled state, mode,
 allowlist, and review-comment preference do not change this instruction choice; the workflow's
 existing delivery authorization still applies. Other completion kinds and on-demand session
@@ -773,6 +778,10 @@ The instruction is not a new CI completion gate. Sessions report absent or unava
 and concrete external blockers accurately. CI repairs and rebases may produce an advisory ref or
 content warning, but they do not stop the PR action. Inspector comments and merge authority remain
 with their existing owners.
+
+When a [Wait for CI](#wait-for-ci) node follows the action, the CI instructions are left out
+whatever the preference says: the node owns CI for that pull request, and an agent chasing the
+same checks would push while the node judges the head it was given.
 
 **Mission Control never polls GitHub for this.** The creation hook durably adopts the pull request.
 The GitHub Inspector's existing poller is the only thing that later asks the provider for
@@ -802,6 +811,122 @@ the checkout it was opened from, that must match this one too; when it recorded 
 rule applies and the completion warning says so. The branch and state are normally unobserved
 here, because only the GitHub Inspector's poller records them and it does not run while the
 Inspector is disabled.
+
+#### Wait for CI
+
+A **Wait for CI** node holds the run until the pull request's CI has finished, so a workflow can
+rely on the full suite in GitHub CI rather than running it locally. It follows a Pull Request
+action's `complete` route and nothing else - Publish refuses it anywhere else
+(`wait_for_ci_placement`), and the Pipeline editor only offers it at the seam right after a Pull
+Request action. It has `pass` and `fail` routes like a Command, and four settings, edited in both
+the Pipeline editor and the Graph rail:
+
+- **Timeout**, 5 to 240 minutes, 45 by default.
+- **Strictness**: "All checks must pass" counts every check GitHub reports on the head commit.
+  "Required checks must pass" counts only the checks GitHub marks required on the pull request
+  (`isRequired`), plus any expected checks.
+- **Quiet period**, 0 to 30 minutes, 3 by default: how long every counted check has to stay
+  settled and unchanged before the node passes. 0 passes as soon as they settle.
+- **Expected checks**: an optional list of exact, case-sensitive check names, one per line. Each
+  must appear and pass in either mode, even when GitHub does not mark it required. A name matches
+  every check of that name.
+
+Publish refuses a quiet period at or above the timeout (`wait_for_ci_quiet_period`) and an
+expected-checks list with a repeated name or more than 20 names (`wait_for_ci_expected_checks`);
+the editor says so on the node. A node that names none of these settings judges as All checks, a
+3-minute quiet period and no expected checks, and an untouched one keeps its graph bytes; the
+first edit to any of the three writes all three. A new node writes the same values explicitly.
+The attempt copies the settings when it starts waiting, like the timeout.
+
+It watches one commit: the head the Pull Request action's continuation captured, which is what
+the session pushed, resolved to a full commit id. The head GitHub last reported is not used
+unless the capture cannot be resolved, because the action completes on adoption and the
+Inspector can still be a poll behind the push. CI reported for any other head is ignored. The
+first 100 checks on the head are read, together with how many GitHub reports in all.
+
+It never talks to GitHub. The [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review)'s
+one pull request query reads the head commit's check runs beside its head, and stores them with
+the pull request. The node is decided from that stored snapshot whenever the Inspector updates and
+on the workflow's fifteen-second sweep, so **the Inspector must be on** for it to see CI. Failure
+detail comes from each check's own title and summary; CI logs are not read.
+
+**Counted checks.** In All mode every check on the head counts. In Required mode the counted
+checks are the ones GitHub marks required plus every check whose name is expected; a failing or
+running check that is neither is shown in the run view, tagged "Not required", and never decides
+anything or reaches the repair packet. When no check on the head is marked required, Required mode
+counts every check instead. GitHub can mark required checks late, so a failure judged this way
+waits out the quiet period first; a pass skips it only when every expected check has reported, as
+in any mode. A verdict reached that way records the fallback, and the run view says "No check on
+this head is marked required, so every check was judged." Skipped and neutral checks count as
+passing.
+
+**More than 100 checks.** The node reads the first 100 checks on the head, and never passes on a
+partial list. When GitHub reports more, an unread check may be a required or expected one, so
+Required mode never falls back to counting every check, and an expected check that was not read is
+unknown rather than missing: the node neither waits for it nor skips the quiet period on the
+strength of the names it did read. A counted failure among the checks read still fails. Otherwise,
+once the checks read have settled for the quiet period, the node blocks as `ci_checks_truncated`.
+
+| CI on the head | Outcome |
+| --- | --- |
+| Any counted check still running, or nothing reported yet | Keeps waiting. |
+| Every counted check finished, one or more failing | **Fail** at once, with no quiet period (after it, in the Required fallback, or at the timeout if that comes first): a repair packet asks for one change per counted failing check, with its conclusion, title, summary excerpt, and link. Checks past the verdict's 20-change or 12,000-byte limit share one last change that names each with its conclusion and link, as many as its 4,000 characters hold, and counts the rest as listed in the run's Wait for CI panel. Expected checks that have not appeared are named in the summary: `Not reported when CI failed: "deploy".` |
+| Every counted check passed, an expected check not reported yet | Keeps waiting for it. |
+| Every counted check passed, every expected check reported | **Passes** at once: the quiet period is skipped. |
+| Every counted check passed, no expected checks | The **quiet period** starts, and the node **passes** once every counted check has stayed settled and unchanged for it (at once with 0). |
+| Nothing counted failed, but GitHub reported more than 100 checks | **Blocks**: `ci_checks_truncated` once the checks read have settled for the quiet period. A counted failure among the first 100 still fails. |
+| Nothing appeared on the head by the timeout | **Blocks**: `ci_missing`. |
+| Counted checks still running at the timeout, or never settled for the quiet period | **Blocks**: `ci_timeout`, naming the counted checks still running. |
+| Every counted check settled at the timeout, an expected check never reported | **Blocks**: `ci_expected_missing`, naming the expected checks that never appeared. |
+
+**The quiet period** stands in for a signal that CI has finished. CI has no such signal, and a
+check that every other job waits for can still appear after the rest have passed. The period
+is measured on Inspector observations, never assumed from the clock. It starts at the
+observation that first saw every counted check settled, and the node passes on an observation at
+least the quiet period later that saw the same counted checks, each with the same state,
+conclusion and required mark. Any change starts it again, including GitHub marking or unmarking
+a check required, and a counted check that goes back to running stops it. In Required mode a
+change to a check that is not counted does not. The Inspector polls a
+pull request about every 90 seconds, so a quiet period spans two or three polls; the
+fifteen-second sweep re-decides the same observation and cannot pass the node on its own.
+
+**At the timeout**, a quiet period already running may still finish, but it never starts or
+restarts. It is decided on the first new observation at or after its end: the same checks
+pass, and changed checks block as `ci_timeout`. The Inspector reviews one pull request at a
+time, so that observation can arrive minutes late. If none arrives within 15 minutes of the
+period's end, the node blocks as `ci_timeout` anyway. A check that starts running again past
+the timeout blocks at once.
+
+No check name is special: every check counts or not by the rules above. A block spends no
+repair round. When CI can be fixed without a new commit - rerun a stuck job, turn on a missing
+workflow - use **Wait for CI again** on the run, which waits on the same head with a fresh
+timeout and a fresh quiet period. When the fix needs a new commit, start a new round instead, so
+the new head is reviewed and pushed. A block the retry cannot fix (`ci_pull_request_unknown`: no
+pull request or head to watch) offers only the new round. For `ci_expected_missing`, check that
+the workflows producing the expected checks run on pull requests, or correct the names in a new
+version. For `ci_checks_truncated`, check the remaining checks on GitHub; if they pass, an
+operator can disable the node for the run, then use **Wait for CI again**: disabling alone does
+not reopen a blocked node, and the new attempt passes without reading CI.
+
+A blocked Wait for CI can be judged again from the dashboard or by the session itself with
+trigger_workflow_action `retry`. Disabling the node passes it without checking CI; leave that to
+the operator.
+
+A fail is an ordinary repair round: the session fixes the change, the round runs the whole
+pipeline again, the Pull Request action pushes the new head, and the node waits on that head.
+A path from a Pull Request action through Wait for CI to End still counts as a shipping-only
+continuation, so it keeps the evidence-readiness exemption and the **verified shipping** label,
+as long as Wait for CI's fail route returns to Session. A fail route into a reviewer or Command
+would run it inside the continuation, so that path is an ordinary evaluator-bound one.
+
+The run view shows what the node is waiting for - the pull request, the head, elapsed time
+against the limit - a settings line such as `Required checks · expects "deploy" · quiet 3 min ·
+limit 45 min`, and the checks with their states. In Required mode each check is tagged
+"Required", "Expected" or "Not required", and an expected check not reported yet has its own row,
+"Not reported yet". During the quiet period its headline says every counted check has settled and
+how much of the period the observations so far cover; the stage chip stays "Waiting for CI". On a
+fail it lists the counted failing checks; on a block it says why in plain words. It notes when
+the fallback judged every check, and when GitHub reported more than the 100 checks read.
 
 ### Command nodes
 

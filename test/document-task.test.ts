@@ -49,7 +49,7 @@ test("Documentation Review composes the documentation gate and three specialists
   assert.ok(pipeline);
   assert.deepEqual(pipeline.stages.map(stage => stage.kind === "session_action"
     ? stage.member.sessionActionId
-    : stage.members.map(member => member.kind === "check" ? member.slot : member.personaId)), [
+    : stage.members.map(member => member.kind === "check" ? member.slot : member.kind === "persona" ? member.personaId : member.kind)), [
     ["documentation"],
     ["builtin:intent-conformance-judge"],
     ["builtin:documentation-steward", "builtin:documentation-consistency-judge", "builtin:conciseness-reference-judge"],

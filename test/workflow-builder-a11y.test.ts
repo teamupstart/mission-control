@@ -100,7 +100,7 @@ test("the pipeline editor roves by name and announces in names", () => {
   assert.match(editor, /ariaLabel: memberRef,/);
   assert.match(editor, /aria-label=\{`Model routing for \$\{memberRef\}`\}/);
   assert.match(editor, /aria-label=\{`Remove \$\{memberRef\}`\}/);
-  assert.match(editor, /member\.kind === "check" \? checkLabel\(member\.slot\) : nameOf\(member\.personaId\)/);
+  assert.match(editor, /member\.kind === "check" \? checkLabel\(member\.slot\)\s+: member\.kind === "wait_for_ci" \? WAIT_FOR_CI_LABEL\s+: nameOf\(member\.personaId\)/);
   // The stage's own name, then its KIND when it has one worth saying, then its position. The
   // kind clause is not decoration: a session action card otherwise sounds exactly like a
   // one-reviewer stage to a screen-reader user, and the two do opposite things.

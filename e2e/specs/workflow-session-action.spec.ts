@@ -439,6 +439,7 @@ test("the Graph palette creates an action node with one complete port, and can d
     "＋ Persona",
     "＋ All-pass Join",
     "＋ Command",
+    "＋ Wait for CI",
     "＋ Session action",
     "＋ End",
   ]);
@@ -493,6 +494,7 @@ test("the shipped Pull Request built-in is addable from the pipeline and the pal
     "＋ Persona",
     "＋ All-pass Join",
     "＋ Command",
+    "＋ Wait for CI",
     "＋ Session action",
     "＋ End",
   ]);

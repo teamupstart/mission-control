@@ -3256,6 +3256,24 @@ export interface InspectorComment {
 }
 
 /**
+ * The compact CI facts Foreman's "Which failures count" reads, projected from the Inspector's
+ * stored CI snapshot (`inspector_prs.observed_ci_json`). The check list itself never travels on
+ * the session wire; this is all of it Foreman needs.
+ */
+export interface InspectorCiProjection {
+  /** The head commit the stored snapshot was read on, or null when none is stored. */
+  headSha: string | null;
+  /** `requiredChecksRollup` of that snapshot: null when no check is marked required. */
+  required: PrChecks | null;
+}
+
+/** The projection plus whether the Inspector is on, which `InspectorSummary.ci` carries. */
+export interface InspectorCiSummary extends InspectorCiProjection {
+  /** `InspectorConfig.enabled` when the summary was built. Off means every check counts. */
+  inspectorEnabled: boolean;
+}
+
+/**
  * The one-time backfill's answer for a finding recorded before posting was tracked.
  * Persisted values: never rename or reorder them.
  */
@@ -3269,6 +3287,8 @@ export type InspectorLegacyPosted = (typeof INSPECTOR_LEGACY_POSTED)[number];
  */
 export interface InspectorSummary {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /** See `InspectorCiSummary`. Absent from an older daemon. */
+  ci?: InspectorCiSummary;
   /** Stacked pull requests: the lifecycle standing of a pull request with stack lineage. */
   stack?: import("./stacking.ts").StackStanding | null;
   prKey: string;
@@ -3326,6 +3346,8 @@ export interface RetroSummary {
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /** The stored CI snapshot's compact projection. */
+  ci?: InspectorCiProjection;
   /**
    * Stacked pull requests: the lifecycle standing of a row with lineage, computed on read. A
    * separate field from `mergeBlock`, which keeps holding only gate values.

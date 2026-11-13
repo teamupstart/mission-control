@@ -177,17 +177,23 @@ export function resolveInspectorModel(
  * The Inspector chip facts for one ledger row: what a session card carries as `inspector`, and
  * what Foreman's follow-through builds for a pull request it found by adoption instead.
  *
- * `mode` is read from the config, not the row, because changing it changes no row.
- * `codeRabbit` is included only when the caller has one to give. A pull request's stack
- * standing needs the registry, so the session card adds it after this.
+ * `mode` and `enabled` are read from the config, not the row, because changing them changes no
+ * row. `ci` is the compact CI projection only, never the check list. `codeRabbit` is included
+ * only when the caller has one to give. A pull request's stack standing needs the registry, so
+ * the session card adds it after this.
  */
 export function inspectorSummaryOf(
   row: InspectorInspection,
-  inspectorConfig: Pick<InspectorConfig, "mode">,
+  inspectorConfig: Pick<InspectorConfig, "mode" | "enabled">,
   codeRabbit?: CodeRabbitSummary,
 ): InspectorSummary {
   return {
     ...(codeRabbit ? { codeRabbit } : {}),
+    ci: {
+      headSha: row.ci?.headSha ?? null,
+      required: row.ci?.required ?? null,
+      inspectorEnabled: inspectorConfig.enabled,
+    },
     prKey: row.key,
     url: row.url,
     mode: inspectorConfig.mode,

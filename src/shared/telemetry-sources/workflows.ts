@@ -53,7 +53,7 @@ export const WORKFLOW_SUBMISSION_EVENT = event("submission", "workflow_run", "Wh
 });
 export const WORKFLOW_NODE_EVENT = event("node", "workflow_stage", "Which nodes executed, reused, bypassed or stopped?", {
   observation: z.enum(["eligible", "queued", "started", "finished", "late_result"]),
-  node_kind: z.enum(["persona", "check", "session", "session_action", "all_pass", "end", "unknown"]),
+  node_kind: z.enum(["persona", "check", "session", "session_action", "all_pass", "end", "unknown", "wait_for_ci"]),
   disposition: z.enum(["pending", "executed", "reused", "disabled", "cancelled", "infrastructure_error", "unknown"]),
   stage_projection: z.enum(["available", "unavailable"]),
   reviewer_model: z.string().max(256), reviewer_runner: z.string().max(40), reviewer_effort: effort,

@@ -1,4 +1,5 @@
 import { withExecutionOverride, withRecheckAfterRepair } from "./workflow.ts";
+import { storedWaitForCiSettings, type WaitForCiStoredSettings } from "./wait-for-ci.ts";
 import type {
   Persona,
   PersonaId,
@@ -66,7 +67,13 @@ export type StageMember =
       executionOverride?: WorkflowNodeExecutionOverride;
       recheckAfterRepair?: boolean;
     }
-  | { nodeId: string | null; kind: "check"; slot: WorkflowCheckSlot };
+  | { nodeId: string | null; kind: "check"; slot: WorkflowCheckSlot }
+  /**
+   * Wait for CI is a verdict member like a Check: pass continues, fail returns to Session. It
+   * is only valid alone, in the stage right after a Pull Request action - graph validation
+   * says so, and the editor offers it only there.
+   */
+  | ({ nodeId: string | null; kind: "wait_for_ci"; timeoutMinutes: number } & WaitForCiStoredSettings);
 
 /**
  * The one thing a SessionAction stage runs.
@@ -83,16 +90,19 @@ export type SessionActionStageMember = {
 };
 
 /** The node kinds an evaluation member is drawn from. Session, End and Join are structure. */
-export type StageMemberNode = Extract<StageNode, { kind: "persona" | "check" }>;
+export type StageMemberNode = Extract<StageNode, { kind: "persona" | "check" | "wait_for_ci" }>;
 
 /** The node kind a SessionAction stage is drawn from. */
 export type SessionActionStageNode = Extract<StageNode, { kind: "session_action" }>;
 
-const isMemberKind = (kind: StageNode["kind"]): kind is "persona" | "check" =>
-  kind === "persona" || kind === "check";
+const isMemberKind = (kind: StageNode["kind"]): kind is "persona" | "check" | "wait_for_ci" =>
+  kind === "persona" || kind === "check" || kind === "wait_for_ci";
 
 /** The member a node IS, which is the projection's half of the round trip. */
 function memberOf(node: StageMemberNode): StageMember {
+  if (node.kind === "wait_for_ci") {
+    return { nodeId: node.id, kind: "wait_for_ci", timeoutMinutes: node.timeoutMinutes, ...storedWaitForCiSettings(node) };
+  }
   return node.kind === "check"
     ? { nodeId: node.id, kind: "check", slot: node.slot }
     : {
@@ -185,6 +195,7 @@ export function stageSeamGate(stage: Stage): string {
  */
 export function stageMemberKey(member: StageMember | SessionActionStageMember): string {
   if (member.kind === "check") return `check:${member.slot}`;
+  if (member.kind === "wait_for_ci") return "wait_for_ci";
   if (member.kind === "session_action") return `session_action:${member.sessionActionId}`;
   return `persona:${member.personaId}`;
 }
@@ -260,8 +271,12 @@ function baseLabel(
   if (node.kind === "all_pass") return joinLabel(graph, node);
   if (node.kind === "check") return checkLabel(node.slot);
   if (node.kind === "session_action") return sessionActionName(node, actions);
+  if (node.kind === "wait_for_ci") return WAIT_FOR_CI_LABEL;
   return personaName(node, personas);
 }
+
+/** What every surface calls a Wait for CI node. */
+export const WAIT_FOR_CI_LABEL = "Wait for CI";
 
 /**
  * A Command names its slot and nothing else, so its label is the slot with the word that says
@@ -313,6 +328,7 @@ export function stageName(
   const only = stage.members.length === 1 ? stage.members[0] : null;
   if (!only) return `Stage ${index + 1}`;
   if (only.kind === "check") return checkLabel(only.slot);
+  if (only.kind === "wait_for_ci") return WAIT_FOR_CI_LABEL;
   return personas.find((persona) => persona.id === only.personaId)?.name ?? "Missing persona";
 }
 
@@ -331,10 +347,12 @@ export function stageName(
 export function stageContents(stage: Stage): string {
   if (stage.kind === "session_action") return "1 session action";
   const reviewers = stage.members.filter((member) => member.kind === "persona").length;
-  const commands = stage.members.length - reviewers;
+  const commands = stage.members.filter((member) => member.kind === "check").length;
+  const ciWaits = stage.members.filter((member) => member.kind === "wait_for_ci").length;
   return [
     ...(reviewers > 0 ? [`${reviewers} reviewer${reviewers === 1 ? "" : "s"}`] : []),
     ...(commands > 0 ? [`${commands} command${commands === 1 ? "" : "s"}`] : []),
+    ...(ciWaits > 0 ? [`${ciWaits} CI wait${ciWaits === 1 ? "" : "s"}`] : []),
   ].join(", ");
 }
 
@@ -713,6 +731,8 @@ export function compileStages(
       // what lets the compiler treat a mixed stage as one stage.
       nodes.push(member.kind === "check"
         ? { id, kind: "check", slot: member.slot, position }
+        : member.kind === "wait_for_ci"
+        ? { id, kind: "wait_for_ci", timeoutMinutes: member.timeoutMinutes, position, ...storedWaitForCiSettings(member) }
         : {
             id,
             kind: "persona",

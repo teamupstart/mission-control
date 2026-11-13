@@ -278,7 +278,8 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
     stage.kind === "session_action"
       ? [`action:${stage.member.sessionActionId}`]
       : stage.members.map((member) =>
-        member.kind === "persona" ? member.personaId : `check:${member.slot}`));
+        member.kind === "persona" ? member.personaId
+          : member.kind === "wait_for_ci" ? "wait_for_ci" : `check:${member.slot}`));
 };
 
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {

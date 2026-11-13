@@ -48,6 +48,7 @@ import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
+import { sdkAskChannel } from "../../ask-channel-prompt.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
 //
@@ -1528,6 +1529,14 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);
       const permissionMode = sdkPermissionMode(opts.permissionMode);
+      // A task asks its human through `request_input`, exactly as a terminal dispatch does,
+      // and only when this launch registers the server that provides it - see `sdkAskChannel`.
+      const askChannel = sdkAskChannel(opts.mcp?.serverName ?? null);
+      // ONE append carrying every contributor, in the terminal path's order: the redirect,
+      // then the operator's standing instructions.
+      const systemPromptAppend = [askChannel?.redirect, opts.standingInstructions]
+        .filter((part): part is string => !!part)
+        .join("\n\n");
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
@@ -1541,19 +1550,19 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
-        // The operator's repository standing instructions, as a NON-DESTRUCTIVE append.
+        // The ask-channel redirect and the operator's repository standing instructions, as
+        // a NON-DESTRUCTIVE append.
         //
         // The preset object is the only form that can do this. A bare `string` here
         // REPLACES Claude Code's own system prompt, which would turn an embedded session
         // into a different agent from the dispatched pane running the same task. Omitted
-        // entirely when there is nothing to send, so an ordinary session's options object
-        // is exactly what it always was.
-        ...(opts.standingInstructions
+        // entirely when there is nothing to send.
+        ...(systemPromptAppend
           ? {
               systemPrompt: {
                 type: "preset" as const,
                 preset: "claude_code" as const,
-                append: opts.standingInstructions,
+                append: systemPromptAppend,
               },
             }
           : {}),
@@ -1589,11 +1598,11 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...claudeFlagOptions(opts),
-        // The ask channel's disallow + redirect are deliberately NOT rendered here. They
-        // exist because a menu on a child's screen is unreadable to the dashboard; a
-        // driver request IS the dashboard's own control, so the native tool is better
-        // than the MCP stand-in it was approximating. The MCP server still rides along
-        // above, because `report_status` and the rest are not about asking questions.
+        // The ask channel: `AskUserQuestion` removed, `request_input` pre-approved. Tied to
+        // the redirect above and to the Mission MCP registration, all or nothing.
+        ...(askChannel
+          ? { allowedTools: askChannel.allowedTools, disallowedTools: askChannel.disallowedTools }
+          : {}),
         canUseTool: session.canUseTool,
         hooks: session.hooks(),
         // CLAUDE.md, skills and the operator's settings - the same sources an

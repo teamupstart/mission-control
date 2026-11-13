@@ -4,18 +4,17 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { NO_MISSION_MCP_ENV, type DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * The other channel a session asks its human through, and what it leaves behind.
  *
- * A session dispatched to a TERMINAL has Claude's built-in `AskUserQuestion` taken away and
- * asks through the MCP review channel instead (`ask-channel.ts`), which
- * `review-answers-in-conversation.spec.ts` covers end to end. A session on the SDK runtime -
- * every session in this suite, and the default a dispatch takes - keeps the built-in
- * deliberately: the ask arrives over `canUseTool` as a driver request, which IS the
- * dashboard's own control, so the MCP stand-in would be approximating something already
- * native.
+ * A dispatched task has Claude's built-in `AskUserQuestion` taken away and asks through the
+ * MCP review channel instead (`ask-channel.ts`), on either runtime - which
+ * `sdk-task-asks-through-request-input.spec.ts` and `review-answers-in-conversation.spec.ts`
+ * cover end to end. The one launch that keeps the built-in is a task dispatched with no
+ * Mission MCP server to replace it, so this file's daemon has none (`NO_MISSION_MCP_ENV`):
+ * there the ask arrives over `canUseTool` as a driver request, and this is that form.
  *
  * The two used to end differently, and only one of them ended well. Answering a driver
  * request resolved the callback the agent was blocked on and recorded nothing, and the
@@ -30,6 +29,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * form the dashboard draws for one, the real `POST /api/sessions/:id/submit-options` route,
  * and the conversation read back off the real SSE stream.
  */
+
+test.use({ daemonEnv: NO_MISSION_MCP_ENV });
 
 const EVIDENCE = artifactsDir("driver-question-in-conversation");
 

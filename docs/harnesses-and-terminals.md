@@ -120,7 +120,8 @@ so a delayed launch or an older list cannot add an agent that list left out, and
 signal stamped before the newest process start or resume belongs to the previous process and is
 ignored, so a late `Stop` or launch from it cannot bring its agents back. A `SessionStart` that
 lands late forgets only what was stamped before it, so agents the new process already reported
-stay listed.
+stay listed. A stop stamped before the operator's latest prompt folds straight into the
+"N finished" count when it lands, since that turn has already begun.
 
 Hooks carry an agent's type, state and timing, and for Claude its launch description, but no tool
 or token counters and no last tool, so a terminal row omits those. See

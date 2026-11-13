@@ -85,6 +85,11 @@ export interface HookSubagentState {
    * any signal stamped before this belongs to a process that is gone and is ignored.
    */
   readonly resetAt: number | null;
+  /**
+   * When the operator's newest prompt folded finished agents. A stop stamped before it arrives
+   * late for a turn the operator has already moved past, so it folds at once instead of listing.
+   */
+  readonly lastFoldAt: number | null;
 }
 
 /**
@@ -102,6 +107,7 @@ const EMPTY: HookSubagentState = {
   finishedFolded: 0,
   lastLive: null,
   resetAt: null,
+  lastFoldAt: null,
 };
 
 export function emptyHookSubagents(): HookSubagentState {
@@ -146,6 +152,7 @@ class Draft {
   finishedFolded: number;
   lastLive: HookSubagentState["lastLive"];
   resetAt: number | null;
+  lastFoldAt: number | null;
   changed = false;
 
   constructor(state: HookSubagentState) {
@@ -155,6 +162,21 @@ class Draft {
     this.finishedFolded = state.finishedFolded;
     this.lastLive = state.lastLive;
     this.resetAt = state.resetAt;
+    this.lastFoldAt = state.lastFoldAt;
+  }
+
+  /**
+   * An agent that ended at `at`, before the newest fold: the operator's next turn has already
+   * started, so it goes straight into the "N finished" count rather than listing until another
+   * prompt. Returns whether it folded.
+   */
+  private foldedLate(id: string, at: number): boolean {
+    if (this.lastFoldAt === null || at >= this.lastFoldAt) return false;
+    this.agents.delete(id);
+    const stillRunning = [...this.agents.values()].some((t) => t.entry.state === "running");
+    this.finishedFolded = stillRunning ? this.finishedFolded + 1 : 0;
+    this.changed = true;
+    return true;
   }
 
   /** Whether a newer complete live set already said `id` was not in flight at `at`. */
@@ -225,7 +247,9 @@ class Draft {
       }
       case "ended": {
         const known = this.agents.get(signal.id);
-        if (known && (known.entry.state === "running" || known.inferred)) {
+        if (known && known.entry.state === "running" && this.foldedLate(signal.id, at)) {
+          // Folded already; only its end is remembered below.
+        } else if (known && (known.entry.state === "running" || known.inferred)) {
           this.agents.set(signal.id, {
             ...known,
             inferred: false,
@@ -279,7 +303,9 @@ class Draft {
           // Only an agent counted before this set was taken can be missing from it; one counted
           // after is newer than the reading and says nothing about it.
           if (known.entry.state !== "running" || listed.has(id) || known.countedAt > at) continue;
-          this.agents.set(id, { ...known, inferred: true, entry: { ...known.entry, state: "stopped", endedAt: at } });
+          if (!this.foldedLate(id, at)) {
+            this.agents.set(id, { ...known, inferred: true, entry: { ...known.entry, state: "stopped", endedAt: at } });
+          }
           this.end(id, at);
           this.changed = true;
         }
@@ -296,6 +322,10 @@ class Draft {
         const finishedFolded = stillRunning ? this.finishedFolded + folded : 0;
         if (folded > 0 || finishedFolded !== this.finishedFolded) this.changed = true;
         this.finishedFolded = finishedFolded;
+        if (this.lastFoldAt === null || at > this.lastFoldAt) {
+          this.lastFoldAt = at;
+          this.changed = true;
+        }
         return;
       }
       case "reset": {
@@ -305,17 +335,20 @@ class Draft {
         const started = new Map([...this.started].filter(([, s]) => s.at >= at));
         const ended = new Map([...this.ended].filter(([, endedAt]) => endedAt >= at));
         const lastLive = this.lastLive !== null && this.lastLive.at >= at ? this.lastLive : null;
+        const lastFoldAt = this.lastFoldAt !== null && this.lastFoldAt >= at ? this.lastFoldAt : null;
         // The folded count describes agents of whichever process folded them; with no way to
         // tell, a start begins it again.
         if (
           agents.size !== this.agents.size || started.size !== this.started.size ||
-          ended.size !== this.ended.size || this.finishedFolded > 0 || lastLive !== this.lastLive
+          ended.size !== this.ended.size || this.finishedFolded > 0 || lastLive !== this.lastLive ||
+          lastFoldAt !== this.lastFoldAt
         ) {
           this.agents = agents;
           this.started = started;
           this.ended = ended;
           this.finishedFolded = 0;
           this.lastLive = lastLive;
+          this.lastFoldAt = lastFoldAt;
           this.changed = true;
         }
         if (this.resetAt !== at) {
@@ -353,6 +386,7 @@ class Draft {
       finishedFolded: this.finishedFolded,
       lastLive: this.lastLive,
       resetAt: this.resetAt,
+      lastFoldAt: this.lastFoldAt,
     };
   }
 }

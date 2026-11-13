@@ -190,6 +190,23 @@ test("a reset that lands late keeps what the new process already reported", () =
   assert.deepEqual(hookSubagentSummary(state)!.agents.map((a) => a.id), ["new-a"]);
 });
 
+test("a stop stamped before the operator's next prompt folds at once when it lands late", () => {
+  // The prompt at 300 is ingested before a SubagentStop stamped at 250.
+  let state = run([[launched("a"), 100], [launched("b"), 110], [{ kind: "fold" }, 300]]);
+  state = reduceHookSubagents(state, [{ kind: "ended", id: "a", type: null }], 250);
+  assert.deepEqual(hookSubagentSummary(state), {
+    agents: [hookSubagentSummary(state)!.agents[0]!],
+    finishedFolded: 1,
+  });
+  assert.equal(hookSubagentSummary(state)!.agents[0]?.id, "b", "only the still-running agent is listed");
+  // A live set stamped before the fold that drops `b` folds it too; nothing runs, so the count goes.
+  state = reduceHookSubagents(state, [{ kind: "live", agents: [] }], 280);
+  assert.equal(hookSubagentSummary(state), null);
+  // A stop stamped after the fold lists as done until the next prompt, as before.
+  state = run([[launched("c"), 100], [launched("d"), 110], [{ kind: "fold" }, 300], [{ kind: "ended", id: "c", type: null }, 400]]);
+  assert.deepEqual(hookSubagentSummary(state)!.agents.map((x) => `${x.id}:${x.state}`).sort(), ["c:completed", "d:running"]);
+});
+
 test("the list is capped: running first, the oldest finished fold", () => {
   const steps: [Signal, number][] = [];
   for (let i = 0; i < SUBAGENT_LIMIT + 3; i++) steps.push([launched(`f${i}`), i]);
@@ -277,7 +294,10 @@ test("signals that change nothing return the same state", () => {
   assert.equal(reduceHookSubagents(state, [], 3), state);
   assert.equal(reduceHookSubagents(state, [launched("a")], 3), state);
   assert.equal(reduceHookSubagents(state, [live], 2), state);
-  assert.equal(reduceHookSubagents(emptyHookSubagents(), [{ kind: "fold" }], 2), emptyHookSubagents());
+  // A fold records when it happened; the same fold again changes nothing.
+  const folded = reduceHookSubagents(emptyHookSubagents(), [{ kind: "fold" }], 2);
+  assert.equal(hookSubagentSummary(folded), null);
+  assert.equal(reduceHookSubagents(folded, [{ kind: "fold" }], 2), folded);
 });
 
 test("a SubagentStart that lands after its launch moves the start earlier, not the count time", () => {

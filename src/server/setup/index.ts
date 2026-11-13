@@ -50,6 +50,7 @@ import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupProbeResult, SetupRepositoryIndexRead, SetupSkillsRead } from "./types.ts";
 import { repoIndexView } from "../repo-index.ts";
+import { lastScannedRepos } from "../repos.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
@@ -538,6 +539,12 @@ export function defaultSetupDeps(): SetupDeps {
     // the same raiser Focus will actually use.
     terminalTargets: () => terminalTargetViews(configuredTerminalTargetDeps),
     repositoryIndex: async () => {
+      // Every Setup read carries this row, whichever family is on screen, so it must not walk
+      // the indexed directories each time. A walk that already found repositories answers the
+      // only question the row asks. Only an empty or missing answer pays for a fresh read, and
+      // that read is also what the failing row needs to say what each directory held.
+      const known = lastScannedRepos();
+      if (known !== null && known.length > 0) return { repoCount: known.length, directories: [] };
       const view = await repoIndexView();
       return {
         repoCount: view.repoCount,

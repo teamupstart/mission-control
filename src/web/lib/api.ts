@@ -1304,6 +1304,27 @@ export async function fetchTranscriptBefore(
   }
 }
 
+/**
+ * The tool call that launched a session's background sub-agent, as its transcript file
+ * records it - null when it records none. "Jump to launch" asks this for an agent whose
+ * source did not name its launching call; see the route for why the file answers it.
+ */
+export async function fetchSubagentLaunch(
+  sessionId: string,
+  agentId: string,
+): Promise<{ ok: true; toolUseId: string | null } | { ok: false; error: string }> {
+  try {
+    const res = await actionFetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/launch`,
+    );
+    const data = (await res.json().catch(() => ({}))) as { toolUseId?: unknown; error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, toolUseId: typeof data.toolUseId === "string" && data.toolUseId ? data.toolUseId : null };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function fetchSessionFiles(
   id: string,
 ): Promise<{ ok: true; files: SessionFileEntry[] } | { ok: false; error: string }> {

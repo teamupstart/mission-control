@@ -102,6 +102,7 @@
   "GET /api/sessions/:id/reset/preview": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/resolved-reviews": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/standing-instructions": "404 {\"error\":\"no such session\"}",
+  "GET /api/sessions/:id/subagents/:agentId/launch": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/transcript": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/transcript/size": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/transcript/stream": "200 \"data: {\\\"type\\\":\\\"unavailable\\\",\\\"reason\\\":\\\"No such session.\\\"}\\n\\n\"",

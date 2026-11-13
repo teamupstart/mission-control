@@ -198,4 +198,6 @@ export const piTranscript: TranscriptSpec = {
   // with no such notion.
   messages: piMessages,
   retain: null,
+  // pi launches no sub-agents Mission Control can see.
+  subagentLaunch: null,
 };

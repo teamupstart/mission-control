@@ -51,7 +51,27 @@ interface Tracked {
  */
 type RunMemory = Pick<Tracked, "runId" | "pastRuns">;
 
-const NO_RUNS: RunMemory = { runId: null, pastRuns: [] };
+/** The run memory of a task with no tracked entry or retired guard: its recorded history. */
+function remembered(history: ReadonlyMap<string, readonly string[]>, id: string): RunMemory {
+  return { runId: null, pastRuns: history.get(id) ?? [] };
+}
+
+/** `history` with the runs of the given tasks added. Returns `history` itself when none are new. */
+function remember(
+  history: ReadonlyMap<string, readonly string[]>,
+  gone: Iterable<[string, RunMemory]>,
+): ReadonlyMap<string, readonly string[]> {
+  let next: Map<string, readonly string[]> | null = null;
+  for (const [id, mem] of gone) {
+    const runs = mem.runId !== null ? [...mem.pastRuns, mem.runId] : mem.pastRuns;
+    const known = (next ?? history).get(id) ?? [];
+    const added = runs.filter((r, i) => !known.includes(r) && runs.indexOf(r) === i);
+    if (added.length === 0) continue;
+    next ??= new Map(history);
+    next.set(id, [...known, ...added]);
+  }
+  return next ?? history;
+}
 
 export interface ClaudeSubagentState {
   /** True once this CLI process has sent a `background_tasks_changed` frame. */
@@ -82,10 +102,21 @@ export interface ClaudeSubagentState {
    * a run, so the start of a run it does not list is a late or stray frame.
    */
   readonly live: ReadonlyMap<string, string | null>;
+  /**
+   * Every run id seen for a task this process no longer tracks or guards, so that a task id
+   * rejoining under a new run - whether or not the live set names that run - still recognises
+   * a late frame from any run before it. Read only when a task has neither a tracked entry nor
+   * a retired guard; it never decides what is shown.
+   *
+   * Kept for the life of the CLI process (a relaunch starts empty): one short list per task
+   * that reported run ids. It is compared by reference, never scanned, so it adds nothing to
+   * the per-frame cost.
+   */
+  readonly runHistory: ReadonlyMap<string, readonly string[]>;
 }
 
 export function emptyClaudeSubagents(): ClaudeSubagentState {
-  return { levelSeen: false, tasks: new Map(), finishedFolded: 0, retired: new Map(), live: new Map() };
+  return { levelSeen: false, tasks: new Map(), finishedFolded: 0, retired: new Map(), live: new Map(), runHistory: new Map() };
 }
 
 function withRetired(
@@ -241,6 +272,7 @@ export function observeClaudeSubagentFrame(
   let levelSeen = state.levelSeen;
   let retired = state.retired;
   let liveNow = state.live;
+  let runHistory = state.runHistory;
   const put = (id: string, next: Tracked): void => {
     tasks.set(id, next);
   };
@@ -275,9 +307,12 @@ export function observeClaudeSubagentFrame(
       }
       const known = tasks.get(id);
       if (known && known.entry.state !== "running" && !restarts(known)) return state;
+      // The memory this start is judged against: the tracked entry, its retired guard, or - for
+      // a task neither holds any more - the runs it had before.
+      const history = known ?? wasRetired ?? remembered(runHistory, id);
       // A start from a run before the one tracked is late, running or not: taking it would
       // roll the entry back to that run, and the old run's own end would then end this one.
-      if (known && earlierRun(runId, known)) return state;
+      if (earlierRun(runId, history)) return state;
       // A resumed run is a new run: its predecessor's state, clock and counters go, whether that
       // run had ended or is still tracked as running.
       const prior = continuing(known, runId);
@@ -297,7 +332,7 @@ export function observeClaudeSubagentFrame(
         // A start that beats the agent into the live set records its detail hidden; the live-set
         // frame that names it is what shows it.
         shown: (prior?.shown ?? false) || (background && listedNow),
-        ...advance(known ?? wasRetired ?? NO_RUNS, runId, !prior),
+        ...advance(history, runId, !prior),
       });
       break;
     }
@@ -330,8 +365,10 @@ export function observeClaudeSubagentFrame(
           if (flagged && !known.ambient && !laterRun(entryRun, known)) put(id, { ...known, ambient: true });
           continue;
         }
-        // A level about an older run than the one tracked is late; it neither updates nor stops.
-        if (known && earlierRun(entryRun, known)) continue;
+        // A level about an older run than the one tracked (or, for a task no longer tracked,
+        // one it had before) is late; it neither updates nor stops.
+        const history = known ?? wasRetired ?? remembered(runHistory, id);
+        if (earlierRun(entryRun, history)) continue;
         // A later run starts clean, even if the run it replaces is still tracked as running.
         const prior = rejoined ? undefined : continuing(known, entryRun);
         const base = prior?.entry ?? freshEntry(id, now);
@@ -346,7 +383,7 @@ export function observeClaudeSubagentFrame(
           // that flagged it), and a new run starts unclassified, so only this entry can flag it.
           ambient: flagged || (prior?.ambient ?? false),
           shown: true,
-          ...advance(known ?? wasRetired ?? NO_RUNS, entryRun, !prior),
+          ...advance(history, entryRun, !prior),
         });
       }
       for (const [id, t] of tasks) {
@@ -358,9 +395,11 @@ export function observeClaudeSubagentFrame(
           // an early start is always followed by a set that names it. Foreground agents stay
           // tracked, since one may still be moved to the background.
           tasks.delete(id);
+          runHistory = remember(runHistory, [[id, t]]);
         }
       }
-      // A retired id the live set no longer lists has nothing left to be revived by.
+      // A retired id the live set no longer lists has nothing left to be revived by. Its runs
+      // are already in the history: every path that retires a task also records them there.
       if ([...retired.keys()].some((id) => !listed.has(id))) {
         retired = new Map([...retired].filter(([id]) => listed.has(id)));
       }
@@ -440,8 +479,11 @@ export function observeClaudeSubagentFrame(
       forgotten.push(t);
     }
   }
-  if (forgotten.length > 0) retired = withRetired({ levelSeen, retired, live: liveNow }, forgotten);
-  return bounded({ levelSeen, tasks, finishedFolded: state.finishedFolded, retired, live: liveNow }, state);
+  if (forgotten.length > 0) {
+    retired = withRetired({ levelSeen, retired, live: liveNow }, forgotten);
+    runHistory = remember(runHistory, forgotten.map((t) => [t.entry.id, t]));
+  }
+  return bounded({ levelSeen, tasks, finishedFolded: state.finishedFolded, retired, live: liveNow, runHistory }, state);
 }
 
 /**
@@ -466,6 +508,7 @@ export function foldClaudeSubagents(state: ClaudeSubagentState): ClaudeSubagentS
   return {
     levelSeen: state.levelSeen,
     live: state.live,
+    runHistory: remember(state.runHistory, gone.map((t) => [t.entry.id, t])),
     tasks,
     finishedFolded,
     retired: gone.length > 0 ? withRetired(state, gone) : state.retired,
@@ -502,13 +545,21 @@ function bounded(next: ClaudeSubagentState, prior: ClaudeSubagentState): ClaudeS
       tasks.delete(t.entry.id);
       finishedFolded += 1;
     }
-    next = { ...next, tasks, finishedFolded, retired: withRetired(next, capped) };
+    next = {
+      ...next,
+      tasks,
+      finishedFolded,
+      retired: withRetired(next, capped),
+      runHistory: remember(next.runHistory, capped.map((t) => [t.entry.id, t])),
+    };
   }
   return sameState(next, prior) ? prior : next;
 }
 
 function sameState(a: ClaudeSubagentState, b: ClaudeSubagentState): boolean {
   if (a.levelSeen !== b.levelSeen || a.finishedFolded !== b.finishedFolded) return false;
+  // Replaced, never mutated, and only when a run is added: identity is equality here.
+  if (a.runHistory !== b.runHistory) return false;
   if (a.live.size !== b.live.size) return false;
   for (const [id, run] of a.live) {
     if (!b.live.has(id) || b.live.get(id) !== run) return false;

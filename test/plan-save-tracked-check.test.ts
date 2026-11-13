@@ -19,11 +19,13 @@ import type { SavePlanInput } from "../src/shared/managed-plans.ts";
  *
  * The git the store runs is a wrapper, named ahead of every other directory through
  * `MISSION_EXECUTABLE_PATHS`, that delegates to the real git except for `ls-files` while a
- * marker file exists - then it is SIGKILLed, the same unanswered outcome a timeout produces.
+ * marker file exists - then it is SIGKILLed, the same unanswered outcome a timeout produces -
+ * or, under a second marker, exits 128 the way a held index lock makes it.
  */
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-plan-tracked-check-")));
 const bin = join(home, "bin");
 const killMarker = join(home, "kill-ls-files");
+const failMarker = join(home, "fail-ls-files");
 const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 mkdirSync(bin, { recursive: true });
 writeFileSync(join(bin, "git"), [
@@ -31,6 +33,11 @@ writeFileSync(join(bin, "git"), [
   `if [ -e '${killMarker}' ]; then`,
   "  for arg in \"$@\"; do",
   "    if [ \"$arg\" = ls-files ]; then kill -KILL $$; fi",
+  "  done",
+  "fi",
+  `if [ -e '${failMarker}' ]; then`,
+  "  for arg in \"$@\"; do",
+  "    if [ \"$arg\" = ls-files ]; then echo \"fatal: Unable to create '.git/index.lock': File exists.\" >&2; exit 128; fi",
   "  done",
   "fi",
   `exec '${realGit}' "$@"`,
@@ -50,7 +57,10 @@ after(() => {
   else process.env.MISSION_EXECUTABLE_PATHS = originalExecutablePaths;
   rmSync(home, { recursive: true, force: true });
 });
-afterEach(() => rmSync(killMarker, { force: true }));
+afterEach(() => {
+  rmSync(killMarker, { force: true });
+  rmSync(failMarker, { force: true });
+});
 
 const git = (cwd: string, ...args: string[]) => execFileSync(realGit, ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 
@@ -92,4 +102,19 @@ test("a plan directory git really tracks is still refused as one", async () => {
   git(authority.checkout, "add", "-A");
   git(authority.checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "track a plan");
   await assert.rejects(savePlan(authority, input("tracked-plan")), /Existing tracked plans cannot be adopted or migrated by a new-plan save/);
+});
+
+test("a git that exits with an error is reported with its reason, not as a tracked plan", async () => {
+  const authority = repo();
+  writeFileSync(failMarker, "");
+  await assert.rejects(savePlan(authority, input("locked-plan")), (error: Error) => {
+    assert.doesNotMatch(error.message, /Existing tracked plans/, "an error exit lists no files");
+    assert.match(
+      error.message,
+      /Could not check docs\/plans\/locked-plan for tracked files: git ls-files failed: fatal: Unable to create '\.git\/index\.lock': File exists\./,
+    );
+    return true;
+  });
+  rmSync(failMarker, { force: true });
+  assert.equal((await savePlan(authority, input("locked-plan"))).manifest.revision, 1);
 });

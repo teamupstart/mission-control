@@ -290,10 +290,14 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
       // host under load, not a big checkout. `run`'s 4 s default was routinely exceeded there,
       // and a git that never answered was then reported as tracked plans that do not exist.
       const tracked = await run("git", ["-C", authority.checkout, "ls-files", "--", `docs/plans/${input.slug}/`], { timeoutMs: PLAN_TRACKED_CHECK_TIMEOUT_MS });
-      if (tracked.outcomeUnknown || tracked.overflowed) {
+      // Only an answer counts as a refusal: git ran, exited 0, and listed files. Any other
+      // outcome - a timeout, a kill, an overflow, or an error exit such as a held index lock
+      // or a corrupt index - says nothing about tracked plans, so it is reported as the
+      // check it is, with git's own reason.
+      if (tracked.outcomeUnknown || tracked.overflowed || tracked.code !== 0) {
         throw new PlanStoreError(`Could not check docs/plans/${input.slug} for tracked files: ${describeCommandFailure("git ls-files", tracked)}. Retry the save.`);
       }
-      if (tracked.code !== 0 || tracked.stdout.trim()) throw new PlanStoreError("Existing tracked plans cannot be adopted or migrated by a new-plan save");
+      if (tracked.stdout.trim()) throw new PlanStoreError("Existing tracked plans cannot be adopted or migrated by a new-plan save");
       if (existsSync(existing) || (() => { try { return !!lstatSync(existing); } catch { return false; } })()) throw new PlanStoreError("Unmanaged plan already exists. Edit its tracked layout explicitly; migration is not supported");
       const id = context.reservedPlanId && !db.prepare("SELECT 1 FROM managed_plans WHERE id = ?").get(context.reservedPlanId) ? context.reservedPlanId : randomUUID();
       plan = { id, repo_root: context.repoRoot, repo_key: context.repoKey, store_path: path.relative(STATE_DIR, path.join(context.localStore, id)), slug: input.slug, policy: JSON.stringify(context.policy), current_revision: 0 };

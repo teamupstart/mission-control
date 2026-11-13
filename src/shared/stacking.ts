@@ -502,6 +502,9 @@ export function deriveStackState(facts: StackStateFacts): StackState {
     const landed = mergeLandedOnDefault(o.baseRefName, o.defaultBranch);
     return landed === null ? "merge-unconfirmed" : landed ? "released" : "broken";
   }
+  // A parent whose own merge missed the default branch outranks a release recorded earlier: the
+  // work this child was built on is not on the default branch, whatever was verified before.
+  if (o && o.childState === "OPEN" && o.parentState === "MERGED" && o.parentMergedInto) return "broken";
   if (head && facts.releasedHeadSha === head && o?.childState !== "CLOSED") return "released";
   if (!o) return "current";
   if (stackBrokenReason(o)) return "broken";

@@ -702,7 +702,9 @@ left to the tick, which retries it and shows *Retarget failed:* as below. A pare
 merge went into a branch other than the default branch (the middle of a three-pull-request
 stack merged into its own parent's branch) moves none of its children, here or on the tick: its
 work is not on the default branch, so a child retargeted there could merge and complete without
-it. Those children read *Stack broken: #A merged into `<branch>`, not main*.
+it. Those children read *Stack broken: #A merged into `<branch>`, not main*, even one whose
+release was recorded earlier: the release check withdraws it, so the merge gates hold the child
+again.
 
 Every tick compares the child's base with the branch it belongs on
 (the parent's branch while it is open, the default branch once it merged into the default branch

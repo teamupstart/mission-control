@@ -31,7 +31,7 @@ process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
 const { observeClosedStackChildren, observeStackLifecycle } = await import("../src/server/stacking/state.ts");
 const { stackPromptCandidate, stackStandingFor } = await import("../src/server/stacking/delivery.ts");
-const { adoptStackLineage } = await import("../src/server/stacking/lineage.ts");
+const { adoptStackLineage, refreshStackRelease } = await import("../src/server/stacking/lineage.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const PARENT = "https://github.com/acme/repo/pull/1416";
@@ -134,6 +134,14 @@ test("a child whose parent merged off the default branch is not retargeted, and 
   assert.equal(stackPromptNeed("broken", grandchild), null);
   assert.equal(stackLifecycleLabel({ state: "broken", parentNumber: 1416, brokenReason: "parent-merged-off-default", retargetError: null, prompt: null }, grandchild).label,
     "Stack broken: #1416 merged into `feat/phase-0`, not main");
+});
+
+test("a parent's merge off the default branch outranks a release recorded for the child's head", () => {
+  const released = observation({ childState: "OPEN", baseRefName: "main", childMergeCommitSha: null, childMergedAt: null });
+  assert.equal(deriveStackState({ observation: released, releasedHeadSha: CHILD_HEAD }), "released");
+  const strayParent = { ...released, parentMergedInto: "feat/phase-0" };
+  assert.equal(deriveStackState({ observation: strayParent, releasedHeadSha: CHILD_HEAD }), "broken");
+  assert.equal(stackBrokenReason(strayParent), "parent-merged-off-default");
 });
 
 test("the Broken label names the parent's branch and the default branch, then why the recovery has not gone", () => {
@@ -391,4 +399,32 @@ test("a stray merge first seen without its merge commit or merge times is read a
   reads.length = 0;
   await observeClosedStackChildren(counted({ refs: new Map([[PARENT, parentRefs(PARENT_MERGED_AT)], [CHILD, childRefs]]) }), ctx, () => "/repo", 60_000);
   assert.deepEqual(reads, []);
+});
+
+test("the release check withdraws a recorded release once the parent turns out to have merged off the default branch", async () => {
+  adoptRow(PARENT, "parent-session", 1_000, "feat/phase-1");
+  const key = adoptRow(CHILD, "child-session", 2_000, "feat/phase-2");
+  assert.equal(adoptStackLineage(key, { task: CHILD_TASK, episodeId: "ep-child" }, 2_000), true);
+  const open = snapshot({ state: "OPEN", baseRefName: "main", mergeCommitSha: null, mergedAt: null });
+  const parentRefs = (baseRefName: string): PrRefs => ({ state: "MERGED", isDraft: false, headSha: PARENT_HEAD,
+    headRefName: "feat/phase-1", baseRefName, defaultBranch: "main", mergeCommitSha: PARENT_MERGE, mergedAt: PARENT_MERGED_AT });
+  const releaseIt = () => assert.equal(db.releaseInspectorPrStack(key, CHILD_HEAD, "merged", 3_000), true);
+
+  // Read from GitHub: the parent merged into its own parent's branch. The release is withdrawn.
+  releaseIt();
+  assert.equal(await refreshStackRelease(db.getInspectorPr(key)!, open, "/repo", seam({ refs: new Map([[PARENT, parentRefs("feat/phase-0")]]) }), 4_000), false);
+  assert.equal(db.getInspectorPr(key)!.stack!.releasedHeadSha, null);
+
+  // The ledger shortcut ("the parent merged, the release is final") does not skip that check
+  // when the ledger saw the parent's base was another branch.
+  releaseIt();
+  db.updateInspectorPr("acme/repo#1416", { state: "closed", observedState: "MERGED", baseRefName: "feat/phase-0" }, 5_000);
+  assert.equal(await refreshStackRelease(db.getInspectorPr(key)!, open, "/repo", seam({ refs: new Map([[PARENT, parentRefs("feat/phase-0")]]) }), 6_000), false);
+  assert.equal(db.getInspectorPr(key)!.stack!.releasedHeadSha, null);
+
+  // A parent merged into main keeps the final release, without a GitHub read.
+  releaseIt();
+  db.updateInspectorPr("acme/repo#1416", { baseRefName: "main" }, 7_000);
+  assert.equal(await refreshStackRelease(db.getInspectorPr(key)!, open, "/repo", seam({ refs: new Map() }), 8_000), true);
+  assert.equal(db.getInspectorPr(key)!.stack!.releasedHeadSha, CHILD_HEAD);
 });

@@ -109,8 +109,9 @@ export interface ClaudeSubagentState {
    * a retired guard; it never decides what is shown.
    *
    * Kept for the life of the CLI process (a relaunch starts empty): one short list per task
-   * that reported run ids. It is compared by reference, never scanned, so it adds nothing to
-   * the per-frame cost.
+   * that reported run ids. State equality compares the map by reference. A frame reads only its
+   * own task's list - a map lookup, then a search of that list for the incoming run id - so the
+   * cost per frame does not grow with the number of tasks remembered.
    */
   readonly runHistory: ReadonlyMap<string, readonly string[]>;
 }
@@ -151,8 +152,10 @@ function advance(known: RunMemory, incoming: string | null, fresh: boolean): Run
     ? [...known.pastRuns, known.runId]
     : known.pastRuns;
   // Unbounded on purpose: forgetting a run is exactly what would let its late frame pass for a
-  // new one. The list grows by one id per resume of this one task, and goes with the task:
-  // once it is folded away the live set no longer names it, and nothing can revive it.
+  // new one. The list grows by one id per resume of this one task. When the task is folded or
+  // otherwise dropped, its runs move to `runHistory` rather than being lost: a later run of the
+  // same task id may still rejoin and is tracked afresh, while frames naming any of the old
+  // runs stay late.
   return { runId, pastRuns };
 }
 

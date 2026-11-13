@@ -22,7 +22,7 @@ import { isBareRepository } from "../util/git.ts";
  */
 export type RemoteProbe<T> =
   | { ok: true; value: T }
-  | { ok: false; reason: string; outcomeUnknown: boolean };
+  | { ok: false; reason: string; outcomeUnknown: boolean; code?: "branch_missing" };
 
 /** Bounded because these run in front of a dispatch a person is waiting on. */
 const LOCAL_TIMEOUT_MS = 15_000;
@@ -349,6 +349,17 @@ export async function freshRemoteBranchSha(
     );
     if (!failed(fetched)) break;
     if (!staleRemoteTrackingRef(fetched) || attempt === MAX_FETCH_ATTEMPTS) {
+      // A fetch error alone cannot distinguish deletion from access/network trouble.
+      // Only a successful empty advertisement proves the branch is absent. Keep unknown
+      // fetch outcomes as failures, and never classify them by localized stderr text.
+      if (!fetched.outcomeUnknown && !fetched.overflowed) {
+        const advertised = await execute("git", ["-C", root, "ls-remote", remote, remoteRef], {
+          timeoutMs: NETWORK_TIMEOUT_MS,
+        });
+        if (!failed(advertised) && advertised.stdout.trim() === "") {
+          return { ok: false, reason: `${remote} has no branch ${branch}`, outcomeUnknown: false, code: "branch_missing" };
+        }
+      }
       return failure(`git fetch ${remote} ${branch}`, fetched, NETWORK_TIMEOUT_MS);
     }
   }
@@ -356,6 +367,9 @@ export async function freshRemoteBranchSha(
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
   if (failed(listed)) return failure(`git ls-remote ${remote} ${branch}`, listed, NETWORK_TIMEOUT_MS);
+  if (listed.stdout.trim() === "") {
+    return { ok: false, reason: `${remote} has no branch ${branch}`, outcomeUnknown: false, code: "branch_missing" };
+  }
   let advertised: string | null = null;
   for (const line of listed.stdout.split("\n")) {
     const [oid, name] = line.split("\t");

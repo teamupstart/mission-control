@@ -6,7 +6,8 @@ launch it from **Dispatch > Resident**. It runs as an ordinary session in the Ag
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
 This page describes profiles, launch, the persistent wake loop, repository-free residents,
-skill sources, session control, MCP servers and their dashboard controls. Skill selection remains a later phase of
+[instruction changes a resident proposes](#changing-instructions-from-the-conversation) and its
+retro, skill sources, session control, MCP servers and their dashboard controls. Skill selection remains a later phase of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
@@ -361,7 +362,9 @@ messages, and never clears a blocker without evidence that its `resumeWhen` cond
 
 After each completed turn a resident waits for its next wake. Foreman never completes it
 automatically. It ends when you choose **Complete & close** on its session,
-or when its session goes away, which settles its task through the ordinary task lifecycle. A
+or when its session goes away, which settles its task through the ordinary task lifecycle. The
+Complete dialog first offers a [retro](#retro-before-completing) that turns your steering into
+proposed instruction changes. A
 failed launch, or one interrupted by a daemon restart before its session started, is recorded
 with its reason and is never relaunched; launch the profile again.
 
@@ -408,6 +411,12 @@ already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
+When the resident is busy - a turn in progress, a human message waiting, an open request for
+you, or a compaction - Run now queues the iteration instead of refusing. The status reads
+**run queued** and the control becomes **Cancel queued run**. Whatever had priority finishes
+first; the queued iteration then runs once, on the next idle moment, without waiting for the
+cadence. The request is durable across reloads and daemon restarts. Pausing drops it, and Run
+now on a paused, busy resident resumes the loop and queues.
 After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
 and launches the latest revision in a new conversation. The old task and session stay open, and
 Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
@@ -434,8 +443,17 @@ for that conversation.
 Before a wake at or above the context threshold, the daemon asks the harness to compact and
 waits for a measured result below that threshold. Compaction and human turns do not count as
 iterations. Missing or invalid context readings pause before a wake until a fresh measurement
-is available and you resume. An interrupted or unconfirmed compaction also pauses instead of
-sending a loop prompt.
+is available and you resume. A compaction never sends the loop prompt until it is measured
+below the threshold.
+
+A compaction that makes no progress for ten minutes is interrupted, so the harness turn ends
+and the session is idle again instead of working indefinitely. A failed compaction (stalled,
+ended without a measured boundary, or refused by the harness) is retried after 1, 5 and then
+15 minutes; the status names the failure and the next retry. A fourth consecutive failure
+pauses with that reason, and Resume starts a fresh set of retries. A measured compaction resets
+the count. Two failures pause at once: a compaction that could not be interrupted, because the
+session may still be mid-turn, and one that finished above the threshold. A human message that
+arrives during a failing compaction keeps precedence, and the next wake compacts again.
 
 The editor and every live-run surface name the active compaction layers:
 
@@ -486,6 +504,62 @@ unconfirmed**, counts conservatively, and pauses for you; it is never silently r
 Sent and released delivery rows are retained for seven days. Unresolved claims are reconciled
 before pruning, and uncertain deliveries stay until the run ends. Pruning never decreases the
 cumulative iteration or reuses a sequence. Pacing receipts remain for the run's lifetime.
+
+## Changing instructions from the conversation
+
+A resident can propose changes to its own standing instructions, so a rule you work out with it
+in conversation does not have to be copied into the editor by hand. Ask it to update its
+instructions and it uses two Mission Control tools:
+
+- `get_resident_instructions` returns the current text of the profile's instructions and of the
+  Persona it names, their revisions, and whether each can be edited.
+- `propose_resident_instruction_changes` asks you, as a `request_input` question, which of its
+  proposed changes to apply, and waits for your answer. Each change replaces one exact passage,
+  removes one, or appends a new one, in the profile instructions or in the Persona's guidance.
+
+The question arrives on the same **input** card as any agent's `request_input` question. It shows
+every change in full, exactly as it would be written, with one checkbox per change. Tick the ones
+you want and choose **Submit**. Mission Control writes exactly those:
+
+- Profile changes become the profile's next revision, as if you had saved them in the editor.
+- Persona changes become the Persona's next revision. Every profile and task that uses that
+  Persona reads it at its next launch.
+
+Text in **Other** goes back to the resident as guidance and is never applied.
+**Dismiss** or **Chat about it** writes nothing.
+
+- **Only your answer applies a proposal.** Foreman and sessions with session control cannot
+  approve one, and no tool lets a resident write its profile or Persona directly (see
+  [security](security.md#resident-instruction-changes)). The answer applies when you give it, even
+  if the resident's tool call timed out first.
+- **Every selection applies.** A proposal is checked against the current text before you see it:
+  each replaced passage must occur exactly once, no two changes may overlap, and even with every
+  growing change applied the result must fit its limit: characters for profile instructions, UTF-8
+  bytes for Persona guidance.
+- **A stale proposal writes nothing.** If the profile or Persona a selected change edits was
+  changed after the proposal was made, or a selected Persona change is for a Persona the profile no
+  longer names, the answer applies none of it and the resident is told to read the text again. A
+  selection that would leave the resident with no role, or exceed the instruction limits, also
+  writes nothing.
+- **Built-ins stay read-only.** A built-in resident's profile and a built-in Persona cannot be
+  edited. Duplicate the resident to shape its instructions.
+
+The running resident keeps the revision it launched with. Its band shows **Profile changed since
+launch (now revision N)**; choose **Restart on new profile** when you want it to run on the change.
+
+### Retro before completing
+
+When you choose **Complete** on a resident that can still take a turn, the Complete dialog offers
+**Run a retro first**. It types a retrospective into the resident's own conversation: the resident
+reads its conversation back, finds where you corrected or redirected it, and proposes changes to
+its instructions or Persona through the same `request_input` question. Choose what to apply,
+then complete it.
+
+The retro completes nothing and needs no skill, because the only write it can make is a proposal
+you approve. It is offered whether or not you steered the resident, because Complete is the last
+time its conversation can be read back. It is not offered for a built-in resident or for one that
+can no longer receive a turn. It never writes [repository memory](repository-memory.md); a
+resident's card does not offer the memory retro.
 
 ## MCP servers
 

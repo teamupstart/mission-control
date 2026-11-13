@@ -87,13 +87,32 @@ test("new and upgraded settings exclude HTML; changing the preference never reco
   assert.equal(Object.hasOwn(JSON.parse(stored.value), "commitPlanHtml"), false, "the saved legacy record lacks the new preference");
   const before = getSkillsConfig();
   assert.equal(skillsConfigProblem(), null);
-  assert.deepEqual(before, { ...legacy, defaultSkillEnabled: false, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository" }, "parsing defaults the new preference and preserves legacy values");
+  assert.deepEqual(before, { ...legacy, defaultSkillEnabled: false, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository", grillFirstKinds: [] }, "parsing defaults the new preference and preserves legacy values");
   const changed = applySkillsConfig({ commitPlanHtml: true }, NOW);
   assert.equal(changed.config.commitPlanHtml, true);
   assert.equal(changed.changed, false);
   assert.equal(changed.config.generation, before.generation);
   assert.equal(changed.config.generationAt, before.generationAt);
   assert.deepEqual(links(), []);
+});
+
+test("Grill me first is a live preference: toggling it never reconciles skill links or reload generation", () => {
+  // The disk is behind the config - alpha is on and not linked - so anything that reconciled
+  // would link it and move the watermark, and every running session would owe a reload.
+  setAppConfig(APP_CONFIG_ENTRIES.skills, { enabled: true, skills: { alpha: true }, generation: 7, generationAt: 123 });
+  const before = getSkillsConfig();
+  assert.deepEqual(before.grillFirstKinds, [], "a saved record without the preference starts every kind off");
+  for (const grillFirstKinds of [["plan", "ship"], []] as const) {
+    const result = applySkillsConfig({ grillFirstKinds: [...grillFirstKinds] }, NOW);
+    assert.deepEqual(result.refused, []);
+    assert.equal(result.changed, false);
+    assert.deepEqual(getSkillsConfig(), { ...before, grillFirstKinds: [...grillFirstKinds] });
+    assert.deepEqual(links(), []);
+  }
+  // The control: the same config with a reconciling patch does link alpha and advance it.
+  assert.equal(applySkillsConfig({ skills: { beta: false } }, NOW).changed, true);
+  assert.deepEqual(links(), ["mission-alpha"]);
+  assert.equal(getSkillsConfig().generation, 8);
 });
 
 test("migration's daemon request passes the real patch schema and preserves disabled skill configuration", async () => {

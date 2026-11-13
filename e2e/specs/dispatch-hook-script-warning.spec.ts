@@ -55,6 +55,7 @@ const EVENTS = [
   "SubagentStop",
   "PreCompact",
   "SessionEnd",
+  "SubagentStart",
 ];
 
 /** Claude Code's user settings, inside the daemon's isolated home. */
@@ -129,15 +130,15 @@ test("a hook path that no longer resolves is named at dispatch time, and clears 
   await expect(environmentNote(dialog)).toBeHidden();
   await closeDispatch(dashboard);
 
-  // The reported state: nine events wired to a checkout that has been renamed away.
+  // The reported state: every event wired to a checkout that has been renamed away.
   installHooks(daemon, stalePath(daemon));
   dialog = await openDispatch(dashboard);
   const note = environmentNote(dialog);
   await expect(note).toBeVisible();
   // The path, so the operator can see which of their checkouts it is.
   await expect(note).toContainText(stalePath(daemon));
-  // How much of their machine is affected. Nine events, not "a hook".
-  await expect(note).toContainText("9 hook events");
+  // How much of their machine is affected. Every installed event, not "a hook".
+  await expect(note).toContainText(`${EVENTS.length} hook events`);
   // The symptom they actually saw in the transcript, so this note is connectable to it
   // rather than reading as an unrelated complaint.
   await expect(note).toContainText("MODULE_NOT_FOUND");
@@ -218,7 +219,7 @@ test("the Setup panel carries the dead hook path as a required row with its reme
   const row = setupRow(dashboard, "environment-check-mission-hook-script");
   await expect(row).toContainText("Claude Code hooks");
   await expectRowStatus(dashboard, "environment-check-mission-hook-script", "Needs setup");
-  await expect(row).toContainText("9 hook events");
+  await expect(row).toContainText(`${EVENTS.length} hook events`);
   // The remedy the panel offers is the installer, not a skill and not a link.
   await expect(row).toContainText("npm run install-hooks");
   await shoot(dashboard, "hook-script-setup-row");

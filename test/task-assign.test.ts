@@ -18,6 +18,10 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
+const { GRILL_SESSION_ACTION_ID } = await import("../src/server/workflows/builtin-session-actions.ts");
+const { GRILL_FIRST_HEADING } = await import("../src/server/grill-first.ts");
 
 /** Every git fixture this file built, removed together - they are whole checkouts. */
 const roots: string[] = [];
@@ -1224,6 +1228,188 @@ test("an assignment verifies every submission tool the task needs", async () => 
   assert.match(res.error ?? "", /submit_workflow_evidence/, "name the tool that is missing");
   assert.equal(reset, false, "nothing may be done to an agent that cannot finish the task");
   assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
+test("a grill-first task is refused before the reset when the MCP bundle cannot be launched", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-nomcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => null,
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /Grill me first/);
+  assert.match(res.error ?? "", /MCP server is not built/);
+  assert.equal(reset, false, "nothing may be done to an agent that cannot run the interview");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), "feature/mine");
+});
+
+test("a grill-first task is refused before the reset when the bundle lacks request_plan_decisions", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-stale-mcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+  let asked: readonly string[] = [];
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "node",
+      args: ["server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpToolsForRunningSession: async (required) => {
+      asked = required;
+      return {
+        ok: false as const,
+        reason:
+          "Mission Control's MCP server at /dist/mcp/server.mjs does not publish "
+          + "request_plan_decisions. Run: npm run build",
+      };
+    },
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.deepEqual([...asked], ["request_plan_decisions"]);
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /starts with Grill me first, and .*request_plan_decisions/);
+  assert.equal(reset, false, "nothing may be done to an agent that cannot run the interview");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
+test("a grill-first task is refused before the reset when this session cannot load the grill skill", async () => {
+  // The skill rung of the assignment seam, after the MCP checks have passed: Grill me first
+  // opens with an action that invokes the grill skill, so a session that cannot load it - the
+  // skill switched off, or a conversation still holding the skill set from before the last
+  // change - would be reset and then told to run an interview it cannot start.
+  const cases = [
+    {
+      name: "the grill skill is off",
+      config: { enabled: true, skills: { grill: false } },
+      startedAt: Date.now() + 1_000,
+      error: /Enable Skills and the grill skill/,
+    },
+    {
+      name: "the session predates the current skills",
+      config: { enabled: true, skills: { grill: true } },
+      // Started long before the generation moved, and never acknowledged the reload.
+      startedAt: 0,
+      error: /Wait for Claude Code to reload its skills/,
+    },
+  ] as const;
+  for (const scenario of cases) {
+    // Off first, so turning skills on (or the grill skill off) moves the generation now.
+    applySkillsConfig({ enabled: false });
+    assert.deepEqual(applySkillsConfig(scenario.config).refused, [], scenario.name);
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-noskill-", { startedAt: scenario.startedAt });
+    gitIn(clone, "checkout", "-qb", "feature/mine");
+    r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+    let reset = false;
+    let typed = false;
+
+    let res: Awaited<ReturnType<typeof tasks.assign>>;
+    try {
+      res = await tasks.assign("t1", sessionId, {
+        paneReady,
+        confirmReset: true,
+        missionMcpDescriptor: async () => ({
+          serverName: "mission-control",
+          command: "node",
+          args: ["server.mjs"],
+          env: {},
+        }),
+        verifyMissionMcpToolsForRunningSession: async () => ({ ok: true as const }),
+        reset: async () => {
+          reset = true;
+          return cleanReset();
+        },
+        inject: async () => {
+          typed = true;
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      });
+    } finally {
+      applySkillsConfig({ enabled: false });
+    }
+
+    assert.equal(res.ok, false, scenario.name);
+    assert.match(res.error ?? "", scenario.error, scenario.name);
+    assert.match(res.error ?? "", /A Grill me first task opens with the Grill session action/, scenario.name);
+    assert.equal(res.scope, "task", scenario.name);
+    assert.equal(reset, false, `${scenario.name}: nothing may be done to an agent that cannot run the interview`);
+    assert.equal(typed, false, `${scenario.name}: and nothing is typed at it`);
+    assert.equal(r.getTask("t1")?.status, "backlog", scenario.name);
+    assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), "feature/mine", `${scenario.name}: the checkout is untouched`);
+  }
+});
+
+test("an assigned grill-first task is typed the resolved Grill action ahead of its contract, with request_plan_decisions verified", async () => {
+  // The success path through the live-session seam. The two refusals above prove the tool
+  // check runs; this proves a passing one ends in a prompt that actually opens with the
+  // interview - the operator's edited Grill instruction, resolved against THIS session's
+  // skills, ahead of the ship contract - rather than a ship prompt with nothing to grill.
+  assert.deepEqual(applySkillsConfig({ enabled: true, skills: { grill: true } }).refused, []);
+  // Started after the skills generation moved, so the watermark rung admits it the way it
+  // admits any session launched on the current set.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-ok-", { startedAt: Date.now() + 1_000 });
+  const actions = new SessionActionManager(r);
+  const shipped = actions.get(GRILL_SESSION_ACTION_ID)!;
+  const edited = `${shipped.promptMarkdown}\nAsk about rollout risk in the first round.\n`;
+  assert.equal(actions.update(GRILL_SESSION_ACTION_ID, { expectedRevision: shipped.revision, promptMarkdown: edited }).ok, true);
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true, intent: "add archive exports" }));
+  let asked: readonly string[] = [];
+  let typed: string | null = null;
+
+  let res: Awaited<ReturnType<typeof tasks.assign>>;
+  try {
+    res = await tasks.assign("t1", sessionId, {
+      paneReady,
+      confirmReset: true,
+      missionMcpDescriptor: async () => ({
+        serverName: "mission-control",
+        command: "node",
+        args: ["server.mjs"],
+        env: {},
+      }),
+      verifyMissionMcpToolsForRunningSession: async (required) => {
+        asked = required;
+        return { ok: true as const };
+      },
+      reset: cleanReset,
+      inject: async (_session, prompt) => {
+        typed = prompt;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+  } finally {
+    actions.reset(GRILL_SESSION_ACTION_ID, actions.get(GRILL_SESSION_ACTION_ID)!.revision);
+    applySkillsConfig({ enabled: false });
+  }
+
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual([...asked], ["request_plan_decisions"], "the decisions tool is required of this session");
+  assert.ok(typed !== null, "the task was typed");
+  const prompt: string = typed;
+  assert.match(prompt, /^add archive exports/, "the operator's words stay first");
+  const grill = prompt.indexOf(`${GRILL_FIRST_HEADING}\n`);
+  assert.ok(grill > 0, "the Grill block was delivered");
+  assert.ok(prompt.includes(`\n/grill\n\n${edited}`), "this session's skill line, then the EDITED instruction verbatim");
+  assert.ok(prompt.indexOf("## Ship task completion handoff") > grill, "the ship contract still follows it");
 });
 
 test("assigned scout and ship prompts keep intent first and receive the shared authorization", async () => {

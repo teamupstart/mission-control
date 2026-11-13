@@ -7,8 +7,10 @@ import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { HOOK_BACKGROUND_TASKS_MAX, HOOK_SUBAGENT_TEXT_MAX } from "./hook-subagents.mjs";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
+  GRILL_FIRST_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
   RESIDENT_TASK_REFUSAL,
@@ -20,7 +22,7 @@ import {
   taskKindPersonaRefusal,
 } from "./task.ts";
 import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
-import type { HarnessLaunchedTaskKind } from "./task.ts";
+import type { GrillFirstTaskKind, HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -249,6 +251,27 @@ const EnvSchema = z
   })
   .prefault({});
 
+/** One bounded sub-agent text field from a hook bridge (`hook-subagents.mjs` clips to the same bound). */
+const HookSubagentText = z.string().min(1).max(HOOK_SUBAGENT_TEXT_MAX);
+
+/** The Agent tool call a Claude `PostToolUse` reports. See `agentToolDescriptor`. */
+const HookAgentToolSchema = z.object({
+  agentId: HookSubagentText.optional(),
+  /** Claude's `tool_response.status`; `async_launched` is a background agent. */
+  status: HookSubagentText.optional(),
+  subagentType: HookSubagentText.optional(),
+  description: HookSubagentText.optional(),
+});
+
+/** One entry of Claude's in-flight `background_tasks`. See `backgroundTaskList`. */
+const HookBackgroundTaskSchema = z.object({
+  id: HookSubagentText,
+  /** Claude's friendly label: `subagent`, `shell`, `monitor`, `workflow`, … */
+  type: HookSubagentText.optional(),
+  description: HookSubagentText.optional(),
+  agentType: HookSubagentText.optional(),
+});
+
 /**
  * Payload a Claude Code hook posts to the daemon. The hook script forwards the
  * raw event JSON plus the terminal env it captured (pane ids), which the daemon
@@ -307,6 +330,32 @@ export const HookIngestSchema = z.object({
   //
   // Absent (not `false`) when it doesn't match, and absent on every non-Bash event.
   prCreated: z.boolean().optional(),
+  // The sub-agent this hook fired inside, when it did. Claude stamps `agent_id` on every hook
+  // a sub-agent's own tool calls raise, and those describe the sub-agent, not its parent: a
+  // background agent's `PreToolUse` must not flip an idle parent back to working. The daemon
+  // reads its presence and nothing else, so the value is a free string.
+  //
+  // Optional so a hook installed before this field existed keeps ingesting unchanged.
+  agentId: z.string().min(1).max(200).optional(),
+  // What a TERMINAL session's background sub-agents are read from (`harness/hook-subagents.ts`).
+  // An SDK session's driver owns its sub-agents and the daemon ignores these for it.
+  //
+  // Each one CATCHES to absent rather than failing the parse. They ride on events that also
+  // move the parent - `Stop` carries `backgroundTasks` - so a malformed descriptor must cost the
+  // sub-agent row, never the parent's own state.
+  //
+  // The sub-agent's type, on the events a sub-agent raises (`SubagentStart`, `SubagentStop`).
+  agentType: HookSubagentText.optional().catch(undefined),
+  // The Agent tool call a `PostToolUse` reports: which agent it launched and whether it went to
+  // the background.
+  agentTool: HookAgentToolSchema.optional().catch(undefined),
+  // The session's in-flight background work as `Stop` and `SubagentStop` list it. Present and
+  // empty means nothing is running; absent means this event does not say.
+  backgroundTasks: z.array(HookBackgroundTaskSchema).max(HOOK_BACKGROUND_TASKS_MAX).optional().catch(undefined),
+  // True when the bridge cut `backgroundTasks` at its bound. The list is then NOT the whole
+  // in-flight set - an agent past the cut is still running - so it may add agents but never stop
+  // one by omission.
+  backgroundTasksTruncated: z.literal(true).optional().catch(undefined),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;
@@ -1243,6 +1292,12 @@ export const DispatchSchema = z
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
+    /**
+     * Grill me first. Omitted follows the kind's default (`SkillsConfig.grillFirstKinds`);
+     * either way the answer is pinned on the task at creation. Ignored for a kind that does
+     * not offer it (`GRILL_FIRST_TASK_KINDS`).
+     */
+    grillFirst: z.boolean().optional(),
     backlog: z.boolean().optional().default(false),
     /**
      * Whether Foreman's backlog autopilot may schedule this task. Defaults on for every
@@ -1571,7 +1626,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
  * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `personaId`, `workflowId`,
- * `dependencies` and `enabled` are PROVISIONING fields -
+ * `grillFirst`, `dependencies` and `enabled` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
  * command line and the Persona into its standing instructions, while dependencies and enabled decide whether a launch is allowed - so a
@@ -1633,6 +1688,8 @@ const UpdateTaskFieldsSchema = z
     personaId: TaskPersonaIdSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
+    /** Grill me first. Provisioning intent, like `workflowId`. */
+    grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
   });
@@ -1658,6 +1715,9 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   advisorModel: true,
   // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
   personaId: true,
+  // Grill me first is the human's choice at dispatch; a task an agent files takes the
+  // Settings default, so MCP neither advertises nor sets it.
+  grillFirst: true,
 }).strict();
 
 /** A separate route prevents older daemons from silently dropping task overrides. */
@@ -2614,6 +2674,15 @@ export const SkillsConfigSchema = z.object({
   /** Pinned by new managed plans; rendered previews are retained regardless. */
   commitPlanHtml: z.boolean().default(false),
   planStorage: z.enum(["repository", "local"]).default("repository"),
+  /**
+   * Grill me first: the kinds whose new tasks start with it on, from Settings -> Tasks. Empty,
+   * so every kind starts off. Pinned on each task at creation and overridable per dispatch.
+   * On, the session runs the Grill session action before its work; off, the task is exactly
+   * the task it always was. Bounded by the kinds that offer it: each appears at most once.
+   */
+  grillFirstKinds: z.array(z.enum(GRILL_FIRST_TASK_KINDS as unknown as [GrillFirstTaskKind, ...GrillFirstTaskKind[]]))
+    .max(GRILL_FIRST_TASK_KINDS.length)
+    .default([]),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
@@ -2650,7 +2719,7 @@ export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
 export const SkillsConfigPatchSchema = partialPatch(
-  SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, alwaysDraftPr: true }),
+  SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, grillFirstKinds: true, alwaysDraftPr: true }),
 )
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
@@ -3888,6 +3957,20 @@ export const ResidentPlacementSchema = z.enum(RESIDENT_PLACEMENTS);
 export type ResidentPlacement = (typeof RESIDENT_PLACEMENTS)[number];
 
 /**
+ * Where the Board draws idle blocked sessions: sessions with a durable blocker that are idle or
+ * unconfirmed. `needs-you` gives them a lane under Needs you, `idle` a red frame at the top of
+ * Idle, and `column` a Blocked column of their own between Needs you and Working. One ordering
+ * (`src/web/lib/fleet-order.ts`) produces the blocked group; this only decides where it is drawn,
+ * so the Console rail, the arrow keys and the ⌘-numbers follow it without a second order.
+ *
+ * Later builds may append choices. The stored field reads an unknown one as the default, so a
+ * downgrade still opens, while the patch schema refuses one.
+ */
+export const BLOCKED_PLACEMENTS = ["needs-you", "idle", "column"] as const;
+export const BlockedPlacementSchema = z.enum(BLOCKED_PLACEMENTS);
+export type BlockedPlacement = (typeof BLOCKED_PLACEMENTS)[number];
+
+/**
  * How one session's Conversation is DRAWN - the same rows, read two ways.
  *
  * `chat` is the shipped log: role bylines, bubbles, tool chips. `terminal` is the Native
@@ -3964,6 +4047,21 @@ export type TaskKindHeaderStyle = (typeof TASK_KIND_HEADER_STYLES)[number];
 export const TASK_KIND_CARD_STYLES = ["tab", "chip", "band", "medallion", "off"] as const;
 export const TaskKindCardStyleSchema = z.enum(TASK_KIND_CARD_STYLES);
 export type TaskKindCardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
+
+/**
+ * How a session shows the sub-agents it launched in the background, on its board card and in
+ * its conversation together: `nested` hangs sub-cards beneath the card and docks a Background
+ * agents tray above the reply box; `chip` puts one chip in the card's flags that opens the
+ * agent list, and gives the conversation rail an Agents tab. One value covers both halves,
+ * because each was decided as a pair (`docs/plans/background-subagent-visibility/plan.md`).
+ *
+ * There is no `off`: the decision was one treatment or the other. Persisted on operators'
+ * machines, so append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the
+ * picker's order.
+ */
+export const BACKGROUND_AGENTS_STYLES = ["nested", "chip"] as const;
+export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
+export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
 
 /**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
@@ -4135,6 +4233,10 @@ export const UI_CONFIG_DEFAULTS = {
   residentPlacement: "drawer",
   /** The drawer floats over the page until someone pins it as a column. */
   residentDrawerPinned: false,
+  /** A lane under Needs you, the placement confirmed in review of the blocker plan. */
+  blockedPlacement: "needs-you",
+  /** The At the top of Idle frame starts open: a blocked session is never folded away unasked. */
+  blockedFrameCollapsed: false,
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
@@ -4153,6 +4255,8 @@ export const UI_CONFIG_DEFAULTS = {
   skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
   taskKindCard: "tab",
+  /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
+  backgroundAgentsStyle: "nested",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -4227,6 +4331,8 @@ export const UI_CONFIG_DEFAULTS = {
   conversationRailCollapsed: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /** The session rail starts open, as every build before the fold drew it. */
+  sessionRailFolded: false,
   /**
    * Empty, both of them: the bar ships the way its predecessor drew it - every item present
    * and every control at full size, with the measured ladder still shedding labels when the
@@ -4249,6 +4355,15 @@ export const UiConfigSchema = z.object({
   residentPlacement: ResidentPlacementSchema.default(UI_CONFIG_DEFAULTS.residentPlacement),
   /** Whether the Residents drawer is pinned as a column beside the fleet. Per machine. */
   residentDrawerPinned: z.boolean().default(UI_CONFIG_DEFAULTS.residentDrawerPinned),
+  /**
+   * Where idle blocked sessions are drawn on the Board and in the Console rail. Permissive on
+   * read, like `skin`: a placement a newer build added reads as the default after a downgrade
+   * rather than failing the whole config. The patch schema below is strict.
+   */
+  blockedPlacement: BlockedPlacementSchema
+    .default(UI_CONFIG_DEFAULTS.blockedPlacement)
+    .catch(UI_CONFIG_DEFAULTS.blockedPlacement),
+  blockedFrameCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.blockedFrameCollapsed),
   /**
    * Which rendering the Conversation opens in. A per-session override lives in the browser
    * only and never reaches here - see `src/web/lib/conversation-view.ts` for why that one is
@@ -4279,6 +4394,14 @@ export const UiConfigSchema = z.object({
   skin: SkinIdSchema.default(UI_CONFIG_DEFAULTS.skin).catch(UI_CONFIG_DEFAULTS.skin),
   taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
   taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
+  /**
+   * Which background sub-agent treatment the board and the conversation draw. `.catch` like
+   * `skin`, so a value a newer build added reads as Nested sub-cards after a downgrade rather
+   * than failing the whole `ui` record. The patch schema below is strict.
+   */
+  backgroundAgentsStyle: BackgroundAgentsStyleSchema
+    .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
+    .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -4409,6 +4532,17 @@ export const UiConfigSchema = z.object({
    */
   collapsedBoardColumns: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([]),
   /**
+   * Whether the session rail beside an open session's detail is folded down to a strip, so
+   * the conversation and terminal take the width it held.
+   *
+   * One flag for every rail the dashboard draws there - the Console's, and the Board drill-in's
+   * in both of its shapes - because they are one surface: the Board's focused column BECOMES
+   * that rail, and a fold that held on one side of the morph and not the other would read as
+   * the rail reopening by itself. Saved, like `collapsedBoardColumns`: how wide someone wants
+   * their reader is a way of working, not a gesture. See `src/web/lib/session-rail.ts`.
+   */
+  sessionRailFolded: z.boolean().default(UI_CONFIG_DEFAULTS.sessionRailFolded),
+  /**
    * The topbar's optional items the operator has hidden - the session counts, search, the cost
    * estimate, product feedback, and alerts and away mode.
    *
@@ -4467,6 +4601,11 @@ export const UiConfigPatchSchema = z.preprocess(
     // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
     // `{ skin: "nope" }` into a successful write of Default.
     skin: SkinIdSchema.optional(),
+    // Strict for the same reason: a `.partial()` of the stored `.catch` would store the default
+    // for a placement this build does not know.
+    blockedPlacement: BlockedPlacementSchema.optional(),
+    // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
+    backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
   }).refine(
     (o) => Object.keys(o).length > 0,
     { message: "empty config update" },
@@ -5582,7 +5721,7 @@ export const InjectPromptSchema = z.object({
    */
   stack: z.object({
     prKey: z.string().min(1).max(512),
-    kind: z.enum(["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
+    kind: z.enum(["catch-up", "restack", "recover-merge", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
     tip: z.string().min(1).max(128).nullable(),
   }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
@@ -6810,6 +6949,18 @@ const WorkflowContextSnapshotInputSchema = z.object({
     coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    publication: z.object({
+      version: z.literal(1),
+      treeOid: CommitOidSchema,
+      unpublishedPaths: z.array(z.string().max(4_096)).max(500),
+      artifactProblems: z.array(z.string().max(2_000)).max(100).default([]),
+      pathsTruncated: z.boolean(),
+      localArtifacts: z.array(z.object({
+        path: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.displayNameChars),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
+      })).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount),
+    }).optional(),
     reviewCommit: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),

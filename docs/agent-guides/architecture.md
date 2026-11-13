@@ -38,7 +38,9 @@ reap any remaining utilities before the update helper handles verified survivors
 The daemon stops workflow checks before slower
 session drains. The workflow engine's abort signal also follows a check through lease
 acquisition to its spawn gate, preventing late branch execution during shutdown. Detached
-check shims tear down their own group on loss of the private owner pipe; the daemon remains
+check shims tear down their own group on loss of the private owner pipe. Orderly shutdown also
+closes that pipe, so an unreadable identity or refused group signal
+does not leave the engine waiting for the command's full timeout. The daemon remains
 the only writer of interruption outcomes and lease recovery.
 
 The detached update helper outlives the desktop and drains verified owned processes before
@@ -75,6 +77,15 @@ dropping the layer. Fresh launches and legacy rows without a saved limit still r
 `schedule_next_iteration` uses the existing signed session/episode credential, without granting
 session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
 its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.
+
+`get_resident_instructions` and `propose_resident_instruction_changes` attribute the caller the
+same way. A proposal is validated against the current profile and Persona text, stored in
+`resident_instruction_proposals` keyed by the `request_input` review the daemon opens for it
+(`requestInputReview` in `src/shared/request-input.ts`, the tool's own builder),
+and applied by `ResidentInstructionChanges.resolution` (`src/server/residents/instruction-changes.ts`)
+inside the transaction `/api/reviews/:id/resolve` writes the human's answer in. Revisions are
+announced only after that commit. A resident's retro is a packet `runRetro` types into the
+resident's own session (`src/server/residents/retro-packet.ts`), with no skill gate.
 
 ## Executable environment and subprocesses
 

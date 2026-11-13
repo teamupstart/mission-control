@@ -48,6 +48,16 @@ import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
+import { sdkAskChannel } from "../../ask-channel-prompt.ts";
+import { SubagentEmitter } from "../../sdk/subagent-emitter.ts";
+import {
+  claudeSubagentSummary,
+  emptyClaudeSubagents,
+  foldClaudeSubagents,
+  isClaudeSubagentFrame,
+  observeClaudeSubagentFrame,
+  type ClaudeSubagentState,
+} from "./subagents.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
 //
@@ -410,6 +420,14 @@ class ClaudeSdkSession implements SdkSessionHandle {
   /** Serialize the experimental control so a slow older reading cannot land after a newer one. */
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
+  /**
+   * This CLI process's background sub-agents, and the coalescing door their summary leaves
+   * through. Per process: the CLI's live task set starts empty whenever it (re)starts.
+   */
+  private subagents: ClaudeSubagentState = emptyClaudeSubagents();
+  private readonly subagentEvents = new SubagentEmitter((subagents) =>
+    this.out.emit({ kind: "subagents", subagents }),
+  );
 
   /**
    * Closes the turn an `authentication_failed` frame opened when no `result` follows it.
@@ -456,11 +474,13 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private readonly compaction = new CompactionCompletion();
   compact = async (focus: string) => {
     if (this.turnActive) throw new Error("Cannot compact a busy session.");
-    const completed = this.compaction.begin();
-    try {
-      const accepted = await this.sendIfIdle({ text: `/compact ${focus}`.trim() });
-      if (!accepted) this.compaction.fail("The driver refused compaction while busy.");
-    } catch (error) { this.compaction.fail(String(error)); }
+    const completed = this.compaction.begin(() => this.interrupt());
+    // Not awaited, for the same reason as Codex: acceptance that never settles must not keep
+    // the stall bound's rejection from the caller.
+    void this.sendIfIdle({ text: `/compact ${focus}`.trim() }).then(
+      (accepted) => { if (!accepted) this.compaction.fail("The driver refused compaction while busy."); },
+      (error: unknown) => this.compaction.fail(String(error)),
+    );
     return completed;
   };
 
@@ -538,6 +558,11 @@ class ClaudeSdkSession implements SdkSessionHandle {
         await fresh.return(undefined);
         throw new Error("this session's driver has stopped");
       }
+      // The replacement process starts with no live tasks; the stale one's agents died with it.
+      // Reset only now, in the same synchronous step as `attach`: until then the stale process
+      // is still the attached query and its pump keeps feeding task frames, which would refill
+      // a summary cleared any earlier.
+      this.setSubagents(emptyClaudeSubagents());
       this.attach(fresh);
     } catch (error) {
       this.finish(error instanceof Error ? error.message : String(error));
@@ -557,6 +582,15 @@ class ClaudeSdkSession implements SdkSessionHandle {
     // for the first assistant frame is what keeps the card honest during the seconds a
     // model spends thinking before it emits anything. `turn_done` is the other end.
     this.out.emit({ kind: "state", state: "working", activity: null });
+    // The operator's turn, specifically: a finished agent's own notification can start a
+    // parent turn by itself, and folding there would hide a result nobody has seen yet.
+    this.setSubagents(foldClaudeSubagents(this.subagents));
+  }
+
+  private setSubagents(next: ClaudeSubagentState): void {
+    if (next === this.subagents) return;
+    this.subagents = next;
+    this.subagentEvents.update(claudeSubagentSummary(next));
   }
 
   async interrupt(): Promise<void> {
@@ -1011,6 +1045,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   private finish(reason: string): void {
     this.disarmAuthenticationStall();
+    this.subagentEvents.dispose();
     this.compaction.fail(reason);
     if (this.stopped && this.query === null) return;
     this.stopped = true;
@@ -1031,6 +1066,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private consume(message: ClaudeSdkMessage): void {
+    if (isClaudeSubagentFrame(message)) {
+      this.setSubagents(observeClaudeSubagentFrame(this.subagents, message, Date.now()));
+    }
     if (message.type === "system" && message.subtype === "compact_boundary") {
       const metadata = message.compact_metadata as { post_tokens?: number } | undefined;
       this.compaction.observe(metadata?.post_tokens ?? null, defaultWindowForModel(this.modelId));
@@ -1071,6 +1109,15 @@ class ClaudeSdkSession implements SdkSessionHandle {
     if (typeof message.session_id === "string") this.bind(message.session_id);
     if (initialized) this.refreshRateLimits();
     if (message.type === "assistant") {
+      // A sub-agent's own frame. A background agent keeps talking after the parent's turn
+      // has ended, and reading its frames as the parent's would flip an idle card back to
+      // working with no turn to close it. While the parent's turn runs they still describe
+      // what the session is doing, so they update the line without arming anything.
+      if (message.parent_tool_use_id) {
+        if (!this.turnActive) return;
+        this.out.emit({ kind: "state", state: "working", activity: assistantActivity(message) });
+        return;
+      }
       // Proof a turn is running, and the reason `turnActive` cannot get stuck on the wrong
       // value: a turn the CLI started for itself - a resumed stream, or a follow-up it chose
       // to dequeue after a `result` we had already read as the end of the work - re-arms the
@@ -1523,11 +1570,30 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
+      // Every decision a Claude SDK session asks goes through `request_input` - with its
+      // context and per-option tradeoffs - never the built-in `AskUserQuestion`. That needs
+      // the Mission Control MCP server on this very launch, so a launch without it is
+      // REFUSED rather than started: keeping the built-in would let the session ask a
+      // decision with no room for its context, and removing it with no replacement would
+      // leave the agent no way to ask at all. Checked before anything is started.
+      const askChannel = sdkAskChannel(opts.mcp?.serverName ?? null);
+      if (!askChannel) {
+        throw new Error(
+          "Claude sessions on the Agent SDK runtime ask every decision through Mission Control's " +
+            "request_input tool, but this launch was not given Mission Control's MCP server " +
+            "(is the MCP bundle built? run: npm run build)",
+        );
+      }
       const session = new ClaudeSdkSession(opts.cwd, opts.resume, authTiming);
       // Turn one is queued before the query is constructed, so the first thing the CLI
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);
       const permissionMode = sdkPermissionMode(opts.permissionMode);
+      // The ask redirect leads and the operator's standing instructions follow, the order the
+      // terminal launch joins them in (`systemPromptAppendArgs`).
+      const systemPromptAppend = [askChannel.redirect, opts.standingInstructions]
+        .filter((part): part is string => !!part)
+        .join("\n\n");
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
@@ -1541,22 +1607,24 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
-        // The operator's repository standing instructions, as a NON-DESTRUCTIVE append.
+        // The ask-channel redirect and the operator's repository standing instructions, as
+        // a NON-DESTRUCTIVE append.
         //
         // The preset object is the only form that can do this. A bare `string` here
         // REPLACES Claude Code's own system prompt, which would turn an embedded session
         // into a different agent from the dispatched pane running the same task. Omitted
-        // entirely when there is nothing to send, so an ordinary session's options object
-        // is exactly what it always was.
-        ...(opts.standingInstructions
+        // entirely when there is nothing to send.
+        ...(systemPromptAppend
           ? {
               systemPrompt: {
                 type: "preset" as const,
                 preset: "claude_code" as const,
-                append: opts.standingInstructions,
+                append: systemPromptAppend,
               },
             }
           : {}),
+        allowedTools: askChannel.allowedTools,
+        disallowedTools: askChannel.disallowedTools,
         // The secondary worktrees of a multi-repo task. Spread conditionally so an
         // ordinary session's options object is exactly what it always was.
         //
@@ -1589,11 +1657,10 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...claudeFlagOptions(opts),
-        // The ask channel's disallow + redirect are deliberately NOT rendered here. They
-        // exist because a menu on a child's screen is unreadable to the dashboard; a
-        // driver request IS the dashboard's own control, so the native tool is better
-        // than the MCP stand-in it was approximating. The MCP server still rides along
-        // above, because `report_status` and the rest are not about asking questions.
+        // The ask channel's allow, disallow and redirect are rendered above on every launch
+        // (`sdkAskChannel`; a launch without the Mission server is refused at the top), so a
+        // decision this session asks goes through `request_input` with its context and
+        // tradeoffs, as on every other runtime.
         canUseTool: session.canUseTool,
         hooks: session.hooks(),
         // CLAUDE.md, skills and the operator's settings - the same sources an

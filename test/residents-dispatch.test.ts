@@ -22,7 +22,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-residents-dispatch-"));
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";
-process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "mcp.mjs"), ["schedule_next_iteration", "request_input"]);
+process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "mcp.mjs"), ["schedule_next_iteration", "get_resident_instructions", "propose_resident_instruction_changes", "request_input"]);
 
 const { Registry } = await import("../src/server/registry.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");

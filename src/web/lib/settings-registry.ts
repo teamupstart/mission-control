@@ -170,7 +170,7 @@ export const SETTINGS_CATEGORIES = [
     // a task source or a recurring mission as well as from this dashboard.
     group: "sessions",
     scope: "machine",
-    keywords: ["task kind", "per kind", "dispatch default", "after work", "workflow", "default"],
+    keywords: ["task kind", "per kind", "dispatch default", "after work", "workflow", "grill me first", "default"],
   },
   {
     id: "worktrees",
@@ -180,24 +180,6 @@ export const SETTINGS_CATEGORIES = [
     group: "sessions",
     scope: "machine",
     keywords: ["pool", "worktree", "slot", "lease", "capacity", "prune", "treehouse", "cleanup"],
-  },
-  {
-    id: "repositories",
-    label: "Repositories",
-    icon: "▤",
-    blurb: "Which directories are walked to find repository checkouts",
-    group: "sessions",
-    scope: "machine",
-    keywords: [
-      "repository",
-      "index",
-      "scan",
-      "directory",
-      "workspace",
-      "discovery",
-      "picker",
-      "folder",
-    ],
   },
   {
     id: "skills",
@@ -469,6 +451,16 @@ export type SettingsNavigate = (category: SettingsCategoryId, anchor?: string) =
 export const DEFAULT_SETTINGS_CATEGORY: SettingsCategoryId = "display";
 
 /** Runtime membership, for the router: an unknown id in a link must not become a route. */
+/**
+ * Categories this build retired by folding them into another, mapped to where they live now.
+ *
+ * Settings hashes are links people keep, so a retired id lands on its new home rather than on
+ * the default panel. Repositories became the Setup panel's Repositories family.
+ */
+export const RETIRED_SETTINGS_CATEGORIES: Readonly<Record<string, SettingsCategoryId>> = {
+  repositories: "setup",
+};
+
 export function isSettingsCategory(id: string): id is SettingsCategoryId {
   return SETTINGS_CATEGORIES.some((c) => c.id === id);
 }

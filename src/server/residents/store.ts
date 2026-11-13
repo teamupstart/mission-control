@@ -65,6 +65,7 @@ interface RunRow {
   consumed_generation: number | null;
   pause_reason: string | null;
   wake_reason: string | null;
+  run_requested_at: number | null;
 }
 
 /** The same normalization Personas use, so two spellings of one name are one identity. */
@@ -515,7 +516,7 @@ const RUN_SELECT = `
   SELECT u.id, u.profile_id, u.profile_revision, u.task_id, u.launch_request_id, u.launch_input,
          u.launch_state, u.launch_error, u.persona_snapshot, u.run_instructions, u.created_at,
          u.ended_at, u.workspace_dir, u.loop_state, u.iteration, u.last_seq, u.next_wake_at,
-         u.consumed_generation, u.pause_reason, u.wake_reason, u.control_authorized_at,
+         u.consumed_generation, u.pause_reason, u.wake_reason, u.run_requested_at, u.control_authorized_at,
          u.control_conversation_id, u.control_cwd, u.control_episode_id, r.settings_json
     FROM resident_runs u
     LEFT JOIN resident_profile_revisions r
@@ -578,7 +579,7 @@ function rowToRun(row: RunRow): StoredResidentRun | null {
       endedAt: row.ended_at,
       loopState: row.loop_state, iteration: row.iteration, lastSeq: row.last_seq,
       nextWakeAt: row.next_wake_at, consumedGeneration: row.consumed_generation,
-      pauseReason: row.pause_reason, wakeReason: row.wake_reason,
+      pauseReason: row.pause_reason, wakeReason: row.wake_reason, runRequestedAt: row.run_requested_at,
     },
     launchInput,
   };

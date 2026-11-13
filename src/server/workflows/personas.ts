@@ -414,6 +414,21 @@ export class PersonaManager {
     }
   }
 
+  /**
+   * Write new guidance, compare-and-set, inside whatever transaction the caller holds, and
+   * publish nothing. A resident's approved instruction change commits this together with the
+   * review answer that approved it, then calls `announce` once that transaction has committed:
+   * an SSE frame cannot be rolled back.
+   */
+  writeGuidance(id: string, expectedRevision: number, guidanceMarkdown: string, now = Date.now()): PersonaStoreWrite {
+    return this.store.updatePersonaCas(id, expectedRevision, { guidanceMarkdown }, now);
+  }
+
+  /** Publish a Persona whose write has already committed. */
+  announce(persona: Persona): void {
+    this.registry.upsertPersona(personaView(persona));
+  }
+
   private publish(result: PersonaStoreWrite): PersonaMutation {
     if (!result.ok) {
       return {

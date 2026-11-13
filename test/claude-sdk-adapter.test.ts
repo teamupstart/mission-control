@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { askChannelPrompt } from "../src/server/ask-channel.ts";
+import { DECISION_CONTEXT_RULE } from "../src/shared/decision-asks.ts";
 import {
   claudeSdkRateLimits,
   claudeSdkSpec,
@@ -11,6 +13,7 @@ import {
 import { defaultClaudeSdkDeps, sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
+import { askChannelRedirect } from "../src/server/ask-channel-prompt.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkInterruptReceipt,
@@ -22,6 +25,7 @@ import type {
   ClaudeSdkUserMessage,
 } from "../src/server/harness/claude/sdk-types.ts";
 import type { SdkEvent } from "../src/server/harness/types.ts";
+import { CompactionError } from "../src/server/harness/compaction.ts";
 
 // What is at stake: this adapter is the only thing standing between the vendor's message
 // stream and every surface in the app. If a permission callback is projected wrongly, a
@@ -169,6 +173,8 @@ const INIT = (sessionId: string): ClaudeSdkMessage => ({
   model: "claude-opus-5",
 });
 
+const MISSION_MCP = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+
 function launchOpts(over: Record<string, unknown> = {}) {
   return {
     cwd: "/wt/one",
@@ -177,7 +183,8 @@ function launchOpts(over: Record<string, unknown> = {}) {
     model: null,
     effort: null,
     permissionMode: null,
-    mcp: null,
+    // Every Claude SDK launch is handed Mission Control's server; one without it is refused.
+    mcp: MISSION_MCP,
     extraDirs: [],
     standingInstructions: "",
     standingInstructionsPrompt: "",
@@ -198,6 +205,23 @@ test("resident compaction waits for the observed native boundary and result", as
   const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/claude-manual.json", import.meta.url), "utf8")) as ClaudeSdkMessage[];
   for (const frame of fixture) query.emit(frame);
   assert.deepEqual(await operation, { contextTokens: 494, contextWindow: 1_000_000 });
+  await handle.stop();
+});
+
+test("a stalled resident compaction interrupts the CLI's /compact turn instead of leaving it open", async (t) => {
+  // Read when the driver is built, so set before launch and restore after.
+  process.env.MISSION_RESIDENT_COMPACTION_STALL_MS = "30";
+  t.after(() => { delete process.env.MISSION_RESIDENT_COMPACTION_STALL_MS; });
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query, turns } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  // The CLI accepts `/compact` and then never answers, as it did behind a dead network.
+  await assert.rejects(handle.compact!(""), (error: unknown) => error instanceof CompactionError && error.retryable &&
+    /no progress for 1 second and was interrupted/.test(error.message));
+  assert.equal(turns[0]?.message.content, "/compact");
+  assert.deepEqual(query.control.filter(c => c === "interrupt"), ["interrupt"]);
   await handle.stop();
 });
 
@@ -222,14 +246,65 @@ test("standing instructions APPEND to the Claude Code preset, and are omitted wh
   assert.deepEqual((await withText.started).options.systemPrompt, {
     type: "preset",
     preset: "claude_code",
-    append: "Never run E2E locally.",
+    append: `${askChannelPrompt}\n\nNever run E2E locally.`,
   });
 
   // And with nothing to send the key is absent entirely - not an empty `append`. An
   // ordinary session's options object stays exactly what it always was.
   const without = fakeDeps();
   await claudeSdkSpec(without.deps).launch(launchOpts());
-  assert.equal("systemPrompt" in (await without.started).options, false);
+  assert.equal(
+    (await without.started).options.systemPrompt?.append,
+    askChannelPrompt,
+    "with no standing instructions the append is the ask redirect alone, never an empty value",
+  );
+});
+
+test("every Claude SDK launch asks decisions through request_input: allow, disallow and redirect ride together", async () => {
+  const launched = fakeDeps();
+  await claudeSdkSpec(launched.deps).launch(launchOpts({ standingInstructions: "Never run E2E locally." }));
+  const options = (await launched.started).options;
+  assert.deepEqual(options.allowedTools, ["mcp__mission-control__request_input"], "calling it raises no permission card");
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"], "the built-in is removed");
+  const append = String(options.systemPrompt?.append);
+  assert.ok(append.startsWith(askChannelPrompt), "the redirect leads the append");
+  assert.ok(append.includes(DECISION_CONTEXT_RULE), "and says a decision carries its context and tradeoffs");
+  assert.ok(append.endsWith("\n\nNever run E2E locally."), "and the operator's own words still follow");
+});
+
+test("a Claude SDK launch without Mission Control's server is refused before anything starts", async () => {
+  // Starting it anyway would mean one of two failures: keep AskUserQuestion, and a decision is
+  // asked with no room for its context; remove it, and the agent has no way to ask at all.
+  const { deps, started } = fakeDeps();
+  let queried = false;
+  void started.then(() => (queried = true));
+  await assert.rejects(
+    claudeSdkSpec(deps).launch(launchOpts({ mcp: null })),
+    /ask every decision through Mission Control's request_input tool/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(queried, false, "no Claude process was started for a refused launch");
+});
+
+test("a task's SDK session asks through request_input, never the built-in AskUserQuestion", async () => {
+  const mcp = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+
+  // With Mission MCP registered: the built-in is removed, `request_input` is pre-approved,
+  // and the redirect leads one append that also carries the standing instructions.
+  const withMcp = fakeDeps();
+  await claudeSdkSpec(withMcp.deps).launch(
+    launchOpts({ mcp, standingInstructions: "Never run E2E locally." }),
+  );
+  const options = (await withMcp.started).options;
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
+  assert.deepEqual(options.allowedTools, ["mcp__mission-control__request_input"]);
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append: `${askChannelRedirect("mission-control")}\n\nNever run E2E locally.`,
+  });
+  // Without Mission MCP the launch is refused rather than started with the built-in - see
+  // "a Claude SDK launch without Mission Control's server is refused before anything starts".
 });
 
 test("the launch pins the binary, seeds turn one, and binds on init", async () => {
@@ -245,9 +320,8 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.equal(options.pathToClaudeCodeExecutable, "/fake/bin/claude");
   assert.equal(options.cwd, "/wt/one");
   assert.equal(options.permissionMode, "auto");
-  // The ask channel's disallow and redirect are deliberately NOT rendered: an embedded
-  // session's questions are answered on the card, which is what the redirect approximated.
-  assert.ok(!("disallowedTools" in options), "AskUserQuestion must stay available");
+  // Every decision goes through request_input, so the built-in is gone on every launch.
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
 
   query.emit(INIT("agent-1"));
   const events = await collect(handle.events, (e) => e.kind === "bound");
@@ -1701,17 +1775,17 @@ test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps dec
     for (const [name, value] of inherited) process.env[name] = value;
   });
   for (const [name] of inherited) delete process.env[name];
-  for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {
-    const { deps, started } = fakeDeps();
-    deps.env = defaultClaudeSdkDeps.env;
-    const handle = await claudeSdkSpec(deps).launch(launchOpts({ mcp }));
-    try {
-      const { options } = await started;
-      const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
-      assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
-    } finally {
-      await handle.stop();
-    }
+  // Every Claude SDK launch carries the Mission server (one without it is refused), so the
+  // default options are the only launch shape there is to check.
+  const { deps, started } = fakeDeps();
+  deps.env = defaultClaudeSdkDeps.env;
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  try {
+    const { options } = await started;
+    const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
+    assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
+  } finally {
+    await handle.stop();
   }
 });
 
@@ -2024,4 +2098,132 @@ test("resident durable memory uses flag settings and the same directory on resum
     assert.ok(options.additionalDirectories?.includes("/state/profile"));
     await handle.stop();
   }
+});
+
+test("background sub-agents become one coalesced summary, and their frames never re-arm the parent", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagents"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-subagents", ...body });
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: null,
+    message: { role: "assistant", content: [{ type: "text", text: "launching" }] } });
+  query.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "a", task_type: "local_agent", subagent_type: "Explore", description: "Map call sites" },
+    { task_id: "sh", task_type: "local_bash", description: "watch" },
+  ] }));
+  query.emit(sys("task_started", { task_id: "a", task_type: "local_agent", subagent_type: "Explore",
+    description: "Map call sites", is_backgrounded: true, tool_use_id: "toolu_a" }));
+  // Counter-only, inside the interval: held rather than sent.
+  query.emit(sys("task_progress", { task_id: "a", description: "Map call sites", last_tool_name: "Grep",
+    usage: { total_tokens: 10, tool_uses: 2, duration_ms: 1 } }));
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagents" });
+  const turn = await collect(handle.events, (e) => e.kind === "turn_done");
+  const summaries = turn.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.equal(summaries.length, 2, "the level, then task_started's launch id; progress is held");
+  assert.deepEqual(summaries[1]?.agents.map((a) => [a.id, a.type, a.state, a.launchTurnId, a.toolUses]), [
+    ["a", "Explore", "running", "toolu_a", null],
+  ]);
+
+  // After the turn: a sub-agent's own frame, then its end.
+  query.emit({ type: "assistant", session_id: "agent-subagents", parent_tool_use_id: "toolu_a",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  query.emit(sys("task_notification", { task_id: "a", status: "completed", summary: "found 4",
+    usage: { total_tokens: 20, tool_uses: 3, duration_ms: 1 } }));
+  const after = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(after.map((e) => e.kind), ["subagents"], "the sub-agent frame did not flip the parent to working");
+  const done = after[0]!.kind === "subagents" ? after[0]!.subagents : null;
+  assert.deepEqual(done?.agents.map((a) => [a.state, a.toolUses, a.summary]), [["completed", 3, "found 4"]]);
+
+  // The operator's next turn folds the finished agent; nothing runs, so nothing is left.
+  await handle.send({ text: "next" });
+  const next = await collect(handle.events, (e) => e.kind === "subagents");
+  assert.deepEqual(next.map((e) => e.kind), ["state", "subagents"]);
+  assert.equal(next[1]!.kind === "subagents" && next[1]!.subagents, null);
+  await handle.stop();
+});
+
+test("task frames the stale process sends while its replacement launches do not survive the relaunch", async (t) => {
+  // The first process ignores its closed input; the relaunch is held open until the test says.
+  const starts: Harnessed[] = [];
+  let requested!: () => void;
+  const relaunchRequested = new Promise<void>((resolve) => { requested = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    authFailureTurnGraceMs: 20,
+    authRecoveryDrainMs: 20,
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        if (launchIndex !== 0) query.end();
+      })();
+      if (launchIndex === 1) {
+        requested();
+        await released;
+      }
+      return query;
+    },
+  };
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.return = () => new Promise<never>(() => {});
+  stale.emit(INIT("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-subagents"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const sending = handle.sendIfIdle({ text: "continue after login" });
+  await relaunchRequested;
+  // The stale process is still the attached query while the replacement launches.
+  const sys = (subtype: string, body: Record<string, unknown>): ClaudeSdkMessage =>
+    ({ type: "system", subtype, session_id: "agent-auth-subagents", ...body });
+  stale.emit(sys("background_tasks_changed", { tasks: [
+    { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore", description: "from the replaced process" },
+  ] }));
+  stale.emit(sys("task_started", { task_id: "ghost", task_type: "local_agent", subagent_type: "Explore",
+    description: "from the replaced process", is_backgrounded: true }));
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal(await sending, "started");
+
+  const events = await collect(handle.events, (e) => e.kind === "state" && e.state === "working");
+  const summaries = events.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
+  assert.ok(summaries.length > 0, "the stale frames did reach the driver before the relaunch landed");
+  assert.equal(summaries.at(-1), null, "the replacement process starts with no sub-agents");
+});
+
+test("a sub-agent's frame during the parent's turn updates its activity without opening another turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagent-active"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  // The parent's own turn is running (the launch seeded it); a foreground sub-agent reports.
+  query.emit({ type: "assistant", session_id: "agent-subagent-active", parent_tool_use_id: "toolu_sub",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  // Bounded, so a frame that never reports fails here instead of hanging the suite.
+  const during = await Promise.race([
+    collect(handle.events, (e) => e.kind === "state"),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the sub-agent frame reported no activity")), 2_000)),
+  ]);
+  assert.deepEqual(during.at(-1), { kind: "state", state: "working", activity: "Grep" });
+
+  // One result closes the one turn: the sub-agent frame opened nothing of its own.
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagent-active" });
+  const closed = await collect(handle.events, (e) => e.kind === "turn_done");
+  assert.equal(closed.filter((e) => e.kind === "turn_done").length, 1);
+  assert.equal(await handle.sendIfIdle({ text: "next" }), "started", "the session is idle once its turn ends");
+  await handle.stop();
 });

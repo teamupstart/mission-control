@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   MISSION_HOOK_SCRIPTS,
+  claudeHooks,
   isMissionHookCommand,
   missionHookScriptPath,
 } from "../src/server/harness/claude/hooks.ts";
@@ -52,6 +53,7 @@ const EVENTS = [
   "SubagentStop",
   "PreCompact",
   "SessionEnd",
+  "SubagentStart",
 ];
 
 const missing = (): FileRead => ({ ok: false, missing: true, reason: "ENOENT" });
@@ -191,7 +193,7 @@ test("a renamed checkout is named, counted, and given the command that repairs i
   // The path, so the operator can see which of their checkouts it is.
   assert.ok(view.warning.includes(STALE), view.warning);
   // How much of their machine is affected. Nine events, not "a hook".
-  assert.match(view.warning, /9 hook events/);
+  assert.match(view.warning, new RegExp(`${EVENTS.length} hook events`));
   // The symptom they actually saw, so they can connect this note to the stack in their
   // transcript rather than reading it as an unrelated complaint.
   assert.match(view.warning, /MODULE_NOT_FOUND/);
@@ -315,4 +317,93 @@ test("two dead paths are read once each and both reported", async () => {
   assert.ok(warning.includes(SATELLITE), warning);
   assert.equal(reads.filter((p) => p === STALE).length, 1, "the same dead path is probed once");
   assert.equal(reads.filter((p) => p === SATELLITE).length, 1);
+});
+
+// --- hooks installed before an event existed ---------------------------------------------
+//
+// The installers write the event list they know and never re-run themselves, so a machine that
+// installed before `SubagentStart` keeps a bridge that works and is silent on it. Nothing fails;
+// terminal sessions just report less. The events check names that, and only that.
+
+/** The events check's view for a machine whose files are exactly `files`. */
+async function eventsCheck(files: Record<string, FileRead>) {
+  const views = await environmentCheckViews(deps(files));
+  const view = views.find((v) => v.id === "mission-hook-events");
+  assert.ok(view, "the check must always be reported");
+  return view;
+}
+
+const WITHOUT_SUBAGENT_START = EVENTS.filter((event) => event !== "SubagentStart");
+
+test("the fixture's event list is exactly what this build installs", () => {
+  assert.deepEqual([...claudeHooks.events].sort(), [...EVENTS].sort());
+  assert.ok(claudeHooks.events.includes("SubagentStart"));
+});
+
+test("hooks covering every current event say nothing", async () => {
+  const view = await eventsCheck({ [SETTINGS]: text(settingsFor(LIVE)), [LIVE]: text("") });
+  assert.equal(view.warning, null);
+  assert.equal(view.detail, null);
+});
+
+test("hooks installed before SubagentStart are told to reinstall", async () => {
+  const view = await eventsCheck({
+    [SETTINGS]: text(settingsFor(LIVE, WITHOUT_SUBAGENT_START)),
+    [LIVE]: text(""),
+  });
+  assert.ok(view.warning);
+  assert.equal(view.label, "Claude Code hook events");
+  // The event by name, and what its absence costs.
+  assert.match(view.warning, /do not run for SubagentStart/);
+  assert.match(view.warning, /background sub-agents/);
+  // Both repairs, because the operator may have installed from either.
+  assert.match(view.warning, /npm run install-hooks/);
+  assert.match(view.warning, /Install Claude integrations/);
+  // The evidence: which file, which script, and what is missing.
+  assert.ok(view.detail?.includes(SETTINGS), view.detail ?? "");
+  assert.ok(view.detail?.includes(LIVE), view.detail ?? "");
+  assert.match(view.detail ?? "", /missing SubagentStart$/);
+  // A bridge that works is not a dead path: the louder check stays quiet.
+  const views = await environmentCheckViews(deps({
+    [SETTINGS]: text(settingsFor(LIVE, WITHOUT_SUBAGENT_START)),
+    [LIVE]: text(""),
+  }));
+  assert.equal(views.find((v) => v.id === "mission-hook-script")?.warning, null);
+});
+
+test("a dead hook path is the other check's finding, not a missing event", async () => {
+  const files = { [SETTINGS]: text(settingsFor(STALE, WITHOUT_SUBAGENT_START)) };
+  assert.equal((await eventsCheck(files)).warning, null);
+  assert.ok((await hookCheck(files)).warning);
+});
+
+test("events are pooled across the installs that still exist", async () => {
+  const hooks: Record<string, unknown[]> = {};
+  for (const event of EVENTS) {
+    const script = event === "SubagentStart" ? SATELLITE : LIVE;
+    hooks[event] = [{ hooks: [{ type: "command", command: `"/opt/homebrew/bin/node" "${script}" ${event}` }] }];
+  }
+  const view = await eventsCheck({
+    [SETTINGS]: text(JSON.stringify({ hooks })),
+    [LIVE]: text(""),
+    [SATELLITE]: text(""),
+  });
+  assert.equal(view.warning, null);
+});
+
+test("silent when the hooks were never installed, or the read was cut short", async () => {
+  assert.equal((await eventsCheck({})).warning, null);
+  assert.equal((await eventsCheck({ [SETTINGS]: text(JSON.stringify({ hooks: {} })) })).warning, null);
+  // Truncation can drop the very entries that would show an event installed, so a cut read
+  // never produces this finding.
+  const cut = settingsFor(LIVE, WITHOUT_SUBAGENT_START);
+  assert.equal((await eventsCheck({ [SETTINGS]: text(cut, true), [LIVE]: text("") })).warning, null);
+});
+
+test("the Setup row for a missing event is optional, with the installer as its remedy", () => {
+  const row = ENVIRONMENT_ROW_METADATA["mission-hook-events"];
+  assert.equal(row.requirement, "optional");
+  assert.equal(row.family, "extensions");
+  assert.equal(row.remedy.kind, "command");
+  if (row.remedy.kind === "command") assert.deepEqual(row.remedy.argv, ["npm", "run", "install-hooks"]);
 });

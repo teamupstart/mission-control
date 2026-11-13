@@ -65,6 +65,8 @@ import {
   setSdkSessionModel,
   setSdkSessionPermissionMode,
   setSdkSessionStatus,
+  noteSdkSessionResumeDeferred,
+  clearSdkSessionResumeDeferrals,
   setSdkSessionTurnInProgress,
   upsertSdkSession,
   type SdkSessionRow,
@@ -167,6 +169,19 @@ function standingInstructionsForResume(noteKey: string): string {
  * harness's own session file, and the only thing that knows the two belong together is the
  * row this class keeps.
  */
+/**
+ * A resume that could not be confirmed safe NOW, for a reason that can clear by itself. Restore
+ * leaves such a row `suspended` for the next restore instead of failing it.
+ */
+class ResumeDeferred extends Error {}
+
+/**
+ * How many consecutive restores may defer a row before it is refused like any other failure.
+ * Enough to ride out a rebuild or a loaded boot; few enough that a bundle that never builds
+ * is reported within a handful of restarts rather than retried, unseen, for ever.
+ */
+export const MAX_RESUME_DEFERRALS = 3;
+
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
@@ -325,6 +340,7 @@ export class SdkSupervisor {
         const restoreStartedAt = Date.now();
         try {
           await this.resume(row);
+          clearSdkSessionResumeDeferrals(row.id);
           observeSessionRestore({
             sessionId: row.id,
             taskId: row.taskId,
@@ -342,8 +358,18 @@ export class SdkSupervisor {
             turnInProgress: row.turnInProgress,
           });
         } catch (err) {
-          const why = err instanceof Error ? err.message : String(err);
-          console.error(`[sdk] could not resume ${row.id}: ${why}`);
+          const reason = err instanceof Error ? err.message : String(err);
+          // Counted first, so the log and the eviction both say whether this was a deferral
+          // and, past the bound, how long it waited. NOT counted while shutting down: a daemon
+          // restarted again and again during boot - exactly when a handshake is slow or the
+          // bundle is mid-rebuild - would otherwise spend the whole bound without the bundle
+          // ever being checked in a calm restore. That row is simply left live, as shutdown
+          // leaves every row it does not finish.
+          const counted = err instanceof ResumeDeferred && !this.shuttingDown;
+          const deferrals = counted ? noteSdkSessionResumeDeferred(row.id) : 0;
+          const deferred = err instanceof ResumeDeferred && (this.shuttingDown || deferrals < MAX_RESUME_DEFERRALS);
+          const why = err instanceof ResumeDeferred && !deferred ? `${reason} (after ${deferrals} restores)` : reason;
+          if (!deferred) console.error(`[sdk] could not resume ${row.id}: ${why}`);
           observeSessionRestore({
             sessionId: row.id,
             taskId: row.taskId,
@@ -356,7 +382,19 @@ export class SdkSupervisor {
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
           });
-          if (!this.shuttingDown) this.registerAndEvict(row, why);
+          if (deferred) {
+            // Not a verdict on this session: keep it live for the next restore, which is the
+            // same treatment a row shutdown interrupted gets, rather than lose the conversation.
+            setSdkSessionStatus(row.id, "suspended");
+            console.warn(
+              `[sdk] left ${row.id} suspended for the next restore (${counted ? `${deferrals} of ${MAX_RESUME_DEFERRALS}` : "shutting down, not counted"}): ${why}`,
+            );
+          } else if (!this.shuttingDown) {
+            // A deferral that has not cleared in `MAX_RESUME_DEFERRALS` restores is no longer
+            // transient. It takes the ordinary refusal from here: a card, an eviction that says
+            // why, and the task settled visibly - never a silent retry on every restart.
+            this.registerAndEvict(row, why);
+          }
         } finally {
           // Success has already emitted `session_upsert`; failure has already registered and
           // begun ordinary eviction. The browser suppresses overlap by id as a second guard.
@@ -1355,6 +1393,34 @@ export class SdkSupervisor {
         throw new Error(
           `managed Pipeline resume requires its Pipeline reporting tools, but ${published.reason}`,
         );
+      }
+    }
+    // Every decision a resumed session asks goes through `request_input`, exactly as at
+    // dispatch (`withDecisionAskTool`): a harness that carries Mission tools through an MCP
+    // client resumes only with a registration whose bundle actually publishes it.
+    //
+    // Unlike a refused dispatch, a refused resume costs a conversation, so only a VERDICT is
+    // terminal: a bundle that answered the handshake without the tool. Everything short of
+    // that - no server resolved, a bundle not built (yet), a handshake that threw or never
+    // completed - says nothing about the bundle a rebuild or a calmer boot will find, so the
+    // row is DEFERRED: left `suspended` for the next restore rather than failed and evicted.
+    if (capabilitiesFor(row.agent).missionTools?.mechanism === "mcp-client") {
+      const ask = "this session asks its decisions through Mission Control's request_input tool, but";
+      if (!mcp) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw new ResumeDeferred(`${ask} its MCP server could not be resolved for the resume - rebuild with: npm run build`);
+      }
+      let published: Awaited<ReturnType<typeof verifyMissionMcpTools>>;
+      try {
+        published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(["request_input"], mcp);
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw new ResumeDeferred(`${ask} its MCP server could not be checked: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (!published.ok) {
+        cleanupDisposableAgentStateHome(stateHome);
+        if (published.cause === "missing-tools") throw new Error(`${ask} ${published.reason}`);
+        throw new ResumeDeferred(`${ask} ${published.reason}`);
       }
     }
     if (task?.kind === "pipeline") {

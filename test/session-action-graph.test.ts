@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Persona, SessionAction, WorkflowDraftGraph } from "../src/shared/workflow.ts";
-import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "../src/shared/workflow.ts";
+import { SESSION_ACTION_COMPLETION_CAPABILITIES, addableSessionActions } from "../src/shared/workflow.ts";
 import {
   WORKFLOW_NODE_CAPABILITIES,
   WORKFLOW_NODE_SOURCE_PORTS,
@@ -183,6 +183,31 @@ test("a missing or archived action reference is conditional on the catalog being
   });
   assert.ok(archived.diagnostics.some((item) =>
     item.code === "archived_session_action" && item.nodeId === "act"));
+});
+
+test("an action marked not a Workflow stage (Grill) is refused as one and never offered as one", () => {
+  const grill = actions.map((action) => ({ ...action, builtin: true, editable: true, workflowStage: false as const }));
+  const refused = validateWorkflowGraph({
+    graph: graph(),
+    personas,
+    sessionActions: grill,
+    completionPolicy: { kind: "none" },
+  });
+  assert.ok(refused.diagnostics.some((item) =>
+    item.code === "session_action_not_a_stage" && item.nodeId === "act"));
+
+  const allowed = validateWorkflowGraph({ graph: graph(), personas, sessionActions: actions, completionPolicy: { kind: "none" } });
+  assert.equal(allowed.diagnostics.some((item) => item.code === "session_action_not_a_stage"), false);
+  // Editable says who may change the instruction, not where it may run: an editable built-in
+  // that is not marked off stages is still one.
+  const editableStage = actions.map((action) => ({ ...action, builtin: true, editable: true }));
+  const editableAllowed = validateWorkflowGraph({ graph: graph(), personas, sessionActions: editableStage, completionPolicy: { kind: "none" } });
+  assert.equal(editableAllowed.diagnostics.some((item) => item.code === "session_action_not_a_stage"), false);
+
+  const every = new Set(Object.keys(SESSION_ACTION_COMPLETION_CAPABILITIES) as Array<keyof typeof SESSION_ACTION_COMPLETION_CAPABILITIES>);
+  assert.deepEqual(addableSessionActions(grill, every), []);
+  assert.deepEqual(addableSessionActions(actions, every).map((action) => action.id), actions.map((action) => action.id));
+  assert.deepEqual(addableSessionActions(editableStage, every).map((action) => action.id), actions.map((action) => action.id));
 });
 
 test("an action participates in reachability and cycle rules like any other node", () => {

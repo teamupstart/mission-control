@@ -200,6 +200,7 @@ test("every field on the form reaches the patch", () => {
     advisorModel: "",
     personaId: "persona-reviewer",
     workflowId: "workflow-review",
+    grillFirst: true,
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
@@ -276,4 +277,28 @@ test("plan conversion carries an explicit None even when the ship task also had 
   assert.deepEqual(taskUpdatePatch(task, edited(task, { kind: "plan", workflowId: null }), task.intent), {
     kind: "plan", workflowId: null,
   });
+});
+
+test("Grill me first reads back as a task's choice and saves only when it moves", () => {
+  const ship = mkTask({ kind: "ship", grillFirst: true });
+  assert.equal(draftFromTask(ship).grillFirst, true);
+  assert.equal(taskUpdatePatch(ship, draftFromTask(ship), ship.intent), null, "an untouched pin is not resent");
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), grillFirst: false }, ship.intent), { grillFirst: false });
+  // A row filed before the column existed reads as off, not as a choice nobody made.
+  assert.equal(draftFromTask(mkTask({ kind: "plan" })).grillFirst, false);
+  // Between kinds that both offer it the pin goes with the task, so the patch is the kind.
+  // (`workflowId: undefined` keeps plan conversion's explicit after-work choice out of it.)
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan", workflowId: undefined }, ship.intent), { kind: "plan" });
+  // Pipeline has no pin, so switching it to plan untouched leaves the daemon to pin plan's
+  // default, and a choice made on the switch is sent even when it is off.
+  const pipeline = mkTask({ kind: "pipeline" });
+  assert.equal(draftFromTask(pipeline).grillFirst, undefined);
+  assert.deepEqual(taskUpdatePatch(pipeline, { ...draftFromTask(pipeline), kind: "plan", workflowId: undefined }, pipeline.intent), { kind: "plan" });
+  assert.deepEqual(
+    taskUpdatePatch(pipeline, { ...draftFromTask(pipeline), kind: "plan", workflowId: undefined, grillFirst: false }, pipeline.intent),
+    { kind: "plan", grillFirst: false },
+  );
+  // Leaving for pipeline there is no pin to save, whatever the box last said.
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "pipeline" }, ship.intent), { kind: "pipeline" });
+  assert.ok(!draftsEqual(draftFromTask(ship), draftFromTask(mkTask({ kind: "ship", grillFirst: false }))));
 });

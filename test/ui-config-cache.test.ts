@@ -53,6 +53,8 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // chose from the mockups: a badge before the console's title, a tab on the card's edge.
   assert.equal(config.taskKindHeader, "badge");
   assert.equal(config.taskKindCard, "tab");
+  // Nested sub-cards, the recommended treatment, for an install that never chose.
+  assert.equal(config.backgroundAgentsStyle, "nested");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
@@ -63,6 +65,10 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // The drawer, floating: residents leave the fleet for an install that never chose.
   assert.equal(config.residentPlacement, "drawer");
   assert.equal(config.residentDrawerPinned, false);
+  // The rail every earlier build drew: open.
+  assert.equal(config.sessionRailFolded, false);
+  assert.equal(config.blockedPlacement, "needs-you");
+  assert.equal(config.blockedFrameCollapsed, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
@@ -79,6 +85,9 @@ test("a written cache round-trips", () => {
     // Both off their defaults, so neither round-trips by falling back.
     residentPlacement: "fleet",
     residentDrawerPinned: true,
+    // Both off their defaults, for the same reason.
+    blockedPlacement: "column",
+    blockedFrameCollapsed: true,
     conversationView: "chat",
     lineDensity: "expanded",
     // Off its default, so it cannot round-trip by falling back.
@@ -88,6 +97,8 @@ test("a written cache round-trips", () => {
     // Off on both, so neither round-trips by falling back to its default.
     taskKindHeader: "off",
     taskKindCard: "off",
+    // Off its default, so it cannot round-trip by falling back.
+    backgroundAgentsStyle: "chip",
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
@@ -112,6 +123,8 @@ test("a written cache round-trips", () => {
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
+    // Folded, the non-default, so only a copied field round-trips it.
+    sessionRailFolded: true,
     // Non-empty, both: the shipped bar hides and minimizes nothing.
     hiddenTopbarItems: ["cost", "feedback"],
     compactTopbarItems: ["fleet", "foreman"],
@@ -120,12 +133,15 @@ test("a written cache round-trips", () => {
   assert.equal(config.layout, "console");
   assert.equal(config.residentPlacement, "fleet");
   assert.equal(config.residentDrawerPinned, true);
+  assert.equal(config.blockedPlacement, "column");
+  assert.equal(config.blockedFrameCollapsed, true);
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
   assert.equal(config.lineHidden, true);
   assert.equal(config.skin, "daylight");
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
+  assert.equal(config.backgroundAgentsStyle, "chip");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
@@ -139,6 +155,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.boardSidebarAllSessions, true);
   assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
+  assert.equal(config.sessionRailFolded, true);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
 });
@@ -250,6 +267,14 @@ test("a task-kind style this build does not ship reads as the shipped one", () =
   );
   assert.equal(readCache().taskKindHeader, "badge");
   assert.equal(readCache().taskKindCard, "tab");
+});
+
+test("a background sub-agents treatment this build does not ship reads as Nested sub-cards", () => {
+  // An `off` was never offered, and a treatment from a later build is not this one's to draw.
+  for (const stray of ["off", "lane", 3, null]) {
+    store.set("mission-control.ui", JSON.stringify({ backgroundAgentsStyle: stray }));
+    assert.equal(readCache().backgroundAgentsStyle, "nested", `${JSON.stringify(stray)} was adopted`);
+  }
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

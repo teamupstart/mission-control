@@ -1,4 +1,5 @@
 import type { HookIngest } from "@shared/protocol.ts";
+import type { HookSubagentSignal } from "../hook-subagents.ts";
 import type { HookReading, HookSpec, WorkCycleSignal } from "../types.ts";
 import { substantivePrompt } from "./scaffolding.ts";
 
@@ -12,7 +13,7 @@ import { substantivePrompt } from "./scaffolding.ts";
 // Kept IMPORT-LIGHT on purpose, and reached directly rather than through
 // `harness/index.ts`: the two installers below both need `events`, and one of them is
 // bundled into the Electron main process, which must not pull the daemon in behind a
-// list of nine strings. Everything imported here is either a type (erased) or pure.
+// list of ten strings. Everything imported here is either a type (erased) or pure.
 //
 // Readers:
 //   - `registry.applyHook` - `toState` and `promptText`
@@ -39,6 +40,10 @@ const EVENTS = [
   "SubagentStop",
   "PreCompact",
   "SessionEnd",
+  // Appended to an installed vocabulary, so a machine whose hooks predate it lacks it until the
+  // installer runs again - `claudeHookEventsCheck` says so. It names a sub-agent's type and the
+  // moment it started; the parent's state never moves on it (it always carries `agent_id`).
+  "SubagentStart",
 ] as const;
 
 /** Claude's per-tool events, whose settings.json group carries `matcher: "*"`. */
@@ -106,6 +111,10 @@ function toState(evt: HookIngest): HookReading {
         : { state: "awaiting_input", activity: trim(evt.message) ?? "waiting for you" };
     case "Stop":
       return { state: "idle", activity: "idle" };
+    case "SubagentStart":
+      // Read only for completeness: Claude stamps `agent_id` on it, so the registry keeps it from
+      // moving the parent, and a background agent starting never re-arms an idle card.
+      return { state: "working", activity: "subagent started" };
     case "SubagentStop":
       return { state: "working", activity: "subagent finished" };
     case "PreCompact":
@@ -162,6 +171,67 @@ function submittedPromptText(evt: HookIngest): string | null {
   return evt.prompt?.trim() || null;
 }
 
+/** Claude Code's friendly label for a sub-agent in `background_tasks`, and its raw task type. */
+const AGENT_TASK_TYPES = new Set(["subagent", "local_agent"]);
+
+/**
+ * Claude's background sub-agents, from four of its events.
+ *
+ * - `SubagentStart` (carries `agent_id`, `agent_type`): an agent started, foreground or not -
+ *   the event cannot say which, so it is remembered for its type and start time, never counted.
+ * - `PostToolUse` on the Agent tool with `status: async_launched`: that agent went to the
+ *   background (launched there, or moved there mid-run), so it counts from now. Its
+ *   description is the short one the model gave the launch.
+ * - `SubagentStop`: it finished.
+ * - `background_tasks` on `Stop` and `SubagentStop`: the whole in-flight set, which both adds
+ *   agents a lost hook never announced and stops ones that left it without a `SubagentStop`.
+ *   Only its sub-agent entries count; shells, monitors and workflows are not agents.
+ *
+ * The operator's next prompt folds finished agents. A prompt raised inside a sub-agent carries
+ * `agentId` and is not the operator's. A process start or resume begins again, since nothing a
+ * previous process launched can still be running under this one.
+ */
+function subagentSignals(evt: HookIngest): HookSubagentSignal[] {
+  const signals: HookSubagentSignal[] = [];
+  switch (evt.event) {
+    case "SessionStart":
+      if (evt.source === "startup" || evt.source === "resume") signals.push({ kind: "reset" });
+      break;
+    case "UserPromptSubmit":
+      if (!evt.agentId) signals.push({ kind: "fold" });
+      break;
+    case "SubagentStart":
+      if (evt.agentId) signals.push({ kind: "started", id: evt.agentId, type: evt.agentType ?? null });
+      break;
+    case "PostToolUse": {
+      const tool = evt.agentTool;
+      if (tool?.status === "async_launched" && tool.agentId) {
+        signals.push({
+          kind: "launched",
+          id: tool.agentId,
+          type: tool.subagentType ?? null,
+          description: tool.description ?? null,
+        });
+      }
+      break;
+    }
+    case "SubagentStop":
+      if (evt.agentId) signals.push({ kind: "ended", id: evt.agentId, type: evt.agentType ?? null });
+      break;
+  }
+  if ((evt.event === "Stop" || evt.event === "SubagentStop") && evt.backgroundTasks) {
+    signals.push({
+      kind: "live",
+      agents: evt.backgroundTasks
+        .filter((task) => task.type !== undefined && AGENT_TASK_TYPES.has(task.type))
+        .map((task) => ({ id: task.id, type: task.agentType ?? null, description: task.description ?? null })),
+      // The bridge cut the list at its bound: an agent past the cut is still running.
+      ...(evt.backgroundTasksTruncated ? { partial: true as const } : {}),
+    });
+  }
+  return signals;
+}
+
 export const claudeHooks: HookSpec = {
   scope: "machine",
   events: EVENTS,
@@ -170,6 +240,7 @@ export const claudeHooks: HookSpec = {
   workCycleSignal,
   promptText,
   submittedPromptText,
+  subagentSignals,
 };
 
 // --- what one of OUR hook commands looks like in somebody else's settings file ---------

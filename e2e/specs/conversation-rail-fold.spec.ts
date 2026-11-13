@@ -181,3 +181,56 @@ test("a narrow conversation ignores the fold and keeps its one-row disclosure", 
   await toggle.click();
   await expect(rail.getByText("bash", { exact: true })).toBeVisible();
 });
+
+test("a rail folded wide and then narrowed keeps a running agent's elapsed time counting on the Agents tab", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Chip and popover gives the rail its Agents tab. A dispatched fake Claude launches three
+  // background agents and ends its turn with two still running.
+  await putUiConfig(daemon, { backgroundAgentsStyle: "chip" });
+  await dashboard.reload();
+  const goal = "E2E_BACKGROUND_AGENTS keep two running for the folded rail";
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill(goal);
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: goal });
+  await expect(row.locator(".rail-state")).toHaveText("idle", { timeout: 60_000 });
+  await row.click();
+  const card = dashboard.locator(".console-detail");
+  const rail = card.getByRole("region", { name: "Conversation rail" });
+  const agentsTab = rail.getByRole("tab", { name: /^Agents/ });
+  await expect(agentsTab).toBeVisible();
+
+  // Fold the rail while the window is wide, the way an operator who wanted the room would.
+  await rail.getByRole("button", { name: "Collapse conversation rail" }).click();
+  await expect.poll(() => storedFold(daemon)).toBe(true);
+  await expect(rail.getByRole("button", { name: "Expand conversation rail" })).toBeVisible();
+
+  // Narrow the window: the narrow layout ignores the fold, and the tabs come back in its head.
+  await dashboard.setViewportSize({ width: 600, height: 900 });
+  await expect(rail.getByRole("button", { name: "Expand conversation rail" })).toBeHidden();
+  await agentsTab.click();
+  await expect(agentsTab).toHaveAttribute("aria-selected", "true");
+
+  // A running agent's detail line is on screen, and its elapsed time advances while you watch.
+  const running = rail.getByRole("listitem").filter({ hasText: "Map every offset-pagination call site" });
+  const detail = running.locator(".agents-detail");
+  await expect(detail).toBeVisible();
+  await expect(running).toHaveClass(/is-running/);
+  // Only the elapsed part is compared: the tool and token figures arrive with the agent's own
+  // progress frames and may land between the two readings.
+  const elapsed = async (): Promise<string> => /^(?:\d+m )?\d+s/.exec((await detail.textContent()) ?? "")?.[0] ?? "";
+  await expect.poll(elapsed, { message: "the row reads an elapsed time" }).toMatch(/^(\d+m )?\d+s$/);
+  const first = await elapsed();
+  await expect.poll(elapsed, {
+    timeout: 5_000,
+    message: "the running agent's elapsed time advanced on the folded-then-narrowed rail",
+  }).not.toBe(first);
+  await shoot(dashboard, card, "agents-tab-folded-then-narrowed");
+});

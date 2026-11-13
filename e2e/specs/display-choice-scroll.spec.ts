@@ -6,7 +6,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
- * Picking a style in Settings > Display leaves the page where it was, on both pickers.
+ * Picking a style in Settings > Display leaves the page where it was, on every picker.
  *
  * Each segment of a style picker is a `<label>` around a radio whose circle is hidden, and a
  * click on the label focuses that radio. The radio was absolutely positioned with no
@@ -32,14 +32,19 @@ async function scrollOffsets(page: Page): Promise<{ settings: number; document: 
 
 /**
  * Every style a picker offers, clicked in turn, with the page held still and the picker and
- * its own preview kept in view after each. Both pickers, because each sits in its own group
- * beside its own preview and either one regressing loses the operator the picture they picked
+ * its own preview kept in view after each. Every picker, because each sits in its own group
+ * beside its own preview and any one regressing loses the operator the picture they picked
  * the style to look at.
  */
 const PICKERS = [
   {
     name: "Board card: Task type",
     styles: ["Medallion", "Name chip", "Top band", "Off", "Edge tab"],
+    preview: ".board-card-preview-stage .tile",
+  },
+  {
+    name: "Board card: Background sub-agents",
+    styles: ["Chip and popover", "Nested sub-cards"],
     preview: ".board-card-preview-stage .tile",
   },
   {

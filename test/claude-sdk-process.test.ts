@@ -34,7 +34,8 @@ lines.on("close", () => { writeFileSync("drained", "stdin closed"); process.exit
 `);
   const handle = await claudeSdkSpec({ ...defaultClaudeSdkDeps, executable: async () => executable,
     env: () => ({ PATH: process.env.PATH }) }).launch({ cwd: root, stateHome: root,
-    prompt: "fixture only", model: null, effort: null, permissionMode: null, mcp: null,
+    prompt: "fixture only", model: null, effort: null, permissionMode: null,
+    mcp: { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} },
     extraDirs: [], standingInstructions: "", standingInstructionsPrompt: "", resume: null });
   childPid = handle.recoveryProcessId ?? null;
   for await (const event of handle.events) {

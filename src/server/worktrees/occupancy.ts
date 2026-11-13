@@ -34,6 +34,16 @@ export interface WorktreeOccupant {
   knownOwner: string | null;
 }
 
+/** Bounded, single-line process detail shared by return logs and the Settings inventory. */
+export function describeWorktreeOccupants(occupants: readonly WorktreeOccupant[]): string | null {
+  if (occupants.length === 0) return null;
+  const shown = occupants.slice(0, 4).map((entry) =>
+    // oxlint-disable-next-line eslint/no-control-regex -- Process diagnostics must stay on one line.
+    `PID ${entry.pid} ${String(entry.command ?? "unknown").replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160)}`);
+  if (occupants.length > shown.length) shown.push(`and ${occupants.length - shown.length} more`);
+  return shown.join("; ");
+}
+
 export type WorktreeOccupancy =
   | { status: "known"; occupants: WorktreeOccupant[] }
   | { status: "unknown"; reason: string };

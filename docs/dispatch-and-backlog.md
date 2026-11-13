@@ -194,6 +194,45 @@ A [resident](residents.md) takes its Persona from its profile and never from thi
 `create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
 `personaId`.
 
+## Grill me first
+
+**Grill me first** makes a task interview you before it starts its work. It is offered for every
+kind this app launches: ship, bugfix, document, plan, scout and chat. When it is on, the task's
+intent is delivered with the Library's built-in **Grill** session action in front of the kind's
+own contract: the agent asks in rounds, each one `request_plan_decisions` form holding every
+question that can be asked so far, with its recommended option listed first and a free-text
+**Other**. Facts the agent can look up itself, with its subagents, are never put to you; only
+decisions are. There is always at least one round, rounds continue until nothing is left to ask, and
+dismissing a round stops the session before the work starts. A round may open with nothing
+selected, so an answer is only what you selected or wrote. Grilling rounds are not the review of
+anything the task delivers: a plan's review and phased follow-up still come afterwards. Once the
+interview is done the task carries on exactly as it would have, with the settled decisions as
+part of its request. When it is off, a task is delivered exactly as it always was.
+
+- **Where it is set.** Each kind's default is its chip in the **Grill me first** card on
+  **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
+  chip in the bar under the **Task** box for every kind that offers it, so one task can differ
+  from its kind's default, and the backlog editor can change it while the task is shelved. The
+  text opposite the chip says where its value came from: **Follows the ship default**, or
+  **Off for this task** with a dot on the chip and a **Reset** that returns it to the default.
+  In the backlog editor it reads as the task's own pin, with no Reset. What it does is the
+  chip's tooltip.
+- **Pinned when filed.** The choice is stored on the task when it is created, so changing a
+  default later moves no existing task. A task filed by a task source, a recurring mission or
+  MCP `create_task` takes its kind's default. Switching a shelved task between two kinds that
+  offer it keeps its choice; switching it in from a kind without it takes the new kind's default.
+- **Editing the interview.** The Grill action is the one built-in session action edited in
+  place: open it under **Library → Actions**, change its instruction and **Save**, and every later
+  grill-first task is sent your text. **Reset to built-in**, in its `⋯` menu, restores the shipped
+  instruction. Its name, required skill and completion stay as shipped.
+- **It needs the Grill skill.** With Grill me first on, the bundled
+  [Grill skill](skills-and-settings.md) must be switched on as well, or the dispatch is refused on
+  the form naming it, and a launch that reaches the daemon anyway fails rather than starting an
+  interview the agent cannot load. A grill-first task of any kind is granted
+  `request_plan_decisions`. Handing one to an agent that is already running is refused before
+  its checkout is reset when Mission Control's MCP server is not built, or does not publish
+  `request_plan_decisions`.
+
 ## Attaching more than one repository
 
 Claude Code and Codex receive launch-time grants for secondary worktrees. Pi is also offered:
@@ -314,9 +353,10 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-**Settings → Tasks → Dispatch defaults** holds one row per task kind Mission Control
-launches: ship, bugfix, document, plan, scout and chat. Pipeline has none, because Conductor
-owns what runs after its work. Each row holds one of three answers:
+**Settings → Tasks** has an **After work** card with one row per task kind Mission Control
+launches: ship, bugfix, document, plan, scout and chat. Each row picks that kind's Workflow.
+Pipeline has none, because Conductor owns what runs after its work. Each row holds one of three
+answers:
 
 | Row | What a new task of that kind arms |
 | --- | --- |
@@ -416,6 +456,9 @@ toggle and where to find it, rather than launching an agent that would improvise
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
 
+With [Grill me first](#grill-me-first) on, a plan task interviews you before it drafts. The
+plan contract above follows the interview unchanged, review and phased follow-up included.
+
 A repository plan with a bound workflow finishes its approved artifacts and requested scheduling, then
 ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
 the automatic workflow; its PR action owns publication. With no workflow bound, Phased Plan
@@ -458,7 +501,7 @@ Internal Ensemble member and replacement tasks opt out because an Ensemble's opt
 Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans the directories
-listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~/dev`, and
+listed in the **Repositories** family of **Settings → Setup**, seeded with `~/workspace`, `~/code`, `~/dev`, and
 `~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
 override. Select the repo to base the task on rather than typing a path. Type to filter;
 arrow/enter to pick.
@@ -478,12 +521,8 @@ on screen, and a window that was disconnected at the time, which catches up when
 so no picker offers a repository from a directory you just removed. The field reads **indexing workspace…** only when the window holds
 no list and no scan has answered yet.
 
-The Settings panel is also where the index is maintained. Any directory can be removed, including
-a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
-leaving operator-added rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
-path instead of silently omitting it. **Rescan now** clears the discovery cache so a newly cloned
-checkout appears immediately. While `MISSION_WORKSPACE_DIRS` is set, the panel names the override
-and keeps the saved list read-only. This same repository picker is reused by Dispatch,
+That Setup family is also where the index is maintained; see
+[Repositories in the setup guide](setup.md#repositories). This same repository picker is reused by Dispatch,
 **Settings → Trust**, **Standing instructions**, and **Task sources**.
 
 Each row is the checkout's **directory name**, not its path: every repo under one workspace
@@ -659,7 +698,14 @@ The prompts go through Foreman; when it cannot send one, the merge queue says wh
 send it by hand. If the task's session is gone the prompt waits for **Resume**, which gives it an
 owner again. If the prerequisite's pull
 request closes without merging, or its task is cancelled or rescheduled, the stacked pull
-request is held as *Stack broken* with an action that fixes it. Flipping the dependency to
+request is held as *Stack broken* with an action that fixes it. If someone merges the stacked
+pull request on GitHub into its prerequisite's branch instead of the default branch, nothing is
+completed: the task stays open and its own dependents stay blocked. When that merge came after the
+prerequisite's pull request had already merged, the session is asked to carry the work onto the
+default branch in a new pull request, whose merge completes it. When the prerequisite was still
+open, no prompt is sent, and the operator confirms whether the work reached the default branch. See
+[a merge into the parent's branch](inspector-and-shipping.md#a-merge-into-the-parents-branch).
+Flipping the dependency to
 *After merge* after the task started changes nothing for it.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
@@ -838,6 +884,18 @@ that cannot appear in Backlog remains failed even in this resource-free state. D
 launch refusals outside that resource phase also remain failed, and once any launch resource
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
+
+Live dispatch failures also write a single-line `dispatch_failed` JSON record to the daemon
+log, prefixed with `[dispatch]`. It includes an ISO timestamp, task ID, dispatch phase,
+repository path, and error text. A remote-default base-freeze failure includes the last Git
+command as an argv array, measured elapsed milliseconds, timeout budget, exit code or signal,
+and timeout, unknown-outcome, and output-overflow flags. A killed child has a null exit code
+rather than the executor's synthetic exit 1. If an attached repository fails, the record names
+that repository. These local diagnostics do not require telemetry to be enabled.
+
+The fetch budget remains 30 seconds. Timeouts, signals, and ordinary remote refusals are not
+automatically retried; only the existing bounded retry for a remote-tracking ref update race
+applies. A failed base freeze still provisions nothing and can be retried manually.
 
 ### Search and filter the backlog
 

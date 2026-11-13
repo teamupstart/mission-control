@@ -71,7 +71,7 @@ function run(taskId: string, p: ResidentProfile): ResidentRunSummary {
     launchState: "launched",
     personaName: "Fleet Triage",
     compaction: { betweenIterations: true, nativeBackstop: false },
-    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
     settings: p.settings,
     createdAt: 1,
   };

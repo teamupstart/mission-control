@@ -33,7 +33,13 @@ process.env.MISSION_PI_BIN = "/bin/echo";
 // `heldHomeNames` about sibling worktrees' live agents. Pointed at a path rather than
 // unset, because a built checkout HAS the bundle and the test would otherwise pass or fail
 // depending on whether `npm run build` had been run.
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+// A stand-in bundle: the ask channel only checks that the path EXISTS, and every
+// Claude and Codex launch now requires `request_input`, so a launch with no bundle at all
+// is refused. What it publishes is answered by the `verifyMissionMcpTools` stub.
+process.env.MISSION_MCP_SERVER = join(home, "server.mjs");
+writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
+/** The Mission Control MCP server every Claude and Codex launch is now handed. */
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
@@ -44,6 +50,10 @@ const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
 const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
+const { applySkillsConfig } = await import("../src/server/skills/config.ts");
+const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
+const { GRILL_SESSION_ACTION_ID } = await import("../src/server/workflows/builtin-session-actions.ts");
+const { GRILL_FIRST_HEADING } = await import("../src/server/grill-first.ts");
 const { HARNESS_CAPABILITIES, resolveSessionRuntime } = await import(
   "../src/shared/harness-capabilities.ts"
 );
@@ -193,7 +203,8 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     supervisor,
     // The bundle is not built in a test run, and a dispatch that passes no `missionMcp`
     // requirement is unaffected by its absence.
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
     // A pane write here would be the defect, not a fixture detail: reaching `injectPrompt`
     // at all means the branch did not take.
     inject: async () => {
@@ -274,7 +285,8 @@ test("with both toggles off, Claude and Codex stay on the terminal branch", asyn
   });
   const dispatcher = new Dispatcher(registry, async () => {}, { supervisor, worktrees });
 
-  // Required Mission MCP tools with no bundle on disk is the terminal path's own refusal,
+  // Required Mission MCP tools the bundle cannot publish is the terminal path's own refusal
+  // (here the stand-in bundle fails the handshake),
   // and it fires while it is assembling the argv - BEFORE it would open a terminal home.
   // That is deliberate here: a test that let the terminal path run to its spawn would
   // create a real tmux session on the developer's machine, and `heldHomeNames` would then
@@ -287,7 +299,7 @@ test("with both toggles off, Claude and Codex stay on the terminal branch", asyn
     assert.equal(registry.getTask(`task-term-${agent}`)?.status, "failed");
     assert.match(
       registry.getTask(`task-term-${agent}`)?.error ?? "",
-      /required Mission MCP tools/,
+      /Mission MCP tools/,
     );
   }
 });
@@ -522,6 +534,61 @@ test("a plan launch is refused when the built bundle cannot publish the review t
   assert.match(task.error ?? "", /npm run build/, "name the fix");
 });
 
+test("a grill-first launch delivers the resolved Grill action ahead of its contract and requires request_plan_decisions", async () => {
+  // The success path through the fresh-dispatch seam, not the composer on its own: the
+  // dispatcher has to resolve the Library's Grill action (the operator's edited text here),
+  // resolve the grill skill for this harness, hand both to the turn-one composer, and require
+  // the decisions tool the interview is asked through. Dropping any one of those still
+  // launches, so each is asserted on what actually reached the supervisor.
+  const repo = seedRepo("grill-first-repo");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  assert.deepEqual(applySkillsConfig({ enabled: true, skills: { grill: true } }).refused, []);
+  const registry = new Registry();
+  const actions = new SessionActionManager(registry);
+  const shipped = actions.get(GRILL_SESSION_ACTION_ID)!;
+  const edited = `${shipped.promptMarkdown}\nAsk about rollout risk in the first round.\n`;
+  assert.equal(actions.update(GRILL_SESSION_ACTION_ID, { expectedRevision: shipped.revision, promptMarkdown: edited }).ok, true);
+  registry.upsertTask(
+    mkTask({
+      id: "task-grill-on",
+      status: "dispatching",
+      repoRoot: repo,
+      agent: "claude",
+      kind: "ship",
+      grillFirst: true,
+      intent: "add archive exports",
+    }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  let required: readonly string[] = [];
+
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+      verifyMissionMcpTools: async (tools) => {
+        required = tools;
+        return { ok: true as const };
+      },
+    }).dispatch("task-grill-on");
+  } finally {
+    const current = actions.get(GRILL_SESSION_ACTION_ID)!;
+    actions.reset(GRILL_SESSION_ACTION_ID, current.revision);
+    applySkillsConfig({ enabled: false });
+  }
+
+  assert.equal(registry.getTask("task-grill-on")?.status, "running", registry.getTask("task-grill-on")?.error ?? "");
+  const prompt = supervisor.starts[0]!.prompt;
+  assert.match(prompt, /^add archive exports/, "the operator's words stay first");
+  const grill = prompt.indexOf(`${GRILL_FIRST_HEADING}\n`);
+  assert.ok(grill > 0, "the Grill block was delivered");
+  assert.ok(prompt.includes(`\n/grill\n\n${edited}`), "this harness's skill line, then the EDITED instruction verbatim");
+  const contract = prompt.indexOf("## Ship task completion handoff");
+  assert.ok(contract > grill, "the Grill block comes before the ship contract, which still follows");
+  assert.ok(required.includes("request_plan_decisions"), `the launch requires the decisions tool: ${required.join(", ")}`);
+  assert.ok(supervisor.starts[0]!.mcp, "and carries the Mission MCP server that publishes it");
+});
+
 test("a build with no supervisor refuses the runtime rather than silently using the other", async () => {
   const repo = seedRepo("no-sup-repo");
   setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
@@ -665,7 +732,7 @@ test("a cancel landing mid-launch stops the driver it just started", async () =>
     // The teardown a cancel triggers. Cancelling here, at the moment the driver has just
     // been started, is what leaves an agent working in a worktree that is being handed back.
     async () => {},
-    { supervisor, missionMcpDescriptor: async () => null },
+    { supervisor, missionMcpDescriptor: async () => MISSION_DESCRIPTOR, verifyMissionMcpTools: async () => ({ ok: true }) },
   );
   const original = supervisor.start.bind(supervisor);
   supervisor.start = async (input) => {

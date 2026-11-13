@@ -278,8 +278,9 @@ function SlotCard({
         <div><dt>Disk</dt><dd>{bytes(slot.diskBytes)}</dd></div>
       </dl>
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
-      {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
-        <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
+      {slot.processes.reason && <p className="wt-diagnostic">{slot.processes.reason}</p>}
+      {(slot.quarantineReason || slot.diagnostic) && (
+        <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic}</p>
       )}
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact worktree path"}>

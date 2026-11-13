@@ -42,7 +42,7 @@ beforeEach(() => {
 after(() => { process.env = previous; rmSync(root, { recursive: true, force: true }); });
 
 test("environment IDs preserve every earlier index and append Pi", () => {
-  assert.deepEqual(ENVIRONMENT_CHECK_IDS, ["upstartclaw-core-setup", "mission-hook-script", "pi-extension"]);
+  assert.deepEqual(ENVIRONMENT_CHECK_IDS.slice(0, 3), ["upstartclaw-core-setup", "mission-hook-script", "pi-extension"]);
 });
 test("never installed is silent but unavailable; enabled missing link warns and allows repair", async () => {
   assert.equal((await inspectPiExtension()).warning, null);

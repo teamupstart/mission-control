@@ -29,8 +29,9 @@ export function claimedIteration(id: string): ResidentIteration | undefined {
 }
 const CLEAR_REQUEST = "wake_request_delay_s = NULL, wake_request_reason = NULL, wake_request_generation = NULL";
 export function pauseResident(id: string, reason: string): void {
+  // A pause also drops a queued Run now: the operator's next Run now or Resume decides again.
   openDb().prepare(`UPDATE resident_runs SET loop_state = 'paused', pause_reason = ?, next_wake_at = NULL,
-    ${CLEAR_REQUEST} WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(reason, id);
+    run_requested_at = NULL, ${CLEAR_REQUEST} WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(reason, id);
 }
 /** Upgrade only the obsolete automatic pause; explicit and guardrail pauses remain durable. */
 export function releaseResidentReviewPause(id: string): boolean {
@@ -41,7 +42,7 @@ export function releaseResidentReviewPause(id: string): boolean {
 export function resumeResident(id: string, working: boolean, generation: number | null, at: number): void {
   const run = liveRun(id);
   openDb().prepare(`UPDATE resident_runs SET loop_state = ?, pause_reason = NULL, wake_reason = NULL, next_wake_at = ?,
-    consumed_generation = ? WHERE id = ?`).run(working ? "working" : "waiting",
+    consumed_generation = ?, compaction_failures = 0 WHERE id = ?`).run(working ? "working" : "waiting",
     working ? null : at + run.settings.loop.delaySeconds * 1000,
     working ? run.consumedGeneration : generation ?? run.consumedGeneration, id);
 }
@@ -52,8 +53,41 @@ export function beginResidentCompaction(id: string): void {
 export function completeResidentCompaction(id: string, generation: number | null): void {
   const run = liveRun(id);
   // Consume the maintenance generation without scheduling or counting an iteration.
-  openDb().prepare("UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ? WHERE id = ?")
+  openDb().prepare("UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ?, compaction_failures = 0 WHERE id = ?")
     .run(generation ?? run.consumedGeneration, id);
+}
+/** Count one more consecutive compaction failure and return the new total. */
+export function recordResidentCompactionFailure(id: string): number {
+  return (openDb().prepare(`UPDATE resident_runs SET compaction_failures = compaction_failures + 1
+    WHERE id = ? RETURNING compaction_failures`).get(id) as { compaction_failures: number }).compaction_failures;
+}
+/**
+ * Leave a failed compaction for a later wake, which compacts again because context is still
+ * above the threshold. An idle session gets its wake now, consuming any maintenance
+ * generation so the ordinary cadence cannot replace the backoff. A session still unwinding
+ * the interrupted turn gets the delay as a pacing request, applied from that turn's completion.
+ */
+export function retryResidentCompaction(id: string, retry: { delaySeconds: number; reason: string; at: number; generation: number | null; idle: boolean }): void {
+  const run = liveRun(id);
+  if (run.loopState !== "compacting") return;
+  if (retry.idle) {
+    openDb().prepare(`UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ?, next_wake_at = ?,
+      wake_reason = ?, ${CLEAR_REQUEST} WHERE id = ?`).run(retry.generation ?? run.consumedGeneration,
+      retry.at + retry.delaySeconds * 1000, retry.reason, id);
+  } else {
+    openDb().prepare(`UPDATE resident_runs SET loop_state = 'waiting', next_wake_at = NULL, wake_reason = ?,
+      wake_request_delay_s = ?, wake_request_reason = ?, wake_request_generation = ? WHERE id = ?`).run(
+      retry.reason, retry.delaySeconds, retry.reason, Math.max(retry.generation ?? -1, run.consumedGeneration ?? -1), id);
+  }
+}
+/** Queue Run now behind the turn in progress. The first press's time is kept. */
+export function requestResidentRun(id: string, at: number): void {
+  liveRun(id);
+  openDb().prepare("UPDATE resident_runs SET run_requested_at = COALESCE(run_requested_at, ?) WHERE id = ?").run(at, id);
+}
+/** Drop a queued Run now. True when one was queued. */
+export function clearResidentRunRequest(id: string): boolean {
+  return !!openDb().prepare("UPDATE resident_runs SET run_requested_at = NULL WHERE id = ? AND run_requested_at IS NOT NULL").run(id).changes;
 }
 export function humanResidentTurn(id: string, preservePacing = false): void {
   openDb().prepare(`UPDATE resident_runs SET next_wake_at = NULL, wake_reason = NULL, ${preservePacing ? "" : `${CLEAR_REQUEST},`}

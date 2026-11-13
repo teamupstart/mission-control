@@ -15,7 +15,6 @@ import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { WorktreeSettingsPanel } from "./WorktreeSettingsPanel.tsx";
-import { RepositoriesPanel } from "./RepositoriesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { StandingInstructionsPanel } from "./StandingInstructionsPanel.tsx";
 import { ConductorPanel } from "./ConductorPanel.tsx";
@@ -26,6 +25,7 @@ import { TaskSettingsPanel } from "./TaskSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
+import { BlockedPlacementPanel } from "./BlockedPlacementPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
@@ -37,7 +37,6 @@ import { SetupPanel } from "./SetupPanel.tsx";
 import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
-import { useRepoIndex } from "../useRepoIndex.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { useStandingInstructions } from "../useStandingInstructions.ts";
 import { useConductor } from "../useConductor.ts";
@@ -324,7 +323,6 @@ export function SettingsPage({
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
   const worktrees = useWorktrees(worktreesRevision, shown === "worktrees");
-  const repoIndex = useRepoIndex(shown === "repositories");
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // page reads the Inspector config, so it polls only while the page is open.
   const inspector = useInspector();
@@ -575,6 +573,7 @@ export function SettingsPage({
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
             {/* Beside Layout: where residents are drawn is part of how sessions are arranged. */}
             <ResidentPlacementPanel />
+            <BlockedPlacementPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,
@@ -621,12 +620,11 @@ export function SettingsPage({
             state={workflowSettings}
             workflows={workflowSummaries}
             foremanEnabled={foreman.config?.enabled ?? false}
+            skills={skills}
           />
         );
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} />;
-      case "repositories":
-        return <RepositoriesPanel state={repoIndex} />;
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
       case "standing-instructions":

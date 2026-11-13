@@ -3,6 +3,10 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectRowStatus, openRepositorySetup, openSetupFamily } from "../fixtures/setup-panel.ts";
+
+/** The required Setup row that passes only once at least one repository is detected. */
+const REPOSITORY_CHECK = "derived-indexed-repositories";
 
 const EVIDENCE = artifactsDir("settings-repository-index");
 
@@ -28,9 +32,12 @@ test.describe("config-backed repository indexing", () => {
     dashboard,
     daemon,
   }) => {
-    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
-    await expect(dashboard.getByRole("tab", { name: "Repositories" }))
-      .toHaveAttribute("aria-selected", "true");
+    await openRepositorySetup(dashboard, daemon.baseURL);
+    // Repositories is a Setup family now, not its own Settings category.
+    await expect(dashboard.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
+    await expect(dashboard.getByRole("tab", { name: "Repositories" })).toHaveCount(0);
+    await expectRowStatus(dashboard, REPOSITORY_CHECK, "Ready");
+    await expect(dashboard.locator("#setup-pane")).toContainText("At least one detected repository");
 
     const paths = ["~/workspace", "~/code", "~/dev", "~/upstart"];
     for (const path of paths) await expect(directoryRow(dashboard, path)).toBeVisible();
@@ -48,6 +55,7 @@ test.describe("config-backed repository indexing", () => {
     await dev.getByRole("button", { name: "Remove" }).click();
     await expect(dev).toHaveCount(0);
     await dashboard.reload();
+    await openSetupFamily(dashboard, "repositories");
     await expect(directoryRow(dashboard, "~/dev")).toHaveCount(0);
 
     await dashboard.goto(`${daemon.baseURL}/#/fleet`);
@@ -59,7 +67,7 @@ test.describe("config-backed repository indexing", () => {
     await dashboard.keyboard.press("Escape");
     await dialog.getByRole("button", { name: "Close" }).click();
 
-    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+    await openRepositorySetup(dashboard, daemon.baseURL);
     await dashboard.getByRole("button", { name: "Restore defaults" }).click();
     await expect(directoryRow(dashboard, "~/dev")).toBeVisible();
 
@@ -70,14 +78,22 @@ test.describe("config-backed repository indexing", () => {
     }
     await expect(dashboard.getByText("Nothing is indexed.")).toBeVisible();
     await expect(dashboard.getByText(/dispatch repo picker offers no repositories/)).toBeVisible();
+    // With nothing detected, Setup does not pass: the required row is a gap, the family says
+    // so on the rail, and the verdict names a required gap.
+    await expectRowStatus(dashboard, REPOSITORY_CHECK, "Needs setup");
+    await expect(dashboard.getByText("No directories are indexed, so no repositories can be detected.", { exact: false })).toBeVisible();
+    await expect(dashboard.locator("#setup-family-repositories")).toHaveAttribute("aria-label", "Repositories: 0 of 1 ready");
+    await expect(dashboard.locator(".setup-verdict")).toContainText("This machine is missing something required.");
     await shoot(dashboard, "03-empty");
 
     await dashboard.getByRole("button", { name: "Restore defaults" }).click();
     for (const path of paths) await expect(directoryRow(dashboard, path)).toBeVisible();
+    await expectRowStatus(dashboard, REPOSITORY_CHECK, "Ready");
+    await expect(dashboard.locator("#setup-family-repositories")).toHaveAttribute("aria-label", "Repositories: 1 of 1 ready");
     await shoot(dashboard, "04-restored");
   });
 
-  test("repository indexing does not poll while another Settings category is visible", async ({
+  test("repository indexing polls only while the Repositories family is on screen", async ({
     dashboard,
     daemon,
   }) => {
@@ -88,9 +104,17 @@ test.describe("config-backed repository indexing", () => {
       }
     });
 
-    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+    await openRepositorySetup(dashboard, daemon.baseURL);
     await expect(directoryRow(dashboard, "~/workspace")).toBeVisible();
 
+    // Another Setup family: the editor is unmounted, so nothing walks the index.
+    await openSetupFamily(dashboard, "agents");
+    await expect(directoryRow(dashboard, "~/workspace")).toHaveCount(0);
+    reads = 0;
+    await dashboard.waitForTimeout(4_500);
+    expect(reads).toBe(0);
+
+    // Another Settings category entirely.
     await dashboard.getByRole("tab", { name: "Harnesses" }).click();
     await expect(dashboard.getByRole("tab", { name: "Harnesses" }))
       .toHaveAttribute("aria-selected", "true");
@@ -98,8 +122,16 @@ test.describe("config-backed repository indexing", () => {
     await dashboard.waitForTimeout(4_500);
     expect(reads).toBe(0);
 
-    await dashboard.getByRole("tab", { name: "Repositories" }).click();
+    await dashboard.getByRole("tab", { name: "Setup" }).click();
+    await openSetupFamily(dashboard, "repositories");
     await expect.poll(() => reads).toBeGreaterThan(0);
+    await expect(directoryRow(dashboard, "~/workspace")).toBeVisible();
+  });
+
+  test("an old Repositories settings link lands on Setup", async ({ dashboard, daemon }) => {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+    await expect(dashboard.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
+    await openSetupFamily(dashboard, "repositories");
     await expect(directoryRow(dashboard, "~/workspace")).toBeVisible();
   });
 
@@ -107,7 +139,7 @@ test.describe("config-backed repository indexing", () => {
     dashboard,
     daemon,
   }) => {
-    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+    await openRepositorySetup(dashboard, daemon.baseURL);
 
     for (const path of ["~/workspace", "~/code", "~/dev", "~/upstart"]) {
       const row = directoryRow(dashboard, path);
@@ -135,7 +167,7 @@ test.describe("environment-owned repository indexing", () => {
     dashboard,
     daemon,
   }) => {
-    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+    await openRepositorySetup(dashboard, daemon.baseURL);
     await expect(dashboard.getByText("Set by the environment.")).toBeVisible();
     await expect(dashboard.getByText(/MISSION_WORKSPACE_DIRS=/)).toBeVisible();
 
@@ -147,6 +179,7 @@ test.describe("environment-owned repository indexing", () => {
     await expect(dashboard.getByRole("button", { name: "Remove" })).toHaveCount(0);
     await expect(dashboard.getByRole("button", { name: "Restore defaults" })).toHaveCount(0);
     await expect(dashboard.getByRole("button", { name: "Rescan now" })).toBeEnabled();
+    await expectRowStatus(dashboard, REPOSITORY_CHECK, "Ready");
     await shoot(dashboard, "05-environment-owned");
   });
 });

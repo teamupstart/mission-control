@@ -720,8 +720,8 @@ export function ScheduleEditor({
           {afterWorkWhy && <span className="field-hint">{afterWorkWhy}</span>}
           {kindWorkflowDefaults === "unreadable" && !afterWorkWhy && (
             <span className="field-hint">
-              Settings → Tasks → Dispatch defaults could not be read, so choosing a kind
-              preselects its built-in Workflow. Check the choice before saving.
+              The After work defaults on Settings → Tasks could not be read, so choosing a
+              kind preselects its built-in Workflow. Check the choice before saving.
             </span>
           )}
           {strandedWorkflow && !afterWorkWhy && (

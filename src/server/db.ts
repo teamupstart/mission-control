@@ -230,7 +230,12 @@ let db: DatabaseSync | undefined;
 // 28: dependency claims (`worktree_slots.deps_state`, `deps_fingerprint`, `deps_fingerprint_sha`,
 //     `deps_claimed_at`, `deps_last_error`, and `tasks.claim_warnings`), nullable with no
 //     backfill: no slot was claimed and no task warned before these existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 28;
+// 29: resident instruction proposals (`resident_instruction_proposals`), a new empty table: no
+//     resident proposed a change to its own instructions before this existed.
+// 30: a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task filed
+//     before it started without grilling; and the Grill action's operator text
+//     (`builtin_session_action_overrides`), a new empty table on an upgraded database.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 30;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -409,6 +414,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
       plan_inputs TEXT, plan_policy TEXT,
+      -- Grill me first (resolveGrillFirstPin). 0 on every kind that does not offer it.
+      grill_first   INTEGER NOT NULL DEFAULT 0,
       dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
       -- May the backlog autopilot schedule this? 1 unless somebody switched it off.
       -- NOT NULL DEFAULT 1 rather than nullable: there is no third state, and a NULL
@@ -1055,6 +1062,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_actions_normalized_name
       ON session_actions(normalized_name);
+
+    -- The operator's instruction for an editable built-in session action (today only Grill),
+    -- overlaid on the shipped one by WorkflowStore. prompt_md NULL is "reset to the shipped
+    -- text"; the row stays so the revision only ever moves forward.
+    CREATE TABLE IF NOT EXISTS builtin_session_action_overrides (
+      action_id  TEXT PRIMARY KEY,
+      prompt_md  TEXT,
+      revision   INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
 
     -- The Global Command catalog: what each portable workflow slot runs on this machine.
     --
@@ -3478,6 +3495,27 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_iterations", "conversation_key", "TEXT");
   addColumn(d, "resident_iterations", "message_id", "TEXT");
   addColumn(d, "resident_iterations", "message_ts", "INTEGER");
+  // A resident's proposed instruction changes, bound to the review that shows them. The review
+  // is what the human answers; this row is what the answer applies, so a proposal survives a
+  // daemon restart exactly as long as its review does. `outcome` is written in the same
+  // transaction as the review's resolution and never rewritten.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS resident_instruction_proposals (
+      review_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      profile_revision INTEGER NOT NULL,
+      persona_id TEXT,
+      persona_revision INTEGER,
+      proposal TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      outcome TEXT,
+      settled_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_resident_instruction_proposals_profile
+      ON resident_instruction_proposals(profile_id, created_at);
+  `);
 
   // Nullable with no default: a run launched before these existed reads as never granted.
   addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");
@@ -3488,6 +3526,10 @@ function migrate(d: DatabaseSync): void {
   // which keeps the native MCP behaviour it launched with; set (even for an empty set) on
   // every run since, which starts exactly its snapshot.
   addColumn(d, "resident_runs", "mcp_snapshot_at", "INTEGER");
+  // Run now pressed while the resident was busy: fires once on the next idle observation.
+  addColumn(d, "resident_runs", "run_requested_at", "INTEGER");
+  // Consecutive failed compactions before a wake; reset by a measured success or Resume.
+  addColumn(d, "resident_runs", "compaction_failures", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -3546,6 +3588,11 @@ function migrate(d: DatabaseSync): void {
   // The task's advisor pin, kept on the driver row so a relaunch renders the same flag
   // layer the first launch did. NULL inherits, which is what every older row did.
   addColumn(d, "sdk_sessions", "advisor_model", "TEXT");
+  // Consecutive restores that deferred this row because its decision tool could not be
+  // confirmed (`ResumeDeferred` in sdk/supervisor.ts). Bounded there, so a bundle that never
+  // builds turns into a visible refusal instead of a silent retry on every restart. 0 on
+  // every older row, which is what they all were.
+  addColumn(d, "sdk_sessions", "resume_deferrals", "INTEGER NOT NULL DEFAULT 0");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -3868,6 +3915,9 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "dependencies", "TEXT");
   addColumn(d, "tasks", "plan_inputs", "TEXT");
   addColumn(d, "tasks", "plan_policy", "TEXT");
+  // A task's Grill me first pin. NOT NULL DEFAULT 0 is the whole migration: every task filed
+  // before it started without grilling, and reads back exactly as it was.
+  addColumn(d, "tasks", "grill_first", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "tasks", "workflow_id", "TEXT");
   // `enabled`: the backlog's autopilot toggle. NOT NULL DEFAULT 1, which is the whole
   // migration - every task already in an operator's backlog was schedulable before this
@@ -5840,6 +5890,7 @@ interface TaskRow {
   dependencies: string | null;
   plan_inputs: string | null;
   plan_policy: string | null;
+  grill_first: number | null;
   enabled: number;
   // `unknown`, not `number | null`: the column is bare INTEGER affinity, so anything a
   // build or a hand edit wrote is what comes back. `rowToTask` validates rather than casts.
@@ -6291,6 +6342,7 @@ function rowToTask(
     labels: parseLabels(r.labels),
     dependencies: parseTaskDependencies(r.dependencies),
     ...readTaskPlans(r.plan_inputs, r.plan_policy),
+    grillFirst: r.grill_first === 1,
     // Only an explicit 0 parks a task. A row written by an older build, or one whose
     // column somehow reads NULL, is schedulable - the direction that degrades to the
     // behaviour every install already had rather than to a silently frozen backlog.
@@ -6402,7 +6454,7 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
+         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
          model, effort, advisor_model, persona_id,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
@@ -6412,12 +6464,12 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
-         enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
+         grill_first=excluded.grill_first, enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
          persona_id=excluded.persona_id,
          workflow_id=excluded.workflow_id,
@@ -6456,6 +6508,7 @@ export function upsertTask(t: Task): string[] {
       serializeTaskDependencies(t.dependencies),
       t.planInputError ? JSON.stringify({ error: t.planInputError }) : t.planInputs?.length ? JSON.stringify(t.planInputs) : null,
       t.planPolicyError ? JSON.stringify({ error: t.planPolicyError }) : t.planPolicy ? JSON.stringify(t.planPolicy) : null,
+      t.grillFirst ? 1 : 0,
       t.enabled ? 1 : 0,
       t.backlogRank,
       t.model,
@@ -14890,6 +14943,24 @@ export function latestStackedPr(
 }
 
 /**
+ * The most recently adopted stacked pull request of a task in one repository, in ANY work
+ * episode. A child merged into its parent's branch is recovered from a new branch, which is a
+ * new episode, so its replacement is not found by `latestStackedPr`'s episode match.
+ */
+export function latestStackedPrForTask(taskId: string, owner: string, repo: string, exceptKey = ""): InspectorPr | null {
+  const row = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE stack_task_id = ? AND lower(owner) = lower(?) AND lower(repo) = lower(?)
+          AND stack_parent_pr_url IS NOT NULL AND key <> ?
+        ORDER BY stack_adopted_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(taskId, owner, repo, exceptKey) as InspectorPrRow | undefined;
+  return row ? rowToInspectorPr(row) : null;
+}
+
+/**
  * Record that the stack release check passed for exactly this child head, and under which
  * parent state (`basis`). Rewritten when either changes: a release first granted under a
  * closed parent that later merged is re-recorded as merged once that ancestry is verified.
@@ -14990,13 +15061,33 @@ function stackAtomically<T>(fn: () => T): T {
  * recovery action still depends on a parent that can move. Ordered by key and resumed after
  * `afterKey`, so a caller walking the pages reaches every row in turn. Ordering by recency
  * would starve the oldest rows, since observing a row makes it recent again.
+ *
+ * Also a child that merged while its parent could not be read, or whose base or default branch
+ * GitHub did not report, or that merged into its finished parent's branch without a merge commit
+ * or merge times yet: whether its merge reached the default branch, or needs the recovery
+ * prompt, is unresolved until those are read again.
  */
 export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
-          AND (observed_state IS NULL OR observed_state <> 'MERGED') AND key > ?
+        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL
+          -- Closed without merging: its recovery action follows a parent that can still move.
+          AND ((merged_at IS NULL AND (observed_state IS NULL OR observed_state <> 'MERGED'))
+            -- Merged, whoever recorded the merge time, with its landing still unresolved.
+            OR (CASE WHEN json_valid(stack_state) THEN CASE WHEN json_extract(stack_state, '$.childState') = 'MERGED' THEN
+                  json_extract(stack_state, '$.parentUnreadSince') IS NOT NULL
+                  OR json_extract(stack_state, '$.baseRefName') IS NULL
+                  OR json_extract(stack_state, '$.defaultBranch') IS NULL
+                  -- Merged into its finished parent's branch, with a fact the recovery prompt
+                  -- needs still unreported (\`strayMergeUndecided\`).
+                  OR (json_extract(stack_state, '$.parentState') = 'MERGED'
+                    AND json_extract(stack_state, '$.baseRefName') = json_extract(stack_state, '$.parentHeadRefName')
+                    AND (json_extract(stack_state, '$.childMergeCommitSha') IS NULL
+                      OR json_extract(stack_state, '$.childMergedAt') IS NULL
+                      OR json_extract(stack_state, '$.parentMergedAt') IS NULL))
+                END END) = 1)
+          AND key > ?
         ORDER BY key ASC LIMIT ?`,
     )
     .all(afterKey, limit) as unknown as InspectorPrRow[];
@@ -15007,7 +15098,7 @@ export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[
 export interface StackPromptClaim {
   prKey: string;
   /** A prompt (`catch-up`, `restack`) or a broken-stack recovery action typed as one. */
-  kind: "catch-up" | "restack" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
+  kind: "catch-up" | "restack" | "recover-merge" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
   tip: string;
   claimId: string;
   outcome: "uncertain" | "delivered";
@@ -15022,7 +15113,7 @@ export function readStackPromptClaim(prKey: string, kind: StackPromptClaim["kind
   if (!row) return null;
   return {
     prKey: String(row.pr_key),
-    kind: (["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
+    kind: (["catch-up", "restack", "recover-merge", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
       .find((kind) => kind === row.kind) ?? "catch-up",
     tip: String(row.tip),
     claimId: String(row.claim_id),

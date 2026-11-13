@@ -41,7 +41,7 @@ import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agen
 const EVIDENCE = artifactsDir("retro-offer");
 const TASK = "hold a session worth retrospecting";
 const CORRECTION = "no - reproduce it in docker first, it never fails on the Mac";
-/** The prompt `fake-claude.mjs` answers by raising a real `AskUserQuestion` and blocking. */
+/** The prompt `fake-claude.mjs` answers by asking a real question and blocking on it. */
 const ASK_TURN = "ask me which linter to use";
 const HELD_TURN = "hold the current turn open";
 
@@ -526,9 +526,9 @@ test("a session nobody corrected is never offered a retro, however clean its rev
 /**
  * The OTHER way a human steers a session, and the one no transcript can carry.
  *
- * A driver-run session keeps Claude's native `AskUserQuestion`, so answering it resolves the
- * callback the agent is blocked on and lands in the JSONL as a pure `tool_result` - which
- * every harness parser drops as machine noise. The observed failure was a finished session
+ * A dispatched task asks through `request_input`, so answering it resolves the tool call the
+ * agent is blocked on and lands in the JSONL as a pure `tool_result` - which every harness
+ * parser drops as machine noise. The observed failure was a finished session
  * ("Add keybinding for To review button") whose operator answered two dashboard questions,
  * whose pull request the Inspector reviewed clean, and whose card offered no retro at all.
  *
@@ -555,19 +555,19 @@ test.describe("steered by answering, not by typing a correction", () => {
     const detail = dashboard.locator(".console-detail");
     await expectNoRetroOffer(detail);
 
-    // Provoke the real `can_use_tool` request and answer the real form the dashboard draws
-    // for one, through the same route a person's click takes.
+    // Provoke the real `request_input` call and answer the real review form the dashboard
+    // draws for it, through the same route a person's click takes.
     const composer = detail.getByPlaceholder(/^Reply to this session/);
     await expect(composer).toBeEnabled();
     await composer.fill(ASK_TURN);
     await composer.press("Enter");
-    const form = detail.locator(".pane-dialog");
-    await expect(form).toBeVisible({ timeout: 30_000 });
-    // Deliberately not the first row of either question: a spec that picks the default passes
-    // just as well against a form that ignores the click.
-    await form.getByRole("radio", { name: /eslint/ }).click();
-    await form.getByRole("checkbox", { name: /tests/ }).click();
-    await form.getByRole("button", { name: "Submit answers" }).click();
+    await detail.getByRole("button", { name: "to review" }).click({ timeout: 30_000 });
+    const form = dashboard.locator(".review-modal");
+    await expect(form).toContainText("Which linter?");
+    // Deliberately not the first option: a spec that picks the default passes just as well
+    // against a form that ignores the click.
+    await form.getByRole("radio", { name: /eslint/ }).check();
+    await form.getByRole("button", { name: "Submit" }).click();
     await expect(form).toBeHidden({ timeout: 30_000 });
     observed("the agent's own question was answered from the dashboard");
 

@@ -10,7 +10,8 @@ import {
 } from "@shared/resident-mcp.ts";
 import { ResidentMcpServerError } from "./residents/mcp-store.ts";
 import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
-import { registerResidentLoopRoutes } from "./residents/routes.ts";
+import { registerResidentInstructionRoutes, registerResidentLoopRoutes } from "./residents/routes.ts";
+import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
@@ -20,6 +21,7 @@ import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt,
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
 import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
+import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
@@ -329,6 +331,7 @@ import { openEndedRequests } from "./http-shutdown.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
+import { grillFirstDispatchBlock } from "./grill-first.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
@@ -338,7 +341,7 @@ import {
   reserveInjection,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
-import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
@@ -1754,6 +1757,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registry.subscribe?.((e) => {
     if (e.type === "session_remove") agentResumeClaims.delete(e.id);
   });
+  // A resident's proposed changes to its own standing instructions. Built from the managers
+  // already here: the review it opens is an ordinary review, and the human's answer to it is
+  // applied by the resolve route below, inside the transaction that records the answer.
+  // Guarded because route tests build the app with a null or stub `reviews`, as the
+  // `registry.subscribe?.` call above documents for the registry.
+  const residentInstructions = personas && reviews
+    ? new ResidentInstructionChanges({
+      registry,
+      reviews,
+      persona: (id) => personas.store.getPersona(id),
+      writePersonaGuidance: (id, expectedRevision, guidance, at) =>
+        personas.writeGuidance(id, expectedRevision, guidance, at),
+      publishPersona: (persona) => {
+        personas.announce(persona);
+        workflows?.refreshSummaries();
+      },
+    })
+    : null;
+  // A resident whose proposal call timed out learns what the answer applied in the continuation.
+  if (residentInstructions) {
+    reviews?.addContinuationAddendum?.((review) => residentInstructions.continuationNote(review.id));
+  }
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -2489,6 +2514,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, UpdateSessionActionSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.update(c.req.param("id"), parsed.data);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
+  });
+  // Reset an editable built-in (the Grill action) to its shipped instruction.
+  app.post("/api/session-actions/:id/reset", bodyLimit({
+    maxSize: REVISION_ONLY_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.reset(c.req.param("id"), parsed.data.expectedRevision);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
   });
@@ -4464,6 +4502,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // reason, and it chains: each page reports the `start` the next call passes back. The
   // panel is the only caller, but it belongs on this route rather than the SSE stream
   // because it is a request for history, not a subscription to new turns.
+  /**
+   * The tool call that launched one of this session's background sub-agents, as its
+   * transcript file records it: `{ toolUseId }`, null when it records none.
+   *
+   * Asked by "Jump to launch" for an agent whose source did not name its launching call. The
+   * answer comes from the file because only the file always holds both halves of a launch -
+   * the call and the result naming its agent are written apart, so the dashboard can receive
+   * them in separate appends or on separate pages. The browser then finds the call by its id
+   * among the turns it holds, paging older ones in, exactly as for an agent the source named.
+   */
+  app.get("/api/sessions/:id/subagents/:agentId/launch", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const agentId = c.req.param("agentId");
+    if (!agentId || agentId.length > 256) return c.json({ error: "agentId must be a sub-agent id" }, 400);
+    const spec = transcriptFor(session);
+    // A harness whose transcript ties no call to its agents answers "none", as does a file
+    // that has not appeared yet: both read as a launch this transcript does not record.
+    const path = spec?.subagentLaunch ? spec.locate(session) : null;
+    return c.json({ toolUseId: path && spec?.subagentLaunch ? await spec.subagentLaunch(path, agentId) : null });
+  });
+
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -5816,6 +5876,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         assertStandingApprovalGrantable(c.req.param("id"));
       } catch (error) { return planFailure(c, error); }
     }
+    // A resident's proposed instruction changes: only a person's answer applies them, and the
+    // write commits with the answer. Refused before anything settles when the answer is not
+    // the operator's, so the question stays open for them.
+    const instructionChange = residentInstructions?.resolution(
+      c.req.param("id"),
+      parsed.data.action,
+      by,
+      parsed.data.selections ?? null,
+    ) ?? null;
+    if (instructionChange && "refusal" in instructionChange) {
+      return c.json({ error: instructionChange.refusal.error }, instructionChange.refusal.status);
+    }
+    if (grant && instructionChange) {
+      return c.json({ error: "A plan bundle grant cannot answer a resident instruction proposal" }, 409);
+    }
     try {
       // An answer to the questions left beside an auto-approved bundle tells the agent the
       // bundle is already approved, because this form no longer asked about it.
@@ -5830,9 +5905,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         by,
         parsed.data.selections,
         // Committed with the answer, so a failed grant leaves the review pending to retry.
-        grant ? () => grantStandingBundleApproval(c.req.param("id")) : undefined,
+        grant
+          ? () => grantStandingBundleApproval(c.req.param("id"))
+          : instructionChange?.persist,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
+      instructionChange?.publish();
       return c.json(updated);
     } catch (error) {
       if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
@@ -6189,7 +6267,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const stackGuard = (): string | null => {
       if (!stackRequest) return null;
       try {
-        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        if (stackParentRead && !isStackPromptKind(stackRequest.kind)) {
           const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
           if (changed) return changed;
         }
@@ -6211,7 +6289,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
       // A recovery action was chosen from the parent's last observed state; read it again
       // before typing, so a parent that merged or closed since never gets a stale instruction.
-      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+      if (!isStackPromptKind(stackRequest.kind)) {
         const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
         if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
         stackParentRead = recheck.parent;
@@ -7444,6 +7522,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       commitPlanHtml: cfg.commitPlanHtml,
       alwaysDraftPr: cfg.alwaysDraftPr,
       planStorage: cfg.planStorage,
+      grillFirstKinds: cfg.grillFirstKinds,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
@@ -8710,7 +8789,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (error instanceof PlanStoreError) return { ok: false, status: 409, body: { error: error.message } };
       throw error;
     }
-    const { workflowId } = creationPolicy;
+    const { workflowId, grillFirst } = creationPolicy;
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
@@ -8731,7 +8810,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
     if (!data.backlog) {
-      const planBlock = planDispatchBlock({ ...data, agent });
+      const planBlock = planDispatchBlock({ ...data, agent })
+        ?? grillFirstDispatchBlock({ kind: data.kind, agent, grillFirst });
       if (planBlock) return { ok: false, status: 409, body: { error: planBlock } };
     }
     try {
@@ -8933,6 +9013,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       effort: task.effort ?? undefined,
       personaId: task.personaId ?? undefined,
       workflowId: task.workflowId,
+      grillFirst: task.grillFirst ?? false,
       priority: task.priority,
       labels: task.labels,
     });
@@ -8947,6 +9028,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }
 
   if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
+  if (residentInstructions) registerResidentInstructionRoutes(app, { registry, changes: residentInstructions });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);

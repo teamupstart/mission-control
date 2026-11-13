@@ -13,7 +13,8 @@
 // happened, and DELIVERY decides what is worth interrupting for (see
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
-import type { Session, Task } from "./types.ts";
+import type { ReviewItem, Session, Task } from "./types.ts";
+import { goalLine } from "./goal.ts";
 import {
   activePaneDialog,
   dialogIdentity,
@@ -71,6 +72,8 @@ export interface Alert {
 export interface AlertScope {
   sessions: Session[];
   tasks: Task[];
+  /** Existing review snapshot, used to describe the newest pending ask in its toast. */
+  reviews?: ReviewItem[];
   /**
    * Currently-stalled sessions, from the daemon's stall detector. Optional because
    * nothing but the daemon can COMPUTE it - the elapsed-time signal never reaches
@@ -179,6 +182,12 @@ export function stuckAlert(st: Stall, sessions: Session[]): Alert {
 export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const alerts: Alert[] = [];
   const prevSessions = new Map(prev.sessions.map((s) => [s.id, s]));
+  const latestReviews = new Map<string, ReviewItem>();
+  for (const review of next.reviews ?? []) {
+    if (review.status !== "pending") continue;
+    const latest = latestReviews.get(review.sessionId);
+    if (!latest || review.createdAt >= latest.createdAt) latestReviews.set(review.sessionId, review);
+  }
   const attentionByCommission = (scope: AlertScope) => {
     return new Map(pipelineCommissionAttentionEntries({
       commissions: scope.pipelineCommissions,
@@ -241,13 +250,17 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       });
     }
 
-    // review: a review item landed (pending count rose from zero).
-    if (s.pendingReviews > 0 && (before?.pendingReviews ?? 0) === 0) {
+    // A new question/review needs attention even if an older one is still pending.
+    // Stable counts and answers stay silent; retries reuse the existing review.
+    if (s.pendingReviews > (before?.pendingReviews ?? 0)) {
+      const review = latestReviews.get(s.id);
+      const description = review?.kind === "input" ? review.body : review?.title;
       alerts.push({
         id: `review:${s.id}`,
         kind: "review",
-        title: `${label} needs review`,
-        body: s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review",
+        title: `${label} ${review?.kind === "input" ? "needs your answer" : "needs review"}`,
+        body: goalLine(description ?? "", 240)
+          || (s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review"),
         sessionId: s.id,
         severity: "attention",
       });
@@ -627,7 +640,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
 /** Compact one-line summary of several alerts, for the reconnect catch-up toast. */
 export function summarizeAlerts(alerts: Alert[]): string {
-  const titles = alerts.map((a) => a.title);
+  const titles = alerts.map((a) => a.kind === "review" && a.body ? `${a.title}: ${a.body}` : a.title);
   const shown = titles.slice(0, 3).join(" · ");
   return titles.length > 3 ? `${shown} · +${titles.length - 3} more` : shown;
 }

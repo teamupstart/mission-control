@@ -1955,6 +1955,15 @@ rl.on("line", (line) => {
     // clean.
     if (frame.request?.subtype === "initialize") {
       appendedSystemPrompt = typeof frame.request.appendSystemPrompt === "string" ? frame.request.appendSystemPrompt : "";
+      // What the driver appended to Claude Code's system prompt travels in this frame, not on
+      // the argv, so it is recorded here - apart from `claude/`, whose readers expect launches.
+      if (recordDir) {
+        mkdirSync(join(recordDir, "claude-initialize"), { recursive: true });
+        writeFileSync(
+          join(recordDir, "claude-initialize", `initialize-${Date.now()}-${process.pid}.json`),
+          JSON.stringify({ cwd: process.cwd(), appendSystemPrompt: frame.request.appendSystemPrompt ?? null }, null, 2),
+        );
+      }
       ok(frame.request_id, {
         commands: [], agents: [], output_style: "default", available_output_styles: [],
         account: {},

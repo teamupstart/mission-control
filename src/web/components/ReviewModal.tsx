@@ -6,7 +6,7 @@ import { PlanView } from "./PlanView.tsx";
 import { ChatGlyph, DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { CHAT_ABOUT_IT, decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
-import { reviewDecisions, showsBody } from "../lib/reviews.ts";
+import { inputBody, reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -223,15 +223,15 @@ export function ReviewCard({
       {/*
         An `input` shows its body only when it SAYS something the header does not.
 
-        `request_input` sends a clipped question as the title and the whole question as the
-        body, so the two are equal whenever the question fit in a heading - and printing both
-        then put the same sentence on screen twice, once as the `<h3>` and again as a paragraph
-        directly beneath, with a third copy possible as the form's legend.
+        `request_input` sends a clipped question as the title and the whole question, then any
+        `context`, as the body. When the question fit in a heading its paragraph equals the
+        title, and printing it again put the same sentence on screen twice - so `inputBody`
+        drops that leading paragraph and only the context is printed beneath the heading.
 
-        But suppressing it unconditionally would flatten a long or multi-line free-text
-        question into a bold heading with its newlines collapsed. So the test is
-        `body !== title` rather than the kind: past the clip the body says something the header
-        does not, and it is rendered as the readable paragraph it should be. The whole block is
+        But suppressing the body outright would flatten a long or multi-line free-text
+        question into a bold heading with its newlines collapsed. Past the clip the body says
+        something the header does not, and it is rendered in full as the readable paragraph it
+        should be. The whole block is
         skipped when there is nothing to put in it, because `.review-content` is a bordered,
         margined box and an empty one is an artifact.
       */}
@@ -241,7 +241,7 @@ export function ReviewCard({
           {(review.kind === "plan" || review.kind === "plan-decisions") && (
             <PlanView markdown={review.body} />
           )}
-          {review.kind === "input" && <p className="question">{review.body}</p>}
+          {review.kind === "input" && <p className="question">{inputBody(review)}</p>}
         </div>
       )}
 

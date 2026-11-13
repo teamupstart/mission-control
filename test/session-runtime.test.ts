@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -174,7 +175,7 @@ test("registration refuses an id outside the sdk space, and refuses a second hol
 
 test("adoption refusals do not create or overwrite durable rows", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   sup.adopt({
     registration: registration(),
@@ -243,7 +244,7 @@ test("a completed discovery sweep does not evict an SDK session", () => {
 
 test("bound fills the identity the read path needs and confirms instrumentation", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   sup.adopt({
     registration: registration(),
@@ -289,7 +290,7 @@ test("bound fills the identity the read path needs and confirms instrumentation"
 
 test("driver state and turn_done move the card the way a hook does", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   sup.adopt({
     registration: registration(),
@@ -309,7 +310,7 @@ test("driver state and turn_done move the card the way a hook does", async () =>
 
 test("a driver request is the dialog every surface already renders", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   sup.adopt({
     registration: registration(),
@@ -353,7 +354,7 @@ test("a driver request is the dialog every surface already renders", async () =>
 
 test("a multi-question ask becomes a form, with its questions intact", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   sup.adopt({
     registration: registration(),
@@ -393,7 +394,7 @@ test("a multi-question ask becomes a form, with its questions intact", async () 
 test("an exited driver leaves through session_remove, on the ordinary linger", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 5_000 });
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   const events: ServerEvent[] = [];
   r.subscribe((e) => events.push(e));
@@ -438,7 +439,7 @@ test("a driver stream that just ends still evicts the session", async () => {
   // An adapter that returns (or throws) without an `exited` event is the same fact for the
   // dashboard: nothing is driving this card any more, so a Send box on it would lie.
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   sup.adopt({
     registration: registration(),
@@ -453,7 +454,7 @@ test("a driver stream that just ends still evicts the session", async () => {
 
 test("delivery is acked and serialized per session, and refused when nothing is driving", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   sup.adopt({
     registration: registration(),
@@ -476,7 +477,7 @@ test("delivery is acked and serialized per session, and refused when nothing is 
 
 test("queued delivery is refused when its driver exits before it runs", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   let releaseFirst!: () => void;
   let markFirstStarted!: () => void;
@@ -515,7 +516,7 @@ test("queued delivery is refused when its driver exits before it runs", async ()
 
 test("stopping refuses queued and new delivery before the driver exits", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   let releaseFirst!: () => void;
   let markFirstStarted!: () => void;
@@ -575,7 +576,7 @@ test("stopping refuses queued and new delivery before the driver exits", async (
 
 test("an accepted stop returns before the driver drains and keeps the card unavailable", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   let releaseStop!: () => void;
   let stops = 0;
@@ -615,7 +616,7 @@ test("an accepted stop returns before the driver drains and keeps the card unava
 
 test("an accepted stop marks a card unavailable when a blocking stop already owns the drain", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   let markStopStarted!: () => void;
   let releaseStop!: () => void;
@@ -656,7 +657,7 @@ test("an accepted stop marks a card unavailable when a blocking stop already own
 
 test("an accepted stop restores a live card when the blocking drain it joined fails", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   let markStopStarted!: () => void;
   let rejectStop!: (reason: Error) => void;
@@ -694,7 +695,7 @@ test("an accepted stop restores a live card when the blocking drain it joined fa
 
 test("an accepted stop failure restores a driver that is still live", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   driver.handle.stop = async () => {
     throw new Error("driver refused stop");
@@ -739,7 +740,7 @@ test("a driver event about a pane-backed session is refused", async () => {
 
 test("a driver-observed gh pr create decorates the card and proves authorship once", async () => {
   const r = new Registry();
-  const sup = new SdkSupervisor(r);
+  const sup = new SdkSupervisor(r, MISSION_TEST_MCP_DEPS);
   const driver = fakeHandle();
   const opened: string[] = [];
   r.onPrOpened((e) => opened.push(e.url));

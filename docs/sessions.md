@@ -1120,12 +1120,18 @@ search; it ends at the start, on a failed page, or when a page arrives without m
 paging cursor back. A page that moves it while adding no turn, such as a stretch of pure tool
 output, is progress and the search continues.
 
-A sub-agent's own activity never moves its parent. On the SDK stream a frame carrying
-`parent_tool_use_id` is the sub-agent's, and it cannot re-open a finished turn. A hook that
-Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it as
-`HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
-cycle as they were. SDK sessions run the machine's installed hooks too, so this matters for
-both runtimes.
+A sub-agent's own activity cannot restart its parent. The two channels it arrives on are
+handled separately:
+
+- **The SDK stream.** A frame carrying `parent_tool_use_id` belongs to a sub-agent. While the
+  parent's own turn is running, it updates the parent's activity line, since the session is
+  working on that sub-agent's behalf, but it never opens a turn of its own. Once the parent's
+  turn has ended, such a frame is dropped, so it cannot re-open a finished turn or flip an idle
+  parent back to working.
+- **Hooks.** A hook Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it
+  as `HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
+  cycle as they were, in the moment and in the hook reading that later discovery sweeps replay.
+  SDK sessions run the machine's installed hooks too, so this matters for both runtimes.
 
 ### Open a terminal, or the agent's own CLI, on a session
 
@@ -2372,9 +2378,15 @@ The MCP tools are:
   rules. Running and dispatching tasks must be cancelled first. Archive preservation and resource
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
-- `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
-  With `options` the human gets clickable choices (radios, or checkboxes with
-  `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
+- `request_input(question, context?, options?)` - ask a question and **block** for an answer or
+  dismissal. With `options` the human gets clickable choices (radios, or checkboxes with
+  `multiSelect`, plus an optional free-text "Other"); without them, a text box. `question` is
+  the card's heading and should be the decision itself; `context` (up to 4000 characters) is
+  printed beneath it, line breaks kept, for what the human needs to decide without the agent's
+  context - what is being decided, why it came up, what the agent found and the tradeoffs.
+  Each option's `detail` states that option's tradeoff, and `recommended` marks the agent's
+  pick. The tool description carries this rule for every harness (`src/shared/decision-asks.ts`),
+  and the dispatch-scoped Claude and Codex prompts repeat it in the same words. Either shape
   can be dismissed without sending an answer, or [moved to chat](#chat-about-it). An ask its
   card could not carry is refused
   before anything is shown: an empty question, an option with an empty label, or two options
@@ -2540,26 +2552,42 @@ publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 ### The ask channel
 
 Claude sessions the dashboard dispatches for a task do not use Claude's built-in
-`AskUserQuestion`, on either runtime. It is disallowed at launch, and the agent is pointed at
-`request_input` instead, so every clarifying question a task asks arrives as the same
-`request_input` review - in the review queue, with **Chat about it** - rather than as a menu
-drawn on a terminal nobody is watching or a driver-only form. On the **Agent SDK runtime**
-the same three pieces ride on the query options (`sdkAskChannel` in
-`src/server/ask-channel-prompt.ts`): `allowedTools` pre-approves `request_input`, `disallowedTools`
-removes the built-in, and the redirect leads the one `systemPrompt.append`, ahead of any
-standing instructions. An SDK launch that registers no Mission MCP server keeps the built-in,
-whose questions then arrive as structured driver requests; see
-[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer lands
-in the session's conversation as the same gold entry.
+`AskUserQuestion`, on either runtime. It is disallowed at launch, `request_input` is
+pre-approved, and the agent is told to ask every decision there instead - with the decision as
+`question`, the background in `context`, a tradeoff on each option and its recommended pick -
+so every decision a task asks arrives as the same `request_input` review, in the review queue
+with **Chat about it** and with what you need to make it, rather than as a menu drawn on a
+terminal nobody is watching or a driver-only form with no room for context. On the terminal
+runtime that is four argv flags; on the **Agent SDK runtime** the same three pieces ride on
+the query options on every launch (`sdkAskChannel` in `src/server/ask-channel-prompt.ts`):
+`allowedTools` pre-approves `request_input`, `disallowedTools` removes the built-in, and the
+redirect leads the one `systemPrompt.append`, ahead of any standing instructions. A Claude
+launch on either runtime that cannot be given the Mission Control MCP server is refused, and
+lands in **Did not start** with a message saying so (usually the MCP bundle is not built -
+run `npm run build`), rather than started with the built-in or with no way to ask at all; see
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Restoring an SDK session after
+a restart applies the same check, but a refused restore costs a conversation, so only a bundle
+verified not to publish `request_input` fails the session. A bundle that is not built yet, or a
+handshake that did not complete, leaves it `suspended` for the next restore instead - for at
+most three restores in a row. A deferral that has not cleared by then is refused the ordinary
+way: the card appears, says why it could not be resumed, and its task settles. A resume that
+goes through starts the count over. The answer
+lands in the session's conversation as the same gold entry.
 
 A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
-appends one developer instruction: when the operator needs to review alternatives, select an
-option, or answer another discrete multiple-choice question, call `request_input` with
-`options` and wait for the response instead of presenting the choices only as prose and
-ending the turn. Mission Control reads Codex's effective configured developer instruction
-first and preserves it ahead of this appendix. If the MCP server is unavailable, or that
-effective instruction cannot be read safely, the appendix is omitted so the launch never
-points Codex at an unavailable tool or replaces the operator's customization.
+appends one developer instruction: whenever it needs a decision, a clarification or a choice
+from the operator, call `request_input` - with `options` for discrete choices, `context` for
+the background and a tradeoff on each option - and wait for the response instead of
+presenting the choices only as prose and ending the turn. Mission Control reads Codex's
+effective configured developer instruction first and preserves it ahead of this appendix. A
+Codex launch without the MCP server is refused, like a Claude one.
+
+If that effective instruction cannot be read safely, the developer instruction is left as the
+operator configured it, and the decision instruction is sent in turn one instead. It comes
+after everything else turn one carries - the intent, or the standing instructions when those
+fell back to turn one too - so a turn one that opens with a skill invocation such as
+`$engineer` keeps it first. On a resume that sends nothing else, it is turn one by itself.
+Either way the session is still told to ask its decisions through `request_input`.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`
@@ -2569,15 +2597,14 @@ carries the redirect that tells the agent where to go instead, inline.
 
 If **anything** prevents the full set - the MCP bundle is missing (`npm run build` never
 ran), or the state directory cannot be written - then **none** of them are passed and the
-session keeps the built-in menu. An agent with nowhere to ask is worse than one with a menu
-we can read, so every failure disarms the whole channel rather than half of it, and setting
-up the *ask channel* never fails the dispatch: it is best-effort, and the daemon logs which
-condition it hit.
+dispatch is refused, naming the condition it hit. The flags are still all or nothing: an
+agent with the built-in removed and nowhere to ask is worse than one with a menu. But a
+session that kept the built-in would ask its decisions outside `request_input`, without the
+context and tradeoffs a decision needs, so a Claude task never starts that way either.
 
-A launch that **requires** a Mission tool is the exception, and it is a different question.
-Asking is best-effort because a session that keeps the built-in menu is merely the status quo;
-submitting is not, because a scout with no `submit_scout_artifacts` and an ensemble member with
-no `submit_ensemble_result` have no way to finish their task at all. So those launches are
+A launch that **requires** another Mission tool is checked further. A scout with no
+`submit_scout_artifacts` and an ensemble member with no `submit_ensemble_result` have no way
+to finish their task at all. So those launches are
 checked twice before the agent spawns - that the registration reached the argv, and that the
 bundle it names actually **publishes** the tools, established by a real MCP handshake against
 that exact file. Either check failing fails the dispatch, names the tool and points at

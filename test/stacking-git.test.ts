@@ -182,7 +182,9 @@ test("before a child PR exists, capture follows the current parent state and ref
   // retained parent branch must not keep a finished parent as the review base either.
   for (const state of ["OPEN", "MERGED", "CLOSED"] as const) {
     const base = await resolveStackDiffBase(registry, session, checkout,
-      parentGitHub({ state, headRefName: "feat/renamed", defaultBranch: "release/next" }));
+      // A merged parent merged into the default branch: one that merged anywhere else gives
+      // its child no base to move to (`parentMergedOffDefault`).
+      parentGitHub({ state, headRefName: "feat/renamed", baseRefName: "release/next", defaultBranch: "release/next" }));
     assert.equal(base?.branch, state === "OPEN" ? "feat/renamed" : "release/next");
   }
   await assert.rejects(resolveStackDiffBase(registry, session, checkout, {
@@ -193,7 +195,10 @@ test("before a child PR exists, capture follows the current parent state and ref
   await assert.rejects(resolveStackDiffBase(registry, session, checkout,
     parentGitHub({ headRefName: "" })), StackDiffBaseError);
   await assert.rejects(resolveStackDiffBase(registry, session, checkout,
-    parentGitHub({ state: "MERGED", defaultBranch: "missing-default" })), /stacked base could not be refreshed: missing-default/);
+    parentGitHub({ state: "MERGED", baseRefName: "missing-default", defaultBranch: "missing-default" })), /stacked base could not be refreshed: missing-default/);
+  // A parent that merged into a branch other than the default branch leaves no base to follow.
+  await assert.rejects(resolveStackDiffBase(registry, session, checkout,
+    parentGitHub({ state: "MERGED", baseRefName: "feat/grandparent", defaultBranch: "release/next" })), StackDiffBaseError);
 });
 
 test("freshRemoteBranchSha refuses a deleted branch, a bad name, and a disagreement", async () => {

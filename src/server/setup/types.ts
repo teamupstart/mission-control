@@ -25,6 +25,11 @@ export interface SetupProbeResult {
   remedy?: SetupRemedy;
 }
 
+export interface SetupRepositoryIndexRead {
+  repoCount: number;
+  directories: { path: string; status: string; repoCount: number | null }[];
+}
+
 export interface SetupSkillsRead {
   enabled: boolean;
   readable: boolean;
@@ -60,6 +65,8 @@ export interface SetupDeps {
   skills(): SetupSkillsRead;
   conductorProbe(): Promise<PipelineProbe>;
   terminalTargets(): TerminalTargetView[];
+  /** The repository index this daemon walks: how many checkouts it found, and where it looked. */
+  repositoryIndex(): Promise<SetupRepositoryIndexRead>;
   environmentChecks(deps: EnvironmentDeps): Promise<EnvironmentCheckView[]>;
   readBannerDismissal(): SetupBannerDismissal;
   writeBannerDismissal(dismissal: SetupBannerDismissal): void;

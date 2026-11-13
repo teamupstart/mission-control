@@ -5659,7 +5659,7 @@ export const InjectPromptSchema = z.object({
    */
   stack: z.object({
     prKey: z.string().min(1).max(512),
-    kind: z.enum(["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
+    kind: z.enum(["catch-up", "restack", "recover-merge", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
     tip: z.string().min(1).max(128).nullable(),
   }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),

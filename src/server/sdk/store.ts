@@ -303,6 +303,24 @@ export function setSdkSessionStatus(
 }
 
 /**
+ * Count one more restore that deferred this row, and return the new count.
+ *
+ * Kept apart from `upsertSdkSession` for the same reason the display name is: that write is
+ * the launch statement, and a relaunch must not reset or carry a count it knows nothing about.
+ */
+export function noteSdkSessionResumeDeferred(id: string, now = Date.now()): number {
+  const row = openDb()
+    .prepare(`UPDATE sdk_sessions SET resume_deferrals = resume_deferrals + 1, updated_at = ? WHERE id = ? RETURNING resume_deferrals`)
+    .get(now, id) as { resume_deferrals: number } | undefined;
+  return row?.resume_deferrals ?? 0;
+}
+
+/** A resume went through, so the count of deferrals before it starts over. */
+export function clearSdkSessionResumeDeferrals(id: string): void {
+  openDb().prepare(`UPDATE sdk_sessions SET resume_deferrals = 0 WHERE id = ? AND resume_deferrals <> 0`).run(id);
+}
+
+/**
  * Record the name a person gave this session, so a restart brings the card back under it.
  *
  * Deliberately NOT part of `upsertSdkSession`: that write is the launch/relaunch statement,

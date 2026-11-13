@@ -20,6 +20,7 @@ import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt,
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
 import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
+import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
@@ -6196,7 +6197,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const stackGuard = (): string | null => {
       if (!stackRequest) return null;
       try {
-        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        if (stackParentRead && !isStackPromptKind(stackRequest.kind)) {
           const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
           if (changed) return changed;
         }
@@ -6218,7 +6219,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
       // A recovery action was chosen from the parent's last observed state; read it again
       // before typing, so a parent that merged or closed since never gets a stale instruction.
-      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+      if (!isStackPromptKind(stackRequest.kind)) {
         const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
         if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
         stackParentRead = recheck.parent;

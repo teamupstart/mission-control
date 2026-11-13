@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -161,7 +162,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
     let launchedModel: string | null | undefined;
     const dispatcher = new Dispatcher(registry, async () => {}, {
       resolveRuntime: () => "terminal",
-      missionMcpDescriptor: async () => null,
+      ...MISSION_TEST_MCP_DEPS,
       spawn: async (_label, _short, cwd, _bin, args = []) => {
         const modelFlag = args.indexOf("--model");
         launchedModel = modelFlag < 0 ? null : args[modelFlag + 1];
@@ -296,7 +297,7 @@ test("an embedded launch reports the SDK runtime, from the resolution and not th
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "sdk",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     supervisor: supervisor as never,
     // Reaching a pane at all would mean the embedded branch did not take.
     inject: async () => assert.fail("an embedded dispatch must never type at a pane"),
@@ -338,7 +339,7 @@ test("an operator settling a dispatch underneath it is superseded, not failed", 
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     spawn: async () => {
       // The operator cancels while the launch is in flight. The dispatch then fails, but the
       // task's terminal state is the operator's and the dispatcher must not overwrite it.
@@ -380,7 +381,7 @@ test("a failure after resolution carries the model that launch resolved", async 
 
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
-    missionMcpDescriptor: async () => null,
+    ...MISSION_TEST_MCP_DEPS,
     // Thrown at the SPAWN, which is after the model and effort ladder has been walked. That
     // ordering is the point: the facts below are the ones this launch resolved, carried
     // forward to an exit three scopes away from where they were computed.

@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -680,7 +681,7 @@ for (const point of ["prepared-persisted", "stopping-persisted", "sdk-detached",
         return snapshot;
       } });
     transfers.start(); t.after(() => transfers.stop());
-    const sdk = new SdkSupervisor(registry);
+    const sdk = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     if (sourcePid) {
       const held = await transfers.recheck(before.id);
       assert.equal(held.state, "recovery_required");
@@ -717,7 +718,7 @@ for (const point of ["prepared-persisted", "stopping-persisted", "sdk-detached",
         assert.equal(settled.workflowVersionId, pin!.workflowVersionId);
       }
       assert.deepEqual(bindings.map((id) => store.getSubmission(id.replace("binding-", "submission-"))), submissions);
-      const sdkAfterSettlement = new SdkSupervisor(registry);
+      const sdkAfterSettlement = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
       sdkAfterSettlement.prepareRestore();
       assert.equal(registry.snapshot().restoringSessions.some((row) => row.id === sourceId), false);
     } else if (point === "ownership-changed") {

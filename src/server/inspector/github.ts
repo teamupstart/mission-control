@@ -306,6 +306,8 @@ export interface PrSnapshot {
   baseSha?: string;
   defaultBranch?: string;
   mergeCommitSha?: string | null;
+  /** When it merged (epoch ms), or null. Read so a stacked child's stray merge can be dated. */
+  mergedAt?: number | null;
   title: string;
   body: string;
   isDraft: boolean;
@@ -401,7 +403,7 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
-      baseRefName baseRefOid mergeCommit{ oid } repository{ defaultBranchRef{ name } }
+      baseRefName baseRefOid mergeCommit{ oid } mergedAt repository{ defaultBranchRef{ name } }
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
       reviewThreads(first:${GITHUB_PAGE_SIZE}){
         nodes{
@@ -571,16 +573,18 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
 /** The base, default branch and merge commit of one GraphQL pull request node. */
 function refFields(
   pr: Record<string, unknown>,
-): { baseRefName: string; baseSha: string; defaultBranch: string; mergeCommitSha: string | null } {
+): { baseRefName: string; baseSha: string; defaultBranch: string; mergeCommitSha: string | null; mergedAt: number | null } {
   const mergeCommit = (pr.mergeCommit as { oid?: unknown } | null | undefined)?.oid;
   const defaultBranch = (
     (pr.repository as { defaultBranchRef?: { name?: unknown } | null } | null | undefined)?.defaultBranchRef
   )?.name;
+  const mergedAt = typeof pr.mergedAt === "string" ? Date.parse(pr.mergedAt) : Number.NaN;
   return {
     baseRefName: typeof pr.baseRefName === "string" ? pr.baseRefName : "",
     baseSha: typeof pr.baseRefOid === "string" ? pr.baseRefOid : "",
     defaultBranch: typeof defaultBranch === "string" ? defaultBranch : "",
     mergeCommitSha: typeof mergeCommit === "string" && mergeCommit ? mergeCommit : null,
+    mergedAt: Number.isFinite(mergedAt) ? mergedAt : null,
   };
 }
 
@@ -601,12 +605,14 @@ export interface PrRefs {
   baseSha?: string;
   defaultBranch: string;
   mergeCommitSha: string | null;
+  /** When it merged (epoch ms). Optional only so hand-built fixtures stay valid. */
+  mergedAt?: number | null;
 }
 
 const PR_REFS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      state isDraft headRefOid headRefName baseRefName baseRefOid mergeCommit{ oid }
+      state isDraft headRefOid headRefName baseRefName baseRefOid mergeCommit{ oid } mergedAt
       repository{ defaultBranchRef{ name } }
     }
   }

@@ -3,7 +3,7 @@ import { sessionWorkspaceRoot } from "../../shared/session.ts";
 import { TASK_KIND_INFO, taskHasRepository } from "../../shared/task.ts";
 import type { RestoringSession, Session } from "../../shared/types.ts";
 import { BLOCKER_KIND_LABELS } from "./blocker.ts";
-import { permissionModeDisplay, relativeTime, sessionTitleDetail, stateDisplay, uptime } from "./format.ts";
+import { permissionModeDisplay, pickableModes, relativeTime, sessionTitleDetail, stateDisplay, uptime } from "./format.ts";
 import { matchesEveryWord, pathLeaf } from "./search-text.ts";
 import { costChipText, subtitle } from "./session-text.ts";
 
@@ -57,7 +57,12 @@ export function sessionSearchFields(session: Session): string[] {
     session.meta?.advisorModel,
     session.meta?.thinkingLevel,
     session.meta?.nativeEffort,
-    permissionModeDisplay(session.permissionMode)?.label,
+    // The permission-mode chip, under the condition `ModePicker` draws it (a harness with
+    // permission modes) and with the text it prints: the mode's label ("auto", "plan"), or
+    // "permissions" while the mode has not been observed yet.
+    pickableModes(session.agent).length > 0
+      ? permissionModeDisplay(session.permissionMode)?.label ?? "permissions"
+      : null,
     session.meta?.contextPct != null ? `${session.meta.contextPct}%` : null,
     costChipText(session.cost),
     // The card's last-seen cell, as it reads right now.

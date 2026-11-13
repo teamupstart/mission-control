@@ -84,6 +84,16 @@ test("the nav-bar search matches a card's repository, agent name and backlog fac
   await expect(backlogCards).toHaveCount(0);
   await capture(dashboard, "repository-match.png");
 
+  // The permission-mode chip, with whatever it prints right now ("auto", "permissions", ...).
+  // Letters only: the chip's button also holds a caret glyph.
+  const modeChip = (await tiles.locator(".mode").first().innerText()).replace(/[^\p{L} ]/gu, "").trim();
+  expect(modeChip).not.toBe("");
+  await filter.fill(modeChip);
+  // The backlog card is not asserted: "auto" is also in its own "autopilot" text.
+  await expect(tiles).toHaveCount(1);
+  await expect(tiles.locator(".mode").first()).toContainText(modeChip);
+  await capture(dashboard, "mode-chip-match.png");
+
   // The agent's product name, as the card's agent dot names it.
   await filter.fill("claude code");
   await expect(tiles).toHaveCount(1);

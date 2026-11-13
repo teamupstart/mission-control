@@ -146,3 +146,12 @@ test("a restoring row matches every word across its name, status and agent", () 
   assert.equal(matchesRestoringFilter(row, "restoring"), true);
   assert.equal(matchesRestoringFilter(row, "rebuild zebra"), false, "one absent word hides it");
 });
+
+test("the permission-mode chip is searched with the text it prints, when it is drawn", () => {
+  const auto = mkSession({ name: "Mode card", agent: "claude", permissionMode: "auto" });
+  const unobserved = mkSession({ name: "Mode card", agent: "claude", permissionMode: null });
+
+  assert.equal(matchesSessionFilter(auto, "auto"), true, "the mode chip's label");
+  assert.equal(matchesSessionFilter(unobserved, "permissions"), true, "the not-yet-observed placeholder");
+  assert.equal(matchesSessionFilter(unobserved, "auto"), false);
+});

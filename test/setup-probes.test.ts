@@ -61,6 +61,7 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     skills: () => ({ enabled: true, readable: true, configured: 2, directories: ["/home/operator/.claude/skills"], problems: [] }),
     conductorProbe: async () => conductor(),
     terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
+    repositoryIndex: async () => ({ repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] }),
     environmentChecks: async () => [],
     readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),
     writeBannerDismissal: () => {},
@@ -374,7 +375,7 @@ test("one thrown probe becomes its own unknown row", async () => {
   const view = await setupChecksView(deps({
     conductorProbe: async () => { throw new Error("broken probe"); },
   }));
-  assert.equal(view.rows.length, SETUP_DEPENDENCY_IDS.length + 1);
+  assert.equal(view.rows.length, SETUP_DEPENDENCY_IDS.length + 2);
   const row = view.rows.find((candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === "ai-conductor");
   assert.equal(row?.status.state, "unknown");
   assert.match(row?.status.state === "unknown" ? row.status.why : "", /broken probe/);
@@ -411,6 +412,51 @@ test("the required terminal pair follows usable composition, not backend presenc
   assert.equal(tmux?.status.state, "satisfied");
   assert.equal(pair?.status.state, "missing");
   assert.equal(pair?.requirement, "required");
+});
+
+function repositoriesRow(view: Awaited<ReturnType<typeof setupChecksView>>) {
+  return view.rows.find((row) => row.rowId.source === "derived" && row.rowId.id === "indexed-repositories");
+}
+
+test("setup passes the repository check once at least one repository is detected", async () => {
+  const view = await setupChecksView(deps());
+  const row = repositoriesRow(view);
+  assert.equal(row?.family, "repositories");
+  assert.equal(row?.requirement, "required");
+  assert.deepEqual(row?.status, { state: "satisfied", evidence: "2 repositories in ~/workspace" });
+  assert.ok(!view.banner.attentionRowIds.some((id) => id.id === "indexed-repositories"));
+});
+
+test("no detected repository is a required setup gap that names what the walk saw", async () => {
+  const empty = await setupChecksView(deps({
+    repositoryIndex: async () => ({
+      repoCount: 0,
+      directories: [
+        { path: "~/workspace", status: "ok", repoCount: 0 },
+        { path: "~/code", status: "missing", repoCount: null },
+      ],
+    }),
+  }));
+  const row = repositoriesRow(empty);
+  assert.equal(row?.status.state, "needs-setup");
+  assert.match(row?.status.state === "needs-setup" ? row.status.why : "", /None of the 2 indexed directories holds a git repository/);
+  assert.equal(row?.status.state === "needs-setup" ? row.status.evidence : null, "~/workspace (0 repositories), ~/code (missing)");
+  assert.ok(empty.banner.attentionRowIds.some((id) => id.source === "derived" && id.id === "indexed-repositories"));
+  assert.equal(empty.banner.visible, true);
+
+  const nothingIndexed = repositoriesRow(await setupChecksView(deps({
+    repositoryIndex: async () => ({ repoCount: 0, directories: [] }),
+  })));
+  assert.equal(nothingIndexed?.status.state, "needs-setup");
+  assert.match(nothingIndexed?.status.state === "needs-setup" ? nothingIndexed.status.why : "", /No directories are indexed/);
+});
+
+test("an unreadable repository index is unknown rather than a pass", async () => {
+  const row = repositoriesRow(await setupChecksView(deps({
+    repositoryIndex: async () => { throw new Error("scan exploded"); },
+  })));
+  assert.equal(row?.status.state, "unknown");
+  assert.match(row?.status.state === "unknown" ? row.status.why : "", /scan exploded/);
 });
 
 test("external Node gaps remain feature-scoped, preserve acknowledgements, and cannot hide required gaps", async () => {

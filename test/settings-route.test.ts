@@ -45,6 +45,14 @@ test("every category round-trips through its own hash", () => {
   }
 });
 
+test("a retired category lands where its settings moved, not on the default panel", () => {
+  // Repositories was folded into Setup as its Repositories family; a kept link follows it.
+  assert.deepEqual(parseMissionRoute("#/settings/repositories"), { page: "settings", category: "setup" });
+  assert.ok(!SETTINGS_CATEGORIES.some((c) => (c.id as string) === "repositories"), "no longer its own rail row");
+  // Only own keys: an inherited name is still an unknown category.
+  assert.deepEqual(parseMissionRoute("#/settings/toString"), { page: "settings", category: DEFAULT_SETTINGS_CATEGORY });
+});
+
 test("an unknown category falls back to the default panel, not to a blank one", () => {
   for (const bad of ["#/settings/notacategory", "#/settings/nonsense", "#/settings/%20"]) {
     assert.deepEqual(

@@ -15,6 +15,7 @@ import {
   CMUX_SOCKET_CONTROL_REMEDY,
   ENVIRONMENT_ROW_METADATA,
   HERDR_SERVER_REMEDY,
+  INDEXED_REPOSITORIES_INFO,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
@@ -47,7 +48,8 @@ import { configuredTerminalTargetDeps } from "../terminals-config.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
-import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
+import type { SetupDeps, SetupProbeResult, SetupRepositoryIndexRead, SetupSkillsRead } from "./types.ts";
+import { repoIndexView } from "../repo-index.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
@@ -418,6 +420,55 @@ async function runProbe(id: SetupDependencyId, deps: SetupDeps): Promise<SetupPr
   }
 }
 
+function repositoryNoun(count: number): string {
+  return `${count} ${count === 1 ? "repository" : "repositories"}`;
+}
+
+/**
+ * Setup passes only once the index has found at least one checkout.
+ *
+ * A machine with every tool installed and nothing to work in cannot dispatch anything, so a
+ * zero count is a required gap rather than an empty list to shrug at. The reason names what
+ * the walk actually saw, because "nothing is indexed" and "four directories, none of them
+ * holding a checkout" are different repairs.
+ */
+export function indexedRepositoriesStatus(read: SetupRepositoryIndexRead): SetupStatus {
+  const looked = read.directories.map((row) =>
+    row.status === "ok" ? `${row.path} (${repositoryNoun(row.repoCount ?? 0)})` : `${row.path} (${row.status.replace(/-/g, " ")})`,
+  );
+  if (read.repoCount > 0) {
+    const holding = read.directories.filter((row) => row.status === "ok" && (row.repoCount ?? 0) > 0);
+    return {
+      state: "satisfied",
+      evidence: holding.length > 0
+        ? `${repositoryNoun(read.repoCount)} in ${holding.map((row) => row.path).join(", ")}`
+        : `${repositoryNoun(read.repoCount)} detected`,
+    };
+  }
+  if (read.directories.length === 0) {
+    return {
+      state: "needs-setup",
+      why: "No directories are indexed, so no repositories can be detected. Add the directory that holds your git checkouts.",
+      evidence: null,
+    };
+  }
+  return {
+    state: "needs-setup",
+    why: `${read.directories.length === 1 ? "The indexed directory holds no" : `None of the ${read.directories.length} indexed directories holds a`} git repository. Add the directory that holds your checkouts, or clone one into an indexed directory, then press Rescan now.`,
+    evidence: looked.join(", "),
+  };
+}
+
+async function indexedRepositoriesRow(deps: SetupDeps): Promise<SetupRowView> {
+  let status: SetupStatus;
+  try {
+    status = indexedRepositoriesStatus(await deps.repositoryIndex());
+  } catch (error) {
+    status = { state: "unknown", why: `The repository index could not be read: ${reasonOf(error)}.`, evidence: null };
+  }
+  return { ...INDEXED_REPOSITORIES_INFO, status };
+}
+
 function environmentRow(check: EnvironmentCheckView): SetupRowView | null {
   const metadata = ENVIRONMENT_ROW_METADATA[check.id];
   const { readyEvidence, ...rowMetadata } = metadata;
@@ -486,6 +537,13 @@ export function defaultSetupDeps(): SetupDeps {
     // Composed with the stored preference, so the Terminals rows and the launch menu report
     // the same raiser Focus will actually use.
     terminalTargets: () => terminalTargetViews(configuredTerminalTargetDeps),
+    repositoryIndex: async () => {
+      const view = await repoIndexView();
+      return {
+        repoCount: view.repoCount,
+        directories: view.directories.map(({ path, status, repoCount }) => ({ path, status, repoCount })),
+      };
+    },
     environmentChecks: environmentCheckViews,
     readBannerDismissal: getSetupBannerDismissal,
     writeBannerDismissal: setSetupBannerDismissal,
@@ -495,10 +553,11 @@ export function defaultSetupDeps(): SetupDeps {
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
   await deps.refreshPath?.();
-  const [probed, targets, environment] = await Promise.all([
+  const [probed, targets, environment, repositories] = await Promise.all([
     Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
+    indexedRepositoriesRow(deps),
   ]);
   const probeById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
@@ -528,6 +587,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       }
     }
     if (family === "terminals") rows.push(derived);
+    if (family === "repositories") rows.push(repositories);
     rows.push(...environmentRows.filter((row) => row.family === family));
   }
   const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());

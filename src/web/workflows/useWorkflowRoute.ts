@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_SETTINGS_CATEGORY,
+  RETIRED_SETTINGS_CATEGORIES,
   isSettingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
@@ -498,7 +499,13 @@ export function parseMissionRoute(hash: string): MissionRoute {
     const id = segment(settings[1]!);
     return {
       page: "settings",
-      category: id !== null && isSettingsCategory(id) ? id : DEFAULT_SETTINGS_CATEGORY,
+      category: id === null
+        ? DEFAULT_SETTINGS_CATEGORY
+        : isSettingsCategory(id)
+          ? id
+          : Object.hasOwn(RETIRED_SETTINGS_CATEGORIES, id)
+            ? RETIRED_SETTINGS_CATEGORIES[id]!
+            : DEFAULT_SETTINGS_CATEGORY,
     };
   }
   return { page: "fleet" };

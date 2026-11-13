@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   HERDR_SERVER_REMEDY,
+  INDEXED_REPOSITORIES_INFO,
+  SETUP_REPOSITORY_ANCHORS,
   homeRelative,
   type SetupChecksSnapshot,
   type SetupRowView,
@@ -129,6 +131,42 @@ test("familyForAnchor resolves both anchor shapes and refuses anything else", ()
   assert.equal(familyForAnchor("setup/dependency-ghostty", rows), null, "a row this snapshot does not carry");
   assert.equal(familyForAnchor("setup/recheck", rows), null);
   assert.equal(familyForAnchor("setup/family-nonsense", rows), null);
+});
+
+const NO_REPOSITORIES: SetupRowView = {
+  ...INDEXED_REPOSITORIES_INFO,
+  status: {
+    state: "needs-setup",
+    why: "None of the 4 indexed directories holds a git repository.",
+    evidence: "~/workspace (0 repositories)",
+  },
+};
+
+test("the Repositories family holds the required check and the directory editor together", () => {
+  const html = render([CLAUDE, NO_REPOSITORIES], "setup/family-repositories");
+  assert.match(html, /<h3 id="setup-family-repositories-title">Repositories<\/h3>/);
+  assert.match(html, /At least one detected repository/);
+  assert.match(html, /None of the 4 indexed directories holds a git repository/);
+  for (const anchor of Object.values(SETUP_REPOSITORY_ANCHORS)) {
+    if (anchor === SETUP_REPOSITORY_ANCHORS.add) continue; // only once the index is read
+    assert.match(html, new RegExp(`data-anchor="${anchor}"`), anchor);
+  }
+  // The verdict counts it like any required gap: setup does not pass without a repository.
+  assert.match(html, /This machine is missing something required\./);
+  // The editor belongs to its family alone.
+  assert.doesNotMatch(render([CLAUDE, NO_REPOSITORIES], "setup/family-agents"), /data-anchor="setup\/repositories-directories"/);
+});
+
+test("with no repository detected, the rail opens on the Repositories family", () => {
+  const html = render([CLAUDE, NO_REPOSITORIES]);
+  assert.match(html, /id="setup-family-repositories"[^>]*aria-current="true"/);
+  assert.match(html, /data-anchor="setup\/repositories-directories"/);
+});
+
+test("a deep link to a directory editor control selects the Repositories family", () => {
+  for (const anchor of Object.values(SETUP_REPOSITORY_ANCHORS)) {
+    assert.equal(familyForAnchor(anchor, []), "repositories", anchor);
+  }
 });
 
 test("a satisfied row states its evidence relative to home and keeps the absolute path", () => {

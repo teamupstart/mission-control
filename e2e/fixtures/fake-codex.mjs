@@ -609,6 +609,25 @@ function runTurn(turnId, input, effort, model) {
     notify("thread/status/changed", { threadId: THREAD_ID, status: { type: "idle" } });
   };
 
+  if (prompt.includes("E2E_CODEX_BACKGROUND_AGENTS")) {
+    const children = ["e2e-scout", "e2e-reviewer"];
+    for (const [index, child] of children.entries()) {
+      notify("item/completed", { threadId: THREAD_ID, turnId, completedAtMs: Date.now(), item: {
+        type: "collabAgentToolCall", id: `spawn-${child}`, tool: "spawnAgent", status: "completed",
+        senderThreadId: THREAD_ID, receiverThreadIds: [child],
+        prompt: index === 0 ? "Map the ledger" : "Review ledger tests", agentsStates: {},
+      } });
+      notify("thread/started", { thread: { ...thread(), id: child, parentThreadId: THREAD_ID,
+        agentRole: index === 0 ? "explorer" : "reviewer", preview: "" } });
+    }
+    finish([prompt]);
+    setTimeout(() => notify("item/completed", { threadId: THREAD_ID, turnId, completedAtMs: Date.now(), item: {
+      type: "subAgentActivity", id: "review-done", kind: "completed",
+      agentThreadId: children[1], agentPath: "/reviewer",
+    } }), 1500);
+    return;
+  }
+
   if (prompt === FAILING_TURN) {
     appendRolloutEvent({
       type: "task_complete",

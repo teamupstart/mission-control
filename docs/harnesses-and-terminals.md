@@ -593,3 +593,26 @@ The probe definitions are source code; captured output belongs in workflow evide
 Not measured: system and managed Codex configuration, which a fixture cannot place without
 administrator rights, and Claude Code's managed MCP file. The layer check and the startup watch
 cover both at runtime by refusing a start rather than trusting them.
+
+## Codex SDK background sub-agents
+
+Codex app-server sessions report children from their native `thread/started`,
+`subAgentActivity`, and `collabAgentToolCall` frames. The adapter projects only children
+proven to belong to the current thread tree into the shared `Session.subagents` summary,
+so the existing sub-agent display reads the same source as other harnesses. A child is
+background work except while an in-progress `wait` names it. Overlapping waits keep it
+hidden until all finish; a completed or interrupted sender turn also releases its waits.
+The parent's own completion does not finish its children.
+
+Role or nickname, spawn prompt or preview, and reported completion state populate the
+rows. Receipt time supplies elapsed time; tokens, tool counts, last tool and launch links
+stay absent because these frames do not provide them. `notFound` does not invent an end
+state. Finished rows fold after the next accepted send, including steering, but not on an
+unsolicited parent turn or a refused send. Context clearing drops the old summary, and
+late frames from retired trees cannot repopulate it.
+
+The summary lists at most 12 agents, running first, then newest finished; overflow finished
+rows fold into the count. Adapter bookkeeping retains at most 512 child identities and
+512 waits, forgetting the oldest beyond those limits. Summaries use the shared emitter's
+immediate membership/state and five-second counter-change policy. This adds no persisted
+state and changes no Codex frame routing, notification muting, or PR attribution.

@@ -360,9 +360,14 @@ export class SdkSupervisor {
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
           // Counted first, so the log and the eviction both say whether this was a deferral
-          // and, past the bound, how long it waited.
-          const deferrals = err instanceof ResumeDeferred ? noteSdkSessionResumeDeferred(row.id) : 0;
-          const deferred = err instanceof ResumeDeferred && deferrals < MAX_RESUME_DEFERRALS;
+          // and, past the bound, how long it waited. NOT counted while shutting down: a daemon
+          // restarted again and again during boot - exactly when a handshake is slow or the
+          // bundle is mid-rebuild - would otherwise spend the whole bound without the bundle
+          // ever being checked in a calm restore. That row is simply left live, as shutdown
+          // leaves every row it does not finish.
+          const counted = err instanceof ResumeDeferred && !this.shuttingDown;
+          const deferrals = counted ? noteSdkSessionResumeDeferred(row.id) : 0;
+          const deferred = err instanceof ResumeDeferred && (this.shuttingDown || deferrals < MAX_RESUME_DEFERRALS);
           const why = err instanceof ResumeDeferred && !deferred ? `${reason} (after ${deferrals} restores)` : reason;
           if (!deferred) console.error(`[sdk] could not resume ${row.id}: ${why}`);
           observeSessionRestore({
@@ -382,7 +387,7 @@ export class SdkSupervisor {
             // same treatment a row shutdown interrupted gets, rather than lose the conversation.
             setSdkSessionStatus(row.id, "suspended");
             console.warn(
-              `[sdk] left ${row.id} suspended for the next restore (${deferrals} of ${MAX_RESUME_DEFERRALS}): ${why}`,
+              `[sdk] left ${row.id} suspended for the next restore (${counted ? `${deferrals} of ${MAX_RESUME_DEFERRALS}` : "shutting down, not counted"}): ${why}`,
             );
           } else if (!this.shuttingDown) {
             // A deferral that has not cleared in `MAX_RESUME_DEFERRALS` restores is no longer

@@ -2039,6 +2039,53 @@ test("a deferral that never clears is refused visibly after a bounded number of 
   assert.match(refusal!, /the MCP server is not built/);
 });
 
+test("a deferral interrupted by shutdown is not counted toward the bound", async () => {
+  // A daemon restarted again and again during boot is exactly when a handshake is slow or the
+  // bundle is mid-rebuild. Those interrupted restores must not spend the bound: after any number
+  // of them, the row still gets its full allowance of calm deferrals.
+  const id = "sdk:resume-decisions-shutdown";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-shutdown",
+    cwd: "/repo/resume-decisions-shutdown",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const fake = withFakeDriver(async () => assert.fail("a deferred restore must not launch"));
+  try {
+    for (let restore = 0; restore < MAX_RESUME_DEFERRALS; restore++) {
+      let supervisor: InstanceType<typeof SdkSupervisor> | null = null;
+      supervisor = new SdkSupervisor(new Registry(), {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        // The daemon is told to stop while the check is still running, and the check then
+        // comes back without an answer - a handshake cut short by the shutdown.
+        verifyMissionMcpTools: async () => {
+          // Not awaited: stopAll waits for the restore this very check is part of.
+          void supervisor!.stopAll(50);
+          return { ok: false as const, cause: "unreachable" as const, reason: "the handshake was cut short" };
+        },
+      });
+      await supervisor.restore();
+      assert.equal(getSdkSession(id)?.status, "suspended", `interrupted restore ${restore + 1} leaves the row live`);
+    }
+    // Every calm deferral short of the bound still defers: none of the allowance was spent.
+    for (let restore = 1; restore < MAX_RESUME_DEFERRALS; restore++) {
+      await new SdkSupervisor(new Registry(), {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+      }).restore();
+      assert.equal(getSdkSession(id)?.status, "suspended", `calm deferral ${restore} still defers`);
+    }
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a resume that goes through starts the count of deferrals over", async () => {
   const id = "sdk:resume-decisions-reset";
   upsertSdkSession({

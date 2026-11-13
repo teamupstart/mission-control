@@ -1063,7 +1063,9 @@ is the full live set and decides who is running; an agent that leaves it without
 end is shown as stopped. `task_started`, `task_progress`, `task_updated` and
 `task_notification` add the type, description, tool and token counts, last tool, summary and
 how it ended. Only `local_agent` tasks count: shells, MCP tasks, monitors, workflows, a
-backgrounded main session and anything flagged `ambient` are left out. A foreground agent
+backgrounded main session and anything flagged `ambient` are left out. The flag counts
+whichever frame carries it: a run marked ambient by its start or by the live set stays hidden
+even when a later frame about the same run omits the field. A foreground agent
 counts only once it is moved to the background. Finished agents fold on the next turn you
 send, not on a turn the agent starts for itself, because a finished agent's notification can
 start one. A change to who is running or how one ended reaches the board at once; a change

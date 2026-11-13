@@ -53,24 +53,22 @@ type RunMemory = Pick<Tracked, "runId" | "pastRuns">;
 
 const NO_RUNS: RunMemory = { runId: null, pastRuns: [] };
 
-/** How many earlier run ids a task remembers. Resumes are rare; this only bounds the list. */
-const RUN_HISTORY_LIMIT = 16;
-
 export interface ClaudeSubagentState {
   /** True once this CLI process has sent a `background_tasks_changed` frame. */
   readonly levelSeen: boolean;
   readonly tasks: ReadonlyMap<string, Tracked>;
   readonly finishedFolded: number;
   /**
-   * Ended agents no longer tracked - folded by a turn, pushed past the cap, or a foreground
-   * agent that never counted - each with the run it ended in. A finishing task leaves the live
-   * set only AFTER its notification, so a fold in that gap would otherwise let the next
-   * live-set frame bring a finished agent back as running.
+   * Ended agents no longer tracked - folded by a turn, or pushed past the cap - that the live
+   * set still names, each with its run memory. A finishing task leaves the live set only AFTER
+   * its notification, so a fold in that gap would otherwise let the next live-set frame bring
+   * a finished agent back as running.
    *
-   * Held only while the CLI sends the live set (without it there is no stale membership to
-   * guard against), and every live-set frame drops the ids it no longer names. So an id is
-   * guarded for exactly as long as the live set still lists it, never evicted early, and the
-   * map is never larger than the live set plus what ended since its last frame.
+   * Only an agent the current live set names is retired: one it does not name (a foreground
+   * agent, say) has no stale membership to guard against, and a later start for it is already
+   * refused by `live`. Every live-set frame drops the ids it no longer names. So an id is
+   * guarded for exactly as long as the live set lists it, never evicted early, and the map is
+   * never larger than the live set.
    */
   readonly retired: ReadonlyMap<string, RunMemory>;
   /**
@@ -92,12 +90,14 @@ export function emptyClaudeSubagents(): ClaudeSubagentState {
 }
 
 function withRetired(
-  state: Pick<ClaudeSubagentState, "levelSeen" | "retired">,
+  state: Pick<ClaudeSubagentState, "levelSeen" | "retired" | "live">,
   gone: Iterable<Tracked>,
 ): ReadonlyMap<string, RunMemory> {
   if (!state.levelSeen) return state.retired;
+  const named = [...gone].filter((t) => state.live.has(t.entry.id));
+  if (named.length === 0) return state.retired;
   const next = new Map(state.retired);
-  for (const t of gone) next.set(t.entry.id, { runId: t.runId, pastRuns: t.pastRuns });
+  for (const t of named) next.set(t.entry.id, { runId: t.runId, pastRuns: t.pastRuns });
   return next;
 }
 
@@ -120,7 +120,10 @@ function advance(known: RunMemory, incoming: string | null, fresh: boolean): Run
   const pastRuns = known.runId !== null && !known.pastRuns.includes(known.runId)
     ? [...known.pastRuns, known.runId]
     : known.pastRuns;
-  return { runId, pastRuns: pastRuns.slice(-RUN_HISTORY_LIMIT) };
+  // Unbounded on purpose: forgetting a run is exactly what would let its late frame pass for a
+  // new one. The list grows by one id per resume of this one task, and goes with the task:
+  // once it is folded away the live set no longer names it, and nothing can revive it.
+  return { runId, pastRuns };
 }
 
 /**
@@ -322,7 +325,9 @@ export function observeClaudeSubagentFrame(
             description: base.description ?? str(t.description),
           },
           background: true,
-          ambient: false,
+          // An entry that omits `ambient` says nothing about it. The same run keeps whatever its
+          // start already said - a housekeeping task stays hidden - while a new run starts fresh.
+          ambient: prior?.ambient ?? false,
           shown: true,
           ...advance(known ?? wasRetired ?? NO_RUNS, entryRun, !prior),
         });
@@ -421,7 +426,7 @@ export function observeClaudeSubagentFrame(
       forgotten.push(t);
     }
   }
-  if (forgotten.length > 0) retired = withRetired({ levelSeen, retired }, forgotten);
+  if (forgotten.length > 0) retired = withRetired({ levelSeen, retired, live: liveNow }, forgotten);
   return bounded({ levelSeen, tasks, finishedFolded: state.finishedFolded, retired, live: liveNow, ambientLive: ambientNow }, state);
 }
 

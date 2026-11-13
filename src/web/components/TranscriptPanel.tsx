@@ -521,6 +521,20 @@ export function TranscriptPanel({
   sessionIdRef.current = sessionId;
   /** Searches that ended without a turn, by agent id, so their row can say so. Cleared by a retry. */
   const [launchMisses, setLaunchMisses] = useState<ReadonlyMap<string, LaunchSearch>>(() => new Map());
+  /**
+   * The session the launch-search state above belongs to. Today's hosts remount this panel
+   * per session, but the panel itself follows a `sessionId` change (its stream and paging
+   * reset on one), so a search started for one session must not run against the next: it
+   * would page through the new transcript for the old session's call id. Reset during
+   * render, not in an effect, so no effect of the new session ever sees the old search.
+   */
+  const [launchSession, setLaunchSession] = useState(sessionId);
+  if (launchSession !== sessionId) {
+    setLaunchSession(sessionId);
+    setLaunchSearch(null);
+    setLaunchMisses(new Map());
+    launchAskedAt.current = null;
+  }
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composerActivity = useComposerActivity(sessionId);

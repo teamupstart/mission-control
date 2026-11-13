@@ -494,3 +494,50 @@ test("an older page that adds no turn but moves back through the file does not e
   expect(pages, "the search asked for the page after the empty one").toBeGreaterThanOrEqual(2);
   await dashboard.unroute(olderPage);
 });
+
+test("switching sessions mid-search leaves the search behind: the next session's transcript is never paged for it", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  await dispatch(dashboard, daemon, PLAIN_GOAL);
+  await dispatch(dashboard, daemon, DEEP_GOAL);
+  const deep = await openSession(dashboard, DEEP_GOAL);
+  const tray = deep.getByRole("region", { name: "Background agents" });
+  await expect(tray.getByRole("listitem")).toHaveCount(3);
+
+  // Hold every older-page request, and note which session each one is for.
+  const olderPage = /\/api\/sessions\/([^/]+)\/transcript\?before=/;
+  const askedFor: string[] = [];
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await dashboard.route(olderPage, async (route) => {
+    askedFor.push(decodeURIComponent(olderPage.exec(route.request().url())![1]!));
+    await held;
+    await route.continue();
+  });
+
+  // The search starts paging the deep session, and is still waiting on its first page.
+  await row(tray, "Trace the distant ledger writes").getByRole("button", { name: "Jump to launch" }).click();
+  await expect(row(tray, "Trace the distant ledger writes").getByRole("button", { name: "Finding launch…" })).toBeVisible();
+  await expect.poll(() => askedFor.length).toBe(1);
+  const deepId = askedFor[0]!;
+
+  // Another session is selected before that page lands, and then the page is let through.
+  const plain = await openSession(dashboard, PLAIN_GOAL);
+  await expect(plain.getByRole("region", { name: "Background agents" })).toHaveCount(0);
+  release();
+  await dashboard.waitForTimeout(2_000);
+  // Nothing paged the plain session's transcript on the deep session's behalf.
+  expect(askedFor.filter((id) => id !== deepId), "older pages asked for another session").toEqual([]);
+  await expect(plain.getByText("Finding launch…")).toHaveCount(0);
+
+  // Back on the deep session, the abandoned search is gone: the link is ready to start afresh.
+  const again = await openSession(dashboard, DEEP_GOAL);
+  const link = again.getByRole("region", { name: "Background agents" }).getByRole("listitem")
+    .filter({ hasText: "Trace the distant ledger writes" });
+  await expect(link.getByRole("button", { name: "Jump to launch" })).toBeVisible();
+  await dashboard.unroute(olderPage);
+});

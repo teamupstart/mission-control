@@ -103,18 +103,6 @@ export async function scanRepos(roots: string[]): Promise<string[]> {
 }
 
 /**
- * The repositories the last walk found, however old, or null when nothing has walked since the
- * cache was last dropped. Never scans.
- *
- * For a reader that only needs "has this machine any repository at all": a past positive
- * answer survives until the root list changes or an operator rescans, both of which drop the
- * cache, so trusting it costs nothing and saves a filesystem walk on every read.
- */
-export function lastScannedRepos(): readonly string[] | null {
-  return cache?.repos ?? null;
-}
-
-/**
  * All git repos under the workspace roots, deduped and sorted. Cached for
  * `CACHE_TTL_MS` so repeated dispatch-modal opens do not rescan the disk.
  */

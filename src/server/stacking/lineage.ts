@@ -1,5 +1,5 @@
 import type { InspectorPr, Task } from "@shared/types.ts";
-import { expectedStackBase, stackPrNumber, stackReleased, type Ancestry } from "@shared/stacking.ts";
+import { expectedStackBase, parentMergedOffDefault, stackPrNumber, stackReleased, type Ancestry } from "@shared/stacking.ts";
 import {
   getInspectorPr,
   latestStackLineage,
@@ -120,7 +120,13 @@ async function correctStackBaseNow(
     return "unknown";
   }
   if (child.value.state !== "OPEN") return "unchanged";
-  const expected = expectedStackBase(parent.value, child.value.defaultBranch || null);
+  const defaultBranch = child.value.defaultBranch || null;
+  if (parentMergedOffDefault(parent.value, defaultBranch)) {
+    // Its parent's work never reached the default branch, so the child stays where it is.
+    noteInspectorPrStack(prKey, `not retargeted: #${stackPrNumber(row.stack.parentPrUrl) ?? "?"} merged into ${parent.value.baseRefName}, not ${parent.value.defaultBranch || defaultBranch}`, now);
+    return "unchanged";
+  }
+  const expected = expectedStackBase(parent.value, defaultBranch);
   if (!expected) {
     noteInspectorPrStack(prKey, "could not work out which branch this stacked pull request belongs on", now);
     return "unknown";

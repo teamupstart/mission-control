@@ -219,6 +219,20 @@ export function stackStartEdge(task: Task, byId: ReadonlyMap<string, Task>): Tas
 export interface StackParentState {
   state: "OPEN" | "CLOSED" | "MERGED" | null;
   headRefName: string | null;
+  /** The branch the parent targets, and its repository's default branch, when read. */
+  baseRefName?: string | null;
+  defaultBranch?: string | null;
+}
+
+/**
+ * The parent merged, but into a branch GitHub says is not the default branch - it was itself a
+ * stacked child merged into its own finished parent's branch. Its work is not on the default
+ * branch, so nothing stacked on it may be moved there: a child retargeted onto the default
+ * branch could merge and complete while the work it was built on is missing.
+ */
+export function parentMergedOffDefault(parent: StackParentState, defaultBranch: string | null = null): boolean {
+  return parent.state === "MERGED"
+    && mergeLandedOnDefault(parent.baseRefName, parent.defaultBranch || defaultBranch) === false;
 }
 
 /**
@@ -235,6 +249,9 @@ export function expectedStackBase(
 ): string | null {
   if (!parent || parent.state === null) return null;
   if (parent.state === "OPEN") return parent.headRefName || null;
+  // A parent that merged somewhere other than the default branch gives its children no branch
+  // to belong on: unknown, so nothing retargets them (`parentMergedOffDefault`).
+  if (parentMergedOffDefault(parent, defaultBranch)) return null;
   return defaultBranch || null;
 }
 
@@ -351,7 +368,13 @@ export type StackBrokenReason =
    * parent's (its base was changed by hand, say). It completes nothing either, but the
    * parent-branch recovery does not describe it, so none is offered.
    */
-  | "merged-off-default";
+  | "merged-off-default"
+  /**
+   * The parent merged, but into a branch that is not the default branch (it was a stacked
+   * child merged into its own parent's branch). This child is not retargeted onto the default
+   * branch and has no prompt: the parent's work has to reach the default branch first.
+   */
+  | "parent-merged-off-default";
 
 /**
  * What the Inspector tick last observed about one stacked child and its current parent.
@@ -394,6 +417,11 @@ export interface StackObservation {
   childMergedAt?: number | null;
   /** When the current parent merged (epoch ms), once it has. */
   parentMergedAt?: number | null;
+  /**
+   * The branch the parent merged into, recorded only when that is not the default branch
+   * (`parentMergedOffDefault`): the stack is broken under this child.
+   */
+  parentMergedInto?: string | null;
   /**
    * When a tick last failed to read the current parent, if it has not been read since. The
    * facts above are then the last ones GitHub gave and may be stale - the parent may have
@@ -441,6 +469,7 @@ export function parseStackObservation(raw: string | null | undefined): StackObse
       ...(str("childMergeCommitSha") ? { childMergeCommitSha: str("childMergeCommitSha") } : {}),
       ...(typeof value.childMergedAt === "number" ? { childMergedAt: value.childMergedAt } : {}),
       ...(typeof value.parentMergedAt === "number" ? { parentMergedAt: value.parentMergedAt } : {}),
+      ...(str("parentMergedInto") ? { parentMergedInto: str("parentMergedInto") } : {}),
     };
   } catch {
     return null;
@@ -488,6 +517,7 @@ export function deriveStackState(facts: StackStateFacts): StackState {
 export function stackBrokenReason(o: StackObservation): StackBrokenReason | null {
   if (mergedIntoParentBranch(o)) return "merged-into-parent";
   if (mergedOffDefault(o)) return "merged-off-default";
+  if (o.parentState === "MERGED" && o.parentMergedInto) return "parent-merged-off-default";
   if (o.childState === "CLOSED") return "child-closed";
   if (o.parentState === "CLOSED") return "parent-closed";
   // Only while the parent's pull request is still open: a parent task stopped AFTER its pull
@@ -715,7 +745,7 @@ function promptStatusPhrase(prompt: NonNullable<StackStanding["prompt"]>): strin
  */
 export function stackLifecycleLabel(
   s: Pick<StackStanding, "state" | "parentNumber" | "brokenReason" | "retargetError" | "prompt">,
-  o: Pick<StackObservation, "parentState" | "parentTaskStopped"> & Partial<Pick<StackObservation, "defaultBranch" | "baseRefName">> | null,
+  o: Pick<StackObservation, "parentState" | "parentTaskStopped"> & Partial<Pick<StackObservation, "defaultBranch" | "baseRefName" | "parentMergedInto">> | null,
 ): { label: string | null; inProgress: boolean } {
   const parent = s.parentNumber === null ? "its parent" : `#${s.parentNumber}`;
   const onto = `Restacking onto ${o?.defaultBranch || "main"}`;
@@ -724,6 +754,12 @@ export function stackLifecycleLabel(
     return { label: `Merged - checking on GitHub whether it reached ${o?.defaultBranch || "the default branch"}`, inProgress: true };
   }
   if (s.state === "broken") {
+    if (s.brokenReason === "parent-merged-off-default") {
+      return {
+        label: `Stack broken: ${parent} merged into ${o?.parentMergedInto ? `\`${o.parentMergedInto}\`` : "another branch"}, not ${o?.defaultBranch || "the default branch"}`,
+        inProgress: false,
+      };
+    }
     if (s.brokenReason === "merged-off-default") {
       return { label: `Stack broken: merged into ${o?.baseRefName ? `\`${o.baseRefName}\`` : "another branch"}, not ${o?.defaultBranch || "the default branch"}`, inProgress: false };
     }
@@ -817,7 +853,9 @@ export interface StackPromptFacts {
  * Every variant says what never to do: force-push, rebase, or open a second pull request for a
  * catch-up or restack. The daemon never runs git in the worktree; the session does the merge.
  * The recovery is the one that opens a new pull request, from a new branch, because both
- * branches it would otherwise touch have already merged and must not be rewritten.
+ * branches it would otherwise touch have already merged and must not be rewritten. It applies
+ * the pull request's whole diff rather than the merge commit's first-parent diff, which holds
+ * only the last commit of a rebase merge.
  */
 export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, f: StackPromptFacts): string {
   const parent = f.parentNumber === null ? f.parentUrl : `#${f.parentNumber} (${f.parentUrl})`;
@@ -856,12 +894,11 @@ export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, 
       ]);
     case "recover-merge": {
       const merge = f.mergeCommitSha ? `\`${f.mergeCommitSha}\`` : "its merge commit";
-      const sha = f.mergeCommitSha ?? "<merge commit>";
       const into = f.mergedIntoRefName ? `\`${f.mergedIntoRefName}\`` : "its parent's branch";
       const merged = [branch, f.mergedIntoRefName ? into : null].filter(Boolean).join(" or ");
       return `PR #${f.prNumber} (${f.prUrl}) was merged into ${into} after ${parent} had already merged, so its changes never reached ${base}. Recover them onto ${base} in a new pull request.\n\n` + steps([
         `Fetch, then create a new branch from \`origin/${base}\`.`,
-        `Bring over exactly the changes that merge introduced - the diff between merge commit ${merge} and its first parent - with \`git diff --binary ${sha}^1 ${sha} | git apply --3way\`, then commit them. This works whether GitHub made a merge commit or a squash commit.`,
+        `Bring over every change PR #${f.prNumber} introduced with \`gh pr diff ${f.prUrl} | git apply --3way\`, then commit. That is the pull request's whole diff, whatever merge method GitHub used: for a merge or squash commit it is the diff between merge commit ${merge} and its first parent, and for a rebase merge it spans every rebased commit, where the first-parent diff of ${merge} would hold only the last one. If the diff names binary files git cannot apply, apply the rest with \`--exclude=<path>\` and copy those files from ${branch} with \`git checkout ${f.headRefName ?? "<child branch>"} -- <path>\`.`,
         `Resolve any conflicts with ${base} and run focused checks for what you touched.`,
         `Push the new branch and open a new pull request with \`gh pr create --base ${base}\`, saying it recovers PR #${f.prNumber}. This task completes when that pull request merges into ${base}.`,
         `Do NOT force-push, rebase, reset or otherwise rewrite ${merged}: they have already merged.`,

@@ -485,3 +485,34 @@ test("the poller retargets every open child of the merged parent, and leaves ano
   assert.deepEqual([...gh.retargets].sort((a, b) => a.number - b.number), [{ number: 1601, base: "main" }, { number: 1602, base: "main" }]);
   assert.ok(!gh.reads.includes("https://github.com/example/repo/pull/1611"), "an unrelated child was read for a retarget");
 });
+
+// ---- a three-pull-request stack whose middle merged into its own parent's branch ----
+
+test("children of a parent that merged off the default branch are not retargeted, by the poller or the tick, and read Broken", async () => {
+  const f = fleet("three-high");
+  const middle = "https://github.com/example/repo/pull/1700";
+  const grandchild = "https://github.com/example/repo/pull/1701";
+  const key = adoptStackedChild(grandchild, middle, "task-three-high");
+  const gh = github({
+    // #1700 merged into its own parent's branch, not into main.
+    [middle]: { state: "MERGED", headRefName: "feat/phase-1", baseRefName: "feat/phase-0", mergeCommitSha: "e".repeat(40) },
+    [grandchild]: { state: "OPEN", baseRefName: "feat/phase-1" },
+  });
+  const byUrl = async (url: string) => (url === middle ? { state: "merged" as const, mergedAt: NOW } : null);
+  await poll(f, async () => null, new StackMergeWatch(), byUrl, () => [middle]);
+  assert.deepEqual(gh.retargets, [], "the poller moved the grandchild onto main without the middle's work");
+  assert.match(db.getInspectorPr(key)!.stack!.note ?? "", /not retargeted: #1700 merged into feat\/phase-0, not main/);
+
+  // The Inspector tick's own base reconciliation leaves it too, and records why.
+  const observed = await observeStackLifecycle(db.getInspectorPr(key)!, {
+    state: "OPEN", headSha: "f".repeat(40), baseRefName: "feat/phase-1", defaultBranch: "main",
+  }, "/repo", activeStackGitHub(), f.registry, NOW + 90_000);
+  assert.deepEqual(gh.retargets, [], "the tick moved the grandchild onto main");
+  assert.equal(observed?.parentMergedInto, "feat/phase-0");
+  assert.equal(observed?.baseRefName, "feat/phase-1");
+  const standing = stackStandingFor(db.getInspectorPr(key)!, [], FOREMAN_OFF)!;
+  assert.equal(standing.state, "broken");
+  assert.equal(standing.brokenReason, "parent-merged-off-default");
+  assert.equal(standing.prompt, null);
+  assert.equal(standing.label, "Stack broken: #1700 merged into `feat/phase-0`, not main");
+});

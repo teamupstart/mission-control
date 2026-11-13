@@ -11,6 +11,8 @@ import type { StackLifecycleContext } from "../src/server/stacking/state.ts";
 import {
   buildStackPrompt,
   deriveStackState,
+  expectedStackBase,
+  parentMergedOffDefault,
   mergeLandedOnDefault,
   stackBrokenReason,
   stackLifecycleLabel,
@@ -116,6 +118,24 @@ test("a merged child whose base or default branch GitHub did not report is unres
   assert.deepEqual(label, { label: "Merged - checking on GitHub whether it reached main", inProgress: true });
 });
 
+test("a child whose parent merged off the default branch is not retargeted, and reads Broken with no prompt", () => {
+  // A three-pull-request stack: the middle one (#1416 here) merged into its own parent's branch.
+  const middle = { state: "MERGED" as const, headRefName: "feat/phase-1", baseRefName: "feat/phase-0", defaultBranch: "main" };
+  assert.equal(parentMergedOffDefault(middle), true);
+  assert.equal(expectedStackBase(middle, "main"), null, "the grandchild would be moved onto main without the middle's work");
+  assert.equal(expectedStackBase({ ...middle, baseRefName: "main" }, "main"), "main");
+  // Branches not reported: the existing rule stands.
+  assert.equal(expectedStackBase({ state: "MERGED", headRefName: "feat/phase-1" }, "main"), "main");
+
+  const grandchild = observation({ childState: "OPEN", baseRefName: "feat/phase-1", childMergeCommitSha: null, childMergedAt: null,
+    parentMergedInto: "feat/phase-0" });
+  assert.equal(deriveStackState({ observation: grandchild, releasedHeadSha: null }), "broken");
+  assert.equal(stackBrokenReason(grandchild), "parent-merged-off-default");
+  assert.equal(stackPromptNeed("broken", grandchild), null);
+  assert.equal(stackLifecycleLabel({ state: "broken", parentNumber: 1416, brokenReason: "parent-merged-off-default", retargetError: null, prompt: null }, grandchild).label,
+    "Stack broken: #1416 merged into `feat/phase-0`, not main");
+});
+
 test("the Broken label names the parent's branch and the default branch, then why the recovery has not gone", () => {
   const o = observation();
   const base = { state: "broken" as const, parentNumber: 1416, brokenReason: "merged-into-parent" as const, retargetError: null };
@@ -138,11 +158,15 @@ test("the recovery prompt branches from the default branch, brings over the merg
   assert.match(text, /merged into `feat\/phase-1` after #1416 \(https:\/\/github\.com\/acme\/repo\/pull\/1416\) had already merged/);
   assert.match(text, /create a new branch from `origin\/main`/);
   assert.match(text, new RegExp(`the diff between merge commit \`${STRAY}\` and its first parent`));
-  // The first-parent diff, applied: works for a merge commit and for a one-parent squash commit,
-  // where `git cherry-pick -m 1` would refuse.
-  assert.ok(text.includes(`git diff --binary ${STRAY}^1 ${STRAY} | git apply --3way`), text);
-  assert.match(text, /whether GitHub made a merge commit or a squash commit/);
-  assert.doesNotMatch(text, /cherry-pick/);
+  // The pull request's whole diff, applied: the same as the first-parent diff of a merge or
+  // squash commit, and every rebased commit of a rebase merge, where the first-parent diff of
+  // the reported merge SHA would hold only the last one (and `git cherry-pick -m 1` would refuse
+  // a squash commit).
+  assert.ok(text.includes(`gh pr diff ${CHILD} | git apply --3way`), text);
+  assert.match(text, new RegExp(`for a merge or squash commit it is the diff between merge commit \`${STRAY}\` and its first parent`));
+  assert.match(text, /for a rebase merge it spans every rebased commit/);
+  assert.match(text, /git checkout feat\/phase-2 -- <path>/);
+  assert.doesNotMatch(text, /cherry-pick|git diff --binary/);
   assert.match(text, /Resolve any conflicts with main and run focused checks/);
   assert.match(text, /gh pr create --base main/);
   assert.match(text, /This task completes when that pull request merges into main/);
@@ -288,7 +312,7 @@ test("the recovery prompt is claimed once, keyed to the pull request and its mer
   assert.equal(candidate.error, undefined, candidate.error);
   if (candidate.error !== undefined) return;
   assert.deepEqual(candidate.claim, { kind: "recover-merge", tip: STRAY });
-  assert.ok(candidate.payload.includes(`git diff --binary ${STRAY}^1 ${STRAY} | git apply --3way`));
+  assert.ok(candidate.payload.includes(`gh pr diff ${CHILD} | git apply --3way`));
   assert.match(candidate.payload, /merged into `feat\/phase-1` after #1416/);
 
   const claim = db.claimStackPrompt(key, "recover-merge", STRAY, "child-session", 1);

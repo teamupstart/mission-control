@@ -535,7 +535,7 @@ test("Foreman delivers the recovery prompt for a stray merge to the idle owner e
   assert.equal(f.messages.length, 1);
   assert.doesNotMatch(f.messages[0]!, /UNTRUSTED WORKER TEXT/, "the daemon builds the prompt, never the caller");
   assert.match(f.messages[0]!, /create a new branch from `origin\/main`/);
-  assert.ok(String(f.messages[0]).includes(`git diff --binary ${STRAY}^1 ${STRAY} | git apply --3way`));
+  assert.ok(String(f.messages[0]).includes(`gh pr diff ${f.session.prUrl} | git apply --3way`));
   assert.match(f.messages[0]!, /gh pr create --base main/);
   assert.equal(readStackPromptClaim(f.key, "recover-merge", STRAY)?.outcome, "delivered");
   assert.equal(readStackPromptClaim(f.key, "recover-merge", STRAY)?.sessionId, f.session.id);

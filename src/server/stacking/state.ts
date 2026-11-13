@@ -1,6 +1,7 @@
 import type { InspectorPr, Task } from "@shared/types.ts";
 import {
   expectedStackBase,
+  parentMergedOffDefault,
   strayMergeUndecided,
   stackPrNumber,
   type Ancestry,
@@ -195,6 +196,9 @@ export async function observeStackLifecycle(
     parentTaskId,
     ...childMergeFacts(snapshot),
     ...(parent.state === "MERGED" && typeof parent.mergedAt === "number" ? { parentMergedAt: parent.mergedAt } : {}),
+    // Only when the parent's own merge missed the default branch, so every other observation
+    // keeps its shape. Base reconciliation above left the child where it is in that case.
+    ...(parentMergedOffDefault(parent, defaultBranch) ? { parentMergedInto: parent.baseRefName } : {}),
     // A replacement parent comes from the same episode as the one it replaced, so the
     // recorded episode carries over a transition unchanged.
     parentEpisodeId,

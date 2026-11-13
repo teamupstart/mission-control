@@ -854,7 +854,8 @@ test("a child merged into its finished parent's branch reads Stack broken, keeps
     const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
     return transcript.messages.some((m) => m.role === "user"
       && m.text.includes("create a new branch from `origin/main`")
-      && m.text.includes(`git diff --binary ${STRAY}^1 ${STRAY} | git apply --3way`)
+      && m.text.includes(`gh pr diff ${childPr.url} | git apply --3way`)
+      && m.text.includes(`merge commit \`${STRAY}\``)
       && m.text.includes("gh pr create --base main")
       && m.text.includes("Do NOT force-push, rebase, reset or otherwise rewrite `feat/stack-child` or `feat/stack-parent`"));
   }, { timeout: 30_000, message: "the recovery prompt reached the child's session" }).toBe(true);

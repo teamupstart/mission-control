@@ -686,7 +686,7 @@ that advanced and then merged or closed never gets a catch-up prompt:
 |---|---|---|
 | Released | the release check passed for the child's current head, or the child merged into the default branch | nothing: an ordinary pull request against the default branch, merged by the ordinary gates |
 | Merge unconfirmed | the child merged, but GitHub has not reported both the branch it merged into and the default branch | nothing completes; the child is read again every sweep until both are known |
-| Broken | the parent closed without merging, the parent task was cancelled, failed or rescheduled back into the backlog while its pull request was open, GitHub closed the child, or the child merged into a branch other than the default branch (its parent's, or any other) | held, with a named reason and the actions below |
+| Broken | the parent closed without merging, the parent task was cancelled, failed or rescheduled back into the backlog while its pull request was open, GitHub closed the child, the child merged into a branch other than the default branch (its parent's, or any other), or the parent itself merged into a branch other than the default branch | held, with a named reason and the actions below |
 | Parent merged, needs retarget | the parent merged and the child's base is not yet the default branch | the base is retargeted on this tick |
 | Restack needed | the parent merged, the child is on the default branch, and the release check has not passed for its head (including a head moved by an unrelated push) | the **restack** prompt |
 | Parent moved | the parent is open and its head is not in the child's history | the **catch-up** prompt |
@@ -698,10 +698,15 @@ and this repository keeps merged branches, so GitHub does not retarget a child w
 merges. When the poller records a merged pull request, every open stacked child whose current
 parent it is is retargeted right then, through the same single-flight base edit the adoption
 correction uses. That happens once per child and parent. A refused or unreadable attempt is
-left to the tick, which retries it and shows *Retarget failed:* as below.
+left to the tick, which retries it and shows *Retarget failed:* as below. A parent whose own
+merge went into a branch other than the default branch (the middle of a three-pull-request
+stack merged into its own parent's branch) moves none of its children, here or on the tick: its
+work is not on the default branch, so a child retargeted there could merge and complete without
+it. Those children read *Stack broken: #A merged into `<branch>`, not main*.
 
 Every tick compares the child's base with the branch it belongs on
-(the parent's branch while it is open, the default branch once it merged or closed) and
+(the parent's branch while it is open, the default branch once it merged into the default branch
+or closed) and
 retargets it through GitHub's API when they differ. It is skipped when they already match,
 which covers GitHub's own retarget after an auto-deleted branch. A refused retarget is tried
 again on the next tick, and until it succeeds the merge queue reads *Retarget failed:* with
@@ -715,11 +720,12 @@ the same path and rules as the CodeRabbit follow-up:
 - *restack*: merge `origin/<default branch>` in, resolve conflicts, run focused checks, push;
 - *recover*: for a child merged into its parent's branch after that parent had already merged
   (see [a merge into the parent's branch](#a-merge-into-the-parents-branch)). Branch from
-  `origin/<default branch>`, bring over the changes the stray merge introduced (the diff
-  between its merge commit and that commit's first parent, applied with
-  `git diff --binary <commit>^1 <commit> | git apply --3way`, which works for a merge commit and
-  for a squash commit alike), resolve conflicts, run focused checks, and open a new pull request
-  against the default branch.
+  `origin/<default branch>`, bring over the changes the stray merge introduced, resolve
+  conflicts, run focused checks, and open a new pull request against the default branch. The
+  changes are applied with `gh pr diff <pull request> | git apply --3way`: the pull request's
+  whole diff. For a merge or squash commit that is the diff between the merge commit and its
+  first parent. For GitHub's *Rebase and merge* it spans every rebased commit, where the
+  reported merge commit's first-parent diff would hold only the last one.
 
 All say never to force-push or rebase, and the recovery also says never to rewrite either merged
 branch. Each is claimed before it is typed, keyed to the pull request, the prompt kind and the
@@ -762,6 +768,7 @@ lifecycle as its detail, which never becomes a gate value:
 | *Stack broken: #A's task was rescheduled* | the parent task is back in the backlog and has not started again | **Start #A's task** |
 | *Merged - checking on GitHub whether it reached main* | the child merged, and the branch it merged into or the default branch is not known yet (counted with **waiting**) | none; read again every sweep |
 | *Stack broken: merged into `<branch>`, not main* | the child merged into a branch that is neither the default branch nor its parent's (its base was changed by hand, say) | none: the parent-branch recovery does not describe it |
+| *Stack broken: #A merged into `<branch>`, not main* | the parent itself merged into a branch other than the default branch, so this child is not retargeted onto the default branch | none: #A's work has to reach the default branch first (its own recovery) |
 | *Stack broken: merged into #A's branch, not main* | the child merged into its parent's branch, not the default branch. Followed by the recovery prompt's status when one is needed: *- Recovery needed: Foreman is off*, *- Recovery needed: Foreman can't send it - <reason>*, *- Recovery needed: no session*, *- Recovery prompt delivery uncertain*, *- recovery prompt on its way*, or *- recovering* once it is delivered | **Send recovery prompt** when Foreman will not send it or its delivery is uncertain; nothing when #A was still open when the child merged |
 
 The child's board tile shows the same label and buttons. The manual sends use the same inject

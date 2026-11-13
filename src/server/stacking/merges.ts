@@ -17,7 +17,8 @@ import { correctStackBase } from "./lineage.ts";
 //    names both the base and the default branch) and remembered, because a merged pull
 //    request's base can never change again.
 //  - `retargetChildren`: when the poller sees a parent merge, its open stacked children are
-//    pointed at the default branch right then, through the same `correctStackBase` the
+//    pointed at the default branch right then - unless that parent's own merge missed the
+//    default branch, in which case `correctStackBase` leaves them where they are - through the same `correctStackBase` the
 //    adoption-time correction uses, so `withRetarget`'s single-flight guard still holds. A
 //    failure is left to the Inspector tick, which retries every tick and shows *Retarget
 //    failed* with GitHub's reason.

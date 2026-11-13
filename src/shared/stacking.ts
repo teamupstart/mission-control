@@ -527,7 +527,9 @@ function mergedIntoParentBranch(o: StackObservation): boolean {
 export function strayMergeAfterParent(o: StackObservation): boolean {
   return mergedIntoParentBranch(o) && o.parentState === "MERGED"
     && typeof o.parentMergedAt === "number" && typeof o.childMergedAt === "number"
-    && o.parentMergedAt <= o.childMergedAt;
+    // Strictly later: equal reported times do not establish which merged first, and the
+    // prompt asserts the parent had already merged. A tie is left to the operator.
+    && o.parentMergedAt < o.childMergedAt;
 }
 
 /**

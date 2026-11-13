@@ -81,6 +81,9 @@ test("the recovery prompt is keyed to the child's own merge commit, and only aft
   // Merged into a parent that was still open: the parent's later merge may have carried it, so
   // no recovery is offered (the task still stays open; the operator confirms).
   assert.equal(stackPromptNeed("broken", observation({ parentMergedAt: CHILD_MERGED_AT + 1 })), null);
+  // The same reported instant does not say which merged first: no prompt on a guess.
+  assert.equal(stackPromptNeed("broken", observation({ parentMergedAt: CHILD_MERGED_AT })), null);
+  assert.deepEqual(stackPromptNeed("broken", observation({ parentMergedAt: CHILD_MERGED_AT - 1 })), { kind: "recover-merge", tip: STRAY });
   assert.equal(stackPromptNeed("broken", observation({ parentState: "OPEN", parentMergedAt: null })), null);
   // Undated, unread, or with no merge commit to recover from: nothing is offered on a guess.
   assert.equal(stackPromptNeed("broken", observation({ childMergedAt: null })), null);

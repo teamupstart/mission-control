@@ -30252,6 +30252,7 @@ span.line-run-prov {
    `~` and not `+`: each pill is wrapped in `Tooltip`, which emits a visually-hidden `.tt-desc`
    span as its NEXT SIBLING. The adjacent combinator therefore never matched, and the reset
    silently did nothing. */
+.board-col-n.n-blocked ~ .board-col-n,
 .board-col-n.n-free ~ .board-col-n {
   margin-left: 0;
 }
@@ -30740,6 +30741,7 @@ span.line-run-prov {
 }
 .board-lane-head .board-col-n,
 .board-col.tone-blocked .board-col-head .board-col-n,
+.board-col-n.n-blocked,
 .board-col-strip-blocked {
   color: var(--danger);
   border-color: color-mix(in oklab, var(--danger) 45%, var(--border));

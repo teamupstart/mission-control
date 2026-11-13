@@ -671,6 +671,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   <span className="board-col-n">{count}</span>
                 ) : (
                   <>
+                    {/* The At the top of Idle frame's cards sit in this column too, and the split
+                        counts only the column's own group, so they get a pill of their own -
+                        first, in the order the column draws them. */}
+                    {frame && (
+                      <Tooltip label={`${c.blocked.length} blocked in the frame above the idle cards`}>
+                        <span className="board-col-n n-blocked">{c.blocked.length} blocked</span>
+                      </Tooltip>
+                    )}
                     {g.heldFrom > 0 && (
                       <Tooltip
                         label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}

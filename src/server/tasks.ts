@@ -537,6 +537,11 @@ export interface TaskManagerStartupDeps {
   teardown?: typeof teardownWorktree;
   occupancy?: typeof inspectWorktreeOccupancy;
   returnBlocker?: typeof worktreeReturnBlocker;
+  /**
+   * The Mission-tools probe an edit awaits after reading its base row. Injectable so a test can
+   * hold an edit at exactly that point and land another write underneath it.
+   */
+  missionTools?: typeof missionToolsAvailability;
 }
 
 interface TaskCleanupJob {
@@ -4209,7 +4214,7 @@ export class TaskManager {
         this.workflowEvidenceEnabledForTask(missionToolsTask),
       )
     ) {
-      const tools = await missionToolsAvailability(agent);
+      const tools = await (this.startupDeps.missionTools ?? missionToolsAvailability)(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }
     const becomesPlan = patch.kind === "plan" && t.kind !== "plan";

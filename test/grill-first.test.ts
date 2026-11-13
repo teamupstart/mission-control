@@ -190,23 +190,88 @@ test("creation pins each kind's default, a dispatch overrides it, and an edit wr
   assert.equal(getTask(shipDefault.id)?.grillFirst, false);
 });
 
-test("a dashboard pin edit that waited on the tools probe is applied to the newer row, never over it", async () => {
+test("a dashboard pin edit held at the tools probe while another edit lands is re-prepared on the newer row", async () => {
+  // The probe is the await an edit makes AFTER reading its base row. Held here on purpose, so
+  // the other write lands between that read and this edit's own write, every time.
+  let probes = 0;
+  let reached!: () => void;
+  const atProbe = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, {
+    missionTools: async () => {
+      probes += 1;
+      if (probes === 1) {
+        reached();
+        await held;
+      }
+      return { available: true, reason: null };
+    },
+  });
   applySkillsConfig({ grillFirstKinds: [] });
   const task = tasks.create({
     repoRoot: "/repos/demo", intent: "do it", title: "Race", kind: "ship", agent: "claude", backlog: true,
   });
-  // Both prepare from the same row; only the pin edit awaits the tools probe before writing.
-  const saving = tasks.update(task.id, { title: "Saved meanwhile" });
+  const base = registry.getTask(task.id);
+
   const pinning = tasks.update(task.id, { grillFirst: true });
-  const saved = await saving;
+  await atProbe;
+  assert.equal(registry.getTask(task.id), base, "the pin edit has read its base row and is held");
+  // A title edit needs no probe, so it writes while the pin edit is still held.
+  const saved = await tasks.update(task.id, { title: "Saved meanwhile" });
   assert.equal(saved.ok, true, saved.error);
+  assert.notEqual(registry.getTask(task.id), base, "the row the pin edit read is now stale");
+  release();
+
   const pinned = await pinning;
   assert.equal(pinned.ok, true, pinned.error);
+  assert.equal(probes, 2, "the stale row was detected and the edit prepared again from the newer one");
   assert.equal(registry.getTask(task.id), pinned.task);
   assert.equal(getTask(task.id)?.title, "Saved meanwhile", "the other edit survives");
-  assert.equal(getTask(task.id)?.grillFirst, true);
+  assert.equal(getTask(task.id)?.grillFirst, true, "and so does the pin");
+});
+
+test("a pin edit whose retry is overtaken too is refused rather than written over the newer row", async () => {
+  // The same hold on both preparations: a dashboard edit retries once, then reports the race.
+  let probes = 0;
+  const holds: Array<() => void> = [];
+  const arrivals: Array<() => void> = [];
+  const arrived = [0, 1].map(() => new Promise<void>((resolve) => arrivals.push(resolve)));
+  const registry = new Registry();
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, {
+    missionTools: async () => {
+      const n = probes++;
+      arrivals[n]?.();
+      await new Promise<void>((resolve) => holds.push(resolve));
+      return { available: true, reason: null };
+    },
+  });
+  applySkillsConfig({ grillFirstKinds: [] });
+  const task = tasks.create({
+    repoRoot: "/repos/demo", intent: "do it", title: "Race", kind: "ship", agent: "claude", backlog: true,
+  });
+
+  const pinning = tasks.update(task.id, { grillFirst: true });
+  await arrived[0];
+  assert.equal((await tasks.update(task.id, { title: "First meanwhile" })).ok, true);
+  holds[0]!();
+  // Raced against the edit settling, so an edit that never retries fails here rather than hanging.
+  const next = await Promise.race([arrived[1]!.then(() => "retried"), pinning.then(() => "settled")]);
+  assert.equal(next, "retried", "the stale first preparation was detected and prepared again");
+  assert.equal((await tasks.update(task.id, { title: "Second meanwhile" })).ok, true);
+  holds[1]!();
+
+  const result = await pinning;
+  assert.equal(result.ok, false);
+  assert.match(result.error!, /task changed while preparing the update; retry/);
+  assert.equal(probes, 2, "one retry, no more");
+  assert.equal(getTask(task.id)?.title, "Second meanwhile", "the newer write stands");
+  assert.equal(getTask(task.id)?.grillFirst, false, "and the refused pin was not written over it");
 });
 
 test("a dashboard edit never undoes a dispatch that landed while it was being prepared", async () => {

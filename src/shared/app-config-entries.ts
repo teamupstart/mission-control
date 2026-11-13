@@ -288,7 +288,10 @@ const uiFields = {
   conversationRailCollapsed: "setting",
   residentPlacement: "setting",
   residentDrawerPinned: "setting",
+  blockedPlacement: "setting",
+  blockedFrameCollapsed: "setting",
   collapsedBoardColumns: "setting",
+  sessionRailFolded: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;

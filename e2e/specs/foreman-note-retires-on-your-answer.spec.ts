@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { NO_MISSION_MCP_ENV, type DaemonHandle } from "../fixtures/daemon.ts";
 import { dialogMarker } from "../../src/server/foreman/pending.ts";
 
 /**
@@ -19,7 +19,8 @@ import { dialogMarker } from "../../src/server/foreman/pending.ts";
  * Both channels a session asks through are driven here, because the note was stranded on each
  * for a different reason and only one of them looked stale:
  *
- *  - The DRIVER form, which is what an SDK session's own `AskUserQuestion` raises. Its marker
+ *  - The DRIVER form, which is what an SDK session's own `AskUserQuestion` raises (a task
+ *    keeps that built-in only on a launch with no Mission MCP server). Its marker
  *    is a `dialog:` digest. Its recommendation is revealed from the form and highlights the
  *    actual option it names, but only the form can send the answer.
  *  - The MCP review. Its marker names the review, so the dashboard did degrade it to "already
@@ -48,6 +49,13 @@ const ASK_TURN = "ask me which linter to use";
 const SUGGESTION = "Choose biome - it is already in the toolchain.";
 /** The sentence the dashboard shows for a note whose review has since been resolved. */
 const STALE_HINT = /already been resolved/;
+
+/**
+ * The driver form below is the native `AskUserQuestion` form, which a dispatched task raises
+ * only when it launched with no Mission MCP server to ask through instead. The review-channel
+ * test posts its review over HTTP and needs no bundle either.
+ */
+test.use({ daemonEnv: NO_MISSION_MCP_ENV });
 
 const EVIDENCE = artifactsDir("foreman-note-retires-on-your-answer");
 

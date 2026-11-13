@@ -427,9 +427,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   `AskUserQuestion` keeps those one-click choice rows and adds a separate custom-answer
   field; multi-question or multi-select asks show every question together and submit once.
   Each question accepts either its choice rows or non-empty custom text, and parallel asks
-  wait their turn on the same session detail instead of replacing one another. Claude's own question
-  tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
-  terminal is unreadable, and here it is not;
+  wait their turn on the same session detail instead of replacing one another. A task's Claude
+  session only shows that form when it launched without the Mission MCP server, because
+  otherwise it asks through `request_input` like a terminal session does
+  ([the ask channel](#the-ask-channel));
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
   just as they control a pane-backed one - though on Codex a reasoning-effort selection
   takes effect when the next turn starts rather than immediately, which the effort badge
@@ -2122,7 +2123,9 @@ a blocked session's review, menu or form, which can only respond to the question
 
 On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
 flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
-[Board card items](ui.md). For now a blocked idle session stays in the Idle column.
+[Board card items](ui.md). An idle blocked session is drawn where **Settings → Display → Blocked
+sessions** says: a lane under Needs you (the default), a red frame at the top of Idle, or a
+Blocked column of its own. See [Layout](ui.md#layout-console-or-board-in-settings).
 The Conversation tab opens with a red band: one row with the kind, the reason, how long it has
 stood and two buttons. **Flag reply** marks a likely answer (with an optional note and link)
 without clearing anything or messaging the session, and **Clear blocker** ends the hold. Click
@@ -2448,14 +2451,18 @@ publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 
 ### The ask channel
 
-Claude sessions the dashboard dispatches into the **terminal runtime** do not use Claude's
-built-in `AskUserQuestion`. It is disallowed on the spawn, and the agent is pointed at
-`request_input` instead, so a clarifying question arrives as structured arguments in the
-dashboard rather than as a menu drawn on a terminal nobody is watching. Agent SDK sessions
-keep the built-in tool because its questions already arrive as structured driver requests;
-see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
-lands in the session's conversation as the same gold entry - the two channels differ in how
-the question reaches you, not in what is written down afterwards.
+Claude sessions the dashboard dispatches for a task do not use Claude's built-in
+`AskUserQuestion`, on either runtime. It is disallowed at launch, and the agent is pointed at
+`request_input` instead, so every clarifying question a task asks arrives as the same
+`request_input` review - in the review queue, with **Chat about it** - rather than as a menu
+drawn on a terminal nobody is watching or a driver-only form. On the **Agent SDK runtime**
+the same three pieces ride on the query options (`sdkAskChannel` in
+`src/server/ask-channel-prompt.ts`): `allowedTools` pre-approves `request_input`, `disallowedTools`
+removes the built-in, and the redirect leads the one `systemPrompt.append`, ahead of any
+standing instructions. An SDK launch that registers no Mission MCP server keeps the built-in,
+whose questions then arrive as structured driver requests; see
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer lands
+in the session's conversation as the same gold entry.
 
 A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
 appends one developer instruction: when the operator needs to review alternatives, select an

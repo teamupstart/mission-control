@@ -771,10 +771,52 @@ on **Board**; an install that already stored a layout keeps it:
 | **Board** (default) | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 
+### Folding the session rail
+
+The session rail beside an open session folds down to a 40px strip, so the conversation, the
+terminal and the reply box take the width it held. Fold it with the **«** at the right of the
+rail's head, or press <kbd>[</kbd>. The strip is the same one a
+collapsed Board column draws (see the three column widths below): a **»**, one count per state group in that
+group's colour, and the rail's name set vertically. Click anywhere on it, or press <kbd>[</kbd>
+again, to unfold.
+
+- It applies to every rail beside a detail: the **Console**'s, and the **Board** drill-in's
+  in both shapes (the clicked column, or every state group when **Show all sessions in
+  sidebar** is on). They are one rail, so they fold together. The Board overview's own
+  columns fold separately, with their width control.
+- The fold persists per machine, like the layout itself.
+- On a **Board** drill-in, the strip has no head, so the **‹** back to the board moves to the
+  leading edge of the session's detail head while the rail is folded.
+- <kbd>↑</kbd>/<kbd>↓</kbd> still walk the sessions while it is folded, and
+  <kbd>Esc</kbd> or <kbd>⇧</kbd><kbd>Tab</kbd> out of the reader hands the keyboard to the
+  strip.
+- A folded strip counts sessions but does not list them. When a session starts waiting on
+  you, the **Needs you** count appears or goes up and pulses, so the fold never hides it.
+
 **Settings → Display → Residents → Where residents live** sits beside it. **Drawer**, the
 default, keeps residents off the Board columns and the Console rail, in a drawer on the right
 edge; **Board and Console** draws them in the fleet with every other session. It applies live and
 persists per machine. See [Finding a resident](residents.md#finding-a-resident).
+
+**Settings → Display → Blocked sessions** sits beside Residents and decides where the Board draws
+idle sessions standing on a [blocker](sessions.md#blocked-sessions). It applies live and
+persists per machine:
+
+| Choice | What it draws |
+|--------|---------------|
+| **In Needs you** (default) | The Needs you column splits into two lanes, each with its own head and its own scroll. Needs you takes the remaining height; the red **Blocked** lane sits at the bottom, sized to its cards between one card and 45% of the column, so it always shows at least one whole card. Either lane leaves when it is empty, and the column leaves the board only when both are. Collapsed, the column's strip carries both counts, amber over red. |
+| **At the top of Idle** | A red frame shaped like a repository frame, headed **Blocked 3 · oldest 2d**, above the idle cards. Its head folds and unfolds it, and the fold persists per machine. A folded frame hides its cards from the arrow keys and the <kbd>⌘</kbd>-numbers too. |
+| **Own column** | A red **Blocked** column between Needs you and Working. Like every other column it is drawn only while it has a card, and it takes the usual width and collapse controls. |
+
+The placement only moves idle and unconfirmed blocked sessions. A blocked session that is asking
+you stays in Needs you, and one that is working stays in Working; both keep the red card. A
+blocked session that a workflow run holds sits in the Blocked group, not under Idle's **held**
+rule, and keeps its **held** tag. Inside the group a session whose reply was flagged comes first,
+then the oldest blocker. The **Console** rail draws the same group under a red **Blocked**
+heading in the same relative place: after Needs you for **In Needs you** and **Own column**, at
+the top of Idle for **At the top of Idle**. The arrow keys and the <kbd>⌘</kbd>-numbers follow
+that order, and a lane follows the lane above it, so <kbd>↓</kbd> from the last Needs you card
+lands on the first Blocked card.
 
 Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
@@ -893,7 +935,8 @@ available:
   say what it is blocked on, all on by default: **Blocker kind** (Question, Dependency,
   Service or Other), **Blocker reason**, **Waiting on**, **Blocker link** (a glyph that opens
   the thread, pull request or status page) and **Reply flagged** (a pill once a resident or you
-  saw a likely answer). A blocked idle session stays in the Idle column. The Conversation tab
+  saw a likely answer). Where a blocked idle session is drawn is the
+  [Blocked sessions](#layout-console-or-board-in-settings) setting. The Conversation tab
   opens with a red band: one row with the kind, reason, age, **Flag reply** and **Clear
   blocker**, which expands in place to every other field and the collapsible details. Any
   flagged reply prints under the row.
@@ -1791,6 +1834,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>Enter</kbd> | Load a completed stage's recorded details in the Review worklist | Workflow Runs pipeline |
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
+| <kbd>[</kbd> | [Fold or unfold the session rail](#folding-the-session-rail) beside the open session, giving its width to the conversation and terminal | Console, or a Board drill-in |
 | <kbd>⇧</kbd><kbd>A</kbd> | Open the **Residents** page | Anywhere |
 | <kbd>⇧</kbd><kbd>H</kbd> | Open or close the [Residents drawer](residents.md#the-residents-drawer), going to Fleet to show it; closing a pinned drawer unpins it. With **Board and Console** placement it opens the Residents dock instead | Anywhere |
 | <kbd>⌥</kbd><kbd>1</kbd>…<kbd>⌥</kbd><kbd>9</kbd> | Open live resident 1 to 9's full detail, in the order the drawer and the dock list them: the drill-in on the **Board**, the detail pane in **Console**. Matched on the physical digit key, so it works where Option+digit types a symbol; ignored while a text field has focus, and reserved from rebinding | Anywhere, both resident placements |

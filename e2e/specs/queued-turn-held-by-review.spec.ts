@@ -4,7 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { NO_MISSION_MCP_ENV, type DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * A queued message the agent's own question is sitting on, and whether the log says so.
@@ -28,6 +28,13 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * `activePaneDialog` withdraws a dying session's dialog and there would be no card to jump
  * to.
  */
+
+/**
+ * The hold below is a hold behind a pane dialog, and the dialog it is provoked with is the
+ * native `AskUserQuestion` form - which a dispatched task raises only when it launched with
+ * no Mission MCP server to ask through instead.
+ */
+test.use({ daemonEnv: NO_MISSION_MCP_ENV });
 
 const EVIDENCE = artifactsDir("queued-turn-held-by-review");
 

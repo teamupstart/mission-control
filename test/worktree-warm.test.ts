@@ -9,6 +9,7 @@ import type { WorktreeOperationView } from "../src/shared/worktrees.ts";
 import { openDb } from "../src/server/db.ts";
 import {
   WorktreeManager,
+  idleSlotRefusal,
   type NativeWorktreeLease,
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
@@ -266,6 +267,33 @@ test("a queued Warm skips a slot whose pool marker went missing, untouched", asy
   assert.equal(row.version, before.version, "the slot was never reserved");
   assert.equal(row.currentHeadSha, before.currentHeadSha);
   assert.equal(runCount(row.path), 0, "no step ran");
+});
+
+test("unreadable process occupancy leaves a slot not idle but never quarantines it", async () => {
+  const facts = {
+    state: "available",
+    exactPath: true,
+    activeIdentity: "none",
+    lastOwner: "none",
+    occupancy: { status: "unknown", reason: "the process list timed out" },
+    registrationSafe: true,
+  } as const;
+  assert.deepEqual(idleSlotRefusal(facts), {
+    kind: "notIdle",
+    reason: "slot occupancy is unknown",
+    detail: "the process list timed out",
+    quarantine: false,
+  });
+
+  const fixture = repository("mission-warm-unknown-occupancy-");
+  const [slot] = await idleSlots(manager({ claim: claimOf(INSTALL) }), fixture.clone, fixture.sha, 1);
+  const blind = manager({ claim: claimOf(INSTALL) }, {
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "unknown" as const, reason: "the process list timed out" }])),
+  });
+  const preview = await service(blind, logsDirectory()).preview({ action: "warm", target: { kind: "slot", slotId: slot!.slotId } });
+  assert.equal(preview.allowed, false);
+  assert.match(preview.blockers.join(" "), /slot occupancy is unknown/);
+  assert.equal(blind.store.slot(slot!.slotId)!.state, "available", "an observation that failed is no evidence against the slot");
 });
 
 test("a slot dirtied after the preview is quarantined at its turn, as at acquisition, and skipped", async () => {

@@ -1,7 +1,9 @@
 import type { AgentType } from "@shared/types.ts";
 import { mcpServerPath } from "./config.ts";
+import { askChannelRedirect, ASK_USER_QUESTION_TOOL } from "./ask-channel-prompt.ts";
 import {
   claudeMissionMcpArgs,
+  MISSION_MCP_SERVER_NAME,
   missionMcpDescriptor,
   missionMcpPaths,
   missionMcpToolName,
@@ -67,69 +69,10 @@ import {
  */
 export const ASK_TOOL = missionMcpToolName("request_input");
 /** The built-in this replaces. */
-export const DISALLOWED_TOOL = "AskUserQuestion";
+export const DISALLOWED_TOOL = ASK_USER_QUESTION_TOOL;
 
-/**
- * The system-prompt appendix that sends the agent to our tool instead of the built-in.
- *
- * Written the way arm B's failure demands: it is not enough to name the replacement, the
- * prompt has to close the escape hatch the agent actually took. "Never ask as prose and
- * stop" is the sentence doing the work - without it the model reaches for the most natural
- * fallback (typing the question into its final answer) and the turn ends with nobody
- * looking at the terminal it typed into.
- *
- * It also states WHY, because a rule with a reason survives paraphrase and summarisation
- * into a long context better than a bare prohibition, and because the reason is true and
- * checkable: the human really is watching a dashboard rather than the child's screen.
- *
- * Passed INLINE as one argv element, which was measured before it was chosen rather than
- * assumed: 1260 bytes of this shape arrived byte-identical through `tmux new-session`,
- * including `$HOME`, `a*b` globs, double and single quotes, backticks, `$(cmd)`, semicolons,
- * pipes, ampersands and newlines. That is the same finding recorded on `spawnDetachedSession`
- * - tmux >= 3.3 uses the trailing arguments as the argv directly and does not reshell them.
- *
- * The accepted tradeoff: a dispatched agent's `ps` line now carries this prompt. That is
- * fine. It is a static instruction with no secrets in it, and the alternative - a file and
- * `--append-system-prompt-file` - buys that cosmetic tidiness with an UNDOCUMENTED flag,
- * a second file to keep in sync, and a capability probe that has to guess from `--help`
- * prose whether the flag exists. It guessed wrong: `claude --help` prints the two variants
- * folded together as `--append-system-prompt[-file]`, so the literal never appears and the
- * probe disabled the channel on every dispatch. `--append-system-prompt <text>` is listed
- * plainly in the option table, so there is nothing left to probe for.
- */
-const REDIRECT_PROMPT = `## Asking your human a question
-
-You are running inside Mission Control. Your human operator watches a dashboard, NOT this
-terminal. Nobody is reading your screen.
-
-The built-in \`${DISALLOWED_TOOL}\` tool is unavailable in this session. When you need a
-decision, a clarification, or a choice from your human, call the MCP tool
-\`${ASK_TOOL}\`. It puts the question on their dashboard and BLOCKS until they answer, then
-returns their answer to you.
-
-Pass discrete choices as \`options\` so they arrive as real controls the human can click:
-
-    ${ASK_TOOL}(
-      question: "Which linter should this repo use?",
-      options: [
-        { label: "biome", detail: "lint + format in one binary" },
-        { label: "eslint", detail: "widest plugin ecosystem" },
-      ],
-    )
-
-Omit \`options\` only when the answer is genuinely open-ended prose.
-
-NEVER ask a question as ordinary prose and end your turn. A prose question reaches nobody:
-the turn simply ends and your human never learns you were stuck. If a question is worth
-asking, it is worth calling the tool for. If you would rather proceed on a reasonable
-assumption than ask, that is fine - say which assumption you made and keep going. What is
-not fine is stopping to ask where no one can hear you.
-
-If you are waiting on someone or something other than your human operator, call the MCP
-tool \`${missionMcpToolName("report_blocker")}\` instead; for a decision the operator can make, call
-\`${ASK_TOOL}\`.
-Ask your question where its owner will see it first (for example Commonroom), then report
-the blocker with a link to that question, and end your turn.`;
+/** The redirect, for the server this module registers. See `askChannelRedirect`. */
+const REDIRECT_PROMPT = askChannelRedirect(MISSION_MCP_SERVER_NAME);
 
 /**
  * Build the argv fragment that routes a dispatched session's questions to the dashboard.

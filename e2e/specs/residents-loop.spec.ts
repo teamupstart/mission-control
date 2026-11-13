@@ -144,7 +144,7 @@ for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loo
   await host.getByRole(role, { name: "Pause", exact: true }).click();
   await expect.poll(() => live(daemon)?.loop_state).toBe("paused");
   const before = live(daemon)!.iteration;
-  await expectControlTooltip(page, host.getByRole(role, { name: "Run now", exact: true }), "Request the next resident iteration now, subject to guardrails");
+  await expectControlTooltip(page, host.getByRole(role, { name: "Run now", exact: true }), "Request the next resident iteration now, subject to guardrails. A busy resident runs it once idle");
   await host.getByRole(role, { name: "Run now", exact: true }).click();
   await expect.poll(() => live(daemon)?.iteration).toBe(before + 1);
   if (kind === "card") host = await surface(page, daemon, profile, kind);

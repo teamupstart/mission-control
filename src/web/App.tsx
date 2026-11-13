@@ -90,6 +90,7 @@ import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
+import { toggleSessionRail } from "./lib/session-rail.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -361,8 +362,8 @@ export function App(): React.JSX.Element {
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
   const alertScope = useMemo(
-    () => ({ sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
-    [sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
+    () => ({ sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
+    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
@@ -783,7 +784,11 @@ export function App(): React.JSX.Element {
     const active = document.activeElement as HTMLElement | null;
     const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
     if (activeEditor && !active?.closest(".cdetail")) return;
-    sessionEls.current.get(id)?.focus({ preventScroll: true });
+    // A folded rail draws no rows, so no row is registered for the id. The strip that stands
+    // in for them takes the keyboard instead: leaving the reader must still leave it, or every
+    // Escape would land back inside the reader and the next one could never peel further.
+    (sessionEls.current.get(id) ?? document.querySelector<HTMLElement>(".session-rail-strip"))
+      ?.focus({ preventScroll: true });
   }, []);
 
   const focusReaderBody = useCallback(() => {
@@ -2372,7 +2377,10 @@ export function App(): React.JSX.Element {
   // a view: `boardColumns` below is derived from the result, and the arrow keys walk those
   // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
   // all three orderings agree by construction rather than by a prop being threaded correctly.
-  const groupByRepo = useUiConfig().groupBoardByRepo;
+  // Where idle blocked sessions are drawn (Settings → Display → Blocked sessions), for the same
+  // reason: the placement moves sessions between `boardColumns` arrays, so it is an input to
+  // the one ordering rather than a decision a view makes while drawing.
+  const { groupBoardByRepo: groupByRepo, blockedPlacement, blockedFrameCollapsed } = useUiConfig();
   // Which sessions are residents, joined through their task to the live run that launched
   // them: the marker and pin from that run's pinned revision. One join, handed to every
   // layout, and its pins reach `orderSessions` here and in both views from the same map.
@@ -2413,8 +2421,10 @@ export function App(): React.JSX.Element {
       ? sessions.filter((s) => !placement.excluded.has(s.id))
       : sessions;
     const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
-    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents);
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents]);
+    return orderSessions(
+      matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+    );
+  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement]);
   const visible = fleet.sessions;
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
@@ -2672,16 +2682,24 @@ export function App(): React.JSX.Element {
   const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
   const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
   const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
+  // The folded At the top of Idle frame hides its cards on the Board overview only, like a
+  // collapsed column: the rails always list the Blocked group in full.
+  const hideFoldedBlocked = layout === "board" && !boardDetailOpen && blockedFrameCollapsed
+    && fleet.blockedPlacement === "idle";
   const foldedIds = useMemo(() => {
     const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
-    if (!hideCollapsedColumns) return folded;
-    const inStrips = collapsedColumnSessionIds(fleet.groups, new Set(collapsedColumns));
-    if (inStrips.size === 0) return folded;
-    return new Set([...folded, ...inStrips]);
-  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns]);
+    const inStrips = hideCollapsedColumns
+      ? collapsedColumnSessionIds(fleet.columns, new Set(collapsedColumns))
+      : new Set<string>();
+    const inFrame = hideFoldedBlocked ? fleet.blocked : [];
+    if (inStrips.size === 0 && inFrame.length === 0) return folded;
+    return new Set([...folded, ...inStrips, ...inFrame.map((s) => s.id)]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked]);
 
+  // One array per drawn column, in Board order, so a Blocked lane or frame is walked as part
+  // of the column that draws it and the Own column placement adds a sixth array.
   const boardColumns = useMemo(
-    () => fleet.groups.map((g) => g.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
+    () => fleet.columns.map((c) => c.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
     [fleet, foldedIds],
   );
 
@@ -3538,6 +3556,16 @@ export function App(): React.JSX.Element {
         // the density from render here made every press after the first a no-op. See that
         // function for the whole story.
         toggleLineDensity();
+        return;
+      }
+
+      // Fold or unfold the session rail, a bare key for the reason the Line's is. Only while a
+      // rail is actually beside a detail - the Console, or a Board drill-in. On the Board
+      // overview there is no rail to fold, and flipping a preference nobody can see would
+      // surprise whoever opens a card next.
+      if (!typing && chord === bindings.sessionRail && (layout === "console" || boardDetailOpen)) {
+        e.preventDefault();
+        toggleSessionRail();
         return;
       }
 

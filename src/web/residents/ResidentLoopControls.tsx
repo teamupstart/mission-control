@@ -4,14 +4,15 @@ import type { Session } from "@shared/types.ts";
 import { residentRestartRequestId, type ResidentLoopStatus, type ResidentRunSummary } from "@shared/residents.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { authorizeResidentLaunch } from "../lib/session-control-authorization.ts";
-import { controlResident } from "./api.ts";
+import { controlResident, type ResidentControlAction } from "./api.ts";
 import type { ResidentSessionMark } from "./marker.ts";
 import { ResidentRestartPromptContext } from "./restart-prompt.ts";
 
 const actionDescriptions = {
   pause: "Pause automatic resident iterations after the current turn",
   resume: "Resume automatic resident iterations when guardrails allow",
-  "run-now": "Request the next resident iteration now, subject to guardrails",
+  "run-now": "Request the next resident iteration now, subject to guardrails. A busy resident runs it once idle",
+  "cancel-run-now": "Drop the queued iteration; the resident keeps its normal cadence",
   restart: "Start a fresh resident run using the latest profile revision",
 };
 
@@ -45,6 +46,7 @@ export function ResidentLoopStatusLine({ loop, session, tags = false }: {
         <span className={`resident-loop-tag is-${loop.loopState}`}>{label}</span>
         <span className="resident-loop-tag">iteration {loop.iteration}</span>
         {next && <span className="resident-loop-tag">{next}</span>}
+        {loop.runRequestedAt !== null && <span className="resident-loop-tag is-queued">run queued</span>}
       </span>
       {reasons.map((reason) => <span key={reason} className="resident-loop-reason">{reason}</span>)}
       {loop.compaction && <span className="resident-compaction-layers">
@@ -57,6 +59,7 @@ export function ResidentLoopStatusLine({ loop, session, tags = false }: {
   return <span className="resident-loop-status" aria-label="Resident loop status">
     {label} · iteration {loop.iteration}
     {next && ` · ${next}`}
+    {loop.runRequestedAt !== null && " · run queued"}
     {loop.pauseReason && ` · ${loop.pauseReason}`}
     {loop.wakeReason && ` · ${loop.wakeReason}`}
     {loop.compaction && <span className="resident-compaction-layers">Compaction before wakes: {loop.compaction.betweenIterations ? "active" : "unavailable"}. Native backstop: {loop.compaction.nativeBackstop ? "active" : "unavailable"}.</span>}
@@ -69,7 +72,7 @@ export function ResidentLoopControls({ mark, menu = false }: { mark: ResidentSes
   const [error, setError] = useState<string | null>(null);
   const promptToComplete = useContext(ResidentRestartPromptContext);
   if (!mark.loop) return null;
-  const act = async (action: "pause" | "resume" | "run-now" | "restart") => {
+  const act = async (action: ResidentControlAction) => {
     if (action === "restart" && mark.changedTo !== null) {
       // A replacement is a new launch. Arm its own click before awaiting anything; the
       // manager checks the new pinned revision's authority, never the old run's grant.
@@ -89,14 +92,14 @@ export function ResidentLoopControls({ mark, menu = false }: { mark: ResidentSes
     finally { setBusy(false); }
   };
   const paused = mark.loop.loopState === "paused";
-  const button = (label: string, action: "pause" | "resume" | "run-now" | "restart") =>
+  const button = (label: string, action: ResidentControlAction) =>
     <Tooltip label={actionDescriptions[action]}>
       <button type="button" role={menu ? "menuitem" : undefined} className="btn btn-ghost" disabled={busy}
         onClick={() => void act(action)}>{label}</button>
     </Tooltip>;
   return <span className="resident-loop-controls" onClick={(event) => event.stopPropagation()}>
     {button(paused ? "Resume" : "Pause", paused ? "resume" : "pause")}
-    {button("Run now", "run-now")}
+    {mark.loop.runRequestedAt === null ? button("Run now", "run-now") : button("Cancel queued run", "cancel-run-now")}
     {mark.changedTo !== null && button("Restart on new profile", "restart")}
     {error && <span role="alert" className="resident-loop-error">{error}</span>}
   </span>;

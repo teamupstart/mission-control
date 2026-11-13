@@ -49,10 +49,40 @@ test("pacing resolves only the signed caller; no session-control grant or body i
     loop.pause("run"); const refused = await request(credential(resident.id), { callId: "paused" });
     assert.equal((await refused.json()).code, "not_recorded");
     store.endResidentRun("run", Date.now());
-    for (const control of ["pause", "resume", "run-now", "restart"]) {
+    for (const control of ["pause", "resume", "run-now", "cancel-run-now", "restart"]) {
       assert.equal((await app.request(`/api/residents/runs/run/${control}`, { method: "POST" })).status, 409);
     }
   } finally { await loop.stop(); residents.stop(); stopCredentials(); await tasks.stop(); }
+});
+
+test("Run now on a busy resident answers queued, and the queued run can be cancelled once", async () => {
+  const registry = new Registry();
+  const sent: string[] = [];
+  const loop = new ResidentLoop({ registry, refreshSession: () => {}, sdk: { sendWhenIdle: async (_id, turn) => { sent.push(turn.text); return null; }, compact: async () => 1 } });
+  const residents = new ResidentManager({ registry, persona: () => null, createTask: () => { throw new Error("unused"); } });
+  const app = new Hono(); registerResidentLoopRoutes(app, { registry, loop, residents });
+  const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Busy resident" }, persona: { personaId: "p" } });
+  store.createResidentProfile({ id: "busy-profile", settings, at: Date.now() });
+  store.reserveResidentRun({ id: "busy-run", profileId: "busy-profile", profileRevision: 1, taskId: "busy-task", launchRequestId: "busy-launch", launchInput: residentLaunchInput("/repo", ""), repoSpelling: "/repo", persona: { personaId: "p", name: "Observer", guidanceMarkdown: "" }, runInstructions: "", at: Date.now() });
+  store.markResidentRunLaunched("busy-run", null);
+  const resident = registry.registerSdkSession({ id: "sdk:busy", agent: "claude", name: "Busy", cwd: "/repo", agentSessionId: "native-busy", initialState: "idle" });
+  // The driver reports a turn in progress, exactly as an accepted turn does.
+  registry.applyDriverEvent(resident.id, { kind: "state", state: "working", activity: null });
+  registry.upsertTask(mkTask({ id: "busy-task", kind: "resident", status: "running", sessionId: resident.id, repoRoot: "/repo" }));
+  loop.start();
+  const control = (action: string) => app.request(`/api/residents/runs/busy-run/${action}`, { method: "POST" });
+  try {
+    const queued = await control("run-now");
+    assert.equal(queued.status, 200);
+    assert.deepEqual(await queued.json(), { ok: true, outcome: "queued" });
+    assert.notEqual(registry.snapshot().residentRuns.find(run => run.id === "busy-run")?.runRequestedAt ?? null, null, "the queued run reaches the published summary");
+    assert.deepEqual(sent, []);
+    assert.equal((await control("cancel-run-now")).status, 200);
+    assert.equal(store.getResidentRun("busy-run")!.run.runRequestedAt, null);
+    const stale = await control("cancel-run-now");
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), { error: "No queued run to cancel." });
+  } finally { await loop.stop(); residents.stop(); }
 });
 
 // Issue #1324, end to end across the agent-facing boundary. Two request_input questions are

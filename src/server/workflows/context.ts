@@ -60,7 +60,9 @@ import { noteKeyFor } from "../registry.ts";
 import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "./commit-id.ts";
-import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { captureWorktreeTree, isolatedGitEnvironment } from "../git/worktree-tree.ts";
+import { captureWorkflowPublication } from "./publication.ts";
+import { inspectCheckoutTextArtifact } from "./images.ts";
 import { captureReviewSnapshot } from "../git/review-snapshot.ts";
 
 const MAX_GOAL = 16_000;
@@ -932,7 +934,13 @@ async function readRepositoryWorkEvidence(cwd: string | null, stackBase?: StackD
  * re-read - so one capture writes at most one review snapshot. The boundary compares the same
  * content tree, which is content-addressed and therefore identical whichever store hashed it.
  */
-async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = false, reviewSnapshot = false, stackBase?: StackDiffBase): Promise<{
+async function readRepositoryEvidence(
+  cwd: string | null,
+  captureCodeRabbit = false,
+  reviewSnapshot = false,
+  stackBase?: StackDiffBase,
+  reservedTextEvidence: Parameters<typeof captureWorkflowPublication>[1] = [],
+): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
@@ -940,6 +948,8 @@ async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = fa
   statusFingerprint: string;
   standards: ReturnType<typeof readStandards>;
   contentTreeOid: string;
+  publication: WorkflowContextSnapshot["evidence"]["publication"];
+  artifacts: NonNullable<WorkflowContextSnapshot["evidence"]["artifacts"]>;
   reviewCommit: string | null;
   repositoryFingerprint: string;
   coderabbit: ReturnType<typeof captureCodeRabbitConfig> | undefined;
@@ -947,8 +957,12 @@ async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = fa
   const work = await readRepositoryWorkEvidence(cwd, stackBase);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
-  const snapshot = reviewSnapshot ? await captureReviewSnapshot(cwd) : null;
-  const contentTreeOid = snapshot?.treeOid ?? (await captureWorktreeTree(cwd)).treeOid;
+  const { contentTreeOid, headOid, publication, artifacts } = await captureWorkflowPublication(
+    cwd, reservedTextEvidence, { objectStorage: reviewSnapshot ? "repository" : "temporary" },
+  );
+  // Commands review the exact publication capture, never retained local report fixtures.
+  const snapshot = reviewSnapshot
+    ? await captureReviewSnapshot(cwd, Date.now(), { treeOid: publication.treeOid, headOid }) : null;
   const reviewCommit = snapshot?.commitOid ?? null;
   const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
   let coderabbit: ReturnType<typeof captureCodeRabbitConfig> | undefined;
@@ -979,7 +993,7 @@ async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = fa
       truncated: doc.truncated,
     })),
   }));
-  return { ...work, standards, contentTreeOid, reviewCommit, coderabbit, repositoryFingerprint };
+  return { ...work, standards, contentTreeOid, publication, artifacts, reviewCommit, coderabbit, repositoryFingerprint };
 }
 
 function sourceFingerprintFields(
@@ -996,6 +1010,7 @@ function sourceFingerprintFields(
     })),
     headSha: context.evidence.headSha,
     contentTreeOid: context.evidence.contentTreeOid ?? null,
+    publication: context.evidence.publication ?? null,
     ...(context.evidence.coderabbit ? { coderabbit: context.evidence.coderabbit } : {}),
     diffFingerprint: context.evidence.diffFingerprint,
     transcriptAnchor,
@@ -1264,6 +1279,8 @@ export async function readWorkflowContextRaw(
   frozenIntent: WorkflowRunIntentSnapshot | null = null,
   /** The run's immutable published graph, never the binding's latest version or draft. */
   graph?: PublishedWorkflowGraph,
+  /** The submission's frozen text reservation, before any local report exemptions. */
+  reservedTextEvidence: Parameters<typeof captureWorkflowPublication>[1] = [],
 ): Promise<WorkflowRawCaptureRead> {
   const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
   if (!session || !compatibleSession(binding, session)) {
@@ -1296,6 +1313,8 @@ export async function readWorkflowContextRaw(
     statusFingerprint,
     standards,
     contentTreeOid,
+    publication,
+    artifacts,
     reviewCommit,
     repositoryFingerprint,
     coderabbit,
@@ -1304,6 +1323,7 @@ export async function readWorkflowContextRaw(
     captureCodeRabbit,
     graph?.nodes.some(node => node.kind === "check") ?? false,
     await reviewDiffBase(registry, binding, session),
+    reservedTextEvidence,
   );
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
@@ -1343,6 +1363,8 @@ export async function readWorkflowContextRaw(
       ...(coderabbit ? { coderabbit } : {}),
       headSha: diff.headSha,
       contentTreeOid,
+      publication,
+      artifacts,
       reviewCommit,
       diffFingerprint: sha(JSON.stringify({ patch: diff.patch, statusFingerprint })),
       diff: boundedDiff,
@@ -1394,7 +1416,16 @@ export async function readWorkflowContext(
 
 /**
  * The repository facts that answer "has any work moved since that submission?" without
- * capturing transcript, standards, decisions, or compacted context.
+ * capturing transcript, standards, decisions, or compacted context. Full tree identity also
+ * sees untracked artifact edits, and the policy version permits one fresh capture after an
+ * upgrade without rewriting the old submission.
+ * This is not a constant-cost metadata probe: its temporary index hashes tracked and
+ * nonignored untracked content. On macOS arm64/Node 26, three local samples with 10,000
+ * tracked files (~39 MiB) took 0.60-0.99s; adding 1,000 untracked text files and a 16 MiB
+ * binary took 2.27-3.51s for the whole probe. These are observations, not a latency bound.
+ * Status, HEAD and the real index cannot key a safe cache: an edit beyond the bounded diff
+ * can leave all three unchanged. The full tree detects that repair; prior retained report
+ * hashes below additionally detect raw bytes normalized away by Git.
  *
  * `diffFingerprint` is intentionally the SAME hash a full capture stores: the bounded patch
  * plus the complete status fingerprint. HEAD and the bounded status list are useful cheap
@@ -1417,6 +1448,9 @@ export async function readWorkflowContext(
  * pre-filter into the full capture it exists to guard.
  */
 export interface WorkflowEvidenceProbe {
+  contentTreeOid?: string;
+  publicationVersion?: 1;
+  localArtifactHashes?: Array<{ path: string; sha256: string | null }>;
   headSha: string | null;
   workingTreeStatus: string[];
   diffFingerprint: string;
@@ -1426,6 +1460,7 @@ export interface WorkflowEvidenceProbe {
 export async function readWorkflowEvidenceProbe(
   registry: Registry,
   binding: WorkflowBinding,
+  retainedArtifacts: readonly { path: string }[] = [],
 ): Promise<WorkflowEvidenceProbe> {
   const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
   if (!session || !compatibleSession(binding, session)) {
@@ -1434,7 +1469,23 @@ export async function readWorkflowEvidenceProbe(
   const checkout = workflowCheckoutPath(binding, session);
   if (!checkout) throw new Error("The bound session has no working directory");
   const work = await readRepositoryWorkEvidence(checkout, await reviewDiffBase(registry, binding, session));
+  const { treeOid: contentTreeOid } = await captureWorktreeTree(checkout);
+  // Git can normalize distinct report bytes to one blob. Re-read only the prior snapshot's
+  // retained paths, without rediscovering or validating report groups on every observer tick.
+  let artifactRoot: string | null = null;
+  if (retainedArtifacts.length) {
+    const root = await run("git", ["-C", checkout, "rev-parse", "--show-toplevel"], { env: isolatedGitEnvironment() });
+    if (root.code === 0) artifactRoot = realpathSync(root.stdout.trim());
+  }
+  const localArtifactHashes = await Promise.all(retainedArtifacts.map(async ({ path }) => ({
+    path,
+    sha256: artifactRoot
+      ? await inspectCheckoutTextArtifact(artifactRoot, path).then((artifact) => artifact.sha256, () => null) : null,
+  })));
   return {
+    contentTreeOid,
+    publicationVersion: 1,
+    localArtifactHashes,
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
     diffFingerprint: sha(JSON.stringify({
@@ -1449,7 +1500,13 @@ export function probeMatchesEvidence(
   probe: WorkflowEvidenceProbe,
   evidence: WorkflowContextSnapshot["evidence"],
 ): boolean {
-  return probe.headSha === evidence.headSha
+  const retained = evidence.publication?.localArtifacts ?? [];
+  const hashes = probe.localArtifactHashes ?? [];
+  return (probe.publicationVersion === undefined || probe.publicationVersion === evidence.publication?.version)
+    && (probe.contentTreeOid === undefined || probe.contentTreeOid === evidence.contentTreeOid)
+    && hashes.length === retained.length
+    && retained.every((artifact) => hashes.some((hash) => hash.path === artifact.path && hash.sha256 === artifact.sha256))
+    && probe.headSha === evidence.headSha
     && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
     && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index])
     && probe.diffFingerprint === evidence.diffFingerprint

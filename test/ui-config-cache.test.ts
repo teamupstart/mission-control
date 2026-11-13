@@ -63,6 +63,10 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // The drawer, floating: residents leave the fleet for an install that never chose.
   assert.equal(config.residentPlacement, "drawer");
   assert.equal(config.residentDrawerPinned, false);
+  // The rail every earlier build drew: open.
+  assert.equal(config.sessionRailFolded, false);
+  assert.equal(config.blockedPlacement, "needs-you");
+  assert.equal(config.blockedFrameCollapsed, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
@@ -79,6 +83,9 @@ test("a written cache round-trips", () => {
     // Both off their defaults, so neither round-trips by falling back.
     residentPlacement: "fleet",
     residentDrawerPinned: true,
+    // Both off their defaults, for the same reason.
+    blockedPlacement: "column",
+    blockedFrameCollapsed: true,
     conversationView: "chat",
     lineDensity: "expanded",
     // Off its default, so it cannot round-trip by falling back.
@@ -112,6 +119,8 @@ test("a written cache round-trips", () => {
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
+    // Folded, the non-default, so only a copied field round-trips it.
+    sessionRailFolded: true,
     // Non-empty, both: the shipped bar hides and minimizes nothing.
     hiddenTopbarItems: ["cost", "feedback"],
     compactTopbarItems: ["fleet", "foreman"],
@@ -120,6 +129,8 @@ test("a written cache round-trips", () => {
   assert.equal(config.layout, "console");
   assert.equal(config.residentPlacement, "fleet");
   assert.equal(config.residentDrawerPinned, true);
+  assert.equal(config.blockedPlacement, "column");
+  assert.equal(config.blockedFrameCollapsed, true);
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
   assert.equal(config.lineHidden, true);
@@ -139,6 +150,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.boardSidebarAllSessions, true);
   assert.equal(config.conversationRailCollapsed, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
+  assert.equal(config.sessionRailFolded, true);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
 });

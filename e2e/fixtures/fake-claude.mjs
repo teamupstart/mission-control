@@ -149,6 +149,8 @@ const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2
  * real ordering without slowing every dispatch in the suite.
  */
 const HOLD_FIRST_TURN = process.env.MC_E2E_HOLD_FIRST_TURN === "1";
+/** Opt-in: `/compact` turns stay open until interrupted. See the branch that reads it. */
+const STALL_COMPACT = process.env.MC_E2E_CLAUDE_STALL_COMPACT === "1";
 const SLOW_STOP = "E2E_SLOW_SESSION_STOP";
 const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
@@ -243,6 +245,13 @@ function failThenHoldCount(prompt) {
  * the request id they echo is held by the driver.
  */
 const ASK_TURN = "ask me which linter to use";
+/**
+ * The prompt this CLI answers by asking PERMISSION for a tool call and blocking on it - the
+ * menu every session can still be parked on, whatever its ask channel. A dispatched task has
+ * `AskUserQuestion` taken away (`ask-channel.ts`), so `ASK_TURN` reaches the native form only
+ * on a launch with no Mission MCP; a permission ask reaches the driver on every launch.
+ */
+const PERMISSION_TURN = "ask permission to run the suite";
 /**
  * The prompt that makes this CLI leave deterministic tool activity in its transcript:
  * one assistant turn carrying prose AND a tool call, then a tool-only turn, then the
@@ -1197,6 +1206,43 @@ const ASK_INPUT = {
 /** Control requests this CLI has sent UP and is waiting on, by request id. */
 const asked = new Map();
 
+/**
+ * The tools this launch removed, as the real CLI reads them: `--disallowedTools a,b`. A
+ * removed `AskUserQuestion` is never raised, so a spec cannot reach the native form on a
+ * launch that took it away.
+ */
+const DISALLOWED_TOOLS = (argvValue("--disallowedTools") ?? "")
+  .split(/[,\s]+/)
+  .filter(Boolean);
+/** What the SDK appended to the system prompt, delivered on `initialize`. */
+let appendedSystemPrompt = "";
+const REQUEST_INPUT_TOOL = "mcp__mission-control__request_input";
+
+/**
+ * `ASK_TURN` on a launch without `AskUserQuestion`: what a model does with what it was told.
+ * Pointed at `request_input`, it asks there and blocks until the human answers. Told
+ * nothing, it asks in prose and ends its turn (arm B in `ask-channel.ts`).
+ */
+function askWithoutBuiltin(prompt) {
+  if (!appendedSystemPrompt.includes(REQUEST_INPUT_TOOL)) {
+    answer([prompt]);
+    return;
+  }
+  const [first] = ASK_INPUT.questions;
+  const args = {
+    question: first.question,
+    options: first.options.map((o) => ({ label: o.label, detail: o.description })),
+  };
+  appendTurn("assistant", [
+    { type: "tool_use", id: `ask-${++turn}`, name: REQUEST_INPUT_TOOL, input: args },
+  ]);
+  beginHeldTurn(withMissionMcp(async (request) => {
+    const called = await request("tools/call", { name: "request_input", arguments: args });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `request_input answered: ${text}`;
+  }));
+}
+
 function ask(prompt) {
   const requestId = `ask-${++turn}`;
   asked.set(requestId, prompt);
@@ -1207,6 +1253,28 @@ function ask(prompt) {
     type: "control_request",
     request_id: requestId,
     request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: ASK_INPUT },
+  });
+}
+
+/** `PERMISSION_TURN`: a `Bash` call the CLI wants approved before it runs. */
+const PERMISSION_INPUT = { command: "npm test", description: "Run the test suite" };
+
+function askPermission(prompt) {
+  const requestId = `ask-${++turn}`;
+  asked.set(requestId, prompt);
+  appendTurn("assistant", [
+    { type: "tool_use", id: requestId, name: "Bash", input: PERMISSION_INPUT },
+  ]);
+  emit({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Bash",
+      input: PERMISSION_INPUT,
+      title: "Claude wants to run npm test",
+      permission_suggestions: [],
+    },
   });
 }
 
@@ -1223,14 +1291,17 @@ function answerAsked(requestId, response) {
   const prompt = asked.get(requestId);
   if (prompt === undefined) return;
   asked.delete(requestId);
-  const picked = response?.updatedInput?.answers ?? {};
+  const picked = response?.updatedInput?.answers;
   appendTurn("user", [
     {
       type: "tool_result",
       tool_use_id: requestId,
-      content: `Your questions have been answered: ${Object.entries(picked)
-        .map(([question, answer]) => `"${question}"="${answer}"`)
-        .join(", ")}.`,
+      // A question carries answers; an approved permission ask carries only the tool's run.
+      content: picked
+        ? `Your questions have been answered: ${Object.entries(picked)
+            .map(([question, answer]) => `"${question}"="${answer}"`)
+            .join(", ")}.`
+        : "ok - 0 failures",
     },
   ]);
   answer([prompt]);
@@ -1566,6 +1637,7 @@ rl.on("line", (line) => {
     // per result) and the driver .catch()es a missing answer, but answering keeps the log
     // clean.
     if (frame.request?.subtype === "initialize") {
+      appendedSystemPrompt = typeof frame.request.appendSystemPrompt === "string" ? frame.request.appendSystemPrompt : "";
       ok(frame.request_id, {
         commands: [], agents: [], output_style: "default", available_output_styles: [],
         account: {},
@@ -1692,8 +1764,13 @@ rl.on("line", (line) => {
 
     // Blocks the turn on a human, which is the whole point: no `result` is emitted until the
     // answer comes back down, so the card stays "waiting on you" for the spec to act on.
+    if (prompt === PERMISSION_TURN) {
+      askPermission(prompt);
+      return;
+    }
     if (prompt === ASK_TURN) {
-      ask(prompt);
+      if (DISALLOWED_TOOLS.includes("AskUserQuestion")) askWithoutBuiltin(prompt);
+      else ask(prompt);
       return;
     }
 
@@ -1786,6 +1863,12 @@ rl.on("line", (line) => {
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
+    // A `/compact` that the CLI accepts and then never finishes, the way it hung behind a
+    // dead network. Only an interrupt ends it, which is the recovery under test.
+    if (STALL_COMPACT && prompt.startsWith("/compact")) {
+      openTurn = { prompts: [prompt] };
+      return;
+    }
     if (prompt.includes(RELEASED_TURN)) {
       const turnState = { prompts: [prompt] };
       turnState.timer = setInterval(() => {

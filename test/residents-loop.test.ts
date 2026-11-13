@@ -13,6 +13,7 @@ import { ResidentLoop } from "../src/server/residents/loop.ts";
 import type { TurnDelivered } from "../src/server/registry.ts";
 import type { SessionMessages } from "../src/server/harness/index.ts";
 import { scheduleResidentIteration } from "../src/mcp/resident-pacing.ts";
+import { CompactionCompletion, CompactionError, compactionStallMs } from "../src/server/harness/compaction.ts";
 
 const loops: ResidentLoop[] = [];
 beforeEach(() => openDb().exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles; DELETE FROM sdk_sessions; DELETE FROM usage_ledger;"));
@@ -78,6 +79,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   let transcript = "";
   let unreadable = false;
   let refreshedContext: number | null = null;
+  let onRefresh: (() => void) | null = null;
   const registry = {
     subscribe: (fn: (e: ServerEvent) => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
     onTurnDelivered: (fn: (event: TurnDelivered) => void) => { humans.add(fn); return () => { humans.delete(fn); }; },
@@ -86,6 +88,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
     upsertResidentRun: (run: NonNullable<ReturnType<typeof import("../src/shared/residents.ts").residentRunSummary>>) => { for (const fn of listeners) fn({ type: "resident_run_upsert", run }); },
   };
   const deps = { registry, refreshSession: () => {
+    onRefresh?.();
     if (refreshedContext !== null) session = { ...session, meta: meta({ contextPct: refreshedContext }) };
   }, now: () => now, messages: () => ({ path: "/fixture", read: {
     size: () => transcript.length,
@@ -111,6 +114,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
     run: () => store.getResidentRun("run")!.run, rows: () => openDb().prepare("SELECT * FROM resident_iterations ORDER BY seq").all() as unknown as state.ResidentIteration[],
     setSend: (value: typeof send) => { send = value; }, setCompact: (fn: typeof compact) => { compact = fn; },
     refreshContext: (value: number) => { refreshedContext = value; },
+    onRefresh: (fn: (() => void) | null) => { onRefresh = fn; },
     patch: (value: Partial<Session>) => { session = { ...session, ...value }; emit(); },
     complete: (generation = session.workCycle!.generation) => { session = { ...session, state: "idle", workCycle: { ...session.workCycle!, generation, active: false, completedAt: now, updatedAt: now } }; emit(); },
     human: (turnId = "human") => { session = { ...session, state: "working", workCycle: { ...session.workCycle!, active: true, generation: session.workCycle!.generation + 1 } }; for (const fn of humans) fn({ sessionId: session.id, turnId, deliveredAt: now }); emit(); },
@@ -169,7 +173,8 @@ test("pending pacing survives restart and continuation under a later generation"
 test("human precedence cancels pacing and uses a fresh default cadence", async () => {
   const f = fixture(); const loop = f.loop(); await flush();
   loop.schedule(f.session, { callId: "late", delaySeconds: 60, reason: "old" });
-  f.human(); await flush(); assert.equal(f.run().nextWakeAt, null); await assert.rejects(loop.runNow("run"), /human message or active turn/); assert.equal(f.calls.length, 0);
+  f.human(); await flush(); assert.equal(f.run().nextWakeAt, null); assert.equal(await loop.runNow("run"), "queued");
+  assert.equal(f.run().runRequestedAt, f.now); loop.cancelRunNow("run"); assert.equal(f.run().runRequestedAt, null); assert.equal(f.calls.length, 0);
   f.complete(); await flush(); assert.equal(f.run().nextWakeAt, f.now + 300_000);
   f.human(); loop.schedule(f.session, { callId: "human", delaySeconds: 600, reason: "new" }); f.complete(); await flush();
   assert.equal(f.run().nextWakeAt, f.now + 600_000);
@@ -477,4 +482,218 @@ test("a review without agent pacing uses the profile default after turn completi
   assert.equal(f.run().nextWakeAt, null);
   f.patch({ pendingReviews: 0 }); await flush();
   assert.equal(f.run().nextWakeAt, f.now + 300_000);
+});
+
+test("Run now behind a busy resident queues, lets the turn in progress finish first, then wakes once", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.human(); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  const queuedAt = f.now; f.advance(1000);
+  assert.equal(await loop.runNow("run"), "queued", "a second press keeps the first request");
+  assert.equal(f.run().runRequestedAt, queuedAt);
+  assert.equal(residentRunSummary(f.run())!.runRequestedAt, queuedAt, "every surface reads the queued run from the summary");
+  assert.deepEqual(f.calls, [], "the human turn keeps priority");
+  f.complete(); await flush();
+  assert.equal(f.calls.length, 1); assert.match(f.calls[0]!, /mission-resident:run:2/);
+  assert.equal(f.rows()[1]!.trigger, "run_now");
+  assert.equal(f.run().runRequestedAt, null);
+  f.complete(); await flush();
+  assert.equal(f.calls.length, 1, "one queued request is spent by one wake");
+  assert.equal(f.run().nextWakeAt, f.now + 300_000, "the ordinary cadence resumes after it");
+});
+
+test("a pause drops a queued run, and Run now on a paused busy resident resumes and queues", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.human(); await flush();
+  await loop.runNow("run"); loop.pause("run");
+  assert.equal(f.run().runRequestedAt, null);
+  f.complete(); await flush(); assert.deepEqual(f.calls, []);
+  f.human(); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  assert.equal(f.run().loopState, "working"); assert.equal(f.run().pauseReason, null);
+  f.complete(); await flush(); assert.equal(f.calls.length, 1);
+  assert.throws(() => loop.cancelRunNow("run"), /No queued run to cancel/);
+});
+
+test("Run now that meets a human turn starting inside the wake is queued, not dropped", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  // Idle when Run now checks; a human turn begins by the time the wake refreshes the session.
+  f.onRefresh(() => { f.onRefresh(null); f.human(); });
+  assert.equal(await loop.runNow("run"), "queued", "the answer reports what actually happened");
+  assert.deepEqual(f.calls, []);
+  assert.notEqual(f.run().runRequestedAt, null);
+  f.complete(); await flush();
+  assert.equal(f.calls.length, 1); assert.match(f.calls[0]!, /mission-resident:run:2/);
+  assert.equal(f.run().runRequestedAt, null);
+});
+
+for (const idleWhileDown of [false, true]) test(`a queued Run now survives a daemon restart and runs exactly once (${idleWhileDown ? "turn finished while down" : "turn finishes after restart"})`, async () => {
+  const f = fixture(); const first = f.loop(); await flush();
+  f.human(); await flush();
+  assert.equal(await first.runNow("run"), "queued");
+  await first.stop();
+  if (idleWhileDown) f.complete();
+  const second = f.loop(); await flush();
+  if (!idleWhileDown) { assert.deepEqual(f.calls, [], "still behind the turn in progress"); f.complete(); await flush(); }
+  assert.equal(f.calls.length, 1); assert.match(f.calls[0]!, /mission-resident:run:2/);
+  assert.equal(f.rows()[1]!.trigger, "run_now");
+  assert.equal(f.run().runRequestedAt, null);
+  f.complete(); await flush();
+  await second.stop(); f.loop(); await flush();
+  assert.equal(f.calls.length, 1, "neither the next completion nor another restart repeats it");
+});
+
+for (const outcome of ["measured", "failed"] as const) test(`a queued Run now outlives a human turn that preempts its ${outcome} compaction`, async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.human(); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  f.patch({ meta: meta({ contextPct: 80 }) });
+  // The queued run starts compacting, and a human message lands during it.
+  f.setCompact(async () => {
+    f.calls.push("compact"); f.human();
+    if (outcome === "failed") throw new CompactionError(STALLED);
+    return 5;
+  });
+  f.complete(); await flush();
+  assert.deepEqual(f.calls, ["compact"], "the human turn goes first");
+  assert.notEqual(f.run().runRequestedAt, null, "the request is put back, not spent");
+  assert.equal(f.run().loopState, "working");
+  f.setCompact(async () => { f.calls.push("compact"); return 5; });
+  f.complete(); await flush();
+  assert.match(f.calls.at(-1)!, /mission-resident:run:2/, "the queued run follows the human turn");
+  assert.equal(f.run().runRequestedAt, null);
+});
+
+test("Run now waits behind an open request for the operator", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.patch({ pendingReviews: 1 }); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  await flush(); assert.deepEqual(f.calls, []);
+  f.patch({ pendingReviews: 0 }); await flush();
+  assert.equal(f.calls.length, 1);
+});
+
+const STALLED = "Compaction made no progress for 10 minutes and was interrupted.";
+test("a failed compaction retries on a backoff, pauses once retries are spent, and Resume or a success resets it", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  let fail = true;
+  f.setCompact(async () => { f.calls.push("compact"); if (fail) throw new CompactionError(STALLED); return 5; });
+  for (const [retry, delayMs, wait] of [[1, 60_000, "1m"], [2, 300_000, "5m"], [3, 900_000, "15m"]] as const) {
+    await loop.runNow("run");
+    assert.equal(f.run().loopState, "waiting", `retry ${retry} waits instead of pausing`);
+    assert.equal(f.run().nextWakeAt, f.now + delayMs);
+    assert.equal(f.run().wakeReason, `${STALLED} Retrying in ${wait} (retry ${retry} of 3).`);
+  }
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().pauseReason, `${STALLED} Paused after 4 compaction attempts. Resume to try again.`);
+  assert.equal(f.run().iteration, 1, "no failed compaction counts as an iteration");
+  assert.deepEqual(f.calls, ["compact", "compact", "compact", "compact"]);
+  loop.resume("run");
+  await loop.runNow("run");
+  assert.match(f.run().wakeReason!, /\(retry 1 of 3\)/, "Resume starts a fresh set of retries");
+  fail = false; await loop.runNow("run");
+  assert.match(f.calls.at(-1)!, /mission-resident:run:2/, "a measured compaction sends the wake");
+  fail = true; f.complete(); f.patch({ meta: meta({ contextPct: 80 }) }); await loop.runNow("run");
+  assert.match(f.run().wakeReason!, /\(retry 1 of 3\)/, "a success resets the count");
+});
+
+test("each scheduled compaction retry fires on its own at its backoff, with no operator action", async (t) => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) }); await flush();
+  f.setCompact(async () => { f.calls.push("compact"); throw new CompactionError(STALLED); });
+  // From here the loop's own wake timers are driven by hand. `flush` waits on a timer itself,
+  // so settling uses immediates, which are not mocked.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+  await loop.runNow("run"); await settle();
+  assert.deepEqual(f.calls, ["compact"], "the one manual action: the first attempt");
+  for (const [delayMs, retry, next] of [[60_000, 1, "Retrying in 5m (retry 2 of 3)."], [300_000, 2, "Retrying in 15m (retry 3 of 3)."]] as const) {
+    await elapse(delayMs - 1);
+    assert.equal(f.calls.length, retry, `retry ${retry} waits for its full backoff`);
+    await elapse(1);
+    assert.equal(f.calls.length, retry + 1, `retry ${retry} fires from the loop's own timer`);
+    assert.ok(f.run().wakeReason!.endsWith(next));
+  }
+  await elapse(900_000 - 1);
+  assert.equal(f.calls.length, 3);
+  await elapse(1);
+  assert.equal(f.calls.length, 4, "the last retry fires too");
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().pauseReason, `${STALLED} Paused after 4 compaction attempts. Resume to try again.`);
+  await elapse(3_600_000);
+  assert.equal(f.calls.length, 4, "a paused resident schedules nothing more");
+  assert.equal(f.run().iteration, 1);
+});
+
+test("a compaction that could not be interrupted pauses at once", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  f.setCompact(async () => { throw new CompactionError("Compaction made no progress for 10 minutes and could not be interrupted: gone", false); });
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().pauseReason, "Compaction made no progress for 10 minutes and could not be interrupted: gone Resume to try again.");
+});
+
+test("a retry waits for the interrupted compaction turn to unwind and counts its delay from that completion", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  f.setCompact(async () => {
+    // The driver's own `/compact` turn is still closing when the stall rejects.
+    f.patch({ state: "working", workCycle: { ...f.session.workCycle!, active: true, generation: f.session.workCycle!.generation + 1, completedAt: null } });
+    throw new CompactionError(STALLED);
+  });
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "waiting", "the compaction's own turn is not mistaken for a human");
+  assert.equal(f.run().nextWakeAt, null);
+  assert.match(f.run().wakeReason!, /Retrying in 1m/);
+  f.advance(5_000); f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 60_000, "the backoff, not the 5-minute cadence");
+  assert.equal(f.run().wakeReason, `${STALLED} Retrying in 1m (retry 1 of 3).`);
+});
+
+test("a human turn delivered during a failing compaction keeps precedence over the retry", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  f.setCompact(async () => { f.human(); throw new CompactionError(STALLED); });
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "working"); assert.equal(f.run().wakeReason, null);
+  f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 300_000);
+});
+
+test("a stalled compaction interrupts its driver turn and rejects as retryable", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const interrupted: string[] = [];
+  const completion = new CompactionCompletion(600_000);
+  const stalled = completion.begin(async () => { interrupted.push("interrupt"); completion.finish(); });
+  t.mock.timers.tick(600_000);
+  await assert.rejects(stalled, (error: unknown) => error instanceof CompactionError && error.retryable &&
+    error.message === STALLED);
+  assert.deepEqual(interrupted, ["interrupt"], "the interrupted turn's own result cannot replace the stall");
+  const refused = completion.begin(async () => { throw new Error("pipe closed"); });
+  t.mock.timers.tick(600_000);
+  await assert.rejects(refused, (error: unknown) => error instanceof CompactionError && !error.retryable &&
+    /could not be interrupted: pipe closed/.test(error.message));
+  // An interrupt the hung CLI never acknowledges is bounded too, and not retryable: the
+  // `/compact` turn may still be open.
+  const silent = completion.begin(() => new Promise<void>(() => {}));
+  t.mock.timers.tick(600_000);
+  let settled = false;
+  const silentRejection = assert.rejects(silent, (error: unknown) => error instanceof CompactionError && !error.retryable &&
+    error.message === "Compaction made no progress for 10 minutes and could not be interrupted: the interrupt was not acknowledged")
+    .finally(() => { settled = true; });
+  t.mock.timers.tick(29_999);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, "the interrupt gets its full 30 seconds");
+  t.mock.timers.tick(1);
+  await silentRejection;
+  const healthy = completion.begin(async () => { throw new Error("never"); });
+  completion.observe(494, 1_000_000); completion.finish();
+  assert.deepEqual(await healthy, { contextTokens: 494, contextWindow: 1_000_000 });
+});
+
+test("the stall bound reads its override and keeps a ten-minute default", () => {
+  assert.equal(compactionStallMs(undefined), 600_000);
+  assert.equal(compactionStallMs(""), 600_000);
+  assert.equal(compactionStallMs("-5"), 600_000);
+  assert.equal(compactionStallMs("1.5"), 600_000);
+  assert.equal(compactionStallMs("2000"), 2_000);
 });

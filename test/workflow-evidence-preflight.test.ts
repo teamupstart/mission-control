@@ -1,7 +1,8 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -20,11 +21,11 @@ const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { WorkflowImageEvidenceError } = await import("../src/server/workflows/images.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { LLM_RUNNERS } = await import("../src/server/llm/index.ts");
-const { fallbackWorkflowContext, compactWorkflowContext } =
+const { fallbackWorkflowContext, compactWorkflowContext, readWorkflowContextRaw } =
   await import("../src/server/workflows/context.ts");
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
-const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
+const { normalizePersonaName, normalizeWorkflowName, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
 const { workflowCaptureFailure } = await import("../src/shared/workflow-lifecycle.ts");
 const { openDb } = await import("../src/server/db.ts");
 
@@ -88,13 +89,18 @@ async function harness(
     runner?: LlmRunner;
     evidenceReadinessPolicy?: "off" | "criterion_mapped_v1";
     head?: { sha: string };
+    cwd?: string;
+    readContextRaw?: typeof readWorkflowContextRaw;
     resumptionPolicy?: "auto" | "manual";
     deliveryMode?: "live" | "preview";
     uncertainDelivery?: boolean;
   } = {},
 ) {
   const registry = new Registry();
-  registry.applyDiscovery([discovered(id)]);
+  registry.applyDiscovery([{
+    ...discovered(id),
+    ...(options.cwd ? { cwd: options.cwd, gitRoot: options.cwd, repoRoot: options.cwd } : {}),
+  }]);
   const store = new WorkflowStore(openDb());
   const personaId = `preflight-persona-${id}`;
   const workflowId = `preflight-workflow-${id}`;
@@ -170,7 +176,7 @@ async function harness(
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
     recordInjection: (() => {}) as never,
-    readContextRaw: async (_registry, binding) => {
+    readContextRaw: options.readContextRaw ?? (async (_registry, binding) => {
       await beforeReadContext?.();
       const raw = {
         primaryGoal: { rawPrompt: "Render the final workflow state", refined: null, sourceNoteKey: binding.noteKey },
@@ -204,7 +210,7 @@ async function harness(
           repositoryFingerprint: "repo",
         },
       };
-    },
+    }),
     boundaryChanged: async () => false,
     readEvidenceProbe: async () => ({
       headSha: options.head?.sha ?? "abc",
@@ -239,6 +245,46 @@ async function harness(
   assert.equal(binding.ok, true);
   if (!binding.ok) throw new Error("binding was refused");
   return { registry, store, manager, binding: binding.value, injected };
+}
+
+for (const limit of ["count", "bytes"] as const) {
+  test(`a full reserved text ${limit} budget leaves local reports required without failing capture`, async (t) => {
+    const root = realpathSync(mkdtempSync(join(home, `publication-${limit}-`)));
+    const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "ignore" });
+    git("init", "-b", "main");
+    git("config", "user.email", "workflow@example.invalid");
+    git("config", "user.name", "Workflow Test");
+    writeFileSync(join(root, "source.ts"), "export {};\n");
+    git("add", "source.ts");
+    git("commit", "-m", "initial");
+    const reportPath = "docs/reports/result/report.html";
+    mkdirSync(join(root, "docs/reports/result"), { recursive: true });
+    writeFileSync(join(root, reportPath), "<!doctype html><title>Result</title><p>Verified.</p>");
+    setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot, root] });
+    t.after(() => setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] }));
+    const h = await harness(t, `reserved-publication-${limit}`, undefined, {
+      cwd: root, readContextRaw: readWorkflowContextRaw, evidenceReadinessPolicy: "off",
+    });
+    const count = limit === "count" ? WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount
+      : WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes / WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact;
+    const content = "r".repeat(limit === "count" ? 1 : WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact);
+    h.store.stageWorkflowEvidence(h.binding.noteKey, Array.from({ length: count }, (_, index) => ({
+      id: `reserved-${limit}-${index}`, clientItemId: `reserved-${index}`, sourceKind: "command" as const,
+      evidenceKind: "text" as const, sourceRoot: root, sourceLocator: "focused-check", inlineContent: content,
+      commandExitCode: 0, displayName: `command-${index}.txt`, caption: "Reserved evidence",
+      repositoryScope: "all", mimeType: "text/plain" as const, bytes: Buffer.byteLength(content),
+      sha256: createHash("sha256").update(content).digest("hex"),
+    })), Date.now());
+    const submitted = await h.manager.submit(h.binding.id, { requestId: `reserved-${limit}` });
+    assert.equal(submitted.ok, true, "full reservation must not cause local artifact capture to fail");
+    if (!submitted.ok) return;
+    const snapshot = WorkflowContextSnapshotSchema.parse(h.store.getSubmission(submitted.value.submission.id)!.context);
+    assert.equal(snapshot.evidence.publication?.localArtifacts.length, 0);
+    assert.deepEqual(snapshot.evidence.publication?.unpublishedPaths, [reportPath]);
+    assert.equal(snapshot.evidence.publication?.treeOid, snapshot.evidence.contentTreeOid);
+    assert.match(snapshot.evidence.publication?.artifactProblems.join("\n") ?? "", /retain|retention/);
+    assert.equal(h.store.listSubmissionTextArtifacts(submitted.value.submission.id).length, count);
+  });
 }
 
 test("round 1 can close gaps on its sixth evidence attempt while retaining earlier proof and intent", async (t) => {
@@ -1293,7 +1339,23 @@ for (const invalid of ["uncaptured", "malformed", "inspector_only"] as const) {
 
 test("failed mapping is infrastructure and explicit recovery freezes a same-round child without live recapture", async (t) => {
   let calls = 0; let recovered = false; let captures = 0;
-  const h = await harness(t, "mapping-recovery", async () => { captures++; }, {
+  const repo = join(realpathSync(home), "mapping-recovery-repo");
+  mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.invalid");
+  git("config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, "source.txt"), "required content\n");
+  git("add", "."); git("commit", "-qm", "base");
+  const report = "docs/reports/recovery/report.html";
+  mkdirSync(join(repo, "docs/reports/recovery"), { recursive: true });
+  writeFileSync(join(repo, report), "<!doctype html><title>Recovery</title><p>Retained proof.</p>");
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot, realpathSync(repo)] });
+  t.after(() => setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] }));
+  const h = await harness(t, "mapping-recovery", undefined, {
+    cwd: repo,
+    readContextRaw: async (...args) => { captures++; return readWorkflowContextRaw(...args); },
     compactContext: async (raw) => compactWorkflowContext(raw, {
       deferReconciliation: true, execute: async () => ({ kind: "ok", value: { constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"], canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }] } }),
     }),
@@ -1327,7 +1389,18 @@ test("failed mapping is infrastructure and explicit recovery freezes a same-roun
   assert.deepEqual(h.store.getSubmission(submission.id), prior);
   assert.equal(rows[1]?.readiness?.status, "ready");
   assert.equal(h.store.consecutiveEvidencePreflightRefinements(rows[1]!.id), 0);
-  assert.equal(h.store.listSubmissionTextArtifacts(rows[1]!.id).length, 1);
+  assert.equal(h.store.listSubmissionTextArtifacts(rows[1]!.id).length, 2);
+  const { workflowPublicationRetained, workflowPublicationTree } = await import("../src/shared/workflow-publication.ts");
+  const parentEvidence = WorkflowContextSnapshotSchema.parse(prior.context).evidence;
+  const childEvidence = WorkflowContextSnapshotSchema.parse(rows[1]!.context).evidence;
+  assert.equal(parentEvidence.publication!.localArtifacts.length, 1);
+  assert.deepEqual(childEvidence.publication, parentEvidence.publication);
+  assert.equal(workflowPublicationRetained(childEvidence), true,
+    "recovery must inherit the retained report bytes before the engine selects a check tree");
+  assert.equal(workflowPublicationTree(childEvidence), git("rev-parse", "HEAD^{tree}"));
+  assert.notEqual(workflowPublicationTree(childEvidence), childEvidence.contentTreeOid);
+  assert.equal(childEvidence.artifacts!.find(item => item.displayName === report)?.content,
+    parentEvidence.artifacts!.find(item => item.displayName === report)?.content);
 });
 
 test("each explicit mapping recovery gets a fresh bounded operation without spending author repairs", async (t) => {

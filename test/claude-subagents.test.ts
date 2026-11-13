@@ -473,6 +473,30 @@ test("an agent its start marked ambient stays hidden when the live set omits the
   assert.deepEqual(states(s), { a: "running", h: "running" });
 });
 
+test("a run the live set marked ambient stays hidden when a later live set omits the flag", () => {
+  // Flagged by the set before any start, then named again without the field: same run, still hidden.
+  let s = run([level(agent("a"), agent("h", { ambient: true, run_id: "r1" })), started("a", { is_backgrounded: true })]);
+  s = observeClaudeSubagentFrame(s, level(agent("a"), agent("h", { run_id: "r1" })), 2);
+  assert.deepEqual(states(s), { a: "running" });
+  assert.equal(subagentActivityLine({ state: "idle", subagents: claudeSubagentSummary(s)! }), "idle · 1 agent still running");
+  // And with no run ids at all, the same holds: nothing says it is a new run.
+  let t = run([level(agent("h", { ambient: true }))]);
+  t = observeClaudeSubagentFrame(t, level(agent("h")), 2);
+  t = observeClaudeSubagentFrame(t, started("h", { is_backgrounded: true }), 3);
+  assert.equal(claudeSubagentSummary(t), null);
+});
+
+test("a new run of an agent once marked ambient starts unclassified", () => {
+  // Through its start: r2 is not housekeeping just because r1 was.
+  let s = run([level(agent("h", { ambient: true, run_id: "r1" }))]);
+  s = observeClaudeSubagentFrame(s, started("h", { is_backgrounded: true, run_id: "r2" }), 2);
+  assert.deepEqual(states(s), { h: "running" });
+  // Through the live set: r2 named without the flag shows too.
+  let t = run([level(agent("h", { ambient: true, run_id: "r1" }))]);
+  t = observeClaudeSubagentFrame(t, level(agent("h", { run_id: "r2" })), 2);
+  assert.deepEqual(states(t), { h: "running" });
+});
+
 test("a no-op frame returns the same state object", () => {
   const s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
   assert.equal(observeClaudeSubagentFrame(s, sys("task_progress", { task_id: "unknown", usage: {} }), 1), s);

@@ -833,8 +833,11 @@ The merge is not the task's outcome. The poller reads a stacked pull request's b
 repository's default branch whenever it sees one merged, and a merge whose base is not the default
 branch, or cannot be read yet, is treated like a merge GitHub reported with no merge time: not a
 merge. It does not mark the work episode merged, complete the task, upgrade a cancelled or
-failed one, or satisfy any dependency edge, so the task's dependents stay blocked. The session's
-pull-request chip keeps its last state. Ordinary pull requests, secondary repositories and the
+failed one, or satisfy any dependency edge, so the task's dependents stay blocked. Once GitHub
+confirms the base, the session keeps the pull request as its own unfinished one: its chip reads it
+as open and its work episode records it unmerged, even when the poller never saw it open, which is
+what the Broken label, Foreman's recovery and the task's recovery branch read. While the base
+cannot be read, the session's chip is left as it was. Ordinary pull requests, secondary repositories and the
 multi-repo quorum are unchanged, and only a merge into the default branch settles anything, as
 in [When a task's pull request merges](#when-a-tasks-pull-request-merges).
 

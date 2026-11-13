@@ -67,8 +67,17 @@ export class StackMergeWatch {
    * unchanged and answers false without a GitHub read.
    */
   async holds(url: string, cwd: string | null, taskId: string | null, lookup: StackedPrLookup, github: StackGitHub): Promise<boolean> {
-    if (!lookup.isStackedTaskPr(url, taskId)) return false;
-    return (await this.landing(url, cwd, github)) !== "landed";
+    return (await this.held(url, cwd, taskId, lookup, github)) !== null;
+  }
+
+  /**
+   * Why a merge is held, or null when it is not: `stray` when GitHub says it missed the
+   * default branch, `unknown` while that cannot be read yet.
+   */
+  async held(url: string, cwd: string | null, taskId: string | null, lookup: StackedPrLookup, github: StackGitHub): Promise<Exclude<MergeLanding, "landed"> | null> {
+    if (!lookup.isStackedTaskPr(url, taskId)) return null;
+    const landing = await this.landing(url, cwd, github);
+    return landing === "landed" ? null : landing;
   }
 
   /**

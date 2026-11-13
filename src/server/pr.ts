@@ -393,14 +393,23 @@ export async function pollAndReconcilePrs(
     if (r === "error") skip.add(t.id);
     else if (r) {
       if (r.state === "merged") sawMerged.add(r.url);
-      // A stacked pull request merged off the default branch says nothing about this session
-      // yet, like a `gh` that failed: its chip and episode are left exactly as they were.
-      if (r.state === "merged" && await holdsMerge(r.url, t.cwd, registry.taskForSession(t.id, t.cwd)?.id ?? null)) {
+      const held = r.state === "merged"
+        ? await stackMerges.held(r.url, t.cwd, registry.taskForSession(t.id, t.cwd)?.id ?? null, registry, stackGitHub)
+        : null;
+      // A merge GitHub cannot place yet says nothing about this session, like a `gh` that
+      // failed: its chip and episode are left exactly as they were.
+      if (held === "unknown") {
         skip.add(t.id);
         continue;
       }
       found.set(t.id, {
         ...r,
+        // A stacked pull request that merged off the default branch is the session's pull
+        // request, but its work is unfinished: it is recorded unmerged, so the card carries it
+        // (the stack's Broken label and Foreman's recovery read it there) and the work episode
+        // holds it (which is what keeps the task when the session starts its recovery branch),
+        // even when this poller never saw it open.
+        ...(held === "stray" ? { state: "open" as const, mergedAt: null } : {}),
         branch: t.branch as string,
         agentSessionId: t.agentSessionId,
         episodeId: t.episodeId,

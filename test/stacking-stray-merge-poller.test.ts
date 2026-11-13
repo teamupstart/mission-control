@@ -358,3 +358,41 @@ test("switching branches away from an ordinary unmerged pull request still gives
   f.registry.workEpisodeForSession(f.id);
   assert.equal(f.registry.getTask(f.taskId)!.status, "cancelled");
 });
+
+test("a stray merge the poller never saw open is still the session's unfinished pull request, so its recovery keeps the task", async () => {
+  // The pull request was opened and merged into its parent's branch between two polls (or
+  // while the daemon was down): the first sighting is already merged.
+  const f = fleet("first-sighting", STACKED);
+  const child = "https://github.com/example/repo/pull/1450";
+  github({ [child]: { baseRefName: "feat/phase-1" } });
+  const watch = new StackMergeWatch();
+  assert.equal(f.registry.getSession(f.id)?.prUrl ?? null, null, "the fixture already had the pull request");
+  await poll(f, onBranch(f, child, "merged"), watch);
+
+  // Carried on the card and the episode, unmerged: nothing completed.
+  const session = f.registry.getSession(f.id)!;
+  assert.equal(session.prUrl, child);
+  assert.equal(session.prState, "open");
+  assert.equal(f.episode().prUrl, child);
+  assert.equal(f.episode().mergedAt, null);
+  assert.equal(f.registry.getTask(f.taskId)!.status, "running");
+  assert.equal(edgeSatisfied(f), false);
+
+  // With the stray merge observed, leaving the branch for the recovery keeps the task.
+  const key = adoptStackedChild(child, PARENT, f.taskId);
+  db.recordStackObservation(key, strayObservation(), 3);
+  f.registry.applyDiscovery([{ ...f.disco, gitBranch: "feat/phase-2-recovery" }]);
+  f.registry.workEpisodeForSession(f.id);
+  assert.equal(f.registry.getTask(f.taskId)!.status, "running", "starting the recovery cancelled the task");
+  assert.equal(f.registry.workEpisodeForTask(f.taskId)?.branch, "feat/phase-2-recovery");
+});
+
+test("a stacked merge GitHub cannot place yet leaves a session's card exactly as it was", async () => {
+  const f = fleet("unplaced-first", STACKED);
+  const child = "https://github.com/example/repo/pull/1451";
+  github({});
+  await poll(f, onBranch(f, child, "merged"), new StackMergeWatch());
+  assert.equal(f.registry.getSession(f.id)?.prUrl ?? null, null);
+  assert.equal(f.episode().prUrl, null);
+  assert.equal(f.registry.getTask(f.taskId)!.status, "running");
+});

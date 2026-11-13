@@ -446,9 +446,10 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
       `UPDATE worktree_slots
           SET state = 'quarantined', version = version + 1,
               quarantine_reason = 'slot process occupancy is unknown',
+              quarantine_category = 'observation', quarantined_at = ?,
               last_error = 'cwd listing failed: exit 1'
         WHERE active_lease_id = ? AND state = 'leased'`,
-    ).run(lease.leaseId);
+    ).run(Date.now(), lease.leaseId);
     expect(Number(changed.changes)).toBe(1);
   });
 
@@ -458,6 +459,10 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
   const slot = repo.locator(".wt-slot", { hasText: lease.path });
   await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  // A recoverable category, but the slot still holds its lease, which recovery never releases:
+  // Settings must not promise that Reconcile will bring it back.
+  await expect(slot.getByText("Needs operator action", { exact: true })).toBeVisible();
+  await expect(slot.getByText("Reconcile returns it once re-proven", { exact: true })).toHaveCount(0);
   await expect(slot.getByText("size unknown", { exact: true })).toBeVisible();
   await slot.getByRole("button", { name: "Destroy", exact: true }).click();
 

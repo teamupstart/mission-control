@@ -15,7 +15,10 @@ import {
   ensureWorktreePoolMarker,
   observeWorktreePoolMarker,
 } from "../src/server/worktrees/marker.ts";
-import { quarantineRecoverable } from "../src/server/worktrees/store.ts";
+import { quarantineAutoRecoverable, quarantineRecoverable } from "../src/server/worktrees/store.ts";
+import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
+import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -501,4 +504,67 @@ test("acquire: a reservation whose cancellation loses its lease guard is quarant
   assert.equal(quarantineRecoverable(slot.quarantineCategory), false);
   await manager.reconcile();
   assert.equal(manager.store.slot(first.slotId)?.state, "quarantined", "reconcile does not recover a transition");
+});
+
+// ---- GitHub Inspector ec77ab05a806 ---------------------------------------------------------
+
+test("inventory promises recovery only to an observation quarantine that holds no lease", async () => {
+  const repository = repo("mission-quarantine-leased-observation-");
+  let unreadableOwner = "";
+  const { manager } = harness(4, {
+    ownerReferenced: async (reference) => {
+      if (reference.leaseId === unreadableOwner) throw new Error("database is locked");
+      return false;
+    },
+  });
+  const held = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "held" } }));
+  const idle = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "idle" } }));
+  assert.equal((await manager.release(idle)).outcome, "released");
+  manager.store.quarantine(idle.slotId, "observation", "slot process occupancy is unknown", KILLED, 1_000,
+    manager.store.slot(idle.slotId)!.version);
+
+  // The real path to a leased observation quarantine: the owner lookup throws on both attempts.
+  unreadableOwner = held.leaseId;
+  await manager.reconcile();
+  const leasedSlot = manager.store.slot(held.slotId)!;
+  assert.equal(leasedSlot.state, "quarantined");
+  assert.equal(leasedSlot.quarantineCategory, "observation");
+  assert.equal(leasedSlot.quarantineReason, "leased domain ownership is unknown");
+  assert.equal(leasedSlot.activeLeaseId, held.leaseId, "quarantine keeps the lease it found");
+  assert.equal(quarantineAutoRecoverable(leasedSlot), false);
+  assert.equal(manager.store.slot(idle.slotId)?.state, "available", "the unleased one was re-proven");
+
+  // Once the lookup answers, reconcile still cannot recover the leased one: the promise must match.
+  unreadableOwner = "";
+  await manager.reconcile();
+  assert.equal(manager.store.slot(held.slotId)?.state, "quarantined");
+
+  // And the inventory, which drives the Settings copy, says so.
+  manager.store.quarantine(idle.slotId, "observation", "slot process occupancy is unknown", KILLED, 2_000,
+    manager.store.slot(idle.slotId)!.version);
+  const operations = new WorktreeOperationsService(manager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(db, { manager, legacy: new LegacyTreehouseService(db) }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => null,
+    claimVariablePresence: async () => [],
+  });
+  const slots = (await operations.inventory()).repositories.flatMap((pool) => pool.slots);
+  assert.equal(slots.find((slot) => slot.id === held.slotId)?.quarantineRecoverable, false);
+  assert.equal(slots.find((slot) => slot.id === idle.slotId)?.quarantineRecoverable, true);
+});
+
+test("a partial lease identity is enough to withhold the recovery promise", () => {
+  const base = { quarantineCategory: "observation", activeLeaseId: null, activeOwnerKind: null, activeOwnerKey: null };
+  assert.equal(quarantineAutoRecoverable(base), true);
+  for (const field of ["activeLeaseId", "activeOwnerKind", "activeOwnerKey"] as const) {
+    assert.equal(quarantineAutoRecoverable({ ...base, [field]: "dangling" }), false, field);
+  }
+  for (const category of ["state", "transition", null, "from-a-newer-build"]) {
+    assert.equal(quarantineAutoRecoverable({ ...base, quarantineCategory: category }), false, String(category));
+  }
 });

@@ -85,6 +85,19 @@ export function quarantineRecoverable(category: string | null): boolean {
   return (RECOVERABLE_QUARANTINE_CATEGORIES as readonly string[]).includes(category ?? "");
 }
 
+/**
+ * Whether reconciliation could ever return this quarantined slot to `available` on its own: a
+ * recoverable category AND no active lease identity at all, which `recoverQuarantined` also
+ * requires. A slot quarantined while it held a lease - a leased slot whose owner lookup did not
+ * answer, or a legacy reservation stranded by an unanswered recheck - keeps that lease until
+ * its owner returns it or an operator destroys it, so it is never promised a recovery.
+ */
+export function quarantineAutoRecoverable(slot: Pick<WorktreeSlotRow,
+  "quarantineCategory" | "activeLeaseId" | "activeOwnerKind" | "activeOwnerKey">): boolean {
+  return quarantineRecoverable(slot.quarantineCategory) &&
+    slot.activeLeaseId === null && slot.activeOwnerKind === null && slot.activeOwnerKey === null;
+}
+
 export interface WorktreePoolRow {
   id: string;
   gitCommonDirectory: string;

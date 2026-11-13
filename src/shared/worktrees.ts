@@ -166,8 +166,9 @@ export interface NativeWorktreeSlotView {
   quarantinedAt: number | null;
   /**
    * Whether Reconcile returns this quarantined slot to available once every safety fact is
-   * proven again (a failed observation), or it stays until an operator acts (a positively bad
-   * fact or an unproven mutation). Null when the slot is not quarantined.
+   * proven again (a failed observation, holding no lease), or it stays until an operator acts:
+   * a positively bad fact, an unproven mutation, or any quarantine that still holds a lease,
+   * which recovery never releases. Null when the slot is not quarantined.
    */
   quarantineRecoverable: boolean | null;
   diagnostic: string | null;

@@ -111,7 +111,10 @@ own; the reason text is only for people and is never read to decide anything:
 
 - **observation**: an observer did not answer - the process listing, a Git read, the
   registration list, or a domain-ownership lookup. Nothing is known to be wrong with the slot,
-  so Reconcile returns it to available once it proves the slot idle again.
+  so Reconcile returns it to available once it proves the slot idle again - provided it holds
+  no lease. Recovery never releases a lease, so an observation quarantine taken while the slot
+  was leased (its owner lookup did not answer) stays until its owner returns it or an operator
+  destroys it.
 - **state**: a positively observed fact makes the slot unsafe to hand out - dirty or untracked
   work, an occupant, a wrong path or common directory, a moved HEAD, a missing or unsafe
   registration, a pool marker that is absent, malformed or names another pool, or lease
@@ -138,7 +141,9 @@ release history; a process that did enter it is still quarantined.
 Quarantines recorded before categories existed were classified once, when the database was
 upgraded: a quarantine whose recorded reason was one only an unanswered observer produced became
 an observation, and every other one has no category and is never recovered automatically. Neither
-kind has a recorded time.
+kind has a recorded time. A legacy observation that still holds a lease - most often "slot
+occupancy became unknown before reset", whose reservation an older build never undid - is shown
+as **Needs operator action**: Destroy it, since recovery never releases a lease.
 
 `make session` is a loopback client for that daemon-owned inventory:
 
@@ -544,8 +549,9 @@ this order:
   relationship to the remote default, cleanliness, process count, disk estimate, and owner.
   A quarantined slot also shows its quarantine reason, how long ago it entered quarantine (hover
   for the exact time, or "Quarantine time not recorded" for one quarantined before the time was
-  kept), and either **Reconcile returns it once re-proven** for an observation quarantine or
-  **Needs operator action** for any other. The time is the moment of the transition, so a slot
+  kept), and either **Reconcile returns it once re-proven** for an observation quarantine that
+  holds no lease or **Needs operator action** for any other, including an observation
+  quarantine that still holds one. The time is the moment of the transition, so a slot
   observed many times since still shows when it was quarantined.
   **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the

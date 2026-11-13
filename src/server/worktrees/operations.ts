@@ -47,7 +47,7 @@ import {
   type NativePoolStatus,
   type NativeSlotStatus,
 } from "./manager.ts";
-import { depsCutOff, quarantineRecoverable, type WorktreeSlotRow } from "./store.ts";
+import { depsCutOff, quarantineAutoRecoverable, type WorktreeSlotRow } from "./store.ts";
 import {
   inspectWorktreeOccupancy,
   describeWorktreeOccupants,
@@ -442,7 +442,7 @@ export class WorktreeOperationsService {
             quarantineReason: compact(entry.slot.quarantineReason),
             quarantinedAt: entry.slot.quarantinedAt,
             quarantineRecoverable: entry.slot.state === "quarantined"
-              ? quarantineRecoverable(entry.slot.quarantineCategory)
+              ? quarantineAutoRecoverable(entry.slot)
               : null,
             diagnostic: compact(entry.slot.lastError),
             actions,

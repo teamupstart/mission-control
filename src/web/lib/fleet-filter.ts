@@ -2,10 +2,10 @@ import { AGENT_IDENTITY } from "../../shared/agent.ts";
 import { sessionWorkspaceRoot } from "../../shared/session.ts";
 import { TASK_KIND_INFO, taskHasRepository } from "../../shared/task.ts";
 import type { RestoringSession, Session } from "../../shared/types.ts";
-import { costChipText, subtitle } from "../components/session-bits.tsx";
 import { BLOCKER_KIND_LABELS } from "./blocker.ts";
 import { permissionModeDisplay, relativeTime, sessionTitleDetail, stateDisplay, uptime } from "./format.ts";
 import { matchesEveryWord, pathLeaf } from "./search-text.ts";
+import { costChipText, subtitle } from "./session-text.ts";
 
 /**
  * Everything a session's card says about it, as searchable text.

@@ -72,6 +72,9 @@ test("search matches the autopilot switch and a parked card's skip line", () => 
   const live = mkTask({ title: "Live", enabled: true });
 
   assert.equal(matchesBacklogSearch(parked, "off"), true);
+  assert.equal(matchesBacklogSearch(parked, "autopilot off"), true);
+  assert.equal(matchesBacklogSearch(live, "autopilot on"), true);
+  assert.equal(matchesBacklogSearch(parked, "autopilot on"), false, "a parked card is not autopilot on");
   assert.equal(matchesBacklogSearch(parked, "autopilot will skip"), true);
   assert.equal(matchesBacklogSearch(live, "skip"), false, "only a parked card prints the skip line");
 });

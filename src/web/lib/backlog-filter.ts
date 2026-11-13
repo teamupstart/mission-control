@@ -64,7 +64,7 @@ export function backlogFacetCount(filter: BacklogFilter): number {
 /**
  * Everything a backlog card says about its task, as searchable text: the title, the intent,
  * the labels, every repository it spans, the agent, the kind, the priority, the model and
- * effort it will dispatch with, its status, its autopilot switch ("on"/"off") and the
+ * effort it will dispatch with, its status, its autopilot switch ("autopilot on"/"autopilot off") and the
  * "autopilot will skip this" line a parked card prints, and how long ago it was added. Repositories
  * match by their name and by the full path the card's repository tooltip shows.
  */
@@ -84,7 +84,8 @@ export function backlogSearchFields(task: Task): (string | null | undefined)[] {
     task.model,
     task.effort,
     task.status,
-    task.enabled ? "on" : "off",
+    // The switch prints a bare ON/OFF; labelled here so "autopilot on" can find enabled cards.
+    task.enabled ? "autopilot on" : "autopilot off",
     task.enabled ? null : "autopilot will skip this",
     relativeTime(task.createdAt),
   ];

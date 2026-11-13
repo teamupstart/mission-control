@@ -10,7 +10,8 @@ import {
 } from "@shared/resident-mcp.ts";
 import { ResidentMcpServerError } from "./residents/mcp-store.ts";
 import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
-import { registerResidentLoopRoutes } from "./residents/routes.ts";
+import { registerResidentInstructionRoutes, registerResidentLoopRoutes } from "./residents/routes.ts";
+import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
@@ -1749,6 +1750,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registry.subscribe?.((e) => {
     if (e.type === "session_remove") agentResumeClaims.delete(e.id);
   });
+  // A resident's proposed changes to its own standing instructions. Built from the managers
+  // already here: the review it opens is an ordinary review, and the human's answer to it is
+  // applied by the resolve route below, inside the transaction that records the answer.
+  // Guarded because route tests build the app with a null or stub `reviews`, as the
+  // `registry.subscribe?.` call above documents for the registry.
+  const residentInstructions = personas && reviews
+    ? new ResidentInstructionChanges({
+      registry,
+      reviews,
+      persona: (id) => personas.store.getPersona(id),
+      writePersonaGuidance: (id, expectedRevision, guidance, at) =>
+        personas.writeGuidance(id, expectedRevision, guidance, at),
+      publishPersona: (persona) => {
+        personas.announce(persona);
+        workflows?.refreshSummaries();
+      },
+    })
+    : null;
+  // A resident whose proposal call timed out learns what the answer applied in the continuation.
+  if (residentInstructions) {
+    reviews?.addContinuationAddendum?.((review) => residentInstructions.continuationNote(review.id));
+  }
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -5802,6 +5825,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         assertStandingApprovalGrantable(c.req.param("id"));
       } catch (error) { return planFailure(c, error); }
     }
+    // A resident's proposed instruction changes: only a person's answer applies them, and the
+    // write commits with the answer. Refused before anything settles when the answer is not
+    // the operator's, so the question stays open for them.
+    const instructionChange = residentInstructions?.resolution(
+      c.req.param("id"),
+      parsed.data.action,
+      by,
+      parsed.data.selections ?? null,
+    ) ?? null;
+    if (instructionChange && "refusal" in instructionChange) {
+      return c.json({ error: instructionChange.refusal.error }, instructionChange.refusal.status);
+    }
+    if (grant && instructionChange) {
+      return c.json({ error: "A plan bundle grant cannot answer a resident instruction proposal" }, 409);
+    }
     try {
       // An answer to the questions left beside an auto-approved bundle tells the agent the
       // bundle is already approved, because this form no longer asked about it.
@@ -5816,9 +5854,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         by,
         parsed.data.selections,
         // Committed with the answer, so a failed grant leaves the review pending to retry.
-        grant ? () => grantStandingBundleApproval(c.req.param("id")) : undefined,
+        grant
+          ? () => grantStandingBundleApproval(c.req.param("id"))
+          : instructionChange?.persist,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
+      instructionChange?.publish();
       return c.json(updated);
     } catch (error) {
       if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
@@ -8933,6 +8974,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }
 
   if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
+  if (residentInstructions) registerResidentInstructionRoutes(app, { registry, changes: residentInstructions });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);

@@ -1697,6 +1697,60 @@ async function runResidentReview() {
   });
 }
 
+/**
+ * The first sentence of the packet the DAEMON types for a resident's retro
+ * (`RESIDENT_RETRO_LEAD` in `src/server/residents/retro-packet.ts`). Recognised from the daemon's
+ * own words, so the packet's delivery is part of what a spec proves.
+ */
+const RESIDENT_RETRO_MARKER = "Run a retrospective over your work as this resident, and turn what the operator taught you into proposed changes to your standing instructions.";
+
+/**
+ * A resident's retro without a model, following the packet's own procedure: read the
+ * conversation back from the daemon's transcript route for the session the packet names, keep
+ * the operator's turns (every user turn after the opening brief, less loop wakes and this
+ * packet), read the current
+ * instructions through the real tool, and propose one change per steering turn, each quoting the
+ * turn it came from. A turn that sets a new cadence edits the profile's "every hour"; any other
+ * steering becomes Persona guidance when the profile names an editable Persona. Then it waits
+ * inside the real proposal tool for the operator. No steering, no proposal.
+ */
+async function runResidentRetro(prompt) {
+  const sessionId = /^Session: (\S+)$/m.exec(prompt)?.[1];
+  if (!sessionId) return "Resident retro: the packet named no session, so there is no conversation to read.";
+  const response = await fetch(`http://127.0.0.1:${process.env.MISSION_PORT ?? "7317"}/api/sessions/${encodeURIComponent(sessionId)}/transcript?turns=200`);
+  if (!response.ok) return `Resident retro: the transcript could not be read (${response.status}).`;
+  // The first user turn is the opening brief, whatever launch sections ride on it; steering is
+  // what comes after it, less loop wakes and this packet.
+  const steering = ((await response.json()).messages ?? [])
+    .filter((message) => message.role === "user")
+    .slice(1)
+    .map((message) => String(message.text ?? "").trim())
+    .filter((text) => text
+      && !text.startsWith("[mission-resident:")
+      && !text.includes(RESIDENT_RETRO_MARKER));
+  if (steering.length === 0) return "Resident retro: nothing in the conversation warrants a change.";
+  return withMissionMcp(async (request) => {
+    const text = (called) => called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    const read = await request("tools/call", { name: "get_resident_instructions", arguments: {} });
+    if (read.error || read.result?.isError) return `get_resident_instructions failed: ${text(read)}`;
+    const view = JSON.parse(text(read));
+    const personaEditable = view.persona !== null && view.refusals.persona === null;
+    const changes = [];
+    for (const turn of steering) {
+      const rationale = `You told me: "${turn}"`;
+      const cadence = /every (\d+) minutes/i.exec(turn);
+      if (cadence && view.profile.instructions.includes("every hour")) {
+        changes.push({ target: "profile", title: `Check every ${cadence[1]} minutes`, rationale, find: "every hour", replace: `every ${cadence[1]} minutes` });
+      } else {
+        const title = turn.split(/\s+/).slice(0, 6).join(" ").replace(/[.,;:]+$/, "");
+        changes.push({ target: personaEditable ? "persona" : "profile", title, rationale, replace: turn });
+      }
+    }
+    const proposed = await request("tools/call", { name: "propose_resident_instruction_changes", arguments: { summary: `Proposed from ${steering.length} steering turn(s) in this conversation.`, changes } });
+    return `Resident retro: ${text(proposed)}`;
+  });
+}
+
 /** Hold an SDK turn open across real I/O, then answer it with the text the work produced. */
 function beginHeldTurn(work) {
   const held = { prompts: [] };
@@ -1925,6 +1979,11 @@ rl.on("line", (line) => {
 
     // A Report bug session, recognised by the brief the daemon wrote. The turn is held open
     // while the real `report_product_issue` call waits for the human's review.
+    if (prompt.includes(RESIDENT_RETRO_MARKER)) {
+      beginHeldTurn(runResidentRetro(prompt));
+      return;
+    }
+
     if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {
       beginHeldTurn(runResidentReview());
       return;

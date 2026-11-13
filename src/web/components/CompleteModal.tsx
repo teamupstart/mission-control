@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Session, Task } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
-import { retroBackstopOffer, retroOutcome } from "../lib/retro-offer.ts";
+import { retroBackstopOffer, retroOutcome, type ResidentRetroContext } from "../lib/retro-offer.ts";
 import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -29,6 +29,7 @@ export function CompleteModal({
   tasks,
   tourOutcome,
   lead,
+  resident,
   onCompleted,
   onClose,
 }: {
@@ -42,6 +43,8 @@ export function CompleteModal({
   tourOutcome?: string;
   /** Why the dialog opened on its own, when it did - Restart on new profile's offer. */
   lead?: string;
+  /** What the dashboard knows about a resident session's profile, for its retro offer. */
+  resident?: ResidentRetroContext;
   /** Fired once the task is closed and session shutdown is accepted, so App drops detail. */
   onCompleted?: () => void;
   onClose: () => void;
@@ -90,8 +93,12 @@ export function CompleteModal({
    * a turn this session has to take, so completing and killing it first would deliver the
    * instruction into a conversation that is being torn down. Complete is still one click away
    * once the retro has been through its approvals.
+   *
+   * A resident's retro is the other kind: it reviews the resident's conversation and proposes
+   * changes to its standing instructions, which the operator selects from in a review before
+   * coming back here to complete it.
    */
-  const retro = retroBackstopOffer(session);
+  const retro = retroBackstopOffer(session, resident);
   const retroLabel = retro?.label ?? (tourPreview ? "Run a retro first" : null);
 
   // Tasks held up by an operator-declared edge onto this one that no merge has closed.

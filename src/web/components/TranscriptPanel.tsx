@@ -71,7 +71,7 @@ import {
 } from "../lib/find.ts";
 import { ConversationActivity, type ActivityTab } from "./ConversationActivity.tsx";
 import { BackgroundAgentsTray, type LaunchSearch } from "./BackgroundAgentsTray.tsx";
-import { launchStep } from "../lib/launch-lookup.ts";
+import { launchStep, pagingStalled } from "../lib/launch-lookup.ts";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
@@ -508,9 +508,10 @@ export function TranscriptPanel({
     null,
   );
   /**
-   * How many turns were loaded when the current search last asked for an older page, or null
-   * before it has asked. A page that lands without adding to that count means paging has
-   * stopped advancing, which is the one thing that ends a search short of the start.
+   * The back anchor (byte offset) the current search last asked for an older page from, or
+   * null before it has asked. A page that lands without moving the anchor means paging has
+   * stopped advancing, which is the one thing that ends a search short of the start - a page
+   * that moves it while adding no turn is progress (`pagingStalled`).
    */
   const launchAskedAt = useRef<number | null>(null);
   /** The search and the session as of this render, for a daemon reply to check it still applies. */
@@ -971,7 +972,7 @@ export function TranscriptPanel({
       canLoadOlder,
       loadingOlder,
       failed: olderError !== null,
-      stalled: launchAskedAt.current !== null && !loadingOlder && messages.length <= launchAskedAt.current,
+      stalled: pagingStalled(launchAskedAt.current, backAnchor(readHistory(sessionId)), loadingOlder),
     });
     switch (step.kind) {
       case "found":
@@ -979,7 +980,7 @@ export function TranscriptPanel({
         setJump((j) => ({ id: step.turnId, nonce: (j?.nonce ?? 0) + 1 }));
         break;
       case "load":
-        launchAskedAt.current = messages.length;
+        launchAskedAt.current = backAnchor(readHistory(sessionId));
         void loadOlder();
         break;
       case "wait":
@@ -993,7 +994,7 @@ export function TranscriptPanel({
         return exhaustive;
       }
     }
-  }, [launchSearch, visible, messages, canLoadOlder, loadingOlder, olderError, loadOlder]);
+  }, [launchSearch, visible, messages, canLoadOlder, loadingOlder, olderError, loadOlder, sessionId]);
 
   function jumpToLaunch(agent: SubagentEntry): void {
     launchAskedAt.current = null;

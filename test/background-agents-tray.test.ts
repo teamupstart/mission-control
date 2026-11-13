@@ -19,7 +19,7 @@ import {
   type LaunchSearch,
 } from "../src/web/components/BackgroundAgentsTray.tsx";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
-import { launchStep, type LaunchHistory } from "../src/web/lib/launch-lookup.ts";
+import { launchStep, pagingStalled, type LaunchHistory } from "../src/web/lib/launch-lookup.ts";
 import { transcriptRows, turnForToolUse } from "../src/web/lib/tools.ts";
 import { resetHistories, seedTail } from "../src/web/lib/transcript-history.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
@@ -181,6 +181,18 @@ test("the search stops at the transcript's start, on a failed page, and when pag
   assert.deepEqual(launchStep(LOADED, OLD, { ...HISTORY, stalled: true }), { kind: "miss", reason: "error" });
   // A start reached on that same step is the start, not a stall.
   assert.deepEqual(launchStep(LOADED, OLD, { ...AT_START, stalled: true }), { kind: "miss", reason: "missing" });
+});
+
+test("paging has stalled only when a page came back without moving the cursor, however many turns it added", () => {
+  // Asked for the page before byte 9000.
+  assert.equal(pagingStalled(9000, 9000, false), true, "the anchor did not move: the same page would be asked for again");
+  // A page of pure tool output adds no turn and still moves the anchor back: that is progress.
+  assert.equal(pagingStalled(9000, 4000, false), false);
+  // Still in flight, or never asked: nothing to judge yet.
+  assert.equal(pagingStalled(9000, 9000, true), false);
+  assert.equal(pagingStalled(null, 9000, false), false);
+  // The start reached is not a stall; `launchStep` reads it from `canLoadOlder` first.
+  assert.equal(pagingStalled(9000, null, false), false);
 });
 
 test("no page count ends a search: a launch 60 pages back is reached, one page at a time", () => {

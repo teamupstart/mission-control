@@ -1113,7 +1113,9 @@ and paging can split them, while the file holds both once the result is written.
 file names no call for the agent: the route answers `{ toolUseId: null }`, the link reports the
 launch as not in the transcript, and a later click asks again. A description is never used to claim
 a launch: agents can share one, and a folded agent's call stays behind. No page count limits a
-search; it ends at the start, on a failed page, or when a page arrives without adding turns.
+search; it ends at the start, on a failed page, or when a page arrives without moving the
+paging cursor back. A page that moves it while adding no turn, such as a stretch of pure tool
+output, is progress and the search continues.
 
 A sub-agent's own activity never moves its parent. On the SDK stream a frame carrying
 `parent_tool_use_id` is the sub-agent's, and it cannot re-open a finished turn. A hook that

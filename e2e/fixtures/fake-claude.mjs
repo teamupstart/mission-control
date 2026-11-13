@@ -332,6 +332,13 @@ const DISTANT_AGENTS = [
   { id: "distant-agent-3", type: "Explore", description: "Audit an orphaned migration", launched: false, named: false },
 ];
 const DISTANT_FILLER_TURNS = 100;
+/**
+ * The same agents and frames as `DISTANT_BACKGROUND_AGENTS_TURN`, with twice the later turns
+ * (about 1.2 MB), so the launch sits two older pages back rather than one. Distinct by its
+ * prefix, so neither sentinel contains the other.
+ */
+const DEEP_BACKGROUND_AGENTS_TURN = "E2E_DEEP_BACKGROUND_AGENTS";
+const DEEP_FILLER_TURNS = 200;
 const DISTANT_FILLER = `Later work, long enough to push the launch out of the opening window. ${"ledger ".repeat(850)}`;
 /**
  * Three agents with the same description and type, none named by a call id on its start frame.
@@ -1608,7 +1615,7 @@ function runFoldedTwinBackgroundAgents(prompt) {
 }
 
 /** The `DISTANT_BACKGROUND_AGENTS_TURN` script: launch, bury the launch, leave them running. */
-function runDistantBackgroundAgents(prompt) {
+function runDistantBackgroundAgents(prompt, fillerTurns = DISTANT_FILLER_TURNS) {
   const system = (subtype, body) => emit({ type: "system", subtype, session_id: SESSION_ID, uuid: `${subtype}-${turn}`, ...body });
   appendTurn("assistant", [{ type: "text", text: "Launching distant background agents" }]);
   for (const agent of DISTANT_AGENTS.filter((a) => a.launched)) {
@@ -1618,7 +1625,7 @@ function runDistantBackgroundAgents(prompt) {
     }]);
     appendAsyncLaunched(agent);
   }
-  for (let i = 0; i < DISTANT_FILLER_TURNS; i += 1) {
+  for (let i = 0; i < fillerTurns; i += 1) {
     appendTurn("assistant", [{ type: "text", text: `${i + 1}. ${DISTANT_FILLER}` }]);
   }
   emit({
@@ -2161,6 +2168,10 @@ rl.on("line", (line) => {
     }
     if (prompt.includes(FOLDED_TWIN_BACKGROUND_AGENTS_TURN)) {
       runFoldedTwinBackgroundAgents(prompt);
+      return;
+    }
+    if (prompt.includes(DEEP_BACKGROUND_AGENTS_TURN)) {
+      runDistantBackgroundAgents(prompt, DEEP_FILLER_TURNS);
       return;
     }
     if (prompt.includes(DISTANT_BACKGROUND_AGENTS_TURN)) {

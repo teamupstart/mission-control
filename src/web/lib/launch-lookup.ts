@@ -36,11 +36,26 @@ export interface LaunchHistory {
   /** A page request has failed since this search started. */
   failed: boolean;
   /**
-   * The last page this search asked for arrived and added no turns, so asking again would
-   * ask for the same page. The search stops on that, and only that: a long-running session's
-   * launch may sit any number of pages back, so no page count is a limit.
+   * The last page this search asked for came back without moving the paging cursor, so
+   * asking again would ask for the same page (`pagingStalled`). The search stops on that,
+   * and only that: a long-running session's launch may sit any number of pages back, so no
+   * page count is a limit.
    */
   stalled: boolean;
+}
+
+/**
+ * Whether paging stopped advancing: a page was asked for from `askedFrom`, nothing is in
+ * flight, and the back anchor is still `askedFrom`.
+ *
+ * Read from the CURSOR, never from how many turns arrived. A page can legitimately add no
+ * turn - a stretch of pure tool output renders nothing - while still moving the anchor
+ * back, and the call being searched for may sit on the page after it. Only an anchor that
+ * did not move (a page refused because the file moved under the request) means the next
+ * request would repeat this one.
+ */
+export function pagingStalled(askedFrom: number | null, anchorNow: number | null, loadingOlder: boolean): boolean {
+  return askedFrom !== null && !loadingOlder && anchorNow === askedFrom;
 }
 
 /**

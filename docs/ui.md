@@ -1278,7 +1278,7 @@ that gap reads **Launch not in transcript**; click again once it is written and 
 including in a conversation that was open while the agent launched. A description is never used: agents can share one, and a finished agent folded out
 of the tray leaves its call behind, so a description could land on another agent's launch. An agent no call in the transcript is
 recorded as launching reads **Launch not in transcript**. A search reads as far back as the
-transcript goes; it stops early only if loading older messages fails or stops adding any.
+transcript goes; it stops early only if loading older messages fails or stops moving back through the file.
 
 ## Skins
 

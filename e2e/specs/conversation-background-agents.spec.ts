@@ -28,6 +28,7 @@ const SPLIT_GOAL = "E2E_SPLIT_BACKGROUND_AGENTS move the ledger to cursor pagina
 const PLAIN_GOAL = "settle without background agents";
 const DISTANT_GOAL = "E2E_DISTANT_BACKGROUND_AGENTS trace the distant ledger";
 const FOLDED_TWIN_GOAL = "E2E_FOLDED_TWIN_BACKGROUND_AGENTS sweep the ledger twice";
+const DEEP_GOAL = "E2E_DEEP_BACKGROUND_AGENTS trace the deep ledger";
 
 async function shoot(page: Page, target: Locator, name: string): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
@@ -448,4 +449,48 @@ test("an agent named by no call id, launched while its conversation is open, sti
   await expect(launchRun).toHaveClass(/is-flashed/);
   await expect(agentRow.getByRole("button", { name: "Jump to launch" })).toBeVisible();
   await shoot(dashboard, detail, "13-live-launch-found");
+});
+
+test("an older page that adds no turn but moves back through the file does not end the search", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  await dispatch(dashboard, daemon, DEEP_GOAL);
+  const detail = await openSession(dashboard, DEEP_GOAL);
+  const tray = detail.getByRole("region", { name: "Background agents" });
+  await expect(tray.getByRole("listitem")).toHaveCount(3);
+  const log = detail.locator(".transcript-log");
+  const launchRun = log.locator(".turn-toolrun").filter({ hasText: "Trace the distant ledger writes" });
+  await expect(launchRun, "the launch is not in the opening window").toHaveCount(0);
+
+  // The first older page arrives with its real byte range and no turns - what a stretch of
+  // pure tool output reads as. It moved the cursor back; the launch is on the page after it.
+  const olderPage = /\/api\/sessions\/[^/]+\/transcript\?before=/;
+  let pages = 0;
+  let emptied: { start: number; end: number; atStart: boolean } | null = null;
+  await dashboard.route(olderPage, async (route) => {
+    pages += 1;
+    const response = await route.fetch();
+    const page = (await response.json()) as { start: number; end: number; atStart: boolean; messages: unknown[] };
+    if (pages === 1) {
+      emptied = { start: page.start, end: page.end, atStart: page.atStart };
+      await route.fulfill({ response, json: { ...page, messages: [] } });
+      return;
+    }
+    await route.fulfill({ response, json: page });
+  });
+
+  const link = row(tray, "Trace the distant ledger writes").getByRole("button", { name: "Jump to launch" });
+  await link.click();
+  await expect(launchRun).toHaveCount(1, { timeout: 30_000 });
+  await expect(launchRun).toBeInViewport();
+  await expect(launchRun).toHaveClass(/is-flashed/);
+  await expect(link).toHaveClass(/is-ready/);
+  // The empty page really was the first one, it moved the cursor, and the search asked past it.
+  expect(emptied, "the first older page was served empty").not.toBeNull();
+  expect(emptied!.start).toBeLessThan(emptied!.end);
+  expect(emptied!.atStart, "the empty page was not the start of the file").toBe(false);
+  expect(pages, "the search asked for the page after the empty one").toBeGreaterThanOrEqual(2);
+  await dashboard.unroute(olderPage);
 });

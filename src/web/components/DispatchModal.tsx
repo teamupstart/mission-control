@@ -509,9 +509,11 @@ function GrillFirstBar({
         {overridden && !editing && (
           <>
             {" · "}
-            <button type="button" className="link-btn" onClick={() => onChange(undefined)}>
-              Reset
-            </button>
+            <Tooltip label={`Follow the ${label} default again`}>
+              <button type="button" className="link-btn" onClick={() => onChange(undefined)}>
+                Reset
+              </button>
+            </Tooltip>
           </>
         )}
       </span>

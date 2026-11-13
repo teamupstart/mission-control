@@ -20,12 +20,16 @@ import type { SavePlanInput } from "../src/shared/managed-plans.ts";
  * The git the store runs is a wrapper, named ahead of every other directory through
  * `MISSION_EXECUTABLE_PATHS`, that delegates to the real git except for `ls-files` while a
  * marker file exists - then it is SIGKILLed, the same unanswered outcome a timeout produces -
- * or, under a second marker, exits 128 the way a held index lock makes it.
+ * or, under a second marker, exits 128 the way a held index lock makes it, or, under a third,
+ * answers only after the 4 s that used to be its whole budget.
  */
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-plan-tracked-check-")));
 const bin = join(home, "bin");
 const killMarker = join(home, "kill-ls-files");
 const failMarker = join(home, "fail-ls-files");
+const slowMarker = join(home, "slow-ls-files");
+/** Longer than `run`'s 4 s default, well inside the check's own 30 s. */
+const SLOW_LS_FILES_SECONDS = 6;
 const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 mkdirSync(bin, { recursive: true });
 writeFileSync(join(bin, "git"), [
@@ -38,6 +42,11 @@ writeFileSync(join(bin, "git"), [
   `if [ -e '${failMarker}' ]; then`,
   "  for arg in \"$@\"; do",
   "    if [ \"$arg\" = ls-files ]; then echo \"fatal: Unable to create '.git/index.lock': File exists.\" >&2; exit 128; fi",
+  "  done",
+  "fi",
+  `if [ -e '${slowMarker}' ]; then`,
+  "  for arg in \"$@\"; do",
+  `    if [ "$arg" = ls-files ]; then sleep ${SLOW_LS_FILES_SECONDS}; fi`,
   "  done",
   "fi",
   `exec '${realGit}' "$@"`,
@@ -60,6 +69,7 @@ after(() => {
 afterEach(() => {
   rmSync(killMarker, { force: true });
   rmSync(failMarker, { force: true });
+  rmSync(slowMarker, { force: true });
 });
 
 const git = (cwd: string, ...args: string[]) => execFileSync(realGit, ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -117,4 +127,18 @@ test("a git that exits with an error is reported with its reason, not as a track
   });
   rmSync(failMarker, { force: true });
   assert.equal((await savePlan(authority, input("locked-plan"))).manifest.revision, 1);
+});
+
+test("a slow git that answers inside the check's own timeout still lets the save through", async () => {
+  // The case the longer timeout exists for: a loaded host where `ls-files` answers, just late.
+  // Under `run`'s 4 s default this was killed and reported as tracked plans.
+  const authority = repo();
+  writeFileSync(slowMarker, "");
+  const started = Date.now();
+  const saved = await savePlan(authority, input("slow-plan"));
+  assert.equal(saved.manifest.revision, 1);
+  assert.ok(
+    Date.now() - started >= SLOW_LS_FILES_SECONDS * 1000,
+    "the check really waited past the old 4 s budget",
+  );
 });

@@ -69,6 +69,18 @@ let snapshotLoaded = false;
 /** The last stamp handed out. Never repeats and never goes backwards within a process. */
 let lastStamp = 0;
 /**
+ * Walks abandoned at their deadline that have not returned yet, by scan key (roots + depth).
+ *
+ * An abandoned walk cannot be cancelled: its blocked `readdir` keeps a libuv pool thread for as
+ * long as the mount stays stalled. Starting another walk of the same tree would pin another
+ * thread on the same directory - and with 4 pool threads, a few Dispatch opens would stall
+ * every other fs operation in the daemon. So no walk of a key starts while one of that key is
+ * stuck; a read that needs one is refused at once. Keyed rather than global so that removing
+ * the stalled directory from the index recovers immediately: the new key walks.
+ */
+const stuckWalks = new Map<string, Promise<void>>();
+
+/**
  * The one walk on disk right now, if any. Walks never overlap: under load each `readdir`
  * already queues behind the rest of the daemon's I/O, and two walks of the same tree at
  * once would only double that for an answer one of them could give.
@@ -226,13 +238,17 @@ function refresh(roots: string[], after?: number): Promise<Snapshot> {
     await previous;
     // Leaving the queue: a request from here on finds this walk running, stamped below.
     queued.delete(slot);
+    // Refused without touching the disk - see `stuckWalks`. Not logged: the timeout was, and a
+    // stalled mount would otherwise print a line per Dispatch open.
+    if (stuckWalks.has(key)) throw new ReposScanStuckError(roots);
     const startedAt = Date.now();
     const at = nextScanStamp();
     walking = { slot, at, scan };
     let deadline: ReturnType<typeof setTimeout> | undefined;
+    const walk = scanRepos(roots);
     try {
       const repos = await Promise.race([
-        scanRepos(roots),
+        walk,
         new Promise<never>((_, reject) => {
           deadline = setTimeout(() => reject(new ReposScanTimeoutError(roots, SCAN_TIMEOUT_MS)), SCAN_TIMEOUT_MS);
           deadline.unref?.();
@@ -246,7 +262,14 @@ function refresh(roots: string[], after?: number): Promise<Snapshot> {
       }
       return snapshot;
     } catch (error) {
-      if (error instanceof ReposScanTimeoutError) console.warn(`[repos] ${error.message}`);
+      if (error instanceof ReposScanTimeoutError) {
+        console.warn(`[repos] ${error.message}; no new scan of these directories starts until it returns`);
+        // Remembered until the blocked `readdir` finally returns, however it ends.
+        const settled: Promise<void> = walk.then(() => undefined, () => undefined).then(() => {
+          if (stuckWalks.get(key) === settled) stuckWalks.delete(key);
+        });
+        stuckWalks.set(key, settled);
+      }
       throw error;
     } finally {
       clearTimeout(deadline);
@@ -267,6 +290,18 @@ export class ReposScanTimeoutError extends Error {
         `may be on a stalled mount`,
     );
     this.name = "ReposScanTimeoutError";
+  }
+}
+
+/** A walk refused because an earlier walk of the same directories is still stuck on disk. */
+export class ReposScanStuckError extends Error {
+  constructor(roots: readonly string[]) {
+    super(
+      `workspace scan of ${roots.join(", ") || "no directories"} is waiting on an earlier scan ` +
+        `that is still stuck on disk; remove the stalled directory from the index, or wait for ` +
+        `its mount to recover`,
+    );
+    this.name = "ReposScanStuckError";
   }
 }
 

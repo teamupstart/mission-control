@@ -544,14 +544,23 @@ test("the index identity holds while nothing changes and moves with the roots or
   }
 });
 
-test("a walk that never finishes is abandoned at its deadline, and the next walk still runs", async (t) => {
+test("a walk stuck on a stalled mount times out, pins no second walk, and recovers when it returns", async (t) => {
   const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const elsewhere = makeWorkspace((r) => makeRepo(join(r, "beta")));
   const previous = process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
-  // A `readdir` of the root that never returns while the mount is "stalled".
+  // A `readdir` of the root that blocks until the "mount" recovers, as a stalled NFS read does.
   const realReaddir = fsPromises.readdir;
+  let recover!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    recover = resolve;
+  });
+  let rootReads = 0;
   let stalled = true;
   t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
-    if (stalled && String(args[0]) === root) return await new Promise<never>(() => {});
+    if (String(args[0]) === root) {
+      rootReads += 1;
+      if (stalled) await recovered;
+    }
     return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
   });
   syncBuiltinESMExports();
@@ -563,26 +572,52 @@ test("a walk that never finishes is abandoned at its deadline, and the next walk
     rmSync(SNAPSHOT, { force: true });
     setRepoIndexConfig({ directories: [{ path: root }] });
     process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = "200";
-    const repos = await restartedRepos("hung-walk");
+    const repos = await restartedRepos("stuck-walk");
 
     // No scan anywhere, so this read waits on the walk - and is told it timed out.
-    await assert.rejects(repos.listRepos({ rescan: true }), (error: Error) => {
-      assert.equal(error.name, "ReposScanTimeoutError");
-      assert.match(error.message, /did not finish within 0 s and was abandoned/);
-      return true;
-    });
-    assert.ok(warned.some((line) => /\[repos\] workspace scan of .* was abandoned/.test(line)), "and it is logged");
+    await assert.rejects(repos.listRepos({ rescan: true }), { name: "ReposScanTimeoutError" });
+    assert.ok(warned.some((line) => /\[repos\] workspace scan of .* was abandoned.*; no new scan of these directories starts until it returns/.test(line)), "and it is logged");
 
-    // The mount recovers. The stuck walk is still pending, yet the next read is not queued
-    // behind it: it walks, and answers.
+    // Every later read of the same directories is refused at once, and none touches the disk:
+    // the stalled mount costs exactly one pinned pool thread, however often Dispatch opens.
+    const started = Date.now();
+    for (let i = 0; i < 3; i += 1) {
+      await assert.rejects(repos.listRepos({ rescan: true }), { name: "ReposScanStuckError" });
+    }
+    assert.ok(Date.now() - started < 200, "refused without waiting out another deadline");
+    assert.equal(rootReads, 1, "no second walk was started on the stalled directory");
+    assert.equal(warned.filter((line) => line.includes("[repos]")).length, 1, "the refusals are not logged");
+
+    // Removing the stalled directory from the index recovers at once: another key walks.
+    setRepoIndexConfig({ directories: [{ path: elsewhere }] });
+    assert.deepEqual(await repos.listRepos({ rescan: true }), [join(elsewhere, "beta")]);
+
+    // Back to the stalled directory: still refused until its walk returns. Then it walks again.
+    setRepoIndexConfig({ directories: [{ path: root }] });
+    await assert.rejects(repos.listRepos({ rescan: true }), { name: "ReposScanStuckError" });
     stalled = false;
-    assert.deepEqual(await repos.listRepos({ rescan: true }), [join(root, "alpha")]);
+    recover();
+    // The abandoned walk finishes its remaining reads, and only then is the key released.
+    const deadline = Date.now() + 5_000;
+    let answer: string[] | null = null;
+    while (answer === null) {
+      try {
+        answer = await repos.listRepos({ rescan: true });
+      } catch (error) {
+        if ((error as Error).name !== "ReposScanStuckError" || Date.now() > deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    assert.deepEqual(answer, [join(root, "alpha")]);
+    assert.equal(rootReads, 2);
   } finally {
+    recover();
     if (previous === undefined) delete process.env.MISSION_REPOS_SCAN_TIMEOUT_MS;
     else process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = previous;
     t.mock.restoreAll();
     syncBuiltinESMExports();
     rmSync(SNAPSHOT, { force: true });
     rmSync(root, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
   }
 });

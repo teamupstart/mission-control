@@ -1109,7 +1109,8 @@ and that id is the task id the SDK reports, so `SubagentEntry.id`. The browser a
 returns its `tool_use_id`; the browser then searches for that call id like any other. The read
 is asynchronous and incremental: each file's launch results are indexed in awaited chunks, so a
 long resident's transcript never holds the daemon's event loop, and a later lookup reads only
-what was appended since. A file that shrinks or is replaced is indexed again, and at most 32
+what was appended since. A file that shrinks, is replaced, or is rewritten in place (its last
+indexed bytes changed, checked only when the file changed) is indexed again, and at most 32
 files' indexes are kept. The file answers rather than the turns the browser holds because the
 call and its result are written apart, so a live conversation receives them in separate appends
 and paging can split them, while the file holds both once the result is written. Until then the

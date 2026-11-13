@@ -328,11 +328,11 @@ test("later lookups read only what was appended, and a line still being written 
   const path = transcriptFile([agentCall("one", "toolu_one", "One"), asyncLaunched("toolu_one", "agent-one")]);
   const first = statSync(path).size;
   assert.equal(await claudeSubagentLaunch(path, "agent-one"), "toolu_one");
-  assert.deepEqual(launchScanCostSoFar(), { scans: 1, bytes: first }, "the first lookup reads the file once");
+  assert.deepEqual(launchScanCostSoFar(), { scans: 1, bytes: first, checked: 0 }, "the first lookup reads the file once");
 
   // Nothing appended: a lookup for an id the file does not name reads nothing at all.
   assert.equal(await claudeSubagentLaunch(path, "agent-two"), null);
-  assert.deepEqual(launchScanCostSoFar(), { scans: 1, bytes: first }, "a repeated miss costs no read");
+  assert.deepEqual(launchScanCostSoFar(), { scans: 1, bytes: first, checked: 0 }, "a repeated miss costs no read");
 
   // A second launch is written after the file was indexed: half a line, then the rest.
   const call = `${JSON.stringify(agentCall("two", "toolu_two", "Two"))}\n`;
@@ -340,13 +340,23 @@ test("later lookups read only what was appended, and a line still being written 
   appendFileSync(path, `${call}${line.slice(0, 40)}`);
   assert.equal(await claudeSubagentLaunch(path, "agent-two"), null, "an unfinished line is not indexed");
   const appended = Buffer.byteLength(`${call}${line.slice(0, 40)}`);
-  assert.deepEqual(launchScanCostSoFar(), { scans: 2, bytes: first + appended }, "only the appended bytes were read");
+  // Plus a check of at most 512 bytes before them, that the file is still the one indexed.
+  const tailCheck = Math.min(512, first);
+  assert.deepEqual(
+    launchScanCostSoFar(),
+    { scans: 2, bytes: first + appended, checked: tailCheck },
+    "only the appended bytes were read",
+  );
 
   appendFileSync(path, `${line.slice(40)}\n`);
   assert.equal(await claudeSubagentLaunch(path, "agent-two"), "toolu_two", "the finished line is");
   // Resumed at the unfinished line: its first 40 bytes are read again, nothing before them.
   const resumed = Buffer.byteLength(line) + 1;
-  assert.deepEqual(launchScanCostSoFar(), { scans: 3, bytes: first + appended + resumed });
+  assert.deepEqual(launchScanCostSoFar(), {
+    scans: 3,
+    bytes: first + appended + resumed,
+    checked: tailCheck + Math.min(512, first + Buffer.byteLength(call)),
+  });
   assert.equal(await claudeSubagentLaunch(path, "agent-one"), "toolu_one", "and what was read before is kept");
 });
 
@@ -358,6 +368,30 @@ test("a transcript cleared or replaced under the same path is indexed again from
   writeFileSync(path, `${JSON.stringify(asyncLaunched("toolu_new", "agent-new"))}\n`);
   assert.equal(await claudeSubagentLaunch(path, "agent-old"), null);
   assert.equal(await claudeSubagentLaunch(path, "agent-new"), "toolu_new");
+});
+
+test("a transcript rewritten in place to the same size, or larger, is indexed again", async () => {
+  resetLaunchIndexes();
+  // Same length, different content: inode and size both unchanged.
+  const oldLines = [agentCall("a", "toolu_aaaa", "A"), asyncLaunched("toolu_aaaa", "agent-aaaa")];
+  const newLines = [agentCall("b", "toolu_bbbb", "B"), asyncLaunched("toolu_bbbb", "agent-bbbb")];
+  const path = transcriptFile(oldLines);
+  const inode = statSync(path).ino;
+  assert.equal(await claudeSubagentLaunch(path, "agent-aaaa"), "toolu_aaaa");
+  const rewritten = newLines.map((r) => JSON.stringify(r)).join("\n") + "\n";
+  assert.equal(Buffer.byteLength(rewritten), statSync(path).size, "the rewrite is the same length");
+  // Truncate and rewrite through the same open file, so the inode is kept.
+  writeFileSync(path, rewritten, { flag: "r+" });
+  assert.equal(statSync(path).ino, inode, "same inode");
+  assert.equal(await claudeSubagentLaunch(path, "agent-bbbb"), "toolu_bbbb", "the new launch is found");
+  assert.equal(await claudeSubagentLaunch(path, "agent-aaaa"), null, "the old agent keeps no stale call");
+
+  // Larger than before: rewritten in place with more launches than were indexed.
+  const larger = [...newLines, agentCall("c", "toolu_cccc", "C"), asyncLaunched("toolu_cccc", "agent-cccc")];
+  writeFileSync(path, `${larger.map((r) => JSON.stringify(r)).join("\n").replaceAll("toolu_bbbb", "toolu_dddd")}\n`, { flag: "r+" });
+  assert.equal(statSync(path).ino, inode);
+  assert.equal(await claudeSubagentLaunch(path, "agent-cccc"), "toolu_cccc");
+  assert.equal(await claudeSubagentLaunch(path, "agent-bbbb"), "toolu_dddd", "the rewritten line's call, not the stale one");
 });
 
 test("lookups that arrive together share one scan and each get their own answer", async () => {
@@ -375,7 +409,7 @@ test("lookups that arrive together share one scan and each get their own answer"
   ]);
   assert.deepEqual([a, b, none], ["toolu_a", "toolu_b", null]);
   // Three lookups, one scan, and the file read exactly once between them.
-  assert.deepEqual(launchScanCostSoFar(), { scans: 1, bytes: statSync(path).size });
+  assert.deepEqual(launchScanCostSoFar(), { scans: 1, bytes: statSync(path).size, checked: 0 });
 });
 
 // ---- the tray's markup ----

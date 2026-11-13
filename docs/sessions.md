@@ -2482,13 +2482,16 @@ A Codex Agent SDK launch that successfully registers the bundled Mission MCP ser
 appends one developer instruction: whenever it needs a decision, a clarification or a choice
 from the operator, call `request_input` - with `options` for discrete choices, `context` for
 the background and a tradeoff on each option - and wait for the response instead of
-presenting the choices only as prose and ending the turn. Mission Control reads Codex's effective configured developer instruction
-first and preserves it ahead of this appendix. A Codex launch without the MCP server is
-refused, like a Claude one. If that effective instruction cannot be read safely, the
-developer instruction is left as the operator configured it and the decision instruction
-rides turn one instead, after whatever turn one already says (so a turn one that opens with a
-skill invocation such as `$engineer` keeps it first) - the fallback standing instructions also take - so the session is
-still told to ask its decisions through `request_input`.
+presenting the choices only as prose and ending the turn. Mission Control reads Codex's
+effective configured developer instruction first and preserves it ahead of this appendix. A
+Codex launch without the MCP server is refused, like a Claude one.
+
+If that effective instruction cannot be read safely, the developer instruction is left as the
+operator configured it, and the decision instruction is sent in turn one instead. It comes
+after everything else turn one carries - the intent, or the standing instructions when those
+fell back to turn one too - so a turn one that opens with a skill invocation such as
+`$engineer` keeps it first. On a resume that sends nothing else, it is turn one by itself.
+Either way the session is still told to ask its decisions through `request_input`.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`

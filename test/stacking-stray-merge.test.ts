@@ -263,8 +263,10 @@ async function strayChild(parentMergedAt = PARENT_MERGED_AT, snap: Partial<PrSna
     defaultBranch: "main", mergeCommitSha: PARENT_MERGE, mergedAt: parentMergedAt,
   }]]) };
   await observeStackLifecycle(db.getInspectorPr(key)!, snapshot(snap), "/repo", seam(g), ctx, 30_000);
-  // The Inspector tick retires a merged row right after observing it.
-  db.updateInspectorPr(key, { state: "closed", observedState: "MERGED" }, 30_000);
+  // The Inspector tick retires a merged row right after observing it. The merge time is recorded
+  // on the row too, which must not take it out of the closed-children sweep while its landing is
+  // unresolved.
+  db.updateInspectorPr(key, { state: "closed", observedState: "MERGED", mergedAt: CHILD_MERGED_AT }, 30_000);
   return key;
 }
 

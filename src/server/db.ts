@@ -15022,9 +15022,11 @@ export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
-          AND (observed_state IS NULL OR observed_state <> 'MERGED'
-            OR (CASE WHEN json_valid(stack_state) THEN
+        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL
+          -- Closed without merging: its recovery action follows a parent that can still move.
+          AND ((merged_at IS NULL AND (observed_state IS NULL OR observed_state <> 'MERGED'))
+            -- Merged, whoever recorded the merge time, with its landing still unresolved.
+            OR (CASE WHEN json_valid(stack_state) THEN CASE WHEN json_extract(stack_state, '$.childState') = 'MERGED' THEN
                   json_extract(stack_state, '$.parentUnreadSince') IS NOT NULL
                   OR json_extract(stack_state, '$.baseRefName') IS NULL
                   OR json_extract(stack_state, '$.defaultBranch') IS NULL
@@ -15035,7 +15037,7 @@ export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[
                     AND (json_extract(stack_state, '$.childMergeCommitSha') IS NULL
                       OR json_extract(stack_state, '$.childMergedAt') IS NULL
                       OR json_extract(stack_state, '$.parentMergedAt') IS NULL))
-                END) = 1)
+                END END) = 1)
           AND key > ?
         ORDER BY key ASC LIMIT ?`,
     )

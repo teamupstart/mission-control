@@ -69,7 +69,7 @@ import {
   type FindHit,
   type FindScope,
 } from "../lib/find.ts";
-import { ConversationActivity, type ActivityTab } from "./ConversationActivity.tsx";
+import { ConversationActivity, useRailTab } from "./ConversationActivity.tsx";
 import { BackgroundAgentsTray, type LaunchSearch } from "./BackgroundAgentsTray.tsx";
 import { launchStep, pagingStalled } from "../lib/launch-lookup.ts";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
@@ -96,7 +96,8 @@ import { Tooltip } from "./Tooltip.tsx";
 import { ConversationArtifacts } from "./ConversationArtifacts.tsx";
 import { AdvisorNote } from "./AdvisorNote.tsx";
 import { InProgressRow } from "./InProgressRow.tsx";
-import { useDisplayItems } from "../lib/board-card.ts";
+import { useDisplayChoice, useDisplayItems } from "../lib/board-card.ts";
+import { hasSubagents } from "@shared/subagents.ts";
 import { currentTurnStartedAt } from "../lib/working-indicator.ts";
 import { ComposerEditorModal } from "./ComposerEditorModal.tsx";
 import {
@@ -468,15 +469,24 @@ export function TranscriptPanel({
    * stylesheet shows the list and hides the toggle above the container breakpoint.
    */
   const [activityOpen, setActivityOpen] = useState(false);
-  /**
-   * Which of the secondary rail's two tabs is up. Held HERE rather than in the rail so
-   * it survives find: find unmounts the rail entirely while it owns the column, and a
-   * reader who was working through their own messages should get that list back when
-   * they close it, not be silently returned to Activity.
-   */
-  const [railTab, setRailTab] = useState<ActivityTab>("activity");
   /** A per-machine preference rather than local state, so one fold holds for every session. */
   const railCollapsed = useUiConfig().conversationRailCollapsed;
+  /**
+   * The conversation half of the background sub-agent treatment the operator chose: the
+   * Background agents tray above the reply box (Nested sub-cards), or the rail's Agents tab
+   * (Chip and popover). The tab is offered only while there are agents to list, like the tray.
+   */
+  const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
+  const railAgents = agentsChip && hasSubagents(session.subagents) ? session.subagents : null;
+  /**
+   * Which of the secondary rail's tabs is up. Held HERE rather than in the rail so
+   * it survives find: find unmounts the rail entirely while it owns the column, and a
+   * reader who was working through their own messages should get that list back when
+   * they close it, not be silently returned to Activity. `useRailTab` also leaves Agents
+   * for good once it stops being offered, so its coming back does not pull the rail off
+   * Activity.
+   */
+  const [railTab, setRailTab] = useRailTab(railAgents !== null);
   /**
    * The turn the "Yours" rail last jumped to.
    *
@@ -1475,6 +1485,7 @@ export function TranscriptPanel({
             onSelectTurn={(id) => setJump((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))}
             collapsed={railCollapsed}
             onCollapsed={(next) => void updateUiConfig({ conversationRailCollapsed: next })}
+            subagents={railAgents}
           />
         )}
       </div>
@@ -1483,7 +1494,8 @@ export function TranscriptPanel({
           would share the rail's column and vanish with it, and inside `.transcript-compose`
           it would sit under that box's image-drop handlers. Here it stays in view whatever
           the rail shows and wherever the log is scrolled. Draws nothing without agents. */}
-      <BackgroundAgentsTray session={session} launches={launches} onJumpToLaunch={jumpToLaunch} />
+      {/* Only under Nested sub-cards: Chip and popover lists the agents on the rail's Agents tab. */}
+      {!agentsChip && <BackgroundAgentsTray session={session} launches={launches} onJumpToLaunch={jumpToLaunch} />}
 
       {/*
         An engine-driven session gets a SENTENCE where the box would be, not a disabled box.

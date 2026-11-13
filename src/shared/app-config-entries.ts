@@ -274,6 +274,7 @@ const uiFields = {
   skin: "setting",
   taskKindHeader: "setting",
   taskKindCard: "setting",
+  backgroundAgentsStyle: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",

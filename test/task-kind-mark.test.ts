@@ -285,12 +285,14 @@ test("a display choice accepts only its own surface's styles, at compile time", 
   void [misuse, crossed, entry, fine];
   assert.deepEqual(
     DISPLAY_CHOICES.map((choice) => choice.key).sort(),
-    ["taskKindCard", "taskKindHeader"],
+    ["backgroundAgentsStyle", "taskKindCard", "taskKindHeader"],
   );
 });
 
 test("the Display panel offers every style for both surfaces, and the card preview follows the card's", async () => {
   for (const choice of DISPLAY_CHOICES) {
+    // Background sub-agents is pinned in `background-agents-display-choice.test.ts`.
+    if (choice.key === "backgroundAgentsStyle") continue;
     const styles = choice.key === "taskKindHeader" ? TASK_KIND_HEADER_STYLES : TASK_KIND_CARD_STYLES;
     assert.deepEqual(choice.options.map((o) => o.id), [...styles]);
   }

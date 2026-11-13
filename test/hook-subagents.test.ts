@@ -224,6 +224,15 @@ test("a prompt that lands late folds only agents that had finished by its own st
   assert.equal(hookSubagentSummary(state)!.finishedFolded, 2);
 });
 
+test("more than twelve running agents read as a floor, never as twelve", () => {
+  const steps: [Signal, number][] = [];
+  for (let i = 0; i < SUBAGENT_LIMIT + 1; i++) steps.push([launched(`r${i}`), 100 + i]);
+  const summary = hookSubagentSummary(run(steps))!;
+  assert.equal(summary.agents.length, SUBAGENT_LIMIT, "the shared contract lists at most twelve");
+  // Phase 1's shared reading marks a list full of running agents as a floor.
+  assert.equal(subagentActivityLine({ state: "idle", subagents: summary }), "idle · 12+ agents still running");
+});
+
 test("the list is capped: running first, the oldest finished fold", () => {
   const steps: [Signal, number][] = [];
   for (let i = 0; i < SUBAGENT_LIMIT + 3; i++) steps.push([launched(`f${i}`), i]);

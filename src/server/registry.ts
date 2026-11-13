@@ -302,6 +302,7 @@ import {
   type TaskDependencyRewrite,
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
+  getInspectorPr as getInspectorPrRow,
 } from "./db.ts";
 // The ONE telemetry call in this file, and deliberately so: everything else Phase 3 needs
 // from the Registry arrives through the event stream it already publishes. This is the
@@ -322,7 +323,7 @@ import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { stackStandingFor } from "./stacking/delivery.ts";
-import type { StackStanding } from "@shared/stacking.ts";
+import { stackBrokenReason, type StackStanding } from "@shared/stacking.ts";
 import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
@@ -4795,6 +4796,15 @@ export class Registry extends EventEmitter {
       !DEFAULT_WORK_BRANCHES.has(existing.branch) &&
       existing.branch !== session.gitBranch;
     if (branchChanged) {
+      // Leaving a stacked pull request that merged into its parent's branch is the recovery
+      // starting, not the session walking away from its task: the recovery prompt asks for a
+      // new branch cut from the default branch, because both merged branches must stay as they
+      // are. So the task moves to a new episode with the session, as after an ordinary merge,
+      // and the recovery pull request opened there is the one whose merge completes it.
+      if (this.recoveringStrayMerge(existing)) {
+        const next = this.rolloverWorkEpisode(existing, now, session);
+        if (next) return next;
+      }
       return this.startWorkEpisode(
         session.id,
         session.agentSessionId,
@@ -4821,6 +4831,34 @@ export class Registry extends EventEmitter {
       this.bindTaskToWorkEpisode(taskId, session.id, existing, now);
     }
     return existing;
+  }
+
+  /**
+   * Stacked pull requests the PR poller confirmed merged off the default branch (lowercased
+   * URLs). A merged pull request's base never changes, so an entry never goes stale; it is lost
+   * on restart, by which time the Inspector's own observation says the same.
+   */
+  private readonly strayStackedMerges = new Set<string>();
+
+  /** The poller confirmed this stacked pull request merged somewhere other than the default branch. */
+  noteStrayStackedMerge(url: string): void {
+    this.strayStackedMerges.add(url.toLowerCase());
+  }
+
+  /**
+   * Whether an episode's pull request is a stacked child that merged into its parent's branch
+   * rather than the default branch. The poller never recorded that merge, so the episode still
+   * reads unmerged: the poller's stray verdict, or the Inspector's lifecycle observation, is
+   * what says it happened.
+   */
+  private recoveringStrayMerge(episode: SessionWorkEpisode): boolean {
+    if (!episode.prUrl || episode.mergedAt !== null) return false;
+    // The poller's own verdict, so a session that starts its recovery before the next Inspector
+    // tick has recorded the merge still keeps its task.
+    if (this.strayStackedMerges.has(episode.prUrl.toLowerCase())) return true;
+    const parsed = parsePrUrl(episode.prUrl);
+    const observation = parsed ? getInspectorPrRow(parsed.key)?.stack?.observation : null;
+    return Boolean(observation && stackBrokenReason(observation) === "merged-into-parent");
   }
 
   resetWorkEpisode(
@@ -7751,6 +7789,35 @@ export class Registry extends EventEmitter {
    */
   taskForSession(sessionId: string, cwd: string | null): Task | undefined {
     return this.activeTaskFor(sessionId, cwd);
+  }
+
+  /**
+   * Whether a pull request is a stacked child, for the merge gate: only a stacked child's merge
+   * has to have reached the default branch to complete anything (see `StackMergeWatch`).
+   *
+   * Stacked when its Inspector row carries stack lineage, which is written in the same step
+   * that adopts it, or - for a pull request the Inspector never adopted - when it is in the
+   * primary repository of a stacked task: the task named, else any stacked task one of whose
+   * bindings carries this URL. A secondary repository is never stacked, and neither is any
+   * pull request of an ordinary task.
+   */
+  isStackedTaskPr(url: string, taskId: string | null): boolean {
+    const parsed = parsePrUrl(url);
+    if (!parsed) return false;
+    if (getInspectorPrRow(parsed.key)?.stack) return true;
+    const sameRepo = (task: Task | undefined): boolean => {
+      const parent = task?.stackParentTaskId && task.stackPrUrl ? parsePrUrl(task.stackPrUrl) : null;
+      return Boolean(parent && parent.owner.toLowerCase() === parsed.owner.toLowerCase()
+        && parent.repo.toLowerCase() === parsed.repo.toLowerCase());
+    };
+    if (taskId !== null) return sameRepo(this.tasks.get(taskId) ?? getDurableTask(taskId) ?? undefined);
+    const wanted = url.toLowerCase();
+    for (const task of this.tasks.values()) {
+      if (!sameRepo(task)) continue;
+      const bindings = [taskWorkEpisodeForTask(task.id), ...historicalTaskWorkEpisodeBindingsForTask(task.id)];
+      if (bindings.some((binding) => binding?.prUrl?.toLowerCase() === wanted)) return true;
+    }
+    return false;
   }
 
   /**

@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { askChannelPrompt } from "../src/server/ask-channel.ts";
+import { DECISION_CONTEXT_RULE } from "../src/shared/decision-asks.ts";
 import {
   claudeSdkRateLimits,
   claudeSdkSpec,
@@ -171,6 +173,8 @@ const INIT = (sessionId: string): ClaudeSdkMessage => ({
   model: "claude-opus-5",
 });
 
+const MISSION_MCP = { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} };
+
 function launchOpts(over: Record<string, unknown> = {}) {
   return {
     cwd: "/wt/one",
@@ -179,7 +183,8 @@ function launchOpts(over: Record<string, unknown> = {}) {
     model: null,
     effort: null,
     permissionMode: null,
-    mcp: null,
+    // Every Claude SDK launch is handed Mission Control's server; one without it is refused.
+    mcp: MISSION_MCP,
     extraDirs: [],
     standingInstructions: "",
     standingInstructionsPrompt: "",
@@ -241,14 +246,44 @@ test("standing instructions APPEND to the Claude Code preset, and are omitted wh
   assert.deepEqual((await withText.started).options.systemPrompt, {
     type: "preset",
     preset: "claude_code",
-    append: "Never run E2E locally.",
+    append: `${askChannelPrompt}\n\nNever run E2E locally.`,
   });
 
   // And with nothing to send the key is absent entirely - not an empty `append`. An
   // ordinary session's options object stays exactly what it always was.
   const without = fakeDeps();
   await claudeSdkSpec(without.deps).launch(launchOpts());
-  assert.equal("systemPrompt" in (await without.started).options, false);
+  assert.equal(
+    (await without.started).options.systemPrompt?.append,
+    askChannelPrompt,
+    "with no standing instructions the append is the ask redirect alone, never an empty value",
+  );
+});
+
+test("every Claude SDK launch asks decisions through request_input: allow, disallow and redirect ride together", async () => {
+  const launched = fakeDeps();
+  await claudeSdkSpec(launched.deps).launch(launchOpts({ standingInstructions: "Never run E2E locally." }));
+  const options = (await launched.started).options;
+  assert.deepEqual(options.allowedTools, ["mcp__mission-control__request_input"], "calling it raises no permission card");
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"], "the built-in is removed");
+  const append = String(options.systemPrompt?.append);
+  assert.ok(append.startsWith(askChannelPrompt), "the redirect leads the append");
+  assert.ok(append.includes(DECISION_CONTEXT_RULE), "and says a decision carries its context and tradeoffs");
+  assert.ok(append.endsWith("\n\nNever run E2E locally."), "and the operator's own words still follow");
+});
+
+test("a Claude SDK launch without Mission Control's server is refused before anything starts", async () => {
+  // Starting it anyway would mean one of two failures: keep AskUserQuestion, and a decision is
+  // asked with no room for its context; remove it, and the agent has no way to ask at all.
+  const { deps, started } = fakeDeps();
+  let queried = false;
+  void started.then(() => (queried = true));
+  await assert.rejects(
+    claudeSdkSpec(deps).launch(launchOpts({ mcp: null })),
+    /ask every decision through Mission Control's request_input tool/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(queried, false, "no Claude process was started for a refused launch");
 });
 
 test("a task's SDK session asks through request_input, never the built-in AskUserQuestion", async () => {
@@ -268,15 +303,8 @@ test("a task's SDK session asks through request_input, never the built-in AskUse
     preset: "claude_code",
     append: `${askChannelRedirect("mission-control")}\n\nNever run E2E locally.`,
   });
-
-  // Without it, nothing is taken away: an agent with no way to ask is worse than one that
-  // keeps the built-in, so the whole channel is off rather than half of it.
-  const withoutMcp = fakeDeps();
-  await claudeSdkSpec(withoutMcp.deps).launch(launchOpts());
-  const bare = (await withoutMcp.started).options;
-  assert.equal("disallowedTools" in bare, false);
-  assert.equal("allowedTools" in bare, false);
-  assert.equal("systemPrompt" in bare, false);
+  // Without Mission MCP the launch is refused rather than started with the built-in - see
+  // "a Claude SDK launch without Mission Control's server is refused before anything starts".
 });
 
 test("the launch pins the binary, seeds turn one, and binds on init", async () => {
@@ -292,9 +320,8 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.equal(options.pathToClaudeCodeExecutable, "/fake/bin/claude");
   assert.equal(options.cwd, "/wt/one");
   assert.equal(options.permissionMode, "auto");
-  // The ask channel's disallow and redirect are deliberately NOT rendered: an embedded
-  // session's questions are answered on the card, which is what the redirect approximated.
-  assert.ok(!("disallowedTools" in options), "AskUserQuestion must stay available");
+  // Every decision goes through request_input, so the built-in is gone on every launch.
+  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
 
   query.emit(INIT("agent-1"));
   const events = await collect(handle.events, (e) => e.kind === "bound");
@@ -1748,17 +1775,17 @@ test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps dec
     for (const [name, value] of inherited) process.env[name] = value;
   });
   for (const [name] of inherited) delete process.env[name];
-  for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {
-    const { deps, started } = fakeDeps();
-    deps.env = defaultClaudeSdkDeps.env;
-    const handle = await claudeSdkSpec(deps).launch(launchOpts({ mcp }));
-    try {
-      const { options } = await started;
-      const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
-      assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
-    } finally {
-      await handle.stop();
-    }
+  // Every Claude SDK launch carries the Mission server (one without it is refused), so the
+  // default options are the only launch shape there is to check.
+  const { deps, started } = fakeDeps();
+  deps.env = defaultClaudeSdkDeps.env;
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  try {
+    const { options } = await started;
+    const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
+    assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
+  } finally {
+    await handle.stop();
   }
 });
 
@@ -2174,4 +2201,29 @@ test("task frames the stale process sends while its replacement launches do not 
   const summaries = events.flatMap((e) => (e.kind === "subagents" ? [e.subagents] : []));
   assert.ok(summaries.length > 0, "the stale frames did reach the driver before the relaunch landed");
   assert.equal(summaries.at(-1), null, "the replacement process starts with no sub-agents");
+});
+
+test("a sub-agent's frame during the parent's turn updates its activity without opening another turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit(INIT("agent-subagent-active"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  // The parent's own turn is running (the launch seeded it); a foreground sub-agent reports.
+  query.emit({ type: "assistant", session_id: "agent-subagent-active", parent_tool_use_id: "toolu_sub",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "inner", name: "Grep", input: {} }] } });
+  // Bounded, so a frame that never reports fails here instead of hanging the suite.
+  const during = await Promise.race([
+    collect(handle.events, (e) => e.kind === "state"),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the sub-agent frame reported no activity")), 2_000)),
+  ]);
+  assert.deepEqual(during.at(-1), { kind: "state", state: "working", activity: "Grep" });
+
+  // One result closes the one turn: the sub-agent frame opened nothing of its own.
+  query.emit({ type: "result", subtype: "success", session_id: "agent-subagent-active" });
+  const closed = await collect(handle.events, (e) => e.kind === "turn_done");
+  assert.equal(closed.filter((e) => e.kind === "turn_done").length, 1);
+  assert.equal(await handle.sendIfIdle({ text: "next" }), "started", "the session is idle once its turn ends");
+  await handle.stop();
 });

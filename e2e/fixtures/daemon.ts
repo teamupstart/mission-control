@@ -181,20 +181,6 @@ export const DAEMON_TERMINAL_IDENTITY = {
 } as const;
 
 /**
- * A daemon whose dispatches register no Mission MCP server: the bundle path names nothing.
- *
- * The one supported launch on which a dispatched Claude task keeps the built-in
- * `AskUserQuestion` (`ask-channel.ts` disarms the whole channel rather than remove the
- * built-in with no replacement). Every other task asks through `request_input`, so a spec
- * about the native driver form - drawing it, answering it, what holds behind it - uses
- * `test.use({ daemonEnv: NO_MISSION_MCP_ENV })`. Only for tasks whose kind requires no
- * Mission tool: a kind that does refuses to launch without the bundle.
- */
-export const NO_MISSION_MCP_ENV: Record<string, string> = {
-  MISSION_MCP_SERVER: "/nonexistent/mission-control-e2e/no-mcp-server.mjs",
-};
-
-/**
  * A port the OS has just confirmed is free on loopback.
  *
  * NOT a fixed port derived from the worker index, which is what this was and which had a

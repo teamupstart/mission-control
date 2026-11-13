@@ -711,7 +711,7 @@ if (argv[0] === "--version") {
   else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
-    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
     repository: { defaultBranchRef: { name: "main" } },
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
@@ -727,7 +727,7 @@ if (argv[0] === "--version") {
   process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, isDraft: pr.isDraft === true, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
-    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
     repository: { defaultBranchRef: { name: "main" } },
   } : null } } }));
 } else if (argv[0] === "api" && (argv[1] || "").includes("/compare/")) {

@@ -46,6 +46,7 @@ export const SETUP_FAMILY_IDS = [
   "agents",
   "terminals",
   "github",
+  "repositories",
   "jira",
   "extensions",
   "pipelines",
@@ -75,6 +76,11 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     id: "github",
     label: "GitHub",
     description: "The GitHub CLI carries pull requests, reviews, issues, and repository reads.",
+  },
+  repositories: {
+    id: "repositories",
+    label: "Repositories",
+    description: "The directories walked for git checkouts. Dispatch needs at least one repository to work in.",
   },
   jira: {
     id: "jira",
@@ -534,7 +540,10 @@ export type SetupStatus =
   | { state: "needs-setup"; why: string; evidence: string | null; source?: string }
   | { state: "unknown"; why: string; evidence: string | null; source?: string };
 
-export type SetupDerivedRowId = "terminal-pair";
+/** Rows the daemon derives from composed state rather than from one dependency probe. */
+export const SETUP_DERIVED_ROW_IDS = ["terminal-pair", "indexed-repositories"] as const;
+
+export type SetupDerivedRowId = (typeof SETUP_DERIVED_ROW_IDS)[number];
 
 export type SetupRowId =
   | { source: "dependency"; id: SetupDependencyId }
@@ -545,7 +554,7 @@ export type SetupRowId =
 export const SetupRowIdSchema: z.ZodType<SetupRowId, SetupRowId> = z.discriminatedUnion("source", [
   z.object({ source: z.literal("dependency"), id: z.enum(SETUP_DEPENDENCY_IDS) }),
   z.object({ source: z.literal("environment-check"), id: z.enum(ENVIRONMENT_CHECK_IDS) }),
-  z.object({ source: z.literal("derived"), id: z.literal("terminal-pair") }),
+  z.object({ source: z.literal("derived"), id: z.enum(SETUP_DERIVED_ROW_IDS) }),
 ]);
 
 /** What this operator has acknowledged while the named rows remained unsatisfied. */
@@ -696,6 +705,37 @@ export const TERMINAL_PAIR_INFO = {
     label: "Open terminal installation guide",
   },
 } as const satisfies Omit<SetupRowView, "status">;
+
+/**
+ * The required row derived from the repository index: at least one detected repository.
+ *
+ * Required because nothing Mission Control dispatches can start without a checkout to work
+ * in - the repo picker offers nothing and tasks filed by repository name cannot resolve. The
+ * Repositories family's pane carries the directory editor itself, so this remedy is the guide
+ * rather than a link back to the page the operator is already reading.
+ */
+export const INDEXED_REPOSITORIES_INFO = {
+  rowId: { source: "derived", id: "indexed-repositories" },
+  label: "At least one detected repository",
+  family: "repositories",
+  requirement: "required",
+  enables: "Without a detected repository, the dispatch repo picker offers nothing and tasks filed by repository name cannot resolve.",
+  remedy: {
+    kind: "link",
+    url: "https://github.com/teamupstart/mission-control/blob/main/docs/setup.md#repositories",
+    label: "Open repository setup guide",
+  },
+} as const satisfies Omit<SetupRowView, "status">;
+
+/**
+ * Anchors inside the Repositories family's directory editor, so a deep link to one of them
+ * selects that family before the page waits for the control to mount.
+ */
+export const SETUP_REPOSITORY_ANCHORS = {
+  directories: "setup/repositories-directories",
+  add: "setup/repositories-add",
+  rescan: "setup/repositories-rescan",
+} as const;
 
 /** A collision-proof anchor slug, including the row's id namespace. */
 export function setupRowAnchor(rowId: SetupRowId): string {

@@ -424,6 +424,10 @@ export function observeClaudeSubagentFrame(
       const usage = record(message.usage);
       put(id, {
         ...prior,
+        // The flag counts whichever task frame carries it. The pinned SDK defines it only on
+        // starts, notifications and live-set entries; honouring it here too costs nothing and
+        // keeps the rule true if a later CLI adds it.
+        ambient: prior.ambient || message.ambient === true,
         entry: {
           ...prior.entry,
           type: prior.entry.type ?? str(message.subagent_type),
@@ -447,6 +451,8 @@ export function observeClaudeSubagentFrame(
       put(id, {
         ...prior,
         background,
+        // As in `task_progress`: honoured on the frame or its patch, wherever it appears.
+        ambient: prior.ambient || message.ambient === true || patch.ambient === true,
         // Moved to the background while still running: it starts counting now - once the live
         // set, when there is one, names it too.
         shown: prior.shown || (background && running && (!levelSeen || state.live.has(id))),

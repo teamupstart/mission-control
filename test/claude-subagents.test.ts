@@ -589,6 +589,24 @@ test("a new run of an agent once marked ambient starts unclassified", () => {
   assert.deepEqual(states(t), { h: "running" });
 });
 
+test("an ambient flag on a progress or update frame hides the agent too", () => {
+  // Neither the start nor the live set says ambient; a later frame does.
+  for (const flagging of [
+    sys("task_progress", { task_id: "h", description: "chore", ambient: true, usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } }),
+    sys("task_updated", { task_id: "h", patch: { ambient: true } }),
+    sys("task_updated", { task_id: "h", ambient: true, patch: {} }),
+  ]) {
+    let s = run([level(agent("a"), agent("h")), started("a", { is_backgrounded: true }), started("h", { is_backgrounded: true })]);
+    assert.deepEqual(states(s), { a: "running", h: "running" });
+    s = observeClaudeSubagentFrame(s, flagging, 5);
+    assert.deepEqual(states(s), { a: "running" }, `${flagging.subtype} flags it housekeeping`);
+    assert.equal(subagentActivityLine({ state: "idle", subagents: claudeSubagentSummary(s)! }), "idle · 1 agent still running");
+    // A later live set that omits the flag does not bring it back: the run keeps it.
+    s = observeClaudeSubagentFrame(s, level(agent("a"), agent("h")), 6);
+    assert.deepEqual(states(s), { a: "running" });
+  }
+});
+
 test("a no-op frame returns the same state object", () => {
   const s = run([level(agent("a")), started("a", { is_backgrounded: true })]);
   assert.equal(observeClaudeSubagentFrame(s, sys("task_progress", { task_id: "unknown", usage: {} }), 1), s);

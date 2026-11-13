@@ -807,3 +807,60 @@ test("when the parent cannot be read, the pending catch-up is withdrawn until Gi
   await expect(queued).toContainText(offered, { timeout: 30_000 });
   await expect(queued.getByRole("button", { name: "Send catch-up prompt" })).toBeEnabled();
 });
+
+// The #1416 / #1417 incident, through the real dashboard: the parent merges, and a person merges
+// the child on GitHub into the parent's now-finished branch before anything retargets it. That
+// merge never reached main, so the child's task stays open, and the stack reads Broken with its
+// own reason on the board tile and in the merge queue. With Foreman off the merge queue offers
+// the recovery prompt, whose button types it into the child's (fake) session.
+test("a child merged into its finished parent's branch reads Stack broken, keeps its task open, and offers the recovery prompt", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  await api(daemon, "/api/foreman/config", { enabled: false }, "PUT");
+  const { child, childSession, parentPr, childPr, row } = await openStack(daemon, 131, 132);
+
+  const STRAY = "57a7".repeat(10);
+  const parentMergedAt = Date.now() - 60_000;
+  writeGhPullRequests(daemon.home, [
+    { ...parentPr, state: "MERGED" as const, mergedAt: new Date(parentMergedAt).toISOString(), mergeCommit: "5eed".repeat(10) },
+    // 22 seconds later, into `feat/stack-parent`: the branch #131 merged from.
+    { ...childPr, state: "MERGED" as const, mergedAt: new Date(parentMergedAt + 22_000).toISOString(), mergeCommit: STRAY },
+  ]);
+  const broken = "Stack broken: merged into #131's branch, not main";
+  const offered = `${broken} - Recovery needed: Foreman is off`;
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe(offered);
+
+  // The merge completed nothing: the child's task is still open.
+  const childTask = async () => (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === child.id)!;
+  expect((await childTask()).status).not.toBe("done");
+  expect((await childTask()).outcomeUrl).toBeNull();
+  // The session card carries the same standing once the daemon re-reads its inspections.
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === childSession.id)?.inspector?.stack?.label,
+    { timeout: 30_000 }).toBe(offered);
+
+  await boardLayout(dashboard, daemon);
+  const tile = dashboard.locator(".stack-lifecycle").filter({ hasText: broken });
+  await expect(tile).toBeVisible({ timeout: 30_000 });
+  await expect(tile.getByRole("button", { name: "Send recovery prompt" })).toBeEnabled();
+  await shoot(dashboard, "board-stack-merged-into-parent");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#132" });
+  await expect(queued).toContainText(offered);
+  const send = queued.getByRole("button", { name: "Send recovery prompt" });
+  await expect(send).toBeEnabled();
+  await shoot(queued, "merge-queue-recovery-foreman-off");
+  await send.click();
+  await expect.poll(async () => {
+    const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
+    return transcript.messages.some((m) => m.role === "user"
+      && m.text.includes("create a new branch from `origin/main`")
+      && m.text.includes(`gh pr diff ${childPr.url} | git apply --3way`)
+      && m.text.includes(`merge commit \`${STRAY}\``)
+      && m.text.includes("gh pr create --base main")
+      && m.text.includes("Do NOT force-push, rebase, reset or otherwise rewrite `feat/stack-child` or `feat/stack-parent`"));
+  }, { timeout: 30_000, message: "the recovery prompt reached the child's session" }).toBe(true);
+  await expect(queued).toContainText(`${broken} - recovering`, { timeout: 15_000 });
+  await expect(queued.getByRole("button", { name: "Send recovery prompt" })).toHaveCount(0);
+  await shoot(queued, "merge-queue-recovering");
+  expect((await childTask()).status, "the stray merge still completed nothing").not.toBe("done");
+});

@@ -1,3 +1,4 @@
+import { DECISION_CONTEXT_RULE } from "@shared/decision-asks.ts";
 // The ask channel's text and tool names, with no dependency on state or configuration.
 //
 // Split from `ask-channel.ts` so the Claude SDK driver can render the channel without
@@ -58,13 +59,17 @@ Pass discrete choices as \`options\` so they arrive as real controls the human c
 
     ${ask}(
       question: "Which linter should this repo use?",
+      context: "The repo has no linter. CI runs Prettier only, and the team asked for type-aware rules.",
       options: [
-        { label: "biome", detail: "lint + format in one binary" },
-        { label: "eslint", detail: "widest plugin ecosystem" },
+        { label: "biome", detail: "lint + format in one fast binary; no type-aware rules" },
+        { label: "eslint", detail: "type-aware rules and the widest plugin ecosystem; slower, more config", recommended: true },
       ],
     )
 
 Omit \`options\` only when the answer is genuinely open-ended prose.
+
+${DECISION_CONTEXT_RULE} A decision asked without its context and tradeoffs makes your
+human rebuild what you already know before they can answer it.
 
 NEVER ask a question as ordinary prose and end your turn. A prose question reaches nobody:
 the turn simply ends and your human never learns you were stuck. If a question is worth

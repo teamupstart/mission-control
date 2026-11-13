@@ -21536,6 +21536,9 @@ button.wf-carried.is-link:focus-visible {
 
 /* ---- repository index directories ----
    One removable row per root, with the filesystem reading kept beside the path. */
+.setup-repositories {
+  margin-top: 14px;
+}
 .ri-panel .settings-section-head {
   align-items: flex-start;
   gap: 20px;

@@ -458,17 +458,13 @@ Internal Ensemble member and replacement tasks opt out because an Ensemble's opt
 Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans the directories
-listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~/dev`, and
+listed in the **Repositories** family of **Settings → Setup**, seeded with `~/workspace`, `~/code`, `~/dev`, and
 `~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
 override. Select the repo to base the task on rather than typing a path. Type to filter;
 arrow/enter to pick.
 
-The Settings panel is also where the index is maintained. Any directory can be removed, including
-a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
-leaving operator-added rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
-path instead of silently omitting it. **Rescan now** clears the discovery cache so a newly cloned
-checkout appears immediately. While `MISSION_WORKSPACE_DIRS` is set, the panel names the override
-and keeps the saved list read-only. This same repository picker is reused by Dispatch,
+That Setup family is also where the index is maintained; see
+[Repositories in the setup guide](setup.md#repositories). This same repository picker is reused by Dispatch,
 **Settings → Trust**, **Standing instructions**, and **Task sources**.
 
 Each row is the checkout's **directory name**, not its path: every repo under one workspace
@@ -644,7 +640,14 @@ The prompts go through Foreman; when it cannot send one, the merge queue says wh
 send it by hand. If the task's session is gone the prompt waits for **Resume**, which gives it an
 owner again. If the prerequisite's pull
 request closes without merging, or its task is cancelled or rescheduled, the stacked pull
-request is held as *Stack broken* with an action that fixes it. Flipping the dependency to
+request is held as *Stack broken* with an action that fixes it. If someone merges the stacked
+pull request on GitHub into its prerequisite's branch instead of the default branch, nothing is
+completed: the task stays open and its own dependents stay blocked. When that merge came after the
+prerequisite's pull request had already merged, the session is asked to carry the work onto the
+default branch in a new pull request, whose merge completes it. When the prerequisite was still
+open, no prompt is sent, and the operator confirms whether the work reached the default branch. See
+[a merge into the parent's branch](inspector-and-shipping.md#a-merge-into-the-parents-branch).
+Flipping the dependency to
 *After merge* after the task started changes nothing for it.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps

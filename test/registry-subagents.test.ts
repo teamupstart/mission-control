@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { SubagentSummary } from "../src/shared/types.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-registry-subagents-"));
 process.env.MISSION_HOME = home;
@@ -116,6 +118,36 @@ test("a hook raised inside a sub-agent leaves an idle parent idle", () => {
   // The same hook from the parent itself still moves it.
   registry.applyHook(hook("PreToolUse"));
   assert.equal(registry.getSession(id)!.state, "working");
+});
+
+test("a sub-agent's hook cannot change the parent's state through a later discovery sweep", () => {
+  // A pane-backed Claude session: its hook overlay is what each discovery sweep replays.
+  const PANE = "%41";
+  const discovered = (): DiscoveredSession => ({
+    syntheticId: "term-subagent-overlay", agent: "claude", name: "work", nameSource: "process",
+    cwd: join(home, "overlay"), gitBranch: null, pid: 4141, tty: "ttys041",
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: PANE })],
+    startedAt: 0,
+  } as DiscoveredSession);
+  const registry = new Registry();
+  registry.applyDiscovery([discovered()]);
+  const hook = (event: string, extra: Partial<HookIngest> = {}): HookIngest => HookIngestSchema.parse({
+    agent: "claude", event, sessionId: "native-overlay", cwd: join(home, "overlay"),
+    env: { tmuxPane: PANE }, toolName: "Grep", ...extra,
+  });
+  registry.applyHook(hook("Stop"));
+  const before = registry.getSession("term-subagent-overlay")!;
+  assert.equal(before.state, "idle");
+
+  // A background sub-agent keeps working after the parent's turn ended.
+  registry.applyHook(hook("PreToolUse", { agentId: "agent-a" }));
+  assert.equal(registry.getSession("term-subagent-overlay")!.state, "idle");
+
+  // The next sweep replays the pane's overlay: it must still read the parent's Stop.
+  registry.applyDiscovery([discovered()]);
+  const after = registry.getSession("term-subagent-overlay")!;
+  assert.equal(after.state, "idle", "the sweep did not pick up the sub-agent's working");
+  assert.equal(after.activity, before.activity);
 });
 
 test("an ingest without agentId still parses, as a hook installed before the field did", () => {

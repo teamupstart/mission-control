@@ -97,6 +97,8 @@ export const MISSION_MCP_TOOLS = [
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
   COMPLETE_RETRO_NO_CHANGE_TOOL,
   "schedule_next_iteration",
+  "get_resident_instructions",
+  "propose_resident_instruction_changes",
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
@@ -146,7 +148,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL, "publish_plan"],
   pipeline: [],
   chat: [PLAN_SCHEDULING_TOOL, "dispatch_task"],
-  resident: ["schedule_next_iteration"],
+  resident: ["schedule_next_iteration", "get_resident_instructions", "propose_resident_instruction_changes"],
 };
 
 /**

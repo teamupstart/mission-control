@@ -154,6 +154,7 @@ import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
+import { isBuiltinResidentProfileId } from "@shared/residents.ts";
 import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
 import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } from "./residents/ResidentsDrawer.tsx";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
@@ -3047,6 +3048,14 @@ export function App(): React.JSX.Element {
   const completeSession = completeSessionId
     ? sessions.find((s) => s.id === completeSessionId) ?? null
     : null;
+  // A built-in resident's profile is app data, so its Complete dialog offers no retro that would
+  // propose edits nothing may write. An ended run is no longer listed; the route still knows.
+  const completeResidentRun = completeSession?.task?.kind === "resident"
+    ? residentRuns.find((run) => run.taskId === completeSession.task?.id) ?? null
+    : null;
+  const completeResident = completeResidentRun
+    ? { builtin: isBuiltinResidentProfileId(completeResidentRun.profileId) }
+    : undefined;
   const killSession = killSessionId ? sessions.find((s) => s.id === killSessionId) ?? null : null;
   const requeueSession = requeueSessionId
     ? sessions.find((s) => s.id === requeueSessionId) ?? requeueSentFor
@@ -4847,6 +4856,7 @@ export function App(): React.JSX.Element {
                   lead={restartPromptSessionId === completeSession.id
                     ? "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer."
                     : undefined}
+                  resident={completeResident}
                   onCompleted={() => onKilled(completeSession.id)}
                   onClose={closeComplete}
                 />

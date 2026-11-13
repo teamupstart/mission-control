@@ -59,6 +59,7 @@ export class ReviewManager {
   private waiters = new Map<string, Set<Waiter>>();
   private continuationDelivery: ContinuationDelivery | null = null;
   private owedContinuationSessions = new Set<string>();
+  private continuationAddenda: Array<(review: ReviewItem) => string | null> = [];
 
   constructor(private registry: Registry) {
     // A review is durable state BOUND TO A SESSION, so it needs the same two halves every
@@ -115,11 +116,29 @@ export class ReviewManager {
     return review;
   }
 
+  /**
+   * Let the owner of a review's side effects say what the answer did, in the continuation an
+   * agent receives when its blocking tool call ended before the human answered. The tool would
+   * have reported that itself; a detached wait has nobody left to ask, so the owner says it here.
+   */
+  addContinuationAddendum(addendum: (review: ReviewItem) => string | null): void {
+    this.continuationAddenda.push(addendum);
+  }
+
   private continuationText(review: ReviewItem): string {
     const result = reviewToolResult(review);
+    const addenda = this.continuationAddenda.flatMap((addendum) => {
+      try {
+        return addendum(review) ?? [];
+      } catch (error) {
+        console.error(`Failed to describe review continuation ${review.id}:`, error);
+        return [];
+      }
+    });
     return (
       `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
-      `Treat this as the result of your earlier review tool call:\n\n${result.text}`
+      `Treat this as the result of your earlier review tool call:\n\n${result.text}` +
+      addenda.map((text) => `\n\n${text}`).join("")
     );
   }
 

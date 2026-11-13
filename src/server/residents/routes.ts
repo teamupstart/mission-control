@@ -10,6 +10,56 @@ import type { ResidentManager } from "./manager.ts";
 import type { ResidentLoop } from "./loop.ts";
 import { ResidentLoopRefusal, liveRun } from "./loop-store.ts";
 import { getResidentProfile, getResidentRun, residentRunIdentityByRequest } from "./store.ts";
+import { ProposeResidentInstructionChangesSchema } from "@shared/resident-instructions.ts";
+import type { ResidentInstructionChanges } from "./instruction-changes.ts";
+
+/**
+ * A resident reading and proposing changes to its own standing instructions.
+ *
+ * The caller names nothing but its proposal: the daemon attributes the signed session exactly
+ * as `schedule_next_iteration` does, and derives the run, profile and Persona from it. No route
+ * here writes a profile or a Persona. A proposal only opens a review; the operator's answer to
+ * that review, through `/api/reviews/:id/resolve`, is the one path that applies it.
+ */
+export function registerResidentInstructionRoutes(app: Hono, deps: {
+  registry: Registry; changes: ResidentInstructionChanges;
+}): void {
+  const caller = (header: string | undefined) => {
+    const id = sessionControlCaller(deps.registry, header);
+    const session = id ? deps.registry.getSession(id) : undefined;
+    return session?.runtime === "sdk" ? session : undefined;
+  };
+  const NO_CALLER = "No matching signed resident session.";
+
+  app.get("/mcp/residents/instructions", (c) => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const session = caller(c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!session) return c.json({ error: NO_CALLER }, 409);
+    const view = deps.changes.read(session);
+    return "error" in view ? c.json({ error: view.error }, view.status) : c.json(view);
+  });
+
+  app.post("/mcp/residents/instructions/proposals", async (c) => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const session = caller(c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!session) return c.json({ error: NO_CALLER }, 409);
+    const body: unknown = await c.req.json().catch(() => null);
+    const parsed = ProposeResidentInstructionChangesSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: `Not proposed: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`).join("; ")}` }, 400);
+    }
+    const proposed = deps.changes.propose(session, parsed.data);
+    return "error" in proposed ? c.json({ error: proposed.error }, proposed.status) : c.json(proposed);
+  });
+
+  app.get("/mcp/residents/instructions/proposals/:reviewId", (c) => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const session = caller(c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    if (!session) return c.json({ error: NO_CALLER }, 409);
+    const outcome = deps.changes.outcome(session, c.req.param("reviewId"));
+    return "error" in outcome ? c.json({ error: outcome.error }, outcome.status) : c.json(outcome);
+  });
+}
 
 export function registerResidentLoopRoutes(app: Hono, deps: {
   registry: Registry; loop: ResidentLoop; residents: ResidentManager;

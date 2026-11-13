@@ -1,4 +1,10 @@
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
+import { requestInputReview } from "@shared/request-input.ts";
+import {
+  ProposeResidentInstructionChangesSchema,
+  residentInstructionOutcomeText,
+  type ResidentInstructionOutcome,
+} from "@shared/resident-instructions.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
 import { DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
@@ -30,7 +36,6 @@ import {
   readClientToken,
   readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
-import { titleLine } from "@shared/title.ts";
 import { TASK_REFERENCE_RULE } from "@shared/task-references.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
@@ -835,30 +840,12 @@ server.registerTool(
       );
     }
     try {
-      // Option ids are positional and generated here rather than asked of the agent. The
-      // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a
-      // wire-level handle between the form and its submit - making the agent invent stable
-      // ids for something it never reads back would be ceremony with a chance of collision.
-      const decisions = options?.length
-        ? [
-            {
-              id: "q",
-              question,
-              options: options.map((o, i) => ({ ...o, id: `o${i}` })),
-              multiSelect,
-              allowOther,
-            },
-          ]
-        : undefined;
-      // The title is a HEADING and the body is the question itself, so a long or multi-line
-      // ask is readable rather than folded into a bold one-liner with its newlines collapsed.
-      // Sending the question as both (which this did) made them equal for every review the
-      // tool produced, and the modal's de-duplication then suppressed the readable paragraph
-      // in every case - including the ones it exists to protect. `titleLine` is the shared
-      // clipper (word boundary, ellipsis, `TITLE_MAX_CHARS`), so a heading here and a heading
-      // on a task card are cut the same way; a question already short enough comes back
-      // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
-      const id = await createReview("input", titleLine(question), question, decisions);
+      // One construction for every `request_input` review (`@shared/request-input.ts`): a
+      // heading clipped from the question, the whole question as the body, and positional
+      // option ids, which the human's answer never shows the agent - it comes back as LABELS.
+      // A resident's proposed instruction changes are asked through the same builder.
+      const ask = requestInputReview({ question, options, multiSelect, allowOther });
+      const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
@@ -1303,6 +1290,68 @@ server.registerTool("schedule_next_iteration", {
   const result = await scheduleResidentIteration(input, (body, signal) =>
     http("/mcp/residents/schedule-next-iteration", "POST", body, true, signal));
   return textResult(JSON.stringify(result), "code" in result);
+});
+// A resident reading and editing its own standing role. Neither tool names a session, run or
+// profile: the daemon attributes the signed session, as it does for schedule_next_iteration.
+server.registerTool("get_resident_instructions", {
+  title: "Read your resident standing instructions",
+  description:
+    "Residents only. Read the CURRENT text of your resident profile's instructions and of the " +
+    "Persona guidance it names, with their revisions and whether each can be edited. Copy passages " +
+    "from here, exactly, into propose_resident_instruction_changes. You keep running on the revision " +
+    "you launched with (runProfileRevision) until the operator chooses Restart on new profile.",
+  inputSchema: {},
+  annotations: { readOnlyHint: true },
+}, async () => {
+  try {
+    const res = await http("/mcp/residents/instructions", "GET", undefined, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (err) {
+    return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+  }
+});
+server.registerTool("propose_resident_instruction_changes", {
+  title: "Propose changes to your resident standing instructions",
+  description:
+    "Residents only. Ask the operator, as a request_input question listing every change in full, " +
+    "which changes to your profile instructions (target profile) or your Persona's guidance " +
+    "(target persona) to apply, and BLOCK until they answer. They select the changes; Mission " +
+    "Control writes only those, as the next profile or Persona revision, and returns what was " +
+    "applied and any guidance they wrote. Do not ask the same thing with request_input yourself. " +
+    "Each change either replaces " +
+    "one passage (find, copied exactly from get_resident_instructions, occurring once) with " +
+    "replace, removes it (empty replace), or appends replace as a new passage (omit find). Put " +
+    "how this resident should work in the profile; use the Persona only for guidance every user " +
+    "of that Persona should follow. Never edit files or settings to make these changes yourself. " +
+    "If this call ends before they answer, their selection is still applied when they do.",
+  inputSchema: ProposeResidentInstructionChangesSchema.shape,
+}, async (input, extra) => {
+  try {
+    const res = await http("/mcp/residents/instructions/proposals", "POST", input, true);
+    if (!res.ok) {
+      return textResult(
+        `${await res.text()} (${res.status}). Nothing was shown to the operator and nothing changed.`,
+        true,
+      );
+    }
+    const { reviewId } = (await res.json()) as { reviewId: string };
+    await waitForResolution(reviewId, extra);
+    const read = await http(`/mcp/residents/instructions/proposals/${encodeURIComponent(reviewId)}`, "GET", undefined, true);
+    if (!read.ok) {
+      return textResult(
+        `The operator answered, but the outcome could not be read (${read.status}): ${await read.text()}. ` +
+          "Call get_resident_instructions to see the current text.",
+        true,
+      );
+    }
+    const outcome = (await read.json()) as ResidentInstructionOutcome;
+    return textResult(
+      residentInstructionOutcomeText(outcome),
+      outcome.status === "stale" || outcome.status === "refused" || outcome.status === "orphaned",
+    );
+  } catch (err) {
+    return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+  }
 });
 server.registerTool("get_plan_context", {
   description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",

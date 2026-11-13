@@ -304,7 +304,10 @@ test("a start naming a later run of a still-running task starts clean too", () =
 });
 
 test("a late start from an earlier run cannot roll a running task back to that run", () => {
-  let s = run([level(agent("a", { run_id: "r2" })), started("a", { is_backgrounded: true, run_id: "r2" })], emptyClaudeSubagents(), 100);
+  // r1 ran first, so its id is a run this task has already been seen in; then r2 takes over.
+  let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })], emptyClaudeSubagents(), 50);
+  s = observeClaudeSubagentFrame(s, level(agent("a", { run_id: "r2" })), 100);
+  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r2" }), 100);
   s = observeClaudeSubagentFrame(s, sys("task_progress", { task_id: "a", run_id: "r2", last_tool_name: "Edit",
     usage: { total_tokens: 300, tool_uses: 3, duration_ms: 1 } }), 200);
   // r1's start arrives late, while r2 runs: it changes nothing at all.
@@ -317,13 +320,36 @@ test("a late start from an earlier run cannot roll a running task back to that r
   assert.equal(subagentActivityLine({ state: "idle", subagents: claudeSubagentSummary(s)! }), "idle · 1 agent still running");
 });
 
+test("runs are told apart by identity, not by how their ids sort", () => {
+  // `r10` sorts before `r9` as text. It is still a new run of the agent that finished r9.
+  let s = run([level(agent("a", { run_id: "r9" })), started("a", { is_backgrounded: true, run_id: "r9" })], emptyClaudeSubagents(), 100);
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r9", status: "completed", summary: "" }), 200);
+  // The live set still lists a; then it and the start report r10.
+  s = observeClaudeSubagentFrame(s, level(agent("a", { run_id: "r10" })), 300);
+  s = observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r10" }), 301);
+  const entry = claudeSubagentSummary(s)!.agents[0]!;
+  assert.deepEqual([entry.state, entry.startedAt, entry.endedAt], ["running", 300, null]);
+  // r9's frames are now late, wherever r9 sorts.
+  s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r9", status: "failed", summary: "late" }), 400);
+  assert.deepEqual(states(s), { a: "running" });
+  assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r9" }), 500), s);
+
+  // The same holds for a start that reaches a folded agent first, and for opaque ids.
+  let t = run([level(agent("b", { run_id: "zz-old" })), started("b", { is_backgrounded: true, run_id: "zz-old" })]);
+  t = observeClaudeSubagentFrame(t, sys("task_notification", { task_id: "b", run_id: "zz-old", status: "completed", summary: "" }), 2);
+  t = foldClaudeSubagents(t);
+  t = observeClaudeSubagentFrame(t, started("b", { is_backgrounded: true, run_id: "aa-new" }), 3);
+  assert.deepEqual(states(t), { b: "running" });
+  assert.deepEqual(t.tasks.get("b")!.pastRuns, ["zz-old"], "the folded run is remembered as past");
+});
+
 test("a repeated start for the run that already ended does not revive it", () => {
   let s = run([level(agent("a", { run_id: "r1" })), started("a", { is_backgrounded: true, run_id: "r1" })]);
   s = observeClaudeSubagentFrame(s, sys("task_notification", { task_id: "a", run_id: "r1", status: "completed", summary: "" }), 2);
   assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r1" }), 3), s);
   s = foldClaudeSubagents(s);
   assert.equal(observeClaudeSubagentFrame(s, started("a", { is_backgrounded: true, run_id: "r1" }), 4), s);
-  assert.deepEqual(s.retired.get("a"), "r1");
+  assert.deepEqual(s.retired.get("a"), { runId: "r1", pastRuns: [] });
 });
 
 test("a live set naming a later run of a folded agent brings it back before its start arrives", () => {

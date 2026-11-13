@@ -1292,6 +1292,72 @@ test("a grill-first task is refused before the reset when the bundle lacks reque
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
+test("a grill-first task is refused before the reset when this session cannot load the grill skill", async () => {
+  // The skill rung of the assignment seam, after the MCP checks have passed: Grill me first
+  // opens with an action that invokes the grill skill, so a session that cannot load it - the
+  // skill switched off, or a conversation still holding the skill set from before the last
+  // change - would be reset and then told to run an interview it cannot start.
+  const cases = [
+    {
+      name: "the grill skill is off",
+      config: { enabled: true, skills: { grill: false } },
+      startedAt: Date.now() + 1_000,
+      error: /Enable Skills and the grill skill/,
+    },
+    {
+      name: "the session predates the current skills",
+      config: { enabled: true, skills: { grill: true } },
+      // Started long before the generation moved, and never acknowledged the reload.
+      startedAt: 0,
+      error: /Wait for Claude Code to reload its skills/,
+    },
+  ] as const;
+  for (const scenario of cases) {
+    // Off first, so turning skills on (or the grill skill off) moves the generation now.
+    applySkillsConfig({ enabled: false });
+    assert.deepEqual(applySkillsConfig(scenario.config).refused, [], scenario.name);
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-grill-noskill-", { startedAt: scenario.startedAt });
+    gitIn(clone, "checkout", "-qb", "feature/mine");
+    r.upsertTask(mkTask({ repoRoot: clone, kind: "ship", grillFirst: true }));
+    let reset = false;
+    let typed = false;
+
+    let res: Awaited<ReturnType<typeof tasks.assign>>;
+    try {
+      res = await tasks.assign("t1", sessionId, {
+        paneReady,
+        confirmReset: true,
+        missionMcpDescriptor: async () => ({
+          serverName: "mission-control",
+          command: "node",
+          args: ["server.mjs"],
+          env: {},
+        }),
+        verifyMissionMcpToolsForRunningSession: async () => ({ ok: true as const }),
+        reset: async () => {
+          reset = true;
+          return cleanReset();
+        },
+        inject: async () => {
+          typed = true;
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      });
+    } finally {
+      applySkillsConfig({ enabled: false });
+    }
+
+    assert.equal(res.ok, false, scenario.name);
+    assert.match(res.error ?? "", scenario.error, scenario.name);
+    assert.match(res.error ?? "", /A Grill me first task opens with the Grill session action/, scenario.name);
+    assert.equal(res.scope, "task", scenario.name);
+    assert.equal(reset, false, `${scenario.name}: nothing may be done to an agent that cannot run the interview`);
+    assert.equal(typed, false, `${scenario.name}: and nothing is typed at it`);
+    assert.equal(r.getTask("t1")?.status, "backlog", scenario.name);
+    assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), "feature/mine", `${scenario.name}: the checkout is untouched`);
+  }
+});
+
 test("an assigned grill-first task is typed the resolved Grill action ahead of its contract, with request_plan_decisions verified", async () => {
   // The success path through the live-session seam. The two refusals above prove the tool
   // check runs; this proves a passing one ends in a prompt that actually opens with the

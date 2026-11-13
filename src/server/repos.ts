@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -192,10 +192,36 @@ function persistSnapshot(snapshot: Snapshot): void {
   persisting = persisting.then(() => writeSnapshot(snapshot));
 }
 
+/**
+ * Log a failure once per distinct reason, until `clearWarning` reports the same operation
+ * recovered. Both callers can fail on every read for as long as their cause lasts - a full
+ * disk, a broken directory - and one line naming the cause is the diagnosis, where one per
+ * Dispatch open is noise that buries it.
+ */
+const lastWarnings = new Map<string, string>();
+function warnOnce(topic: string, message: string, cause: unknown): void {
+  // Compared by cause, not wording: an fs error's message names the temp path it hit, which is
+  // unique per write, and would make every repeat of one full disk look like a new reason.
+  const reason = causeOf(cause);
+  if (lastWarnings.get(topic) === reason) return;
+  lastWarnings.set(topic, reason);
+  console.warn(`[repos] ${message}`);
+}
+function causeOf(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" ? code : reasonOf(error);
+}
+function clearWarning(topic: string): void {
+  lastWarnings.delete(topic);
+}
+const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
 async function writeSnapshot(snapshot: Snapshot): Promise<void> {
   // A later scan already replaced this one in memory; its own queued write follows.
   if (cache !== snapshot) return;
-  const temporary = `${SNAPSHOT_PATH}.${process.pid}.tmp`;
+  // Unique per write, not per process: two writers sharing one name would rename each
+  // other's half-written file away.
+  const temporary = `${SNAPSHOT_PATH}.${process.pid}.${randomUUID()}.tmp`;
   const body = {
     version: SNAPSHOT_VERSION,
     at: snapshot.at,
@@ -207,7 +233,16 @@ async function writeSnapshot(snapshot: Snapshot): Promise<void> {
     await writeFile(temporary, `${JSON.stringify(body)}\n`, { mode: 0o600 });
     // A rename, so a starting daemon never reads half a file.
     await rename(temporary, SNAPSHOT_PATH);
-  } catch {
+    clearWarning("snapshot");
+  } catch (error) {
+    // Not fatal - the in-memory scan still answers - but without the file every restart walks
+    // before the first Dispatch can answer, which is the stall this cache exists to prevent.
+    warnOnce(
+      "snapshot",
+      `could not save the repository scan to ${SNAPSHOT_PATH}, so a restart will walk the ` +
+        `workspace before answering: ${reasonOf(error)}`,
+      error,
+    );
     await rm(temporary, { force: true }).catch(() => {});
   }
 }
@@ -422,7 +457,16 @@ export async function listReposScan(
   }
   // A TTL of zero turns caching off: every read is answered by a current walk.
   if (current && !options.fresh && CACHE_TTL_MS > 0) {
-    void refresh(roots).catch(() => {});
+    void refresh(roots).then(
+      () => clearWarning("background-rescan"),
+      (error: unknown) => {
+        // A timeout was logged where it happened, and a refusal over a stuck walk is the
+        // quiet consequence of that one line; anything else would leave the cache stale with
+        // no trace at all.
+        if (error instanceof ReposScanTimeoutError || error instanceof ReposScanStuckError) return;
+        warnOnce("background-rescan", `background workspace rescan failed; still serving the previous scan: ${reasonOf(error)}`, error);
+      },
+    );
     return answer(current);
   }
   return answer(await refresh(roots));

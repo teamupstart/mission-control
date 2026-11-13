@@ -621,3 +621,78 @@ test("a walk stuck on a stalled mount times out, pins no second walk, and recove
     rmSync(elsewhere, { recursive: true, force: true });
   }
 });
+
+test("a scan that cannot be saved is logged once with its reason, and again only if the reason changes", async (t) => {
+  const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const warned: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warned.push(String(message));
+  });
+  const saveWarnings = () => warned.filter((line) => line.includes("could not save the repository scan"));
+  // Earlier tests' daemons save their snapshots fire-and-forget; let those land first, so the
+  // only writer this test hears is its own.
+  await new Promise((r) => setTimeout(r, 300));
+  warned.length = 0;
+  try {
+    // A directory where the file should go: the rename onto it fails, as a read-only or full
+    // state dir would.
+    rmSync(SNAPSHOT, { recursive: true, force: true });
+    mkdirSync(join(SNAPSHOT, "occupied"), { recursive: true });
+    setRepoIndexConfig({ directories: [{ path: root }] });
+    const repos = await restartedRepos("unsaveable");
+    for (let i = 0; i < 3; i += 1) assert.deepEqual(await repos.listRepos({ rescan: true }), [join(root, "alpha")]);
+    const deadline = Date.now() + 5_000;
+    while (saveWarnings().length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(saveWarnings().length, 1, `one line for a cause that persists across three scans: ${JSON.stringify(saveWarnings())}`);
+    assert.match(saveWarnings()[0]!, /\[repos\] could not save the repository scan to .*repo-index-cache\.json, so a restart will walk the workspace before answering: /);
+
+    // Writable again: the next scan saves, silently.
+    rmSync(SNAPSHOT, { recursive: true, force: true });
+    await repos.listRepos({ rescan: true });
+    await waitForSnapshot(root);
+    assert.equal(saveWarnings().length, 1);
+  } finally {
+    rmSync(SNAPSHOT, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a background rescan that fails is logged with its reason while the previous scan keeps answering", async (t) => {
+  const root = makeWorkspace((r) => makeRepo(join(r, "alpha")));
+  const warned: string[] = [];
+  t.mock.method(console, "warn", (message: unknown) => {
+    warned.push(String(message));
+  });
+  const realReaddir = fsPromises.readdir;
+  let broken = false;
+  // Not an fs error the walk tolerates: an answer it cannot read, so the walk itself rejects.
+  t.mock.method(fsPromises, "readdir", async (...args: Parameters<typeof realReaddir>) => {
+    if (broken && String(args[0]) === root) return null as unknown as Awaited<ReturnType<typeof realReaddir>>;
+    return await (realReaddir as (...a: unknown[]) => Promise<unknown>)(...args);
+  });
+  syncBuiltinESMExports();
+  const rescanWarnings = () => warned.filter((line) => line.includes("background workspace rescan failed"));
+  try {
+    setRepoIndexConfig({ directories: [{ path: root }] });
+    assert.deepEqual(await listRepos(), [join(root, "alpha")]);
+
+    broken = true;
+    invalidateReposCache();
+    // The ordinary read answers from the previous scan and rescans behind it - which fails.
+    assert.deepEqual(await listRepos(), [join(root, "alpha")]);
+    const deadline = Date.now() + 5_000;
+    while (rescanWarnings().length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(rescanWarnings().length, 1, "the failure leaves a trace");
+    assert.match(rescanWarnings()[0]!, /\[repos\] background workspace rescan failed; still serving the previous scan: /);
+
+    // The same failure again is not a new line.
+    assert.deepEqual(await listRepos(), [join(root, "alpha")]);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(rescanWarnings().length, 1);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

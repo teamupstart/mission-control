@@ -1066,11 +1066,26 @@ how it ended. Only `local_agent` tasks count: shells, MCP tasks, monitors, workf
 backgrounded main session and anything flagged `ambient` are left out. The flag counts
 whichever frame carries it: a run marked ambient by its start or by the live set stays hidden
 even when a later frame about the same run omits the field. The flag belongs to the run, so a
-new run of the same agent starts unclassified. A resumed agent keeps its task id and gets a new
-run id; the live set is what establishes a run, so a start, progress or end that names a run
-other than the one being shown is a late frame and changes nothing. The run ids a task has
-had are remembered for the life of the CLI process, so this still holds after the task leaves
-the live set and rejoins, even under a set that names no run. A foreground agent
+new run of the same agent starts unclassified.
+
+A resumed agent keeps its task id. When the CLI reports run ids it also gets a new run id, but
+any frame, the live set included, may omit one. The run ids a task has had are remembered for
+the life of the CLI process, including after it leaves the live set and rejoins, and the rules
+below read them:
+
+- **What opens a run.** A run is new when the task reports an id it has not had before that
+  differs from the current run's id. If the current run has no id, a newly reported id is taken
+  as that run's own. Without run ids, a live set that names again an agent it had dropped opens
+  a new run. A new run starts a fresh row with nothing carried over. Once a live set has been
+  seen, a start counts only if the set names the agent, and it is refused when the set lists a
+  different run for it or when it names a run the task already had. An agent that has ended
+  then comes back only for a new run, so a repeated start without a run id does not revive it.
+  A CLI that sends no live set is read from its start and update frames, by `is_backgrounded`.
+- **What a progress, update or end frame can change.** These frames never open a run. One that
+  names a run other than the run being shown, or a run the task already had, is a late frame and
+  changes nothing. The second check covers a shown run that has no id of its own.
+
+A foreground agent
 counts only once it is moved to the background. Finished agents fold on the next turn you
 send, not on a turn the agent starts for itself, because a finished agent's notification can
 start one. A change to who is running or how one ended reaches the board at once; a change

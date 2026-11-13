@@ -109,8 +109,9 @@ export interface ClaudeSubagentState {
    * a retired guard; it never decides what is shown.
    *
    * Kept for the life of the CLI process (a relaunch starts empty): one short list per task
-   * that reported run ids. It is compared by reference, never scanned, so it adds nothing to
-   * the per-frame cost.
+   * that reported run ids. State equality compares the map by reference. A frame reads only its
+   * own task's list - a map lookup, then a search of that list for the incoming run id - so the
+   * cost per frame does not grow with the number of tasks remembered.
    */
   readonly runHistory: ReadonlyMap<string, readonly string[]>;
 }
@@ -151,8 +152,10 @@ function advance(known: RunMemory, incoming: string | null, fresh: boolean): Run
     ? [...known.pastRuns, known.runId]
     : known.pastRuns;
   // Unbounded on purpose: forgetting a run is exactly what would let its late frame pass for a
-  // new one. The list grows by one id per resume of this one task, and goes with the task:
-  // once it is folded away the live set no longer names it, and nothing can revive it.
+  // new one. The list grows by one id per resume of this one task. When the task is folded or
+  // otherwise dropped, its runs move to `runHistory` rather than being lost: a later run of the
+  // same task id may still rejoin and is tracked afresh, while frames naming any of the old
+  // runs stay late.
   return { runId, pastRuns };
 }
 
@@ -181,8 +184,10 @@ function newRun(incoming: string | null, known: RunMemory, wasLive: boolean): bo
  * Whether a progress, update or notification frame is about a run other than the one tracked.
  * Those frames never open a run - only a start or a live-set entry does - so when both sides
  * name a run and the names differ, the frame belongs to some other run and changes nothing.
- * That needs no memory of the old run, so it still holds after the task's history is gone (a
- * folded agent that left the live set and later rejoined under a new run).
+ * The check compares the two ids directly rather than consulting the run history, so it holds
+ * for any other run, including one never recorded. `earlierRun` covers the remaining case, a
+ * current run with no id, from the task's past runs (kept across live-set gaps in
+ * `runHistory`).
  */
 function otherRun(incoming: string | null, known: RunMemory): boolean {
   return incoming !== null && known.runId !== null && incoming !== known.runId;
@@ -344,18 +349,28 @@ export function observeClaudeSubagentFrame(
         const id = str(t?.task_id);
         if (!t || !id || !isAgentTask(t.task_type, t.subagent_type)) continue;
         const entryRun = str(t.run_id);
+        const wasRetired = retired.get(id);
+        const known = tasks.get(id);
+        // The memory this entry is judged against: the tracked entry, its retired guard, or - for
+        // a task neither holds any more - the runs it had before.
+        const history = known ?? wasRetired ?? remembered(runHistory, id);
+        // An entry about an older run than the one tracked is late: it neither updates nor stops
+        // anything, and it must not change which run the set is taken to list either - a valid
+        // start for the current run would otherwise be refused against the stale one.
+        if (earlierRun(entryRun, history)) {
+          listed.set(id, history.runId ?? state.live.get(id) ?? null);
+          continue;
+        }
         listed.set(id, entryRun);
         // Whether this entry says the run is housekeeping. Absent says nothing: the run keeps the
         // classification it already has, which lives on its tracked entry beside its run memory.
         const flagged = t.ambient === true;
         // Already ended and no longer tracked: this level is late, not a new start - unless it
         // names a later run, which is the agent resumed (a run joins the set before its start).
-        const wasRetired = retired.get(id);
         if (wasRetired) {
           if (!newRun(entryRun, wasRetired, state.live.has(id))) continue;
           unretire(id);
         }
-        const known = tasks.get(id);
         // A late level that still lists an agent which already reported its end does not
         // revive it: a finishing task leaves the set after its notification.
         const rejoined = known !== undefined && known.entry.state !== "running" &&
@@ -365,10 +380,6 @@ export function observeClaudeSubagentFrame(
           if (flagged && !known.ambient && !laterRun(entryRun, known)) put(id, { ...known, ambient: true });
           continue;
         }
-        // A level about an older run than the one tracked (or, for a task no longer tracked,
-        // one it had before) is late; it neither updates nor stops.
-        const history = known ?? wasRetired ?? remembered(runHistory, id);
-        if (earlierRun(entryRun, history)) continue;
         // A later run starts clean, even if the run it replaces is still tracked as running.
         const prior = rejoined ? undefined : continuing(known, entryRun);
         const base = prior?.entry ?? freshEntry(id, now);
@@ -413,6 +424,10 @@ export function observeClaudeSubagentFrame(
       const usage = record(message.usage);
       put(id, {
         ...prior,
+        // The flag counts whichever task frame carries it. The pinned SDK defines it only on
+        // starts, notifications and live-set entries; honouring it here too costs nothing and
+        // keeps the rule true if a later CLI adds it.
+        ambient: prior.ambient || message.ambient === true,
         entry: {
           ...prior.entry,
           type: prior.entry.type ?? str(message.subagent_type),
@@ -436,6 +451,8 @@ export function observeClaudeSubagentFrame(
       put(id, {
         ...prior,
         background,
+        // As in `task_progress`: honoured on the frame or its patch, wherever it appears.
+        ambient: prior.ambient || message.ambient === true || patch.ambient === true,
         // Moved to the background while still running: it starts counting now - once the live
         // set, when there is one, names it too.
         shown: prior.shown || (background && running && (!levelSeen || state.live.has(id))),

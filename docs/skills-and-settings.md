@@ -156,15 +156,13 @@ backlog while the skills are off and dispatch cleanly once they are on. A pointe
 that is not installed points at nothing, and an agent left to improvise a plan looks exactly
 like one that followed a procedure.
 
-The **Grill** row carries the interview that any task dispatched with
-[Grill me first](dispatch-and-backlog.md#grill-me-first) runs through the Library's Grill
-session action before its work. It maps the work as a design tree and asks every question whose
-prerequisites are settled as one `request_plan_decisions` form per round, each question with its
-recommended option first and a free-text Other. Facts go to the agent and its subagents; only
-decisions go to you. It always asks at least one round, stops the session when a round is
-dismissed, and ends when nothing is left to ask. It adapts Matt Pocock's `grilling` skill (MIT,
-credited in the skill and in `NOTICE`) and is bundled here, so it does not depend on the
-mattpocock-skills plugin. The procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
+The **Grill** row is the skill that
+[Grill me first](dispatch-and-backlog.md#grill-me-first) needs: a task dispatched with it runs
+the Library's Grill session action, which invokes this skill, before its work. That section owns
+how the interview behaves. While this row is off, a task that grills first is refused at
+dispatch. The skill adapts Matt Pocock's `grilling` skill (MIT, credited in the skill and in
+`NOTICE`) and is bundled here, so it does not depend on the mattpocock-skills plugin. The
+procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
 
 The **HTML Report** row applies to the other half of the work - the sessions that are
 asked to find something out rather than to change something. An investigation, scout, audit or

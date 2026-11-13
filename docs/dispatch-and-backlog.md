@@ -201,7 +201,8 @@ kind this app launches: ship, bugfix, document, plan, scout and chat. When it is
 intent is delivered with the Library's built-in **Grill** session action in front of the kind's
 own contract: the agent asks in rounds, each one `request_plan_decisions` form holding every
 question that can be asked so far, with its recommended option listed first and a free-text
-**Other**. There is always at least one round, rounds continue until nothing is left to ask, and
+**Other**. Facts the agent can look up itself, with its subagents, are never put to you; only
+decisions are. There is always at least one round, rounds continue until nothing is left to ask, and
 dismissing a round stops the session before the work starts. A round may open with nothing
 selected, so an answer is only what you selected or wrote. Grilling rounds are not the review of
 anything the task delivers: a plan's review and phased follow-up still come afterwards. Once the

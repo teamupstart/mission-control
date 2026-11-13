@@ -211,9 +211,9 @@ export function ConsoleDetail({
   view: SessionViewProps;
   session: Session;
   /**
-   * The Board's way back, drawn at the head's leading edge. Given only when the Board opened
-   * this session with no rail beside it - its column had no card to list - so the rail head's
-   * back button is not on screen to do the job.
+   * The Board's way back, drawn at the head's leading edge. Given only when the rail head's back
+   * button is not on screen to do the job: the Board opened this session with no rail beside it
+   * (its column had no card to list), or the rail beside it is folded to its strip.
    */
   onBack?: () => void;
 }): React.JSX.Element {

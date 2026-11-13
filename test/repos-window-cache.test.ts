@@ -146,6 +146,44 @@ test("changing the indexed directories forgets the list, and drops a read sent b
   assert.equal(api.cachedRepos(), null, "nor is it cached for the next open");
 });
 
+test("a refused or failed directory save leaves the list, reads in flight and an open picker alone", async () => {
+  const api = await freshApi();
+  let releaseRead!: () => void;
+  const readHeld = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  scriptFetch([
+    list(["/w/alpha"], 100),
+    async () => {
+      await readHeld;
+      return list(["/w/alpha", "/w/beta"], 200)();
+    },
+    // The save is refused: a relative path the daemon will not index.
+    () => new Response(JSON.stringify({ error: "\"relative\" is not an absolute path." }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }),
+    // And a second save never reaches the daemon at all.
+    refused,
+  ]);
+  assert.deepEqual(await api.fetchRepos(), ["/w/alpha"]);
+  let drops = 0;
+  const stop = api.onCachedReposDropped(() => {
+    drops += 1;
+  });
+  try {
+    const inFlight = api.fetchRepos({ rescan: true });
+    assert.equal((await api.api.setRepoIndex({ directories: [{ path: "relative" }] })).ok, false);
+    assert.equal((await api.api.setRepoIndex({ directories: [{ path: "/new" }] })).ok, false);
+    assert.deepEqual(api.cachedRepos(), ["/w/alpha"], "nothing changed, so the list stays");
+    assert.equal(drops, 0, "an open picker does not flash back to indexing");
+    releaseRead();
+    assert.deepEqual(await inFlight, ["/w/alpha", "/w/beta"], "a read sent before the attempt still lands");
+  } finally {
+    stop();
+  }
+});
+
 test("a reconnect naming the same index keeps the list; one naming another index drops it", async () => {
   const api = await freshApi();
   scriptFetch([list(["/w/alpha"], 100, "index-a")]);

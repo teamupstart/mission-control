@@ -8738,7 +8738,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await executeSetupInstall(parsed.data, {
       catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
       homeDir: setupInstallDeps?.homeDir ?? homedir(),
-      listRepoRoots: setupInstallDeps?.listRepoRoots ?? listRepos,
+      // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
+      // the catalog rather than offering it.
+      listRepoRoots: setupInstallDeps?.listRepoRoots ?? (() => listRepos({ fresh: true })),
       listProviderInstallers:
         setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
       prepareProviderInstaller:

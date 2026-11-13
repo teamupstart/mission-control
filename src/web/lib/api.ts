@@ -2276,12 +2276,17 @@ export const api = {
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
 
   // --- Repository discovery roots ---
-  // Forgets the window's repository list FIRST: the directories it answered for are
-  // changing, and a picker opened meanwhile must not offer a repository just removed. A
-  // rescan keeps it - same directories, and a list that is a few seconds old beats none.
-  setRepoIndex: (cfg: RepoIndexConfigPatch) => {
-    forgetCachedRepos();
-    return put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+  // Forgets the window's repository list once the save is ACCEPTED: the directories it
+  // answered for have changed, and a picker must not offer a repository just removed. A
+  // refused or failed save changed nothing, so the list, every read in flight and any open
+  // picker are left alone. Forgetting here rather than waiting for `repo_index_changed` also
+  // drops reads sent before the save, and clears the announced identity so this window takes
+  // its new index before its own announcement arrives. A rescan keeps the list - same
+  // directories, and a list that is a few seconds old beats none.
+  setRepoIndex: async (cfg: RepoIndexConfigPatch) => {
+    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+    if (saved.ok) forgetCachedRepos();
+    return saved;
   },
   rescanRepoIndex: () => post<ActionResult & RepoIndexView>(`/api/repo-index/rescan`),
 

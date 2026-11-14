@@ -709,6 +709,107 @@ every other shortcut it is rebindable in **Settings → Keyboard**.
 With nothing to stop - an idle agent - the chord does nothing, and the session keeps
 everything it had.
 
+### Pause and resume a session
+
+Pausing stops an agent from using the machine and the network without ending it. The
+conversation, the checkout and the task are untouched, and a resumed agent carries on exactly
+where it stopped. There are three ways to pause:
+
+- **One session**, from its card or its console. **Pause now** freezes it at once. **Pause
+  after this turn** lets the current turn finish and freezes it then.
+- **Pause all**, the two-bar button in the title bar. It pauses every live session at once.
+  Its confirm can also hold automatic launches, so the backlog autopilot starts nothing new
+  until you resume. It can also resume everything automatically in 1 hour, in 4 hours or
+  tomorrow at 8:00 am. A banner under the title bar says what is paused and offers **Resume
+  all now**.
+- **Make priority**, from a session's pause menu. That session keeps running and every other
+  live session pauses for it, which is how you give an urgent session (an oncall
+  investigation, say) the whole machine. Automatic launches are held while it lasts. **End
+  priority** resumes the sessions it paused.
+
+**What a pause does.** From the moment you ask, nothing automated starts a turn in the
+session: Foreman, workflow packets, the resident loop, the work queue and the outbox all hold
+their work rather than failing it. The hold is in place before the daemon has finished reading
+the process table, so nothing can slip a turn in while the freeze is being prepared. Pause all
+and Make priority hold every session they take before freezing the first one. When the pause freezes, the daemon stops the agent's whole
+process tree with `SIGSTOP`, including its running tools and background sub-agents. A stopped
+process sends and receives nothing, which is what frees the network. Resume sends `SIGCONT`.
+If the model's server dropped a request during a long pause, the agent retries it.
+
+For a pane-backed agent started from an interactive shell, that shell is stopped first and
+resumed last, so it never notices its foreground job stop and keeps the terminal.
+
+**A process that will not stop is never called frozen.** If any process in the tree refuses
+`SIGSTOP` (for example it belongs to another user), whatever did stop is continued again, the
+session stays held but running, and the control that asked says which process refused. The
+freeze is retried on a timer that backs off from 15 seconds to 5 minutes, never in a tight
+loop. While any Pause all session is only held, its banner reads "Paused, but not everything is
+frozen" and counts frozen and still-running sessions separately. A re-freeze after a restart
+that cannot read the process table keeps the processes an earlier freeze stopped, so resuming
+still continues them.
+
+**A resume that does not complete says so.** If a stopped process refuses `SIGCONT`, the
+session stays paused with only that process recorded, and Resume reports it, so pressing Resume
+again finishes the job. A resume is saved as asked for before any `SIGCONT` is sent, and its
+record stays until the processes have continued and that is saved too. So a restart in between
+finishes the resume instead of freezing the session again, and never loses a process that
+refused. Each stopped process is saved with a fingerprint of its start time and command line,
+and checked against it before every `SIGCONT`, so a pid that an unrelated process reused while
+Mission Control was down is never continued. Kill, Complete, Interrupt and Reset do nothing if the agent could not be thawed first,
+and say why, because a stopped process cannot act on any of them.
+
+**Nothing is stopped that is not saved first.** The processes a freeze is about to stop are
+saved before the first `SIGSTOP`, so a daemon that exits straight afterwards leaves the next one
+a record of what to continue. A pause that cannot be saved stops nothing and says so. A resume
+that cannot be saved continues nothing, because a restart would otherwise freeze again what you
+resumed. A scheduled morning resume that cannot be saved leaves everything paused and tries
+again on a timer that backs off from 15 seconds to 5 minutes. A Pi session
+running inside Mission Control has no separate process to stop. It is held instead, and once
+its current turn ends it starts nothing new until you resume.
+
+**Who resumes what.** Every pause has one owner. Ending Pause all or priority is saved before
+it is reported, even when there is nothing left for it to resume, so its launch hold does not
+come back after a restart. Ending priority, Resume all and the scheduled
+morning resume each lift only what they paused. A session you paused yourself stays paused
+until you resume it. Resuming one session lifts it whatever paused it.
+
+**Messages wait.** While a session is paused, the reply box's **Send** reads **Queue**. A
+message sent then waits in the session's outbox and is delivered when it resumes. Its steer
+and interrupt deadlines count from the resume, not from when you typed it, so a message queued
+overnight does not interrupt the turn it resumed. The resume time is saved, so a daemon restart
+just after a resume keeps those deadlines too. Writing straight into a frozen agent is
+refused, which includes answering a menu on its screen. Resume it first.
+
+**Stopping a paused session thaws it first.** Kill, Complete, Interrupt and Reset all need an
+answer from the agent, so they resume it before acting.
+
+**Across a restart.** A frozen pane agent outlives the daemon, so quitting Mission Control
+leaves it frozen, and the next start picks the pause back up without rescanning or signalling
+it again. An Agent SDK session is the
+daemon's own child: it is thawed so it can shut down cleanly, then frozen again once it is
+restored. Until that new freeze succeeds the session reads as pausing, never as frozen, and a failed
+attempt is retried on the same backing-off timer; the processes it listed before are kept for
+the resume. A paused session that does not come back is thawed and forgotten.
+
+**Where the controls are.** Settings → Display → **Pause controls** chooses which pause
+controls the cards and the console draw, each with its own preview. Any number of each can be
+on, or none. On a card:
+
+- **Corner buttons**: pause and priority buttons in the card's corner, shown when you point at it.
+- **Run chip**: a Running, Paused or Priority chip that leads the runtime row and opens the pause menu. On by default.
+- **Card menu**: a ⋯ menu, plus a Resume button on a paused card.
+
+In the console:
+
+- **Toolbar button**: a button beside session control in the tab row that opens the pause menu. On by default.
+- **Message box button**: a button beside Send, plus a band above the reply box while paused.
+- **State badge and band**: a pause half on the header's state badge, plus a band under the header while paused or while it is the priority session. On by default.
+
+A paused session looks paused whichever controls are on. Its card has a hatched slate spine
+and a flag that says why: **Paused · 14m**, **Fleet paused** or **Paused for priority**. Its
+activity line says when it stopped and what it was doing, and its state reads `paused`.
+Pause all can be hidden from the title bar under Settings → Display → **Top bar**.
+
 ### What each agent can do is declared, not assumed
 
 Claude Code, Codex and Pi are not the same product, and several features below reach
@@ -2372,7 +2473,8 @@ The MCP tools are:
   just filed with `create_task`. Shares the dashboard's dispatch path and its dependency,
   workflow, kind, and launch checks. Disabled backlog work needs `overrideDisabled: true`.
   The calling agent can set this override itself, without human approval; disabled is an
-  autopilot hold, not a permission boundary against the agent.
+  autopilot hold, not a permission boundary against the agent. The operator's launch hold
+  (Pause all, or a priority session) has no agent override: the launch is refused until it lifts.
   `defaultModel` fills only a task without a pinned model. Returns the task's current status:
   `dispatching` means accepted, so use `get_task` to confirm it reaches `running`. Uses the same
   daemon-token authority as task creation without a Control other sessions grant. Chat launches

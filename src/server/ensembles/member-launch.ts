@@ -48,6 +48,9 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
     const outcome = await this.tasks.dispatch(request.taskId, {
       baseSha: request.baseSha,
       missionMcp: { tools: [SUBMIT_ENSEMBLE_RESULT_TOOL] },
+      // Part of an ensemble a person launched: refusing a member here would fail the whole run,
+      // which is not what pausing asks for.
+      overridePauseHold: true,
     });
     if (!outcome.ok) {
       throw new Error(outcome.error ?? `dispatch of member Task ${request.taskId} was refused`);

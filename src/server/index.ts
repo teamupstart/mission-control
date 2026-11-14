@@ -17,7 +17,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
+import { closeDb, databaseMigratedOnOpen, getAppConfig, openDb, setAppConfig } from "./db.ts";
+import { PauseManager } from "./pause/manager.ts";
+import { processFreezer } from "./pause/freezer.ts";
+import { StoredPauseStateSchema } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
@@ -240,7 +244,26 @@ const reviews = new ReviewManager(registry);
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
 maintainScoutSessionCredentials(registry);
-const sdkSessions = new SdkSupervisor(registry);
+// The one owner of pausing: a session, Pause all, and the priority session. Constructed before
+// the SDK supervisor and the task manager, which take it as an explicit dependency for the
+// thaw every stop and reset starts with. Its freezer reads the supervisor's driver pids through
+// a closure, called only once a pause is asked for - long after both exist. `start()` publishes
+// what the last daemon left and freezes the sessions that come back once the first sweep has
+// observed them.
+const pauses: PauseManager = new PauseManager({
+  registry,
+  freezer: processFreezer({ sdkDriverPid: (id): number | null => sdkSessions.driverProcessId(id) }),
+  store: {
+    load: () => {
+      const stored = getAppConfig(APP_CONFIG_ENTRIES.pauseState);
+      const parsed = stored === undefined ? null : StoredPauseStateSchema.safeParse(stored);
+      return parsed?.success ? parsed.data : undefined;
+    },
+    save: (state) => setAppConfig(APP_CONFIG_ENTRIES.pauseState, state),
+  },
+});
+pauses.start();
+const sdkSessions: SdkSupervisor = new SdkSupervisor(registry, { pause: pauses });
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
 // and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
@@ -279,6 +302,7 @@ const tasks = new TaskManager(
   {},
   worktrees,
   legacyWorktrees,
+  pauses,
 );
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
@@ -509,6 +533,7 @@ ensembles = new EnsembleManager(registry, undefined, {
     workflows,
     sdk: sdkSessions,
     pendingTurns,
+    pause: pauses,
   }),
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
@@ -698,6 +723,7 @@ const keepAwake = new KeepAwakeManager({
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
+
 // One in-memory owner for live Pi discovery, freshness, and last-success fallback. It is
 // deliberately not persisted and is shared by every dashboard request through the route.
 const modelCatalogs = new HarnessModelCatalogService();
@@ -746,6 +772,7 @@ const app = buildApp({
   sessionActions,
   pendingTurns,
   keepAwake,
+  pauses,
   archives,
   workflowCommands,
   worktrees,
@@ -993,6 +1020,9 @@ async function shutdown(): Promise<void> {
   await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
+  // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's
+  // stop opens with. Pane agents stay frozen - they outlive us, and quitting is not resuming.
+  await pauses.stop();
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // release its provider-authoritative worktree before native maintenance stops.

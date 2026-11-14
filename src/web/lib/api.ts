@@ -1,4 +1,5 @@
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
+import type { SessionPauseMode } from "@shared/pause.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
 import type { KindWorkflowDefaults } from "@shared/task.ts";
@@ -1968,6 +1969,19 @@ export const api = {
   clearBlocker: (id: string, blockerId: string, resolution?: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
+  /** Pause one session: freeze it now, or once its current turn ends. */
+  pauseSession: (id: string, mode: SessionPauseMode = "now") =>
+    post(`/api/sessions/${encodeURIComponent(id)}/pause`, { mode }),
+  /** Resume one session, whatever paused it. */
+  resumeSession: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/resume`),
+  /** Pause every live session; optionally hold automatic launches and resume at a set time. */
+  pauseFleet: (options: { holdDispatch: boolean; resumeAt: number | null }) => post("/api/pause/fleet", options),
+  /** Resume what Pause all paused. Sessions paused one at a time stay paused. */
+  resumeFleet: () => post("/api/pause/fleet/resume"),
+  /** Make one session the priority session: every other live session pauses for it. */
+  setPriority: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/priority`),
+  /** End priority and resume the sessions it paused. */
+  endPriority: () => post("/api/pause/priority/end"),
   /**
    * Stop what the session is doing right now and drop what was queued behind it, leaving
    * the conversation open. Nothing to send: the gesture has one meaning.
@@ -2119,10 +2133,11 @@ export const api = {
     ),
   /**
    * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual
-   * action; without that claim the daemon refuses a parked task.
+   * action; without that claim the daemon refuses a parked task. Every dashboard launch is a
+   * person's, so it always claims `overridePauseHold`: a pause holds the autopilot, not you.
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
-    post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
+    post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled, overridePauseHold: true }),
   recheckPipelineReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>
@@ -2187,6 +2202,8 @@ export const api = {
     post<AssignResult>(`/api/tasks/${encodeURIComponent(id)}/assign`, {
       sessionId,
       overrideDisabled,
+      // A person's handover, so never held by a pause; see `dispatchBacklog`.
+      overridePauseHold: true,
       confirmReset,
     }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),

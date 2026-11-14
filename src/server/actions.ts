@@ -1,4 +1,5 @@
 import { transferHold } from "./session-transfers/store.ts";
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { readInventory } from "./terminal/inventory.ts";
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task, ThinkingLevel } from "@shared/types.ts";
@@ -50,6 +51,17 @@ import type {
 import { run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { resetWorktreeToCommit } from "./git/ensemble-snapshot.ts";
+
+/**
+ * Why nothing may be written into this pane right now: a terminal handoff holding it, or an
+ * operator pause that has frozen its agent. Bytes typed into a frozen pane would sit in the
+ * pty and land on the thaw, after every pickup check here had already timed out, so a frozen
+ * pane refuses like a held one. A pause still waiting for its turn to end does not: answering
+ * a menu is how that turn gets to end.
+ */
+function writeHold(session: Session): string | null {
+  return transferHold(session) ?? (session.pause?.phase === "frozen" ? PAUSED_SESSION_REASON : null);
+}
 
 export interface ActionResult {
   ok: boolean;
@@ -386,7 +398,7 @@ export async function sendText(
   return withPaneLock<ActionResult>(
     session,
     () => ({ ok: false, error: PANE_BUSY }),
-    () => sendTextLocked(session, text, submit, deps, () => transferHold(session) ?? beforeWrite?.() ?? null),
+    () => sendTextLocked(session, text, submit, deps, () => writeHold(session) ?? beforeWrite?.() ?? null),
     lockOwner,
   );
 }
@@ -1075,7 +1087,7 @@ export async function injectPrompt(
   return withPaneLock<InjectResult>(
     session,
     () => undelivered({ ok: false, error: PANE_BUSY }),
-    () => injectPromptLocked(session, text, deps, () => transferHold(session) ?? beforeWrite?.() ?? null),
+    () => injectPromptLocked(session, text, deps, () => writeHold(session) ?? beforeWrite?.() ?? null),
   );
 }
 
@@ -1571,7 +1583,7 @@ export async function selectPaneOption(
   target: OptionTarget,
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<ActionResult> {
-  const held = transferHold(session);
+  const held = writeHold(session);
   if (held) return { ok: false, error: held };
   if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
   // Shares the mode-walk's lock: both drive the same pane with bare keystrokes, and
@@ -1733,7 +1745,7 @@ export async function submitPaneForm(
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<FormResult> {
   if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
-  const held = transferHold(session);
+  const held = writeHold(session);
   if (held) return { ok: false, error: held };
   if (targets.length === 0) return { ok: false, error: "no rows to submit" };
   return withPaneLock<FormResult>(
@@ -1887,7 +1899,7 @@ const NO_MENU = "no option menu is on this session's screen";
 
 /** Press Enter, with no text before it - the confirm half of a menu selection. */
 async function injectEnter(session: Session, deps: PaneDeps): Promise<ActionResult> {
-  const held = transferHold(session);
+  const held = writeHold(session);
   if (held) return { ok: false, error: held };
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
@@ -2306,6 +2318,8 @@ const defaultKillDeps: KillDeps = { signal: signalProcess, terminals: defaultTer
  * surfaces an error when both fail. With no group, the signal result stands on its own.
  */
 export async function kill(session: Session, deps: KillDeps = defaultKillDeps): Promise<ActionResult> {
+  // A paused agent is thawed by the caller first (`requestSessionStop` / `stopSession`): a
+  // stopped process holds a SIGTERM until it is continued.
   const signalled = deps.signal(session.pid);
 
   const inside = muxHandle(session);

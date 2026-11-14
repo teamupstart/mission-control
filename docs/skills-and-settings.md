@@ -392,12 +392,21 @@ carries sample agents, so it draws whichever you pick. Searching Settings for "s
 "background agents", "agents tab" or "popover" lands on this panel. See
 [Chip and popover](ui.md#chip-and-popover).
 
+**Pause controls**, after the Session display panel, chooses where you pause and resume a
+session. It has three card controls (**Corner buttons**, **Run chip** and **Card menu**) and
+three console controls (**Toolbar button**, **Message box button** and **State badge and
+band**). Each is a checkbox, any number can be on at once, and each has its own preview that
+draws that control alone on a running session and on a paused one. The run chip, the toolbar
+button and the state badge ship on. A paused session looks paused whichever controls are on.
+Searching Settings for "pause", "resume", "priority" or "bandwidth" lands on this panel. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
+
 Display's last panel is **Top bar**, which chooses what the bar across the top of every page
 draws. A live preview of the real bar sits above its two lists and redraws as you change them.
 
 - **Show or hide** covers the bar's optional readouts and tools: the **Session count**,
   **Need you** and **Working** counts in the fleet pulse, **Search** (the fleet filter),
-  **Cost estimate**, **Report product feedback** and **Alerts and away mode**. Hiding Search
+  **Cost estimate**, **Report product feedback**, **Alerts and away mode** and **Pause all**. Hiding Search
   also clears any filter term, so the fleet is never filtered by a box you cannot see. The
   feedback form stays in the palette (<kbd>⌘</kbd><kbd>K</kbd>), cost settings stay in
   Settings → Cost, and the pulse's **to answer** count is not on the list: it is the only way

@@ -1,4 +1,5 @@
 import type { Registry } from "../registry.ts";
+import type { PauseRelease } from "../pause/release.ts";
 import { TaskIdCollisionError, type TaskManager } from "../tasks.ts";
 import type { WorkflowManager } from "../workflows/manager.ts";
 import { injectPrompt, paneAcceptsPrompt, resetToCommit } from "../actions.ts";
@@ -38,6 +39,8 @@ export function createFinalizeDeps(deps: {
   sdk?: SdkClearer;
   /** Coordinates pending delivery with the winner reset boundary. */
   pendingTurns?: PendingTurnResetBoundary;
+  /** Thaws a paused winner before its reset types into it. */
+  pause?: PauseRelease;
 }): EnsembleFinalizeDeps {
   const { registry, tasks, workflows } = deps;
 
@@ -108,6 +111,7 @@ export function createFinalizeDeps(deps: {
           resetToCommit(s, snapshotSha, clear, undefined, lockOwner, driverClear),
         driverClearFor(deps.sdk),
         deps.pendingTurns,
+        deps.pause,
       );
       if (!result.ok) {
         return { ok: false, detail: result.error ?? "the winner reset failed" };
@@ -179,6 +183,8 @@ export function createFinalizeDeps(deps: {
         const outcome = await tasks.dispatch(request.taskId, {
           baseSha: request.snapshotSha,
           missionMcp: { tools: [SUBMIT_ENSEMBLE_RESULT_TOOL] },
+          // The finalize step of an ensemble a person launched; see the member launch.
+          overridePauseHold: true,
         });
         if (!outcome.ok) return { ok: false, detail: outcome.error };
       }

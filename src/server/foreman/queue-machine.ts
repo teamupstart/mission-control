@@ -8,6 +8,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
+import { isPaused } from "@shared/pause.ts";
 import { hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -209,8 +210,9 @@ export function tickTargets(
   // require an invite - Foreman only looks at sessions it was asked into. Needs-you
   // additionally requires the authorization promised by that harness's hook scope, which
   // `foremanTriageAuthorized` folds together with the invite check.
+  // A paused session is out of both halves: Foreman answers nothing and sends nothing there.
   const needsYou = sessions
-    .filter((s) => foremanTriageAuthorized(s, sessions) && reportBucket(s, sessions) === "needs-you")
+    .filter((s) => !isPaused(s) && foremanTriageAuthorized(s, sessions) && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
   const seen = new Set(needsYou.map((s) => s.id));
   const rest = sessions.filter(
@@ -224,6 +226,7 @@ export function tickTargets(
       // hook half is not.
       s.foremanInvite !== null &&
       s.state !== "exited" &&
+      !isPaused(s) &&
       !seen.has(s.id) &&
       (queueWantsATick(s, triggers) || promptedWantsATick(s, triggers)),
   );
@@ -343,6 +346,9 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   // 2b. A durable blocker holds the queue whole: no next item, no in-flight verdict and no
   //     wrap-up. Items stay queued exactly as they are until the blocker is cleared.
   if (hasBlocker(session)) return { kind: "none" };
+  // Paused: hold the queue where it is. A send now would spend an attempt and escalate an
+  // item that is only waiting for the operator to resume this session.
+  if (isPaused(session)) return { kind: "none" };
 
   // 3. No hooks means no pickup signal and no completion signal - the queue has
   //    nothing to gate on, so it can never advance. Say so rather than stalling.

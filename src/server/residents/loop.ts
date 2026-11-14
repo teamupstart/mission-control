@@ -230,7 +230,9 @@ export class ResidentLoop {
     const target = current && this.session(current);
     if (this.stopped || !current || current.endedAt !== null || current.loopState === "paused") return "Resident paused or ended.";
     if (!target || target.id !== session.id || target.agentSessionId !== session.agentSessionId) return "Resident conversation changed.";
-    if (target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return BUSY_BLOCKER;
+    // A session the operator paused is busy in exactly this sense: the wake waits, and the
+    // `session_upsert` that lifts the pause is what lets observation send it.
+    if (target.pause || target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return BUSY_BLOCKER;
     return null;
   }
   /**

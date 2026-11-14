@@ -68,6 +68,12 @@
      member before it. */
   --held: var(--purple);
 
+  /* A session the operator paused (`Session.pause`). Slate, and each neighbour was ruled out
+     for the reason `--held` gives: `--working` blue would read as an agent burning tokens,
+     `--idle` green as free to take, `--held` purple as a run owning it. Colour is never the
+     only cue - every paused surface also prints the two-bar glyph and the word. */
+  --paused: #9aaecb;
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -4099,6 +4105,8 @@ body {
    nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
 .is-desktop .launch-pop,
 .is-desktop .session-toolbar-menu,
+/* Pause all's confirm hangs straight off the title bar, so it is IN the bar's rectangle. */
+.is-desktop .fleet-pause-pop,
 /* The background sub-agents popover a board card's chip opens. It is fixed to the viewport
    and opens ABOVE a chip in the lower half of the window, clamped to the top - which is the
    bar. An eaten click would leave it unable to take focus or be dismissed by a press inside. */
@@ -32202,6 +32210,579 @@ span.line-run-prov {
   color: var(--held);
   cursor: help;
 }
+/* ---- pausing sessions (`PauseControls.tsx`, `FleetPauseControl.tsx`) ----
+   One look for a paused session wherever it is drawn: the slate `--paused` tone, a hatched
+   spine, the two-bar glyph and the word. Priority keeps the fleet's brightest ink rather than
+   a new hue. Which CONTROLS appear is the operator's choice; this look is not. */
+.pause-glyph {
+  flex: none;
+  display: inline-block;
+  vertical-align: -1px;
+}
+.tile.is-paused {
+  --tone-color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 34%, var(--border));
+  background: linear-gradient(color-mix(in oklab, var(--paused) 6%, var(--panel)), var(--panel-2));
+}
+/* Hatched rather than solid, so a paused spine never reads as a solid tone at a glance. */
+.tile.is-paused::before {
+  background: repeating-linear-gradient(180deg, var(--paused) 0 5px, transparent 5px 8px);
+}
+.tile.is-paused .tile-goal,
+.tile.is-paused .card-runtime,
+.tile.is-paused .tile-branch,
+.tile.is-paused .tile-worktree {
+  opacity: 0.62;
+}
+.tile.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 46%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px color-mix(in oklab, var(--fg) 22%, transparent),
+    0 0 26px color-mix(in oklab, var(--working) 20%, transparent);
+}
+.tile.is-priority::before {
+  background: linear-gradient(var(--fg), var(--working));
+}
+.tile-flag.tf-paused,
+.tile-flag.tf-priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+}
+.tile-flag.tf-paused {
+  border-color: color-mix(in oklab, var(--paused) 50%, var(--border));
+  background: color-mix(in oklab, var(--paused) 14%, transparent);
+  color: var(--paused);
+}
+.tile-flag.tf-priority {
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, transparent);
+  color: var(--fg);
+}
+.tile-activity.pause-frozen-line,
+.tile-activity.pause-frozen-line .ta-glyph {
+  color: var(--paused);
+}
+/* The conversation's in-progress row, frozen: slate and still. */
+.turn-progress.is-frozen,
+.turn-progress.is-frozen .turn-progress-glyph {
+  color: var(--paused);
+}
+.turn-progress.is-frozen .turn-progress-glyph {
+  animation: none;
+  letter-spacing: -1px;
+}
+/* The ticker's glyph spins to say "working"; a frozen agent's must stand still. */
+.tile-activity.pause-frozen-line .ta-glyph {
+  display: inline-flex;
+  animation: none;
+}
+/* Card controls ride above the stretched open button, like the PR flag. */
+.pause-card-control {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* Card A: corner buttons. Drawn on the card you point at or have the cursor on; a paused or
+   priority card keeps its one button, because the way back must never hide. */
+.pause-corner {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tile:hover .pause-corner,
+.tile:focus-within .pause-corner,
+.tile.selected .pause-corner,
+.pause-corner.is-set,
+.pause-card-preview .pause-corner {
+  opacity: 1;
+}
+.pause-corner-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pause-corner-btn:hover:not(:disabled),
+.pause-corner-btn:focus-visible {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 40%, var(--border));
+}
+.pause-corner-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+}
+.pause-corner-btn.is-priority {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+/* Card B: the run chip, the same size as the mode and effort chips beside it. */
+.pause-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--working);
+  border: 1px solid color-mix(in oklab, var(--working) 38%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
+}
+.pause-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+.pause-chip-caret {
+  font-size: 9px;
+  color: var(--dim);
+}
+.pause-chip.is-paused,
+.pause-chip.is-pending {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 50%, var(--border));
+  background: color-mix(in oklab, var(--paused) 13%, var(--panel-2));
+}
+.pause-chip.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, var(--panel-2));
+}
+.pause-chip:focus-visible,
+.pause-more:focus-visible,
+.pause-pill:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* Card E: the ⋯ menu, and the Resume pill a paused card carries in its flag row. */
+.pause-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0 0 4px;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pause-more:hover,
+.pause-more[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.pause-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.4;
+  padding: 1px 7px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.pause-pill:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--fg) 40%, var(--border));
+}
+/* The shared menu's rows: a label and the sentence of what it does. */
+.session-toolbar-option.pause-menu-row {
+  align-items: flex-start;
+}
+.pause-menu-row > .pause-glyph {
+  margin-top: 2px;
+  color: var(--muted);
+}
+.pause-menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.session-toolbar-option > .pause-menu-text:last-child {
+  margin-left: 0;
+}
+.pause-menu-label {
+  color: var(--fg);
+}
+.pause-menu-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+/* Console B: the toolbar button, beside session control. */
+.pause-toolbar-btn.is-paused,
+.pause-toolbar-btn.is-pending {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 55%, var(--border));
+  background: color-mix(in oklab, var(--paused) 13%, var(--panel-2));
+}
+.pause-toolbar-btn.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, var(--panel-2));
+}
+.pause-toolbar-text {
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* Console C: the button beside Send, and Send saying Queue while paused. */
+.composer-pause-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  color: var(--muted);
+}
+.composer-pause-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+}
+.btn-send.is-queue {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 55%, var(--border));
+}
+/* Console D: the state badge's pause half, flush against the badge. */
+.badge.is-paused {
+  color: var(--paused);
+  background: color-mix(in oklab, var(--paused) 15%, transparent);
+}
+.badge.is-paused .badge-dot {
+  background: var(--paused);
+  animation: none;
+}
+.badge-split {
+  display: inline-flex;
+  align-items: stretch;
+  flex: none;
+}
+.badge-split > .badge,
+.badge-split > .tt-anchor > .badge {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.badge-pause-half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+  cursor: pointer;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0 999px 999px 0;
+}
+.badge-pause-half:hover:not(:disabled),
+.badge-pause-half:focus-visible {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--fg) 12%, transparent);
+}
+.badge-pause-half.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-left-color: var(--paused);
+}
+/* The paused band, under the console header (Console D) or above the reply box (Console C). */
+.pause-band {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: none;
+  padding: 9px 22px;
+  font-size: 12.5px;
+  color: var(--fg);
+  border-bottom: 1px solid color-mix(in oklab, var(--paused) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--paused) 10%, var(--panel));
+}
+.pause-band > .pause-glyph,
+.pause-band-lead {
+  color: var(--paused);
+}
+.pause-band-lead {
+  font-weight: 650;
+}
+.pause-band-sub {
+  flex: 1 1 260px;
+  min-width: 0;
+  color: var(--muted);
+}
+.pause-band.is-inline {
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklab, var(--paused) 35%, var(--border-soft));
+  border-radius: 10px;
+}
+.pause-band.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.pause-band.is-priority > .pause-glyph,
+.pause-band.is-priority .pause-band-lead {
+  color: var(--fg);
+}
+.pause-band-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pause-band-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: transparent;
+}
+/* The rail's paused and priority rows. */
+.rail-row.is-paused {
+  --tone-color: var(--paused);
+}
+.rail-row.is-paused .rail-state {
+  color: var(--paused);
+}
+.rail-row.is-priority .rail-state {
+  color: var(--fg);
+}
+.rail-pause-mark {
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  color: var(--paused);
+}
+.rail-pause-mark.is-priority {
+  color: var(--fg);
+}
+/* Pause all, in the title bar. Glyph-only at rest; the count rides on it once engaged. */
+.fleet-pause-wrap {
+  position: relative;
+  display: flex;
+}
+.fleet-pause-btn {
+  gap: 5px;
+}
+.fleet-pause-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+  font-weight: 650;
+}
+.fleet-pause-btn.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 8%, transparent);
+}
+.fleet-pause-count {
+  font-variant-numeric: tabular-nums;
+}
+.fleet-pause-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.fleet-pause-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+.fleet-pause-sub {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.fleet-pause-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fleet-pause-check small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.fleet-pause-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.fleet-pause-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+.fleet-pause-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.fleet-pause-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+  font-weight: 650;
+}
+.fleet-pause-confirm.is-priority {
+  background: var(--fg);
+  border-color: var(--fg);
+}
+.fleet-pause-confirm:disabled {
+  opacity: 0.55;
+}
+.app-banner.fleet-pause-banner {
+  justify-content: flex-start;
+  border-color: color-mix(in oklab, var(--paused) 40%, var(--border));
+  background: color-mix(in oklab, var(--paused) 10%, var(--panel));
+  font-size: 12.5px;
+}
+.fleet-pause-banner > .pause-glyph,
+.fleet-pause-banner-lead {
+  color: var(--paused);
+}
+.fleet-pause-banner-lead {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.fleet-pause-banner-sub {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+/* Partial: something Pause all took is still running, so the banner takes the attention tone. */
+.app-banner.fleet-pause-banner.is-partial {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.fleet-pause-banner.is-partial .fleet-pause-banner-lead {
+  color: var(--attention);
+}
+.app-banner.fleet-pause-banner.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 35%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.fleet-pause-banner.is-priority > .pause-glyph,
+.fleet-pause-banner.is-priority .fleet-pause-banner-lead {
+  color: var(--fg);
+}
+/* Settings > Display > Pause controls: one row per control, its checkbox beside a preview of
+   that control on a running and a paused session. */
+.pause-controls-options {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 8px 0 18px;
+}
+.pause-control-option {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  gap: 14px;
+  align-items: start;
+}
+/* The card panel's stage, restated rather than shared: a selector for that panel's preview
+   must not also find these. */
+.pause-control-stage {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.pause-control-stage .tile,
+.pause-control-stage .tile *,
+.pause-control-stage button {
+  cursor: default;
+}
+.pause-control-stage .tile:hover {
+  transform: none;
+}
+.pause-control-stage.is-console {
+  grid-template-columns: minmax(0, 1fr);
+}
+.pause-console-preview {
+  flex: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--bg-2) 72%, transparent);
+}
+.pause-console-preview .detail-head {
+  padding: 10px 14px 8px;
+}
+.pause-console-preview .detail-tabs {
+  padding: 0 14px;
+  align-items: center;
+}
+.pause-console-preview .pause-band {
+  padding-inline: 14px;
+}
+.pause-preview-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pause-preview-spacer {
+  flex: 1;
+}
+.pause-preview-compose {
+  padding: 10px 14px;
+}
+@media (max-width: 900px) {
+  .pause-control-option {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .tile-head {
   display: flex;
   align-items: center;
@@ -35852,8 +36433,9 @@ body.foreman-sidecar-open .modal-backdrop {
   font-weight: 640;
 }
 
-/* Health pills and inline status badges. No --healthy/--paused tokens exist, so healthy
-   maps to --idle, paused to --exited, attention to --attention, neutral to --neutral. */
+/* Health pills and inline status badges. No --healthy token exists, and a paused schedule is
+   not a paused session (`--paused` is the session's), so healthy maps to --idle, paused to
+   --exited, attention to --attention, neutral to --neutral. */
 .rm-pill,
 .rm-badge-inline {
   display: inline-flex;

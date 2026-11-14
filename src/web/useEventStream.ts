@@ -15,6 +15,7 @@ import type {
 } from "@shared/types.ts";
 import type { LineSummary } from "@shared/line.ts";
 import type { StorageHealth } from "@shared/storage-health.ts";
+import { EMPTY_PAUSE_STATE, type PauseState } from "@shared/pause.ts";
 import type {
   PersonaView,
   SessionAction,
@@ -193,6 +194,11 @@ export interface MissionState {
    */
   keepAwakeStatus: KeepAwakeStatus | null;
   /**
+   * Pause all and the priority session. Starts empty and is replaced whole by the snapshot and
+   * every `pause_state` frame; an older daemon that sends none reads as nothing paused.
+   */
+  pauseState: PauseState;
+  /**
    * Backups and storage problems, or null before the first snapshot and from an older daemon
    * that sends none. Replaced whole by every `storage_health` frame.
    */
@@ -286,6 +292,7 @@ export function useEventStream(): MissionState {
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
+  const [pauseState, setPauseState] = useState<PauseState>(EMPTY_PAUSE_STATE);
   const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
@@ -425,6 +432,8 @@ export function useEventStream(): MissionState {
           // development this build can connect to an older daemon whose snapshot has no
           // such field, and `undefined` must read as unknown - never as on.
           setKeepAwakeStatus(msg.keepAwake ?? null);
+          // Version-skew guard again: an older daemon's snapshot carries no pause state.
+          setPauseState(msg.pause ?? EMPTY_PAUSE_STATE);
           // The `?? null` is the version-skew guard: an older daemon's snapshot has no field.
           setStorageHealth(msg.storageHealth ?? null);
           // A fresh window loaded current settings before this first snapshot, so the marker
@@ -667,6 +676,10 @@ export function useEventStream(): MissionState {
         case "keep_awake_status":
           setKeepAwakeStatus(msg.status);
           break;
+        // Replaced whole: two singletons the daemon owns, so every window converges on them.
+        case "pause_state":
+          setPauseState(msg.state);
+          break;
         // Replaced whole: the aggregate is one recompute, and a patch could draw a problem
         // list from one pass beside backup status from another.
         case "storage_health":
@@ -814,6 +827,7 @@ export function useEventStream(): MissionState {
     lineSummary,
     settingsStatus,
     keepAwakeStatus,
+    pauseState,
     storageHealth,
     harnessesRevision,
     worktreesRevision,

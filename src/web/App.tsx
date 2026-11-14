@@ -1,4 +1,6 @@
 import { taskHasRepository } from "@shared/task.ts";
+import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
+import { FleetPauseBanner } from "./components/FleetPauseControl.tsx";
 import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
 import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -335,6 +337,7 @@ export function App(): React.JSX.Element {
     lineSummary,
     settingsStatus,
     keepAwakeStatus,
+    pauseState,
     storageHealth,
     harnessesRevision,
     worktreesRevision,
@@ -2536,6 +2539,9 @@ export function App(): React.JSX.Element {
   const failedLaunchTiles = launchFailureGroups.length;
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
+  // Every pause control reads this one fold (`lib/fleet-pause.ts`), so the title bar, the
+  // cards and the console cannot count paused sessions differently.
+  const fleetPause = useMemo(() => fleetPauseView(sessions, pauseState), [sessions, pauseState]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
   // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
@@ -4242,6 +4248,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <FleetPauseContext.Provider value={fleetPause}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -4333,6 +4340,7 @@ export function App(): React.JSX.Element {
           onReload={() => window.location.reload()}
         />
         <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
+        <FleetPauseBanner />
         <OrganizationTelemetryNotice
           notice={settingsStatus?.telemetry?.organizationNotice ?? null}
           onDismiss={async () => {
@@ -5095,6 +5103,7 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </FleetPauseContext.Provider>
     </OverlayHost>
   );
 }
@@ -5118,7 +5127,8 @@ function summarize(sessions: Session[]): { attention: number; working: number } 
   for (const s of sessions) {
     const tone = stateDisplay(s).tone;
     if (tone === "attention") attention++;
-    else if (tone === "working") working++;
+    // A frozen agent keeps its column but is not working; the title bar's count says so.
+    else if (tone === "working" && s.pause?.phase !== "frozen") working++;
   }
   return { attention, working };
 }

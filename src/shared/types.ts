@@ -9,6 +9,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
@@ -651,6 +652,15 @@ export interface Session {
   foremanInvite: ForemanInvite | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  /**
+   * The operator's pause, or null/absent when the session runs freely - see `@shared/pause.ts`.
+   *
+   * RESOLVED by the registry from the daemon's `PauseManager`, never by discovery or the SDK
+   * supervisor, the way `sessionControlEnabled` is: a discovery pass cannot clear it. While it
+   * is set, nothing automated starts a turn here; once `phase` is `frozen`, the agent's process
+   * tree is stopped. Optional so a snapshot from an older daemon still parses.
+   */
+  pause?: SessionPause | null;
   /**
    * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
@@ -3740,6 +3750,12 @@ export type ServerEvent =
        */
       keepAwake: KeepAwakeStatus;
       /**
+       * Pause all and the priority session at connect time - two nullable singletons, so it is
+       * bounded by construction. Per-session pauses ride on each `Session.pause`. Optional so a
+       * snapshot from an older daemon still parses; absent reads as nothing paused.
+       */
+      pause?: PauseState;
+      /**
        * Backups and storage problems at connect time, so Settings > Storage is right from
        * the first render. Null until the daemon's storage service has computed
        * it once; absent from an older daemon, which sends none.
@@ -3926,6 +3942,12 @@ export type ServerEvent =
    * `Registry.setKeepAwakeStatus`).
    */
   | { type: "keep_awake_status"; status: KeepAwakeStatus }
+  /**
+   * Pause all or the priority session started, changed or ended. Carries the whole state so
+   * every open dashboard converges without a fetch. Per-session pauses travel on
+   * `session_upsert`; this is only the fleet-wide half.
+   */
+  | { type: "pause_state"; state: PauseState }
   /**
    * The storage aggregate moved: a capture settled or copies were pruned. Carries the whole aggregate, for `line_summary`'s reason,
    * and is emitted only when it changed (see `StorageHealthService.recompute`).

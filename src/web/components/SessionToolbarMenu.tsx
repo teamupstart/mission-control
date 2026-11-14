@@ -11,11 +11,16 @@ export function SessionToolbarIcon({ kind }: { kind: "chat" | "terminal" | "cont
 }
 
 /** Compact session controls share focus, dismissal and viewport-safe menu placement. */
-export function SessionToolbarMenu({ label, title, icon, className = "", children }: {
+export function SessionToolbarMenu({ label, title, icon, className = "", bare = false, children }: {
   label: string;
   title: string;
   icon: React.ReactNode;
   className?: string;
+  /**
+   * Draw the trigger as `className` alone, without the toolbar button's chrome and caret - for
+   * a menu opened from something that is not a toolbar button (a card's chip or ⋯).
+   */
+  bare?: boolean;
   children: (close: () => void) => React.ReactNode;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
@@ -76,9 +81,9 @@ export function SessionToolbarMenu({ label, title, icon, className = "", childre
 
   return <>
     <Tooltip label={label}>
-      <button ref={button} type="button" className={`launch-btn session-toolbar-btn ${className}`} aria-label={label}
+      <button ref={button} type="button" className={bare ? className : `launch-btn session-toolbar-btn ${className}`} aria-label={label}
         aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-        {icon}<span className="session-toolbar-caret" aria-hidden="true">⌄</span>
+        {icon}{!bare && <span className="session-toolbar-caret" aria-hidden="true">⌄</span>}
       </button>
     </Tooltip>
     {open && createPortal(<div ref={menu} role="menu" aria-label={title} tabIndex={-1}

@@ -85,6 +85,18 @@ The loopback HTTP surface is likewise bounded:
 These routes consume the verified snapshot service. They do not parse snapshot payloads or repeat
 digest, preflight, transaction, rollback, or reconciliation logic at the HTTP boundary.
 
+## Pausing
+
+A session's pause rides on the session itself, as `Session.pause` in `session_upsert` and the
+snapshot's `sessions`. The fleet-wide half (Pause all and the priority session) is the
+`pause_state` event, which carries the whole `PauseState` from `src/shared/pause.ts`: two
+nullable singletons, so it is bounded by construction. The reconnect snapshot carries the same
+value as `pause`, and a snapshot from an older daemon without it reads as nothing paused.
+`PauseManager` (`src/server/pause/manager.ts`) is the only writer of both, and the registry
+emits `pause_state` only when the state changed. It is deliberately absent from
+`LINE_INPUT_EVENTS`, because the Line has no stage for a fleet-wide control.
+See [Pause and resume a session](sessions.md#pause-and-resume-a-session).
+
 ## Storage health
 
 `storage_health` carries the whole storage aggregate from `src/shared/storage-health.ts`: backup

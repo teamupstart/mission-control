@@ -12,6 +12,7 @@ import {
   ShippingConfigSchema,
   SkillsConfigSchema,
   StandingInstructionsConfigSchema,
+  StoredPauseStateSchema,
   StoredWorkflowPolicySchema,
   TerminalsConfigSchema,
   UiConfigSchema,
@@ -296,6 +297,8 @@ const uiFields = {
   sessionRailFolded: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",
+  pauseCardControls: "setting",
+  pauseConsoleControls: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const repoIndexFields = {
@@ -371,6 +374,12 @@ export const APP_CONFIG_ENTRIES = {
   // another installation could suppress a new break or resurrect a reminder already handled.
   setupBanner: wholeEntry("setup.banner", SetupBannerDismissalSchema, "operational", null),
   backlogPlan: wholeEntry("backlog.plan", StoredBacklogPlanSchema, "derived", null),
+  /**
+   * Paused sessions, Pause all and the priority session (`src/server/pause/`). `operational`
+   * with no backup domain: it names this machine's live processes by pid, and restored onto
+   * another installation it would describe agents that were never running there.
+   */
+  pauseState: wholeEntry("pause.state", StoredPauseStateSchema, "operational", null),
   costTelemetryEnabledAt: wholeEntry(
     "costTelemetryEnabledAt", z.number().nullable(), "derived", null,
   ),

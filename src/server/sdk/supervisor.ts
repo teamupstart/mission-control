@@ -1,4 +1,5 @@
 import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
+import type { PauseRelease } from "../pause/release.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
@@ -182,6 +183,14 @@ class ResumeDeferred extends Error {}
  */
 export const MAX_RESUME_DEFERRALS = 3;
 
+/** What the supervisor needs of the daemon's `PauseManager`. */
+export interface SupervisorPause extends PauseRelease {
+  frozenRefusal(sessionId: string): string | null;
+}
+
+/** How often a capacity retry held by a frozen session looks again for the thaw. */
+const PAUSED_RETRY_RECHECK_MS = 15_000;
+
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
@@ -257,6 +266,11 @@ export class SdkSupervisor {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
       processSnapshot?: typeof listProcessesSnapshot;
+      /**
+       * The daemon's `PauseManager`: why a write must not reach a frozen child, and the thaw
+       * every stop starts with. Absent, nothing is ever frozen, so neither has anything to do.
+       */
+      pause?: SupervisorPause;
     } = {},
   ) {}
 
@@ -1096,6 +1110,11 @@ export class SdkSupervisor {
    * the id to another process.
    */
   stop(id: string): Promise<void> {
+    // Every stop - Kill, task completion, handoff, dispatch cleanup - starts by thawing: a
+    // stopped child never answers the interrupt `handle.stop()` opens with, so a thaw that did
+    // not happen refuses the stop rather than waiting on a driver that cannot answer.
+    const stuck = this.deps.pause?.releaseNow(id) ?? null;
+    if (stuck) return Promise.reject(new Error(`this session is paused and could not be resumed first: ${stuck}`));
     const existing = this.stopPromises.get(id);
     if (existing) return existing;
     const handle = this.handles.get(id);
@@ -1123,6 +1142,16 @@ export class SdkSupervisor {
       },
     );
     return stopping;
+  }
+
+  /**
+   * The driver's own child process, for the pause freezer (`src/server/pause/freezer.ts`), or
+   * null when it has none. Pi's driver runs inside the daemon and reports `process.pid` as its
+   * recovery process; that is never a process anyone may stop, so it reads as none here.
+   */
+  driverProcessId(id: string): number | null {
+    const pid = this.handles.get(id)?.recoveryProcessId ?? null;
+    return pid !== null && Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid ? pid : null;
   }
 
   /**
@@ -1302,10 +1331,21 @@ export class SdkSupervisor {
     }
   }
 
+  /**
+   * Why a write must not reach this session's driver because its child is frozen, or null. A
+   * stopped child never answers, so a write queued to it would hold this session's whole send
+   * chain until the thaw.
+   */
+  private pauseGate(id: string): string | null {
+    return this.deps.pause?.frozenRefusal(id) ?? null;
+  }
+
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
     if (transferForSource(id)) return Promise.reject(new Error(TRANSFER_HOLD_REASON));
+    const frozen = this.pauseGate(id);
+    if (frozen) return Promise.reject(new Error(frozen));
     if (!handle || this.stopping.has(id) || taskSessionClosureForSession(id)) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
@@ -1315,6 +1355,8 @@ export class SdkSupervisor {
       // stop keeps the handle until the pump consumes `exited` or the stream ends. Identity
       // alone would let a queued turn land on the half of a terminal handoff being torn down.
       if (transferForSource(id)) throw new Error(TRANSFER_HOLD_REASON);
+      const frozenNow = this.pauseGate(id);
+      if (frozenNow) throw new Error(frozenNow);
       if (this.handles.get(id) !== handle || this.stopping.has(id) || taskSessionClosureForSession(id)) throw noLiveDriver();
       return op(handle);
     });
@@ -1821,7 +1863,16 @@ export class SdkSupervisor {
 
   /** Send the continuation, through the same idle-only boundary every automated turn uses. */
   private async fireCapacityRetry(id: string, handle: SdkSessionHandle, token: object): Promise<void> {
-    if (this.capacityRetries.get(id)?.token !== token) return;
+    const waiting = this.capacityRetries.get(id);
+    if (waiting?.token !== token) return;
+    if (this.pauseGate(id) && this.handles.get(id) === handle && !this.shuttingDown) {
+      // Frozen by the operator. The retry belongs to the turn the pause interrupted, so it
+      // waits rather than being refused and the turn reported finished; it fires after resume.
+      const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, token), PAUSED_RETRY_RECHECK_MS);
+      timer.unref?.();
+      this.capacityRetries.set(id, { ...waiting, timer });
+      return;
+    }
     this.capacityRetries.delete(id);
     if (this.handles.get(id) !== handle || this.shuttingDown) return;
     // Harness-authored, like the restart continuation: the agent's prompt echo must not be

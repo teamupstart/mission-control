@@ -590,6 +590,8 @@ export class WorkflowManager {
    * nothing but the right to stay quiet about a hold it has already reported once.
    */
   private readonly queuedDeliveries = new Set<string>();
+  /** Prepared packets held because their session is paused, re-offered when it resumes. */
+  private readonly pausedDeliveries = new Set<string>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
@@ -750,6 +752,7 @@ export class WorkflowManager {
           return;
         }
         if (event.type !== "session_upsert") return;
+        if (!event.session.pause && this.pausedDeliveries.size > 0) this.offerResumedDeliveries(event.session.id);
         // Pickup is recorded HERE rather than on the sweep: a turn can start and finish
         // between two fifteen-second samples, and the proof would be gone by the time the
         // observer looked. See `noteSessionActionActivity`.
@@ -5211,6 +5214,16 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
+  /** Re-offer every packet a pause held for this session, now that it has resumed. */
+  private offerResumedDeliveries(sessionId: string): void {
+    for (const id of [...this.pausedDeliveries]) {
+      const delivery = this.store.getDelivery(id);
+      if (delivery && delivery.sessionId !== sessionId) continue;
+      this.pausedDeliveries.delete(id);
+      if (delivery?.state === "prepared") this.schedulePreparedDelivery(id);
+    }
+  }
+
   private recoverWaitingDeliveries(noteKey?: string): void {
     const inScope = (run: WorkflowRun | null): boolean => Boolean(run &&
       (noteKey === undefined || this.store.getBinding(run.bindingId)?.noteKey === noteKey));
@@ -6388,6 +6401,15 @@ export class WorkflowManager {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery || transferForNote(delivery.noteKey)) return;
     if (delivery.state !== "prepared" && !(explicitRetry && delivery.state === "refused")) return;
+    // The operator paused this session. Not a refusal: the packet stays `prepared`, the run is
+    // left as it is, and the same bytes are offered again the moment the pause lifts (the
+    // `session_upsert` arm of the subscription). A restart re-offers prepared packets anyway,
+    // and lands back here while the pause still stands.
+    if (this.registry.getSession(delivery.sessionId)?.pause) {
+      this.pausedDeliveries.add(delivery.id);
+      return;
+    }
+    this.pausedDeliveries.delete(delivery.id);
     const initialBlock = this.deliveryBlock(delivery);
     if (initialBlock) {
       const retainPrepared = [

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -582,6 +583,9 @@ export function SettingsPage({
                 live card, so it belongs at the bottom of the scroll rather than pushing
                 the three one-line choices below the fold. */}
             <BoardCardPanel />
+            {/* Beside the card panel: which pause controls those cards and the console draw,
+                each with its own preview. */}
+            <PauseControlsPanel />
             {/* After the card, because it is the one panel here about the chrome around every
                 page rather than about sessions - and it carries a whole bar as its preview. */}
             <TopbarPanel />

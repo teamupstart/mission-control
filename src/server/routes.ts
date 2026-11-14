@@ -1,4 +1,7 @@
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
+import type { PauseManager } from "./pause/manager.ts";
+import { registerPauseRoutes } from "./pause/routes.ts";
 import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
@@ -1005,6 +1008,9 @@ function foremanWriteRefusal(
   if (!structuredAnswer && hasBlocker(session)) {
     return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
   }
+  // No structured-answer exemption here: a paused session is the operator's to resume, and
+  // Foreman answering its menu would start the very turn the pause is holding back.
+  if (session.pause) return { error: PAUSED_SESSION_REASON, status: 409 };
   return null;
 }
 
@@ -1335,6 +1341,11 @@ export interface RouteDeps {
    */
   keepAwake?: KeepAwakeManager;
   /**
+   * The one owner of pausing (`src/server/pause/manager.ts`). Absent, the pause routes answer
+   * 503 rather than building a second owner of the same frozen processes.
+   */
+  pauses?: PauseManager;
+  /**
    * The archive library owner. Absent means the archive routes answer 503 rather than
    * constructing a manager here. A route-built twin would be a second owner of one filesystem
    * library and one reconciler - two background walks over the same directory, two writers of
@@ -1416,6 +1427,7 @@ export const ROUTE_DEP_NAMES = [
   "pendingTurns",
   "paneDeps",
   "keepAwake",
+  "pauses",
   "archives",
   "workflowCommands",
   "worktrees",
@@ -1749,6 +1761,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     pendingTurns,
     paneDeps,
     keepAwake,
+    pauses,
     archives,
     workflowCommands,
     worktrees,
@@ -2159,6 +2172,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+
+  // --- Pausing sessions: one session, Pause all, and the priority session ---
+  registerPauseRoutes(app, pauses);
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -5325,7 +5341,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Same task authority as creation/update. The dashboard and MCP share every launch gate.
   app.post("/mcp/tasks/:id/dispatch", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    return dispatchSavedTask(c, c.req.param("id"));
+    return dispatchSavedTask(c, c.req.param("id"), "agent");
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -6619,7 +6635,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
-    const r = await requestSessionStop(session, sdkSessions);
+    const r = await requestSessionStop(session, sdkSessions, undefined, pauses);
     if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
@@ -6657,7 +6673,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
     if (unsupported) return c.json({ error: unsupported }, 400);
-    const r = await interruptSession(session, sdkSessions, pendingTurns, panes);
+    const r = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
     observeSessionOperation({
       session,
       operation: "interrupt",
@@ -6888,6 +6904,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       driverClearFor(sdkSessions),
       pendingTurns,
+      pauses,
     );
     return c.json(r, r.ok ? 200 : 500);
   });
@@ -9048,7 +9065,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const filed = await tasks.reschedule(task.id);
         if (!filed.ok) return c.json({ error: filed.error }, 409);
       }
-      const r = await tasks.dispatch(task.id, { overrideDisabled: true });
+      // The operator's own retry of a failed launch: it is neither held as parked nor by a pause.
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true, overridePauseHold: true });
       return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
     }
     const workKey = launchWorkKey(task);
@@ -9291,6 +9309,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
       overrideDisabled: recipe.dispatch.overrideDisabled,
+      // A tour the operator started: theirs to launch whatever is paused.
+      overridePauseHold: true,
       missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
@@ -9365,7 +9385,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           resumable: false,
         });
       } else {
-        const stopped = await requestSessionStop(session, sdkSessions);
+        const stopped = await requestSessionStop(session, sdkSessions, undefined, pauses);
         if (!stopped.ok) {
           return c.json(
             { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
@@ -9507,12 +9527,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  async function dispatchSavedTask(c: Context, id: string) {
+  async function dispatchSavedTask(c: Context, id: string, caller: "dashboard" | "agent" = "dashboard") {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
-    const r = await tasks.dispatch(id, parsed.data);
+    // An agent may not lift the operator's launch hold for itself: the pause is the operator's,
+    // unlike `overrideDisabled`, which the MCP tool documents as the agent's to set.
+    const options = caller === "agent" ? { ...parsed.data, overridePauseHold: false } : parsed.data;
+    const r = await tasks.dispatch(id, options);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
@@ -9628,6 +9651,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const r = await tasks.assign(id, parsed.data.sessionId, {
       overrideDisabled: parsed.data.overrideDisabled,
+      overridePauseHold: parsed.data.overridePauseHold,
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);

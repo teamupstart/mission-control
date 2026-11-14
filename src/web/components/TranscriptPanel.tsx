@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ComposerPauseButton, ComposerPausedBand } from "./PauseControls.tsx";
+import { usePauseConsoleControls } from "../lib/pause-controls.ts";
 import type {
   ForemanEpisode,
   PendingTurn,
@@ -477,6 +479,8 @@ export function TranscriptPanel({
    * (Chip and popover). The tab is offered only while there are agents to list, like the tray.
    */
   const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
+  // The console's pause controls the operator chose; this panel draws the composer's.
+  const pauseControls = usePauseConsoleControls();
   const railAgents = agentsChip && hasSubagents(session.subagents) ? session.subagents : null;
   /**
    * Which of the secondary rail's tabs is up. Held HERE rather than in the rail so
@@ -1401,6 +1405,7 @@ export function TranscriptPanel({
             terminal={terminal}
             startedAt={turnStartedAt}
             pinned={workingPinned}
+            frozenAt={session.pause?.phase === "frozen" ? session.pause.since : null}
           />
         )}
         {/* AFTER the in-progress row, and the order is the conversation's own. A pending
@@ -1522,6 +1527,8 @@ export function TranscriptPanel({
         </div>
       ) : (
       <div className="transcript-compose" {...drop.dropProps}>
+        {/* What pausing means for what you type, above the box it is about. */}
+        {pauseControls.has("composer") && <ComposerPausedBand session={session} />}
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
         <div className="compose-row">
           {/* Decorative, and marked as such: the box's accessible name stays its
@@ -1617,6 +1624,7 @@ export function TranscriptPanel({
               name the expand chord simply dragged Send inward off that edge, and giving the
               legend the full row width instead pushed it under the box and cost the
               transcript a line. Inside this column the legend wraps. */}
+          {pauseControls.has("composer") && <ComposerPauseButton session={session} />}
           <Tooltip
             label={
               !canSend
@@ -1625,15 +1633,19 @@ export function TranscriptPanel({
                   ? "Answer the prompt above first"
                   : drop.uploading
                     ? "Waiting for the attachments to finish uploading"
-                    : "Send this reply to the agent's prompt (Enter)"
+                    : session.pause
+                      ? "Queue this reply - it is delivered when the session resumes (Enter)"
+                      : "Send this reply to the agent's prompt (Enter)"
             }
           >
             <button
-              className="btn btn-send"
+              className={`btn btn-send${session.pause ? " is-queue" : ""}`}
               disabled={!canSend || dialogOpen || sending || drop.uploading}
               onClick={() => void send()}
             >
-              {drop.uploading ? "Uploading…" : "Send"}
+              {/* A paused session holds what you send in its queue, so the button says what
+                  pressing it will actually do. */}
+              {drop.uploading ? "Uploading…" : session.pause ? "Queue" : "Send"}
             </button>
           </Tooltip>
           {/* One row, two columns, matching the conversation above it: the box and Send are

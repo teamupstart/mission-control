@@ -925,6 +925,15 @@ export class PauseManager {
     }
     if (this.resumeTimer !== null) this.clearTimer(this.resumeTimer);
     this.resumeTimer = null;
+    if (this.stillOwns("fleet")) {
+      // Some of what it paused would not continue. Pause all stands until they do, so its banner
+      // and Resume all stay on screen and pressing it again retries just those. Its scheduled
+      // resume has fired or been overtaken, so it is not offered again.
+      this.fleet = { ...fleet, resumeAt: null };
+      this.publishFleet();
+      this.persistSettled();
+      return failed;
+    }
     this.publishFleet();
     return failed;
   }
@@ -938,8 +947,21 @@ export class PauseManager {
       this.priority = priority;
       return failed;
     }
+    if (this.stillOwns("priority") && this.registry.getSession(priority.sessionId)) {
+      // As for Pause all: priority stands, with its End priority, until all it paused continue.
+      this.priority = priority;
+      this.publishFleet();
+      this.persistSettled();
+      return failed;
+    }
     this.publishFleet();
     return failed;
+  }
+
+  /** Whether a bulk control still has a session it paused, one whose processes would not continue. */
+  private stillOwns(reason: "fleet" | "priority"): boolean {
+    for (const record of this.records.values()) if (record.reason === reason) return true;
+    return false;
   }
 
   /**

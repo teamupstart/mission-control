@@ -1714,3 +1714,59 @@ test("a restamped identity that cannot be saved leaves the freeze unsettled unti
   assert.equal(registry.pauses.get("a")?.phase, "frozen");
   assert.equal(store.get()?.sessions.a?.procs.find((p) => p.pid === 71)?.identity, execd.identity, "saved as the process it is now");
 });
+
+/** A freezer whose SIGCONT refusals can be lifted mid-test. */
+function stubbornFreezer(trees: Record<string, number[]>, stuck: Set<number>) {
+  const resumed: number[][] = [];
+  const freezer: ProcessFreezer = {
+    treeOf: async (s) => refs(...(trees[s.id] ?? [])),
+    stop: () => [],
+    resume: (procs) => {
+      resumed.push(pidsOf(procs));
+      return procs.filter((p) => stuck.has(p.pid)).map((p) => ({ pid: p.pid, code: "EPERM" }));
+    },
+  };
+  return { freezer, resumed };
+}
+
+test("Resume all stays on offer while a session it paused will not continue, and retrying finishes it", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const stuck = new Set([80]);
+  const { freezer } = stubbornFreezer({ a: [70], b: [80] }, stuck);
+  const manager = new PauseManager({ registry, freezer, store: memoryStore(), log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  await manager.pauseFleet({ holdDispatch: true, resumeAt: Date.now() + 60_000 });
+
+  const first = await manager.resumeFleet();
+  assert.equal(first.ok, false, "pid 80 would not continue");
+  assert.notEqual(manager.state().fleet, null, "Pause all still stands, so its banner and Resume all stay");
+  assert.equal(manager.state().fleet?.resumeAt, null, "its scheduled resume is not offered again");
+  assert.equal(registry.pauses.get("a") ?? null, null, "what did continue is resumed");
+  assert.equal(registry.pauses.get("b")?.reason, "fleet", "what would not is still Pause all's");
+
+  stuck.clear();
+  assert.deepEqual(await manager.resumeFleet(), { ok: true }, "pressing it again retries the rest");
+  assert.equal(manager.state().fleet, null);
+  assert.equal(registry.pauses.get("b") ?? null, null);
+});
+
+test("End priority stays on offer while a session it paused will not continue", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const stuck = new Set([80]);
+  const { freezer } = stubbornFreezer({ a: [70], b: [80] }, stuck);
+  const manager = new PauseManager({ registry, freezer, store: memoryStore(), log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  await manager.setPriority("a");
+  assert.equal(registry.pauses.get("b")?.reason, "priority");
+
+  assert.equal((await manager.endPriority()).ok, false);
+  assert.equal(manager.state().priority?.sessionId, "a", "priority stands, with End priority");
+  stuck.clear();
+  assert.deepEqual(await manager.endPriority(), { ok: true });
+  assert.equal(manager.state().priority, null);
+  assert.equal(registry.pauses.get("b") ?? null, null);
+});

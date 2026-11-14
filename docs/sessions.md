@@ -791,7 +791,8 @@ its current turn ends it starts nothing new until you resume.
 **Who resumes what.** Every pause has one owner. Ending Pause all or priority is saved before
 it is reported, even when there is nothing left for it to resume, so its launch hold does not
 come back after a restart. Ending priority, Resume all and the scheduled
-morning resume each lift only what they paused. A session you paused yourself stays paused
+morning resume each lift only what they paused. If any of it will not continue, Pause all or
+priority stays in force, banner and button included, and pressing it again retries just those. A session you paused yourself stays paused
 until you resume it. Making a paused session the priority is saved before that session is
 continued: if it cannot be saved, or the session would not continue, nothing changes. Pausing a
 session that Pause all or priority already holds makes it yours

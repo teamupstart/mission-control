@@ -706,6 +706,53 @@ test("a startup opening that waited behind a dialog re-reads an announcement ano
   expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
 });
 
+test("a startup refresh the daemon cannot answer opens on the loaded record and keeps the opt-out", async ({
+  page,
+  daemon,
+}) => {
+  // A profile saved before the tour shipped, opted out of the picker: owed the announcement.
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO app_config (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run("ui", JSON.stringify({ showToursOnStartup: false, residentPlacement: "drawer" }));
+  });
+  // Hydration is answered; every later read of the settings - the refresh that confirms the
+  // announcement just before the picker opens - fails as an unreachable daemon would.
+  let reads = 0;
+  let refused = 0;
+  await page.route("**/api/ui/config", async (route) => {
+    if (route.request().method() === "GET" && reads++ > 0) {
+      refused += 1;
+      await route.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
+    } else await route.continue();
+  });
+  const picker = page.getByRole("dialog", { name: PICKER });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+
+  // The refresh was attempted and refused, so the record this window loaded stands: the tour is
+  // still owed, and the picker opens once to feature it rather than not at all.
+  await expect(picker).toBeVisible();
+  expect(refused).toBeGreaterThan(0);
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
+  // The saved opt-out is shown as it is, and the refusal is not reported as a broken preference.
+  await expect(picker.getByRole("checkbox", { name: "Show tours when Mission Control opens" })).not.toBeChecked();
+  await expect(page.getByText(PREFERENCE_ERROR)).toHaveCount(0);
+  // Opening it is the announcement: recorded, with the opt-out untouched.
+  await expect.poll(async () => (await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
+  await picker.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(picker).toBeHidden();
+
+  // With the daemon answering again, the next window honors the saved opt-out.
+  await page.unroute("**/api/ui/config");
+  await page.reload();
+  await expectDashboardReady(page);
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  await expect(picker).toBeHidden();
+});
+
 test.describe("a fresh profile", () => {
   // The product's own startup default: no preference pinned and no UI record written, so the
   // picker opens on its ordinary first-run path.

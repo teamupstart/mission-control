@@ -24,6 +24,7 @@ import {
 } from "./repo-index-config.ts";
 import {
   invalidateReposCache,
+  isScanUnavailable,
   listRepos,
   reposCacheScannedAt,
 } from "./repos.ts";
@@ -143,7 +144,19 @@ export async function repoIndexView(): Promise<RepoIndexView> {
   const config = getRepoIndexConfig();
   const override = repositoryIndexEnvironmentOverride();
   const effectivePaths = override ? environmentDirectories() : config.directories.map((row) => row.path);
-  const repos = await listRepos();
+  // Fresh: this view is read right after a config write or Rescan now, and must show it.
+  // A scan that cannot run (a stalled mount, with no earlier scan to fall back to) leaves the
+  // counts unknown rather than failing the view: this page is where the operator removes the
+  // directory that is stalling it.
+  let repos: string[] | null;
+  let scanUnavailable: string | null = null;
+  try {
+    repos = await listRepos({ fresh: true });
+  } catch (error) {
+    if (!isScanUnavailable(error)) throw error;
+    repos = null;
+    scanUnavailable = error.message;
+  }
   const directories = await Promise.all(
     effectivePaths.map((path) => directoryView(path, repos, override === null)),
   );
@@ -161,8 +174,9 @@ export async function repoIndexView(): Promise<RepoIndexView> {
     defaultsMissing: DEFAULT_INDEXED_DIRECTORIES.filter(
       (path) => !saved.has(canonicalize(path)),
     ),
-    repoCount: repos.length,
-    scannedAt: reposCacheScannedAt() ?? Date.now(),
+    repoCount: repos === null ? null : repos.length,
+    scannedAt: repos === null ? null : reposCacheScannedAt() ?? Date.now(),
+    scanUnavailable,
   };
 }
 

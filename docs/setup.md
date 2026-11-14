@@ -70,8 +70,8 @@ Below the row, the editor lists the directories Mission Control walks for reposi
 with `~/workspace`, `~/code`, `~/dev`, and `~/upstart`. Add a directory, or remove any row, a
 seeded default included. **Restore defaults** adds back only seeded directories that are missing
 and leaves your own rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
-path instead of silently omitting it. **Rescan now** drops the discovery cache so a newly cloned
-repository appears immediately. Every accepted change re-reads the machine, so the row follows the edit
+path instead of silently omitting it. **Rescan now** waits for a fresh scan so a newly cloned
+repository appears immediately; Dispatch keeps offering the previous list until that scan lands. Every accepted change re-reads the machine, so the row follows the edit
 without a separate **Re-check**. While `MISSION_WORKSPACE_DIRS` is set, the editor names the
 override and keeps the saved list read-only. Indexing offers a checkout to pickers; it grants
 nothing, and Trust stays separate.

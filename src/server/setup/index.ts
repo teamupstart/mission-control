@@ -543,10 +543,13 @@ export function defaultSetupDeps(): SetupDeps {
       // the shared scan cache, so reads walk the indexed directories at most once per cache
       // window (the same one the dispatch picker uses) and a vanished last repository is
       // noticed as soon as that window expires. Only a zero count pays for the per-directory
-      // read the failing row explains itself with.
-      const repos = await listRepos();
+      // read the failing row explains itself with. `fresh`, because a required check must not
+      // report the scan from before the window closed while a rescan runs behind it - the
+      // stale-while-revalidate answer is for the picker, not for readiness.
+      const repos = await listRepos({ fresh: true });
       if (repos.length > 0) return { repoCount: repos.length, directories: [] };
       const view = await repoIndexView();
+      if (view.repoCount === null) throw new Error(view.scanUnavailable ?? "the workspace scan is unavailable");
       return {
         repoCount: view.repoCount,
         directories: view.directories.map(({ path, status, repoCount }) => ({ path, status, repoCount })),

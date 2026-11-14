@@ -187,9 +187,12 @@ import type {
   WorkflowLaunchFix,
   WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
-import type {
-  RepoIndexConfigPatch,
-  RepoIndexView,
+import {
+  REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
+  REPOS_SCANNED_AT_HEADER,
+  type RepoIndexConfigPatch,
+  type RepoIndexView,
 } from "@shared/repo-index.ts";
 
 export interface ActionResult {
@@ -1017,15 +1020,151 @@ async function acceptGoal(id: string): Promise<AcceptGoalResult> {
   }
 }
 
-/** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
-export async function fetchRepos(): Promise<string[]> {
+/**
+ * The newest repository list this window has received, with when the daemon's scan behind it
+ * started. Null before the first list lands, and again after the indexed directories change:
+ * a list of other directories is not an answer, and opening a picker on one would offer a
+ * repository the operator just removed.
+ */
+let lastRepos: { repos: string[]; scannedAt: number; identity: string | null } | null = null;
+
+/** Told whenever the window drops its list, so a picker already open stops offering it. */
+const repoListDropListeners = new Set<() => void>();
+
+/** Subscribe to the window dropping its repository list. Returns the unsubscribe. */
+export function onCachedReposDropped(listener: () => void): () => void {
+  repoListDropListeners.add(listener);
+  return () => {
+    repoListDropListeners.delete(listener);
+  };
+}
+
+/** The newest repository list this window has received, for a picker to open on before it asks. */
+export function cachedRepos(): string[] | null {
+  return lastRepos?.repos ?? null;
+}
+
+/** Bumped by `forgetCachedRepos`, so a read sent before the change cannot repopulate the list. */
+let repoCacheGeneration = 0;
+
+/**
+ * The index identity the daemon last announced to this window, or null before the first
+ * announcement and after `forgetCachedRepos`. Tracked even while no list is held: a first
+ * load in flight when the directories change must not be answered by the index that was.
+ * Only an announcement sets it; while it is unknown, any answer is taken.
+ */
+let announcedIdentity: string | null = null;
+
+/**
+ * Forget the window's repository list - the indexed directories changed or were restored.
+ *
+ * Also drops every read already sent (they answer for the directories that were) and the
+ * announced identity, so answers are taken again until the next announcement: the window that
+ * saved hears its own `repo_index_changed` only after its PUT, and must not refuse the new
+ * index meanwhile.
+ */
+export function forgetCachedRepos(): void {
+  lastRepos = null;
+  announcedIdentity = null;
+  repoCacheGeneration += 1;
+  for (const listener of [...repoListDropListeners]) listener();
+}
+
+/**
+ * The daemon named the index it walks now (on the SSE snapshot, and on `repo_index_changed`).
+ * A list answering for any other index is dropped; a list answering for this one is kept -
+ * which is what lets a reconnect under load keep the list the picker most needs, while one
+ * that missed a directory change while disconnected still lets go of a stale list.
+ */
+export function noteRepoIndexIdentity(identity: string): void {
+  if (identity === REPO_INDEX_IDENTITY_UNKNOWN) {
+    // The daemon cannot vouch for any index right now: let go of what is held, and take the
+    // next real answer rather than refuse it against an identity that is not one.
+    if (lastRepos !== null || announcedIdentity !== null) forgetCachedRepos();
+    return;
+  }
+  const superseded = announcedIdentity !== null && announcedIdentity !== identity;
+  const stale = lastRepos !== null && lastRepos.identity !== identity;
+  // A changed index forgets even when no list is held yet: that is what drops a first load
+  // still in flight for the directories that were, and tells an open picker to ask again.
+  if (superseded || stale) forgetCachedRepos();
+  announcedIdentity = identity;
+}
+
+/**
+ * Fetch the workspace's git repos (dispatch bases). Never throws: a read that fails answers
+ * with the newest list this window has, or [] when it has none.
+ *
+ * The daemon answers from its last scan and rescans behind it. `rescan` asks it to wait for
+ * a scan started after the request instead, so a checkout cloned a moment ago is included.
+ *
+ * Answers are ordered by the scan behind them, not by arrival: a caller that sends both
+ * reads can receive the rescan first, and the ordinary one landing after it must not put
+ * the older list back. The answer is always the newest list held, so a caller rendering it
+ * never shows a regression either.
+ */
+export async function fetchRepos(options: { rescan?: boolean } = {}): Promise<string[]> {
+  return (await fetchReposAnswer(options)).repos;
+}
+
+/**
+ * How one repository read ended, for a caller that must tell an empty index from no answer.
+ *
+ * - `answered`: the daemon answered for the current index; `repos` is the newest list held.
+ * - `held`: the read failed, and `repos` is the list the window already had.
+ * - `failed`: the read failed and the window holds no list; `repos` is [] and means nothing.
+ * - `dropped`: the indexed directories changed while it was out (or its answer named another
+ *   index), so it says nothing about the current one. A picker that hears `onCachedReposDropped`
+ *   has already asked again; this answer is not for it.
+ */
+export type RepoReadOutcome = "answered" | "held" | "failed" | "dropped";
+
+/** `fetchRepos`, with how the read ended. Never throws. */
+export async function fetchReposAnswer(
+  options: { rescan?: boolean } = {},
+): Promise<{ repos: string[]; outcome: RepoReadOutcome }> {
+  // Captured before the request: one sent before the directories changed answers for the
+  // directories that were, and is dropped rather than cached or returned.
+  const generation = repoCacheGeneration;
+  // What this window had heard when it asked - see the identity check below.
+  const announcedAtSend = announcedIdentity;
+  const held = (): string[] => lastRepos?.repos ?? [];
+  const failure = (): { repos: string[]; outcome: RepoReadOutcome } =>
+    generation !== repoCacheGeneration
+      ? { repos: held(), outcome: "dropped" }
+      : { repos: held(), outcome: lastRepos ? "held" : "failed" };
   try {
-    const res = await actionFetch("/api/repos");
-    if (!res.ok) return [];
+    const res = await actionFetch(options.rescan ? "/api/repos?rescan=1" : "/api/repos");
+    if (!res.ok || generation !== repoCacheGeneration) return failure();
     const data = (await res.json()) as unknown;
-    return Array.isArray(data) ? (data as string[]) : [];
+    if (!Array.isArray(data) || generation !== repoCacheGeneration) return failure();
+    // The daemon stamps each scan uniquely and increasingly, so only a strictly later stamp
+    // is a newer scan. A daemon too old to stamp is taken in arrival order, as before.
+    const header = res.headers.get(REPOS_SCANNED_AT_HEADER);
+    const stamp = header === null ? Number.NaN : Number(header);
+    const scannedAt = Number.isFinite(stamp) ? stamp : 0;
+    const identity = res.headers.get(REPO_INDEX_IDENTITY_HEADER);
+    // An answer for an index other than the one announced. Which of the two is newer is
+    // decided by whether an announcement landed while this read was out:
+    //  - one did (including the very first): the answer may predate it, so it is dropped -
+    //    the announcement already made the window forget, and an open picker asked again.
+    //  - none did: the daemon answered after everything this window has heard, so the index
+    //    moved on while it was not listening (a dropped event stream). The answer is the
+    //    news: the old list goes, an open picker is told, and this list is the new one.
+    if (announcedIdentity !== null && identity !== null && identity !== announcedIdentity) {
+      if (announcedIdentity !== announcedAtSend) return { repos: held(), outcome: "dropped" };
+      forgetCachedRepos();
+      announcedIdentity = identity;
+      lastRepos = { repos: data as string[], scannedAt, identity };
+      return { repos: held(), outcome: "answered" };
+    }
+    // A list for a different index is never compared by stamp: it replaces the old one.
+    if (!lastRepos || lastRepos.identity !== identity || scannedAt === 0 || scannedAt > lastRepos.scannedAt) {
+      lastRepos = { repos: data as string[], scannedAt, identity };
+    }
+    return { repos: held(), outcome: "answered" };
   } catch {
-    return [];
+    return failure();
   }
 }
 
@@ -2179,8 +2318,18 @@ export const api = {
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
 
   // --- Repository discovery roots ---
-  setRepoIndex: (cfg: RepoIndexConfigPatch) =>
-    put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg),
+  // Forgets the window's repository list once the save is ACCEPTED: the directories it
+  // answered for have changed, and a picker must not offer a repository just removed. A
+  // refused or failed save changed nothing, so the list, every read in flight and any open
+  // picker are left alone. Forgetting here rather than waiting for `repo_index_changed` also
+  // drops reads sent before the save, and clears the announced identity so this window takes
+  // its new index before its own announcement arrives. A rescan keeps the list - same
+  // directories, and a list that is a few seconds old beats none.
+  setRepoIndex: async (cfg: RepoIndexConfigPatch) => {
+    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+    if (saved.ok) forgetCachedRepos();
+    return saved;
+  },
   rescanRepoIndex: () => post<ActionResult & RepoIndexView>(`/api/repo-index/rescan`),
 
   // --- Pipelines (observing an external SDLC engine) ---

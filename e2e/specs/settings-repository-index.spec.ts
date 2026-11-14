@@ -128,6 +128,56 @@ test.describe("config-backed repository indexing", () => {
     await expect(directoryRow(dashboard, "~/workspace")).toBeVisible();
   });
 
+  test("a scan stuck on a stalled mount leaves the editor usable, with the count unknown and why", async ({
+    dashboard,
+    daemon,
+  }) => {
+    // A stalled mount cannot be staged in the fixture, so the daemon's real answer is taken and
+    // only what a stuck scan changes is blanked: the counts, and the reason they are unknown.
+    // Every row, path and status is the daemon's own, and the Remove below is a real write.
+    const reason =
+      "workspace scan of /mnt/stalled did not finish within 60 s and was abandoned; a directory under an indexed root may be on a stalled mount";
+    await dashboard.route(
+      (url) => url.pathname === "/api/repo-index",
+      async (route) => {
+        if (route.request().method() !== "GET") return await route.continue();
+        const response = await route.fetch();
+        const view = await response.json() as {
+          repoCount: number | null;
+          scannedAt: number | null;
+          scanUnavailable: string | null;
+          directories: Array<{ repoCount: number | null }>;
+        };
+        view.repoCount = null;
+        view.scannedAt = null;
+        view.scanUnavailable = reason;
+        for (const row of view.directories) row.repoCount = null;
+        await route.fulfill({ response, json: view });
+      },
+    );
+    try {
+      await openRepositorySetup(dashboard, daemon.baseURL);
+      await expect(dashboard.getByText(`Repository count unknown - ${reason}`)).toBeVisible();
+      await expect(dashboard.getByText(/repositories indexed/)).toHaveCount(0);
+      // A readable directory no scan could count is not shown as empty.
+      await expect(directoryRow(dashboard, "~/workspace")).toContainText("count unknown");
+      await expect(directoryRow(dashboard, "~/workspace")).not.toContainText("0 repositories");
+      await dashboard.getByText(`Repository count unknown - ${reason}`).scrollIntoViewIfNeeded();
+      await shoot(dashboard, "07-scan-unavailable");
+
+      // The directory behind the stall can still be taken out of the index from here.
+      const dev = directoryRow(dashboard, "~/dev");
+      await dev.getByRole("button", { name: "Remove" }).click();
+      await expect(dev).toHaveCount(0);
+      const saved = await fetch(`${daemon.baseURL}/api/repo-index`).then((r) => r.json()) as {
+        directories: Array<{ path: string }>;
+      };
+      expect(saved.directories.map((row) => row.path)).not.toContain("~/dev");
+    } finally {
+      await dashboard.unrouteAll({ behavior: "ignoreErrors" });
+    }
+  });
+
   test("an old Repositories settings link lands on Setup", async ({ dashboard, daemon }) => {
     await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
     await expect(dashboard.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");

@@ -107,8 +107,9 @@ export async function hydrateUiConfig(): Promise<void> {
     const legacy = readLegacySettings();
     if (legacy) {
       // Retain the old one-time flag's upgrade behavior for compatible clients.
-      // The independent startup-picker preference keeps its default-on value.
-      if (!await updateUiConfig({ ...legacy, guidedTour: false })) {
+      // The independent startup-picker preference keeps its default-on value, and an
+      // adopted profile predates every announced tour, so it is owed each of them once.
+      if (!await updateUiConfig({ ...legacy, guidedTour: false, announcedTours: [] })) {
         retryHydration();
         return;
       }

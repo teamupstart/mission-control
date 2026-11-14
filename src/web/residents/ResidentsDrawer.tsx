@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
@@ -14,6 +14,7 @@ import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { ResidentProfileLaunchList } from "./ResidentProfileLaunchList.tsx";
 import { residentAccentStyle, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import type { ResidentLaunches } from "./useResidentLaunches.ts";
 
 /** One live resident as the drawer lists it, in the dock's order. */
@@ -138,6 +139,13 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
   const { bindings } = useKeybindings();
   const collapsed = useResidentCardsCollapsed();
   const rootRef = useRef<HTMLElement | null>(null);
+  // The residents tour spotlights the drawer itself, then its Pin.
+  const tourDrawerRef = useTourTargetRef<HTMLElement>("residents:drawer");
+  const tourPinRef = useTourTargetRef<HTMLButtonElement>("residents:drawer-pin");
+  const setRoot = useCallback((element: HTMLElement | null): void => {
+    rootRef.current = element;
+    tourDrawerRef(element);
+  }, [tourDrawerRef]);
 
   /** The card's head button, when it is mounted and can take focus. */
   const cardHead = (sessionId: string): HTMLButtonElement | null => {
@@ -237,9 +245,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
   );
   return (
     <aside
-      ref={(el) => {
-        rootRef.current = el;
-      }}
+      ref={setRoot}
       className="residents-drawer"
       aria-label="Residents"
       onKeyDown={onKeyDown}
@@ -254,6 +260,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
           : "Pin the drawer, so it is still open after a reload or restart"}
         >
           <button
+            ref={tourPinRef}
             type="button"
             className="btn btn-ghost residents-drawer-pin"
             aria-pressed={pinned}

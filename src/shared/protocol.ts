@@ -4216,6 +4216,17 @@ export function seedHiddenDisplayItems(raw: unknown): unknown {
   };
 }
 
+/**
+ * Tours the startup tour picker features once to a profile that existed before they shipped.
+ *
+ * Append-only, oldest first: every id is a web `TourId`, and `src/web/tour/announcements.ts`
+ * holds this list to that union. A fresh profile is born having seen all of them - nothing in
+ * the catalog is news to someone opening it for the first time - so `announcedTours` defaults to
+ * this whole list, while the daemon gives a record stored before that key existed an empty one.
+ * That absence is the "upgraded" signal, exactly as it is for `hiddenDisplayItemsSeed`.
+ */
+export const ANNOUNCED_TOURS = ["residents"] as const;
+
 export const UI_CONFIG_DEFAULTS = {
   /**
    * Board, which is the product's intended first view. Retiring Cards (#706) moved this to
@@ -4265,6 +4276,8 @@ export const UI_CONFIG_DEFAULTS = {
   // Retained for clients that used the former one-time orientation.
   guidedTour: true,
   showToursOnStartup: true,
+  /** Every announced tour: a fresh profile has nothing in the catalog to be told is new. */
+  announcedTours: [...ANNOUNCED_TOURS] as readonly string[],
   trustStaged: [],
   /**
    * NOT empty, and this is the one place the reason is written down.
@@ -4444,6 +4457,20 @@ export const UiConfigSchema = z.object({
   guidedTour: z.boolean().default(UI_CONFIG_DEFAULTS.guidedTour),
   /** Offer the tour catalog once per dashboard document, including upgraded profiles. */
   showToursOnStartup: z.boolean().default(UI_CONFIG_DEFAULTS.showToursOnStartup),
+  /**
+   * Which `ANNOUNCED_TOURS` this profile's startup picker has already featured.
+   *
+   * A tour on that list and missing here opens the picker once more, even with
+   * `showToursOnStartup` off, preselected on the new tour - the opt-out was a choice about the
+   * catalog the operator had seen, not one they made about a tour that did not exist yet. The
+   * opening records it, so the next window goes back to honoring the preference. Ids are not
+   * validated, as `trustStaged`'s are not: one this build does not know is inert, and a build
+   * that retires a tour must still be able to read its own record.
+   */
+  announcedTours: z
+    .array(z.string().min(1))
+    .max(UI_CONFIG_LIST_MAX)
+    .default([...UI_CONFIG_DEFAULTS.announcedTours]),
   /**
    * Repos the Trust panel has STAGED - added to the matrix but granted nothing yet.
    *

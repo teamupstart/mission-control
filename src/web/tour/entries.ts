@@ -19,7 +19,7 @@ export interface TourEntry {
   preview: {
     summary: string;
     outcomes: readonly [string, string, string];
-    illustration?: "work" | "library" | "setup";
+    illustration?: "work" | "library" | "setup" | "residents";
   };
   /** The Settings rail's Help & tours row. */
   settings: {
@@ -67,6 +67,7 @@ const SEE_WORK_TITLE = tourContent("see-work").title;
 const LIBRARY_TITLE = tourContent("library").title;
 const WORKFLOWS_TITLE = tourContent("workflows").title;
 const SETUP_TITLE = tourContent("setup").title;
+const RESIDENTS_TITLE = tourContent("residents").title;
 
 const SEE_WORK_ENTRY: TourEntry = {
   id: "see-work",
@@ -235,9 +236,60 @@ const SETUP_ENTRY: TourEntry = {
   exit: { route: { page: "settings", category: "trust" }, focus: "setup:trust-tab" },
 };
 
+const RESIDENTS_ENTRY: TourEntry = {
+  id: "residents",
+  title: RESIDENTS_TITLE,
+  preview: {
+    summary:
+      "Meet Agent Shepherd, the resident that ships with Mission Control, and the sidebar "
+      + "where long-running agents live.",
+    outcomes: [
+      "See what the built-in Agent Shepherd does for you",
+      "Duplicate a resident to edit it, or author your own",
+      "Open the Residents sidebar and pin it",
+    ],
+    illustration: "residents",
+  },
+  settings: {
+    tooltip: "Tour residents: Agent Shepherd, your own profiles, and the Residents sidebar",
+    ariaLabel: `Start ${RESIDENTS_TITLE} tour`,
+    heading: RESIDENTS_TITLE,
+    hint: "Agent Shepherd and the sidebar",
+  },
+  palette: {
+    rowId: "command:residents-tour",
+    title: `Start ${RESIDENTS_TITLE} tour`,
+    detail:
+      "Meet the built-in Agent Shepherd, make a resident your own, and open and pin the "
+      + "Residents sidebar.",
+    keywords: [
+      "tour",
+      "product tour",
+      "onboarding",
+      "resident",
+      "residents",
+      "agent shepherd",
+      "shepherd",
+      "profile",
+      "sidebar",
+      "drawer",
+      "pin",
+      "long-running",
+    ],
+    hint: "Start the guided Residents tour.",
+  },
+  // The profiles page, whose rail and editor the first seven stops read.
+  entryRoute: { page: "residents" },
+  // The last stop is the drawer beside the fleet, and the tour hands it over open: the point
+  // is to leave the operator where running residents live, one press from pinning it. The
+  // landing control is the top bar's Residents button rather than Pin, because it exists in
+  // either placement and after an early Exit, before the drawer was ever opened.
+  exit: { route: { page: "fleet" }, focus: "residents:topbar-button" },
+};
+
 /** Every tour Mission Control offers, in the order its entry points list them. */
 export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
-  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY, WORKFLOWS_ENTRY, SETUP_ENTRY];
+  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY, WORKFLOWS_ENTRY, SETUP_ENTRY, RESIDENTS_ENTRY];
   const seen = new Set<string>();
   for (const entry of entries) {
     if (seen.has(entry.id)) throw new Error(`duplicate tour entry ${entry.id}`);

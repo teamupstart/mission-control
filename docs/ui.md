@@ -444,6 +444,25 @@ reports the error inline, or in a dashboard banner after dismissal once other di
 close. The banner's **Browse tours** action lets you retry. Already-open windows do not live-sync
 this preference. The legacy one-time orientation flag does not opt anyone out of this picker.
 
+**A new tour is announced once.** A tour listed in `ANNOUNCED_TOURS` (`src/shared/protocol.ts`)
+that a profile has not yet been shown opens the picker one more time, even with **Show tours
+when Mission Control opens** unchecked, with that tour preselected, focused, and tagged **New**
+and the header opening with **New tour:** and its name. The checkbox still shows the saved opt-out. That
+opening, automatic or through **Browse tours**, records the announcement in `announcedTours`, so
+the next window honors the preference again; a refused write simply announces it again next
+time. A fresh profile is born with every announced tour already seen, so it gets the ordinary
+picker with **Set up this machine** previewed. A profile saved by a build before
+`announcedTours` existed is owed every announced tour, which is how **Meet your residents**
+reaches operators who dismissed the picker and opted out before it shipped. Dismissing **Meet
+your residents** midway - Exit before its last stop, however it was started - makes it owed
+again, so the next window's picker features it once more; reaching **Pin it open** is seeing it
+through, and Finish or Exit there leaves the record alone. The browser records that debt under
+`mission.tourAnnouncementsOwed` in `localStorage` at the moment of the midway Exit, before the
+daemon is asked, so a window opened while that write is in flight, or after the daemon refuses
+it, still features the tour. The browser's copy is settled once the daemon saves the debt, once
+a picker opening's own record write is saved, or once the tour is seen through. It can only make a tour owed
+again, never mark one as seen.
+
 **Dismiss**, the close button, Escape, or the backdrop closes the picker for the current
 document. Refocusing, navigating, or reconnecting does not reopen it. **Browse tours** in
 **Settings > Help & tours** or the command palette reopens it regardless of the saved preference.
@@ -451,16 +470,17 @@ The existing direct tour shortcuts remain. A dirty draft keeps the picker beneat
 leave dialog: Cancel keeps the draft; Discard and leave changes route, then **Start this tour**
 must be pressed again.
 
-Four tours are registered, and none stores progress or resumes. Exiting a tour restores the
+Five tours are registered, and none stores progress or resumes. Exiting a tour restores the
 page, asset, and control it started from, unless its entry declares an exit route because
-handing that page over is the point; see **Follow the review** and **Set up this machine**
-below. Finishing or exiting a
+handing that page over is the point; see **Follow the review**, **Set up this machine** and
+**Meet your residents** below. Finishing or exiting a
 tour does not reopen the picker. Each tour can always be started manually at stop one.
 
 The tour names, stage titles, stage descriptions, and stage definition lists have one authored
 location per tour: [`tours/see-work.md`](../tours/see-work.md),
-[`tours/library.md`](../tours/library.md), [`tours/workflows.md`](../tours/workflows.md), and
-[`tours/setup.md`](../tours/setup.md). Their H1 is
+[`tours/library.md`](../tours/library.md), [`tours/workflows.md`](../tours/workflows.md),
+[`tours/setup.md`](../tours/setup.md), and [`tours/residents.md`](../tours/residents.md). Their
+H1 is
 the tour name, each H2 is a stage title,
 and the prose below it is the stage description. Edit those Markdown files and run
 `npm run tours`; `src/web/tour/content.generated.ts` is generated build input and is never
@@ -729,6 +749,48 @@ the whole point: an operator who has never opened Setup or Trust has to be shown
 one is before its rows mean anything. Both halves live in the `setup`
 target namespace, because a namespace is owned by the tour that spotlights a target rather
 than by the panel that renders it.
+
+#### Meet your residents
+
+**Meet your residents** starts from the Settings rail's **Help & tours** footer, **Start Meet your
+residents tour** in the palette, or the startup picker, which announces it once to profiles that
+predate it. It advertises the built-in **Agent Shepherd**, shows how a resident is made your own,
+then where running residents live. Ten stops, in two halves. The first seven stand on the
+Residents page with Agent Shepherd's read-only profile open:
+
+1. **Agents that stay on the job** is a centered card over that page: what a resident is.
+2. **Agent Shepherd ships ready to launch** spotlights its row under **Built-in** in the rail,
+   with what it does as a definition list.
+3. **A profile is the resident's role** spotlights the editor's head and lists what a profile
+   decides.
+4. **Make Agent Shepherd your own** spotlights **Duplicate to edit**.
+5. **Or author one from scratch** spotlights the rail's **New**.
+6. **How a resident keeps working** spotlights the profile's **Loop and guardrails** section.
+7. **Launch it** spotlights **Launch**.
+
+The last three are the drawer:
+
+8. **Open the Residents sidebar** opens the fleet and spotlights the top bar's **Residents**
+   button. Its Next reads **Open the sidebar**. With that button hidden under **Settings >
+   Display > Top bar**, the stop names Shift+H, the palette and the edge tab instead.
+9. **Every resident at a glance** opens the drawer and spotlights it. Back puts away a drawer
+   the tour opened.
+10. **Pin it open** spotlights the drawer's **Pin** and finishes.
+
+**It shows the drawer in either placement.** Under **Board and Console** the tour borrows the
+drawer for its length, the way See the work borrows a switched-off Line, and the drawer goes
+away with the tour. The stored placement and pin are never written. The tour opens the drawer
+without moving focus onto a card, because the tour's popover owns the keyboard.
+
+**It ends on the fleet.** Its entry declares an `exit` route, so Finish or Exit lands on the
+fleet, with the drawer still open in **Drawer** placement when the tour opened it, and focus on
+the top bar's **Residents** button, which exists in both placements and after an early Exit.
+The tour is read-only: no profile is duplicated or saved, nothing launches, and Pin is the
+operator's to press. Its one write is giving its announcement back when it is dismissed midway,
+so the startup picker shows it again in the next window. Agent Shepherd's row and the Loop section resolve inside the registered
+rail and editor; the **Residents** button is registered by App rather than by the dock that draws
+it, because **Settings > Display** draws a preview top bar whose dock would take the
+registration over.
 
 **A spotlight is framed by Driver's class or its `aria-controls` wiring, whichever survives.**
 Driver adds both to the active element and clears both on the same transition. React owns

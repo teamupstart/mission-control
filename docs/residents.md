@@ -75,6 +75,11 @@ live-profile limit. Settings snapshots do not carry them, and a restore never ar
 The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
 the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
 
+The **Meet your residents** guided tour walks this page on Agent Shepherd, then opens the
+[Residents drawer](#the-residents-drawer) and points at **Pin**. Start it from **Settings > Help &
+tours** or the palette; the startup tour picker announces it once to profiles that predate it.
+See [guided tours](ui.md#meet-your-residents).
+
 ## Launching a resident
 
 **Dispatch > Resident** shows a card per live profile, the repository (pre-filled from the

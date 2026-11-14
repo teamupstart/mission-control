@@ -21,6 +21,18 @@ function TourIllustration({ kind }: { kind: TourCatalogEntry["preview"]["illustr
           <path className="tour-art-line" d={`M60 ${y + 8}H${[250, 212, 276][i]}`} />
           <rect className="tour-art-panel" x="342" y={y} width="64" height="16" rx="8" />
         </g>)}
+      </> : kind === "residents" ? <>
+        {[30, 98, 166].map((x) => (
+          <rect key={x} className="tour-art-card" x={x} y="50" width="56" height="74" rx="6" />
+        ))}
+        <rect className="tour-art-panel" x="248" y="44" width="166" height="86" rx="8" />
+        <path className="tour-art-line" d="M262 58H340" />
+        <circle className="tour-art-accent" cx="398" cy="58" r="5" />
+        {[72, 101].map((y, i) => <g key={y}>
+          <rect className="tour-art-card" x="258" y={y} width="146" height="22" rx="5" />
+          <circle className="tour-art-accent" cx="271" cy={y + 11} r="4" />
+          <path className="tour-art-line" d={`M284 ${y + 11}H${[372, 344][i]}`} />
+        </g>)}
       </> : kind === "library" ? <>
         {[30, 158, 286].map((x) => <g key={x}>
           <rect className="tour-art-card" x={x} y="50" width="112" height="72" rx="6" />
@@ -39,8 +51,16 @@ function TourIllustration({ kind }: { kind: TourCatalogEntry["preview"]["illustr
   );
 }
 
-export function TourPicker({ entries, enabled, hydrated, saving, saveError, onSave, onStart, onClose }: {
+export function TourPicker({
+  entries, featuredId = null, enabled, hydrated, saving, saveError, onSave, onStart, onClose,
+}: {
   entries: readonly TourCatalogEntry[];
+  /**
+   * A tour this opening announces as new: preselected, focused, and marked New. Fixed for the
+   * life of the picker - App captures it as it opens - so recording the announcement, which
+   * clears it from the saved profile, never moves the selection out from under anyone.
+   */
+  featuredId?: TourId | null;
   enabled: boolean;
   hydrated: boolean;
   saving: boolean;
@@ -49,7 +69,9 @@ export function TourPicker({ entries, enabled, hydrated, saving, saveError, onSa
   onStart: (id: TourId) => void;
   onClose: () => void;
 }): React.JSX.Element {
-  const [selectedId, setSelectedId] = useState(entries[0]?.id);
+  const featured = entries.find((entry) => entry.id === featuredId) ?? null;
+  const [initialId] = useState(() => featured?.id ?? entries[0]?.id);
+  const [selectedId, setSelectedId] = useState(initialId);
   const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0];
   const surface = useRef<HTMLElement | null>(null);
   const setSurface = useCallback((element: HTMLElement | null) => { surface.current = element; }, []);
@@ -62,7 +84,10 @@ export function TourPicker({ entries, enabled, hydrated, saving, saveError, onSa
       surfaceRef={setSurface}
       onKeyDown={containTab}>
       <header className="modal-head">
-        <div><h2>Explore Mission Control</h2><p>Choose a tour. Start when you’re ready.</p></div>
+        <div><h2>Explore Mission Control</h2><p>
+          {featured && <><strong>New tour: {featured.title}.</strong> </>}
+          Choose a tour. Start when you’re ready.
+        </p></div>
         <Tooltip label="Close the picker without starting a tour">
           <button className="icon-btn" aria-label="Close tour picker" onClick={onClose}
             autoFocus={!selected}>✕</button>
@@ -76,9 +101,10 @@ export function TourPicker({ entries, enabled, hydrated, saving, saveError, onSa
               <Tooltip key={entry.id} label={`Preview ${entry.title}`}>
                 <label className={`tour-picker-row${entry.id === selected.id ? " is-selected" : ""}`}>
                   <input type="radio" name="tour-picker-selection" value={entry.id}
-                    checked={entry.id === selected.id} autoFocus={entry.id === entries[0]?.id}
+                    checked={entry.id === selected.id} autoFocus={entry.id === initialId}
                     onChange={() => setSelectedId(entry.id)} aria-label={entry.title} />
                   <span><strong>{entry.title}</strong><small>{entry.stopCount} stops</small>
+                    {entry.id === featured?.id && <span className="tour-picker-new">New</span>}
                     {entry.recommended && <span className="tour-picker-recommended">Recommended first</span>}
                   </span>
                 </label>

@@ -193,8 +193,22 @@ test("the Library and Setup tour targets are declared, namespaced, and their own
     "workflows:run-filter-all",
   ]);
   assert.ok(workflows.every((id) => tourTargetScope(id) === "page"));
+  // Residents walks the profiles page, then the top bar's button and the drawer it opens. The
+  // built-in's rail row and the editor's Loop section resolve inside the rail and the editor.
+  const residents = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "residents");
+  assert.deepEqual(residents, [
+    "residents:rail",
+    "residents:new",
+    "residents:editor",
+    "residents:duplicate",
+    "residents:launch",
+    "residents:topbar-button",
+    "residents:drawer",
+    "residents:drawer-pin",
+  ]);
+  assert.ok(residents.every((id) => tourTargetScope(id) === "page"));
   assert.equal(
-    seeWork.length + library.length + workflows.length + setup.length,
+    seeWork.length + library.length + workflows.length + setup.length + residents.length,
     TOUR_TARGET_IDS.length,
   );
 });

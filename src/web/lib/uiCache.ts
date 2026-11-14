@@ -192,6 +192,12 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     guidedTour: raw?.guidedTour ?? UI_CONFIG_DEFAULTS.guidedTour,
     showToursOnStartup: typeof raw?.showToursOnStartup === "boolean"
       ? raw.showToursOnStartup : UI_CONFIG_DEFAULTS.showToursOnStartup,
+    // A fresh array, like `trustStaged` below. A miss reads as every announced tour already
+    // seen: only the daemon's record can say a profile predates one, and the startup picker
+    // waits for that record before it reads this field at all.
+    announcedTours: Array.isArray(raw?.announcedTours)
+      ? raw.announcedTours.filter((id): id is string => typeof id === "string")
+      : [...UI_CONFIG_DEFAULTS.announcedTours],
     // A fresh array either way: the default is a shared frozen literal, and the cache must
     // hand back something the Trust panel can build its next patch from without mutating it.
     trustStaged: raw?.trustStaged ? [...raw.trustStaged] : [],

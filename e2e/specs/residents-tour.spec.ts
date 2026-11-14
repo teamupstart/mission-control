@@ -1,0 +1,562 @@
+import { mkdirSync } from "node:fs";
+import type { Locator, Page, Route } from "@playwright/test";
+
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { expectSpotlight } from "../fixtures/tour-spotlight.ts";
+import { expect, test } from "../fixtures/test.ts";
+
+/**
+ * Meet your residents, driven through the real dashboard against a real daemon.
+ *
+ * The tour advertises the built-in Agent Shepherd, shows how a resident is duplicated or
+ * authored, then opens the Residents drawer and points at its Pin. It writes nothing: no
+ * profile is saved, no resident launches, and the stored pin is never touched. The last test
+ * is the announcement: a profile that predates the tour sees the startup picker once more,
+ * featuring it, even after opting out of the picker.
+ */
+
+const EVIDENCE = artifactsDir("residents-tour");
+const TOUR_COMMAND = /Start Meet your residents tour, command/;
+const SHEPHERD_HASH = "#/residents/builtin%3Aagent-shepherd";
+const PICKER = "Explore Mission Control";
+
+test.describe.configure({ timeout: 120_000 });
+
+function tourStep(page: Page, title: string): Locator {
+  return page.getByRole("dialog", { name: title }).or(page.getByRole("status", { name: title }));
+}
+
+const hash = (page: Page) => page.evaluate(() => location.hash);
+const drawer = (page: Page) => page.getByRole("complementary", { name: "Residents", exact: true });
+const residentsButton = (page: Page) => page.getByRole("button", { name: /^Residents - \d+ live$/ });
+
+async function shoot(page: Page, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/residents-tour/${name}.png`);
+}
+
+async function uiConfig(daemon: DaemonHandle) {
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`);
+  expect(response.ok).toBe(true);
+  return (await response.json() as {
+    config: {
+      residentPlacement: string;
+      residentDrawerPinned: boolean;
+      showToursOnStartup: boolean;
+      announcedTours: string[];
+    };
+  }).config;
+}
+
+async function putUiConfig(daemon: DaemonHandle, patch: object): Promise<void> {
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  expect(response.ok).toBe(true);
+}
+
+/**
+ * Record every write the tour could make to a profile, a launch, a task or a tour recipe.
+ *
+ * Preferences are compared by value instead: finishing any tour replays the snapshot's layout,
+ * and the layout setter persists what it is given even when it is unchanged.
+ */
+function recordWrites(page: Page): () => string[] {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET") return;
+    const url = new URL(request.url());
+    if (/^\/api\/(residents|tasks|tours)/.test(url.pathname)) {
+      writes.push(`${request.method()} ${url.pathname} ${request.postData() ?? ""}`);
+    }
+  });
+  return () => writes;
+}
+
+/**
+ * Refuse every browser write of `announcedTours` with a 503, the way a daemon that cannot save
+ * answers. Resolves once the first refusal has been sent; `release` lets writes through again.
+ */
+async function rejectAnnouncementWrites(page: Page): Promise<{
+  rejected: Promise<void>;
+  count: () => number;
+  release: () => Promise<void>;
+}> {
+  let count = 0;
+  let first!: () => void;
+  const rejected = new Promise<void>((resolve) => { first = resolve; });
+  await page.route("**/api/ui/config", async (route) => {
+    const request = route.request();
+    if (request.method() === "PUT" && "announcedTours" in (request.postDataJSON() ?? {})) {
+      count += 1;
+      await route.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
+      first();
+    } else await route.continue();
+  });
+  return { rejected, count: () => count, release: () => page.unroute("**/api/ui/config") };
+}
+
+/** The `announcedTours` this browser's own cache holds: where a refused write's rollback lands. */
+const cachedAnnouncedTours = (page: Page) => page.evaluate(() =>
+  (JSON.parse(localStorage.getItem("mission-control.ui") ?? "{}") as { announcedTours?: string[] })
+    .announcedTours);
+
+/** What this browser owes because the daemon refused the write that would have owed it there. */
+const owedAnnouncements = (page: Page) => page.evaluate(() =>
+  JSON.parse(localStorage.getItem("mission.tourAnnouncementsOwed") ?? "[]") as string[]);
+
+const PREFERENCE_ERROR = "Could not save your tour preference";
+
+async function startFromPalette(page: Page): Promise<void> {
+  await page.keyboard.press("Meta+k");
+  const palette = page.getByRole("dialog", { name: "Search everything" });
+  await palette.getByRole("combobox").fill("Meet your residents");
+  await palette.getByRole("option", { name: TOUR_COMMAND }).click();
+}
+
+test("the tour advertises Agent Shepherd, walks authoring, and hands over the open drawer", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  // The shipped placement. The dashboard fixture pins Board and Console for older specs.
+  await putUiConfig(daemon, { residentPlacement: "drawer" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.reload();
+  await expectDashboardReady(page);
+  const writes = recordWrites(page);
+  const before = await uiConfig(daemon);
+
+  // Discovery: the Settings rail's Help & tours footer draws a row for it from the registry.
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.getByRole("button", { name: "Start Meet your residents tour" }).click();
+
+  let step = tourStep(page, "Agents that stay on the job");
+  await expect(step).toBeVisible();
+  await expect(step).toContainText("Step 1 of 10");
+  await expect(step).toContainText("A resident is a long-running agent with a standing role.");
+  // Behind the opening card is the page the next six stops read: the built-in, read-only.
+  await expect.poll(() => hash(page)).toBe(SHEPHERD_HASH);
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Agent Shepherd ships ready to launch");
+  await expect(step).toBeVisible();
+  await expect(step).toContainText("Unblocks stuck work");
+  await expect(step).toContainText("Asks you when it matters");
+  const rail = page.getByRole("complementary", { name: "Resident profiles" });
+  const shepherdRow = rail.getByRole("button", { name: /^Agent Shepherd/ });
+  await expectSpotlight(shepherdRow);
+  await expect(shepherdRow).toHaveAttribute("aria-current", "true");
+  await shoot(page, "residents-tour-agent-shepherd");
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "A profile is the resident's role");
+  await expect(step).toBeVisible();
+  await expect(step).toContainText("Loop and guardrails");
+  const editor = page.getByRole("region", { name: "Resident profile Agent Shepherd" });
+  await expectSpotlight(editor.locator(".resident-editor-head"));
+  await expect(editor).toContainText("ships with Mission Control and is read-only");
+  await shoot(page, "residents-tour-profile");
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Make Agent Shepherd your own");
+  await expect(step).toBeVisible();
+  await expectSpotlight(editor.getByRole("button", { name: "Duplicate to edit" }));
+  await shoot(page, "residents-tour-duplicate");
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Or author one from scratch");
+  await expect(step).toBeVisible();
+  await expectSpotlight(rail.getByRole("button", { name: "New", exact: true }));
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "How a resident keeps working");
+  await expect(step).toBeVisible();
+  await expectSpotlight(editor.getByRole("region", { name: "Loop and guardrails" }));
+  await shoot(page, "residents-tour-loop");
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Launch it");
+  await expect(step).toBeVisible();
+  await expectSpotlight(editor.getByRole("button", { name: "Launch", exact: true }));
+  // Still on the built-in: no stop opened a copy or a blank profile.
+  expect(await hash(page)).toBe(SHEPHERD_HASH);
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Open the Residents sidebar");
+  await expect(step).toBeVisible();
+  await expect.poll(() => hash(page)).toBe("#/fleet");
+  await expectSpotlight(residentsButton(page));
+  await expect(drawer(page)).toBeHidden();
+  await shoot(page, "residents-tour-open-sidebar");
+
+  await step.getByRole("button", { name: "Open the sidebar" }).click();
+  step = tourStep(page, "Every resident at a glance");
+  await expect(step).toBeVisible();
+  await expect(drawer(page)).toBeVisible();
+  await expectSpotlight(drawer(page));
+  // The drawer lists Agent Shepherd's profile to launch, and the tour launched nothing.
+  await expect(drawer(page).getByRole("button", { name: /Launch/ }).first()).toBeVisible();
+  await shoot(page, "residents-tour-sidebar");
+
+  // Back puts away the drawer the tour opened, and Next opens it again.
+  await step.getByRole("button", { name: "Back" }).click();
+  await expect(tourStep(page, "Open the Residents sidebar")).toBeVisible();
+  await expect(drawer(page)).toBeHidden();
+  await tourStep(page, "Open the Residents sidebar").getByRole("button", { name: "Open the sidebar" }).click();
+  await expect(drawer(page)).toBeVisible();
+
+  step = tourStep(page, "Every resident at a glance");
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Pin it open");
+  await expect(step).toBeVisible();
+  await expect(step).toContainText("Step 10 of 10");
+  const pin = drawer(page).getByRole("button", { name: "Pin", exact: true });
+  await expectSpotlight(pin);
+  await expect(pin).toHaveAttribute("aria-pressed", "false");
+  await shoot(page, "residents-tour-pin");
+
+  await step.getByRole("button", { name: "Finish tour" }).click();
+  await expect(step).toBeHidden();
+  // Handed over: the fleet with the drawer still open beside it, unpinned, and the keyboard
+  // on the button that opens and closes it.
+  await expect.poll(() => hash(page)).toBe("#/fleet");
+  await expect(drawer(page)).toBeVisible();
+  await expect(residentsButton(page)).toBeFocused();
+  await shoot(page, "residents-tour-handover");
+  expect(writes()).toEqual([]);
+  const config = await uiConfig(daemon);
+  expect(config).toEqual(before);
+  expect(config.residentDrawerPinned).toBe(false);
+  expect(config.residentPlacement).toBe("drawer");
+  expect(await (await fetch(`${daemon.baseURL}/api/tasks`)).json()).toEqual([]);
+
+  // The Pin the tour pointed at is the real one, and it is the operator's to press.
+  await pin.click();
+  await expect(drawer(page).getByRole("button", { name: "Unpin", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(async () => (await uiConfig(daemon)).residentDrawerPinned).toBe(true);
+  await page.reload();
+  await expect(drawer(page)).toBeVisible();
+});
+
+test("under Board and Console the tour borrows the drawer and gives it back", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  // The dashboard fixture's placement: residents on the Board and Console, with the dock.
+  expect((await uiConfig(daemon)).residentPlacement).toBe("fleet");
+  await expect(drawer(page)).toBeHidden();
+  await startFromPalette(page);
+  for (const title of [
+    "Agents that stay on the job",
+    "Agent Shepherd ships ready to launch",
+    "A profile is the resident's role",
+    "Make Agent Shepherd your own",
+    "Or author one from scratch",
+    "How a resident keeps working",
+    "Launch it",
+    "Open the Residents sidebar",
+    "Every resident at a glance",
+  ]) {
+    const stop = tourStep(page, title);
+    await expect(stop).toBeVisible();
+    await stop.getByRole("button", { name: /^(Next|Open the sidebar)$/ }).click();
+  }
+  const step = tourStep(page, "Pin it open");
+  await expect(step).toBeVisible();
+  await expect(drawer(page)).toBeVisible();
+  await expectSpotlight(drawer(page).getByRole("button", { name: "Pin", exact: true }));
+  await expect(step).toContainText("Settings > Display > Residents chooses where residents live");
+
+  await step.getByRole("button", { name: "Exit tour" }).click();
+  await expect(step).toBeHidden();
+  await expect.poll(() => hash(page)).toBe("#/fleet");
+  // Borrowed, not kept: the placement is unchanged and the drawer goes with the tour.
+  await expect(drawer(page)).toBeHidden();
+  const config = await uiConfig(daemon);
+  expect(config.residentPlacement).toBe("fleet");
+  expect(config.residentDrawerPinned).toBe(false);
+  // Exit on the last stop is seeing it through, not dismissing it midway: still announced.
+  expect(config.announcedTours).toEqual(["residents"]);
+  // The top bar's button still opens the dock in this placement.
+  await residentsButton(page).click();
+  await expect(page.getByRole("button", { name: "Manage residents" })).toBeVisible();
+  await expect(drawer(page)).toBeHidden();
+});
+
+test("a profile that opted out before the tour shipped is shown it once in the picker", async ({
+  page,
+  daemon,
+}) => {
+  // A record an older build wrote: it opted out of the startup picker, and it has no
+  // `announcedTours`, because that key did not exist yet.
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO app_config (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run("ui", JSON.stringify({ showToursOnStartup: false, residentPlacement: "drawer" }));
+  });
+  const picker = page.getByRole("dialog", { name: PICKER });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(picker).toBeVisible();
+  await expectContentClearsBorder(picker);
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  // Featured: preselected, focused, and the only row marked New. Setup keeps its badge.
+  const residents = picker.getByRole("radio", { name: "Meet your residents", exact: true });
+  await expect(residents).toBeChecked();
+  await expect(residents).toBeFocused();
+  await expect(picker.getByText("New", { exact: true })).toHaveCount(1);
+  await expect(picker.getByText("Recommended first")).toBeVisible();
+  const preview = picker.getByRole("region", { name: "Meet your residents preview" });
+  await expect(preview.getByRole("listitem")).toHaveText([
+    "See what the built-in Agent Shepherd does for you",
+    "Duplicate a resident to edit it, or author your own",
+    "Open the Residents sidebar and pin it",
+  ]);
+  await expect(picker.getByText("10 stops", { exact: true })).toBeVisible();
+  // The opt-out still reads as the operator left it.
+  await expect(picker.getByRole("checkbox", { name: "Show tours when Mission Control opens" })).not.toBeChecked();
+  await shoot(page, "residents-tour-announcement");
+
+  // Opening it was the announcement: recorded, with the preference untouched.
+  await expect.poll(async () => (await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
+
+  await picker.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(picker).toBeHidden();
+  await page.reload();
+  await expectDashboardReady(page);
+  // Back to honoring the opt-out.
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  await expect(picker).toBeHidden();
+
+  // Browse tours still offers it, now as an ordinary row.
+  await page.keyboard.press("Meta+k");
+  const palette = page.getByRole("dialog", { name: "Search everything" });
+  await palette.getByRole("combobox").fill("Browse tours");
+  await palette.getByRole("option", { name: /Browse tours, command/ }).click();
+  await expect(picker).toBeVisible();
+  await expect(picker.getByText("New", { exact: true })).toHaveCount(0);
+  await expect(picker.getByRole("radio", { name: "Set up this machine", exact: true })).toBeChecked();
+  await picker.getByRole("radio", { name: "Meet your residents", exact: true }).check();
+  await picker.getByRole("button", { name: "Start this tour" }).click();
+  await expect(tourStep(page, "Agents that stay on the job")).toBeVisible();
+  await expect.poll(() => hash(page)).toBe(SHEPHERD_HASH);
+});
+
+test("dismissing the tour midway shows it again in the next window, and seeing it through does not", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  // The dashboard fixture's profile: picker opted out, every tour already announced.
+  const picker = page.getByRole("dialog", { name: PICKER });
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await startFromPalette(page);
+  await tourStep(page, "Agents that stay on the job").getByRole("button", { name: "Next" }).click();
+  const midway = tourStep(page, "Agent Shepherd ships ready to launch");
+  await expect(midway).toContainText("Step 2 of 10");
+  await midway.getByRole("button", { name: "Exit tour" }).click();
+  await expect(midway).toBeHidden();
+  // Dismissed midway: owed again, and nothing else about the profile changes. The daemon holds
+  // the debt now, so the browser's own copy of it is settled.
+  await expect.poll(async () => (await uiConfig(daemon)).announcedTours).toEqual([]);
+  await expect.poll(() => owedAnnouncements(page)).toEqual([]);
+  expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
+  await expect(picker).toBeHidden();
+
+  // The next window's startup picker features it again, past the opt-out.
+  await page.reload();
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
+  await shoot(page, "residents-tour-shown-again");
+  await picker.getByRole("button", { name: "Start this tour" }).click();
+
+  // Seen through this time: every stop to Finish, which records nothing new to owe.
+  for (const title of [
+    "Agents that stay on the job",
+    "Agent Shepherd ships ready to launch",
+    "A profile is the resident's role",
+    "Make Agent Shepherd your own",
+    "Or author one from scratch",
+    "How a resident keeps working",
+    "Launch it",
+    "Open the Residents sidebar",
+    "Every resident at a glance",
+  ]) {
+    const stop = tourStep(page, title);
+    await expect(stop).toBeVisible();
+    await stop.getByRole("button", { name: /^(Next|Open the sidebar)$/ }).click();
+  }
+  const last = tourStep(page, "Pin it open");
+  await last.getByRole("button", { name: "Finish tour" }).click();
+  await expect(last).toBeHidden();
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await page.reload();
+  await expectDashboardReady(page);
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  await expect(picker).toBeHidden();
+});
+
+test("a refused announcement write leaves the tour owed, so the next window features it again", async ({
+  page,
+  daemon,
+}) => {
+  // The same pre-upgrade, opted-out record as above: owed the residents announcement.
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO app_config (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run("ui", JSON.stringify({ showToursOnStartup: false, residentPlacement: "drawer" }));
+  });
+  const writes = await rejectAnnouncementWrites(page);
+  const picker = page.getByRole("dialog", { name: PICKER });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  await writes.rejected;
+  expect(writes.count()).toBe(1);
+
+  // Refused: nothing reached the daemon, and the browser rolled its optimistic copy back.
+  expect((await uiConfig(daemon)).announcedTours).toEqual([]);
+  await expect.poll(() => cachedAnnouncedTours(page)).toEqual([]);
+  // The picker stays as it opened, featured, and the refusal is not reported as a broken
+  // preference: the startup checkbox is untouched and no tour-preference alert appears.
+  await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
+  await expect(page.getByText(PREFERENCE_ERROR)).toHaveCount(0);
+  await picker.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(picker).toBeHidden();
+  await expect(page.getByText(PREFERENCE_ERROR)).toHaveCount(0);
+  // Still one offer per document: the rolled-back announcement does not reopen it here, and
+  // nothing retried the write behind the operator's back.
+  await page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: /Library/ }).click();
+  await expect(picker).toBeHidden();
+  expect(writes.count()).toBe(1);
+
+  // The next window is owed it still, and features it again; this time the write lands.
+  await writes.release();
+  await page.reload();
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
+  await expect.poll(async () => (await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await picker.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await page.reload();
+  await expectDashboardReady(page);
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  await expect(picker).toBeHidden();
+});
+
+test("a refused midway write is still owed, so the next window features the tour again", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  // The dashboard fixture's profile: picker opted out, every tour already announced.
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  const writes = await rejectAnnouncementWrites(page);
+  const picker = page.getByRole("dialog", { name: PICKER });
+  await startFromPalette(page);
+  await tourStep(page, "Agents that stay on the job").getByRole("button", { name: "Next" }).click();
+  const midway = tourStep(page, "Agent Shepherd ships ready to launch");
+  await expect(midway).toBeVisible();
+  await midway.getByRole("button", { name: "Exit tour" }).click();
+  await expect(midway).toBeHidden();
+  await writes.rejected;
+  expect(writes.count()).toBe(1);
+
+  // Refused: the daemon still records the tour as announced and the browser's copy of the
+  // preference rolled back to match it, but this browser keeps the reminder it could not save.
+  // The tour still ends where it hands over, with nothing reported and nothing retried.
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await expect.poll(() => cachedAnnouncedTours(page)).toEqual(["residents"]);
+  await expect.poll(() => owedAnnouncements(page)).toEqual(["residents"]);
+  await expect.poll(() => hash(page)).toBe("#/fleet");
+  await expect(page.getByText(PREFERENCE_ERROR)).toHaveCount(0);
+  await expect(picker).toBeHidden();
+  expect(writes.count()).toBe(1);
+
+  // The next window features the tour again, past the saved opt-out, even though the daemon
+  // never heard about the midway dismissal.
+  await writes.release();
+  await page.reload();
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
+  await expect(picker.getByRole("checkbox", { name: "Show tours when Mission Control opens" })).not.toBeChecked();
+  await shoot(page, "residents-tour-shown-again-after-refusal");
+  // That opening is the announcement, and once it is saved the browser's debt is settled.
+  await expect.poll(() => owedAnnouncements(page)).toEqual([]);
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
+  await picker.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await page.reload();
+  await expectDashboardReady(page);
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  await expect(picker).toBeHidden();
+});
+
+test("a window opened while the midway write is in flight still features the tour", async ({
+  dashboard: page,
+  daemon,
+  context,
+}) => {
+  // Hold the midway write unanswered, as a slow daemon would, and refuse it only later.
+  let held!: Route;
+  let arrived!: () => void;
+  const pending = new Promise<void>((resolve) => { arrived = resolve; });
+  await page.route("**/api/ui/config", async (route) => {
+    const request = route.request();
+    if (request.method() === "PUT" && "announcedTours" in (request.postDataJSON() ?? {})) {
+      held = route;
+      arrived();
+    } else await route.continue();
+  });
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await startFromPalette(page);
+  await tourStep(page, "Agents that stay on the job").getByRole("button", { name: "Next" }).click();
+  const midway = tourStep(page, "Agent Shepherd ships ready to launch");
+  await expect(midway).toBeVisible();
+  await midway.getByRole("button", { name: "Exit tour" }).click();
+  await expect(midway).toBeHidden();
+  await pending;
+
+  // The write has not landed - the daemon still reads the tour as seen - but the reminder was
+  // kept the moment the tour was left, so a second window opened now still features it.
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  expect(await owedAnnouncements(page)).toEqual(["residents"]);
+  const second = await context.newPage();
+  const secondPicker = second.getByRole("dialog", { name: PICKER });
+  await second.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(secondPicker).toBeVisible();
+  await expect(secondPicker).toContainText("New tour: Meet your residents.");
+  await expect(secondPicker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
+  // That window's announcement is saved, which settles the reminder for this browser.
+  await expect.poll(() => owedAnnouncements(second)).toEqual([]);
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+
+  // The first window's held write is refused afterwards: the tour was already announced, and
+  // the refusal neither brings the reminder back nor surfaces an error.
+  await held.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
+  await page.unroute("**/api/ui/config");
+  await expect.poll(() => cachedAnnouncedTours(page)).toEqual(["residents"]);
+  expect(await owedAnnouncements(page)).toEqual([]);
+  await expect(page.getByText(PREFERENCE_ERROR)).toHaveCount(0);
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+});
+
+test("a fresh profile is not told a tour is new", async ({ page, daemon }) => {
+  // Every PUT the fixture made leaves a record born with every tour already announced.
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expectDashboardReady(page);
+  await expect(page.getByRole("dialog", { name: PICKER })).toBeHidden();
+});

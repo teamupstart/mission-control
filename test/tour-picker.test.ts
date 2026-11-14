@@ -35,3 +35,35 @@ test("an empty catalog stays dismissible and cannot start a tour", () => {
   assert.match(html, /disabled=""/);
   assert.doesNotMatch(html, /Start this tour/);
 });
+
+test("a featured tour opens preselected and tagged New, and an ordinary opening tags nothing", () => {
+  const props = {
+    entries: tourCatalog(), enabled: false, hydrated: true, saving: false, saveError: false,
+    onSave() {}, onStart() {}, onClose() {},
+  };
+  const featured = renderToStaticMarkup(withOverlayHost(createElement(TourPicker, {
+    ...props, featuredId: "residents",
+  })));
+  assert.match(featured, /New tour: Meet your residents\./);
+  assert.equal(featured.split('class="tour-picker-new"').length - 1, 1);
+  // The featured row is the checked radio, and its preview is the one drawn.
+  const checked = (html: string) => /<input type="radio"[^>]*\bchecked=""[^>]*value="([a-z-]+)"/.exec(html)?.[1];
+  assert.equal(checked(featured), "residents");
+  // Focus starts on the featured row, not on the first one.
+  assert.match(featured, /<input type="radio" autofocus=""[^>]*value="residents"/);
+  assert.match(featured, /aria-label="Meet your residents preview"/);
+  // The recommendation is still stated; it is simply not what this opening previews.
+  assert.match(featured, /Recommended first/);
+  // The opt-out still reads as saved.
+  assert.doesNotMatch(featured, /type="checkbox" checked=""/);
+
+  const ordinary = renderToStaticMarkup(withOverlayHost(createElement(TourPicker, props)));
+  assert.doesNotMatch(ordinary, /tour-picker-new|New tour:/);
+  assert.equal(checked(ordinary), "setup");
+  // A featured id the catalog cannot draw falls back to the ordinary opening.
+  const unknown = renderToStaticMarkup(withOverlayHost(createElement(TourPicker, {
+    ...props, entries: tourCatalog().filter((entry) => entry.id !== "residents"), featuredId: "residents",
+  })));
+  assert.doesNotMatch(unknown, /tour-picker-new|New tour:/);
+  assert.equal(checked(unknown), "setup");
+});

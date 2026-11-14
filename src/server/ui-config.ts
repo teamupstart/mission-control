@@ -63,6 +63,19 @@ function migrateGuidedTour(raw: unknown): unknown {
 }
 
 /**
+ * A record stored before `announcedTours` existed belongs to a profile that predates every tour
+ * on `ANNOUNCED_TOURS`, so it is owed each of them once: an empty list, where a record parsed
+ * from nothing takes the schema's full one. The same absence-on-a-stored-record signal
+ * `migrateGuidedTour` reads, and it holds for the same reason - an older build cannot have
+ * written a key this one invented.
+ */
+function migrateAnnouncedTours(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const stored = raw as Record<string, unknown>;
+  return "announcedTours" in stored ? raw : { ...stored, announcedTours: [] };
+}
+
+/**
  * The stored skin id exactly as written, when it is one this build does not ship - a skin a
  * newer build added, read here after a downgrade. Null for a known id, a missing one, or
  * anything that is not an id.
@@ -97,7 +110,9 @@ export function getUiConfig(persistMigration = true): UiConfig {
   // marker still means "written before this build".
   const migrated = stored === undefined
     ? {}
-    : seedHiddenDisplayItems(migrateGuidedTour(migrateHiddenLineDensity(migrateRetiredLayout(stored))));
+    : seedHiddenDisplayItems(migrateAnnouncedTours(
+      migrateGuidedTour(migrateHiddenLineDensity(migrateRetiredLayout(stored))),
+    ));
   const config = UiConfigSchema.parse(migrated);
   if (persistMigration && migrated !== stored && stored !== undefined) {
     persistUiConfig(config, stored, false);

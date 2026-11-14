@@ -100,7 +100,7 @@ import {
   cardShortcutTarget,
   NO_CARD_SHORTCUTS,
 } from "./lib/card-shortcuts.ts";
-import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
+import { uiConfig, updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
@@ -183,7 +183,18 @@ import { GuidedTourController } from "./tour/GuidedTourController.tsx";
 import { TourPicker } from "./components/TourPicker.tsx";
 import { TourPreferenceNotice } from "./components/TourPreferenceNotice.tsx";
 import { tourCatalog } from "./tour/catalog.ts";
-import { startupTourDecision } from "./tour/startup.ts";
+import {
+  pendingTourAnnouncement,
+  rearmTourAnnouncement,
+  recordTourAnnouncements,
+  startupTourDecision,
+  withOwedAnnouncements,
+} from "./tour/startup.ts";
+import {
+  oweAnnouncement,
+  readOwedAnnouncements,
+  settleOwedAnnouncements,
+} from "./tour/owed-announcements.ts";
 import type { TourId } from "./tour/contracts.ts";
 import { TOUR_DEFINITIONS } from "./tour/definitions.ts";
 import { tourEntry } from "./tour/entries.ts";
@@ -208,6 +219,12 @@ import {
   type WorkflowsTourRuntime,
 } from "./tour/tours/workflows.ts";
 import { SETUP_TOUR, type SetupTourNavigation } from "./tour/tours/setup.ts";
+import {
+  RESIDENTS_TOUR,
+  selectResidentsTourProfile,
+  type ResidentsTourNavigation,
+  type ResidentsTourRuntime,
+} from "./tour/tours/residents.ts";
 import { createTourTargetRegistry, type TourTargetId } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
 import {
@@ -520,6 +537,12 @@ export function App(): React.JSX.Element {
   sessionsRef.current = sessions;
   tasksRef.current = tasks;
   const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "see-work:dispatch");
+  // The top bar's Residents button, registered here rather than by the dock that draws it:
+  // Settings > Display renders a preview top bar whose dock would overwrite the real one.
+  const residentsButtonTourRef = useOwnedTourTargetRef<HTMLButtonElement>(
+    tourTargets,
+    "residents:topbar-button",
+  );
   // The gear, for the Setup tour's first stop. App renders the topbar above `TourTargetHost`,
   // so it registers through the owned hook exactly as Dispatch does.
   const settingsGearTourRef = useOwnedTourTargetRef<HTMLButtonElement>(
@@ -549,7 +572,17 @@ export function App(): React.JSX.Element {
   const [residentDrawerSelected, setResidentDrawerSelected] = useState<string | null>(null);
   /** A one-shot request to focus a card in the drawer. */
   const [residentCardFocus, setResidentCardFocus] = useState<{ sessionId: string | null; nonce: number } | null>(null);
-  const residentDrawerShown = residentsInDrawer && (residentDrawerOpen || residentDrawerPinned);
+  /**
+   * The Meet your residents tour shows this drawer whatever the placement. Under Board and
+   * Console it borrows the drawer for the length of the tour - only one the tour opened, never
+   * the stored pin - the way See the work borrows a switched-off Line, and writes nothing.
+   */
+  const residentsTourBorrowsDrawer = !residentsInDrawer && activeTour?.tourId === "residents";
+  const residentDrawerShown = residentsInDrawer
+    ? residentDrawerOpen || residentDrawerPinned
+    : residentsTourBorrowsDrawer && residentDrawerOpen;
+  const residentDrawerShownRef = useRef(residentDrawerShown);
+  residentDrawerShownRef.current = residentDrawerShown;
   // The one launch state behind the dock and the drawer, so a launch outlives either closing.
   const residentLauncher = useResidentLaunches();
   /**
@@ -966,11 +999,32 @@ export function App(): React.JSX.Element {
   // from any page, and `DispatchSettingsPanel` and the dispatch modal's header switch read
   // the same module-level store, so this is a third reader of one value rather than a copy.
   const [guidedDispatch, setGuidedDispatch] = useGuidedDispatch();
-  const showToursOnStartup = useUiConfig().showToursOnStartup;
+  const { showToursOnStartup, announcedTours } = useUiConfig();
   const tourPreferenceHydrated = useUiConfigHydrated();
   const catalog = useMemo(() => tourCatalog(), []);
+  /**
+   * Announcements this browser owes after a midway dismissal, kept until the daemon's record
+   * owes them itself. Read once per document and settled as they are saved, announced, or seen
+   * through.
+   */
+  const [owedAnnouncements, setOwedAnnouncements] = useState(readOwedAnnouncements);
+  const tourAnnouncement = useMemo(
+    () => (tourPreferenceHydrated
+      ? pendingTourAnnouncement(
+        withOwedAnnouncements(announcedTours, owedAnnouncements),
+        catalog.map((entry) => entry.id),
+      )
+      : null),
+    [announcedTours, catalog, owedAnnouncements, tourPreferenceHydrated],
+  );
+  const tourAnnouncementRef = useRef(tourAnnouncement);
+  tourAnnouncementRef.current = tourAnnouncement;
+  const announcedToursRef = useRef(announcedTours);
+  announcedToursRef.current = announcedTours;
   const startupTourHandled = useRef(false);
   const [tourPickerOpen, setTourPickerOpen] = useState(false);
+  /** The tour the open picker announces, captured as it opened. */
+  const [tourPickerFeatured, setTourPickerFeatured] = useState<TourId | null>(null);
   const tourPickerOrigin = useRef<FocusBookmark>(captureFocusBookmark(null));
   const [tourPreferenceSaving, setTourPreferenceSaving] = useState(false);
   const tourPreferenceSavingRef = useRef(false);
@@ -987,6 +1041,18 @@ export function App(): React.JSX.Element {
     // A palette opened from the document root has no focusable invoker to return to.
     tourPickerOrigin.current = origin.element === document.body
       ? captureFocusBookmark(null) : origin;
+    // Whichever way the picker opens, the first opening that features a new tour is its
+    // announcement, and recording it lets the next window honor the startup preference again.
+    // A refused write rolls back and the next window announces it once more; nothing to report.
+    const featured = tourAnnouncementRef.current;
+    setTourPickerFeatured(featured);
+    if (featured) {
+      const recorded = recordTourAnnouncements(announcedToursRef.current);
+      void updateUiConfig({ announcedTours: recorded }).then((saved) => {
+        // Announced and saved: whatever this browser still owed is settled too.
+        if (saved) setOwedAnnouncements(settleOwedAnnouncements(recorded));
+      });
+    }
     setTourPickerOpen(true);
   }, []);
 
@@ -1200,6 +1266,15 @@ export function App(): React.JSX.Element {
 
 
   /**
+   * Whether this residents run reached its last stop, which is what seeing it through means.
+   * A run that ends without it was dismissed midway, and its cleanup announces the tour again.
+   */
+  const residentsTourReachedEnd = useRef(false);
+  const beginResidentsRun = useCallback((): void => {
+    residentsTourReachedEnd.current = false;
+  }, []);
+
+  /**
    * How each tour opens: the resource it wants to point at, and the run state it seeds.
    *
    * Keyed by `TourId`, so a new tour cannot be registered without saying both, and the
@@ -1219,8 +1294,12 @@ export function App(): React.JSX.Element {
     // pins the daemon's deterministic demonstration run, whatever the fleet holds.
     "workflows": { resource: pickWorkflowsTourSession, begin: beginWorkflowsTourRun },
     "setup": { resource: () => null, begin: () => {} },
+    // Meet your residents reads the live profile collection and the drawer, both of which
+    // already exist, so it singles nothing out. Each run starts not having reached its end.
+    "residents": { resource: () => null, begin: beginResidentsRun },
   }), [
     beginLibraryRun,
+    beginResidentsRun,
     beginSeeWorkRun,
     beginWorkflowsTourRun,
     pickSeeWorkSession,
@@ -1263,12 +1342,21 @@ export function App(): React.JSX.Element {
       handled: startupTourHandled.current,
       hydrated: tourPreferenceHydrated,
       enabled: showToursOnStartup,
+      announcing: tourAnnouncement !== null,
       hasTours: catalog.length > 0,
       busy: overlaysRef.current.anyOpen || activeTour !== null,
     });
     if (decision === "settle") startupTourHandled.current = true;
     if (decision === "open") openTourPicker(captureFocusBookmark(null));
-  }, [activeTour, catalog, openTourPicker, overlays.anyOpen, showToursOnStartup, tourPreferenceHydrated]);
+  }, [
+    activeTour,
+    catalog,
+    openTourPicker,
+    overlays.anyOpen,
+    showToursOnStartup,
+    tourAnnouncement,
+    tourPreferenceHydrated,
+  ]);
 
   const startPickerTour = useCallback((id: TourId): void => {
     if (startTour(id, tourPickerOrigin.current)) setTourPickerOpen(false);
@@ -1564,6 +1652,42 @@ export function App(): React.JSX.Element {
   }, []);
   // Setup only navigates and spotlights existing page chrome, so it creates nothing to reclaim.
   const cleanupSetupRun = useCallback(async (): Promise<void> => {}, []);
+  /**
+   * Whether the Residents drawer on screen is one the residents tour opened, rather than one
+   * the operator already had open or pinned. Only that one is the tour's to put away.
+   */
+  const residentsTourOpenedDrawer = useRef(false);
+  /**
+   * The residents tour creates nothing. What it may hold is a drawer it opened: in Drawer
+   * placement that is handed over open on the fleet, which is where the tour ends; under Board
+   * and Console it was borrowed, so it goes away with the tour rather than lying in wait to
+   * spring open if the operator later switches placement.
+   */
+  const cleanupResidentsRun = useCallback(async (): Promise<void> => {
+    if (residentsTourOpenedDrawer.current && uiConfig().residentPlacement !== "drawer") {
+      setResidentDrawerOpen(false);
+    }
+    residentsTourOpenedDrawer.current = false;
+    // Dismissed midway: the tour is owed its announcement again, so the next window's picker
+    // features it once more. The debt is kept in this browser FIRST, before the daemon is
+    // asked, so a window opened while that write is in flight - or after it is refused and
+    // rolled back to "seen" - still features the tour. Once the daemon holds the debt itself,
+    // the browser's copy is settled. Seen through, nothing is written, and anything this
+    // browser still owed is settled.
+    if (!residentsTourReachedEnd.current) {
+      const announced = uiConfig().announcedTours;
+      const rearmed = rearmTourAnnouncement(announced, "residents");
+      if (rearmed !== announced) {
+        setOwedAnnouncements(oweAnnouncement("residents"));
+        void updateUiConfig({ announcedTours: [...rearmed] }).then((saved) => {
+          if (saved) setOwedAnnouncements(settleOwedAnnouncements(["residents"]));
+        });
+      }
+    } else {
+      setOwedAnnouncements(settleOwedAnnouncements(["residents"]));
+    }
+    residentsTourReachedEnd.current = false;
+  }, []);
 
   /**
    * Close whichever tour is active.
@@ -2173,6 +2297,31 @@ export function App(): React.JSX.Element {
     showSettings: () => navigate({ page: "settings", category: DEFAULT_SETTINGS_CATEGORY }),
     showSetup: () => navigate({ page: "settings", category: "setup" }),
     showTrust: () => navigate({ page: "settings", category: "trust" }),
+  }), [navigate]);
+  /**
+   * The residents tour's moves: the Residents page on a profile, the fleet, and the drawer.
+   *
+   * `showDrawer` is not `showResidentDrawer`: that one puts the keyboard on a card, which would
+   * pull focus out of the tour's popover, and the pin it never touches is the operator's.
+   */
+  const residentsNavigation = useMemo<ResidentsTourNavigation>(() => ({
+    showProfile: (profileId) =>
+      navigate(profileId ? { page: "residents", profileId } : { page: "residents" }),
+    showFleet: () => navigate({ page: "fleet" }),
+    showDrawer: () => {
+      if (!navigate({ page: "fleet" })) return false;
+      if (!residentDrawerShownRef.current) residentsTourOpenedDrawer.current = true;
+      setResidentDrawerOpen(true);
+      return true;
+    },
+    hideDrawer: () => {
+      if (!residentsTourOpenedDrawer.current) return;
+      residentsTourOpenedDrawer.current = false;
+      setResidentDrawerOpen(false);
+    },
+    reachedEnd: () => {
+      residentsTourReachedEnd.current = true;
+    },
   }), [navigate]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
@@ -2935,6 +3084,10 @@ export function App(): React.JSX.Element {
       .map((action) => action.id)
       .sort()[0] ?? null
   ), [sessionActions]);
+  const residentsTourRuntime: ResidentsTourRuntime = {
+    profileId: selectResidentsTourProfile(residentProfiles),
+    drawerShown: residentDrawerShown,
+  };
   const libraryTourRuntime: LibraryTourRuntime = {
     personaId: libraryTourPersonaId,
     actionId: libraryTourActionId,
@@ -3047,6 +3200,21 @@ export function App(): React.JSX.Element {
           registry={tourTargets}
           navigation={setupNavigation}
           runtime={null}
+          isTop={isTop}
+          onFinish={onFinish}
+        />
+      ),
+    },
+    "residents": {
+      activeTaskId: null,
+      activeRunId: null,
+      cleanup: cleanupResidentsRun,
+      mount: ({ isTop, onFinish }) => (
+        <GuidedTourController
+          definition={RESIDENTS_TOUR}
+          registry={tourTargets}
+          navigation={residentsNavigation}
+          runtime={residentsTourRuntime}
           isTop={isTop}
           onFinish={onFinish}
         />
@@ -4291,6 +4459,7 @@ export function App(): React.JSX.Element {
             onOpenLaunch: openResidentLaunch,
             onManage: () => navigate({ page: "residents" }),
             launcher: residentLauncher,
+            buttonTourRef: residentsButtonTourRef,
             // Drawer placement: the same button opens the drawer, and the dock stays shut.
             ...(residentsInDrawer
               ? { onToggleDrawer: toggleResidentDrawer, drawerOpen: residentDrawerShown }
@@ -4886,7 +5055,7 @@ export function App(): React.JSX.Element {
               />
 
               {tourPickerOpen && (
-                <TourPicker entries={catalog} enabled={showToursOnStartup}
+                <TourPicker entries={catalog} featuredId={tourPickerFeatured} enabled={showToursOnStartup}
                   hydrated={tourPreferenceHydrated} saving={tourPreferenceSaving}
                   saveError={tourPreferenceError} onSave={saveTourPreference}
                   onStart={startPickerTour} onClose={closeTourPicker} />

@@ -1545,10 +1545,18 @@ const MAX_ARROW_STEPS = 12;
 type Arrow = Extract<Key, "up" | "down" | "left" | "right">;
 
 /** Send one arrow key to a pane. Which bytes that is, is the backend's business. */
-async function injectArrow(session: Session, dir: Arrow, deps: PaneDeps): Promise<ActionResult> {
+async function injectArrow(
+  session: Session,
+  dir: Arrow,
+  deps: PaneDeps,
+  /** The caller's live guard, asked right before this keystroke (see `selectPaneOption`). */
+  beforeWrite?: PromptWriteGuard,
+): Promise<ActionResult> {
+  const held = writeHold(session);
+  if (held) return { ok: false, error: held };
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
-  return sendKeys(pane, [dir]);
+  return sendKeys(pane, [dir], undefined, beforeWrite);
 }
 
 /** Wait for the menu's cursor to leave `from`, or null if it never does. */
@@ -1628,7 +1636,7 @@ async function selectOptionLocked(
   const row = dialog.options.find((o) => o.number === target.number)!;
   if (row.checked !== undefined) return { ok: false, error: IS_A_FORM };
 
-  const walked = await walkCursorTo(session, dialog, target.number, deps);
+  const walked = await walkCursorTo(session, dialog, target.number, deps, beforeWrite);
   if (!walked.ok) return walked;
 
   // Read once more rather than trusting the walk: this is the last look before the only
@@ -1668,12 +1676,18 @@ async function walkCursorTo(
   from: PaneDialog,
   number: number,
   deps: PaneDeps,
+  /**
+   * Asked before EVERY arrow, not only before the final Enter: a session that freezes mid-walk
+   * would otherwise get cursor keys queued in its pty, which land on the resume and move the
+   * menu's selection after the operator chose.
+   */
+  beforeWrite?: PromptWriteGuard,
 ): Promise<WalkResult> {
   let dialog = from;
   for (let i = 0; dialog.highlighted !== number; i++) {
     if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
     const dir = number > dialog.highlighted ? "down" : "up";
-    const sent = await injectArrow(session, dir, deps);
+    const sent = await injectArrow(session, dir, deps, beforeWrite);
     if (!sent.ok) return { ...sent, ok: false, error: sent.error ?? "could not send an arrow key" };
     const moved = await awaitCursorMove(session, dialog.highlighted, deps);
     // The cursor didn't move: the dialog closed under us, or it ate the arrow. Either
@@ -1788,7 +1802,7 @@ async function submitFormLocked(
   for (const t of targets) {
     const row = dialog.options.find((o) => o.number === t.number)!;
     if (row.checked === t.checked) continue;
-    const walked = await walkCursorTo(session, dialog, t.number, deps);
+    const walked = await walkCursorTo(session, dialog, t.number, deps, beforeWrite);
     if (!walked.ok) return walked;
     const sent = await injectEnter(session, deps, beforeWrite);
     if (!sent.ok) return sent;
@@ -1803,11 +1817,11 @@ async function submitFormLocked(
   // on an ordinary row: on Claude's trailing "Type something" row it opens a text field
   // that EATS left/right, so a walk that happened to finish there would press `→` into an
   // input and sit on the same tab believing it had moved.
-  const parked = await walkCursorTo(session, dialog, dialog.options[0]!.number, deps);
+  const parked = await walkCursorTo(session, dialog, dialog.options[0]!.number, deps, beforeWrite);
   if (!parked.ok) return parked;
 
   const before = dialogIdentity(parked.dialog);
-  const stepped = await injectArrow(session, "right", deps);
+  const stepped = await injectArrow(session, "right", deps, beforeWrite);
   if (!stepped.ok) return stepped;
   const next = await awaitDialogChange(session, before, deps);
   if (!next) return { ok: false, error: "the agent did not move on from this question" };
@@ -1816,9 +1830,9 @@ async function submitFormLocked(
   // the next one from whichever surface they are on.
   const submit = readSubmitRow(session, next);
   if (!submit) return { ok: true, outcome: "next-question" };
-  if (readUnansweredWarning(session, await deps.capture(session))) return stepBackFromReview(session, next, deps);
+  if (readUnansweredWarning(session, await deps.capture(session))) return stepBackFromReview(session, next, deps, beforeWrite);
 
-  const onSubmit = await walkCursorTo(session, next, submit.number, deps);
+  const onSubmit = await walkCursorTo(session, next, submit.number, deps, beforeWrite);
   if (!onSubmit.ok) return onSubmit;
   const final = readPaneDialog(session, await deps.capture(session));
   const stillThere = final && readSubmitRow(session, final);
@@ -1859,8 +1873,9 @@ async function stepBackFromReview(
   session: Session,
   review: PaneDialog,
   deps: PaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<FormResult> {
-  const back = await injectArrow(session, "left", deps);
+  const back = await injectArrow(session, "left", deps, beforeWrite);
   const returned = back.ok && (await awaitDialogChange(session, dialogIdentity(review), deps));
   return returned
     ? { ok: true, outcome: "unanswered" }

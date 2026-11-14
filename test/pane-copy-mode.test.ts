@@ -370,3 +370,14 @@ test("the Enter that answers a menu asks the caller's live guard last, so a paus
   assert.equal(answered.ok, true);
   assert.equal(open.argv.length, 1, "the Enter went through");
 });
+
+test("the cursor walk to a menu row asks the live guard before every arrow, not only before Enter", async () => {
+  // Row 2 is one arrow away. A pause that froze the agent before the walk must stop the arrow
+  // too: a cursor key queued in a stopped pane lands on the resume and moves the selection.
+  const h = harness("0", "copy-mode", menu(1));
+  const paused = "this session is paused - resume it before sending it anything";
+  const r = await selectPaneOption(tmuxSession(), { number: 2, label: "Hold it" }, paneDeps(h), () => paused);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, paused);
+  assert.deepEqual(h.argv, [], "no arrow and no Enter reached the paused pane");
+});

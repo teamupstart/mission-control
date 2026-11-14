@@ -396,6 +396,14 @@ test("a backup size budget previews what saving deletes, then deletes exactly th
   await preMigrationCount.fill("2");
   await expect(alwaysKept).toContainText("2 newest pre-migration copies");
 
+  // Text that is not a number never reaches Save: it would otherwise be dropped from the patch
+  // and Save would report success without saving it.
+  const age = dashboard.getByLabel("Scheduled maximum age in days");
+  await age.fill("abc");
+  await expect(dashboard.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(dashboard.getByText("ages 1 to 365 days", { exact: false })).toBeVisible();
+  await age.fill("");
+
   await dashboard.getByLabel("Backup size budget in GiB").fill("0.5");
   const effect = dashboard.getByRole("status").filter({ hasText: "Saving deletes" });
   // The copies are sparse, so deleting them frees no disk, and the page says so rather than

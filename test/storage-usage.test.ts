@@ -440,6 +440,44 @@ test("a backup captured while the walk runs is in the measurement it publishes, 
   assert.equal(health.recompute().usage.categories.find((category) => category.id === "backups")?.bytes, 2 * GIB);
 });
 
+test("a backup folder first created during the walk is settled from zero", () => {
+  // du passed backups/ before the first capture created backups/database: no entry for it.
+  const listing = { directories: new Map([["", 5 * GIB], ["backups", 0]]), partial: null };
+  const settled = settleListing(listing, ROOT, (path) => (path === `${ROOT}/backups/database` ? GIB : null));
+  assert.equal(settled.directories.get("backups/database"), GIB);
+  assert.equal(settled.directories.get("backups"), GIB);
+  assert.equal(settled.directories.get(""), 6 * GIB);
+  const measured = measurementFrom({ root: ROOT, listing: settled, fileBytes: () => null, measuredAt: 1, durationMs: 1 });
+  assert.equal(measured.categories.find((category) => category.id === "backups")?.bytes, GIB);
+});
+
+test("a live backup change never takes more off the total than the backups category held", () => {
+  // A baseline that ran ahead of the measurement: 30 GiB of kept copies against 10 GiB measured.
+  let keptDisk = 30 * GIB;
+  const service = new StorageHealthService({
+    backups: { status: () => databaseBackupStatusFrom(undefined), keptCopies: () => [], keptDiskBytes: () => keptDisk },
+    usage: {
+      usage: () => ({
+        root: ROOT,
+        measuredAt: 1,
+        durationMs: 1,
+        measuring: false,
+        error: null,
+        totalBytes: 50 * GIB,
+        categories: [{ id: "backups", bytes: 10 * GIB }, { id: "other", bytes: 40 * GIB }],
+        pools: [],
+      }),
+      volume: () => volume(80),
+    },
+    publish: () => {},
+  });
+  service.recompute();
+  keptDisk = 10 * GIB; // a 20 GiB copy is deleted
+  const after = service.recompute();
+  assert.equal(after.usage.categories.find((category) => category.id === "backups")?.bytes, 0);
+  assert.equal(after.usage.totalBytes, 40 * GIB, "only the 10 GiB the category held came off; other categories keep theirs");
+});
+
 test("settling leaves a listing alone when the folder is unchanged or unreadable", () => {
   const listing = { directories: new Map([["", 5 * GIB], ["backups", GIB], ["backups/database", GIB]]), partial: null };
   assert.deepEqual([...settleListing(listing, ROOT, () => GIB).directories], [...listing.directories]);

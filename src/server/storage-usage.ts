@@ -245,8 +245,10 @@ export function settleListing(
 ): DiskUsageListing {
   const directories = new Map(listing.directories);
   for (const rel of settled) {
-    const listed = directories.get(rel);
-    if (listed === undefined) continue;
+    // Absent from the listing: the folder did not exist when du passed its parent (the first
+    // capture creates it), so it held nothing the walk counted. A folder still missing now
+    // (`null`) is skipped.
+    const listed = directories.get(rel) ?? 0;
     const now = directoryBytes(join(root, rel));
     if (now === null || now === listed) continue;
     const delta = now - listed;

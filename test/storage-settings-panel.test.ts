@@ -49,7 +49,11 @@ test("a deep link lands on the tab that holds its control, and problems live on 
 test("GiB fields read empty as no limit and refuse what is not a positive number", () => {
   assert.equal(gibField(null), "");
   assert.equal(gibField(60 * GIB), "60");
-  assert.equal(gibField(GIB / 4), "0.3");
+  // Shown exactly, never rounded to a different threshold than the daemon enforces.
+  assert.equal(gibField(GIB / 4), "0.25");
+  for (const bytes of [GIB / 4, 280 * 1024 ** 2, 10 * GIB, 60 * GIB, 1_234_567_891]) {
+    assert.equal(parseGibField(gibField(bytes)), bytes, `${bytes} round-trips through its field`);
+  }
   assert.equal(parseGibField(""), null);
   assert.equal(parseGibField("60"), 60 * GIB);
   assert.equal(parseGibField("0.5"), GIB / 2);
@@ -300,4 +304,11 @@ test("a plan not read for the current inputs, or not readable at all, is never o
   });
   assert.match(previewButton(failed), /disabled=""/);
   assert.match(text(failed), /could not be read from the daemon, so nothing is offered for removal/);
+});
+
+test("Cleanup says why nothing more is offered when warm or blocked slots keep the caches over the budget", () => {
+  const stuck = { ...IDLE_PLAN, remove: [], freesBytes: 0, afterIdleBytes: 3 * GIB };
+  const body = text(render("cleanup", { plan: stuck }));
+  assert.doesNotMatch(body, /already fit the budget/);
+  assert.match(body, /Nothing more can be removed, though the idle caches are 1\.0 GiB over the budget: what remains is the 2 most recently used slots each pool keeps warm and the 1 blocked slot below\./);
 });

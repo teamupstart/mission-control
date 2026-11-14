@@ -95,6 +95,13 @@ const SIZE_WARNINGS: ReadonlySet<StorageProblemKind> = new Set(["low-free-space"
 
 // ---------------------------------------------------------------- drafts
 
+/** A draft patch with an edited field its parser could not read: never sent. */
+const REFUSED = { success: false } as const;
+
+function hasUnreadable(edited: Record<string, unknown>): boolean {
+  return Object.values(edited).some((value) => value === undefined);
+}
+
 type BackupDraft = Record<keyof DatabaseBackupsConfig, string>;
 
 const BACKUP_KEYS = [
@@ -526,7 +533,9 @@ function BackupsTab({
   const edited = draft
     ? Object.fromEntries(editedKeys.map((key) => [key, backupFieldValue(key, draft[key])]))
     : {};
-  const patch = DatabaseBackupsConfigPatchSchema.safeParse(edited);
+  // An edited field that did not parse (`abc`) refuses the whole patch: `.partial()` would accept
+  // its `undefined`, JSON would drop it, and Save would report success without saving it.
+  const patch = hasUnreadable(edited) ? REFUSED : DatabaseBackupsConfigPatchSchema.safeParse(edited);
   const changed = editedKeys.length > 0;
   const draftConfig = config ? { ...config, ...(patch.success ? patch.data : {}) } : null;
   const effect = draftConfig ? backupDraftEffect(copies, draftConfig, now) : null;
@@ -773,7 +782,7 @@ function PoolsTab({
   const keys = ["poolIdleBudgetBytes", "poolKeepWarm"] as const;
   const [draft, set, editedKeys] = useDraft(limits, keys, limitsDraftOf);
   const edited = draft ? Object.fromEntries(editedKeys.map((key) => [key, limitFieldValue(key, draft[key])])) : {};
-  const patch = StorageLimitsConfigPatchSchema.safeParse(edited);
+  const patch = hasUnreadable(edited) ? REFUSED : StorageLimitsConfigPatchSchema.safeParse(edited);
   const plan = idle.plan;
   return (
     <section className="storage-band" aria-label="Worktree pool caches">
@@ -960,7 +969,9 @@ function CleanupTab({
               <p className="settings-hint">
                 {plan.unmeasuredIdle > 0
                   ? "Nothing is offered until the unmeasured idle slots are sized."
-                  : "The idle caches already fit the budget."}
+                  : plan.afterIdleBytes <= plan.budgetBytes
+                    ? "The idle caches already fit the budget."
+                    : `Nothing more can be removed, though the idle caches are ${formatBytes(plan.afterIdleBytes - plan.budgetBytes)} over the budget: what remains is the ${plan.keepWarm} most recently used ${plan.keepWarm === 1 ? "slot" : "slots"} each pool keeps warm${plan.blocked.length > 0 ? ` and the ${plan.blocked.length} blocked ${plan.blocked.length === 1 ? "slot" : "slots"} below` : ""}.`}
               </p>
             ) : (
               <ul className="storage-rows" aria-label="Idle slots to remove">
@@ -1049,7 +1060,7 @@ function WarningsTab({
   const keys = ["limitBytes", "warnAtPercent", "freeFloorBytes", "fleetBanner", "desktopNotification"] as const;
   const [draft, set, editedKeys] = useDraft(health.limits, keys, limitsDraftOf);
   const edited = draft ? Object.fromEntries(editedKeys.map((key) => [key, limitFieldValue(key, draft[key])])) : {};
-  const patch = StorageLimitsConfigPatchSchema.safeParse(edited);
+  const patch = hasUnreadable(edited) ? REFUSED : StorageLimitsConfigPatchSchema.safeParse(edited);
   const [permission, setPermission] = useState<string | null>(
     typeof Notification === "undefined" ? null : Notification.permission,
   );

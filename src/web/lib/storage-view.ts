@@ -33,11 +33,18 @@ export function storageTabForAnchor(anchor: string): StorageTabId | null {
 
 const GIB = 1024 ** 3;
 
-/** A byte limit as its GiB field shows it: empty for no limit, at most one decimal. */
+/**
+ * A byte limit as its GiB field shows it: empty for no limit, otherwise the shortest decimal that
+ * reads back (through `parseGibField`) as exactly the bytes stored, so the field never shows a
+ * threshold other than the one the daemon enforces. A quarter GiB reads "0.25", not "0.3".
+ */
 export function gibField(bytes: number | null): string {
   if (bytes === null) return "";
-  const gib = Math.round((bytes / GIB) * 10) / 10;
-  return String(gib);
+  for (let places = 0; places <= 12; places += 1) {
+    const text = String(Number((bytes / GIB).toFixed(places)));
+    if (Math.round(Number(text) * GIB) === bytes) return text;
+  }
+  return String(bytes / GIB);
 }
 
 /**

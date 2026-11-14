@@ -67,14 +67,17 @@ const UNMEASURED: StorageUsage = {
  * the category with the kept copies alone would drop those bytes from the total and from the
  * limit warning. The total moves by the same difference, which keeps the categories adding up.
  */
-function withLiveBackups(usage: StorageUsage, delta: number): StorageUsage {
-  if (usage.totalBytes === null || delta === 0) return usage;
+function withLiveBackups(usage: StorageUsage, rawDelta: number): StorageUsage {
+  if (usage.totalBytes === null || rawDelta === 0) return usage;
   const measured = usage.categories.find((category) => category.id === "backups")?.bytes ?? 0;
+  // Never take away more than the category held: anything past that belongs to other
+  // categories, and removing it would understate the total and could clear a real warning.
+  const delta = Math.max(rawDelta, -measured);
   return {
     ...usage,
     totalBytes: Math.max(0, usage.totalBytes + delta),
     categories: usage.categories.map((category) => category.id === "backups"
-      ? { ...category, bytes: Math.max(0, measured + delta) }
+      ? { ...category, bytes: measured + delta }
       : category),
   };
 }

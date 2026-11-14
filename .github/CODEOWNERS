@@ -1,6 +1,6 @@
 # Default owners for every path; team access is managed separately.
 # When code-owner review is required, approval from any one listed owner is sufficient.
-* @teamupstart/delivery-squad @teamupstart/developer-platform @mancej
+* @teamupstart/delivery-squad @teamupstart/developer-platform @mancej @teamupstart/repo-automation
 
 # Third party dependency checks
 Gemfile                 @teamupstart/infosec
@@ -15,3 +15,6 @@ poetry.lock             @teamupstart/infosec
 versions.properties     @teamupstart/infosec
 package-lock.json       @teamupstart/infosec
 **/.yarn/cache/**       @teamupstart/infosec
+
+# Infosec for CODEOWNERS file changes
+CODEOWNERS              @teamupstart/infosec @teamupstart/repo-automation

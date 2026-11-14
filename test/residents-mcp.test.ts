@@ -461,6 +461,7 @@ test("an inherited server residents cannot represent refuses the launch, naming 
 
 test("a profile saved before the choice existed, and a new one, keep the pinned set", () => {
   assert.equal(profile().mcp.nativeSources, "pinned");
+  assert.equal(profile().mcp.disableClaudeAiConnectors, undefined, "legacy profiles do not opt out");
   const stored = ResidentProfileRevisionSchema.parse({
     identity: { name: "Older" }, persona: { personaId: "p" }, mcp: { inheritDefaults: false, selected: [] },
   });
@@ -932,7 +933,7 @@ test("a profile on all native sources launches with its pinned revision's choice
 test("a running resident keeps its launch revision's source mode after the profile is edited back to pinned", async () => {
   const { registry, residents } = manager(async (agent) => globalsOf(agent, { github: { command: "gh" } }));
   const created = residents.createProfile(ResidentProfileRevisionSchema.parse({
-    identity: { name: "Mode Keeper" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all" },
+    identity: { name: "Mode Keeper" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all", disableClaudeAiConnectors: true },
   }));
   assert.ok(created.ok, JSON.stringify(created));
   const launched = await residents.launch(created.profile.id, { repoRoot: null, requestId: "mcp-mode-keeper" });
@@ -940,11 +941,12 @@ test("a running resident keeps its launch revision's source mode after the profi
   assert.equal(launched.result.run.profileRevision, 1);
   const task = registry.getTask(launched.result.taskId)!;
   assert.equal(residents.mcpLaunchForTask(task)?.nativeSources, "all");
+  assert.equal(residents.mcpLaunchForTask(task)?.disableClaudeAiConnectors, true);
 
   // The operator edits the profile back to a pinned set while the resident runs.
   const revised = residents.updateProfile(created.profile.id, 1, {
     ...created.profile.settings,
-    mcp: { ...created.profile.settings.mcp, nativeSources: "pinned" },
+    mcp: { ...created.profile.settings.mcp, nativeSources: "pinned", disableClaudeAiConnectors: false },
   });
   assert.ok(revised.ok && revised.profile.revision === 2, JSON.stringify(revised));
   assert.equal(revised.profile.settings.mcp.nativeSources, "pinned");
@@ -954,6 +956,7 @@ test("a running resident keeps its launch revision's source mode after the profi
   // only, never the edited setting.
   const next = residents.mcpLaunchForTask(task);
   assert.equal(next?.nativeSources, "all");
+  assert.equal(next?.disableClaudeAiConnectors, true, "resume reads the original revision, not the edited preference");
   assert.deepEqual(next?.names, []);
 
   // The edit reaches the next launch, which pins revision 2 and its inherited global server.
@@ -962,6 +965,7 @@ test("a running resident keeps its launch revision's source mode after the profi
   assert.equal(relaunched.result.run.profileRevision, 2);
   const pinned = residents.mcpLaunchForTask(registry.getTask(relaunched.result.taskId)!);
   assert.equal(pinned?.nativeSources, "pinned");
+  assert.equal(pinned?.disableClaudeAiConnectors, false);
   assert.deepEqual(pinned?.names, ["github"]);
   // And the first run still has not moved.
   assert.equal(residents.mcpLaunchForTask(task)?.nativeSources, "all");

@@ -50,6 +50,8 @@ test("Agent Shepherd ships read-only, duplicates into an editable profile, and l
   await expect(instructions).toBeDisabled();
   await expect(instructions).toHaveValue(/## Unblock stuck work/);
   await expect(shipped.getByRole("checkbox", { name: /Control other sessions/ })).toBeChecked();
+  await expect(shipped.getByLabel("Spend per 24 hours (USD)", { exact: true })).toHaveValue("40");
+  await capture(shipped.getByRole("region", { name: "Loop and guardrails", exact: true }), "10-shepherd-spend-cap");
   await capture(page.locator("main.residents-page"), "01-builtin-read-only");
 
   // The daemon refuses the write the editor does not offer.
@@ -66,6 +68,7 @@ test("Agent Shepherd ships read-only, duplicates into an editable profile, and l
   const draft = page.getByRole("region", { name: "New resident profile" });
   await expect(draft.getByLabel("Name")).toHaveValue(COPY);
   await expect(draft.getByLabel("Name")).toBeEnabled();
+  await expect(draft.getByLabel("Spend per 24 hours (USD)", { exact: true })).toHaveValue("40");
   await expect(draft.getByLabel("Profile instructions")).toHaveValue(/## Unblock stuck work/);
   await draft.getByLabel("Profile instructions").fill("Watch only the release branch.");
   await capture(page.locator("main.residents-page"), "02-duplicate-draft");

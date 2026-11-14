@@ -39,6 +39,7 @@ const BUILTIN_RESIDENT_SETTINGS: Record<string, BuiltinResidentSettings> = {
   "agent-shepherd": {
     execution: { agent: "claude", model: "claude-sonnet-5-5", effort: "xhigh" },
     board: { colorId: "amber", label: null, pin: true },
+    loop: { spendCapUsd: 40 },
     // Its role is controlling other sessions. The grant is still only ever given by an
     // operator's desktop Launch click; see docs/residents.md#session-control.
     authority: { controlOtherSessions: true },

@@ -135,6 +135,9 @@ export function claudeSdkRateLimits(
 ): RateLimits | null {
   if (!usage.rate_limits_available || !usage.rate_limits) return null;
   const fiveHour = sdkUsageWindow(usage.rate_limits.five_hour);
+  // A seven-day-only reading tells the registry the account has no five-hour limit, so a
+  // five-hour window that is present but unreadable rejects the whole reading instead.
+  if (usage.rate_limits.five_hour != null && !fiveHour) return null;
   const sevenDay = sdkUsageWindow(usage.rate_limits.seven_day);
   if (!fiveHour && !sevenDay) return null;
   return { fiveHour, sevenDay, updatedAt: now };
@@ -1391,7 +1394,8 @@ function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> 
  *
  * A resident whose profile imports all native sources gives the pin up on purpose
  * (`allNativeSources: "lift-strict-mcp-config"`): its snapshot is rendered the same way, but
- * without either switch, so Claude Code also loads its own configuration and connectors.
+ * without strict config, so Claude Code also loads its own configuration. Cloud connectors
+ * remain enabled unless the profile explicitly opts out to work around plugin deduplication.
  */
 function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
   // No prototype, so every server name - whatever a configuration used - is an own entry.
@@ -1401,7 +1405,15 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
   }
   if (opts.residentMcp) for (const entry of opts.residentMcp.forStart()) servers[entry.name] = claudeResidentServer(entry);
   const listed = Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
-  if (!opts.residentMcp || opts.residentMcp.nativeSources === "all") return listed;
+  if (!opts.residentMcp) return listed;
+  if (opts.residentMcp.nativeSources === "all") {
+    // Claude Code's asynchronous connector dedup can suppress both a plugin server and its
+    // cloud counterpart. The opt-in environment switch skips that fetch without disabling
+    // native plugin configuration. Flag-layer settings scope it to this run, including resume.
+    return opts.residentMcp.disableClaudeAiConnectors
+      ? { ...listed, settings: { env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } } }
+      : listed;
+  }
   return {
     ...listed,
     strictMcpConfig: true,

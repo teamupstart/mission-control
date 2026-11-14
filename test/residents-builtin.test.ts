@@ -80,6 +80,8 @@ test("Agent Shepherd ships as a launchable built-in whose whole role is its docu
     readFileSync(join(root, "residents", "agent-shepherd.md"), "utf8"),
   );
   assert.equal(shepherd.settings.authority.controlOtherSessions, true);
+  assert.equal(shepherd.settings.loop.spendCapUsd, 40);
+  assert.equal(settings("Custom resident").loop.spendCapUsd, 20, "ordinary profiles keep the general default");
   assert.equal(manager().settingsProblem(shepherd.settings), null, "the shipped settings are launchable");
 });
 
@@ -117,6 +119,19 @@ test("reconcile refuses an id outside the built-in namespace", () => {
     () => store.reconcileBuiltinResidentProfiles([{ id: "operator-id", settings: settings("Sneaky") }], 1),
     /must start with builtin:/,
   );
+});
+
+test("the Shepherd spend-cap upgrade preserves the prior pinned revision", () => {
+  const current = BUILTIN_RESIDENTS.find((builtin) => builtin.id === SHEPHERD)!;
+  const prior = { ...current, settings: { ...current.settings, loop: { ...current.settings.loop, spendCapUsd: 20 } } };
+  store.reconcileBuiltinResidentProfiles([prior], 1);
+  store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, 2);
+
+  const upgraded = store.getResidentProfile(SHEPHERD)!;
+  assert.equal(upgraded.revision, 2);
+  assert.equal(upgraded.settings.loop.spendCapUsd, 40);
+  assert.equal(store.residentProfileRevision(SHEPHERD, 1)?.loop.spendCapUsd, 20);
+  assert.deepEqual(store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, 3), []);
 });
 
 test("a built-in cannot be edited or archived, through the store or the manager", () => {

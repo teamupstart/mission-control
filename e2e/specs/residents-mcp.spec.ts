@@ -24,6 +24,69 @@ async function capture(target: Locator, name: string): Promise<void> {
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
 }
 
+test("a resident can opt out of claude.ai connectors without disabling native plugin sources", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const profile = page.getByRole("region", { name: "New resident profile" });
+  await profile.getByLabel("Name").fill("Plugin Resident");
+  await profile.getByLabel("Profile instructions").fill("Summarize available plugin tools.");
+  const section = profile.getByRole("region", { name: "MCP servers" });
+  await section.getByRole("radio", { name: "All native sources (not pinned)" }).click();
+  const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
+  await expectContentClearsBorder(confirm);
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
+  const optOut = section.getByRole("checkbox", { name: "Disable claude.ai connectors" });
+  await optOut.hover();
+  await expect(page.locator(".tooltip")).toHaveText("Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident");
+  await expect(page.locator(".tooltip")).toBeVisible();
+  await expect(optOut).toHaveAccessibleDescription("Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident");
+  await capture(page.locator("body"), "plugin-connectors-tooltip-repair");
+  await expect(optOut).not.toBeChecked();
+  await expect(section).toContainText("including Claude Docs");
+  await optOut.check();
+  await profile.getByRole("button", { name: "Save" }).click();
+  const saved = page.getByRole("region", { name: "Resident profile Plugin Resident" });
+  await expect(saved).toContainText("Revision 1");
+
+  // The persisted revision survives a fresh page load, and is visible in Dispatch.
+  await page.reload();
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Plugin Resident/ }).click();
+  const savedSection = saved.getByRole("region", { name: "MCP servers" });
+  await expect(savedSection.getByRole("checkbox", { name: "Disable claude.ai connectors" })).toBeChecked();
+  await expect(savedSection.getByRole("combobox", { name: "Add an MCP server" })).not.toContainText("Loading…");
+  await savedSection.scrollIntoViewIfNeeded();
+  await capture(savedSection, "plugin-connectors-opt-out-repair");
+  await saved.getByRole("button", { name: "Launch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toContainText("claude.ai connectors off");
+  await expectContentClearsBorder(dialog);
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+  // Inspect the real SDK's child-process launch, using the no-token Claude fake.
+  // This proves transport of the workaround, not live third-party MCP connectivity.
+  let argv: string[] = [];
+  await expect.poll(() => {
+    const record = recordsIn<{ argv: string[] }>(join(daemon.recordDir, "claude"))
+      .find((entry) => (argvValue(entry.argv, "--settings") ?? "").includes("ENABLE_CLAUDEAI_MCP_SERVERS"));
+    argv = record?.argv ?? [];
+    return argv.length > 0;
+  }, { timeout: 60_000 }).toBe(true);
+  expect(argv).not.toContain("--strict-mcp-config");
+  expect(JSON.parse(argvValue(argv, "--settings")!)).toMatchObject({
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+  });
+
+  // An edit can undo the workaround without changing the server source mode.
+  await savedSection.getByRole("checkbox", { name: "Disable claude.ai connectors" }).uncheck();
+  await saved.getByRole("button", { name: "Save" }).click();
+  await expect(saved).toContainText("Revision 2");
+  await page.reload();
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Plugin Resident/ }).click();
+  await expect(savedSection.getByRole("checkbox", { name: "Disable claude.ai connectors" })).not.toBeChecked();
+  await expect(savedSection.getByRole("radio", { name: "All native sources (not pinned)" })).toBeChecked();
+});
+
 test("a custom MCP server's secret is write-only, its selection reaches the launch summary and the launch, and no payload carries a secret", async ({
   dashboard: page,
   daemon,

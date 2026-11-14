@@ -5,6 +5,7 @@ import type {
   PrChecks,
   Session,
 } from "@shared/types.ts";
+import { isPaused } from "@shared/pause.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -585,6 +586,7 @@ function followupOwnershipBlocker({ session: s, bucket, workflowOwnsSession }: F
   if (s.state === "awaiting_input") return "the session is waiting on input";
   // 4b. A durable blocker: the session is waiting on someone else, so nothing is typed into it.
   if (hasBlocker(s)) return "the session is blocked";
+  if (isPaused(s)) return "the session is paused";
 
   // 5. THE OVERLAP RULE, the same shape prompted-wrapup states: a checkout with live work
   //    queue items belongs to the drain path. Gated on open ITEMS, via the card summary

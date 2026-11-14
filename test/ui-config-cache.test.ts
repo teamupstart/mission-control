@@ -141,6 +141,9 @@ test("a written cache round-trips", () => {
     // Non-empty, both: the shipped bar hides and minimizes nothing.
     hiddenTopbarItems: ["cost", "feedback"],
     compactTopbarItems: ["fleet", "foreman"],
+    // Off their defaults: one is emptied, the other picks a set the build does not ship.
+    pauseCardControls: [],
+    pauseConsoleControls: ["composer", "badge"],
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -172,6 +175,9 @@ test("a written cache round-trips", () => {
   assert.equal(config.sessionRailFolded, true);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
+  // An emptied list is the operator's answer, never the default coming back.
+  assert.deepEqual(config.pauseCardControls, []);
+  assert.deepEqual(config.pauseConsoleControls, ["composer", "badge"]);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {

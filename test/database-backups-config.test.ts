@@ -62,11 +62,20 @@ function scheduledCopies(): string[] {
   return readdirSync(backupRoot).filter((name) => name.startsWith("scheduled-"));
 }
 
-test("the shared schema defaults to 3 hourly, 2 pre-migration, every hour", () => {
+// The age and size limits arrived after the counts. Off by default, so a config stored before
+// them keeps exactly the copies it kept.
+const NO_AGE_OR_SIZE_LIMIT = {
+  scheduledMaxAgeDays: null,
+  preMigrationMaxAgeDays: null,
+  maxTotalBytes: null,
+} as const;
+
+test("the shared schema defaults to 3 hourly, 2 pre-migration, every hour, with no age or size limit", () => {
   assert.deepEqual(DEFAULT_DATABASE_BACKUPS_CONFIG, {
     scheduledCount: 3,
     preMigrationCount: 2,
     intervalHours: 1,
+    ...NO_AGE_OR_SIZE_LIMIT,
   });
 });
 
@@ -87,21 +96,82 @@ test("the shared schema refuses out-of-range counts and intervals, and never acc
     { scheduledCount: 1, preMigrationCount: 1, intervalHours: 24 },
     { scheduledCount: 48, preMigrationCount: 10, intervalHours: 12 },
   ]) {
-    assert.deepEqual(DatabaseBackupsConfigSchema.parse(valid), valid);
+    assert.deepEqual(DatabaseBackupsConfigSchema.parse(valid), { ...valid, ...NO_AGE_OR_SIZE_LIMIT });
   }
   assert.equal(DatabaseBackupsConfigPatchSchema.safeParse({ manualCount: 2 }).success, false);
+  for (const days of [0, 366, 1.5]) {
+    assert.equal(DatabaseBackupsConfigSchema.safeParse({ scheduledMaxAgeDays: days }).success, false);
+    assert.equal(DatabaseBackupsConfigSchema.safeParse({ preMigrationMaxAgeDays: days }).success, false);
+  }
+  for (const bytes of [0, 1024 ** 3 / 8, 1.5 * 1024 ** 3 + 0.5]) {
+    assert.equal(DatabaseBackupsConfigSchema.safeParse({ maxTotalBytes: bytes }).success, false);
+  }
+  // `null` in a patch clears a limit; a number sets it.
+  assert.deepEqual(
+    DatabaseBackupsConfigPatchSchema.parse({ scheduledMaxAgeDays: null, maxTotalBytes: 8 * 1024 ** 3 }),
+    { scheduledMaxAgeDays: null, maxTotalBytes: 8 * 1024 ** 3 },
+  );
+});
+
+test("a save whose shown deletions no longer match answers 409 with the current list, saving and deleting nothing", async () => {
+  seedScheduled(5);
+  const name = (index: number) => `scheduled-2020010${index + 1}T000000000Z-${String(index).padStart(32, "b")}.sqlite3`;
+  const announcedBefore = configAnnouncements;
+  const countBefore = getDatabaseBackupsConfig().scheduledCount;
+  // The page showed a count of 2 deleting the three oldest; an older copy has landed since.
+  writeFileSync(join(backupRoot, `scheduled-20191231T000000000Z-${"9".padStart(32, "b")}.sqlite3`), "late copy");
+  const stale = await putConfig({ scheduledCount: 2, expectRemove: [name(0), name(1), name(2)] });
+  assert.equal(stale.status, 409);
+  const body = await stale.json() as { error: string; remove: string[] };
+  assert.equal(body.error, "stale_preview");
+  assert.equal(body.remove.length, 4);
+  assert.equal(configAnnouncements, announcedBefore, "a refused save announces nothing");
+  assert.equal(scheduledCopies().length, 6, "nothing was deleted");
+  assert.equal(getDatabaseBackupsConfig().scheduledCount, countBefore, "nothing was saved");
+
+  // Sent with the list as it now is, the save goes through and deletes exactly that.
+  const saved = await putConfig({ scheduledCount: 2, expectRemove: body.remove });
+  assert.equal(saved.status, 200);
+  assert.equal(getDatabaseBackupsConfig().scheduledCount, 2);
+  assert.deepEqual(scheduledCopies().sort(), [name(3), name(4)]);
+  // Leave the shared config and copies as the tests below expect to find them.
+  setDatabaseBackupsConfig({ scheduledCount: countBefore }, { prune: () => {} });
+  rmSync(backupRoot, { recursive: true, force: true });
+});
+
+test("a save that would delete copies without naming them is refused with the exact list, and nothing changes", async () => {
+  seedScheduled(5);
+  const announcedBefore = configAnnouncements;
+  const countBefore = getDatabaseBackupsConfig().scheduledCount;
+  const unconfirmed = await putConfig({ scheduledCount: 2 });
+  assert.equal(unconfirmed.status, 409);
+  const body = await unconfirmed.json() as { error: string; message: string; remove: string[] };
+  assert.equal(body.error, "preview_required");
+  assert.match(body.message, /Saving these limits deletes 3 copies\. Nothing was saved or deleted/);
+  assert.deepEqual(body.remove, scheduledCopies().sort().slice(0, 3));
+  assert.equal(scheduledCopies().length, 5, "nothing was deleted");
+  assert.equal(getDatabaseBackupsConfig().scheduledCount, countBefore, "nothing was saved");
+  assert.equal(configAnnouncements, announcedBefore, "a refused save announces nothing");
+
+  // Any save prunes to the current limits, so with copies over them even an interval change
+  // names what it deletes. With nothing over the limits, a save needs no list.
+  assert.equal((await putConfig({ intervalHours: 1 })).status, 409);
+  rmSync(backupRoot, { recursive: true, force: true });
+  assert.equal((await putConfig({ intervalHours: 1 })).status, 200);
 });
 
 test("saving lowered counts prunes at once, and a refused save changes nothing", async () => {
   seedScheduled(5);
   const announcedBefore = configAnnouncements;
-  const saved = await putConfig({ scheduledCount: 2 });
+  const confirm = (await (await putConfig({ scheduledCount: 2 })).json() as { remove: string[] }).remove;
+  const saved = await putConfig({ scheduledCount: 2, expectRemove: confirm });
   assert.equal(saved.status, 200);
   assert.equal(configAnnouncements, announcedBefore + 1, "a save tells every open window to re-read");
   assert.deepEqual(await saved.json(), {
     scheduledCount: 2,
     preMigrationCount: 2,
     intervalHours: 1,
+    ...NO_AGE_OR_SIZE_LIMIT,
   });
   assert.equal(scheduledCopies().length, 2);
 
@@ -113,12 +183,15 @@ test("saving lowered counts prunes at once, and a refused save changes nothing",
   assert.equal(getDatabaseBackupsConfig().scheduledCount, 2);
   assert.equal(scheduledCopies().length, 2);
 
-  const raised = await putConfig({ scheduledCount: 1, intervalHours: 6 });
+  const lowered = (await (await putConfig({ scheduledCount: 1, intervalHours: 6 })).json() as { remove: string[] }).remove;
+  assert.equal(lowered.length, 1, "a count of 1 deletes one of the two copies, so it is named first");
+  const raised = await putConfig({ scheduledCount: 1, intervalHours: 6, expectRemove: lowered });
   assert.equal(raised.status, 200);
   assert.deepEqual(getDatabaseBackupsConfig(), {
     scheduledCount: 1,
     preMigrationCount: 2,
     intervalHours: 6,
+    ...NO_AGE_OR_SIZE_LIMIT,
   });
   assert.equal(scheduledCopies().length, 1);
 });
@@ -194,7 +267,7 @@ test("a settings snapshot taken before the database-backups domain still validat
 
   validateSettingsBackupDomains(old);
   restoreSettingsConfigInTransaction(db, stageSettingsConfigRestore(migrateSettingsBackupSnapshot(old).settings));
-  assert.deepEqual(getDatabaseBackupsConfig(), kept, "absence leaves the current backup settings alone");
+  assert.deepEqual(getDatabaseBackupsConfig(), { ...kept, ...NO_AGE_OR_SIZE_LIMIT }, "absence leaves the current backup settings alone");
 });
 
 test("Back up now takes a manual copy, and its failure is recorded on the manual kind", async () => {

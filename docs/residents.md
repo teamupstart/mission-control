@@ -19,13 +19,22 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 |---|---|---|
 | Identity | The name (unique among live profiles) and an optional description | required |
 | Persona | The Library Persona whose guidance becomes the resident's standing role | none |
+| Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills | none |
-| Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
-| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 | MCP servers | A pinned set or, on Claude Code, all native sources; whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | pinned, inherit on, none selected |
+| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
+
+Each section is a card. When the editor has room, the cards form two columns: identity, Persona,
+instructions and MCP servers on the wide left, with board presence, the runtime, the workspace,
+authority and the profile's durable state beside them, and **Loop and guardrails** across the
+full width between the two bands, its six limits as tiles beside the loop prompt. A narrow
+editor stacks the cards in the order of the table. **Board presence** previews the board card
+the next launch draws: its glow, its label chip, its name and model, and, while pinned, its place
+above the cards around it. Granting **Control other sessions** marks its row in the attention
+color.
 
 A profile needs a Persona, profile instructions, or both: one with neither has no role and is
 refused on save and at launch. Leave the Persona at **No Persona** to run a resident on its

@@ -447,3 +447,26 @@ test("the supervisor refuses a permission-mode change Pi has no way to make", as
     scripted.restore();
   }
 });
+
+test("shutdown drains a driver without lifting its pause; stopping the session lifts it", async () => {
+  // `PauseManager.stop()` has already continued the driver and kept the pause record for the
+  // next daemon. Lifting it in the drain would forget the operator's pause on every restart.
+  const sdk = new FakePiSdk();
+  const scripted = withScriptedPi(sdk);
+  const released: string[] = [];
+  const pause = { releaseNow: (id: string): string | null => (released.push(id), null), frozenRefusal: () => null };
+  try {
+    const shutdown = new SdkSupervisor(new Registry(), { pause });
+    await shutdown.start(START);
+    await shutdown.stopAll(50);
+    assert.deepEqual(released, [], "the daemon going down is not the session's pause ending");
+
+    const ending = new SdkSupervisor(new Registry(), { pause });
+    const started = await ending.start(START);
+    await ending.stop(started.id);
+    assert.deepEqual(released, [started.id], "a stop of the session itself still thaws and lifts it first");
+    await ending.stopAll(50);
+  } finally {
+    scripted.restore();
+  }
+});

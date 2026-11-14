@@ -2706,3 +2706,102 @@ test("with no turn end, a captured SDK follow-up stops absorbing echoes once it 
   assert.equal(f.registry.getGoal(f.id)?.promptRevision, 2, "a hook-only arrival is captured");
   f.manager.stop();
 });
+
+/** The operator's pause, as `PauseManager` publishes it onto the session. */
+function pauseSession(registry: InstanceType<typeof Registry>, id: string, since: number): void {
+  registry.setSessionPause(id, { reason: "operator", phase: "frozen", since, interrupted: null, stopped: true });
+}
+
+/** A resume, as `PauseManager.lift` writes it: the resume time first, then the cleared pause. */
+function resumeSession(registry: InstanceType<typeof Registry>, id: string): void {
+  registry.setSessionResumedAt(id, Date.now());
+  registry.setSessionPause(id, null);
+}
+
+test("a message queued before a long pause waits through it, then steers one minute after the resume", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 700000 });
+  const f = steeringFixture("pause-rebase-steer");
+  const row = f.manager.submit(f.id, "queued before the pause").pendingTurn!;
+  assert.equal(row.createdAt, 700000);
+  pauseSession(f.registry, f.id, 700000);
+
+  // Ten minutes paused: far past both the one-minute steer and the three-minute interrupt,
+  // and nothing is attempted while the session is held.
+  t.mock.timers.tick(600000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "nothing is steered into a paused session");
+  assert.equal(f.interrupts(), 0, "nothing interrupts a paused session");
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "queued");
+
+  // Resumed mid-turn. Counted from its enqueue the row is nine minutes overdue for a steer and
+  // seven for an interrupt; counted from the resume it gets the same quiet minute as a new one.
+  resumeSession(f.registry, f.id);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "the resume does not steer the overdue message at once");
+  assert.equal(f.interrupts(), 0, "the resume does not interrupt the turn it just thawed");
+  t.mock.timers.tick(59999);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "still inside the minute after the resume");
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, ["queued before the pause"], "steered exactly one minute after the resume");
+  assert.equal(f.interrupts(), 0);
+  f.manager.stop();
+});
+
+test("a message queued before a long pause interrupts three minutes after the resume, not at once", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 800000 });
+  // Steering is refused throughout, so the second stage is the one under test.
+  const f = steeringFixture("pause-rebase-interrupt", { beforeSteer: async () => {
+    throw new Error("the driver refused this steer");
+  } });
+  f.manager.submit(f.id, "interrupt only after the resume's three minutes");
+  pauseSession(f.registry, f.id, 800000);
+  t.mock.timers.tick(600000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.interrupts(), 0);
+
+  resumeSession(f.registry, f.id);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.interrupts(), 0, "the resume does not interrupt at once");
+  t.mock.timers.tick(179999);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.interrupts(), 0, "three minutes from the resume, not from the enqueue");
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.interrupts(), 1, "interrupted exactly three minutes after the resume");
+  f.manager.stop();
+});
+
+test("a daemon restart just after a resume keeps the held message's deadlines counted from the resume", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 900000 });
+  const f = steeringFixture("pause-rebase-restart");
+  f.manager.submit(f.id, "queued before the pause, delivered after a restart");
+  pauseSession(f.registry, f.id, 900000);
+  t.mock.timers.tick(600000);
+  resumeSession(f.registry, f.id);
+  // The daemon stops ten seconds after the resume. The registry the next manager reads holds the
+  // resume time because `PauseManager` persisted it and hands it back on start.
+  t.mock.timers.tick(10000);
+  f.manager.stop();
+  const restarted = new PendingTurnManager(f.registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async () => null,
+    send: async (_id, turn, guard) => {
+      const blocked = guard?.();
+      if (blocked) throw new Error(blocked);
+      f.sends.push(turn.text);
+      return "steered";
+    },
+  }, { idleSettleMs: 0 });
+  restarted.start();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "the restart does not treat the held message as ten minutes overdue");
+  t.mock.timers.tick(49999);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "still inside the minute after the resume");
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, ["queued before the pause, delivered after a restart"], "steered one minute after the resume");
+  restarted.stop();
+});

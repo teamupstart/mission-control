@@ -8,6 +8,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
+import { isPaused } from "@shared/pause.ts";
 import { hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -209,8 +210,9 @@ export function tickTargets(
   // require an invite - Foreman only looks at sessions it was asked into. Needs-you
   // additionally requires the authorization promised by that harness's hook scope, which
   // `foremanTriageAuthorized` folds together with the invite check.
+  // A paused session is out of both halves: Foreman answers nothing and sends nothing there.
   const needsYou = sessions
-    .filter((s) => foremanTriageAuthorized(s, sessions) && reportBucket(s, sessions) === "needs-you")
+    .filter((s) => !isPaused(s) && foremanTriageAuthorized(s, sessions) && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
   const seen = new Set(needsYou.map((s) => s.id));
   const rest = sessions.filter(
@@ -224,6 +226,7 @@ export function tickTargets(
       // hook half is not.
       s.foremanInvite !== null &&
       s.state !== "exited" &&
+      !isPaused(s) &&
       !seen.has(s.id) &&
       (queueWantsATick(s, triggers) || promptedWantsATick(s, triggers)),
   );
@@ -333,6 +336,12 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     if (flight) return { kind: "escalate", item: flight, reason: "the session exited" };
     return { kind: "none" };
   }
+
+  // Paused: hold the queue and triage where they are. A send now would spend an attempt and
+  // escalate an item that is only waiting for the operator to resume this session, and a
+  // triage would run a review whose answer the paused session refuses. Above triage for that
+  // reason: a session read as needing you after the pause began is still paused.
+  if (isPaused(session)) return { kind: "none" };
 
   // 2. An unanswered question blocks the item anyway, so let triage own that
   //    episode. This sits above the in-flight branch on purpose: an item in
@@ -510,13 +519,18 @@ function decideInFlight(
 
     case "awaiting_pickup": {
       const sentAt = item.sentAt ?? item.updatedAt;
+      // The pickup window opens at the later of the send and the session's last resume. Time
+      // the agent spent frozen is not time it spent ignoring the prompt: measured from the
+      // send alone, the first tick after a long pause would resend (or escalate) a prompt the
+      // agent has not yet had a chance to read. Activity is still judged against the send.
+      const windowFrom = Math.max(sentAt, session.resumedAt ?? 0);
       // THE critical race. After delivery the session is still `idle` from its
       // previous Stop until UserPromptSubmit flips it to `working`. Without
       // `lastActivity > sentAt` the next tick would "verify" an untouched item,
       // find nothing, and open a feedback loop against an agent that never saw
       // the prompt.
       if ((session.lastActivity ?? 0) > sentAt) return { kind: "picked-up", item };
-      if (now - sentAt < cfg.pickupTimeoutMs) return { kind: "none" };
+      if (now - windowFrom < cfg.pickupTimeoutMs) return { kind: "none" };
       // The window expired with no activity at all. If the session isn't even idle
       // any more we can't call it undelivered - wait for the next tick.
       if (session.state !== "idle") return { kind: "none" };

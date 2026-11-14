@@ -1748,7 +1748,7 @@ export function StateBadge({
         label={`${session.pendingReviews} review${session.pendingReviews === 1 ? "" : "s"} waiting on you - open the queue`}
       >
         <button
-          className={`badge badge-${st.tone} badge-btn`}
+          className={`badge badge-${st.tone} badge-btn${session.pause ? " is-paused" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             onOpenReviews();
@@ -1767,7 +1767,7 @@ export function StateBadge({
     );
   }
   return (
-    <span className={`badge badge-${st.tone}`}>
+    <span className={`badge badge-${st.tone}${session.pause ? " is-paused" : ""}`}>
       <span className="badge-dot" />
       {st.label}
     </span>

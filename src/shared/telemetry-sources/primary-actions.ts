@@ -177,6 +177,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PUT", "/api/worktrees/config", "settings.worktrees", "settings"],
   ["PUT", "/api/storage/backups/config", "settings.database_backups", "settings"],
   ["POST", "/api/storage/backups", "settings.database_backup_now", "settings"],
+  ["PUT", "/api/storage/limits", "settings.storage_limits", "settings"],
+  ["POST", "/api/storage/usage/measure", "settings.storage_measure", "settings"],
   ["POST", "/api/worktrees/manual/acquire", "worktree.acquire", "settings"],
   ["POST", "/api/worktrees/manual/return", "worktree.return", "settings"],
   ["POST", "/api/worktrees/actions/preview", "worktree.preview", "settings"],

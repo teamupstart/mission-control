@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -57,7 +58,7 @@ import {
   settingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
-import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
+import { settingsRailDot, storageDotTone, type SettingsDotTone } from "../lib/settings-dots.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES } from "../tour/entries.ts";
@@ -125,10 +126,12 @@ function dotLabel(
       return "GitHub Inspector is live - reviews post to GitHub";
     }
     case "armed":
+      if (category === "storage") return "Mission Control is near its storage limit";
       return category === "trust"
         ? "Trust needs a look - a repository grant is armed"
         : "YOLO mode is armed - clean pull requests may merge themselves";
     case "failing": {
+      if (category === "storage") return "Storage needs attention: free space is low or a backup failed";
       if (category === "telemetry") {
         return "A telemetry destination stopped or is not getting through";
       }
@@ -582,6 +585,9 @@ export function SettingsPage({
                 live card, so it belongs at the bottom of the scroll rather than pushing
                 the three one-line choices below the fold. */}
             <BoardCardPanel />
+            {/* Beside the card panel: which pause controls those cards and the console draw,
+                each with its own preview. */}
+            <PauseControlsPanel />
             {/* After the card, because it is the one panel here about the chrome around every
                 page rather than about sessions - and it carries a whole bar as its preview. */}
             <TopbarPanel />
@@ -671,7 +677,10 @@ export function SettingsPage({
           <StorageSettingsPanel
             health={storageHealth}
             configRevision={storageConfigRevision}
+            worktreesRevision={worktreesRevision}
             onNavigate={navigateWithAnchor}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
           />
         );
       case "restore":
@@ -789,6 +798,7 @@ export function SettingsPage({
                         foremanEnabled,
                         trustBlindSpot,
                         trustCheckExecution,
+                        storageTone: storageDotTone(storageHealth),
                       })}
                       status={settingsStatus}
                       category={c.id}

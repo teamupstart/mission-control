@@ -242,6 +242,13 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     compactTopbarItems: Array.isArray(raw?.compactTopbarItems)
       ? raw.compactTopbarItems.filter((id): id is string => typeof id === "string")
       : [],
+    // Non-empty defaults, so a miss restores them while a stored [] (every control off) stays.
+    pauseCardControls: Array.isArray(raw?.pauseCardControls)
+      ? raw.pauseCardControls.filter((id): id is string => typeof id === "string")
+      : [...UI_CONFIG_DEFAULTS.pauseCardControls],
+    pauseConsoleControls: Array.isArray(raw?.pauseConsoleControls)
+      ? raw.pauseConsoleControls.filter((id): id is string => typeof id === "string")
+      : [...UI_CONFIG_DEFAULTS.pauseConsoleControls],
   };
 }
 

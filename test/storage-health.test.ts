@@ -238,12 +238,29 @@ test("GET /api/storage returns the aggregate and config, and a saved count prune
   assert.equal(read.status, 200);
   const view = await read.json() as StorageView;
   assert.equal(view.health.backups.copies.length, 5, "seeded copies above the default count are listed until a prune");
-  assert.deepEqual(view.config, { scheduledCount: 3, preMigrationCount: 2, intervalHours: 1 });
+  assert.deepEqual(view.config, {
+    scheduledCount: 3,
+    preMigrationCount: 2,
+    intervalHours: 1,
+    scheduledMaxAgeDays: null,
+    preMigrationMaxAgeDays: null,
+    maxTotalBytes: null,
+  });
 
-  const saved = await routes.request("/api/storage/backups/config", {
+  // Lowering the count deletes copies, so the save is refused until it names them.
+  const unconfirmed = await routes.request("/api/storage/backups/config", {
     method: "PUT",
     headers: HEADERS,
     body: JSON.stringify({ scheduledCount: 2 }),
+  });
+  assert.equal(unconfirmed.status, 409);
+  const preview = await unconfirmed.json() as { error: string; remove: string[] };
+  assert.equal(preview.error, "preview_required");
+  assert.equal(preview.remove.length, 3);
+  const saved = await routes.request("/api/storage/backups/config", {
+    method: "PUT",
+    headers: HEADERS,
+    body: JSON.stringify({ scheduledCount: 2, expectRemove: preview.remove }),
   });
   assert.equal(saved.status, 200);
   assert.equal(published.at(-1)!.backups.copies.length, 2, "the save's prune published the smaller list");

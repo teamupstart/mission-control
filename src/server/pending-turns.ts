@@ -632,13 +632,30 @@ export class PendingTurnManager {
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) &&
       !this.interruptHolds.has(session.id) &&
+      // Paused: hold every row where it is. Lifting the pause emits a `session_upsert`, and
+      // that is what re-arms the drain - so a message typed while paused is delivered on resume.
+      !session.pause &&
       canMessage(session)
     );
+  }
+
+  /**
+   * A row as its escalation clock should read it. Steer and interrupt deadlines count from
+   * `createdAt`, so a message queued during a long pause would otherwise be overdue the moment
+   * the pause lifts and interrupt the turn it resumed. Rows older than the last resume count
+   * from the resume instead, which gives them the same quiet minute any new message gets.
+   */
+  private rebased(session: Session, row: PendingTurn): PendingTurn {
+    // Read from the registry, where `PauseManager` keeps it - and restores it on start - so a
+    // daemon restart just after a resume does not make every held message overdue at once.
+    const resumedAt = this.registry.sessionResumedAt(session.id);
+    return resumedAt !== null && row.createdAt < resumedAt ? { ...row, createdAt: resumedAt } : row;
   }
 
   /** Shared safety gates; only steering is allowed to relax the idle requirement. */
   private canDeliver(session: Session): boolean {
     return !this.stopped && !this.interruptHolds.has(session.id) && session.stateConfirmed &&
+      !session.pause &&
       (session.state === "idle" || session.state === "working") &&
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) && canMessage(session) &&
@@ -656,7 +673,7 @@ export class PendingTurnManager {
   private stages(session: Session): { turn: PendingTurn; at: number; action: MessageDeliveryAction }[] {
     return session.pendingTurns.flatMap((row) => {
       if (row.interruptAttemptedAt != null) return [];
-      const stage = deliveryStage(session, row, this.deps.now());
+      const stage = deliveryStage(session, this.rebased(session, row), this.deps.now());
       return stage ? [{ turn: row, ...stage }] : [];
     });
   }
@@ -688,7 +705,7 @@ export class PendingTurnManager {
     if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
     const ahead = session.pendingTurns
       .filter((row) => row.interruptAttemptedAt == null)
-      .flatMap((row) => deliverySchedule(session, row).map((stage) => stage.at))
+      .flatMap((row) => deliverySchedule(session, this.rebased(session, row)).map((stage) => stage.at))
       .filter((at) => at > this.deps.now());
     return ahead.length ? Math.min(...ahead) : null;
   }

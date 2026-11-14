@@ -8,6 +8,7 @@
 // trust dot's blind-spot input comes from the two allowlists the Settings page already
 // holds, so no new server signal is needed for it either.
 
+import type { StorageHealth } from "@shared/storage-health.ts";
 import type { SettingsStatus } from "@shared/types.ts";
 import type { SettingsCategoryId } from "./settings-registry.ts";
 
@@ -47,6 +48,23 @@ export interface SettingsDotInputs {
    * daemon goes quiet, and nothing here can tell. That was the first cut of this input.
    */
   trustCheckExecution: boolean;
+  /**
+   * Settings > Storage's standing problems, from `storageDotTone`. Its own input because it is
+   * the storage aggregate, not the status tuple: it rides the `storage_health` event.
+   */
+  storageTone: SettingsDotTone | null;
+}
+
+/**
+ * Red while free space is under its floor or a backup is failing, amber while Mission Control
+ * is near its size limit, and nothing otherwise. Null health is "unknown", so no dot.
+ */
+export function storageDotTone(health: StorageHealth | null): SettingsDotTone | null {
+  if (!health) return null;
+  const kinds = new Set(health.problems.map((problem) => problem.kind));
+  if (kinds.has("low-free-space") || kinds.has("backup-failed")) return "failing";
+  if (kinds.has("storage-limit")) return "armed";
+  return null;
 }
 
 /**
@@ -58,10 +76,12 @@ export interface SettingsDotInputs {
  */
 export function settingsRailDot(
   id: SettingsCategoryId | "trust",
-  { status, foremanEnabled, trustBlindSpot, trustCheckExecution }: SettingsDotInputs,
+  { status, foremanEnabled, trustBlindSpot, trustCheckExecution, storageTone }: SettingsDotInputs,
 ): SettingsDotTone | null {
   // Foreman's dot is knowable even before the snapshot: App holds that state, not the payload.
   if (id === "foreman") return foremanEnabled ? "foreman" : null;
+  // Storage reads its own aggregate, which arrives on its own event, never from the tuple.
+  if (id === "storage") return storageTone;
   // Armed check execution is knowable without the tuple - it comes off the Workflow config
   // the page holds - so it is answered BEFORE the null-status return below. Behind that
   // return it would go dark whenever the SSE snapshot lapsed, which is not a reason to stop

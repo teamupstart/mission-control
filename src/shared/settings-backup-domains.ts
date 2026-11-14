@@ -41,6 +41,8 @@ export const SETTINGS_BACKUP_DOMAINS = [
   // Database backup counts and interval, edited in Settings > Storage. Added after format
   // v1 shipped.
   { id: "database-backups", surface: "settings" },
+  // Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget.
+  { id: "storage-limits", surface: "settings" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

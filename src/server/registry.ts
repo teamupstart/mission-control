@@ -14,6 +14,7 @@ import { basename } from "node:path";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
+import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
   ForemanEpisode,
@@ -656,6 +657,8 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // pending review already does - which is the same reason `review_upsert` is absent above.
   //
   // `session_transfers` is absent: the Line counts existing tasks and runs, not transport reservations.
+  // `pause_state` is DELIBERATELY absent: Pause all and priority are fleet-wide controls the
+  // Line has no stage for. A session's own pause rides `session_upsert`, already a member.
   // `restoring_session_upsert` / `restoring_session_remove` are DELIBERATELY absent. A
   // provisional row has no driver and is excluded from every fleet execution count; these
   // frames move only its inert Board presentation, so a Line refold could not change.
@@ -1176,6 +1179,17 @@ export class Registry extends EventEmitter {
     error: null,
   };
   /**
+   * Each paused session's pause, keyed by session id. `PauseManager` is the only writer; the
+   * registry only decorates it onto every session it emits (`emitSession`), the way it does
+   * `sessionControlEnabled`, so no discovery pass or SDK frame can drop it. Bounded by live
+   * sessions: `session_remove` clears an entry through the manager's subscriber.
+   */
+  private sessionPauses = new Map<string, SessionPause>();
+  /** `sessionResumedAt`'s store. Bounded by `PauseManager`, which prunes what can no longer matter. */
+  private sessionResumes = new Map<string, number>();
+  /** Pause all and the priority session, held for the snapshot and emitted on change. */
+  private pauseState: PauseState = EMPTY_PAUSE_STATE;
+  /**
    * The storage aggregate, held for the snapshot. `StorageHealthService` computes it and pushes
    * only changed values here. Null until it does: an empty placeholder would read as "no copies
    * and no problems" and hide the real answer the Storage panel reads from its route.
@@ -1275,6 +1289,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    pause: PauseState;
     storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
@@ -1320,6 +1335,8 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      // The held state, pushed by `PauseManager` on every change - two nullable singletons.
+      pause: this.pauseState,
       storageHealth: this.storageHealth,
       latestSettingsRestore: this.latestSettingsRestore,
     };
@@ -1329,6 +1346,61 @@ export class Registry extends EventEmitter {
   setStorageHealth(health: StorageHealth): void {
     this.storageHealth = health;
     this.emitEvent({ type: "storage_health", health });
+  }
+
+  /** The pause the registry is drawing for one session, or null. */
+  sessionPause(id: string): SessionPause | null {
+    return this.sessionPauses.get(id) ?? null;
+  }
+
+  /**
+   * Adopt `PauseManager`'s answer for one session and re-emit it. Returns false for a session
+   * the registry does not hold, so the manager can drop a record that outlived its session.
+   */
+  setSessionPause(id: string, pause: SessionPause | null): boolean {
+    if (pause) this.sessionPauses.set(id, pause);
+    else this.sessionPauses.delete(id);
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    // Stored, not only emitted: the snapshot, `getSession` and every server-side gate read
+    // the map, so an emitted copy alone would leave them answering with the old pause.
+    const next: Session = { ...session, pause: pause ?? null };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+    return true;
+  }
+
+  /**
+   * When this session last resumed from a pause, or null. `PauseManager` owns and persists it;
+   * the outbox reads it so a message held through a pause counts its steer and interrupt
+   * deadlines from the resume, and it rides on `Session.resumedAt` for Foreman's worker, which
+   * reads sessions over the API and measures a queue item's pickup window from it.
+   */
+  sessionResumedAt(id: string): number | null {
+    return this.sessionResumes.get(id) ?? null;
+  }
+
+  setSessionResumedAt(id: string, at: number | null): void {
+    if (at === null) this.sessionResumes.delete(id);
+    else this.sessionResumes.set(id, at);
+    const session = this.sessions.get(id);
+    if (!session || (session.resumedAt ?? null) === at) return;
+    const next: Session = { ...session, resumedAt: at };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+  }
+
+  /** The fleet-wide half: Pause all and the priority session. */
+  currentPauseState(): PauseState {
+    return this.pauseState;
+  }
+
+  /** Adopt the manager's fleet-wide state, dropping a frame that restates the last one. */
+  setPauseState(state: PauseState): void {
+    const same = JSON.stringify(state) === JSON.stringify(this.pauseState);
+    this.pauseState = state;
+    if (same) return;
+    this.emitEvent({ type: "pause_state", state });
   }
 
   /**
@@ -1988,6 +2060,8 @@ export class Registry extends EventEmitter {
   }
   private emitSession(s: Session): void {
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
+    s.pause = this.sessionPauses.get(s.id) ?? null;
+    s.resumedAt = this.sessionResumes.get(s.id) ?? null;
     this.emitEvent({ type: "session_upsert", session: s });
   }
 
@@ -2628,6 +2702,10 @@ export class Registry extends EventEmitter {
       // that decides the key.
       foremanInvite: null,
       sessionControlEnabled: prev?.sessionControlEnabled ?? false,
+      // Daemon-owned like the grant above: a sweep carries the manager's answer, and an
+      // explicit null keeps `byJson` from reading absent-vs-null as a change every tick.
+      pause: this.sessionPauses.get(d.syntheticId) ?? null,
+      resumedAt: this.sessionResumes.get(d.syntheticId) ?? null,
       name: d.name,
       nameSource: d.nameSource,
       renameable: canRenameTerminal(d),
@@ -2866,6 +2944,9 @@ export class Registry extends EventEmitter {
       // Control runs this session by definition - unless a `'withdrawn'` tombstone says
       // the operator kicked Foreman out.
       foremanInvite: null,
+      // A restored SDK session that was paused before the restart is still paused.
+      pause: this.sessionPauses.get(input.id) ?? null,
+      resumedAt: this.sessionResumes.get(input.id) ?? null,
       name: input.name,
       // Nothing holds a pane to name this session, so the supervisor that launched it said
       // what it is called - which is what this `NameSource` value records.
@@ -7186,6 +7267,10 @@ export class Registry extends EventEmitter {
   promptResourceBlockerForSession(sessionId: string): string | null {
     const heldSession = this.getSession(sessionId);
     if (heldSession && transferHold(heldSession)) return transferHold(heldSession);
+    // The operator's pause, pending or frozen: nothing new is typed into a paused session.
+    // Every scheduler that should HOLD rather than fail asks `session.pause` itself first;
+    // this is the backstop for every path that only asks here.
+    if (heldSession?.pause) return PAUSED_SESSION_REASON;
     const closing = taskSessionClosureForSession(sessionId);
     if (closing) {
       const task = this.tasks.get(closing.taskId);
@@ -10707,6 +10792,11 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // the phase 3 rail control would swap only when something unrelated shook the card.
   foremanInvite: byValue,
   sessionControlEnabled: byValue,
+  // Nested and moves on its own: a pause, its after-turn freeze and its lift change nothing
+  // else on the session, so leaving it out would let a card keep saying "paused" after resume.
+  pause: byJson,
+  // Scalar, and moves on its own when a pause lifts; Foreman's pickup clock reads it.
+  resumedAt: byValue,
   name: byValue,
   nameSource: byValue,
   renameable: byValue,

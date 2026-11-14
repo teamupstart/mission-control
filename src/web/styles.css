@@ -68,6 +68,12 @@
      member before it. */
   --held: var(--purple);
 
+  /* A session the operator paused (`Session.pause`). Slate, and each neighbour was ruled out
+     for the reason `--held` gives: `--working` blue would read as an agent burning tokens,
+     `--idle` green as free to take, `--held` purple as a run owning it. Colour is never the
+     only cue - every paused surface also prints the two-bar glyph and the word. */
+  --paused: #9aaecb;
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -3834,15 +3840,25 @@ button.wf-run-version:focus-visible {
    rows its component asks for, grows with wrapped or explicit lines, and keeps five lines
    visible before it becomes its own scroller. `field-sizing` also reacts to imperative
    value changes, which matters when a queued turn is recalled into an uncontrolled
-   composer without a React render. Unsupported browsers keep the native rows-based size
-   and the existing vertical resize handle. */
+   composer without a React render. Unsupported browsers keep the native rows-based size.
+
+   Where a field shows the corner handle, dragging it gives the field the height the person
+   chose, past the five-line cap. The cap describes how far a field GROWS ON ITS OWN, so it
+   must never clamp a drag - when it did, a drag stopped at five lines, and a field already
+   at the cap or held at a taller `min-height` did not move at all. The browser records a
+   drag as an inline `height` on the element, and that is the one signal the cap yields to;
+   no component here writes an inline height of its own. The handle is vertical only,
+   because these fields fill their column and a sideways drag pushes them out of it. */
 :where(textarea) {
   --textarea-min-content-height: 2lh;
   --textarea-block-chrome: 18px;
   field-sizing: content;
   min-height: calc(var(--textarea-min-content-height) + var(--textarea-block-chrome));
-  max-height: calc(5lh + var(--textarea-block-chrome));
   overflow-y: auto;
+  resize: vertical;
+}
+:where(textarea:not([style*="height"])) {
+  max-height: calc(5lh + var(--textarea-block-chrome));
 }
 textarea[rows="1"] { --textarea-min-content-height: 1lh; }
 textarea[rows="2"] { --textarea-min-content-height: 2lh; }
@@ -4099,6 +4115,8 @@ body {
    nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
 .is-desktop .launch-pop,
 .is-desktop .session-toolbar-menu,
+/* Pause all's confirm hangs straight off the title bar, so it is IN the bar's rectangle. */
+.is-desktop .fleet-pause-pop,
 /* The background sub-agents popover a board card's chip opens. It is fixed to the viewport
    and opens ABOVE a chip in the lower half of the window, clamped to the top - which is the
    bar. An eaten click would leave it unable to take focus or be dismissed by a press inside. */
@@ -7262,9 +7280,307 @@ a.btn {
 }
 .storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
 .storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.storage-problem-list li.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
+/* Storage is one category with five tabs. The tab strip sits on the pane's measure, and each
+   tab's bands stack with the same air as two settings sections. */
+.storage-panel { display: grid; gap: 0; }
+.storage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.storage-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -1px;
+  padding: 8px 12px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.storage-tab:hover { color: var(--fg); }
+.storage-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
+.storage-tab small { font-family: var(--mono); font-size: 10.5px; font-weight: 500; color: var(--dim); }
+.storage-tab small.storage-green { color: var(--idle); }
+.storage-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+.storage-band h3 { margin: 0 0 6px; }
+.storage-band + .storage-band { margin-top: 22px; }
+.storage-band .settings-blurb + .storage-config-row { margin-top: 4px; }
+.storage-muted { color: var(--muted); }
+.storage-red { color: var(--danger); }
+.storage-amber { color: var(--attention); }
+.storage-green { color: var(--idle); }
+.storage-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storage-meter { margin: 12px 0 6px; }
+.storage-meter-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.storage-meter-head strong { color: var(--fg); font-size: 13px; }
+.storage-meter-head strong.storage-red { color: var(--danger); }
+.storage-meter-head strong.storage-amber { color: var(--attention); }
+.storage-meter-head code { font-size: 11px; color: var(--dim); }
+.storage-bar {
+  position: relative;
+  display: flex;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in srgb, var(--border) 80%, transparent) 5px 7px);
+}
+.storage-bar > i { display: block; height: 100%; min-width: 2px; }
+.storage-bar > i:first-child { border-radius: 6px 0 0 6px; }
+.storage-bar > i:last-of-type { border-radius: 0 6px 6px 0; }
+.storage-tick {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--attention);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.storage-tick.is-danger { background: var(--danger); }
+/* One hue per category, all from the resident palette or a role token, none a session state,
+   so a bar segment never reads as a card's tone. */
+.storage-seg-mine, .storage-seg-pools { background: var(--working); }
+.storage-seg-others { background: color-mix(in srgb, var(--border) 85%, var(--panel)); }
+.storage-seg-free { background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--idle) 55%, transparent) 4px 6px); }
+.storage-seg-backups { background: var(--purple); }
+.storage-seg-updates { background: var(--resident-cyan); }
+.storage-seg-database { background: var(--resident-rose); }
+.storage-seg-evidence { background: var(--resident-lime); }
+.storage-seg-worktrees { background: var(--resident-teal); }
+.storage-seg-archives { background: var(--resident-orange); }
+.storage-seg-other { background: var(--neutral); }
+.storage-seg-over { background: repeating-linear-gradient(135deg, var(--attention) 0 3px, transparent 3px 6px); }
+.storage-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border-radius: 3px;
+  vertical-align: -1px;
+}
+.storage-table { margin-top: 12px; }
+/* Row headers sit in a `.storage-copies` table, whose header cells are small caps labels. A row
+   header names a thing, so it reads as body text. */
+.storage-table th[scope="row"] {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  color: var(--fg);
+}
+.storage-table th small,
+.storage-table td small {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.storage-table td small.storage-red,
+.storage-table td small.storage-muted { font-family: var(--sans); font-size: 11px; }
+.storage-table td small.storage-red { color: var(--danger); }
+.storage-table td { vertical-align: top; }
+.storage-table tr.storage-total > * { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
+.storage-measure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.storage-policy { width: 100%; margin: 10px 0 4px; border-collapse: collapse; font-size: 12.5px; border: 1px solid var(--border); }
+.storage-policy th,
+.storage-policy td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.storage-policy thead th { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.storage-policy tbody th { font-weight: 560; }
+.storage-policy tr:last-child > * { border-bottom: 0; }
+.storage-policy td.storage-num { text-align: right; }
+.storage-field { display: inline-flex; align-items: center; gap: 6px; }
+.storage-field em { font-style: normal; font-size: 11px; color: var(--dim); }
+.storage-input,
+.storage-config-row .storage-input {
+  width: 92px;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.storage-keep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--idle) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--idle) 5%, var(--panel));
+  font-size: 12px;
+}
+.storage-keep p { flex-basis: 100%; margin: 2px 0 0; font-size: 11.5px; color: var(--dim); }
+.storage-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--idle) 35%, var(--border));
+  border-radius: 20px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.storage-effect {
+  margin: 12px 0 0;
+  padding: 10px 13px;
+  border-left: 3px solid var(--attention);
+  border-radius: 0 9px 9px 0;
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.storage-effect strong { color: var(--fg); }
+.storage-effect ul { margin: 4px 0; padding-left: 18px; }
+.storage-note {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+.storage-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.storage-strip > i { width: 12px; height: 20px; border-radius: 3px; }
+.storage-strip-scheduled { background: color-mix(in srgb, var(--purple) 70%, var(--panel)); }
+.storage-strip-preMigration { background: color-mix(in srgb, var(--resident-cyan) 70%, var(--panel)); }
+.storage-strip-manual { background: color-mix(in srgb, var(--resident-blue) 70%, var(--panel)); }
+.storage-strip > i.is-go { background: transparent; border: 1.5px dashed var(--danger); }
+.storage-strip > i.is-always { box-shadow: 0 0 0 2px var(--idle); }
+.storage-status-grid article.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
+.storage-status-grid article.is-danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.storage-slots { display: flex; flex-wrap: wrap; gap: 3px; margin: 2px 0 4px; }
+.storage-slots > i { width: 11px; height: 11px; border-radius: 3px; }
+.storage-slots > .is-leased { background: var(--working); }
+.storage-slots > .is-idle { background: color-mix(in srgb, var(--working) 35%, var(--panel)); }
+.storage-slots > .is-go { border: 1.5px solid var(--idle); }
+.storage-slots > .is-quarantined {
+  background: repeating-linear-gradient(135deg, var(--attention) 0 2px, transparent 2px 4px);
+  border: 1px solid color-mix(in srgb, var(--attention) 50%, var(--border));
+}
+.storage-slots > .is-other { background: var(--neutral); }
+.storage-slots > .is-room { border: 1px dashed var(--border); }
+.storage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, auto) 1fr;
+  gap: 10px 26px;
+  margin: 12px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.storage-summary span { display: block; margin-bottom: 2px; font-size: 11px; color: var(--muted); }
+.storage-summary strong { font-size: 15px; }
+.storage-group { margin-top: 8px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); }
+.storage-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.storage-group > summary span { font-size: 11.5px; color: var(--muted); }
+.storage-group > summary em { margin-left: auto; font-family: var(--mono); font-size: 12px; font-style: normal; }
+.storage-group.is-blocked { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.storage-group.is-blocked > summary strong { color: var(--danger); }
+.storage-group > .settings-hint { margin: 8px 12px 10px; }
+.storage-rows { max-height: 300px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.storage-rows li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+.storage-rows li.is-blocked { box-shadow: inset 3px 0 0 var(--danger); }
+/* The exact copies a backup save deletes, listed inside its warning before the save. */
+.storage-delete-list {
+  margin: 8px 0 6px;
+  border: 1px solid color-mix(in srgb, var(--attention) 30%, var(--border));
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.storage-delete-list li:first-child { border-top: 0; }
+.storage-copies tr.is-going td { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.storage-rows code { font-size: 11px; overflow-wrap: anywhere; }
+.storage-why { font-size: 11.5px; color: var(--dim); }
+.storage-size { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.storage-plain { margin: 0; padding: 8px 12px 10px 30px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.storage-plain b { font-weight: 560; color: var(--fg); }
+.storage-preview-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.storage-preview-foot > span { flex: 1; font-size: 11.5px; color: var(--dim); }
+.storage-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 4px 0 0; padding: 0; border: 0; font-size: 12px; color: var(--muted); }
+.storage-checks legend { float: left; margin-right: 6px; padding: 0; font-size: 11px; color: var(--muted); }
+.storage-checks label { display: inline-flex; align-items: center; gap: 6px; }
+.app-banner-storage {
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--border));
+  background: color-mix(in oklab, var(--danger) 7%, var(--panel));
+}
+.app-banner-storage.is-warn {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--panel));
+}
 @media (max-width: 760px) {
   .storage-status-grid { grid-template-columns: 1fr; }
   .storage-problem-list li { align-items: stretch; flex-direction: column; }
+  .storage-summary { grid-template-columns: 1fr 1fr; }
+  .storage-rows li { grid-template-columns: 1fr; gap: 2px; }
 }
 /* Queue is a disclosure, not a command: it stays a plain button until the drawer is
    open, then holds the pressed tint for as long as the panel below it is showing -
@@ -17310,6 +17626,164 @@ select.ensemble-judge-persona {
 }
 .resident-instructions {
   min-height: 140px;
+}
+
+/* ---- The profile editor's card grid ----
+   Each registered section is one card. Narrow, they stack in registry order; from 860px of
+   workspace they form two bands of a wide left and a narrow right column around a full-width
+   loop card. The registry order is the reading order, so the DOM and the tab order match what
+   the grid shows. A section the areas do not name spans the full width after the rest. */
+.residents-workspace {
+  container: residents-workspace / inline-size;
+}
+.resident-editor.resident-profile-editor {
+  max-width: 1180px;
+}
+.resident-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+.resident-cards > .resident-editor-card {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+@container residents-workspace (min-width: 860px) {
+  .resident-cards {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    grid-template-areas:
+      "identity board"
+      "persona board"
+      "instructions execution"
+      "instructions workspace"
+      "loop loop"
+      "mcp authority"
+      "mcp state";
+  }
+  .resident-cards > .resident-editor-card-identity { grid-area: identity; }
+  .resident-cards > .resident-editor-card-persona { grid-area: persona; }
+  .resident-cards > .resident-editor-card-board { grid-area: board; }
+  .resident-cards > .resident-editor-card-instructions { grid-area: instructions; }
+  .resident-cards > .resident-editor-card-execution { grid-area: execution; }
+  .resident-cards > .resident-editor-card-workspace { grid-area: workspace; }
+  .resident-cards > .resident-editor-card-loop { grid-area: loop; }
+  .resident-cards > .resident-editor-card-mcp { grid-area: mcp; }
+  .resident-cards > .resident-editor-card-authority { grid-area: authority; }
+  .resident-cards > .resident-editor-card-state { grid-area: state; }
+  /* The narrow runtime card: the harness takes the line, model and effort share the next. */
+  .resident-editor-card-execution .resident-fields-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .resident-editor-card-execution .resident-fields-row > .field:first-child {
+    grid-column: 1 / -1;
+  }
+  .resident-loop {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 16px;
+  }
+  .resident-loop .resident-loop-limits {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+/* The board card's label and pin each take a line: its three-column row is the runtime card's. */
+.resident-editor-card-board .resident-fields-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* The instructions card grows with the rows beside it rather than leaving a gap under them. */
+.resident-editor-card-instructions .resident-instructions {
+  flex: 1;
+}
+.resident-editor-card-instructions > .field {
+  flex: 1;
+}
+
+/* The next launch's board card, between two plain neighbours: pinned, it sorts above them. */
+.resident-board-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-board-preview-ghost {
+  height: 30px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.resident-board-preview-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in oklab, var(--resident) 70%, var(--border));
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--resident) 45%, transparent),
+    0 0 18px color-mix(in oklab, var(--resident) 26%, transparent);
+}
+.resident-board-preview-name {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.resident-board-preview-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Loop and guardrails: the prose on the left, the six limits as tiles on the right. */
+.resident-loop-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.resident-loop-text textarea {
+  min-height: 96px;
+}
+.resident-loop-limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.resident-loop-limit {
+  justify-content: space-between;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-loop-limit .field-input {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+.resident-loop-spend {
+  grid-column: 1 / -1;
+}
+
+/* Authority widens what the resident can reach, so the granted state reads as a warning. */
+.resident-editor-card .resident-authority {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-editor-card .resident-authority:has(input:checked) {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--bg));
 }
 .resident-error {
   margin: 0;
@@ -32217,6 +32691,606 @@ span.line-run-prov {
   color: var(--held);
   cursor: help;
 }
+/* ---- pausing sessions (`PauseControls.tsx`, `FleetPauseControl.tsx`) ----
+   One look for a paused session wherever it is drawn: the slate `--paused` tone, a hatched
+   spine, the two-bar glyph and the word. Priority keeps the fleet's brightest ink rather than
+   a new hue. Which CONTROLS appear is the operator's choice; this look is not. */
+.pause-glyph {
+  flex: none;
+  display: inline-block;
+  vertical-align: -1px;
+}
+.tile.is-paused {
+  --tone-color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 34%, var(--border));
+  background: linear-gradient(color-mix(in oklab, var(--paused) 6%, var(--panel)), var(--panel-2));
+}
+/* Hatched rather than solid, so a paused spine never reads as a solid tone at a glance. The
+   card's text and its runtime controls are NOT dimmed: the border, the tint, this spine and the
+   flag say paused, and faded text would take the muted lines under 4.5:1 contrast. */
+.tile.is-paused::before {
+  background: repeating-linear-gradient(180deg, var(--paused) 0 5px, transparent 5px 8px);
+}
+.tile.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 46%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px color-mix(in oklab, var(--fg) 22%, transparent),
+    0 0 26px color-mix(in oklab, var(--working) 20%, transparent);
+}
+.tile.is-priority::before {
+  background: linear-gradient(var(--fg), var(--working));
+}
+.tile-flag.tf-paused,
+.tile-flag.tf-priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+}
+.tile-flag.tf-paused {
+  border-color: color-mix(in oklab, var(--paused) 50%, var(--border));
+  background: color-mix(in oklab, var(--paused) 14%, transparent);
+  color: var(--paused);
+}
+.tile-flag.tf-priority {
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, transparent);
+  color: var(--fg);
+}
+.tile-activity.pause-frozen-line,
+.tile-activity.pause-frozen-line .ta-glyph {
+  color: var(--paused);
+}
+/* The conversation's in-progress row, frozen: slate and still. */
+.turn-progress.is-frozen,
+.turn-progress.is-frozen .turn-progress-glyph {
+  color: var(--paused);
+}
+.turn-progress.is-frozen .turn-progress-glyph {
+  animation: none;
+  letter-spacing: -1px;
+}
+/* The ticker's glyph spins to say "working"; a frozen agent's must stand still. */
+.tile-activity.pause-frozen-line .ta-glyph {
+  display: inline-flex;
+  animation: none;
+}
+/* Card controls ride above the stretched open button, like the PR flag. */
+.pause-card-control {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* Card A: corner buttons. Drawn on the card you point at or have the cursor on; a paused or
+   priority card keeps its one button, because the way back must never hide. */
+.pause-corner {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tile:hover .pause-corner,
+.tile:focus-within .pause-corner,
+.tile.selected .pause-corner,
+.pause-corner.is-set,
+.pause-card-preview .pause-corner {
+  opacity: 1;
+}
+.pause-corner-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* Only an idle button takes the hover ink. A paused or priority one keeps its own: `--fg` on
+   the priority button's `--fg` fill would erase the glyph. Those brighten their ring instead. */
+.pause-corner-btn:not(.is-paused):not(.is-priority):hover:not(:disabled),
+.pause-corner-btn:not(.is-paused):not(.is-priority):focus-visible {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 40%, var(--border));
+}
+.pause-corner-btn:is(.is-paused, .is-priority):hover:not(:disabled),
+.pause-corner-btn:is(.is-paused, .is-priority):focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--fg) 35%, transparent);
+}
+.pause-corner-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+}
+.pause-corner-btn.is-priority {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+/* Card B: the run chip, the same size as the mode and effort chips beside it. */
+.pause-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--working);
+  border: 1px solid color-mix(in oklab, var(--working) 38%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
+}
+.pause-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+.pause-chip-caret {
+  font-size: 9px;
+  color: var(--dim);
+}
+.pause-chip.is-paused,
+.pause-chip.is-pending {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 50%, var(--border));
+  background: color-mix(in oklab, var(--paused) 13%, var(--panel-2));
+}
+.pause-chip.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, var(--panel-2));
+}
+.pause-chip:focus-visible,
+.pause-more:focus-visible,
+.pause-pill:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* Card E: the ⋯ menu, and the Resume pill a paused card carries in its flag row. */
+.pause-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0 0 4px;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pause-more:hover,
+.pause-more[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.pause-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.4;
+  padding: 1px 7px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.pause-pill:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--fg) 40%, var(--border));
+}
+/* The shared menu's rows: a label and the sentence of what it does. */
+.session-toolbar-option.pause-menu-row {
+  align-items: flex-start;
+}
+.pause-menu-row > .pause-glyph {
+  margin-top: 2px;
+  color: var(--muted);
+}
+.pause-menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.session-toolbar-option > .pause-menu-text:last-child {
+  margin-left: 0;
+}
+.pause-menu-label {
+  color: var(--fg);
+}
+.pause-menu-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+/* Console B: the toolbar button, beside session control. */
+.pause-toolbar-btn.is-paused,
+.pause-toolbar-btn.is-pending {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 55%, var(--border));
+  background: color-mix(in oklab, var(--paused) 13%, var(--panel-2));
+}
+.pause-toolbar-btn.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 9%, var(--panel-2));
+}
+.pause-toolbar-text {
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* Console C: the button beside Send, and Send saying Queue while paused. */
+.composer-pause-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  color: var(--muted);
+}
+.composer-pause-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+}
+.btn-send.is-queue {
+  color: var(--paused);
+  border-color: color-mix(in oklab, var(--paused) 55%, var(--border));
+}
+/* Console D: the state badge's pause half, flush against the badge. */
+.badge.is-paused {
+  color: var(--paused);
+  background: color-mix(in oklab, var(--paused) 15%, transparent);
+}
+.badge.is-paused .badge-dot {
+  background: var(--paused);
+  animation: none;
+}
+.badge-split {
+  display: inline-flex;
+  align-items: stretch;
+  flex: none;
+}
+/* In the console header the half is the badge's own sibling, not wrapped with it, so the
+   header's rung-7 allowlist (which keeps `.badge`) sheds the half by itself and can never take
+   the review button with it. A paused session's band still offers Resume there, and the toolbar
+   button and the board card still offer Pause. The margin closes the header's 10px gap; the
+   badge squares its end only while the half is drawn beside it. */
+.detail-head > .badge-pause-half,
+.detail-head > .tt-anchor:has(> .badge-pause-half) {
+  flex: none;
+  margin-left: -10px;
+}
+.badge-split > .badge,
+.badge-split > .tt-anchor > .badge,
+.detail-head:not([data-rung~="7"]) > .badge:has(+ .badge-pause-half, + .tt-anchor > .badge-pause-half) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.badge-pause-half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  /* The badge's own vertical metrics, plus a zero-width line of its text below, so the half is
+     exactly the badge's height on its own: in the console header it is the badge's sibling,
+     with no wrapper to stretch it. */
+  padding: 3px 0;
+  font-size: 11.5px;
+  cursor: pointer;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+  border: 1px solid transparent;
+  border-left-color: var(--border);
+  border-radius: 0 999px 999px 0;
+}
+.badge-pause-half::before {
+  content: "\200b";
+}
+.badge-pause-half:hover:not(:disabled),
+.badge-pause-half:focus-visible {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--fg) 12%, transparent);
+}
+.badge-pause-half.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-left-color: var(--paused);
+}
+/* The paused band, under the console header (Console D) or above the reply box (Console C). */
+.pause-band {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: none;
+  padding: 9px 22px;
+  font-size: 12.5px;
+  color: var(--fg);
+  border-bottom: 1px solid color-mix(in oklab, var(--paused) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--paused) 10%, var(--panel));
+}
+.pause-band > .pause-glyph,
+.pause-band-lead {
+  color: var(--paused);
+}
+.pause-band-lead {
+  font-weight: 650;
+}
+.pause-band-sub {
+  flex: 1 1 260px;
+  min-width: 0;
+  color: var(--muted);
+}
+.pause-band.is-inline {
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklab, var(--paused) 35%, var(--border-soft));
+  border-radius: 10px;
+}
+.pause-band.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.pause-band.is-priority > .pause-glyph,
+.pause-band.is-priority .pause-band-lead {
+  color: var(--fg);
+}
+.pause-band-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pause-band-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: transparent;
+}
+/* The rail's paused and priority rows. */
+.rail-row.is-paused {
+  --tone-color: var(--paused);
+}
+.rail-row.is-paused .rail-state {
+  color: var(--paused);
+}
+.rail-row.is-priority .rail-state {
+  color: var(--fg);
+}
+.rail-pause-mark {
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  color: var(--paused);
+}
+.rail-pause-mark.is-priority {
+  color: var(--fg);
+}
+/* Pause all, in the title bar. Glyph-only at rest; the count rides on it once engaged.
+   It gives way at the last rung, with the pulse's words, so the narrowest bar fits exactly as
+   it did before the control joined it: the glyph is about 44px, and on Linux font metrics that
+   stacked a busy bar at widths where every rung had already been spent. While Pause all or
+   priority is on, its banner carries Resume all and End priority at every width. */
+.topbar[data-rung~="5"] .fleet-pause-wrap {
+  display: none;
+}
+.fleet-pause-wrap {
+  position: relative;
+  display: flex;
+}
+.fleet-pause-btn {
+  gap: 5px;
+}
+.fleet-pause-btn.is-paused {
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+  font-weight: 650;
+}
+.fleet-pause-btn.is-priority {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--fg) 8%, transparent);
+}
+.fleet-pause-count {
+  font-variant-numeric: tabular-nums;
+}
+.fleet-pause-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.fleet-pause-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+.fleet-pause-sub {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.fleet-pause-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fleet-pause-check small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.fleet-pause-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.fleet-pause-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+.fleet-pause-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.fleet-pause-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bg);
+  background: var(--paused);
+  border-color: var(--paused);
+  font-weight: 650;
+}
+.fleet-pause-confirm.is-priority {
+  background: var(--fg);
+  border-color: var(--fg);
+}
+.fleet-pause-confirm:disabled {
+  opacity: 0.55;
+}
+.app-banner.fleet-pause-banner {
+  justify-content: flex-start;
+  border-color: color-mix(in oklab, var(--paused) 40%, var(--border));
+  background: color-mix(in oklab, var(--paused) 10%, var(--panel));
+  font-size: 12.5px;
+}
+.fleet-pause-banner > .pause-glyph,
+.fleet-pause-banner-lead {
+  color: var(--paused);
+}
+.fleet-pause-banner-lead {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.fleet-pause-banner-sub {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+/* Partial: something Pause all took is still running, so the banner takes the attention tone. */
+.app-banner.fleet-pause-banner.is-partial {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.fleet-pause-banner.is-partial .fleet-pause-banner-lead {
+  color: var(--attention);
+}
+.app-banner.fleet-pause-banner.is-priority {
+  border-color: color-mix(in oklab, var(--fg) 35%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.fleet-pause-banner.is-priority > .pause-glyph,
+.fleet-pause-banner.is-priority .fleet-pause-banner-lead {
+  color: var(--fg);
+}
+/* Settings > Display > Pause controls: one row per control, its checkbox beside a preview of
+   that control on a running and a paused session. */
+.pause-controls-options {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 8px 0 18px;
+}
+.pause-control-option {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  gap: 14px;
+  align-items: start;
+}
+/* The card panel's stage, restated rather than shared: a selector for that panel's preview
+   must not also find these. */
+.pause-control-stage {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.pause-control-stage .tile,
+.pause-control-stage .tile *,
+.pause-control-stage button {
+  cursor: default;
+}
+.pause-control-stage .tile:hover {
+  transform: none;
+}
+.pause-control-stage.is-console {
+  grid-template-columns: minmax(0, 1fr);
+}
+.pause-console-preview {
+  flex: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--bg-2) 72%, transparent);
+}
+.pause-console-preview .detail-head {
+  padding: 10px 14px 8px;
+}
+.pause-console-preview .detail-tabs {
+  padding: 0 14px;
+  align-items: center;
+}
+.pause-console-preview .pause-band {
+  padding-inline: 14px;
+}
+.pause-preview-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pause-preview-spacer {
+  flex: 1;
+}
+.pause-preview-compose {
+  padding: 10px 14px;
+}
+@media (max-width: 900px) {
+  .pause-control-option {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .tile-head {
   display: flex;
   align-items: center;
@@ -35867,8 +36941,9 @@ body.foreman-sidecar-open .modal-backdrop {
   font-weight: 640;
 }
 
-/* Health pills and inline status badges. No --healthy/--paused tokens exist, so healthy
-   maps to --idle, paused to --exited, attention to --attention, neutral to --neutral. */
+/* Health pills and inline status badges. No --healthy token exists, and a paused schedule is
+   not a paused session (`--paused` is the session's), so healthy maps to --idle, paused to
+   --exited, attention to --attention, neutral to --neutral. */
 .rm-pill,
 .rm-badge-inline {
   display: inline-flex;

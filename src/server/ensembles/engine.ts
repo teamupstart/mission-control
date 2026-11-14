@@ -79,7 +79,11 @@ export interface EnsembleReviewDeps {
 }
 
 /** A finalization side effect either happened or is refused with a sentence the operator can act on. */
-export type FinalizeStepResult = { ok: true } | { ok: false; detail: string };
+/**
+ * `launchHeld`: a replacement launch TaskManager refused only for the operator's launch hold - a
+ * wait, not a failure; see `ensureWinnerReady`.
+ */
+export type FinalizeStepResult = { ok: true } | { ok: false; detail: string; launchHeld?: true };
 export type ContinuationDeliveryResult =
   | { ok: true }
   | { ok: false; retryable: boolean; detail: string };
@@ -202,12 +206,31 @@ export interface MemberTaskRequest {
   effort: ThinkingLevel | null;
 }
 
+/**
+ * A member dispatch refused only because the operator's launch hold stood when TaskManager read
+ * it. The gateway throws this, not a plain Error, so the engine can tell a launch to wait out from
+ * one that failed - from the refusal itself, whatever the hold says by the time it is handled.
+ */
+export class MemberLaunchHeldError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "MemberLaunchHeldError";
+  }
+}
+
 export interface MemberDispatchRequest {
   taskId: string;
   /** The exact commit the worktree must be provisioned at and verified against. */
   baseSha: string;
   model: string | null;
   effort: ThinkingLevel | null;
+  /**
+   * A person started this launch just now - their own Launch of the run, or their Retry of a
+   * member - so it goes through the operator's launch hold (Pause all with launches held, or a
+   * priority session). Never set for a launch the engine makes on its own later: a member a freed
+   * slot opens, or a wave after the first. Absent means held.
+   */
+  overridePauseHold?: boolean;
 }
 
 /**
@@ -291,6 +314,13 @@ export interface EnsembleEngineDeps {
   armTimer?: (delayMs: number, fire: () => void) => () => void;
   /** First review infrastructure backoff, in ms. Injected so a test drives the ladder in zero time. */
   reviewRetryBaseMs?: number;
+  /**
+   * Why automatic launches are held right now, or null (`PauseManager.launchHoldReason`). While
+   * it answers, a member the engine would launch on its own stays pending and the winner's
+   * replacement Task is not started; both go once the manager wakes the run after the hold lifts.
+   * Absent means never held.
+   */
+  launchHold?: () => string | null;
 }
 
 // ---- submission ----
@@ -536,6 +566,12 @@ export class EnsembleEngine {
    */
   private readonly reviewRetryTimers = new Map<string, () => void>();
   private readonly reviewRetryBaseMs: number;
+  private readonly launchHold: () => string | null;
+  /**
+   * Runs whose advance is a person's own Launch, for the length of that one advance under the run
+   * lock: the members it dispatches claim the pause override, and nothing dispatched later does.
+   */
+  private readonly operatorLaunches = new Set<string>();
   /** The abort controller of the one in-flight review per run, so a cancel can stop its retry. */
   private readonly reviewAborts = new Map<string, AbortController>();
 
@@ -549,6 +585,7 @@ export class EnsembleEngine {
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log ?? (() => {});
     this.reviewRetryBaseMs = deps.reviewRetryBaseMs ?? REVIEW_RETRY_BASE_MS;
+    this.launchHold = deps.launchHold ?? (() => null);
     this.armTimer =
       deps.armTimer ??
       ((delayMs, fire) => {
@@ -653,9 +690,22 @@ export class EnsembleEngine {
 
   // ---- public entry points (each takes the run lock) ----
 
-  /** Launch a freshly created, already-pinned run: move it to running and issue its first wave. */
-  async launch(runId: string): Promise<void> {
-    await this.withRunLock(runId, () => this.advanceLocked(runId));
+  /**
+   * Launch a freshly created, already-pinned run: move it to running and issue its first wave.
+   *
+   * `byOperator` is a person's own Launch, and only the first wave it dispatches in this advance
+   * goes through the operator's launch hold. Every later launch of the run is the engine's own and
+   * waits the hold out.
+   */
+  async launch(runId: string, options: { byOperator?: boolean } = {}): Promise<void> {
+    await this.withRunLock(runId, async () => {
+      if (options.byOperator) this.operatorLaunches.add(runId);
+      try {
+        await this.advanceLocked(runId);
+      } finally {
+        this.operatorLaunches.delete(runId);
+      }
+    });
   }
 
   /** React to a durable Task/Session change for a member of this run. Recomputes from state. */
@@ -852,9 +902,12 @@ export class EnsembleEngine {
       // would sit backlog forever. `reserveAttempt` already moved the member to `launching`; take the
       // attempt to `launching` and hand it to the owner, with the same rejection handling a wave launch has.
       this.store.setAttemptStatus(reserved.id, ["pending"], "launching", {}, now);
+      // A person pressed Retry, so this launch is theirs and goes through the launch hold.
       void this.tasks
-        .dispatch({ taskId, baseSha: input.baseSha, model: role.model, effort: role.effort })
-        .catch((err) => this.onDispatchRejected(state.run.id, member.id, reserved.id, err instanceof Error ? err.message : String(err)));
+        .dispatch({ taskId, baseSha: input.baseSha, model: role.model, effort: role.effort, overridePauseHold: true })
+        .catch((err) =>
+          this.onDispatchRejected(state.run.id, member.id, reserved.id, err instanceof Error ? err.message : String(err), false),
+        );
       this.event(runId, "member_retried", { memberId, attempt: attemptNumber }, `member_retried:${member.id}:${attemptNumber}`);
       // Advance so the downstream barrier re-opens: the retried member is no longer settled, so a run
       // parked at review returns to waiting until it submits.
@@ -2319,6 +2372,9 @@ export class EnsembleEngine {
       (m) => OCCUPYING_MEMBER_STATUSES.includes(m.status ?? "pending") && this.attemptDispatched(state, m),
     ).length;
     const launchedTotal = state.attempts.length;
+    // A person's own Launch goes through the operator's launch hold; anything the engine launches
+    // later on its own waits it out, pending, and the manager wakes the run when it lifts.
+    const byOperator = this.operatorLaunches.has(state.run.id);
     for (const member of state.members) {
       if (!roleSet.has(member.roleKey)) continue;
       if (member.status !== "launching") continue;
@@ -2328,6 +2384,11 @@ export class EnsembleEngine {
       if (launchedTotal > state.run.plan.budget.maxMembers) {
         await this.failRun(state.run.id, "a member launch would exceed the plan's hard member cap");
         return;
+      }
+      const held = byOperator ? null : this.launchHold();
+      if (held) {
+        this.log("info", { event: "ensemble_member_launch_held", runId: state.run.id, memberId: member.id, reason: held });
+        break;
       }
       const role = state.run.plan.roles.find((r) => r.key === member.roleKey);
       this.store.setAttemptStatus(attempt.id, ["pending"], "launching", {}, this.now());
@@ -2344,8 +2405,17 @@ export class EnsembleEngine {
           baseSha: attempt.baseSha!,
           model: role?.model ?? null,
           effort: role?.effort ?? null,
+          ...(byOperator ? { overridePauseHold: true } : {}),
         })
-        .catch((err) => this.onDispatchRejected(state.run.id, memberId, attemptId, err instanceof Error ? err.message : String(err)));
+        .catch((err) =>
+          this.onDispatchRejected(
+            state.run.id,
+            memberId,
+            attemptId,
+            err instanceof Error ? err.message : String(err),
+            !byOperator && err instanceof MemberLaunchHeldError,
+          ),
+        );
       this.event(state.run.id, "member_launched", { memberId: member.id }, `member_launched:${attempt.id}`);
       occupied += 1;
     }
@@ -2355,10 +2425,29 @@ export class EnsembleEngine {
    * A member's dispatch call rejected. Fail the attempt and the member under the run lock, then wake
    * so the compiled barrier can decide whether the stage can still proceed - the same as any other
    * member failure, just reached through the launch path instead of an observed Task death.
+   *
+   * Except a wave launch TaskManager refused for the operator's launch hold (`launchHeld`): the
+   * hold began between the engine's check and TaskManager's, so the attempt goes back to pending,
+   * exactly as if the check had seen it. Decided from the refusal, never by asking the hold again:
+   * the operator may already have resumed, and the wake that lift sent has then come and gone. The
+   * wake below is what launches it in that case; while the hold stands, that wake holds it again.
+   * An operator's own retry claimed the override, so it is never deferred - nothing would launch it
+   * again.
    */
-  private async onDispatchRejected(runId: string, memberId: string, attemptId: string, detail: string): Promise<void> {
+  private async onDispatchRejected(
+    runId: string,
+    memberId: string,
+    attemptId: string,
+    detail: string,
+    refusedForHold: boolean,
+  ): Promise<void> {
     await this.withRunLock(runId, async () => {
       const now = this.now();
+      if (refusedForHold) {
+        this.store.setAttemptStatus(attemptId, ["launching"], "pending", {}, now);
+        this.log("info", { event: "ensemble_member_launch_held", runId, memberId, reason: detail });
+        return;
+      }
       this.store.setAttemptStatus(attemptId, ["pending", "launching"], "failed", { error: detail, finishedAt: now }, now);
       this.store.setMemberStatus(memberId, ["pending", "launching"], "failed", { error: detail }, now);
       this.event(runId, "member_dispatch_failed", { memberId, detail }, `member_dispatch_failed:${attemptId}`);
@@ -2956,6 +3045,18 @@ export class EnsembleEngine {
         };
       }
     }
+    // Starting the replacement is a launch the engine makes on its own, long after the person who
+    // launched the run, so it waits out the operator's launch hold. Parked, not failed: the manager
+    // wakes the run when the hold lifts, and this step runs again from here.
+    const held = this.launchHold();
+    if (held) {
+      return {
+        ok: false,
+        winner: { mode: "replacement", ready: false },
+        detail: `the selected result's replacement task starts when the launch hold lifts: ${held}`,
+        continuationInIntent: progress.continuationInIntent,
+      };
+    }
     if (materializedTaskId === null && outcome && outcome.kind === "selected") {
       this.store.setRunStatus(run.id, ["finalizing"], "finalizing", { outcome: { ...outcome, materializedTaskId: replacementTaskId } }, now);
     }
@@ -2985,6 +3086,20 @@ export class EnsembleEngine {
       effort: winnerAttempt?.requestedEffort ?? role?.effort ?? null,
       snapshotSha,
     });
+    if (!materialize.ok && materialize.launchHeld) {
+      // The hold began between this engine's check above and TaskManager's. Parked like the check
+      // would have parked it - and woken once it is parked: if the hold already lifted, the wake
+      // its pause_state sent has come and gone, and nothing else would re-drive this step. The
+      // wake takes the run lock, so it runs after this pass; if the hold still stands, the check
+      // above parks it again without a launch, and the hold's own lift wakes it later.
+      void this.wake(run.id);
+      return {
+        ok: false,
+        winner: { mode: "replacement", ready: false },
+        detail: `the selected result's replacement task starts when the launch hold lifts: ${materialize.detail}`,
+        continuationInIntent,
+      };
+    }
     if (!materialize.ok) {
       return {
         ok: false,

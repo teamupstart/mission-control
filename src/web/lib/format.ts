@@ -136,29 +136,9 @@ export function duration(ms: number): string {
   return `${Math.floor(h / 24)}d ${String(h % 24).padStart(2, "0")}h`;
 }
 
-/**
- * A byte count for a reader, in BINARY units.
- *
- * KiB/MiB/GiB rather than KB/MB/GB, because the only place these numbers are compared
- * against anything is the scout archive's limits, and those are specified and enforced in
- * binary units - 32 MiB for a report, 512 MiB for a whole bundle. Printing a 536,870,912
- * byte bundle as "537 MB" beside a "512 MiB" limit reads as a bundle comfortably under a
- * cap it has in fact exactly hit.
- */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
-  const units = ["KiB", "MiB", "GiB", "TiB"] as const;
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  // One decimal below 10 so "1.2 MiB" keeps its precision, none above it so a rail of
-  // sizes stays a column rather than a ragged edge.
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
-}
+// One implementation, in `@shared/format-bytes.ts`, so a size the daemon writes into a message
+// (Storage's warnings) reads exactly as the same size does on the page.
+export { formatBytes } from "@shared/format-bytes.ts";
 
 export type ContextTone = "ok" | "warn" | "high";
 
@@ -316,6 +296,15 @@ export interface StateDisplay {
  * Mirrors reportBucket's precedence (see src/shared/session.ts).
  */
 export function stateDisplay(session: Session, interrupting = false): StateDisplay {
+  const base = unpausedStateDisplay(session, interrupting);
+  // A pause is the operator's, and the word says so; the TONE stays the reading underneath, so
+  // a paused card keeps its column and its place in the counts. The paused look itself (the
+  // hatched spine, the flag) is the card's, keyed on `session.pause`.
+  if (!session.pause || session.state === "exited" || session.state === "stopping") return base;
+  return { ...base, label: session.pause.phase === "pending" ? "pausing" : "paused" };
+}
+
+function unpausedStateDisplay(session: Session, interrupting: boolean): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
   if (session.state === "stopping") return { label: "stopping", tone: "working" };
   // A pending review always needs you, regardless of the agent's own state.

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.tsx";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -244,6 +244,32 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
   );
 }
 
+/**
+ * The board card this profile's next launch draws: its glow, its chip, and where it sorts. A pinned
+ * resident sits above its neighbours, so the preview shows the pin as an order, not only a glyph.
+ */
+function ResidentBoardPreview({ draft }: { draft: ResidentProfileRevision }): React.JSX.Element {
+  const { board, execution } = draft;
+  const label = board.label?.trim() || defaultResidentMarkerLabel(draft.identity.name);
+  const neighbour = <div className="resident-board-preview-ghost" aria-hidden />;
+  return (
+    <div className="resident-board-preview" role="group" aria-label="Board card preview">
+      {!board.pin && neighbour}
+      <div className="resident-board-preview-card" style={residentAccentStyle(residentMarkerColor(board.colorId))}>
+        <span className="resident-chip">
+          {board.pin && <span className="resident-chip-pin" aria-label="pinned">⤒</span>}
+          {label}
+        </span>
+        <strong className="resident-board-preview-name">{draft.identity.name.trim() || "New resident"}</strong>
+        <span className="resident-board-preview-meta">
+          {AGENT_IDENTITY[execution.agent].label} · {execution.model ?? "harness default"}
+        </span>
+      </div>
+      {neighbour}
+    </div>
+  );
+}
+
 function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
   const board = draft.board;
   const colorId = residentMarkerColor(board.colorId);
@@ -296,13 +322,8 @@ function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): 
         </label>
       </div>
       <ResidentDrawerInertNote what="Pin to top of column" />
-      <p className="field-hint">
-        Preview: <span className="resident-chip" style={residentAccentStyle(colorId)} aria-hidden>
-          {board.pin && <span className="resident-chip-pin">⤒</span>}
-          {board.label?.trim() || derived}
-        </span>{" "}
-        Running residents keep the marker they launched with.
-      </p>
+      <ResidentBoardPreview draft={draft} />
+      <p className="field-hint">Running residents keep the marker they launched with.</p>
     </div>
   );
 }
@@ -543,10 +564,6 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
   );
 }
 
-/**
- * The editor's sections, in order. Phase 1 registers the core five; later phases append
- * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
- */
 function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const loop = draft.loop;
   const numeric = [
@@ -554,37 +571,48 @@ function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: Resi
     ["maxDelaySeconds", "Maximum requested delay (seconds)"], ["iterationCap", "Iterations per 24 hours"],
     ["spendCapUsd", "Spend per 24 hours (USD)"], ["contextThreshold", "Compact at context (%)"],
   ] as const;
-  return <div className="resident-fields">
-    <label className="field"><span className="field-label">Loop prompt</span>
-      <textarea className="field-input" value={loop.prompt} disabled={disabled}
-        onChange={(e) => update("loop", { ...loop, prompt: e.target.value })} />
-    </label>
-    {numeric.map(([key, label]) => <Fragment key={key}><label className="field">
-      <span className="field-label">{label}</span>
-      <input className="field-input" type="number" min="1" step={key === "spendCapUsd" ? "0.01" : "1"}
-        id={key === "spendCapUsd" ? "resident-spend-cap" : undefined}
-        aria-describedby={key === "spendCapUsd" && spendUnavailable ? "resident-cap-spend" : undefined}
-        aria-invalid={key === "spendCapUsd" && !!spendUnavailable && loop.spendCapUsd !== null}
-        value={loop[key] ?? ""} disabled={disabled}
-        onChange={(e) => update("loop", { ...loop, [key]: e.target.value === "" && (key === "iterationCap" || key === "spendCapUsd") ? null : Number(e.target.value) })} />
-    </label>
-    {key === "spendCapUsd" && spendUnavailable && <div className="field">
+  return <div className="resident-fields resident-loop">
+    <div className="resident-loop-text">
+      <label className="field"><span className="field-label">Loop prompt</span>
+        <textarea className="field-input" value={loop.prompt} disabled={disabled}
+          onChange={(e) => update("loop", { ...loop, prompt: e.target.value })} />
+      </label>
+      <label className="field"><span className="field-label">Compaction focus</span>
+        <input className="field-input" value={loop.compactionFocus} disabled={disabled}
+          onChange={(e) => update("loop", { ...loop, compactionFocus: e.target.value })} />
+      </label>
+      <p className="field-hint">Compaction before wakes is active. Native backstop: {capabilitiesFor(draft.execution.agent).residentCompaction?.nativeBackstop ? "active" : "unavailable on this harness"}.</p>
+      <p className="field-hint">Guardrails pause the resident. Clear a cap to disable it. Profile edits apply on the next launch.</p>
+    </div>
+    <div className="resident-loop-limits">
+      {numeric.map(([key, label]) => <label className="field resident-loop-limit" key={key}>
+        <span className="field-label">{label}</span>
+        <input className="field-input" type="number" min="1" step={key === "spendCapUsd" ? "0.01" : "1"}
+          id={key === "spendCapUsd" ? "resident-spend-cap" : undefined}
+          aria-describedby={key === "spendCapUsd" && spendUnavailable ? "resident-cap-spend" : undefined}
+          aria-invalid={key === "spendCapUsd" && !!spendUnavailable && loop.spendCapUsd !== null}
+          value={loop[key] ?? ""} disabled={disabled}
+          onChange={(e) => update("loop", { ...loop, [key]: e.target.value === "" && (key === "iterationCap" || key === "spendCapUsd") ? null : Number(e.target.value) })} />
+      </label>)}
+    </div>
+    {spendUnavailable && <div className="field resident-loop-spend">
       <p id="resident-cap-spend" className="field-hint resident-problem" role="status">{spendUnavailable}</p>
       {loop.spendCapUsd !== null && <Tooltip label="Disable the spend guardrail for future launches; keep the selected model">
         <button type="button" className="btn btn-ghost" disabled={disabled}
           onClick={() => update("loop", { ...loop, spendCapUsd: null })}>Clear spend cap</button>
       </Tooltip>}
     </div>}
-    </Fragment>)}
-    <p className="field-hint">Compaction before wakes is active. Native backstop: {capabilitiesFor(draft.execution.agent).residentCompaction?.nativeBackstop ? "active" : "unavailable on this harness"}.</p>
-    <p className="field-hint">Guardrails pause the resident. Clear a cap to disable it. Profile edits apply on the next launch.</p>
-    <label className="field"><span className="field-label">Compaction focus</span>
-      <input className="field-input" value={loop.compactionFocus} disabled={disabled}
-        onChange={(e) => update("loop", { ...loop, compactionFocus: e.target.value })} />
-    </label>
   </div>;
 }
 
+/**
+ * The editor's sections, in reading order. Phase 1 registered the core five; later phases append
+ * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
+ *
+ * The editor lays these out as a card grid, and this order is the grid's reading and tab order:
+ * each band reads its wide left card before its narrow right one. A section the grid does not
+ * place spans the full width after the rest, so appending one needs no layout change.
+ */
 export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
   {
     id: "identity",
@@ -597,6 +625,12 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     title: "Persona",
     blurb: "Who the agent is, if a Library Persona says it. Its guidance arrives as standing instructions, never as a message.",
     Body: PersonaSection,
+  },
+  {
+    id: "board",
+    title: "Board presence",
+    blurb: "How this resident is found: a glowing outline and label chip, and whether it sorts first in its column.",
+    Body: BoardSection,
   },
   {
     id: "instructions",
@@ -616,23 +650,17 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     blurb: "Choose a repository for a task worktree, or no repository for a private directory removed when the run ends.",
     Body: WorkspaceSection,
   },
-  {
-    id: "board",
-    title: "Board presence",
-    blurb: "How this resident is found: a glowing outline and label chip, and whether it sorts first in its column.",
-    Body: BoardSection,
-  },
-  {
-    id: "authority",
-    title: "Authority",
-    blurb: "What this resident may do beyond its own session.",
-    Body: AuthoritySection,
-  },
   { id: "loop", title: "Loop and guardrails", blurb: "Cadence, self-pacing and rolling 24-hour limits.", Body: ResidentLoopSection },
   {
     id: "mcp",
     title: "MCP servers",
     blurb: "Which MCP servers the resident starts with: a pinned set from its harness's global servers and your custom ones, or, where the harness offers it, everything it loads natively.",
     Body: McpSection,
+  },
+  {
+    id: "authority",
+    title: "Authority",
+    blurb: "What this resident may do beyond its own session.",
+    Body: AuthoritySection,
   },
 ];

@@ -1,5 +1,6 @@
 import type { Ref, RefObject } from "react";
 
+import { FleetPauseControl } from "./FleetPauseControl.tsx";
 import type { AwayConfig } from "@shared/protocol.ts";
 import type { AwayBufferSummary } from "@shared/away-buffer.ts";
 import type { FleetCost, KeepAwakeStatus } from "@shared/types.ts";
@@ -248,6 +249,9 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
           </Tooltip>
         </div>
         <div className="tb-group">
+          {/* First among the controls that act on the whole fleet, and glyph-only so it costs
+              the bar its glyph at every width. Hidden with the rest of the optional items. */}
+          {isTopbarItemShown(layout, "pauseAll") && <FleetPauseControl />}
           <ForemanBar
             state={props.foreman}
             compact={isTopbarItemCompact(layout, "foreman")}

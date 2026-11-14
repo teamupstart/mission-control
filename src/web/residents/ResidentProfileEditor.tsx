@@ -216,7 +216,7 @@ export function ResidentProfileEditor({
 
   const title = draft.identity.name.trim() || (profile ? profile.name : "New resident");
   return (
-    <section ref={tourEditorRef} className="resident-editor" aria-label={profile ? `Resident profile ${profile.name}` : "New resident profile"}>
+    <section ref={tourEditorRef} className="resident-editor resident-profile-editor" aria-label={profile ? `Resident profile ${profile.name}` : "New resident profile"}>
       <header className="resident-editor-head">
         <div>
           <h3>{title}</h3>
@@ -339,14 +339,16 @@ export function ResidentProfileEditor({
       )}
       {error && <p className="resident-error" role="alert">{error}</p>}
       {!error && dirty && problem && <p className="field-hint resident-problem">{problem}</p>}
-      {RESIDENT_EDITOR_SECTIONS.map(({ id, title: heading, blurb, Body }) => (
-        <section key={id} className="resident-section" aria-labelledby={`resident-section-${id}`}>
-          <h4 id={`resident-section-${id}`}>{heading}</h4>
-          <p className="resident-section-blurb">{blurb}</p>
-          <Body draft={draft} update={update} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
-        </section>
-      ))}
-      {profile && <ResidentState key={profile.id} profileId={profile.id} />}
+      <div className="resident-cards">
+        {RESIDENT_EDITOR_SECTIONS.map(({ id, title: heading, blurb, Body }) => (
+          <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
+            <h4 id={`resident-section-${id}`}>{heading}</h4>
+            <p className="resident-section-blurb">{blurb}</p>
+            <Body draft={draft} update={update} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
+          </section>
+        ))}
+        {profile && <ResidentState key={profile.id} profileId={profile.id} />}
+      </div>
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
     </section>
   );

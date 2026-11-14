@@ -1,4 +1,7 @@
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
+import type { PauseManager } from "./pause/manager.ts";
+import { registerPauseRoutes } from "./pause/routes.ts";
 import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
@@ -403,11 +406,19 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
-import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
+import {
+  getDatabaseBackupsConfig,
+  setDatabaseBackupsConfig,
+  StaleBackupPreviewError,
+} from "./database-backups/config.ts";
 import type { DatabaseBackupService } from "./database-backups/service.ts";
 import type { StorageHealthService } from "./storage-health.ts";
-import type { StorageView } from "@shared/storage-health.ts";
-import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
+import type { IdleCachePlanUnavailable, StorageView } from "@shared/storage-health.ts";
+import { StorageLimitsConfigPatchSchema } from "@shared/storage-limits.ts";
+import { getStorageLimitsConfig, setStorageLimitsConfig } from "./storage-limits.ts";
+import { planIdleCache } from "./storage-pools.ts";
+import type { StorageUsageMonitor } from "./storage-usage.ts";
+import { DatabaseBackupsSaveRequestSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -624,6 +635,7 @@ import {
   formDelivered,
   type PaneDeps,
   submitPaneForm,
+  writeHold,
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
@@ -1005,6 +1017,9 @@ function foremanWriteRefusal(
   if (!structuredAnswer && hasBlocker(session)) {
     return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
   }
+  // No structured-answer exemption here: a paused session is the operator's to resume, and
+  // Foreman answering its menu would start the very turn the pause is holding back.
+  if (session.pause) return { error: PAUSED_SESSION_REASON, status: 409 };
   return null;
 }
 
@@ -1335,6 +1350,11 @@ export interface RouteDeps {
    */
   keepAwake?: KeepAwakeManager;
   /**
+   * The one owner of pausing (`src/server/pause/manager.ts`). Absent, the pause routes answer
+   * 503 rather than building a second owner of the same frozen processes.
+   */
+  pauses?: PauseManager;
+  /**
    * The archive library owner. Absent means the archive routes answer 503 rather than
    * constructing a manager here. A route-built twin would be a second owner of one filesystem
    * library and one reconciler - two background walks over the same directory, two writers of
@@ -1370,6 +1390,10 @@ export interface RouteDeps {
   databaseBackups?: DatabaseBackupService;
   /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
   storageHealth?: StorageHealthService;
+  /**
+   * The state directory's measurer. Measure now and the pool-cache plan return 503 without it.
+   */
+  storageUsage?: StorageUsageMonitor;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1416,6 +1440,7 @@ export const ROUTE_DEP_NAMES = [
   "pendingTurns",
   "paneDeps",
   "keepAwake",
+  "pauses",
   "archives",
   "workflowCommands",
   "worktrees",
@@ -1427,6 +1452,7 @@ export const ROUTE_DEP_NAMES = [
   "settingsBackups",
   "databaseBackups",
   "storageHealth",
+  "storageUsage",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1749,6 +1775,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     pendingTurns,
     paneDeps,
     keepAwake,
+    pauses,
     archives,
     workflowCommands,
     worktrees,
@@ -1760,6 +1787,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     settingsBackups,
     databaseBackups,
     storageHealth,
+    storageUsage,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -2159,6 +2187,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+
+  // --- Pausing sessions: one session, Pause all, and the priority session ---
+  registerPauseRoutes(app, pauses);
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -5325,7 +5356,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Same task authority as creation/update. The dashboard and MCP share every launch gate.
   app.post("/mcp/tasks/:id/dispatch", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    return dispatchSavedTask(c, c.req.param("id"));
+    return dispatchSavedTask(c, c.req.param("id"), "agent");
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -6090,7 +6121,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
-    const r = await selectPaneOption(session, parsed.data, panes);
+    // Re-read at the Enter: the walk to the row takes captures, and a pause can freeze the
+    // agent in between. `session` is the snapshot from before it.
+    const r = await selectPaneOption(session, parsed.data, panes, () => writeHold(registry.getSession(session.id) ?? session));
     if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
     observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
@@ -6144,7 +6177,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         409,
       );
     }
-    const r = await submitPaneForm(session, options, panes);
+    const r = await submitPaneForm(session, options, panes, () => writeHold(registry.getSession(session.id) ?? session));
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
     if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);
@@ -6619,7 +6652,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
-    const r = await requestSessionStop(session, sdkSessions);
+    const r = await requestSessionStop(session, sdkSessions, undefined, pauses);
     if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
@@ -6657,7 +6690,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
     if (unsupported) return c.json({ error: unsupported }, 400);
-    const r = await interruptSession(session, sdkSessions, pendingTurns, panes);
+    const r = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
     observeSessionOperation({
       session,
       operation: "interrupt",
@@ -6888,6 +6921,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       driverClearFor(sdkSessions),
       pendingTurns,
+      pauses,
     );
     return c.json(r, r.ok ? 200 : 500);
   });
@@ -8693,25 +8727,39 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }, 503);
   // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
   // and reaches every open dashboard through the same `storage_health` event.
+  const storageUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Storage health service is unavailable",
+  }, 503);
   app.get("/api/storage", (c) => {
-    if (!storageHealth) {
-      return c.json({
-        error: "service_unavailable" as const,
-        message: "Storage health service is unavailable",
-      }, 503);
-    }
+    if (!storageHealth) return storageUnavailable(c);
     const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
     return c.json(view);
   });
   app.put("/api/storage/backups/config", async (c) => {
     if (!databaseBackups) return databaseBackupsUnavailable(c);
-    const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
+    const parsed = await parseBody(c, DatabaseBackupsSaveRequestSchema);
     if (!parsed.ok) return parsed.res;
-    // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    const { expectRemove, ...patch } = parsed.data;
+    // No save deletes a copy its caller did not name. A request without `expectRemove` is taken
+    // to expect no deletions: one that deletes nothing (an interval, a raised count) goes through
+    // as before, and one that would delete copies is refused with the exact list, which the
+    // caller confirms by sending it back. That refusal is the preview for any API caller.
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk, or
+    // a list the copies no longer match.
     let saved;
     try {
-      saved = setDatabaseBackupsConfig(parsed.data, databaseBackups);
+      saved = setDatabaseBackupsConfig(patch, databaseBackups, expectRemove ?? []);
     } catch (error) {
+      if (error instanceof StaleBackupPreviewError) {
+        return c.json(expectRemove === undefined
+          ? {
+              error: "preview_required" as const,
+              message: `Saving these limits deletes ${error.remove.length} ${error.remove.length === 1 ? "copy" : "copies"}. Nothing was saved or deleted; send them as expectRemove to confirm.`,
+              remove: error.remove,
+            }
+          : { error: "stale_preview" as const, message: error.message, remove: error.remove }, 409);
+      }
       return c.json({
         error: "save_failed" as const,
         message: error instanceof Error ? error.message : String(error),
@@ -8720,6 +8768,64 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
     registry.emitStorageConfigChanged();
     return c.json(saved);
+  });
+
+  // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
+  // idle-cache budget only chooses what a cleanup preview offers.
+  app.put("/api/storage/limits", async (c) => {
+    if (!storageHealth) return storageUnavailable(c);
+    const parsed = await parseBody(c, StorageLimitsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    let limits;
+    try {
+      limits = setStorageLimitsConfig(parsed.data);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // The limits ride the aggregate, so this publishes them, and any warning they start or end,
+    // to every open dashboard.
+    storageHealth.recompute();
+    return c.json({ limits });
+  });
+
+  // Measure now. The walk runs in the background and can take minutes; the answer is the state
+  // it started, and the finished measurement arrives through `storage_health`.
+  app.post("/api/storage/usage/measure", (c) => {
+    if (!storageUsage || !storageHealth) return storageUnavailable(c);
+    void storageUsage.measure();
+    void storageUsage.checkVolume();
+    return c.json({ usage: storageUsage.usage() }, 202);
+  });
+
+  // What the idle-cache budget would remove right now. On demand rather than in the aggregate,
+  // because it observes every native slot through Git.
+  app.get("/api/storage/pool-caches", async (c) => {
+    if (!storageUsage || !worktreeOperations) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: "Native worktree pools are unavailable",
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
+    const limits = getStorageLimitsConfig();
+    try {
+      const status = await worktreeOperations.manager.status();
+      return c.json(planIdleCache({
+        status,
+        slotBytes: (path) => storageUsage.slotBytes(path),
+        sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+        budgetBytes: limits.poolIdleBudgetBytes,
+        keepWarm: limits.poolKeepWarm,
+        now: Date.now(),
+      }));
+    } catch (error) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
   });
 
   // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
@@ -9048,7 +9154,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const filed = await tasks.reschedule(task.id);
         if (!filed.ok) return c.json({ error: filed.error }, 409);
       }
-      const r = await tasks.dispatch(task.id, { overrideDisabled: true });
+      // The operator's own retry of a failed launch: it is neither held as parked nor by a pause.
+      // Only the operator's: an agent calling this route is held like any other launch.
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true, overridePauseHold: mayOverridePauseHold(c) });
       return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
     }
     const workKey = launchWorkKey(task);
@@ -9291,6 +9399,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
       overrideDisabled: recipe.dispatch.overrideDisabled,
+      // A tour the operator started: theirs to launch whatever is paused. Not a token caller's.
+      overridePauseHold: mayOverridePauseHold(c),
       missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
@@ -9365,7 +9475,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           resumable: false,
         });
       } else {
-        const stopped = await requestSessionStop(session, sdkSessions);
+        const stopped = await requestSessionStop(session, sdkSessions, undefined, pauses);
         if (!stopped.ok) {
           return c.json(
             { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
@@ -9507,12 +9617,24 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  async function dispatchSavedTask(c: Context, id: string) {
+  /**
+   * Whether this request may lift the operator's launch hold (`overridePauseHold`): only the
+   * operator's own, by the same test the pause routes apply. An agent holding the daemon token
+   * can call any of these routes directly, so a flag in the body is never trusted on its own.
+   */
+  const mayOverridePauseHold = (c: Context): boolean => sessionControlCallerRefusal(c) === null;
+
+  async function dispatchSavedTask(c: Context, id: string, caller: "dashboard" | "agent" = "dashboard") {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
-    const r = await tasks.dispatch(id, parsed.data);
+    // An agent may not lift the operator's launch hold for itself: the pause is the operator's,
+    // unlike `overrideDisabled`, which the MCP tool documents as the agent's to set. Checked at
+    // this boundary, not only on the MCP route: the dashboard route is reachable with the token.
+    const operator = caller === "dashboard" && mayOverridePauseHold(c);
+    const options = operator ? parsed.data : { ...parsed.data, overridePauseHold: false };
+    const r = await tasks.dispatch(id, options);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
@@ -9628,6 +9750,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const r = await tasks.assign(id, parsed.data.sessionId, {
       overrideDisabled: parsed.data.overrideDisabled,
+      overridePauseHold: parsed.data.overridePauseHold === true && mayOverridePauseHold(c),
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);

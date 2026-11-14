@@ -128,6 +128,12 @@ const OPTIONAL_ITEMS = [
     label: "Alerts and away mode",
     description: "The bell that turns desktop alerts, the chime and away mode on and off.",
   },
+  {
+    id: "pauseAll",
+    kind: "optional",
+    label: "Pause all",
+    description: "The button that pauses every running session at once. While everything is paused, it resumes them.",
+  },
 ] as const satisfies readonly TopbarItem[];
 
 const COMPACTABLE_ITEMS = [

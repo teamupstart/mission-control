@@ -2709,7 +2709,7 @@ test("with no turn end, a captured SDK follow-up stops absorbing echoes once it 
 
 /** The operator's pause, as `PauseManager` publishes it onto the session. */
 function pauseSession(registry: InstanceType<typeof Registry>, id: string, since: number): void {
-  registry.setSessionPause(id, { reason: "operator", phase: "frozen", since, interrupted: null });
+  registry.setSessionPause(id, { reason: "operator", phase: "frozen", since, interrupted: null, stopped: true });
 }
 
 /** A resume, as `PauseManager.lift` writes it: the resume time first, then the cleared pause. */

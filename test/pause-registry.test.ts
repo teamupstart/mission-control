@@ -134,3 +134,22 @@ for (const failure of ["unreadable process table", "SIGSTOP refused"] as const) 
     assert.deepEqual(timers.map((t) => t.ms), [30_000], "with a longer wait each time");
   });
 }
+
+test("a pane whose agent is stopped refuses a write even while its pause reads pending", async () => {
+  // A freeze a restart interrupted leaves stopped processes under a pending record. Keystrokes
+  // into that pane would sit in the pty, so the pane gate asks whether processes are stopped.
+  const { selectPaneOption } = await import("../src/server/actions.ts");
+  const base = { id: "proc:t1:70:1", runtime: "terminal", pid: 70, state: "working" } as const;
+  const untouched = {
+    pane: () => {
+      throw new Error("the pane was reached");
+    },
+  } as unknown as Parameters<typeof selectPaneOption>[2];
+  const stopped = { ...base, pause: { reason: "operator", phase: "pending", since: 1, interrupted: null, stopped: true } };
+  const refused = await selectPaneOption(stopped as never, { number: 1, label: "Yes" }, untouched);
+  assert.deepEqual(refused, { ok: false, error: PAUSED_SESSION_REASON });
+
+  // An after-turn pause with nothing stopped is not refused here: answering a menu is how its turn ends.
+  const waiting = { ...base, pause: { reason: "operator", phase: "pending", since: 1, interrupted: null, stopped: false } };
+  await assert.rejects(selectPaneOption(waiting as never, { number: 1, label: "Yes" }, untouched), /the pane was reached/);
+});

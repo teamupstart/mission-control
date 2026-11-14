@@ -39,6 +39,13 @@ export interface SessionPause {
   since: number;
   /** What the agent was doing when it froze, for the card's activity line. Null when idle. */
   interrupted: string | null;
+  /**
+   * Whether processes of this agent are stopped right now, which is what a write into it would
+   * meet. Usually the same as `frozen`, and deliberately its own fact: a freeze the last daemon
+   * did not live to finish leaves its processes stopped under a `pending` record until the next
+   * one completes it, and every write gate refuses on this, never on the phase.
+   */
+  stopped: boolean;
 }
 
 /** Pause all: every live session paused, optionally with automatic launches held too. */

@@ -88,7 +88,9 @@ digest, preflight, transaction, rollback, or reconciliation logic at the HTTP bo
 ## Pausing
 
 A session's pause rides on the session itself, as `Session.pause` in `session_upsert` and the
-snapshot's `sessions`. The fleet-wide half (Pause all and the priority session) is the
+snapshot's `sessions`. Its `phase` is what the dashboard shows; its `stopped` says whether any of
+the agent's processes are stopped right now, and is what every write gate refuses on, because a
+freeze a restart interrupted leaves stopped processes under a `pending` phase. The fleet-wide half (Pause all and the priority session) is the
 `pause_state` event, which carries the whole `PauseState` from `src/shared/pause.ts`: two
 nullable singletons, so it is bounded by construction. The reconnect snapshot carries the same
 value as `pause`, and a snapshot from an older daemon without it reads as nothing paused.

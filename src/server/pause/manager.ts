@@ -152,11 +152,28 @@ function bulkResult(failures: readonly string[]): PauseResult {
  * no rescan. An SDK driver is ours and was restored as a new process - drained at shutdown, or
  * gone with a crash - so it is frozen again, as is any record with nothing stopped yet: a
  * pending hold whose turn has ended, or a freeze that never recorded a process.
+ *
+ * A pending record that lists processes is a freeze already under way - they are saved before
+ * the first SIGSTOP - which the last daemon did not live to mark frozen. Its processes may be
+ * stopped, so the turn the session still reports can never end, and waiting for it would leave
+ * the record pending for good: it is completed now.
  */
 function needsFreezeAfterRestart(record: StoredSessionPause, session: Session): boolean {
-  if (record.phase === "pending") return !turnRunning(session);
+  if (record.phase === "pending") return record.procs.length > 0 || !turnRunning(session);
   if (record.runtime === "sdk") return true;
   return record.procs.length === 0;
+}
+
+/**
+ * Whether this record's processes are stopped, as far as a write into the session goes: every
+ * write gate refuses on this. A frozen record with processes is; so is a pending one, whose
+ * freeze was begun and not finished. The exception is a restored SDK driver: it is a new
+ * process, the pids its record lists belong to the driver before it, and its restart
+ * continuation has to land until its own freeze succeeds.
+ */
+function processesStopped(record: StoredSessionPause): boolean {
+  if (record.procs.length === 0) return false;
+  return record.phase === "frozen" || record.runtime !== "sdk";
 }
 
 /** States in which a turn is still running, so an after-turn pause keeps waiting. */
@@ -279,13 +296,13 @@ export class PauseManager {
   }
 
   /**
-   * The transport gate: a refusal only while this session's processes are actually stopped.
-   * Narrower than `isHeld` on purpose - a restored SDK driver whose record says frozen is not
+   * The transport gate: a refusal only while this session's processes are actually stopped
+   * (`processesStopped`). Narrower than `isHeld` on purpose - a restored SDK driver is not
    * stopped until reconciliation freezes it, and its restart continuation must still land.
    */
   frozenRefusal(sessionId: string): string | null {
     const record = this.records.get(sessionId);
-    return record && record.phase === "frozen" && record.procs.length > 0 ? PAUSED_SESSION_REASON : null;
+    return record && processesStopped(record) ? PAUSED_SESSION_REASON : null;
   }
 
   /** Whether automatic launches (backlog autopilot, recurring missions) are held right now. */
@@ -503,8 +520,9 @@ export class PauseManager {
       this.clearRetry(sessionId);
       return;
     }
-    if (turnRunning(live)) {
-      // A turn started meanwhile: its end is the next attempt, through `onEvent`.
+    if (turnRunning(live) && record.procs.length === 0) {
+      // A turn started meanwhile: its end is the next attempt, through `onEvent`. Not when
+      // processes are already recorded: stopped, they cannot end the turn the session reports.
       this.clearRetry(sessionId);
       return;
     }
@@ -544,9 +562,13 @@ export class PauseManager {
     }
     if (this.records.get(session.id) !== record) return null;
     if (tree.length === 0) {
-      // A scan that found none of a still-frozen tree is not a replacement for it. A pending
-      // record has nothing proven stopped, so an empty tree there means nothing to stop.
-      if (record.phase === "frozen" && record.procs.length > 0) return null;
+      // A scan that found none of a recorded tree is not a replacement for it: what was stopped
+      // is still the record of what to continue, and there is nothing more to stop. That holds
+      // for a freeze a restart interrupted too, whose session still reports the turn it was in.
+      if (record.procs.length > 0) {
+        record.phase = "frozen";
+        return null;
+      }
       // Nothing this daemon may stop (an in-process driver). Mid-turn it stays a hold and
       // settles when the turn ends - the honest "paused" for an agent we cannot freeze.
       record.phase = turnRunning(session) ? "pending" : "frozen";
@@ -856,7 +878,13 @@ export class PauseManager {
   private publicPause(sessionId: string): SessionPause | null {
     const record = this.records.get(sessionId);
     if (!record) return null;
-    return { reason: record.reason, phase: record.phase, since: record.since, interrupted: record.interrupted };
+    return {
+      reason: record.reason,
+      phase: record.phase,
+      since: record.since,
+      interrupted: record.interrupted,
+      stopped: processesStopped(record),
+    };
   }
 
   private publishSession(sessionId: string): void {

@@ -22,7 +22,7 @@ import { InProgressRow } from "../src/web/components/InProgressRow.tsx";
 const NOW = 10_000_000;
 
 function pause(reason: SessionPause["reason"], phase: SessionPause["phase"] = "frozen", since = NOW - 14 * 60_000): SessionPause {
-  return { reason, phase, since, interrupted: null };
+  return { reason, phase, since, interrupted: null, stopped: phase === "frozen" };
 }
 
 function session(id: string, extra: Partial<Session> = {}): Session {

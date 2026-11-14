@@ -846,7 +846,7 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
   manager.start();
 
   // Paused by the operator before the review returns its repair packet.
-  registry.setSessionPause("paused-session", { reason: "operator", phase: "frozen", since: Date.now(), interrupted: null });
+  registry.setSessionPause("paused-session", { reason: "operator", phase: "frozen", since: Date.now(), interrupted: null, stopped: true });
   const submitted = await manager.submit(binding.ok ? binding.value.id : "", { requestId: "paused-submit" });
   assert.equal(submitted.ok, true);
   const runId = submitted.ok ? submitted.value.run.id : "";

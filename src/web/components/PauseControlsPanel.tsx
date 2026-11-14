@@ -45,7 +45,7 @@ function usePreviewSessions(): { running: Session; paused: Session } {
     const running = { ...previewSession(now), blocker: null } as Session;
     const paused: Session = {
       ...running,
-      pause: { reason: "operator", phase: "frozen", since: now - 14 * 60_000, interrupted: running.activity ?? null },
+      pause: { reason: "operator", phase: "frozen", since: now - 14 * 60_000, interrupted: running.activity ?? null, stopped: true },
     };
     return { running, paused };
   }, []);

@@ -538,6 +538,9 @@ ensembles = new EnsembleManager(registry, undefined, {
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
   resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),
+  // Pause all with launches held, or a priority session: later member launches and the winner's
+  // replacement Task wait it out.
+  launchHold: () => pauses.launchHoldReason(),
 });
 // Resume non-terminal ensembles once the first discovery sweep makes member Task/Session state
 // real - the same gate TaskManager and WorkflowManager recovery use, and registered after both so

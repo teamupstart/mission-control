@@ -95,8 +95,9 @@ test("the top bar hides and minimizes what Display says, previews it, and keeps 
 }) => {
   await seedCost(daemon);
   // Wide enough that the ladder sheds nothing on the default bar, so every "minimized" below
-  // is the operator's choice and not the fit's.
-  await dashboard.setViewportSize({ width: 1920, height: 1000 });
+  // is the operator's choice and not the fit's. 2200px, because at 1920 the default bar with
+  // the Pause all glyph is within a few pixels of its first rung on Linux font metrics.
+  await dashboard.setViewportSize({ width: 2200, height: 1000 });
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
 
   const bar = dashboard.locator("header.topbar");

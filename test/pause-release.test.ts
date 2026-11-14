@@ -19,7 +19,7 @@ const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
 const { Registry } = await import("../src/server/registry.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const PAUSED = { reason: "operator", phase: "frozen", since: 1, interrupted: null } as const;
+const PAUSED = { reason: "operator", phase: "frozen", since: 1, interrupted: null, stopped: true } as const;
 
 function recordingRelease(events: string[]) {
   return { releaseNow: (id: string): string | null => (events.push(`release ${id}`), null) };

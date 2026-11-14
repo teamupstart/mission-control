@@ -183,8 +183,8 @@ export function createFinalizeDeps(deps: {
         const outcome = await tasks.dispatch(request.taskId, {
           baseSha: request.snapshotSha,
           missionMcp: { tools: [SUBMIT_ENSEMBLE_RESULT_TOOL] },
-          // The finalize step of an ensemble a person launched; see the member launch.
-          overridePauseHold: true,
+          // No pause override: the engine already waits out the operator's launch hold before this
+          // step, and a hold that began since is refused here, which parks finalization until it lifts.
         });
         if (!outcome.ok) return { ok: false, detail: outcome.error };
       }

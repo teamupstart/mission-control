@@ -54,13 +54,14 @@ import { resetWorktreeToCommit } from "./git/ensemble-snapshot.ts";
 
 /**
  * Why nothing may be written into this pane right now: a terminal handoff holding it, or an
- * operator pause that has frozen its agent. Bytes typed into a frozen pane would sit in the
- * pty and land on the thaw, after every pickup check here had already timed out, so a frozen
+ * operator pause that has stopped its agent. Bytes typed into a stopped pane would sit in the
+ * pty and land on the thaw, after every pickup check here had already timed out, so a stopped
  * pane refuses like a held one. A pause still waiting for its turn to end does not: answering
- * a menu is how that turn gets to end.
+ * a menu is how that turn gets to end. Asked of `stopped`, not of the phase, because a freeze
+ * interrupted by a restart leaves stopped processes under a pending record.
  */
 function writeHold(session: Session): string | null {
-  return transferHold(session) ?? (session.pause?.phase === "frozen" ? PAUSED_SESSION_REASON : null);
+  return transferHold(session) ?? (session.pause?.stopped ? PAUSED_SESSION_REASON : null);
 }
 
 export interface ActionResult {

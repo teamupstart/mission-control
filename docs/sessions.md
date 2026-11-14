@@ -760,7 +760,9 @@ and say why, because a stopped process cannot act on any of them.
 
 **Nothing is stopped that is not saved first.** The processes a freeze is about to stop are
 saved before the first `SIGSTOP`, so a daemon that exits straight afterwards leaves the next one
-a record of what to continue. A pause that cannot be saved stops nothing and says so. A resume
+a record of what to continue. The next one also finishes that freeze at once, even though the
+stopped agent still reports the turn it was in, and until it has, nothing is typed or sent into
+those stopped processes. A pause that cannot be saved stops nothing and says so. A resume
 that cannot be saved continues nothing, because a restart would otherwise freeze again what you
 resumed. A scheduled morning resume that cannot be saved leaves everything paused and tries
 again on a timer that backs off from 15 seconds to 5 minutes. A Pi session

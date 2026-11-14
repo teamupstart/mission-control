@@ -29050,7 +29050,9 @@ span.line-run-prov {
      - `.agent-dot` and `.detail-title`, which are the session's identity, and `.tk-tile`, a
        fixed 48px that takes the agent dot's place (riding its corner) under the Kind tile
        task-type style;
-     - `.badge`, which is the review button and is never shed at any rung;
+     - `.badge`, which is the review button and is never shed at any rung, and `.badge-split`,
+       the wrapper it sits in when Pause controls > State badge is on - only the pause half
+       beside it goes, below;
      - `.workflow-bind-chip`, at its mark from rung 2 - the console detail is the ONLY
        surface that offers it, so hiding it removes the affordance rather than moving it;
      - `.si-session-chip`, a 14px mark whose width does not move with the session;
@@ -29061,8 +29063,19 @@ span.line-run-prov {
    Everything on that list is either the session's identity or a fixed width, so past this
    rung the header's requirement no longer depends on what the session is carrying at all.
    That is what makes the fit provable rather than measured per fixture. */
-.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.tk-tile):not(.detail-title):not(.badge):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
+.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.tk-tile):not(.detail-title):not(.badge):not(.badge-split):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
   display: none;
+}
+/* The state badge's pause half goes at rung 7; the review button it is joined to never does.
+   Nothing is lost with it: a paused session's band under the header still offers Resume, and
+   the toolbar button and the board card still offer Pause. The badge takes back its own round
+   end once the half beside it has gone. */
+.detail-head[data-rung~="7"] .badge-pause-half {
+  display: none;
+}
+.detail-head[data-rung~="7"] .badge-split > .badge,
+.detail-head[data-rung~="7"] .badge-split > .tt-anchor > .badge {
+  border-radius: 999px;
 }
 
 .detail-pipeline-meter {

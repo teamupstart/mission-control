@@ -202,6 +202,12 @@ export interface EnsembleManagerOptions {
   resolveWorkflowVersion?: (workflowId: string, version: number) => ResolvedWorkflowVersion | null;
   agentBinPresent?: (agent: AgentType) => Promise<boolean>;
   missionMcpAvailable?: () => Promise<boolean>;
+  /**
+   * Why automatic launches are held right now, or null (`PauseManager.launchHoldReason`). Handed
+   * to the engine, and read again on each `pause_state` change so a run waiting the hold out is
+   * woken the moment it lifts. Absent means never held.
+   */
+  launchHold?: () => string | null;
   now?: () => number;
   log?: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
 }
@@ -308,6 +314,7 @@ export class EnsembleManager {
           adapters: options.adapters,
           review: options.review,
           finalize: options.finalize,
+          launchHold: options.launchHold,
           now: this.now,
           log: options.log,
         })
@@ -339,6 +346,14 @@ export class EnsembleManager {
         return;
       }
       if (!this.engine) return;
+      if (event.type === "pause_state") {
+        // The operator's launch hold lifting produces no Task event, so a member left pending and
+        // a finalization parked for it are woken here. Waking is a recompute, so a pause_state that
+        // changed something else wakes nothing it should not.
+        if ((options.launchHold?.() ?? null) !== null) return;
+        for (const run of this.store.listNonTerminalRuns()) void this.engine.wake(run.id);
+        return;
+      }
       if (event.type !== "task_upsert" && event.type !== "task_remove") return;
       const taskId = event.type === "task_upsert" ? event.task.id : event.id;
       const member = this.store.memberForTask(taskId);
@@ -680,7 +695,9 @@ export class EnsembleManager {
       validated.handoff,
     );
     const outcome = this.published(write);
-    if (write.created) await this.engine.launch(write.run.id);
+    // The person launching the run is the one launch that goes through the operator's launch hold;
+    // a response-loss retry resumes it like any other wake.
+    if (write.created) await this.engine.launch(write.run.id, { byOperator: true });
     else void this.engine.launch(write.run.id);
     return outcome;
   }

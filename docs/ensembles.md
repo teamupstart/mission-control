@@ -46,7 +46,8 @@ Consensus's agreements and divergence cards, Panel vote's rank matrix and ballot
 that strategy asks for - over HTTP, refetching when that run's summary revises rather than polling.
 The strategy-neutral runtime pins one base commit, launches
 bounded *waves* of ordinary member tasks (creating every task in a wave before dispatching the
-first, and never launching past the concurrency the plan authorizes), accepts an explicit
+first, never launching past the concurrency the plan authorizes, and launching nothing on its own
+while the operator's launch hold stands: see [the backlog autopilot](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet)), accepts an explicit
 submission from each member, captures its working tree as an immutable private Git commit, advances
 barriers off ready artifacts rather than off a task going idle, and resumes safely after a daemon
 restart. A member submits through a dedicated `submit_ensemble_result` MCP tool (with a manual

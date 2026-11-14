@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { PauseState, SessionPause } from "../src/shared/pause.ts";
+import { PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "../src/shared/pause.ts";
 import type { StoredPauseState } from "../src/shared/protocol.ts";
 import type { ServerEvent, Session } from "../src/shared/types.ts";
 import { PauseManager, type PauseRegistry, type ProcessFreezer, type ProcessRef } from "../src/server/pause/manager.ts";
@@ -993,4 +993,109 @@ test("a restored SDK driver whose re-freeze read fails is not called frozen, kee
   assert.equal(registry.pauses.get("sdk")?.phase, "frozen");
   assert.equal(registry.pauses.get("sdk")?.interrupted, "Editing", "what it was doing survives");
   assert.deepEqual(pidsOf(store.get()?.sessions.sdk?.procs), [700, 701]);
+});
+
+test("a pane freeze a restart interrupted is finished, though its stopped agent still reads as working", async () => {
+  // The last daemon saved the pids, sent SIGSTOP, and exited before saving `frozen`. The agent is
+  // stopped, so the turn the session still reports will never end: nothing may wait for it.
+  const stored: StoredPauseState = {
+    fleet: null,
+    priority: null,
+    sessions: {
+      pane: { reason: "operator", phase: "pending", since: 1, interrupted: "Editing", runtime: "terminal", procs: refs(60, 70), resuming: false },
+    },
+    resumed: {},
+  };
+  const registry = new FakeRegistry([session("pane", "working")]);
+  const store = memoryStore(stored);
+  const timers: { fn: () => void; ms: number }[] = [];
+  let reads = 0;
+  const stopped: number[][] = [];
+  const manager = new PauseManager({
+    registry,
+    freezer: {
+      treeOf: async () => {
+        reads++;
+        if (reads === 1) throw new Error("ps timed out");
+        return refs(60, 70, 71);
+      },
+      stop: (procs) => (stopped.push(pidsOf(procs)), []),
+      resume: () => [],
+    },
+    store,
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+    log: () => {},
+  });
+  manager.start();
+  // Before reconciliation, every write gate already treats the agent as stopped.
+  assert.equal(registry.pauses.get("pane")?.stopped, true, "published as stopped, whatever the phase says");
+  assert.equal(manager.frozenRefusal("pane"), PAUSED_SESSION_REASON, "the transport gate refuses a write");
+
+  registry.sweep();
+  await manager.idle();
+  assert.equal(reads, 1, "reconciliation finishes the freeze instead of waiting for the turn to end");
+  assert.equal(registry.pauses.get("pane")?.phase, "pending");
+  assert.equal(registry.pauses.get("pane")?.stopped, true);
+  assert.deepEqual(pidsOf(store.get()?.sessions.pane?.procs), [60, 70], "the stopped pids are kept");
+  assert.deepEqual(timers.map((t) => t.ms), [15_000], "the failed read is retried on the timer");
+
+  // The session still reads as working: the retry goes ahead rather than waiting for a turn end.
+  timers.shift()!.fn();
+  await manager.idle();
+  assert.deepEqual(stopped, [[60, 70, 71]]);
+  assert.equal(registry.pauses.get("pane")?.phase, "frozen");
+  assert.equal(registry.pauses.get("pane")?.interrupted, "Editing", "what it was doing survives");
+  assert.deepEqual(pidsOf(store.get()?.sessions.pane?.procs), [60, 70, 71]);
+  assert.deepEqual(timers, [], "nothing left to retry");
+});
+
+test("an interrupted freeze whose agent the restarted scan cannot find is settled, not left waiting", async () => {
+  const stored: StoredPauseState = {
+    fleet: null,
+    priority: null,
+    sessions: {
+      pane: { reason: "operator", phase: "pending", since: 1, interrupted: null, runtime: "terminal", procs: refs(60, 70), resuming: false },
+    },
+    resumed: {},
+  };
+  const registry = new FakeRegistry([session("pane", "working")]);
+  const store = memoryStore(stored);
+  const manager = new PauseManager({
+    registry,
+    freezer: { treeOf: async () => [], stop: () => [], resume: () => [] },
+    store,
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  assert.equal(registry.pauses.get("pane")?.phase, "frozen", "what was stopped is what is frozen");
+  assert.deepEqual(pidsOf(store.get()?.sessions.pane?.procs), [60, 70], "and is still the record of what to continue");
+});
+
+test("an after-turn pause with nothing stopped yet still waits for its turn after a restart", async () => {
+  const stored: StoredPauseState = {
+    fleet: null,
+    priority: null,
+    sessions: {
+      pane: { reason: "operator", phase: "pending", since: 1, interrupted: null, runtime: "terminal", procs: [], resuming: false },
+    },
+    resumed: {},
+  };
+  const registry = new FakeRegistry([session("pane", "working")]);
+  let reads = 0;
+  const manager = new PauseManager({
+    registry,
+    freezer: { treeOf: async () => (reads++, refs(70)), stop: () => [], resume: () => [] },
+    store: memoryStore(stored),
+    log: () => {},
+  });
+  manager.start();
+  assert.equal(registry.pauses.get("pane")?.stopped, false, "nothing is stopped, so a menu answer still lands");
+  assert.equal(manager.frozenRefusal("pane"), null);
+  registry.sweep();
+  await manager.idle();
+  assert.equal(reads, 0, "its turn is still running");
+  assert.equal(registry.pauses.get("pane")?.phase, "pending");
 });

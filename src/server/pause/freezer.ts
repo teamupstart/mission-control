@@ -183,9 +183,12 @@ export function processFreezer(deps: FreezerDeps): ProcessFreezer {
     stop(refs) {
       // Each pid checked against the identity `treeOf` recorded, immediately before its signal:
       // a short-lived child can exit after the read and its pid be reused by an unrelated
-      // process, and SIGSTOP would freeze that one instead. A pid now naming a different process,
-      // or none, is a tree member that has gone - not a failure, and not signalled. A live pid
-      // that cannot be identified is a failure: the freeze is not called complete over it.
+      // process, and SIGSTOP would freeze that one instead. A pid with no process now is a tree
+      // member that has gone - not signalled, not a failure. A pid whose identity CHANGED is not
+      // signalled either, and IS a failure: it may be a reused pid, or the agent's own process
+      // having exec'd, and those cannot be told apart from here - so the freeze is not called
+      // complete, and its retry reads the tree again and stops that process as it is now. A
+      // live pid that cannot be identified fails the same way.
       const failed: SignalFailure[] = [];
       for (const ref of refs) {
         if (!signalable(ref.pid)) continue;
@@ -195,7 +198,12 @@ export function processFreezer(deps: FreezerDeps): ProcessFreezer {
           failed.push({ pid: ref.pid, code: "UNIDENTIFIED" });
           continue;
         }
-        if (now !== ref.identity) continue;
+        if (now === null) continue;
+        if (now !== ref.identity) {
+          log(`pid ${ref.pid} is not the process the tree recorded, so it was not stopped`);
+          failed.push({ pid: ref.pid, code: "CHANGED" });
+          continue;
+        }
         failed.push(...send([ref.pid], "SIGSTOP"));
       }
       return failed;

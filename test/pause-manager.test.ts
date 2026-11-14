@@ -566,7 +566,7 @@ test("a pause that cannot be saved stops nothing, and a resume that cannot be sa
   const paused = await manager.pause("a", "now");
   assert.equal(paused.ok, false);
   assert.deepEqual(stopped, [], "a freeze that could not be recorded is not made: no agent can be stranded");
-  assert.equal(registry.pauses.get("a")?.phase, "pending", "held, but its processes were never stopped");
+  assert.equal(registry.pauses.get("a") ?? null, null, "and a pause reported as not saved does not stand as a hold either");
 
   failing = false;
   await manager.resume("a");
@@ -1383,4 +1383,20 @@ test("a Pause all or priority that cannot be saved leaves nothing paused and not
   assert.equal(manager.state().priority, null, "priority did not stand");
   assert.equal(registry.pauses.get("b") ?? null, null);
   assert.deepEqual(stopped, []);
+});
+
+test("a pause of one session that cannot be saved leaves nothing held and nothing frozen", async () => {
+  const registry = new FakeRegistry([session("a", "idle")]);
+  const { freezer, stopped } = recordingFreezer({ a: [70] });
+  const store = flakyStore();
+  const manager = new PauseManager({ registry, freezer, store, now: () => 1_000_000, log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+
+  store.failSaves(1);
+  assert.equal((await manager.pause("a", "now")).ok, false, "the operator is told it was not saved");
+  assert.equal(manager.isHeld("a"), false, "and it does not stand");
+  assert.equal(registry.pauses.get("a") ?? null, null);
+  assert.deepEqual(stopped, [], "nothing was frozen");
 });

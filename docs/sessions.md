@@ -761,15 +761,16 @@ finishes the resume instead of freezing the session again, and never loses a pro
 refused. Each stopped process is saved with a fingerprint of its start time and command line,
 and checked against it immediately before every `SIGSTOP` and every `SIGCONT`, so a pid that an
 unrelated process reused - in the instant between reading the tree and stopping it, or while
-Mission Control was down - is never frozen or continued. Kill, Complete, Interrupt and Reset do nothing if the agent could not be thawed first,
+Mission Control was down - is never frozen or continued. A process whose identity changed in that
+instant fails the freeze rather than being skipped, and the retry reads the tree again. Kill, Complete, Interrupt and Reset do nothing if the agent could not be thawed first,
 and say why, because a stopped process cannot act on any of them.
 
 **Nothing is stopped that is not saved first.** The processes a freeze is about to stop are
 saved before the first `SIGSTOP`, so a daemon that exits straight afterwards leaves the next one
 a record of what to continue. The next one also finishes that freeze at once, even though the
 stopped agent still reports the turn it was in, and until it has, nothing is typed or sent into
-those stopped processes. A pause that cannot be saved stops nothing and says so, and a Pause
-all or priority that cannot be saved holds nothing either: no launch or delivery waits behind a
+those stopped processes. A pause that cannot be saved stops and holds nothing, and says so, and
+a Pause all or priority that cannot be saved holds nothing either: no launch or delivery waits behind a
 pause you were told did not happen. A resume
 that cannot be saved continues nothing, because a restart would otherwise freeze again what you
 resumed. A scheduled morning resume that cannot be saved leaves everything paused and tries

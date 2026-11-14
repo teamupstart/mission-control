@@ -377,7 +377,17 @@ export class PauseManager {
         this.publishSession(sessionId);
         return failed ? heldButRunning(failed) : { ok: true };
       }
-      const failed = await this.hold(session, "operator", mode);
+      // Saved before anything is frozen, like the bulk pauses: a pause reported as not saved
+      // must not stand, or automation stays held behind it and a restart forgets it.
+      const record = this.holdOnly(session, "operator", mode);
+      if (!this.persist()) {
+        if (this.records.get(sessionId) === record) {
+          this.records.delete(sessionId);
+          this.publishSession(sessionId);
+        }
+        return UNSAVED;
+      }
+      const failed = await this.freezeHeld(session, record, mode);
       if (!this.persist()) return UNSAVED;
       return failed ? heldButRunning(failed) : { ok: true };
     });
@@ -486,20 +496,13 @@ export class PauseManager {
   }
 
   /**
-   * Record the hold, publish it, and freeze now unless the turn is still running. Answers why
-   * the freeze did not happen, or null.
+   * The hold alone: recorded and published, nothing awaited.
    *
    * The hold is PUBLISHED before anything is awaited. Reading the process table takes a moment,
    * and every automated writer - the outbox, Foreman, workflow packets - asks `session.pause`;
    * publishing only after the freeze would leave that moment open for one of them to start the
    * very turn the operator just paused.
    */
-  private async hold(session: Session, reason: SessionPauseReason, mode: SessionPauseMode): Promise<string | null> {
-    const record = this.holdOnly(session, reason, mode);
-    return this.freezeHeld(session, record, mode);
-  }
-
-  /** The hold alone: recorded and published, nothing awaited. */
   private holdOnly(session: Session, reason: SessionPauseReason, mode: SessionPauseMode): StoredSessionPause {
     const record: StoredSessionPause = {
       reason,

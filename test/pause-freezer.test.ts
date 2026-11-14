@@ -206,12 +206,17 @@ test("a tree with a live process that cannot be identified is not frozen at all"
   await assert.rejects(freezer.treeOf(sdk("sdk:a")), /pid 81 could not be identified/);
 });
 
-test("a stop never freezes a pid that now names a different process, and refuses one it cannot identify", () => {
-  // Pid 500 exited after the tree was read and was reused by an unrelated process; 501 is alive
-  // but unreadable; 502 is still the process the tree recorded.
+test("a stop never freezes a pid that changed identity, and never calls the freeze complete over it", () => {
+  // Pid 500 changed identity after the tree was read: reused by an unrelated process, or the
+  // agent's own process having exec'd - indistinguishable here. 501 is alive but unreadable;
+  // 503 has gone; 502 is still the process the tree recorded.
   const exists = (pid: number) => pid === 501;
-  const identify = (pid: number) => (pid === 500 ? "a different process" : pid === 501 ? null : ident(pid));
+  const identify = (pid: number) => (pid === 500 ? "a different process" : pid === 501 || pid === 503 ? null : ident(pid));
   const { freezer, sent } = freezerOver(TABLE, 80, identify, exists);
-  assert.deepEqual(freezer.stop(refsOf(500, 501, 502)), [{ pid: 501, code: "UNIDENTIFIED" }], "the unreadable one fails the freeze");
-  assert.deepEqual(sent, [[502, "SIGSTOP"]], "neither the reused nor the unidentified pid is signalled");
+  assert.deepEqual(
+    freezer.stop(refsOf(500, 501, 502, 503)),
+    [{ pid: 500, code: "CHANGED" }, { pid: 501, code: "UNIDENTIFIED" }],
+    "a changed or unreadable pid fails the freeze, so its retry reads the tree again; a vanished one does not",
+  );
+  assert.deepEqual(sent, [[502, "SIGSTOP"]], "only the pid that is still the recorded process is signalled");
 });

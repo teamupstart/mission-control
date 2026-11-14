@@ -216,9 +216,14 @@ export function processFreezer(deps: FreezerDeps): ProcessFreezer {
       // received that pid since would resume an unrelated stopped process. A pid now naming a
       // different process, or none, is not ours to signal and is not a failure: ours is gone. A
       // live pid that cannot be identified is a failure, kept recorded to try again.
-      const verified: number[] = [];
+      //
+      // Checked immediately before its OWN signal, one pid at a time, never all up front: on a
+      // large tree a pid checked early could exit and be reused while the rest are checked, and
+      // a SIGCONT sent later from that list would reach the newcomer. Reverse of the stop order:
+      // children first, the parent shell last.
       const failed: SignalFailure[] = [];
-      for (const ref of refs) {
+      for (const ref of [...refs].reverse()) {
+        if (!signalable(ref.pid)) continue;
         const now = identityNow(ref.pid);
         if (now === "unreadable") {
           log(`pid ${ref.pid} could not be identified, so it was not continued`);
@@ -229,10 +234,9 @@ export function processFreezer(deps: FreezerDeps): ProcessFreezer {
           if (now !== null) log(`pid ${ref.pid} is now a different process; not continuing it`);
           continue;
         }
-        verified.push(ref.pid);
+        failed.push(...send([ref.pid], "SIGCONT"));
       }
-      // Reverse of the stop order: children first, the parent shell last.
-      return [...failed, ...send(verified.reverse(), "SIGCONT")];
+      return failed;
     },
   };
 }

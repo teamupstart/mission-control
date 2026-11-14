@@ -231,3 +231,23 @@ test("a stop never freezes a pid that changed identity, and never calls the free
   );
   assert.deepEqual(sent, [[502, "SIGSTOP"]], "only the pid that is still the recorded process is signalled");
 });
+
+test("a resume checks each pid right before its own SIGCONT, so a pid reused mid-resume is never continued", () => {
+  // Resume goes children first: 72, then 71. Continuing 72 lets 71 exit and its pid be reused
+  // before its turn comes. A resume that checked every pid up front would still signal 71.
+  let reused = false;
+  const sent: [number, string][] = [];
+  const freezer = processFreezer({
+    sdkDriverPid: () => null,
+    signal: (pid, sig) => {
+      sent.push([pid, sig]);
+      if (pid === 72) reused = true;
+    },
+    identify: (pid) => (pid === 71 && reused ? "an unrelated process" : ident(pid)),
+    exists: () => true,
+    daemonPid: DAEMON,
+    log: () => {},
+  });
+  assert.deepEqual(freezer.resume(refsOf(70, 71, 72)), [], "a reused pid is not ours, and not a failure");
+  assert.deepEqual(sent, [[72, "SIGCONT"], [70, "SIGCONT"]], "71 was checked after 72's signal, found reused, and skipped");
+});

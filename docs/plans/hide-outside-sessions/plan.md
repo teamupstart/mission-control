@@ -211,6 +211,10 @@ sessions leave through the normal eviction lifecycle.
   release a task on an upstream merge in any case.
 - **Phase 1 start.** The Phase 1 task has no automatic dependency and its autopilot is off. The
   human starts it manually after plan validation passes.
+- **Upstream gate declined.** In plan validation round 3 the human was asked whether to unschedule
+  Phase 1 until the plan reaches `teamupstart/mission-control`, keep the fork as home, or complete
+  the SSO step. They chose to keep the fork as home. Phase 1 is therefore not gated on upstream
+  publication.
 
 ## Adopted decisions (review of revision 2)
 

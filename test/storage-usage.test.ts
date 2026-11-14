@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
@@ -26,7 +26,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { StorageHealthService } = await import("../src/server/storage-health.ts");
 const { getStorageLimitsConfig } = await import("../src/server/storage-limits.ts");
-const { measurementFrom, parseDiskUsage, remeasureGrowthFor, StorageUsageMonitor } = await import("../src/server/storage-usage.ts");
+const { measurementFrom, parseDiskUsage, remeasureGrowthFor, settleListing, StorageUsageMonitor } = await import("../src/server/storage-usage.ts");
 
 const GIB = 1024 ** 3;
 const ROOT = "/state";
@@ -403,6 +403,75 @@ test("a pruned sparse copy moves the totals by the disk space it held, not by it
   assert.equal(after.usage.categories.find((category) => category.id === "backups")?.bytes, 2 * MIB);
   assert.equal(after.usage.totalBytes, 50 * GIB - MIB, "1 MiB came off the total, not the copy's 3 GiB file size");
   assert.equal(after.usage.categories.find((category) => category.id === "other")?.bytes, 50 * GIB - 3 * MIB, "no other category is hidden");
+});
+
+test("a backup captured while the walk runs is in the measurement it publishes, and in no later delta", async () => {
+  // du passed backups/database before the capture landed: it listed 1 GiB, the folder now holds 2.
+  let kept = GIB;
+  const usage = new StorageUsageMonitor({
+    root: ROOT,
+    listDirectories: async () => {
+      const listing = {
+        directories: new Map([["", 10 * GIB], ["backups", GIB], ["backups/database", GIB]]),
+        partial: null,
+      };
+      kept = 2 * GIB; // the capture lands after du's visit, before the walk ends
+      return listing;
+    },
+    directoryBytes: (path) => (path === `${ROOT}/backups/database` ? kept : null),
+    fileBytes: () => null,
+    onChange: () => {},
+  });
+  await usage.measure();
+  const view = usage.usage();
+  assert.equal(view.totalBytes, 11 * GIB, "the root moved by the same difference");
+  assert.equal(view.categories.find((category) => category.id === "backups")?.bytes, 2 * GIB);
+
+  // Storage takes its kept-copies baseline in that same step, so the new copy is not lost.
+  const health = new StorageHealthService({
+    backups: {
+      status: () => databaseBackupStatusFrom(undefined),
+      keptCopies: () => [],
+      keptDiskBytes: () => kept,
+    },
+    usage,
+    publish: () => {},
+  });
+  assert.equal(health.recompute().usage.categories.find((category) => category.id === "backups")?.bytes, 2 * GIB);
+});
+
+test("settling leaves a listing alone when the folder is unchanged or unreadable", () => {
+  const listing = { directories: new Map([["", 5 * GIB], ["backups", GIB], ["backups/database", GIB]]), partial: null };
+  assert.deepEqual([...settleListing(listing, ROOT, () => GIB).directories], [...listing.directories]);
+  assert.deepEqual([...settleListing(listing, ROOT, () => null).directories], [...listing.directories]);
+  // A folder that shrank moves its ancestors down, never below zero.
+  const shrunk = settleListing(listing, ROOT, () => 0);
+  assert.equal(shrunk.directories.get(""), 4 * GIB);
+  assert.equal(shrunk.directories.get("backups"), 0);
+});
+
+test("a state directory reached through a symlink is measured through it, contents and slots included", async () => {
+  const MIB = 1024 ** 2;
+  const real = mkdtempSync(join(tmpdir(), "mission-storage-real-home-"));
+  const linkParent = mkdtempSync(join(tmpdir(), "mission-storage-link-home-"));
+  const linked = join(linkParent, "home");
+  symlinkSync(real, linked);
+  const slot = join(real, "worktree-pools", "web-0123456789abcdef", "1", "web");
+  mkdirSync(slot, { recursive: true });
+  writeFileSync(join(slot, "blob"), Buffer.alloc(2 * MIB, 1));
+  try {
+    // The real `du`, given the link as the root.
+    const usage = new StorageUsageMonitor({ root: linked, onChange: () => {} });
+    await usage.measure();
+    const view = usage.usage();
+    assert.equal(view.error, null);
+    assert.ok((view.totalBytes ?? 0) >= 2 * MIB, `measured ${view.totalBytes} through the link`);
+    assert.ok((view.categories.find((category) => category.id === "pools")?.bytes ?? 0) >= 2 * MIB);
+    assert.ok((usage.slotBytes(join(linked, "worktree-pools", "web-0123456789abcdef", "1", "web")) ?? 0) >= 2 * MIB);
+  } finally {
+    rmSync(linkParent, { recursive: true, force: true });
+    rmSync(real, { recursive: true, force: true });
+  }
 });
 
 // ---- warnings ----

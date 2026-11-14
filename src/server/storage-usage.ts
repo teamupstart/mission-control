@@ -28,6 +28,16 @@ const MEASURE_DEPTH = 3;
 const POOLS_ROOT = "worktree-pools";
 
 /**
+ * Directories whose contents can change while a walk is still running elsewhere, re-summed the
+ * moment it finishes. A backup capture that lands after `du` has passed `backups/database` but
+ * before the walk ends would otherwise be missing from the measurement, while the kept-copies
+ * baseline Storage takes at that moment includes it, and the backups figure and the limit warning
+ * would stay low until the next walk. Re-summed synchronously, in the same step that publishes the
+ * measurement, the directory and the baseline describe the same instant.
+ */
+const SETTLED_AT_FINISH = ["backups/database"];
+
+/**
  * Free space moves with every write on the machine. A reading is replaced only once it has
  * moved this far, so a quiet machine does not publish a new aggregate to every open window each
  * minute. A reading on the other side of a threshold (`volumeThresholds`, the free-space floor)
@@ -99,6 +109,11 @@ export interface StorageUsageDeps {
   root: string;
   /** Lists directory sizes to `MEASURE_DEPTH` beneath `root`. Defaults to `du`. */
   listDirectories?: (root: string) => Promise<DiskUsageListing>;
+  /**
+   * The allocated bytes beneath one directory right now, or null when it cannot be read. Used for
+   * `SETTLED_AT_FINISH`. Defaults to a synchronous `lstat` sum that follows no symlink.
+   */
+  directoryBytes?: (path: string) => number | null;
   /** Allocated bytes of one top-level file, or null when it cannot be read. */
   fileBytes?: (path: string) => number | null;
   volume?: (root: string) => Promise<Omit<StorageVolume, "checkedAt">>;
@@ -141,17 +156,32 @@ export function parseDiskUsage(stdout: string, root: string): Map<string, number
   return sizes;
 }
 
+/**
+ * The state directory as `du` must be given it. `du` does not follow a symlink named on its
+ * command line, so a `MISSION_HOME` that is a link would measure the link and nothing in it. The
+ * root is resolved first, and every path `du` prints is read back against that same resolved
+ * root. Symlinks inside the directory are still not followed.
+ */
+function walkRoot(root: string): string {
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
+}
+
 async function duListing(root: string): Promise<DiskUsageListing> {
+  const resolved = walkRoot(root);
   const result: RunResult = await run(
     "du",
-    ["-k", "-x", "-d", String(MEASURE_DEPTH), root],
+    ["-k", "-x", "-d", String(MEASURE_DEPTH), resolved],
     { timeoutMs: MEASURE_TIMEOUT_MS, maxBuffer: MEASURE_MAX_BUFFER },
   );
   if (result.outcomeUnknown) {
     throw new Error("Measuring took longer than 15 minutes and was stopped.");
   }
   if (result.overflowed) throw new Error("The state directory listing was too large to read.");
-  const directories = parseDiskUsage(result.stdout, root);
+  const directories = parseDiskUsage(result.stdout, resolved);
   if (!directories.has("")) {
     throw new Error(result.stderr.trim().split("\n")[0] || "du returned no total for the state directory.");
   }
@@ -187,6 +217,48 @@ function slotDirectoryPresent(path: string): boolean {
 function measuredKey(root: string, path: string): string {
   const parts = relative(root, path).split(sep);
   return (parts[0] === POOLS_ROOT ? parts.slice(0, 3) : parts).join("/");
+}
+
+/** Allocated bytes beneath `path`, counted as `du` counts them: every file once, no link followed. */
+function allocatedTreeBytes(path: string): number | null {
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) return 0;
+    if (!stat.isDirectory()) return stat.blocks * 512;
+    let total = stat.blocks * 512;
+    for (const entry of readdirSync(path)) total += allocatedTreeBytes(join(path, entry)) ?? 0;
+    return total;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Replace each settled directory's size in a finished listing with what it holds now, moving its
+ * ancestors (the root included) by the same difference so everything still adds up.
+ */
+export function settleListing(
+  listing: DiskUsageListing,
+  root: string,
+  directoryBytes: (path: string) => number | null,
+  settled: readonly string[] = SETTLED_AT_FINISH,
+): DiskUsageListing {
+  const directories = new Map(listing.directories);
+  for (const rel of settled) {
+    const listed = directories.get(rel);
+    if (listed === undefined) continue;
+    const now = directoryBytes(join(root, rel));
+    if (now === null || now === listed) continue;
+    const delta = now - listed;
+    directories.set(rel, now);
+    const parts = rel.split("/");
+    for (let depth = parts.length - 1; depth >= 0; depth -= 1) {
+      const ancestor = parts.slice(0, depth).join("/");
+      const size = directories.get(ancestor);
+      if (size !== undefined) directories.set(ancestor, Math.max(0, size + delta));
+    }
+  }
+  return { ...listing, directories };
 }
 
 async function volumeOf(root: string): Promise<Omit<StorageVolume, "checkedAt">> {
@@ -262,6 +334,7 @@ export class StorageUsageMonitor {
   /** Free space when the last successful walk began: the baseline growth is measured from. */
   private freeAtLastMeasure: number | null = null;
   private readonly listDirectories: (root: string) => Promise<DiskUsageListing>;
+  private readonly directoryBytes: (path: string) => number | null;
   private readonly fileBytes: (path: string) => number | null;
   private readonly readVolume: (root: string) => Promise<Omit<StorageVolume, "checkedAt">>;
   private readonly slotPresent: (path: string) => boolean;
@@ -269,6 +342,7 @@ export class StorageUsageMonitor {
 
   constructor(private readonly deps: StorageUsageDeps) {
     this.listDirectories = deps.listDirectories ?? duListing;
+    this.directoryBytes = deps.directoryBytes ?? allocatedTreeBytes;
     this.fileBytes = deps.fileBytes ?? allocatedBytes;
     this.readVolume = deps.volume ?? volumeOf;
     this.slotPresent = deps.slotPresent ?? slotDirectoryPresent;
@@ -328,7 +402,9 @@ export class StorageUsageMonitor {
     this.lastMeasureStartedAt = started;
     this.running = (async () => {
       try {
-        const listing = await this.listDirectories(this.deps.root);
+        // Settled with no await between it and the publish below (`changed` in `finally`), so
+        // Storage reads the kept copies at the same instant the backup folder was summed.
+        const listing = settleListing(await this.listDirectories(this.deps.root), this.deps.root, this.directoryBytes);
         const finished = this.now();
         this.last = measurementFrom({
           root: this.deps.root,

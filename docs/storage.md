@@ -38,7 +38,10 @@ how much that limit would reclaim now. The categories are `STORAGE_CATEGORIES` i
 | Everything else | whatever no category names | Not cleaned here |
 
 Measuring walks every file, which on a machine with large pools is millions of files and can
-take minutes. The daemon runs one `du -k -x -d 3` walk in a child process two minutes after it
+take minutes. A state directory reached through a symlink is resolved first, so the walk measures
+what the link points at; symlinks inside it are never followed. When a walk finishes, the backup
+folder is summed again on the spot, so a copy captured while the walk was elsewhere is counted
+in the measurement it publishes. The daemon runs one `du -k -x -d 3` walk in a child process two minutes after it
 starts and every six hours after that, and **Measure now** runs one on request. While a storage
 limit is set, the free-space check also watches for growth: once the volume has lost as much free
 space, since the last walk began, as was left between the measured total and the next threshold

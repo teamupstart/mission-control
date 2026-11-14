@@ -214,7 +214,7 @@ test("normalized findings use the existing quota and authenticated reader; raw c
 test("all 33 previously published versions retain exact hashes; only No-Mistakes appends the stage",()=>{
  const expected=JSON.parse(readFileSync(new URL("./fixtures/coderabbit-workflow-history.json",import.meta.url),"utf8"));
  for(const [id,hash] of Object.entries(expected)){const v=BUILTIN_WORKFLOWS.flatMap(w=>w.versions).find(v=>v.id===id)!;assert.equal(createHash("sha256").update(JSON.stringify(v)).digest("hex"),hash,id);}
- const noMistakes=BUILTIN_WORKFLOWS.find(w=>w.definition.id.includes("no-mistakes"))!;assert.equal(noMistakes.versions.length,22);
+ const noMistakes=BUILTIN_WORKFLOWS.find(w=>w.definition.id.includes("no-mistakes"))!;assert.equal(noMistakes.versions.length,23); // v23 adds the issue closing line on top of v22
  const nodes=noMistakes.versions.at(-1)!.graph.nodes;assert.equal(nodes.filter(n=>n.kind==="check"&&n.slot==="coderabbit").length,1);
  for(const w of BUILTIN_WORKFLOWS.filter(w=>w!==noMistakes))assert.ok(!w.versions.some(v=>v.graph.nodes.some(n=>n.kind==="check"&&n.slot==="coderabbit")));
 });

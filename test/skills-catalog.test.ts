@@ -582,4 +582,17 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   assert.match(text, /Do not repeat design decisions or implementation detail/i);
   assert.match(text, /Do not list tests added or modified/i);
   assert.match(text, /Always list the failure modes and edge cases/i);
+
+  // Issue-backed work names its issue in the body, where a closing keyword works: PRs that
+  // carried only a title `(#N)` merged and left their issues open.
+  assert.match(text, /\n### Closing the issue the work came from\n/);
+  assert.match(text, /`Closes #<n>` when merging this pull request finishes the issue/);
+  assert.match(text, /`Closes <owner>\/<repo>#<n>` when it is in a different one/);
+  // A multi-repository task's first merged sibling, or one phase of a plan, must not close it.
+  assert.match(text, /`Part of #<n>`[\s\S]*while part of the issue remains\s+after this pull request merges/);
+  assert.match(text, /a sibling pull request in another repository of the same\s+task/);
+  assert.match(text, /a later phase of its plan/);
+  assert.match(text, /only a human can finish[\s\S]*List what remains under `### Known gaps`/);
+  assert.match(text, /Nothing when the work does not come from an issue/);
+  assert.match(text, /A `\(#<n>\)` in the title closes nothing/);
 });

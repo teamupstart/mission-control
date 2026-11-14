@@ -109,6 +109,25 @@ published description or comment renders the attachments before treating the evi
 as complete. When a check or screenshot is unavailable, say so and explain why rather than
 implying it exists. Prefer one short bullet per check or artifact.
 
+### Closing the issue the work came from
+
+When the work comes from a GitHub issue, the body names it on its own line at the top of
+`## For Humans`, above the change bullets:
+
+- `Closes #<n>` when merging this pull request finishes the issue and it is in the pull
+  request's repository, or `Closes <owner>/<repo>#<n>` when it is in a different one. Merging
+  then closes the issue.
+- `Part of #<n>` (or `Part of <owner>/<repo>#<n>`) instead while part of the issue remains
+  after this pull request merges: a sibling pull request in another repository of the same
+  task, a later phase of its plan, or an acceptance criterion only a human can finish, such as
+  a playtest or a manual sign-off. List what remains under `### Known gaps`, so the reviewer
+  can see why the issue stays open.
+- Nothing when the work does not come from an issue. Do not invent one.
+
+Only that line in the body closes the issue. A `(#<n>)` in the title closes nothing, and
+neither does a mention such as "from #<n>". A pull request that covers several issues gives
+each its own line.
+
 ## For Agents
 
 Written for the next agent that has to read, extend, or debug this code. Keep this section

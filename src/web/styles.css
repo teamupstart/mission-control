@@ -17296,6 +17296,164 @@ select.ensemble-judge-persona {
 .resident-instructions {
   min-height: 140px;
 }
+
+/* ---- The profile editor's card grid ----
+   Each registered section is one card. Narrow, they stack in registry order; from 860px of
+   workspace they form two bands of a wide left and a narrow right column around a full-width
+   loop card. The registry order is the reading order, so the DOM and the tab order match what
+   the grid shows. A section the areas do not name spans the full width after the rest. */
+.residents-workspace {
+  container: residents-workspace / inline-size;
+}
+.resident-editor.resident-profile-editor {
+  max-width: 1180px;
+}
+.resident-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+.resident-cards > .resident-editor-card {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+@container residents-workspace (min-width: 860px) {
+  .resident-cards {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    grid-template-areas:
+      "identity board"
+      "persona board"
+      "instructions execution"
+      "instructions workspace"
+      "loop loop"
+      "mcp authority"
+      "mcp state";
+  }
+  .resident-cards > .resident-editor-card-identity { grid-area: identity; }
+  .resident-cards > .resident-editor-card-persona { grid-area: persona; }
+  .resident-cards > .resident-editor-card-board { grid-area: board; }
+  .resident-cards > .resident-editor-card-instructions { grid-area: instructions; }
+  .resident-cards > .resident-editor-card-execution { grid-area: execution; }
+  .resident-cards > .resident-editor-card-workspace { grid-area: workspace; }
+  .resident-cards > .resident-editor-card-loop { grid-area: loop; }
+  .resident-cards > .resident-editor-card-mcp { grid-area: mcp; }
+  .resident-cards > .resident-editor-card-authority { grid-area: authority; }
+  .resident-cards > .resident-editor-card-state { grid-area: state; }
+  /* The narrow runtime card: the harness takes the line, model and effort share the next. */
+  .resident-editor-card-execution .resident-fields-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .resident-editor-card-execution .resident-fields-row > .field:first-child {
+    grid-column: 1 / -1;
+  }
+  .resident-loop {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 16px;
+  }
+  .resident-loop .resident-loop-limits {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+/* The board card's label and pin each take a line: its three-column row is the runtime card's. */
+.resident-editor-card-board .resident-fields-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* The instructions card grows with the rows beside it rather than leaving a gap under them. */
+.resident-editor-card-instructions .resident-instructions {
+  flex: 1;
+}
+.resident-editor-card-instructions > .field {
+  flex: 1;
+}
+
+/* The next launch's board card, between two plain neighbours: pinned, it sorts above them. */
+.resident-board-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-board-preview-ghost {
+  height: 30px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.resident-board-preview-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in oklab, var(--resident) 70%, var(--border));
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--resident) 45%, transparent),
+    0 0 18px color-mix(in oklab, var(--resident) 26%, transparent);
+}
+.resident-board-preview-name {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.resident-board-preview-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Loop and guardrails: the prose on the left, the six limits as tiles on the right. */
+.resident-loop-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.resident-loop-text textarea {
+  min-height: 96px;
+}
+.resident-loop-limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.resident-loop-limit {
+  justify-content: space-between;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-loop-limit .field-input {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+.resident-loop-spend {
+  grid-column: 1 / -1;
+}
+
+/* Authority widens what the resident can reach, so the granted state reads as a warning. */
+.resident-editor-card .resident-authority {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-editor-card .resident-authority:has(input:checked) {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--bg));
+}
 .resident-error {
   margin: 0;
   padding: 8px 10px;

@@ -609,6 +609,19 @@ launch**. A global server residents cannot carry no longer refuses the launch, b
 Control does not resolve it. A custom server named like one of Claude Code's global servers is
 still refused, because both would load under one name.
 
+If plugin MCP tools disappear when the account has a claude.ai connector for the same server,
+enable **Disable claude.ai connectors** under **MCP servers**. Claude Code can suppress both
+copies during non-interactive startup. This opt-in workaround passes
+`ENABLE_CLAUDEAI_MCP_SERVERS=false` through the run's launch-scoped settings, keeping native
+plugin sources enabled. It disables **every** claude.ai connector for that resident, including
+Claude Docs. It does not change the machine's Claude settings or other sessions.
+
+The checkbox is off by default and applies only with **All native sources (not pinned)**.
+Dispatch shows **claude.ai connectors off** when enabled. Save the profile and launch a new
+resident to apply a change; an existing run keeps its launch revision's choice on resume.
+Switching to **Pinned at launch** keeps the checkbox's saved preference for a later switch
+back, but the pinned set continues to exclude native plugins and cloud connectors as before.
+
 ### What a run starts
 
 A launch resolves the run's set once, from the revision it pins and each harness's configuration

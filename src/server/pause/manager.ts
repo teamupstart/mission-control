@@ -916,13 +916,11 @@ export class PauseManager {
   private resumeFleetNow(): PauseResult | null {
     if (this.fleet === null) return null;
     const fleet = this.fleet;
-    this.fleet = null;
-    const failed = this.endBulk("fleet");
-    if (failed && !failed.ok && failed.status === 500) {
-      // Not saved, so not lifted: Pause all - and its launch hold - still stands.
-      this.fleet = fleet;
-      return failed;
-    }
+    // Pause all stays set through the lift, so every save the lift makes still records it: were
+    // the daemon to restart midway, it would come back with its launch hold and its banner. It
+    // is cleared - in a save of its own - only once nothing it paused is left paused.
+    const failed = this.liftOwned("fleet");
+    if (failed && !failed.ok && failed.status === 500) return failed;
     if (this.resumeTimer !== null) this.clearTimer(this.resumeTimer);
     this.resumeTimer = null;
     if (this.stillOwns("fleet")) {
@@ -934,6 +932,13 @@ export class PauseManager {
       this.persistSettled();
       return failed;
     }
+    this.fleet = null;
+    if (!this.persist()) {
+      // Not saved, so not lifted: Pause all - and its launch hold - still stands.
+      this.fleet = { ...fleet, resumeAt: null };
+      this.publishFleet();
+      return { ok: false, status: 500, error: "The change could not be saved, so Pause all still stands. Try again." };
+    }
     this.publishFleet();
     return failed;
   }
@@ -941,44 +946,35 @@ export class PauseManager {
   private endPriorityNow(): PauseResult | null {
     if (this.priority === null) return null;
     const priority = this.priority;
-    this.priority = null;
-    const failed = this.endBulk("priority");
-    if (failed && !failed.ok && failed.status === 500) {
-      this.priority = priority;
-      return failed;
-    }
+    // As for Pause all: the priority stays recorded through the lift, and is cleared in a save
+    // of its own once everything it paused has continued - or its own session has gone.
+    const failed = this.liftOwned("priority");
+    if (failed && !failed.ok && failed.status === 500) return failed;
     if (this.stillOwns("priority") && this.registry.getSession(priority.sessionId)) {
-      // As for Pause all: priority stands, with its End priority, until all it paused continue.
-      this.priority = priority;
+      // Priority stands, with its End priority, until all it paused continue.
       this.publishFleet();
       this.persistSettled();
       return failed;
     }
+    this.priority = null;
+    if (!this.persist()) {
+      this.priority = priority;
+      return { ok: false, status: 500, error: "The change could not be saved, so the priority still stands. Try again." };
+    }
     this.publishFleet();
     return failed;
+  }
+
+  /** Lift every session one bulk control paused, while that control is still recorded. */
+  private liftOwned(reason: "fleet" | "priority"): PauseResult | null {
+    const ids = [...this.records].filter(([, r]) => r.reason === reason).map(([id]) => id);
+    return ids.length === 0 ? null : this.liftAll(ids);
   }
 
   /** Whether a bulk control still has a session it paused, one whose processes would not continue. */
   private stillOwns(reason: "fleet" | "priority"): boolean {
     for (const record of this.records.values()) if (record.reason === reason) return true;
     return false;
-  }
-
-  /**
-   * Lift what one bulk control paused, after the caller has cleared the control in memory. The
-   * cleared control is saved in the same write as the lift's intent - or, when nothing is left
-   * for it to lift (each session already resumed one by one, or a priority that paused nobody),
-   * in a write of its own. Either way it is saved BEFORE success is reported: a cleared control
-   * recorded nowhere would come back, launch hold and all, on the next start.
-   */
-  private endBulk(reason: "fleet" | "priority"): PauseResult | null {
-    const ids = [...this.records].filter(([, r]) => r.reason === reason).map(([id]) => id);
-    if (ids.length === 0) {
-      return this.persist()
-        ? null
-        : { ok: false, status: 500, error: "The change could not be saved, so nothing was changed. Try again." };
-    }
-    return this.liftAll(ids);
   }
 
   private armResumeTimer(): void {

@@ -1770,3 +1770,21 @@ test("End priority stays on offer while a session it paused will not continue", 
   assert.equal(manager.state().priority, null);
   assert.equal(registry.pauses.get("b") ?? null, null);
 });
+
+test("every save a partial Resume all makes still records Pause all, so a restart keeps its launch hold", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const { freezer } = stubbornFreezer({ a: [70], b: [80] }, new Set([80]));
+  const saves: StoredPauseState[] = [];
+  const store = { load: () => undefined, save: (state: StoredPauseState) => void saves.push(structuredClone(state)) };
+  const manager = new PauseManager({ registry, freezer, store, log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  await manager.pauseFleet({ holdDispatch: true, resumeAt: null });
+
+  saves.length = 0;
+  assert.equal((await manager.resumeFleet()).ok, false, "pid 80 would not continue");
+  assert.ok(saves.length > 0);
+  assert.ok(saves.every((s) => s.fleet !== null), "no save in between ever cleared Pause all");
+  assert.equal(saves.at(-1)?.fleet?.holdDispatch, true, "and its launch hold is on disk");
+});

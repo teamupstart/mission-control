@@ -192,11 +192,15 @@ export interface SupervisorPause extends PauseRelease {
 const PAUSED_RETRY_RECHECK_MS = 15_000;
 
 /**
- * A write refused because the operator's pause has the session's child stopped. Its own type,
- * so a caller that owns unfinished work - the capacity retry - can tell "wait for the thaw" from
- * a refusal that ends the work, from the refusal itself rather than by asking the pause again.
+ * A write refused because the operator's pause holds the session - its child stopped, or (for an
+ * agent with no process of its own, Pi) held without one. Its own type, so a caller that owns
+ * unfinished work - the capacity retry - can tell "wait for the resume" from a refusal that ends
+ * the work, from the refusal itself rather than by asking the pause again.
  */
 class SessionFrozenError extends Error {}
+
+/** The refusal an automated turn meets on a paused session, held or frozen. */
+const SESSION_HELD = "this session is paused - its automated turns wait until it resumes";
 
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
@@ -1359,6 +1363,16 @@ export class SdkSupervisor {
     return this.deps.pause?.frozenRefusal(id) ?? null;
   }
 
+  /**
+   * Whether the operator's pause holds this session at all, frozen or not. What an AUTOMATED turn
+   * asks - `pauseGate` only answers whether a process is stopped, and an agent with none to stop
+   * (Pi) is held without ever being frozen. The restart continuation does not ask this: it is how
+   * a restored driver comes back, and the pause freezes it again once it has.
+   */
+  private heldByPause(id: string): boolean {
+    return (this.registry.getSession(id)?.pause ?? null) !== null;
+  }
+
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
@@ -1884,9 +1898,11 @@ export class SdkSupervisor {
   private async fireCapacityRetry(id: string, handle: SdkSessionHandle, token: object): Promise<void> {
     const waiting = this.capacityRetries.get(id);
     if (waiting?.token !== token) return;
-    if (this.pauseGate(id) && this.handles.get(id) === handle && !this.shuttingDown) {
-      // Frozen by the operator. The retry belongs to the turn the pause interrupted, so it
-      // waits rather than being refused and the turn reported finished; it fires after resume.
+    if ((this.pauseGate(id) || this.heldByPause(id)) && this.handles.get(id) === handle && !this.shuttingDown) {
+      // Paused by the operator - frozen, or held where there is no process to freeze (Pi, whose
+      // driver runs inside the daemon and so never trips `pauseGate`). The retry is an automated
+      // turn and belongs to the turn the pause interrupted, so it waits rather than being sent or
+      // refused and the turn reported finished; it fires after resume.
       const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, token), PAUSED_RETRY_RECHECK_MS);
       timer.unref?.();
       this.capacityRetries.set(id, { ...waiting, timer });
@@ -1899,7 +1915,12 @@ export class SdkSupervisor {
     reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
     const busy = new Error("the driver was already running a turn");
     try {
-      const started = await this.sendWhenIdle(id, { text: CAPACITY_CONTINUATION_PROMPT });
+      // Asked again at send time: the send waits its turn on the session's chain, and a pause can
+      // begin meanwhile. Thrown as the paused error, so the catch below re-arms the retry.
+      const started = await this.sendWhenIdle(id, { text: CAPACITY_CONTINUATION_PROMPT }, () => {
+        if (this.heldByPause(id)) throw new SessionFrozenError(SESSION_HELD);
+        return null;
+      });
       if (started !== "started") throw busy;
     } catch (err) {
       // Both ways in are positive evidence nothing was delivered: `sendWhenIdle` rejects only

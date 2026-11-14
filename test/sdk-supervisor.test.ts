@@ -3258,6 +3258,39 @@ test("a pause that lands while the capacity retry waits its turn keeps the retry
   assert.equal(continuations(), 1, "the kept retry continues the work after the thaw");
 });
 
+test("a capacity retry waits out a pause that holds the session without freezing it (an in-process agent)", async (t) => {
+  // Pi's driver runs inside the daemon: its pause holds the session but stops no process, so
+  // `frozenRefusal` never answers. The automated retry must wait for the resume all the same.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, {
+    ...MISSION_TEST_MCP_DEPS,
+    pause: { releaseNow: () => null, frozenRefusal: () => null },
+  });
+  const session = await supervisor.start(START);
+  handle.push({ kind: "state", state: "working", activity: null });
+  await drain();
+  const sentBefore = handle.sent.length;
+  const continuations = () =>
+    handle.sent.slice(sentBefore).filter((turn) => turn.text === CAPACITY_CONTINUATION_PROMPT).length;
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+
+  registry.setSessionPause(session.id, { reason: "operator", phase: "frozen", since: Date.now(), interrupted: null, stopped: false });
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "no automated turn while the session is held");
+  assert.equal(registry.getSession(session.id)?.workCycle?.active, true, "the interrupted turn is not reported finished");
+
+  registry.setSessionPause(session.id, null);
+  t.mock.timers.tick(15_000);
+  await drain();
+  assert.equal(continuations(), 1, "the kept retry continues the work after the resume");
+});
+
 test("a message delivered during the backoff replaces the retry", async (t) => {
   const { handle, registry, supervisor, session, continuations } = await startWorking(t);
   handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });

@@ -58,6 +58,9 @@ unsaved profile named `<name> copy` with the same settings. Your copy is an ordi
 editable, archivable, and never touched by an upgrade. Every saved profile also offers
 **Duplicate**.
 
+Agent Shepherd ships with a **$40 spend cap per rolling 24 hours**. New custom profiles default
+to $20.
+
 A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
 ships different settings, the daemon writes them as the built-in's next revision at startup. A
 resident already running keeps the revision it launched with. Use **Restart on new profile** to

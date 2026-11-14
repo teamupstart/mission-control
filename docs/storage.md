@@ -95,6 +95,10 @@ list is taken to expect no deletions, so one that deletes nothing (an interval, 
 goes through, and one that would delete copies is refused with 409 and the exact list, which the
 caller confirms by sending it back as `expectRemove`.
 
+A save that passes has stored the limits; the prune runs after that, and if it fails the daemon
+only warns and prunes again at the next backup or start. The tab therefore reads the copies back
+after every save and reports what they show: the copies removed, or the ones still on disk.
+
 ## Pool caches
 
 A released native slot stays on disk so the next lease in its repository starts warm, with its

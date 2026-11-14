@@ -396,6 +396,26 @@ test("Overview names the backup space the saved limits would reclaim, and says w
   expect(copiesOnDisk(daemon, "scheduled")).toHaveLength(5);
 });
 
+test("a save whose prune fails says the copies are still there, not that they were removed", async ({ dashboard, daemon }) => {
+  await withoutFreeSpaceFloor(dashboard, daemon);
+  seedScheduledCopies(daemon, 4);
+  // A directory where the oldest copy's WAL sidecar would be: unlinking it fails on every
+  // platform, so the prune that follows the save stops before deleting anything.
+  const [oldest] = copiesOnDisk(daemon, "scheduled").sort();
+  mkdirSync(join(backupRoot(daemon), `${oldest}-wal`, "held"), { recursive: true });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await openTab(dashboard, "Backups");
+  await dashboard.getByLabel("Scheduled copies kept").fill("2");
+  await expect(dashboard.getByRole("list", { name: "Copies saving deletes" }).getByRole("listitem")).toHaveCount(2);
+
+  await dashboard.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dashboard.getByText(
+    "Backup settings saved, but the 2 copies the new limits no longer keep could not be removed. The daemon tries again at the next backup or restart.",
+  )).toBeVisible();
+  await expect(dashboard.getByText("were removed", { exact: false })).toHaveCount(0);
+  expect(copiesOnDisk(daemon, "scheduled").filter((name) => name.endsWith(".sqlite3"))).toHaveLength(4);
+});
+
 test("a backup size budget previews what saving deletes, then deletes exactly that, oldest first", async ({ dashboard, daemon }) => {
   // Four 200 MiB copies, sparse so the fixture costs no disk.
   mkdirSync(backupRoot(daemon), { recursive: true });

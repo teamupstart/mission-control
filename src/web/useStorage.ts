@@ -10,6 +10,7 @@ import {
   fetchStorage,
   previewWorktreeAction,
 } from "./lib/api.ts";
+import { backupSaveNotice } from "./lib/storage-view.ts";
 
 // Settings > Storage. The live aggregate arrives over SSE as `storage_health`; this hook owns
 // what the event does not carry - the backup config - and the two writes. It reads the route
@@ -69,16 +70,18 @@ export function useStorage(
   // Back up now is clickable before the first read lands, so reads can overlap; only the
   // newest one may write.
   const reloadSeq = useRef(0);
-  const reload = useCallback(async (): Promise<void> => {
+  /** Read the aggregate and config again. Resolves to what was read, or null when it failed. */
+  const reload = useCallback(async (): Promise<StorageView | null> => {
     const seq = ++reloadSeq.current;
     const next = await fetchStorage();
-    if (seq !== reloadSeq.current) return;
+    if (seq !== reloadSeq.current) return next;
     if (next) {
       setView(next);
       setLoadError(null);
     } else {
       setLoadError("Storage status could not be loaded from the daemon.");
     }
+    return next;
   }, []);
 
   // `configRevision` moves when any window saves the backup config, and on every reconnect.
@@ -111,8 +114,10 @@ export function useStorage(
         return false;
       }
       setError(null);
-      setNotice("Backup settings saved. Copies the new limits no longer keep were removed.");
-      await reload();
+      // The save succeeds once the limits are stored; the prune after it can still fail. Say
+      // what the copies read back show, never that they were removed because the save passed.
+      const after = await reload();
+      setNotice(backupSaveNotice(expectRemove, after?.health.backups.copies ?? null));
       return true;
     } finally {
       setSaving(false);

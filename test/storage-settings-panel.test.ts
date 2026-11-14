@@ -6,6 +6,7 @@ import { StorageSettingsPanelView } from "../src/web/components/StorageSettingsP
 import { StorageBanner, storageNotificationsDue, storageWarnings } from "../src/web/components/StorageBanner.tsx";
 import { storageDotTone } from "../src/web/lib/settings-dots.ts";
 import {
+  backupSaveNotice,
   gibField,
   parseGibField,
   parseWholeField,
@@ -342,4 +343,26 @@ test("Overview's backup reclaimable comes from the saved limits, and says within
   const stuck = overview(withConfig({ maxTotalBytes: GIB / 4 }, alwaysKeptOnly));
   assert.match(stuck, /None: the always-kept copies exceed the size budget/);
   assert.doesNotMatch(stuck, /Within limits/);
+});
+
+test("a backup save reports the deletions the copies read back confirm, never more", () => {
+  const shown = ["scheduled-a.sqlite3", "scheduled-b.sqlite3"];
+  assert.equal(backupSaveNotice([], [{ filename: "scheduled-c.sqlite3" }]), "Backup settings saved.");
+  assert.equal(
+    backupSaveNotice(shown, [{ filename: "scheduled-c.sqlite3" }]),
+    "Backup settings saved. 2 copies the new limits no longer keep were removed.",
+  );
+  // The limits were stored but the prune failed: the copies are still there, and the page says so.
+  assert.equal(
+    backupSaveNotice(shown, [{ filename: "scheduled-a.sqlite3" }, { filename: "scheduled-b.sqlite3" }, { filename: "scheduled-c.sqlite3" }]),
+    "Backup settings saved, but the 2 copies the new limits no longer keep could not be removed. The daemon tries again at the next backup or restart.",
+  );
+  assert.equal(
+    backupSaveNotice(shown, [{ filename: "scheduled-b.sqlite3" }]),
+    "Backup settings saved, but only 1 of the 2 copies the new limits no longer keep was removed; 1 could not be. The daemon tries again at the next backup or restart.",
+  );
+  assert.equal(
+    backupSaveNotice(["scheduled-a.sqlite3"], null),
+    "Backup settings saved. The copies could not be read back, so whether the 1 copy the new limits no longer keep is gone is unknown.",
+  );
 });

@@ -110,6 +110,32 @@ export function backupDraftEffect(
   };
 }
 
+/**
+ * What a backup save says, judged from the copies read back after it rather than assumed. The
+ * daemon stores the limits first and prunes second, and a prune that fails only warns and is
+ * retried at the next backup or start, so a successful save does not mean the copies are gone.
+ * `copiesAfter` is null when the read-back failed.
+ */
+export function backupSaveNotice(
+  expectRemove: readonly string[],
+  copiesAfter: readonly Pick<StorageBackupCopy, "filename">[] | null,
+): string {
+  const total = expectRemove.length;
+  if (total === 0) return "Backup settings saved.";
+  const copies = (count: number) => (count === 1 ? "1 copy" : `${count} copies`);
+  if (copiesAfter === null) {
+    return `Backup settings saved. The copies could not be read back, so whether the ${copies(total)} the new limits no longer keep ${total === 1 ? "is" : "are"} gone is unknown.`;
+  }
+  const onDisk = new Set(copiesAfter.map((copy) => copy.filename));
+  const left = expectRemove.filter((filename) => onDisk.has(filename)).length;
+  if (left === 0) return `Backup settings saved. ${copies(total)} the new limits no longer keep ${total === 1 ? "was" : "were"} removed.`;
+  const retry = "The daemon tries again at the next backup or restart.";
+  if (left === total) {
+    return `Backup settings saved, but the ${total === 1 ? "copy" : copies(total)} the new limits no longer keep could not be removed. ${retry}`;
+  }
+  return `Backup settings saved, but only ${total - left} of the ${copies(total)} the new limits no longer keep ${total - left === 1 ? "was" : "were"} removed; ${left} could not be. ${retry}`;
+}
+
 /** A span as the recovery-window line reads it: hours under two days, days above. */
 export function spanLabel(ms: number | null): string {
   if (ms === null) return "none";

@@ -595,6 +595,44 @@ test("a standing warning keeps its id across a restart and through a moment with
   assert.equal(store.state.lowFreeSpaceSince, null);
 });
 
+test("a warning whose occurrence could not be saved keeps its id, and the same occurrence is saved once writes work", () => {
+  // A full disk: the occurrence starts, but writing it fails, and the row on disk stays clear.
+  const persisted = { state: storageAlertStateFrom(undefined) };
+  let failing = true;
+  let free = 8;
+  let clock = 5_000;
+  const service = new StorageHealthService({
+    backups: { status: () => databaseBackupStatusFrom(undefined), keptCopies: () => [] },
+    usage: {
+      usage: () => ({ root: ROOT, measuredAt: 1, durationMs: null, measuring: false, error: null, totalBytes: 50 * GIB, categories: [{ id: "other", bytes: 50 * GIB }], pools: [] }),
+      volume: () => volume(free),
+    },
+    limits: () => ({ ...DEFAULT_STORAGE_LIMITS_CONFIG }),
+    alerts: {
+      read: () => persisted.state,
+      write: (state) => {
+        if (failing) throw new Error("database or disk is full");
+        persisted.state = state;
+      },
+    },
+    now: () => clock,
+    publish: () => {},
+  });
+  assert.equal(service.recompute().problems[0]?.id, "low-free-space:volume:5000");
+  assert.equal(persisted.state.lowFreeSpaceSince, null, "the write failed");
+
+  // Later recomputes, still unable to write, show the same occurrence rather than a new one.
+  clock = 9_000;
+  free = 7;
+  assert.equal(service.recompute().problems[0]?.id, "low-free-space:volume:5000");
+
+  // Once a write succeeds, the occurrence on disk is that same one, for the next restart.
+  failing = false;
+  clock = 12_000;
+  assert.equal(service.recompute().problems[0]?.id, "low-free-space:volume:5000");
+  assert.equal(persisted.state.lowFreeSpaceSince, 5_000);
+});
+
 // ---- routes ----
 
 function app(deps: Partial<Parameters<typeof buildApp>[0]> = {}) {

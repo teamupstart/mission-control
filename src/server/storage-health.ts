@@ -89,7 +89,15 @@ function withLiveBackups(usage: StorageUsage, rawDelta: number): StorageUsage {
  */
 export class StorageHealthService {
   private last: { health: StorageHealth; serialized: string } | null = null;
-  private memoryAlerts: StorageAlertState = storageAlertStateFrom(undefined);
+  /**
+   * Each warning's current occurrence. Read from `deps.alerts` once, then held here as the source
+   * of truth: the persisted copy only carries it across a restart. A write can fail exactly when
+   * this matters most, on a full disk, and reading the older row back would start the standing
+   * warning again under a new id, re-showing a dismissed banner and repeating the notification.
+   */
+  private alertState: StorageAlertState | null = null;
+  /** The last write of `alertState` failed, so it is written again on the next recompute. */
+  private alertsUnsaved = false;
   /**
    * The kept copies' on-disk bytes when this service first saw the current walk: the baseline a
    * change in them is measured from, in the walk's own allocated-block basis.
@@ -151,7 +159,9 @@ export class StorageHealthService {
    * condition with no reading to judge (nothing measured yet) neither starts nor ends one.
    */
   private advanceAlerts(conditions: { lowFreeSpace: boolean | null; storageLimit: boolean | null }): StorageAlertState {
-    const current = this.attempt("storage alerts", () => this.deps.alerts?.read() ?? this.memoryAlerts, this.memoryAlerts);
+    const current = this.alertState ??= this.attempt(
+      "storage alerts", () => this.deps.alerts?.read() ?? storageAlertStateFrom(undefined), storageAlertStateFrom(undefined),
+    );
     const now = this.deps.now?.() ?? Date.now();
     const since = (holds: boolean | null, started: number | null): number | null =>
       holds === null ? started : holds ? started ?? now : null;
@@ -159,9 +169,16 @@ export class StorageHealthService {
       lowFreeSpaceSince: since(conditions.lowFreeSpace, current.lowFreeSpaceSince),
       storageLimitSince: since(conditions.storageLimit, current.storageLimitSince),
     };
-    if (next.lowFreeSpaceSince !== current.lowFreeSpaceSince || next.storageLimitSince !== current.storageLimitSince) {
-      this.memoryAlerts = next;
-      this.attempt("storage alerts write", () => this.deps.alerts?.write(next), undefined);
+    const changed = next.lowFreeSpaceSince !== current.lowFreeSpaceSince || next.storageLimitSince !== current.storageLimitSince;
+    this.alertState = next;
+    if (changed || this.alertsUnsaved) {
+      try {
+        this.deps.alerts?.write(next);
+        this.alertsUnsaved = false;
+      } catch (error) {
+        this.alertsUnsaved = true;
+        console.warn(`[mission-control] storage health could not save storage alerts, will retry: ${errorMessage(error)}`);
+      }
     }
     return next;
   }

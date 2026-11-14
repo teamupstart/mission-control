@@ -152,8 +152,11 @@ are listed in Settings > Worktrees.
 The Storage rail dot always shows a standing warning: red for low free space or a failed backup,
 amber near the storage limit. Each warning is one occurrence with an id built from when it began,
 kept in the operational `storage.alerts` value, so a restart reports the same occurrence and a
-warning that clears and returns is a new one. Dismissing the fleet banner hides the occurrences
-it showed; a new occurrence shows again.
+warning that clears and returns is a new one. The daemon reads that value once at start and
+then holds the occurrences in memory. A write that fails, as one can on a full disk, does not
+start the warning again under a new id; the same occurrence is written again on the next
+recompute. Dismissing the fleet banner hides the occurrences it showed; a new occurrence shows
+again.
 
 The limits and the idle-cache budget are the `storage.limits` setting, saved with
 `PUT /api/storage/limits` and carried by settings snapshots in the `storage-limits` domain.

@@ -272,6 +272,8 @@ test("the console's toolbar, badge band and composer pause it, and a reply sent 
     timeout: 30_000,
     message: "the held reply is delivered once the session resumes",
   }).toBe(0);
+  // Delivered, not dropped: the agent itself answers the message that waited through the pause.
+  await expect(page.locator(".console-detail").getByText("Mock reply to: still there?")).toBeVisible({ timeout: 30_000 });
 
   // The composer's own button pauses too, and the badge's half resumes.
   await page.getByRole("button", { name: "Pause session", exact: true }).click();

@@ -176,7 +176,8 @@ function needsFreezeAfterRestart(record: StoredSessionPause, session: Session): 
  */
 function processesStopped(record: StoredSessionPause, restored: boolean): boolean {
   if (record.procs.length === 0) return false;
-  return record.phase === "frozen" || record.runtime !== "sdk" || !restored;
+  // Whatever the phase: a frozen record a crash left behind lists the previous driver's pids.
+  return record.runtime !== "sdk" || !restored;
 }
 
 /**
@@ -676,20 +677,24 @@ export class PauseManager {
       // A restored SDK driver that runs as a process of its own but was not found: it has not
       // started yet. Nothing has been stopped, so it is not frozen - held, and read again on the
       // backing-off timer until it appears. Only a driver with no process of its own settles here.
-      if (record.runtime === "sdk" && this.restoredSdk.has(session.id) && pauseFreezes(session)) {
+      //
+      // The same for a fresh driver mid-turn: a starting session has no driver pid until its
+      // child spawns, and Pause now must not settle over a turn still using the network.
+      if (record.runtime === "sdk" && pauseFreezes(session) && (this.restoredSdk.has(session.id) || turnRunning(session))) {
         record.phase = "pending";
-        return "its restored driver has not started yet";
+        return "its driver process has not started yet";
       }
       // A scan that found none of a recorded tree is not a replacement for it: what was stopped
       // is still the record of what to continue, and there is nothing more to stop. That holds
       // for a freeze a restart interrupted too, whose session still reports the turn it was in.
       if (record.procs.length > 0) {
-        record.phase = "frozen";
+        this.settleFrozen(record);
         return null;
       }
       // Nothing this daemon may stop (an in-process driver). Mid-turn it stays a hold and
       // settles when the turn ends - the honest "paused" for an agent we cannot freeze.
-      record.phase = turnRunning(session) ? "pending" : "frozen";
+      if (turnRunning(session)) record.phase = "pending";
+      else this.settleFrozen(record);
       return null;
     }
     const before = record.procs;
@@ -725,10 +730,19 @@ export class PauseManager {
       return why;
     }
     this.restoredSdk.delete(session.id);
+    // Published before the rescan is awaited: the tree IS stopped now, and the pane and SDK write
+    // gates read `stopped` from the registry - an old projection would let a write through.
+    this.publishSession(session.id);
     const unsettled = await this.settle(session, record);
     if (unsettled !== undefined) return unsettled;
-    record.phase = "frozen";
+    this.settleFrozen(record);
     return null;
+  }
+
+  /** Settle a record frozen, stamping when it first did: a re-freeze keeps the original time. */
+  private settleFrozen(record: StoredSessionPause): void {
+    record.phase = "frozen";
+    record.frozenAt ??= this.now();
   }
 
   /**
@@ -1071,6 +1085,7 @@ export class PauseManager {
       since: record.since,
       interrupted: record.interrupted,
       stopped: processesStopped(record, this.restoredSdk.has(sessionId)),
+      frozenAt: record.frozenAt ?? null,
     };
   }
 

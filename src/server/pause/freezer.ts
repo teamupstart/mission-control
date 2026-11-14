@@ -175,8 +175,10 @@ export function processFreezer(deps: FreezerDeps): ProcessFreezer {
       const root = session.pid;
       const pinned = terminalRootStart(session.id);
       const rootProc = processes.find((p) => p.pid === root);
-      // A reused pid is somebody else's process. Lstart has one-second resolution, so allow it.
-      if (!rootProc || (pinned !== null && Math.abs(rootProc.startMs - pinned) > 1000)) return [];
+      // A reused pid is somebody else's process. The id's start time comes from the same `ps`
+      // parse as this snapshot's, so the agent matches it exactly; a pid reused even one second
+      // later does not.
+      if (!rootProc || (pinned !== null && rootProc.startMs !== pinned)) return [];
       if (daemonOwnedPids(processes, daemonPid).has(root)) return [];
       return withIdentities(agentTree(processes, root, { daemonPid, includeParentShell: true }));
     },

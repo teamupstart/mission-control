@@ -662,6 +662,14 @@ export interface Session {
    */
   pause?: SessionPause | null;
   /**
+   * When this session last resumed from a pause, epoch ms, or null. Resolved by the registry
+   * from `PauseManager` like `pause`. Every deadline that started before a pause counts from
+   * here instead - a message held through it, an item awaiting pickup - so the time the agent
+   * was frozen is never read as the time it ignored something. Optional so a snapshot from an
+   * older daemon still parses.
+   */
+  resumedAt?: number | null;
+  /**
    * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
    * `<agent> <pid>` process fallback. The SDK supervisor names a driver-run session.

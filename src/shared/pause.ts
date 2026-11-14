@@ -47,6 +47,17 @@ export interface SessionPause {
    * one completes it, and every write gate refuses on this, never on the phase.
    */
   stopped: boolean;
+  /**
+   * When the pause settled frozen, as opposed to when it was asked for (`since`): an after-turn
+   * pause asked for early freezes only when its turn ends. Null or absent until then; a reader
+   * falls back to `since` when it is absent.
+   */
+  frozenAt?: number | null;
+}
+
+/** When the session actually stopped for its pause: the freeze time, else when it was asked for. */
+export function pausedAt(pause: Pick<SessionPause, "since" | "frozenAt">): number {
+  return pause.frozenAt ?? pause.since;
 }
 
 /** Pause all: every live session paused, optionally with automatic launches held too. */

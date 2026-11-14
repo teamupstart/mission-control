@@ -133,3 +133,20 @@ test("Pause all and its state read back through the routes", async () => {
   await app.request("/api/pause/fleet/resume", { method: "POST", headers: HEADERS, body: "{}" });
   assert.equal(((await (await app.request("/api/pause", { headers: HEADERS })).json()) as PauseState).fleet, null);
 });
+
+test("a pause body past the cap is refused before it is read, and a body that cannot be read is not a default pause", async () => {
+  const { app, pauses } = harness();
+  const huge = await app.request("/api/sessions/s1/pause", { method: "POST", headers: HEADERS, body: JSON.stringify({ mode: "now", pad: "x".repeat(8192) }) });
+  assert.equal(huge.status, 413);
+  assert.equal(pauses.get("s1") ?? null, null, "nothing was paused");
+
+  const { parseBody } = await import("../src/server/http-body.ts");
+  const { PauseSessionRequestSchema } = await import("../src/shared/protocol.ts");
+  const unreadable = {
+    req: { text: () => Promise.reject(new Error("connection reset")) },
+    json: (body: unknown, status: number) => new Response(JSON.stringify(body), { status }),
+  };
+  const parsed = await parseBody(unreadable as never, PauseSessionRequestSchema, { strict: true });
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.ok ? 0 : parsed.res.status, 400);
+});

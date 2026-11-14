@@ -1056,6 +1056,24 @@ test("awaiting_pickup: the window expiring with the session still idle -> resend
   assert.equal(a.kind, "resend");
 });
 
+test("awaiting_pickup: a pause longer than the window does not count against the pickup", () => {
+  // Sent, then the session was paused for an hour and has just resumed: the agent has had no
+  // chance to read the prompt yet. Measured from the send, this tick would resend it (or, at
+  // the cap, escalate) and the agent could read it twice.
+  const item = mkItem({ state: "awaiting_pickup", sentAt: NOW - 3_600_000, sendAttempts: 1 });
+  const justResumed = tick({ items: [item], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 5_000 } });
+  assert.equal(justResumed.kind, "none", "the window opened at the resume");
+  const atCap = mkItem({ state: "awaiting_pickup", sentAt: NOW - 3_600_000, sendAttempts: SEND_ATTEMPT_CAP });
+  assert.equal(tick({ items: [atCap], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 5_000 } }).kind, "none", "nor escalates");
+
+  // Once a whole window has passed since the resume, the usual timeout applies.
+  const later = tick({ items: [item], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 60_000 } });
+  assert.equal(later.kind, "resend");
+  // And a resume before the send changes nothing.
+  const sentAfter = mkItem({ state: "awaiting_pickup", sentAt: NOW - 60_000, sendAttempts: 1 });
+  assert.equal(tick({ items: [sentAfter], session: { lastActivity: NOW - 90_000, resumedAt: NOW - 120_000 } }).kind, "resend");
+});
+
 test("awaiting_pickup: at the send cap -> escalate instead of resending forever", () => {
   const item = mkItem({
     state: "awaiting_pickup",

@@ -89,6 +89,7 @@ test("a terminal session's tree is found by its pid and pinned start time", asyn
   assert.deepEqual(pidsOf(tree), [60, 70, 71, 73, 72]);
   assert.deepEqual(tree[1], ref(70), "each process is recorded with its identity");
   assert.deepEqual(await freezer.treeOf(terminal("proc:ttys001:70:7000", 70)), [], "a reused pid is not the agent");
+  assert.deepEqual(await freezer.treeOf(terminal("proc:ttys001:70:6000", 70)), [], "not even one reused a second later");
 });
 
 test("an SDK driver must be the daemon's own child", async () => {
@@ -137,15 +138,25 @@ function processState(pid: number): string {
 
 test("a real child process tree is stopped and continued", { skip: process.platform === "win32" }, async () => {
   // A parent that spawns a grandchild, both idling - the shape of an agent running a tool.
+  // The parent says "ready" only once it has spawned the grandchild, so the tree is read when the
+  // grandchild exists however slowly the machine starts processes - not after a guessed delay.
   const child = spawn(process.execPath, ["-e", `
     require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    process.stdout.write("ready\\n");
     setInterval(() => {}, 1000);
-  `], { stdio: "ignore" });
+  `], { stdio: ["ignore", "pipe", "ignore"] });
   // Every pid the tree read found, so a failed assertion still kills them - the grandchild
   // included, which would otherwise outlive the run, possibly stopped, with its interval.
   let pids: number[] = [];
   try {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await new Promise<void>((resolve, reject) => {
+      let seen = "";
+      child.stdout!.on("data", (chunk: Buffer) => {
+        seen += chunk.toString();
+        if (seen.includes("ready")) resolve();
+      });
+      child.once("exit", (code) => reject(new Error(`the parent exited (${code}) before it was ready`)));
+    });
     const freezer = processFreezer({ sdkDriverPid: () => child.pid ?? null, log: () => {} });
     const tree = await freezer.treeOf({ id: "sdk:real", pid: 0, runtime: "sdk" } as Session);
     pids = pidsOf(tree);

@@ -22,7 +22,14 @@ export async function parseBody<S extends ZodTypeAny>(
 ): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
   let raw: unknown = {};
   if (options.strict) {
-    const text = await c.req.text().catch(() => "");
+    let text: string;
+    try {
+      text = await c.req.text();
+    } catch {
+      // Not the same as an empty body: a body that could not be read must not become `{}`.
+      const error = "the request body could not be read";
+      return { ok: false, error, res: c.json({ error }, 400) };
+    }
     if (text.trim() !== "") {
       try {
         raw = JSON.parse(text);

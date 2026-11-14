@@ -1373,7 +1373,8 @@ export class Registry extends EventEmitter {
   /**
    * When this session last resumed from a pause, or null. `PauseManager` owns and persists it;
    * the outbox reads it so a message held through a pause counts its steer and interrupt
-   * deadlines from the resume. Not on `Session`: nothing in a browser reads it.
+   * deadlines from the resume, and it rides on `Session.resumedAt` for Foreman's worker, which
+   * reads sessions over the API and measures a queue item's pickup window from it.
    */
   sessionResumedAt(id: string): number | null {
     return this.sessionResumes.get(id) ?? null;
@@ -1382,6 +1383,11 @@ export class Registry extends EventEmitter {
   setSessionResumedAt(id: string, at: number | null): void {
     if (at === null) this.sessionResumes.delete(id);
     else this.sessionResumes.set(id, at);
+    const session = this.sessions.get(id);
+    if (!session || (session.resumedAt ?? null) === at) return;
+    const next: Session = { ...session, resumedAt: at };
+    this.sessions.set(id, next);
+    this.emitSession(next);
   }
 
   /** The fleet-wide half: Pause all and the priority session. */
@@ -2055,6 +2061,7 @@ export class Registry extends EventEmitter {
   private emitSession(s: Session): void {
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
     s.pause = this.sessionPauses.get(s.id) ?? null;
+    s.resumedAt = this.sessionResumes.get(s.id) ?? null;
     this.emitEvent({ type: "session_upsert", session: s });
   }
 
@@ -2698,6 +2705,7 @@ export class Registry extends EventEmitter {
       // Daemon-owned like the grant above: a sweep carries the manager's answer, and an
       // explicit null keeps `byJson` from reading absent-vs-null as a change every tick.
       pause: this.sessionPauses.get(d.syntheticId) ?? null,
+      resumedAt: this.sessionResumes.get(d.syntheticId) ?? null,
       name: d.name,
       nameSource: d.nameSource,
       renameable: canRenameTerminal(d),
@@ -2938,6 +2946,7 @@ export class Registry extends EventEmitter {
       foremanInvite: null,
       // A restored SDK session that was paused before the restart is still paused.
       pause: this.sessionPauses.get(input.id) ?? null,
+      resumedAt: this.sessionResumes.get(input.id) ?? null,
       name: input.name,
       // Nothing holds a pane to name this session, so the supervisor that launched it said
       // what it is called - which is what this `NameSource` value records.
@@ -10786,6 +10795,8 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // Nested and moves on its own: a pause, its after-turn freeze and its lift change nothing
   // else on the session, so leaving it out would let a card keep saying "paused" after resume.
   pause: byJson,
+  // Scalar, and moves on its own when a pause lifts; Foreman's pickup clock reads it.
+  resumedAt: byValue,
   name: byValue,
   nameSource: byValue,
   renameable: byValue,

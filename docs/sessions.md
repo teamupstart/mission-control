@@ -745,8 +745,10 @@ resumed last, so it never notices its foreground job stop and keeps the terminal
 `SIGSTOP` (for example it belongs to another user), whatever did stop is continued again, the
 session stays held but running, and the control that asked says which process refused. The
 freeze is retried on a timer that backs off from 15 seconds to 5 minutes, never in a tight
-loop. A **Pause now** keeps retrying even while its turn runs; only **Pause after this turn**
-waits for the turn to end. After every stop the tree is read again, so a tool the agent started
+loop. A **Pause now** keeps retrying even while its turn runs, including on an SDK session whose
+driver process has not started yet; only **Pause after this turn** waits for the turn to end. A
+paused card and conversation say when the agent actually froze, which for an after-turn pause is
+when its turn ended, not when you asked. After every stop the tree is read again, so a tool the agent started
 in the instant before it stopped, or a process that replaced its own program in that instant, is
 stopped and recorded too; the session reads as frozen only once a read finds nothing new.
 While any Pause all session is only held, its banner reads "Paused, but not everything is
@@ -792,8 +794,10 @@ Resume all still brings it back. Resuming one session lifts it whatever paused i
 **Messages wait.** While a session is paused, the reply box's **Send** reads **Queue**. A
 message sent then waits in the session's outbox and is delivered when it resumes. Its steer
 and interrupt deadlines count from the resume, not from when you typed it, so a message queued
-overnight does not interrupt the turn it resumed. The resume time is saved, so a daemon restart
-just after a resume keeps those deadlines too. Writing straight into a frozen agent is
+overnight does not interrupt the turn it resumed. Foreman's work queue counts the same way: an
+item delivered just before a pause gets its whole pickup window again after the resume, so it is
+not resent or escalated for the time the agent spent paused. The resume time is saved, so a
+daemon restart just after a resume keeps those deadlines too. Writing straight into a frozen agent is
 refused, which includes answering a menu on its screen. Resume it first.
 
 **Stopping a paused session thaws it first.** Kill, Complete, Interrupt and Reset all need an

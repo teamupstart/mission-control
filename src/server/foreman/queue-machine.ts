@@ -519,13 +519,18 @@ function decideInFlight(
 
     case "awaiting_pickup": {
       const sentAt = item.sentAt ?? item.updatedAt;
+      // The pickup window opens at the later of the send and the session's last resume. Time
+      // the agent spent frozen is not time it spent ignoring the prompt: measured from the
+      // send alone, the first tick after a long pause would resend (or escalate) a prompt the
+      // agent has not yet had a chance to read. Activity is still judged against the send.
+      const windowFrom = Math.max(sentAt, session.resumedAt ?? 0);
       // THE critical race. After delivery the session is still `idle` from its
       // previous Stop until UserPromptSubmit flips it to `working`. Without
       // `lastActivity > sentAt` the next tick would "verify" an untouched item,
       // find nothing, and open a feedback loop against an agent that never saw
       // the prompt.
       if ((session.lastActivity ?? 0) > sentAt) return { kind: "picked-up", item };
-      if (now - sentAt < cfg.pickupTimeoutMs) return { kind: "none" };
+      if (now - windowFrom < cfg.pickupTimeoutMs) return { kind: "none" };
       // The window expired with no activity at all. If the session isn't even idle
       // any more we can't call it undelivered - wait for the next tick.
       if (session.state !== "idle") return { kind: "none" };

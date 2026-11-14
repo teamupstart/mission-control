@@ -9307,6 +9307,12 @@ export const StoredSessionPauseSchema = z.object({
    * this was saved, which reads as `after-turn`, the behaviour it was written under.
    */
   mode: z.enum(SESSION_PAUSE_MODES).optional(),
+  /**
+   * When the pause first settled frozen - not when it was asked for (`since`). An after-turn
+   * pause asked for early freezes when its turn ends, and the paused row stops its clock there.
+   * Absent on records written before it was saved.
+   */
+  frozenAt: z.number().nullable().optional(),
 });
 export type StoredSessionPause = z.output<typeof StoredSessionPauseSchema>;
 

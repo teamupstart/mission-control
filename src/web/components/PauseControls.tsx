@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { canPause, pauseAge, pauseFlagLabel, pauseFreezes, type SessionPauseMode } from "@shared/pause.ts";
+import { canPause, pauseAge, pauseFlagLabel, pauseFreezes, pausedAt, type SessionPauseMode } from "@shared/pause.ts";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { isPrioritySession, sessionCount, useFleetPause, type FleetPauseView } from "../lib/fleet-pause.ts";
@@ -329,7 +329,7 @@ export function PauseTileFlag({ session }: { session: Session }): React.JSX.Elem
 export function PausedActivityLine({ session }: { session: Session }): React.JSX.Element | null {
   const pause = session.pause;
   if (!pause || pause.phase !== "frozen") return null;
-  const when = new Date(pause.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const when = new Date(pausedAt(pause)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return (
     <span className="tile-activity pause-frozen-line">
       <span className="ta-glyph"><PauseGlyph kind="pause" size={10} /></span>

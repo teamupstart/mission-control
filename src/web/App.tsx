@@ -1,3 +1,4 @@
+import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
 import { FleetPauseBanner } from "./components/FleetPauseControl.tsx";
@@ -5132,7 +5133,7 @@ function summarize(sessions: Session[]): { attention: number; working: number } 
     const tone = stateDisplay(s).tone;
     if (tone === "attention") attention++;
     // A frozen agent keeps its column but is not working; the title bar's count says so.
-    else if (tone === "working" && s.pause?.phase !== "frozen") working++;
+    else if (tone === "working" && !isFrozen(s)) working++;
   }
   return { attention, working };
 }

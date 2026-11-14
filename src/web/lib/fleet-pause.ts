@@ -16,7 +16,7 @@ export interface FleetPauseView {
   pausedForFleet: number;
   pausedForPriority: number;
   /**
-   * Of those, the ones actually frozen. The rest are held but still running - a process refused
+   * Of those, the ones actually frozen. The rest are held but not frozen - a process refused
    * to stop, or a turn has not ended - and a banner must never call them frozen: the person
    * pausing to free the network needs to know an agent is still using it.
    */

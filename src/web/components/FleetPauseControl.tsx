@@ -224,9 +224,10 @@ export function FleetPauseBanner(): React.JSX.Element | null {
     const until = pause.resumeAt
       ? ` Resumes automatically at ${new Date(pause.resumeAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}.`
       : "";
-    // Only what is actually frozen is called frozen. A session held but still running - a
-    // process refused to stop - turns the banner into a partial one that names how many, because
-    // the person who paused to free the network needs to know an agent is still using it.
+    // Only what is actually frozen is called frozen. A session held but not frozen - a process
+    // refused to stop, or an agent that runs inside Mission Control and has nothing to stop -
+    // turns the banner into a partial one that names how many, because the person who paused to
+    // free the network needs to know which agents a pause did not quiet.
     const running = fleet.pausedForFleet - fleet.frozenForFleet;
     const label = running > 0 ? "Paused, but not everything is frozen" : "Everything is paused";
     return (
@@ -235,7 +236,7 @@ export function FleetPauseBanner(): React.JSX.Element | null {
         <span className="fleet-pause-banner-lead">{label}</span>
         <span className="fleet-pause-banner-sub">
           since {since}. {sessionCount(fleet.frozenForFleet)} frozen
-          {running > 0 ? `, ${sessionCount(running)} held but still running` : ""}
+          {running > 0 ? `, ${sessionCount(running)} held but not frozen` : ""}
           {pause.holdDispatch ? ", and automatic launches are held" : ""}.
           {until}
         </span>
@@ -256,7 +257,7 @@ export function FleetPauseBanner(): React.JSX.Element | null {
       <span className="fleet-pause-banner-sub">
         {sessionCount(fleet.frozenForPriority)} frozen so it has the machine and the network
         {fleet.pausedForPriority > fleet.frozenForPriority
-          ? `, ${sessionCount(fleet.pausedForPriority - fleet.frozenForPriority)} held but still running`
+          ? `, ${sessionCount(fleet.pausedForPriority - fleet.frozenForPriority)} held but not frozen`
           : ""}
         . Ending priority resumes those, not sessions you paused yourself.
       </span>

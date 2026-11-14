@@ -1119,9 +1119,21 @@ export class SdkSupervisor {
   stop(id: string): Promise<void> {
     // Every stop - Kill, task completion, handoff, dispatch cleanup - starts by thawing: a
     // stopped child never answers the interrupt `handle.stop()` opens with, so a thaw that did
-    // not happen refuses the stop rather than waiting on a driver that cannot answer.
+    // not happen refuses the stop rather than waiting on a driver that cannot answer. Ending
+    // the session ends its pause too.
     const stuck = this.deps.pause?.releaseNow(id) ?? null;
     if (stuck) return Promise.reject(new Error(`this session is paused and could not be resumed first: ${stuck}`));
+    return this.drain(id);
+  }
+
+  /**
+   * The stop itself, without lifting the session's pause. Shutdown's path (`stopAll`): the
+   * daemon is going down, not the session, and `PauseManager.stop()` has already continued the
+   * driver's processes so it can drain while keeping the pause record, which the next daemon
+   * restores and freezes again. Lifting it here would forget the operator's pause on every
+   * restart.
+   */
+  private drain(id: string): Promise<void> {
     const existing = this.stopPromises.get(id);
     if (existing) return existing;
     const handle = this.handles.get(id);
@@ -1184,7 +1196,7 @@ export class SdkSupervisor {
       ...(this.restorePromise ? [this.restorePromise] : []),
       ...this.startOwnership,
     ]);
-    const drained = Promise.allSettled(ids.map((id) => this.stop(id)));
+    const drained = Promise.allSettled(ids.map((id) => this.drain(id)));
     await Promise.race([Promise.allSettled([startupOwnership, drained]), sleep(timeoutMs)]);
     // Whatever did not drain in time is still OUR session and still resumable: the row has
     // to say so before the process goes, because after that nothing will.

@@ -381,7 +381,13 @@ test("a Pi agent that runs inside Mission Control is offered a hold, never promi
   await page.getByRole("button", { name: "Pause all", exact: true }).click();
   const confirm = page.getByRole("dialog", { name: "Pause all" });
   await expect(confirm, "said before the confirm, where the choice is made").toContainText(/inside Mission Control, so it is held instead/);
-  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await confirm.getByRole("button", { name: /^Pause 1 session/ }).click();
+
+  // Held, and never counted as frozen: nothing of it was stopped.
+  const banner = page.getByRole("status", { name: "Paused, but not everything is frozen" });
+  await expect(banner).toContainText("0 sessions frozen, 1 session held but not frozen");
+  await banner.getByRole("button", { name: /Resume all now/ }).click();
+  await expect(banner).toBeHidden();
 });
 });
 

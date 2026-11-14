@@ -14,6 +14,7 @@ import type {
   Session,
   SubagentEntry,
 } from "@shared/types.ts";
+import { isFrozen } from "@shared/pause.ts";
 import type { ConversationView } from "@shared/protocol.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
@@ -1405,7 +1406,7 @@ export function TranscriptPanel({
             terminal={terminal}
             startedAt={turnStartedAt}
             pinned={workingPinned}
-            frozenAt={session.pause?.phase === "frozen" ? session.pause.since : null}
+            frozenAt={isFrozen(session) ? session.pause!.since : null}
           />
         )}
         {/* AFTER the in-progress row, and the order is the conversation's own. A pending

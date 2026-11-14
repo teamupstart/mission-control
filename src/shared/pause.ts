@@ -105,8 +105,13 @@ export function isPaused(session: Pick<Session, "pause">): boolean {
 }
 
 /** Whether the session's process tree is stopped right now. */
+/**
+ * Whether the session is frozen: its pause has settled AND processes of it are stopped. A pause
+ * that settled with nothing stopped - an agent whose driver runs inside the daemon (Pi), or one
+ * whose processes had already gone - is a hold, never called frozen on a card or in a count.
+ */
 export function isFrozen(session: Pick<Session, "pause">): boolean {
-  return session.pause?.phase === "frozen";
+  return session.pause?.phase === "frozen" && session.pause.stopped;
 }
 
 /** Whether an operator may pause or resume this session: live, and not on its way out. */
@@ -160,7 +165,7 @@ export function countFrozenFor(
   reason: SessionPauseReason,
 ): number {
   let n = 0;
-  for (const session of sessions) if (session.pause?.reason === reason && session.pause.phase === "frozen") n += 1;
+  for (const session of sessions) if (session.pause?.reason === reason && isFrozen(session)) n += 1;
   return n;
 }
 

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   bulkPauseTargets,
+  countFrozenFor,
   countPausedFor,
+  isFrozen,
   pauseAge,
   pauseFlagLabel,
   type SessionPause,
@@ -132,7 +134,7 @@ test("the Pause all banner calls only frozen sessions frozen, and says when some
     session("refused", { pause: pause("fleet", "pending") }),
   ]);
   assert.match(partial, /aria-label="Paused, but not everything is frozen"/);
-  assert.match(partial, /1 session frozen, 1 session held but still running, and automatic launches are held/);
+  assert.match(partial, /1 session frozen, 1 session held but not frozen, and automatic launches are held/);
   assert.doesNotMatch(partial, /Everything is paused/);
   assert.match(partial, /is-partial/);
 
@@ -155,4 +157,13 @@ test("the fleet fold separates frozen from held", () => {
   assert.equal(view.frozenForFleet, 1);
   assert.equal(view.pausedForPriority, 1);
   assert.equal(view.frozenForPriority, 0);
+});
+
+test("a pause that settled with nothing stopped is a hold, never counted or shown as frozen", () => {
+  // A Pi driver runs inside the daemon: its pause settles with no process stopped.
+  const held = session("pi", { pause: { reason: "fleet", phase: "frozen", since: NOW, interrupted: null, stopped: false } });
+  const frozen = session("claude", { pause: pause("fleet") });
+  assert.equal(isFrozen(held), false);
+  assert.equal(isFrozen(frozen), true);
+  assert.equal(countFrozenFor([held, frozen], "fleet"), 1);
 });

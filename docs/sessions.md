@@ -749,7 +749,7 @@ waits for the turn to end. After every stop the tree is read again, so a tool th
 in the instant before it stopped, or a process that replaced its own program in that instant, is
 stopped and recorded too; the session reads as frozen only once a read finds nothing new.
 While any Pause all session is only held, its banner reads "Paused, but not everything is
-frozen" and counts frozen and still-running sessions separately. A re-freeze after a restart
+frozen" and counts frozen and held sessions separately; a Pi session, which has nothing to stop, is always counted as held, never as frozen. A re-freeze after a restart
 that cannot read the process table keeps the processes an earlier freeze stopped, so resuming
 still continues them.
 

@@ -781,7 +781,8 @@ The last three are the drawer:
 8. **Open the Residents sidebar** opens the fleet and spotlights the top bar's **Residents**
    button. Its Next reads **Open the sidebar**. The button is drawn in every top-bar layout:
    **Settings > Display > Top bar** can minimize it to its ⌂ but cannot hide it. The stop's
-   copy also names Shift+H, the palette and the edge tab.
+   copy also names Shift+H, the palette and the edge tab, and says that under **Board and
+   Console** placement the button and Shift+H open the Residents dock instead.
 9. **Every resident at a glance** opens the drawer and spotlights it. Back puts away a drawer
    the tour opened.
 10. **Pin it open** spotlights the drawer's **Pin** and finishes.

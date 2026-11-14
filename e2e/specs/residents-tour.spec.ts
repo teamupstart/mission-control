@@ -288,6 +288,12 @@ test("under Board and Console the tour borrows the drawer and gives it back", as
   ]) {
     const stop = tourStep(page, title);
     await expect(stop).toBeVisible();
+    // In this placement the highlighted button opens the dock, and the stop says so.
+    if (title === "Open the Residents sidebar") {
+      await expect(stop).toContainText(
+        "this button and Shift+H open the Residents dock, and this tour borrows the sidebar to show it.",
+      );
+    }
     await stop.getByRole("button", { name: /^(Next|Open the sidebar)$/ }).click();
   }
   const step = tourStep(page, "Pin it open");

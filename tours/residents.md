@@ -49,7 +49,7 @@ Launch opens Dispatch on this profile. Choose a repository, or No repository for
 ## Open the Residents sidebar
 <!-- stage: open-sidebar -->
 
-Running residents live in the Residents sidebar, a column on the right of the fleet. Open it with this Residents button, Shift+H, Open the Residents drawer or dock in the ⌘K palette, or the edge tab on the window's right edge. Next opens it.
+Running residents live in the Residents sidebar, a column on the right of the fleet. Open it with this Residents button, Shift+H, Open the Residents drawer or dock in the ⌘K palette, or the edge tab on the window's right edge. If Settings > Display > Residents puts residents on the Board and in Console instead, this button and Shift+H open the Residents dock, and this tour borrows the sidebar to show it. Next opens it.
 
 ## Every resident at a glance
 <!-- stage: sidebar -->

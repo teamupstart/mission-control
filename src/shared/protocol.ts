@@ -3605,6 +3605,13 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
   z
     .object({ action: z.literal("legacyReturn"), owner: WorktreeOwnerTargetSchema })
     .strict(),
+  // Settings > Storage's idle-cache budget: the exact idle slots its plan chose, across pools.
+  z
+    .object({
+      action: z.literal("trimIdle"),
+      slotIds: z.array(WorktreeStableIdSchema).min(1).max(WORKTREE_INVENTORY_LIMITS.bulkSlots),
+    })
+    .strict(),
 ]);
 
 export const WorktreeActionExecuteSchema = z

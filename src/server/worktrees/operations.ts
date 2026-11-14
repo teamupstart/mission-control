@@ -43,6 +43,7 @@ import {
   type WorktreeGit,
 } from "./git.ts";
 import {
+  maintenanceCandidates,
   WorktreeManager,
   type NativePoolStatus,
   type NativeSlotStatus,
@@ -111,6 +112,14 @@ export interface WorktreeOperationsDeps {
    * Further submissions are refused; nothing listed is ever dropped to make room.
    */
   maxOperations: number;
+  /**
+   * The slots Settings > Storage's idle-cache budget removes right now, judged from the
+   * observation a `trimIdle` preview is built from; null where nothing supplies it. A named slot
+   * the current budget no longer removes blocks the preview, and because Execute rebuilds the
+   * preview before removing anything, a budget saved after the dialog opened refuses the run
+   * there, on the daemon, whatever the browser has heard.
+   */
+  trimIdleSelection: ((status: NativePoolStatus[]) => ReadonlySet<string>) | null;
 }
 
 interface Observation {
@@ -320,6 +329,7 @@ export class WorktreeOperationsService {
       },
       maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
       claimVariablePresence,
+      trimIdleSelection: null,
       ...deps,
     };
   }
@@ -914,6 +924,10 @@ export class WorktreeOperationsService {
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
+    if (request.action === "trimIdle") {
+      return this.buildTrimIdle(request, observed, affected, risks, blockers, consequences);
+    }
+
     const poolId = request.action === "prune" || request.action === "reconcile"
       ? request.poolId
       : request.action === "destroy" && request.target.kind === "pool"
@@ -988,6 +1002,63 @@ export class WorktreeOperationsService {
       .map((slot) => ({ pool, slot }));
     if (initialTargets.length === 0) blockers.push("The fixed pool target contains no slots to destroy.");
     return this.buildSlotTargets(request, observed, initialTargets, affected, risks, blockers, consequences);
+  }
+
+  /**
+   * The idle slots Settings > Storage's budget chose, held to exactly the bar Safe prune holds
+   * a slot to (`maintenanceCandidates`): available, unreferenced by any task or check lease, clean,
+   * merged into the remote default, registered, and with no process in it. The set is fixed by
+   * the request rather than re-chosen from sizes, because Execute rebuilds this preview without
+   * measuring anything. A slot that no longer qualifies, or that the current idle-cache budget
+   * no longer removes (`trimIdleSelection`), blocks the preview instead of quietly leaving it,
+   * so what runs is always what the operator was shown and what the budget still asks for.
+   */
+  private buildTrimIdle(
+    request: Extract<WorktreeActionRequest, { action: "trimIdle" }>,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Omit<WorktreeActionPreview, "token" | "expiresAt"> {
+    // Judged against the observation this preview was built from, not a second one, so every
+    // version, head and safety reason below describes the same moment.
+    const candidates = new Map(maintenanceCandidates(observed.native)
+      .map((candidate) => [candidate.slotId, candidate]));
+    const heads = new Map(observed.native.flatMap((pool) => pool.slots)
+      .map((entry) => [entry.slot.id, entry.observedHead]));
+    const selected = this.deps.trimIdleSelection?.(observed.native) ?? null;
+    for (const slotId of new Set(request.slotIds)) {
+      const candidate = candidates.get(slotId);
+      if (!candidate) {
+        blockers.push("A chosen slot no longer exists; measure and plan again.");
+        continue;
+      }
+      if (!candidate.safe) {
+        blockers.push(`${candidate.path}: ${candidate.reason}.`);
+        continue;
+      }
+      if (observed.pending.has(candidate.path)) {
+        blockers.push(`${candidate.path}: a cleanup is already queued for it.`);
+        continue;
+      }
+      if (selected && !selected.has(slotId)) {
+        blockers.push(`${candidate.path}: the current idle-cache budget no longer removes it; preview again from the current plan.`);
+        continue;
+      }
+      affected.push({
+        provider: "mission",
+        id: candidate.slotId,
+        path: candidate.path,
+        owner: null,
+        version: candidate.slotVersion,
+        safetyRevision: digest({ ...candidate, head: heads.get(candidate.slotId) ?? null }),
+        diskBytes: null,
+      });
+    }
+    consequences.push("Removes each idle slot whole, with git worktree remove. Ignored files inside a slot are never cleaned one by one.");
+    consequences.push("The next session in these repositories may start in a fresh slot and install its dependencies again.");
+    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
   /** Return or destroy a fixed set of native slots, widened to every resource their tasks own. */
@@ -1246,7 +1317,7 @@ export class WorktreeOperationsService {
       }
       return;
     }
-    if (request.action === "prune") {
+    if (request.action === "prune" || request.action === "trimIdle") {
       for (const target of preview.affected) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
@@ -1320,7 +1391,7 @@ export class WorktreeOperationsService {
    */
   private removalTargets(preview: WorktreeActionPreview): WorktreeActionAffected[] {
     const request = preview.request;
-    if (request.action === "prune") return preview.affected;
+    if (request.action === "prune" || request.action === "trimIdle") return preview.affected;
     if (request.action !== "destroy") return [];
     return preview.affected.filter((target) => {
       if (target.provider !== "mission") return false;
@@ -1374,6 +1445,7 @@ export class WorktreeOperationsService {
       case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
       case "destroy": return "Fixed worktree target destroyed.";
       case "legacyReturn": return "Exact legacy lease returned through its domain owner.";
+      case "trimIdle": return "Idle slots over the cache budget removed.";
     }
   }
 }

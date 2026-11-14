@@ -2,8 +2,9 @@ import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
 import type { KindWorkflowDefaults } from "@shared/task.ts";
-import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
-import type { StorageView } from "@shared/storage-health.ts";
+import type { DatabaseBackupsSaveRequest } from "@shared/database-backups.ts";
+import type { IdleCachePlan, StorageView } from "@shared/storage-health.ts";
+import type { StorageLimitsConfigPatch } from "@shared/storage-limits.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -458,6 +459,8 @@ export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/p
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
+/** Settings > Storage: what the idle-cache budget would remove now. Observes every slot. */
+export const fetchIdleCachePlan = () => fetchJson<IdleCachePlan>("/api/storage/pool-caches");
 /** Machine-local roots that feed every repository picker and name resolver. */
 export const fetchRepoIndex = () => fetchJson<RepoIndexView>("/api/repo-index");
 /**
@@ -2312,10 +2315,15 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
-  setDatabaseBackupsConfig: (patch: DatabaseBackupsConfigPatch) =>
-    put<ActionResult & { message?: string }>(`/api/storage/backups/config`, patch),
+  /** `expectRemove` is the exact deletion list the page showed; a mismatch answers 409. */
+  setDatabaseBackupsConfig: (request: DatabaseBackupsSaveRequest) =>
+    put<ActionResult & { message?: string }>(`/api/storage/backups/config`, request),
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
+  setStorageLimits: (patch: StorageLimitsConfigPatch) =>
+    put<ActionResult & { message?: string }>(`/api/storage/limits`, patch),
+  /** Start measuring the state directory. It finishes in the background. */
+  measureStorage: () => post<ActionResult & { message?: string }>(`/api/storage/usage/measure`),
 
   // --- Repository discovery roots ---
   // Forgets the window's repository list once the save is ACCEPTED: the directories it

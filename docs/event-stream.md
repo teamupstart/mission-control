@@ -88,9 +88,13 @@ digest, preflight, transaction, rollback, or reconciliation logic at the HTTP bo
 ## Storage health
 
 `storage_health` carries the whole storage aggregate from `src/shared/storage-health.ts`: backup
-status per kind, the kept copies with their sizes, the total size, and the current problems. The
-daemon's `StorageHealthService` recomputes it after every database backup capture and prune,
-and emits the event only when the result changed. The
+status per kind, the kept copies with their sizes, the total size, the state directory's last
+measurement by category (and its pools, at most `STORAGE_USAGE_POOL_LIMIT`), the volume's free
+space, the storage limits it was judged against, and the current problems. The daemon's
+`StorageHealthService` recomputes it after every database backup capture and prune, measurement,
+volume check that moved, and limits save, and emits the event only when the result changed. The
+aggregate is bounded: eight categories, at most 64 pools, and no per-slot sizes, which stay in the
+daemon for `GET /api/storage/pool-caches`. The
 reconnect snapshot carries the same value as `storageHealth`, or null before the service has
 computed it once, and `GET /api/storage` returns it with the backup config. Settings > Storage
 shows whichever of the two arrived last, so its re-read after a write is not hidden by an older

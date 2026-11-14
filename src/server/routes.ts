@@ -403,11 +403,19 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
-import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
+import {
+  getDatabaseBackupsConfig,
+  setDatabaseBackupsConfig,
+  StaleBackupPreviewError,
+} from "./database-backups/config.ts";
 import type { DatabaseBackupService } from "./database-backups/service.ts";
 import type { StorageHealthService } from "./storage-health.ts";
-import type { StorageView } from "@shared/storage-health.ts";
-import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
+import type { IdleCachePlanUnavailable, StorageView } from "@shared/storage-health.ts";
+import { StorageLimitsConfigPatchSchema } from "@shared/storage-limits.ts";
+import { getStorageLimitsConfig, setStorageLimitsConfig } from "./storage-limits.ts";
+import { planIdleCache } from "./storage-pools.ts";
+import type { StorageUsageMonitor } from "./storage-usage.ts";
+import { DatabaseBackupsSaveRequestSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -1370,6 +1378,10 @@ export interface RouteDeps {
   databaseBackups?: DatabaseBackupService;
   /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
   storageHealth?: StorageHealthService;
+  /**
+   * The state directory's measurer. Measure now and the pool-cache plan return 503 without it.
+   */
+  storageUsage?: StorageUsageMonitor;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1427,6 +1439,7 @@ export const ROUTE_DEP_NAMES = [
   "settingsBackups",
   "databaseBackups",
   "storageHealth",
+  "storageUsage",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1760,6 +1773,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     settingsBackups,
     databaseBackups,
     storageHealth,
+    storageUsage,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -8693,25 +8707,39 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }, 503);
   // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
   // and reaches every open dashboard through the same `storage_health` event.
+  const storageUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Storage health service is unavailable",
+  }, 503);
   app.get("/api/storage", (c) => {
-    if (!storageHealth) {
-      return c.json({
-        error: "service_unavailable" as const,
-        message: "Storage health service is unavailable",
-      }, 503);
-    }
+    if (!storageHealth) return storageUnavailable(c);
     const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
     return c.json(view);
   });
   app.put("/api/storage/backups/config", async (c) => {
     if (!databaseBackups) return databaseBackupsUnavailable(c);
-    const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
+    const parsed = await parseBody(c, DatabaseBackupsSaveRequestSchema);
     if (!parsed.ok) return parsed.res;
-    // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    const { expectRemove, ...patch } = parsed.data;
+    // No save deletes a copy its caller did not name. A request without `expectRemove` is taken
+    // to expect no deletions: one that deletes nothing (an interval, a raised count) goes through
+    // as before, and one that would delete copies is refused with the exact list, which the
+    // caller confirms by sending it back. That refusal is the preview for any API caller.
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk, or
+    // a list the copies no longer match.
     let saved;
     try {
-      saved = setDatabaseBackupsConfig(parsed.data, databaseBackups);
+      saved = setDatabaseBackupsConfig(patch, databaseBackups, expectRemove ?? []);
     } catch (error) {
+      if (error instanceof StaleBackupPreviewError) {
+        return c.json(expectRemove === undefined
+          ? {
+              error: "preview_required" as const,
+              message: `Saving these limits deletes ${error.remove.length} ${error.remove.length === 1 ? "copy" : "copies"}. Nothing was saved or deleted; send them as expectRemove to confirm.`,
+              remove: error.remove,
+            }
+          : { error: "stale_preview" as const, message: error.message, remove: error.remove }, 409);
+      }
       return c.json({
         error: "save_failed" as const,
         message: error instanceof Error ? error.message : String(error),
@@ -8720,6 +8748,64 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
     registry.emitStorageConfigChanged();
     return c.json(saved);
+  });
+
+  // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
+  // idle-cache budget only chooses what a cleanup preview offers.
+  app.put("/api/storage/limits", async (c) => {
+    if (!storageHealth) return storageUnavailable(c);
+    const parsed = await parseBody(c, StorageLimitsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    let limits;
+    try {
+      limits = setStorageLimitsConfig(parsed.data);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // The limits ride the aggregate, so this publishes them, and any warning they start or end,
+    // to every open dashboard.
+    storageHealth.recompute();
+    return c.json({ limits });
+  });
+
+  // Measure now. The walk runs in the background and can take minutes; the answer is the state
+  // it started, and the finished measurement arrives through `storage_health`.
+  app.post("/api/storage/usage/measure", (c) => {
+    if (!storageUsage || !storageHealth) return storageUnavailable(c);
+    void storageUsage.measure();
+    void storageUsage.checkVolume();
+    return c.json({ usage: storageUsage.usage() }, 202);
+  });
+
+  // What the idle-cache budget would remove right now. On demand rather than in the aggregate,
+  // because it observes every native slot through Git.
+  app.get("/api/storage/pool-caches", async (c) => {
+    if (!storageUsage || !worktreeOperations) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: "Native worktree pools are unavailable",
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
+    const limits = getStorageLimitsConfig();
+    try {
+      const status = await worktreeOperations.manager.status();
+      return c.json(planIdleCache({
+        status,
+        slotBytes: (path) => storageUsage.slotBytes(path),
+        sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+        budgetBytes: limits.poolIdleBudgetBytes,
+        keepWarm: limits.poolKeepWarm,
+        now: Date.now(),
+      }));
+    } catch (error) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
   });
 
   // Back up now: a `manual` copy through the same single-flight capture as the hourly one.

@@ -32,7 +32,7 @@ function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
   };
 }
 
-const OFF = { foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false };
+const OFF = { foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false, storageTone: null };
 
 // ---- rail: which category lights, and in which tone ----
 
@@ -158,21 +158,21 @@ test("a daemon that does not report telemetry lights nothing rather than an all-
 
 test("the Foreman dot rides App-owned state, not the status payload", () => {
   // Knowable even with a null status: Foreman is deliberately absent from the payload.
-  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: true, trustBlindSpot: false, trustCheckExecution: false }), "foreman");
-  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false }), null);
+  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: true, trustBlindSpot: false, trustCheckExecution: false, storageTone: null }), "foreman");
+  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false, storageTone: null }), null);
   // And it does not read any status fact, so a busy status leaves it off when Foreman is off.
   assert.equal(
-    settingsRailDot("foreman", { status: status({ taskSources: { failing: 3 } }), foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false }),
+    settingsRailDot("foreman", { status: status({ taskSources: { failing: 3 } }), foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false, storageTone: null }),
     null,
   );
 });
 
 test("the trust dot is amber only when armed AND there is a merge-without-review blind spot", () => {
   const armed = status({ shipping: { autoMerge: true } });
-  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: true, trustCheckExecution: false }), "armed");
+  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: true, trustCheckExecution: false, storageTone: null }), "armed");
   // Armed with no blind spot, or a blind spot with YOLO disarmed, is not a trap.
-  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false }), null);
-  assert.equal(settingsRailDot("trust", { status: status(), foremanEnabled: false, trustBlindSpot: true, trustCheckExecution: false }), null);
+  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false, storageTone: null }), null);
+  assert.equal(settingsRailDot("trust", { status: status(), foremanEnabled: false, trustBlindSpot: true, trustCheckExecution: false, storageTone: null }), null);
 });
 
 // The trust panel's OTHER amber, summarized. Without this the rail claims less than the

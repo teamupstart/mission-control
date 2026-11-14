@@ -779,8 +779,9 @@ Residents page with Agent Shepherd's read-only profile open:
 The last three are the drawer:
 
 8. **Open the Residents sidebar** opens the fleet and spotlights the top bar's **Residents**
-   button. Its Next reads **Open the sidebar**. With that button hidden under **Settings >
-   Display > Top bar**, the stop names Shift+H, the palette and the edge tab instead.
+   button. Its Next reads **Open the sidebar**. The button is drawn in every top-bar layout:
+   **Settings > Display > Top bar** can minimize it to its ⌂ but cannot hide it. The stop's
+   copy also names Shift+H, the palette and the edge tab.
 9. **Every resident at a glance** opens the drawer and spotlights it. Back puts away a drawer
    the tour opened.
 10. **Pin it open** spotlights the drawer's **Pin** and finishes.
@@ -792,7 +793,8 @@ without moving focus onto a card, because the tour's popover owns the keyboard.
 
 **It ends on the fleet.** Its entry declares an `exit` route, so Finish or Exit lands on the
 fleet, with the drawer still open in **Drawer** placement when the tour opened it, and focus on
-the top bar's **Residents** button, which exists in both placements and after an early Exit.
+the top bar's **Residents** button. That button exists in both placements, after an early Exit,
+and in every top-bar layout, minimized or not, so the landing always has a target.
 The tour is read-only: no profile is duplicated or saved, nothing launches, and Pin is the
 operator's to press. Its one write is giving its announcement back when it is dismissed midway,
 so the startup picker shows it again in the next window. Agent Shepherd's row and the Loop section resolve inside the registered

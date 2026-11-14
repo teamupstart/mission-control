@@ -178,10 +178,11 @@ const STEPS: readonly Step[] = [
     targets: [{ target: "residents:topbar-button", side: "bottom" }],
     prepare: (context) => context.navigation.showFleet(),
     ready: (context) => context.element !== null,
+    // The button is drawn in every top-bar layout - Settings > Display > Top bar can minimize it
+    // to its ⌂ but not hide it - so this only shows while the fleet's top bar is still mounting.
     fallback: () =>
-      "The top bar's Residents button is hidden under Settings > Display > Top bar. Shift+H, "
-      + "the ⌘K palette and the edge tab on the window's right edge still open the sidebar. "
-      + "Next opens it.",
+      "The top bar's Residents button is still loading. Shift+H, the ⌘K palette and the edge "
+      + "tab on the window's right edge also open the sidebar. Next opens it.",
     nextLabel: () => "Open the sidebar",
     reconcile: refresh,
   },

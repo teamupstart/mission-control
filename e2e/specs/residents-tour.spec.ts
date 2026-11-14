@@ -195,6 +195,7 @@ test("the tour advertises Agent Shepherd, walks authoring, and hands over the op
     "Create your own custom persona's and apply them to Residents. Keep your Resident's scoped to specific domains for best results and to avoid context bloat.",
   );
   await expectSpotlight(rail.getByRole("button", { name: "New", exact: true }));
+  await shoot(page, "residents-tour-new");
 
   await step.getByRole("button", { name: "Next" }).click();
   step = tourStep(page, "How a resident keeps working");

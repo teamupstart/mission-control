@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { flattenTour, type TourStepContext } from "../src/web/tour/contracts.ts";
+import { TOPBAR_ITEMS } from "../src/web/lib/topbar-items.ts";
 import { TOUR_ENTRIES, tourEntry } from "../src/web/tour/entries.ts";
 import {
   createTourTargetRegistry,
@@ -162,7 +163,7 @@ test("until the profiles arrive, the page stops say so and wait on the rail", ()
   assert.deepEqual(moves, ["profile:none"]);
 });
 
-test("the drawer stops wait for the drawer, and a hidden top-bar button names the other ways in", () => {
+test("the drawer stops wait for the drawer, and a top-bar button still loading names the other ways in", () => {
   const { navigation } = recorder();
   const closed = contextFor("sidebar", READY, navigation);
   assert.equal(closed.stop.ready?.(closed), false);
@@ -170,9 +171,12 @@ test("the drawer stops wait for the drawer, and a hidden top-bar button names th
   const open = contextFor("pin", { ...READY, drawerShown: true }, navigation);
   assert.equal(open.stop.ready?.(open), true);
   assert.equal(open.stop.reconcile?.(open).kind, "refresh");
-  const hidden = contextFor("open-sidebar", READY, navigation, { element: null });
-  assert.equal(hidden.stop.ready?.(hidden), false);
-  assert.match(hidden.stop.fallback?.(hidden) ?? "", /Shift\+H/);
+  // The button can be minimized but never hidden, so the stop and the exit landing always have
+  // it; the fallback covers only the moment the fleet's top bar is mounting.
+  assert.equal(TOPBAR_ITEMS.find((item) => item.id === "residents")?.kind, "compactable");
+  const loading = contextFor("open-sidebar", READY, navigation, { element: null });
+  assert.equal(loading.stop.ready?.(loading), false);
+  assert.match(loading.stop.fallback?.(loading) ?? "", /Shift\+H/);
 });
 
 test("the entry opens on the Residents page and hands the fleet over on exit", () => {

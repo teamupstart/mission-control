@@ -202,6 +202,18 @@ export interface MemberTaskRequest {
   effort: ThinkingLevel | null;
 }
 
+/**
+ * A member dispatch refused only because the operator's launch hold stood when TaskManager read
+ * it. The gateway throws this, not a plain Error, so the engine can tell a launch to wait out from
+ * one that failed - from the refusal itself, whatever the hold says by the time it is handled.
+ */
+export class MemberLaunchHeldError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "MemberLaunchHeldError";
+  }
+}
+
 export interface MemberDispatchRequest {
   taskId: string;
   /** The exact commit the worktree must be provisioned at and verified against. */
@@ -2392,7 +2404,13 @@ export class EnsembleEngine {
           ...(byOperator ? { overridePauseHold: true } : {}),
         })
         .catch((err) =>
-          this.onDispatchRejected(state.run.id, memberId, attemptId, err instanceof Error ? err.message : String(err), !byOperator),
+          this.onDispatchRejected(
+            state.run.id,
+            memberId,
+            attemptId,
+            err instanceof Error ? err.message : String(err),
+            !byOperator && err instanceof MemberLaunchHeldError,
+          ),
         );
       this.event(state.run.id, "member_launched", { memberId: member.id }, `member_launched:${attempt.id}`);
       occupied += 1;
@@ -2404,24 +2422,26 @@ export class EnsembleEngine {
    * so the compiled barrier can decide whether the stage can still proceed - the same as any other
    * member failure, just reached through the launch path instead of an observed Task death.
    *
-   * Except a wave launch refused while the operator's launch hold stands: the hold began between
-   * the engine's check and TaskManager's, so the attempt goes back to pending to launch when the
-   * hold lifts, exactly as if the check had seen it. An operator's own retry claimed the override,
-   * so it is never deferred - nothing would launch it again.
+   * Except a wave launch TaskManager refused for the operator's launch hold (`launchHeld`): the
+   * hold began between the engine's check and TaskManager's, so the attempt goes back to pending,
+   * exactly as if the check had seen it. Decided from the refusal, never by asking the hold again:
+   * the operator may already have resumed, and the wake that lift sent has then come and gone. The
+   * wake below is what launches it in that case; while the hold stands, that wake holds it again.
+   * An operator's own retry claimed the override, so it is never deferred - nothing would launch it
+   * again.
    */
   private async onDispatchRejected(
     runId: string,
     memberId: string,
     attemptId: string,
     detail: string,
-    deferIfHeld: boolean,
+    refusedForHold: boolean,
   ): Promise<void> {
     await this.withRunLock(runId, async () => {
       const now = this.now();
-      const held = deferIfHeld ? this.launchHold() : null;
-      if (held) {
+      if (refusedForHold) {
         this.store.setAttemptStatus(attemptId, ["launching"], "pending", {}, now);
-        this.log("info", { event: "ensemble_member_launch_held", runId, memberId, reason: held });
+        this.log("info", { event: "ensemble_member_launch_held", runId, memberId, reason: detail });
         return;
       }
       this.store.setAttemptStatus(attemptId, ["pending", "launching"], "failed", { error: detail, finishedAt: now }, now);

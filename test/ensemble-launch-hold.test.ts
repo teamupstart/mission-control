@@ -19,7 +19,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
-const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
+const { EnsembleEngine, MemberLaunchHeldError } = await import("../src/server/ensembles/engine.ts");
 const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
 const { TaskManagerGateway } = await import("../src/server/ensembles/member-launch.ts");
 const { createFinalizeDeps } = await import("../src/server/ensembles/finalize-deps.ts");
@@ -135,7 +135,7 @@ test("a member launch refused because the hold began meanwhile goes back to pend
     override async dispatch(request: MemberDispatchRequest): Promise<void> {
       // TaskManager read the hold after the engine did, and the operator paused in between.
       this.hold!.reason = HOLD;
-      throw new Error(HOLD);
+      throw new MemberLaunchHeldError(HOLD);
     }
   }
   const gateway = new HoldsMidDispatch();
@@ -152,6 +152,46 @@ test("a member launch refused because the hold began meanwhile goes back to pend
   assert.equal(attempt!.status, "pending", "back to pending, to launch when the hold lifts");
   assert.equal(member!.status, "launching", "the member did not fail");
   assert.notEqual(store.getRun(run.id)!.status, "failed");
+});
+
+test("a launch refused for the hold is still kept, and launched, when the hold lifted before the refusal was handled", async () => {
+  // TaskManager refused for the hold; by the time the rejection runs, the operator has resumed and
+  // the wake that lift sent has come and gone. Asking the hold again would read null and fail the
+  // member for good. The refusal itself says it was the hold.
+  class RefusedOnce extends FakeGateway {
+    refusals = 0;
+    override async dispatch(request: MemberDispatchRequest): Promise<void> {
+      if (this.refusals === 0) {
+        this.refusals += 1;
+        throw new MemberLaunchHeldError(HOLD);
+      }
+      return super.dispatch(request);
+    }
+  }
+  const gateway = new RefusedOnce();
+  const { store, engine, hold } = harness({ gateway });
+  assert.equal(hold.reason, null, "the engine's own check never sees the hold");
+  const { run } = store.createRun(runInsert(singleWavePlan(1)));
+  await engine.launch(run.id);
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+
+  const [member] = store.listMembers(run.id);
+  assert.notEqual(member!.status, "failed", "a hold is a wait, not a failure");
+  assert.equal(gateway.refusals, 1);
+  assert.equal(gateway.dispatched.length, 1, "relaunched by the rejection's own wake, the hold being gone");
+  assert.notEqual(store.getRun(run.id)!.status, "failed");
+});
+
+test("a launch refused for any other reason still fails the member", async () => {
+  const gateway = new FakeGateway();
+  gateway.failAllDispatches();
+  const { store, engine, hold } = harness({ gateway });
+  hold.reason = null;
+  const { run } = store.createRun(runInsert(singleWavePlan(1)));
+  await engine.launch(run.id);
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  const [member] = store.listMembers(run.id);
+  assert.equal(member!.status, "failed");
 });
 
 test("the winner's replacement task waits out the hold, the run stays finalizing, and it starts when the hold lifts", async () => {
@@ -246,6 +286,18 @@ test("the real gateway claims the pause override only when the request does", as
   await gateway.dispatch({ taskId: "t1", baseSha: "a".repeat(40), model: null, effort: null });
   await gateway.dispatch({ taskId: "t2", baseSha: "a".repeat(40), model: null, effort: null, overridePauseHold: true });
   assert.deepEqual(seen, [false, true]);
+});
+
+test("the real gateway reports a launch-hold refusal as one, and any other refusal as a failure", async () => {
+  const outcomes = [
+    { ok: false as const, error: HOLD, launchHeld: true as const },
+    { ok: false as const, error: "no such task" },
+  ];
+  const fakeTasks = { dispatch: async () => outcomes.shift()! };
+  const gateway = new TaskManagerGateway(fakeTasks as never, { getTask: () => undefined } as never);
+  const request = { taskId: "t1", baseSha: "a".repeat(40), model: null, effort: null };
+  await assert.rejects(gateway.dispatch(request), (err: unknown) => err instanceof MemberLaunchHeldError);
+  await assert.rejects(gateway.dispatch(request), (err: unknown) => err instanceof Error && !(err instanceof MemberLaunchHeldError));
 });
 
 test("the finalizer's replacement dispatch claims no pause override", async () => {

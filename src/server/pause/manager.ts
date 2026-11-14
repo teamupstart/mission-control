@@ -337,10 +337,18 @@ export class PauseManager {
       if (existing) {
         // Already held. A person's own pause takes ownership, so a later bulk lift leaves it;
         // asking for `now` on a session still waiting for its turn freezes it at once.
-        existing.reason = "operator";
         const failed = mode === "now" && existing.phase === "pending" ? await this.attemptFreeze(session, existing) : null;
+        // The owner changes only with a save behind it. Unsaved, a restart would bring back the
+        // old owner, so this daemon keeps it too: Resume all or ending priority still lifts the
+        // session, exactly as the next one would. The freeze above saved under the old owner.
+        const previous = existing.reason;
+        existing.reason = "operator";
+        if (!this.persist()) {
+          existing.reason = previous;
+          this.publishSession(sessionId);
+          return UNSAVED;
+        }
         this.publishSession(sessionId);
-        if (!this.persist()) return UNSAVED;
         return failed ? heldButRunning(failed) : { ok: true };
       }
       const failed = await this.hold(session, "operator", mode);

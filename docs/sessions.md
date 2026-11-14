@@ -773,7 +773,9 @@ its current turn ends it starts nothing new until you resume.
 it is reported, even when there is nothing left for it to resume, so its launch hold does not
 come back after a restart. Ending priority, Resume all and the scheduled
 morning resume each lift only what they paused. A session you paused yourself stays paused
-until you resume it. Resuming one session lifts it whatever paused it.
+until you resume it. Pausing a session that Pause all or priority already holds makes it yours
+only once that is saved: if it cannot be, the control says so and the session stays theirs, so
+Resume all still brings it back. Resuming one session lifts it whatever paused it.
 
 **Messages wait.** While a session is paused, the reply box's **Send** reads **Queue**. A
 message sent then waits in the session's outbox and is delivered when it resumes. Its steer
@@ -810,7 +812,10 @@ In the console:
 A paused session looks paused whichever controls are on. Its card has a hatched slate spine
 and a flag that says why: **Paused · 14m**, **Fleet paused** or **Paused for priority**. Its
 activity line says when it stopped and what it was doing, and its state reads `paused`.
-Pause all can be hidden from the title bar under Settings → Display → **Top bar**.
+Pause all can be hidden from the title bar under Settings → Display → **Top bar**. On the
+narrowest title bar it gives way with the fleet pulse's words, and comes back as the window
+widens; while Pause all or priority is on, the banner under the title bar keeps **Resume all
+now** and **End priority** at every width.
 
 ### What each agent can do is declared, not assumed
 

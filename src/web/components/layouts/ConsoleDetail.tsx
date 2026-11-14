@@ -679,24 +679,17 @@ export function ConsoleDetail({
             </button>
           </Tooltip>
         )}
+        <StateBadge
+          session={session}
+          onOpenReviews={() => view.onOpenReviews(session.id)}
+          display={st}
+        />
         {/* The pause half sits flush against the state badge: pausing is an action on the
-            state, so it lives on the badge that names it (Pause controls > State badge). */}
-        {pauseControls.has("badge") ? (
-          <span className="badge-split">
-            <StateBadge
-              session={session}
-              onOpenReviews={() => view.onOpenReviews(session.id)}
-              display={st}
-            />
-            <BadgePauseHalf session={session} />
-          </span>
-        ) : (
-          <StateBadge
-            session={session}
-            onOpenReviews={() => view.onOpenReviews(session.id)}
-            display={st}
-          />
-        )}
+            state, so it lives on the badge that names it (Pause controls > State badge). Its
+            own child of the header, never wrapped with the badge: the deepest rung's allowlist
+            keeps `.badge` and sheds everything else, so it takes the half and never the review
+            button. */}
+        {pauseControls.has("badge") && <BadgePauseHalf session={session} />}
         <span className="detail-head-spacer" />
         {/* Leads the runtime cluster - mode, model, context, cost - because the posture
             governs the session while the other three are consequences of running under

@@ -846,9 +846,7 @@ test("missing GitHub auth and a missing label each produce actionable copy", asy
 test("the Feedback control stays reachable when the bar is compressed", async ({
   dashboard,
 }) => {
-  // 1000px, not 900: the Pause all glyph raised the width below which an all-rungs bar may
-  // stack by about 44px, and on Linux font metrics 900 now sits under it.
-  await dashboard.setViewportSize({ width: 1000, height: 800 });
+  await dashboard.setViewportSize({ width: 900, height: 800 });
   const bar = dashboard.locator(".topbar");
   await expect(bar).toBeVisible();
   // One row, at the width that fires most of the ladder.

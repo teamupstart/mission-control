@@ -144,7 +144,8 @@ const LONG_PROFILES = [PROFILES[0]!, PROFILES[1]!, profile("p3", LONG_NAME, "amb
  *
  * `wide` spends the last rung too since Pause all joined the bar: its glyph is about 44px, and
  * on Linux font metrics rungs 1 to 4 no longer hold this fleet and the open dock on one row at
- * 1400px, so the fit steps on to rung 5 there.
+ * 1400px, so the fit steps on to rung 5 there - where the glyph gives way, so every width that
+ * spends the last rung fits exactly as it did before.
  */
 const VIEWPORTS = {
   wide: { width: 1400, height: 900, rung: "1 2 3 4 5", oneRow: true },

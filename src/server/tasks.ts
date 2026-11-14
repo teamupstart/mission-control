@@ -976,7 +976,13 @@ export interface AssignOutcome extends Ok {
 
 export type DispatchOutcome =
   | { ok: true; task: Task }
-  | { ok: false; error: string; task?: Task };
+  /**
+   * `launchHeld`: refused only because the operator's launch hold stands (Pause all with
+   * launches held, or a priority session). A caller that launches on its own waits that out
+   * rather than treating it as a failure, and it reads that from here, never by asking the
+   * hold again later, when it may already have lifted.
+   */
+  | { ok: false; error: string; task?: Task; launchHeld?: true };
 
 export type PipelineRecoveryOutcome =
   | { ok: true; task: Task }
@@ -3553,7 +3559,7 @@ export class TaskManager {
       // The operator's launch hold (Pause all, or a priority session), by the same inversion
       // and with its own claim: only a launch that claims `overridePauseHold` gets through it.
       const held = options.overridePauseHold === true ? null : this.launchHold();
-      if (held) return { ok: false, error: held, task: t };
+      if (held) return { ok: false, error: held, task: t, launchHeld: true };
       const blockers = this.dependencyBlockers(t);
       if (blockers.length > 0) {
         return {

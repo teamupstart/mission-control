@@ -1099,3 +1099,40 @@ test("an after-turn pause with nothing stopped yet still waits for its turn afte
   assert.equal(reads, 0, "its turn is still running");
   assert.equal(registry.pauses.get("pane")?.phase, "pending");
 });
+
+test("a pause that takes a session from Pause all but cannot be saved leaves it Pause all's", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const { freezer, resumed } = recordingFreezer({ a: [70], b: [80] });
+  const store = flakyStore();
+  const manager = new PauseManager({ registry, freezer, store, now: () => 1_000_000, log: () => {} });
+  manager.start();
+  registry.sweep();
+  assert.deepEqual(await manager.pauseFleet({ holdDispatch: true, resumeAt: null }), { ok: true });
+  assert.equal(registry.pauses.get("a")?.reason, "fleet");
+
+  store.failSaves(1);
+  const result = await manager.pause("a");
+  assert.equal(result.ok, false, "the operator is told it was not saved");
+  assert.equal(registry.pauses.get("a")?.reason, "fleet", "the published owner is still Pause all");
+  assert.equal(store.get()?.sessions.a?.reason, "fleet", "and so is the saved one");
+
+  // Resume all lifts it, as a restart from that saved state would.
+  assert.deepEqual(await manager.resumeFleet(), { ok: true });
+  assert.equal(registry.pauses.get("a") ?? null, null);
+  assert.deepEqual(resumed.flat().sort(), [70, 80]);
+});
+
+test("a pause that takes a session from Pause all and is saved keeps it through Resume all", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const { freezer } = recordingFreezer({ a: [70], b: [80] });
+  const store = flakyStore();
+  const manager = new PauseManager({ registry, freezer, store, now: () => 1_000_000, log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.pauseFleet({ holdDispatch: false, resumeAt: null });
+  assert.deepEqual(await manager.pause("a"), { ok: true });
+  assert.equal(store.get()?.sessions.a?.reason, "operator");
+  await manager.resumeFleet();
+  assert.equal(registry.pauses.get("a")?.reason, "operator", "a person's own pause outlasts Resume all");
+  assert.equal(registry.pauses.get("b") ?? null, null);
+});

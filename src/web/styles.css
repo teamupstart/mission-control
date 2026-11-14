@@ -29050,9 +29050,7 @@ span.line-run-prov {
      - `.agent-dot` and `.detail-title`, which are the session's identity, and `.tk-tile`, a
        fixed 48px that takes the agent dot's place (riding its corner) under the Kind tile
        task-type style;
-     - `.badge`, which is the review button and is never shed at any rung, and `.badge-split`,
-       the wrapper it sits in when Pause controls > State badge is on - only the pause half
-       beside it goes, below;
+     - `.badge`, which is the review button and is never shed at any rung;
      - `.workflow-bind-chip`, at its mark from rung 2 - the console detail is the ONLY
        surface that offers it, so hiding it removes the affordance rather than moving it;
      - `.si-session-chip`, a 14px mark whose width does not move with the session;
@@ -29063,19 +29061,8 @@ span.line-run-prov {
    Everything on that list is either the session's identity or a fixed width, so past this
    rung the header's requirement no longer depends on what the session is carrying at all.
    That is what makes the fit provable rather than measured per fixture. */
-.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.tk-tile):not(.detail-title):not(.badge):not(.badge-split):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
+.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.tk-tile):not(.detail-title):not(.badge):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
   display: none;
-}
-/* The state badge's pause half goes at rung 7; the review button it is joined to never does.
-   Nothing is lost with it: a paused session's band under the header still offers Resume, and
-   the toolbar button and the board card still offer Pause. The badge takes back its own round
-   end once the half beside it has gone. */
-.detail-head[data-rung~="7"] .badge-pause-half {
-  display: none;
-}
-.detail-head[data-rung~="7"] .badge-split > .badge,
-.detail-head[data-rung~="7"] .badge-split > .tt-anchor > .badge {
-  border-radius: 999px;
 }
 
 .detail-pipeline-meter {
@@ -32500,8 +32487,19 @@ span.line-run-prov {
   align-items: stretch;
   flex: none;
 }
+/* In the console header the half is the badge's own sibling, not wrapped with it, so the
+   header's rung-7 allowlist (which keeps `.badge`) sheds the half by itself and can never take
+   the review button with it. A paused session's band still offers Resume there, and the toolbar
+   button and the board card still offer Pause. The margin closes the header's 10px gap; the
+   badge squares its end only while the half is drawn beside it. */
+.detail-head > .badge-pause-half,
+.detail-head > .tt-anchor:has(> .badge-pause-half) {
+  flex: none;
+  margin-left: -10px;
+}
 .badge-split > .badge,
-.badge-split > .tt-anchor > .badge {
+.badge-split > .tt-anchor > .badge,
+.detail-head:not([data-rung~="7"]) > .badge:has(+ .badge-pause-half, + .tt-anchor > .badge-pause-half) {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
@@ -32510,13 +32508,20 @@ span.line-run-prov {
   align-items: center;
   justify-content: center;
   width: 26px;
-  padding: 0;
+  /* The badge's own vertical metrics, plus a zero-width line of its text below, so the half is
+     exactly the badge's height on its own: in the console header it is the badge's sibling,
+     with no wrapper to stretch it. */
+  padding: 3px 0;
+  font-size: 11.5px;
   cursor: pointer;
   color: var(--muted);
   background: color-mix(in oklab, var(--fg) 6%, transparent);
-  border: 0;
-  border-left: 1px solid var(--border);
+  border: 1px solid transparent;
+  border-left-color: var(--border);
   border-radius: 0 999px 999px 0;
+}
+.badge-pause-half::before {
+  content: "\200b";
 }
 .badge-pause-half:hover:not(:disabled),
 .badge-pause-half:focus-visible {
@@ -32597,7 +32602,14 @@ span.line-run-prov {
 .rail-pause-mark.is-priority {
   color: var(--fg);
 }
-/* Pause all, in the title bar. Glyph-only at rest; the count rides on it once engaged. */
+/* Pause all, in the title bar. Glyph-only at rest; the count rides on it once engaged.
+   It gives way at the last rung, with the pulse's words, so the narrowest bar fits exactly as
+   it did before the control joined it: the glyph is about 44px, and on Linux font metrics that
+   stacked a busy bar at widths where every rung had already been spent. While Pause all or
+   priority is on, its banner carries Resume all and End priority at every width. */
+.topbar[data-rung~="5"] .fleet-pause-wrap {
+  display: none;
+}
 .fleet-pause-wrap {
   position: relative;
   display: flex;

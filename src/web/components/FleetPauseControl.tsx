@@ -80,18 +80,21 @@ export function FleetPauseControl(): React.JSX.Element {
       ? `Resume all - ${sessionCount(fleet.pausedForFleet)} paused with everything else`
       : `End priority - resume the ${sessionCount(fleet.pausedForPriority)} paused for it`;
     return (
-      <Tooltip label={error ?? label}>
-        <button
-          type="button"
-          className={`ghost-btn glyph-btn fleet-pause-btn ${paused ? "is-paused" : "is-priority"}`}
-          aria-label={label}
-          disabled={busy}
-          onClick={() => void act(paused ? api.resumeFleet : api.endPriority)}
-        >
-          <PauseGlyph kind={paused ? "resume-all" : "star"} size={11} />
-          <span className="fleet-pause-count">{paused ? fleet.pausedForFleet : fleet.pausedForPriority}</span>
-        </button>
-      </Tooltip>
+      // In the same wrapper as the resting button, so the title bar's last rung sheds either one.
+      <div className="fleet-pause-wrap">
+        <Tooltip label={error ?? label}>
+          <button
+            type="button"
+            className={`ghost-btn glyph-btn fleet-pause-btn ${paused ? "is-paused" : "is-priority"}`}
+            aria-label={label}
+            disabled={busy}
+            onClick={() => void act(paused ? api.resumeFleet : api.endPriority)}
+          >
+            <PauseGlyph kind={paused ? "resume-all" : "star"} size={11} />
+            <span className="fleet-pause-count">{paused ? fleet.pausedForFleet : fleet.pausedForPriority}</span>
+          </button>
+        </Tooltip>
+      </div>
     );
   }
 

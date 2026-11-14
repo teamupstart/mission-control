@@ -3834,15 +3834,25 @@ button.wf-run-version:focus-visible {
    rows its component asks for, grows with wrapped or explicit lines, and keeps five lines
    visible before it becomes its own scroller. `field-sizing` also reacts to imperative
    value changes, which matters when a queued turn is recalled into an uncontrolled
-   composer without a React render. Unsupported browsers keep the native rows-based size
-   and the existing vertical resize handle. */
+   composer without a React render. Unsupported browsers keep the native rows-based size.
+
+   Where a field shows the corner handle, dragging it gives the field the height the person
+   chose, past the five-line cap. The cap describes how far a field GROWS ON ITS OWN, so it
+   must never clamp a drag - when it did, a drag stopped at five lines, and a field already
+   at the cap or held at a taller `min-height` did not move at all. The browser records a
+   drag as an inline `height` on the element, and that is the one signal the cap yields to;
+   no component here writes an inline height of its own. The handle is vertical only,
+   because these fields fill their column and a sideways drag pushes them out of it. */
 :where(textarea) {
   --textarea-min-content-height: 2lh;
   --textarea-block-chrome: 18px;
   field-sizing: content;
   min-height: calc(var(--textarea-min-content-height) + var(--textarea-block-chrome));
-  max-height: calc(5lh + var(--textarea-block-chrome));
   overflow-y: auto;
+  resize: vertical;
+}
+:where(textarea:not([style*="height"])) {
+  max-height: calc(5lh + var(--textarea-block-chrome));
 }
 textarea[rows="1"] { --textarea-min-content-height: 1lh; }
 textarea[rows="2"] { --textarea-min-content-height: 2lh; }

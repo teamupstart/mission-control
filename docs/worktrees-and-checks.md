@@ -70,7 +70,10 @@ task's attached repositories still resolve their own remote defaults.
 Native pooling is enabled by default. The daemon lazily creates exact-commit, detached Git
 worktrees beneath `MISSION_HOME/worktree-pools`, keyed by Git's physical common directory rather
 than by the checkout path used to reach it. Released slot directories remain in place so ignored
-dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
+dependencies and build caches stay warm for the next lease. Slot counts bound a pool, not its
+bytes; **Settings > Storage** measures them and offers an idle-cache budget whose removals run
+through the same previews and queue as this page (the `trimIdle` action). See
+[Storage](storage.md#pool-caches). A repository-specific disable uses a
 cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
 
 The allocator serializes new Git worktree creation within each repository. Distinct slot

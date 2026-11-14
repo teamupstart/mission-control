@@ -1118,7 +1118,12 @@ buttons do, and Foreman never does.
 An agent calling Mission MCP's `dispatch_task` can also explicitly set `overrideDisabled: true`
 to launch a parked task. Chat pre-approves this tool, including that option: the disabled switch
 is an autopilot hold, not a human approval or permission boundary against the calling agent.
-Dependencies, workflow readiness, and the remaining launch checks still apply.
+Dependencies, workflow readiness, and the remaining launch checks still apply. The operator's
+launch hold is different: while Pause all holds launches or a priority session runs, an agent's
+`dispatch_task` is refused, and the tool offers no override for it. Nor does any other route:
+the daemon honours the override only on the operator's own request, never on one carrying the
+daemon token, so an agent calling the dashboard's dispatch or assign route directly is held too. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
 
 The refusing default is the point. The Foreman worker is a separate process you start by
 hand, so it can outlive a daemon restart; one that predates this feature sends no override

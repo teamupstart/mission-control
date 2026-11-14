@@ -1,4 +1,5 @@
 import { taskDefaultWorkflowId } from "@shared/task.ts";
+import type { PauseRelease } from "./pause/release.ts";
 import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
 import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
 import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
@@ -819,12 +820,22 @@ function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): b
 export interface DispatchOptions extends TaskDispatchOptions {
   /** The caller is deliberately starting a parked task. See `DISABLED_REFUSAL`. */
   overrideDisabled?: boolean;
+  /**
+   * The caller is a person (or a launch a person started) launching while the operator's
+   * launch hold stands - Pause all with launches held, or a priority session. A separate claim
+   * from `overrideDisabled` because the two holds are separate decisions: starting a parked
+   * task is not consent to launch during a pause, nor the other way round. Absent means held,
+   * by `DISABLED_REFUSAL`'s inversion, so a Foreman worker older than this field is held too.
+   */
+  overridePauseHold?: boolean;
 }
 
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
   /** The caller is deliberately handing over a parked task. See `DISABLED_REFUSAL`. */
   overrideDisabled?: boolean;
+  /** The caller is handing work over during the operator's launch hold. See `DispatchOptions`. */
+  overridePauseHold?: boolean;
   /**
    * The caller has accepted what the handover reset discards beyond git state. False -
    * the default, and what an omitted flag gets - means a reset with anything to lose is
@@ -965,7 +976,13 @@ export interface AssignOutcome extends Ok {
 
 export type DispatchOutcome =
   | { ok: true; task: Task }
-  | { ok: false; error: string; task?: Task };
+  /**
+   * `launchHeld`: refused only because the operator's launch hold stands (Pause all with
+   * launches held, or a priority session). A caller that launches on its own waits that out
+   * rather than treating it as a failure, and it reads that from here, never by asking the
+   * hold again later, when it may already have lifted.
+   */
+  | { ok: false; error: string; task?: Task; launchHeld?: true };
 
 export type PipelineRecoveryOutcome =
   | { ok: true; task: Task }
@@ -1004,6 +1021,12 @@ function describeResetLoss(c: AssignResetConfirm): string {
   return parts.join(", ");
 }
 
+/** What the task manager needs of the daemon's `PauseManager`. */
+export interface TaskPause extends PauseRelease {
+  /** Why automatic launches are held right now, or null. */
+  launchHoldReason(): string | null;
+}
+
 /**
  * Owns the task lifecycle: create/queue, kick off dispatch, cancel (tearing down
  * the live session + terminal home + optional worktree), complete with an outcome, and
@@ -1011,6 +1034,11 @@ function describeResetLoss(c: AssignResetConfirm): string {
  * policy layer routes call into - the task analog of ReviewManager.
  */
 export class TaskManager {
+  /** Why automatic launches are held right now, or null; nothing without a `PauseManager`. */
+  private launchHold(): string | null {
+    return this.pause?.launchHoldReason() ?? null;
+  }
+
   private dispatcher: Dispatcher;
   private readonly worktrees: WorktreeManager;
   private readonly legacyWorktrees: LegacyTreehouseService;
@@ -1116,6 +1144,12 @@ export class TaskManager {
     private startupDeps: TaskManagerStartupDeps = {},
     worktrees?: WorktreeManager,
     legacyWorktrees?: LegacyTreehouseService,
+    /**
+     * The daemon's `PauseManager`: the launch hold automatic launches respect, and the thaw a
+     * stop or reset starts with. Absent - every focused test's bare manager - nothing is held
+     * and nothing can be frozen.
+     */
+    private pause?: TaskPause,
   ) {
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
@@ -2080,7 +2114,7 @@ export class TaskManager {
         MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS,
       ));
     });
-    const attempt = stopSession(session, this.supervisor, this.closeMergedSessionDeps.kill)
+    const attempt = stopSession(session, this.supervisor, this.closeMergedSessionDeps.kill, this.pause)
       .catch((error: unknown): ActionResult => ({
         ok: false,
         error: error instanceof Error ? error.message : String(error),
@@ -2443,6 +2477,7 @@ export class TaskManager {
       currentSession,
       this.supervisor,
       this.closeMergedSessionDeps.kill,
+      this.pause,
     );
     if (!killed.ok) {
       throw new Error(killed.error ?? "could not close the merged task's session");
@@ -3521,6 +3556,10 @@ export class TaskManager {
       if (refusedAsDisabled(t, options.overrideDisabled)) {
         return { ok: false, error: DISABLED_REFUSAL, task: t };
       }
+      // The operator's launch hold (Pause all, or a priority session), by the same inversion
+      // and with its own claim: only a launch that claims `overridePauseHold` gets through it.
+      const held = options.overridePauseHold === true ? null : this.launchHold();
+      if (held) return { ok: false, error: held, task: t, launchHeld: true };
       const blockers = this.dependencyBlockers(t);
       if (blockers.length > 0) {
         return {
@@ -3639,6 +3678,12 @@ export class TaskManager {
       // again. The launch-only value now travels with the launch, and an unpinned task stays
       // unpinned; the model a session actually ran on is recorded on the SESSION, which is
       // where it belongs and where the card reads it from.
+      //
+      // The launch hold asked again, in front of the launch: stacked readiness above can wait
+      // on GitHub, and Pause all or a priority session may have begun meanwhile. The same claim
+      // and the same refusal as the first check.
+      const heldNow = options.overridePauseHold === true ? null : this.launchHold();
+      if (heldNow) return { ok: false, error: heldNow, task: this.registry.getTask(id) ?? t, launchHeld: true };
       void this.dispatcher.dispatch(id, launch);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
@@ -4708,6 +4753,8 @@ export class TaskManager {
     if (refusedAsDisabled(t, opts.overrideDisabled)) {
       return { ok: false, error: DISABLED_REFUSAL, scope: "task" };
     }
+    const held = opts.overridePauseHold === true ? null : this.launchHold();
+    if (held) return { ok: false, error: held, scope: "task" };
     const dependencyBlockers = this.dependencyBlockers(t);
     if (dependencyBlockers.length > 0) {
       return {
@@ -4790,6 +4837,7 @@ export class TaskManager {
           undefined,
           driverClearFor(this.supervisor),
           this.pendingTurns,
+          this.pause,
         ));
     // The driver arm is supplied here rather than left to `rename`'s default for the same
     // reason `driverClearFor` is above: an embedded session handed a new task has to stop

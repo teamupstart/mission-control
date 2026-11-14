@@ -1,4 +1,5 @@
 import { isActiveTask } from "@shared/task-status.ts";
+import { isPaused } from "@shared/pause.ts";
 import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
@@ -218,6 +219,8 @@ export function agentIsFree(
   if (reportBucket(s, sessions) !== "idle") return false;
   // A blocked session is still working its own task; it is not free for another.
   if (hasBlocker(s)) return false;
+  // A paused session is not free: nothing may be handed to it until the operator resumes it.
+  if (isPaused(s)) return false;
   if (!settledIdle(s, now, cfg.settleMs)) return false;
   if (!s.hooksSeen) return false;
   // Only sessions Mission Control created. Note this is the SELECTION side only: the

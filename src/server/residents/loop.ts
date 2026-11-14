@@ -134,6 +134,10 @@ export class ResidentLoop {
       this.publish(id);
     }
     if (run.loopState === "paused") { this.cancelTimer(id); return; }
+    // The operator paused this session: hold every wake, keeping a queued Run now and the pacing
+    // intent, until the `session_upsert` that lifts the pause observes it again. Without this a
+    // Run now held by the pause re-woke itself here, through microtasks, without ever yielding.
+    if (session.pause) { this.cancelTimer(id); return; }
     // A request holds delivery without discarding the durable wake or pacing intent.
     if (reportBucket(session) === "needs-you") { this.cancelTimer(id); return; }
     if (session.pendingTurns.length > 0) {
@@ -238,7 +242,9 @@ export class ResidentLoop {
     const target = current && this.session(current);
     if (this.stopped || !current || current.endedAt !== null || current.loopState === "paused") return "Resident paused or ended.";
     if (!target || target.id !== session.id || target.agentSessionId !== session.agentSessionId) return "Resident conversation changed.";
-    if (target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return BUSY_BLOCKER;
+    // A session the operator paused is busy in exactly this sense: the wake waits, and the
+    // `session_upsert` that lifts the pause is what lets observation send it.
+    if (target.pause || target.pendingTurns.length || reportBucket(target) === "needs-you" || target.state !== "idle" || target.workCycle?.active) return BUSY_BLOCKER;
     return null;
   }
   /**

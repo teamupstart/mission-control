@@ -97,6 +97,7 @@ const OPTIONAL_MARKERS: Record<string, RegExp> = {
   cost: /class="spend-chip"/,
   feedback: /aria-label="Report product feedback"/,
   alerts: /aria-label="Alerts &amp; away mode - muted"/,
+  pauseAll: /aria-label="Pause all"/,
 };
 
 /** Every control that may be minimized, located by the class the bar puts on it. */
@@ -115,7 +116,7 @@ const COMPACT_MARKERS: Record<string, RegExp> = {
 test("the registry is the two lists the request names, and nothing else", () => {
   assert.deepEqual(
     TOPBAR_ITEMS.filter((item) => item.kind === "optional").map((item) => item.id),
-    ["sessions", "needYou", "working", "search", "cost", "feedback", "alerts"],
+    ["sessions", "needYou", "working", "search", "cost", "feedback", "alerts", "pauseAll"],
   );
   assert.deepEqual(
     TOPBAR_ITEMS.filter((item) => item.kind === "compactable").map((item) => item.id),

@@ -5,6 +5,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsPage } from "../src/web/components/SettingsPage.tsx";
 import { SetupPanel } from "../src/web/components/SetupPanel.tsx";
 import { SETUP_FAMILY_IDS } from "../src/shared/setup-catalog.ts";
+import { StorageSettingsPanelView } from "../src/web/components/StorageSettingsPanel.tsx";
+import { STORAGE_TABS } from "../src/web/lib/storage-view.ts";
+import {
+  IDLE_ACTIONS,
+  idleStateFixture,
+  STORAGE_ACTIONS,
+  storageStateFixture,
+} from "./helpers/storage-fixtures.ts";
 import {
   BINDABLE_CONTROL_IDS,
   SETTINGS_CONTROLS,
@@ -118,6 +126,19 @@ function renderedAnchors(): Set<string> {
     const html = renderToStaticMarkup(createElement(SetupPanel, {
       state: SETUP,
       jumpAnchor: `setup/family-${family}`,
+      jumpRequestId: 1,
+    }));
+    for (const m of html.matchAll(/data-anchor="([^"]+)"/g)) anchors.add(m[1]!);
+  }
+  // Storage shows one tab at a time, and a deep link selects its tab during render the same way.
+  for (const tab of STORAGE_TABS) {
+    const html = renderToStaticMarkup(createElement(StorageSettingsPanelView, {
+      state: storageStateFixture(),
+      actions: STORAGE_ACTIONS,
+      idle: idleStateFixture(),
+      idleActions: IDLE_ACTIONS,
+      onNavigate: () => {},
+      jumpAnchor: tab.anchor,
       jumpRequestId: 1,
     }));
     for (const m of html.matchAll(/data-anchor="([^"]+)"/g)) anchors.add(m[1]!);

@@ -559,6 +559,20 @@ Autopilot **confirms the rest of that reset unattended**, and it has already rul
 what the confirmation protects: an agent is only "free" here with an empty work queue,
 and clearing the context is how a handover works at all.
 
+**Pausing holds the autopilot.** A paused session is never "free", so nothing is assigned to
+it. **Pause all** with *Hold automatic launches too* checked, or a **priority** session, holds
+every automatic launch and assignment until you resume; the Foreman readout says which. The
+daemon refuses an autopilot launch itself while the hold stands, so a Foreman worker older
+than the daemon is held too. A launch you start yourself (Dispatch, **launch anyway**, a drag
+onto a running agent, a retro or a tour) claims its own pause override and is not held. That
+override is separate from the one that starts a parked task: one never implies the other. An
+agent dispatching through the `dispatch_task` tool cannot claim it, nor can anything that calls
+the daemon with its token, so it is held like the autopilot. An ensemble works the same way: launching one yourself, or pressing **Retry** on one
+of its members, is your own launch and is not held. A member the ensemble starts later on its own,
+when a slot frees, and the task it starts for the result you selected wait for the hold to lift,
+then launch without being asked again. Nothing in the ensemble fails for having waited. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
+
 On the **board**, the Backlog column shows the
 [hold switch and its disabled state](dispatch-and-backlog.md#hold-a-backlog-item-back), a **blocked** chip naming
 what an item waits on, and a **next up** mark on the one Foreman would take next. A card

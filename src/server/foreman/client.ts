@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PauseState } from "@shared/pause.ts";
 import { PlanPublicationContextSchema, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import {
   existsSync,
@@ -1055,6 +1056,11 @@ export class ForemanClient implements ForemanActions {
   /** Foreman's stored reading of the backlog, or null when it has never made one. */
   backlogPlan(): Promise<BacklogPlan | null> {
     return get<BacklogPlan | null>("/api/backlog/plan");
+  }
+
+  /** Pause all and the priority session: whether the operator has held automatic launches. */
+  pauseState(): Promise<PauseState> {
+    return get<PauseState>("/api/pause");
   }
 
   /**

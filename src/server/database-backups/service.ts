@@ -16,9 +16,12 @@ import { basename, dirname, join } from "node:path";
 import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
+  backupRetentionLimits,
+  DATABASE_BACKUP_FUTURE_TOLERANCE_MS,
   databaseBackupsConfigFrom,
   databaseBackupStatusFrom,
   DEFAULT_DATABASE_BACKUPS_CONFIG,
+  planBackupRetention,
   type DatabaseBackupsConfig,
   type DatabaseBackupStatus,
   type RecordedDatabaseBackupKind,
@@ -41,13 +44,12 @@ export const DATABASE_BACKUP_RETENTION: Readonly<DatabaseBackupRetention> = Obje
   databaseBackupRetention(DEFAULT_DATABASE_BACKUPS_CONFIG),
 );
 
-const MANUAL_BACKUP_RETENTION = 1;
 
 /** The first wait after a failed scheduled capture; each further failure doubles it. */
 export const DATABASE_BACKUP_BACKOFF_BASE_MS = 5 * 60 * 1_000;
 
 /** A copy dated further than this past `now` is treated as written under a wrong clock. */
-export const DATABASE_BACKUP_FUTURE_TOLERANCE_MS = 60 * 1_000;
+export { DATABASE_BACKUP_FUTURE_TOLERANCE_MS };
 
 const HOUR_MS = 60 * 60 * 1_000;
 
@@ -120,7 +122,10 @@ export interface DatabaseBackupCopy {
   filename: string;
   /** The capture time its filename names, in epoch milliseconds. */
   at: number;
+  /** Its file size. */
   bytes: number;
+  /** What it occupies on disk, in allocated blocks. */
+  diskBytes: number;
 }
 
 export interface DatabaseBackupRecord {
@@ -135,6 +140,8 @@ interface OwnedCopy {
   /** The capture time its filename names, in epoch milliseconds. */
   at: number;
   bytes: number;
+  /** What it occupies on disk, the basis a `du` measurement counts in. */
+  diskBytes: number;
 }
 
 export interface DatabaseBackupValidation {
@@ -485,6 +492,7 @@ export class DatabaseBackupService {
         filename,
         at: copyTime(match[2]!),
         bytes: stat.size,
+        diskBytes: stat.blocks * 512,
       });
     }
     return groups;
@@ -507,9 +515,27 @@ export class DatabaseBackupService {
   }
 
   /**
-   * Delete every copy above its kind's count, newest kept, with any SQLite sidecar beside it.
-   * Runs after every capture; the daemon also calls it at startup and when the counts are
-   * saved, so a lowered count takes effect without waiting for the next capture.
+   * What the kept copies occupy on disk, in the same allocated-block basis a `du` walk counts,
+   * so a change in them can be applied to a measured total. A copy's file size can be far larger
+   * than its blocks (a sparse file), and that difference was never in the measurement.
+   */
+  keptDiskBytes(): number {
+    try {
+      const rootStat = lstatSync(this.root);
+      if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return 0;
+    } catch {
+      return 0;
+    }
+    const groups = this.ownedCopies();
+    return BACKUP_KINDS.reduce((total, kind) =>
+      total + groups[kind].reduce((sum, copy) => sum + copy.diskBytes, 0), 0);
+  }
+
+  /**
+   * Delete every copy the saved limits no longer keep (`planBackupRetention`: count, then
+   * age, then size, never the minimum recovery set), with any SQLite sidecar beside it.
+   * Runs after every capture; the daemon also calls it at startup and when the limits are
+   * saved, so a lowered limit takes effect without waiting for the next capture.
    */
   prune(): void {
     try {
@@ -519,34 +545,41 @@ export class DatabaseBackupService {
     }
   }
 
+  /** The limits a prune applies under `config`. Fixed counts replace only the counts. */
+  private limitsFor(config: DatabaseBackupsConfig) {
+    const limits = backupRetentionLimits(config);
+    if (this.retention) {
+      limits.counts.scheduled = this.retention.scheduled;
+      limits.counts.preMigration = this.retention.preMigration;
+    }
+    return limits;
+  }
+
+  /**
+   * The filenames a prune would delete right now if `config` were saved, oldest first. Read-only,
+   * over the same listing, limits and clock the prune itself uses, so a save can refuse when the
+   * copies changed after the operator was shown what it deletes.
+   */
+  plannedRemovals(config: DatabaseBackupsConfig): string[] {
+    return planBackupRetention(this.keptCopies(), this.limitsFor(config), this.now().getTime())
+      .remove.map((copy) => copy.filename);
+  }
+
   private pruneCopies(): void {
     if (!existsSync(this.root)) return;
     // Startup and save prune outside a capture, so they refuse a symlinked root the same way.
     this.ensureRoot();
-    const retention = this.retention ?? databaseBackupRetention(
-      storedDatabaseBackupsConfig(this.source),
-    );
-    const keep: Record<DatabaseBackupKind, number> = {
-      ...retention,
-      manual: MANUAL_BACKUP_RETENTION,
-    };
+    // Fixed counts replace only the counts: the age and size limits are always the saved ones.
+    const limits = this.limitsFor(storedDatabaseBackupsConfig(this.source));
     const groups = this.ownedCopies();
-    // Newest first, except that a copy dated in the future, left by a clock that moved
-    // backward, sorts as the oldest: it is the first one expired once newer copies exist.
-    const horizon = this.now().getTime() + DATABASE_BACKUP_FUTURE_TOLERANCE_MS;
-    const rank = (copy: OwnedCopy) => (copy.at > horizon ? -Infinity : copy.at);
-    for (const kind of BACKUP_KINDS) {
-      const expired = groups[kind]
-        .sort((left, right) => rank(right) - rank(left) || right.filename.localeCompare(left.filename))
-        .slice(keep[kind])
-        .map((copy) => copy.filename);
-      for (const filename of expired) {
-        const path = join(this.root, filename);
-        // Sidecars first: only the copy itself is listed, so a failure must leave it in place
-        // for the next prune to retry, never an orphaned journal no listing can find.
-        for (const suffix of SQLITE_SIDECARS) safeUnlink(`${path}${suffix}`);
-        safeUnlink(path);
-      }
+    const copies = BACKUP_KINDS.flatMap((kind) => groups[kind].map(({ filename, at, bytes }) => ({ kind, filename, at, bytes })));
+    const { remove } = planBackupRetention(copies, limits, this.now().getTime());
+    for (const { filename } of remove) {
+      const path = join(this.root, filename);
+      // Sidecars first: only the copy itself is listed, so a failure must leave it in place
+      // for the next prune to retry, never an orphaned journal no listing can find.
+      for (const suffix of SQLITE_SIDECARS) safeUnlink(`${path}${suffix}`);
+      safeUnlink(path);
     }
     syncFile(this.root);
   }

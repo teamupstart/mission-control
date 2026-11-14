@@ -1,4 +1,5 @@
 import type { Session, SessionGoal, SessionQueue, TrackedGap } from "@shared/types.ts";
+import { isPaused } from "@shared/pause.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
@@ -197,6 +198,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   // 4b. The session reported a durable blocker: it is waiting on someone else, not finished.
   //     A skip consumes nothing, so the generation is still there to complete once cleared.
   if (hasBlocker(session)) return { kind: "skip", why: "the session is blocked" };
+  if (isPaused(session)) return { kind: "skip", why: "the session is paused" };
 
   // 5. No hooks, ever: no completion signal exists for this session, so its `idle` is
   //    the rebuild default rather than a claim anyone made. `hooksSeen`, NOT

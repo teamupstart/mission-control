@@ -110,6 +110,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "inspector",
       "instructions.standing",
       "llm",
+      // Paused sessions by pid, Pause all and the priority session. `operational`, never
+      // restored: it names this machine's live processes.
+      "pause.state",
       "pipelines",
       "repoIndex",
       "residents.mcpServers",
@@ -117,6 +120,11 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "setup.banner",
       "shipping",
       "skills",
+      // When each storage warning's occurrence began. `operational`, never restored: it dates
+      // warnings about this machine's disk.
+      "storage.alerts",
+      // Settings > Storage's size limit, free-space floor and idle-cache budget.
+      "storage.limits",
       "taskSources",
       // Telemetry consent and the installation pseudonym. Both are `operational` with NO backup
       // domain: restoring either from another installation, or from before a withdrawal, could
@@ -151,6 +159,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     APP_CONFIG_ENTRIES.residentMcpServers,
     APP_CONFIG_ENTRIES.terminals,
     APP_CONFIG_ENTRIES.backups,
+    APP_CONFIG_ENTRIES.storageLimits,
     APP_CONFIG_ENTRIES.ui,
   ]) {
     assert.equal(entry.classification.kind, "fields");

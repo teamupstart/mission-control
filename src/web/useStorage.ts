@@ -50,9 +50,24 @@ function failure(result: { error?: string; message?: string }): string {
 }
 
 /**
+ * The aggregate to show when `next` arrives from either source - the stream or a route read.
+ * It replaces what is shown, except the measurement: a read answered while a walk was still
+ * running can be delivered after the stream has already said that walk finished, and showing it
+ * would leave the page on "Measuring…" with nothing left to correct it. So the measurement is
+ * kept from whichever answer finished one more recently (`usage.measuredAt`).
+ */
+export function mergeStorageHealth(shown: StorageHealth | null, next: StorageHealth): StorageHealth {
+  if (!shown) return next;
+  const shownAt = shown.usage.measuredAt ?? -1;
+  const nextAt = next.usage.measuredAt ?? -1;
+  return shownAt > nextAt ? { ...next, usage: shown.usage } : next;
+}
+
+/**
  * `live` is `MissionState.storageHealth`. Each source replaces the shown aggregate when it
  * delivers a new value, so neither a stale stream value nor an old route read can outrank a
- * newer answer from the other.
+ * newer answer from the other - and a stale measurement cannot outrank a newer one
+ * (`mergeStorageHealth`).
  */
 export function useStorage(
   live: StorageHealth | null,
@@ -90,10 +105,10 @@ export function useStorage(
   }, [reload, configRevision]);
 
   useEffect(() => {
-    if (live) setHealth(live);
+    if (live) setHealth((shown) => mergeStorageHealth(shown, live));
   }, [live]);
   useEffect(() => {
-    if (view) setHealth(view.health);
+    if (view) setHealth((shown) => mergeStorageHealth(shown, view.health));
   }, [view]);
 
   const save = useCallback(async (patch: DatabaseBackupsConfigPatch, expectRemove: string[]): Promise<boolean> => {

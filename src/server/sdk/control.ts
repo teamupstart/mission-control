@@ -1,4 +1,5 @@
 import type { Session } from "@shared/types.ts";
+import type { PauseRelease } from "../pause/release.ts";
 import { agentActive } from "@shared/session.ts";
 import {
   defaultPaneDeps,
@@ -39,6 +40,14 @@ export interface InterruptResult extends ActionResult {
 }
 
 /**
+ * The refusal when a paused agent could not be thawed first. Going on would signal, interrupt or
+ * type into a process that is still stopped and cannot act on any of it, and report success.
+ */
+export function pausedAndStuck(why: string): string {
+  return `This session is paused and could not be resumed first, so nothing else was done: ${why}`;
+}
+
+/**
  * Accept an interactive stop.
  *
  * Terminal teardown already returns as soon as its process/group signal lands. An SDK stop
@@ -50,7 +59,11 @@ export async function requestSessionStop(
   session: Session,
   supervisor: SdkSupervisor | undefined,
   stopTerminal: typeof kill = kill,
+  /** Thaws a paused agent first: a stopped process holds a SIGTERM until it is continued. */
+  pause?: PauseRelease,
 ): Promise<ActionResult> {
+  const stuck = pause?.releaseNow(session.id) ?? null;
+  if (stuck) return { ok: false, error: pausedAndStuck(stuck) };
   if (session.runtime !== "sdk") return stopTerminal(session);
   if (!supervisor) return { ok: false, error: "this build has no session supervisor" };
   return supervisor.requestStop(session.id)
@@ -77,7 +90,15 @@ export async function interruptSession(
   supervisor: SdkSupervisor | undefined,
   pendingTurns?: PendingTurnQueueDrop,
   paneDeps?: PaneDeps,
+  pause?: PauseRelease,
 ): Promise<InterruptResult> {
+  if (session.pause && pause) {
+    // Interrupting a paused session is a person deciding what it should do next, and a frozen
+    // agent cannot be interrupted at all: thaw it first, and read it as unpaused from here on.
+    const stuck = pause.releaseNow(session.id);
+    if (stuck) return { ok: false, error: pausedAndStuck(stuck) };
+    session = { ...session, pause: null };
+  }
   const resumeDelivery = pendingTurns?.pauseForInterrupt?.(session.id);
   try {
     const stopped = session.runtime === "sdk"
@@ -155,7 +176,11 @@ export async function stopSession(
   session: Session,
   supervisor: SdkSupervisor | undefined,
   stopTerminal: typeof kill = kill,
+  /** Thaws a paused agent first; see `requestSessionStop`. */
+  pause?: PauseRelease,
 ): Promise<ActionResult> {
+  const stuck = pause?.releaseNow(session.id) ?? null;
+  if (stuck) return { ok: false, error: pausedAndStuck(stuck) };
   if (session.runtime !== "sdk") return stopTerminal(session);
   if (!supervisor) return { ok: false, error: "this build has no session supervisor" };
   if (!supervisor.handleFor(session.id)) {

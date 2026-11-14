@@ -1,4 +1,6 @@
 import { transferHold } from "./session-transfers/store.ts";
+import { pausedAndStuck } from "./sdk/control.ts";
+import type { PauseRelease } from "./pause/release.ts";
 import type { ResetResult, Session } from "@shared/types.ts";
 import { resetToOrigin, withPaneLockWait, type DriverClear, type PaneLockToken } from "./actions.ts";
 import type { Registry } from "./registry.ts";
@@ -73,9 +75,19 @@ export async function resetSession(
    */
   driverClear?: DriverClear,
   pendingTurns?: PendingTurnResetBoundary,
+  /** Thaws a paused agent first: a reset types into it and waits for it. */
+  pause?: PauseRelease,
 ): Promise<ResetResult> {
   const transferBlock = transferHold(session);
   if (transferBlock) return { ok: false, error: transferBlock, root: session.cwd, cleared: false, detached: false };
+  if (session.pause && pause) {
+    // A reset types into the agent and waits for it; a frozen one would never answer. Resetting
+    // is a person deciding what the session does next, so it resumes the session too - and does
+    // not go on when it could not.
+    const stuck = pause.releaseNow(session.id);
+    if (stuck) return { ok: false, error: pausedAndStuck(stuck), root: session.cwd, cleared: false, detached: false };
+    session = registry.getSession(session.id) ?? { ...session, pause: null };
+  }
   const pendingTurnKey = noteKeyFor(session);
   registry.beginSessionReset(session.id);
   try {

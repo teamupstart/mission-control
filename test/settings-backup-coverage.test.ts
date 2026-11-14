@@ -110,6 +110,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "inspector",
       "instructions.standing",
       "llm",
+      // Paused sessions by pid, Pause all and the priority session. `operational`, never
+      // restored: it names this machine's live processes.
+      "pause.state",
       "pipelines",
       "repoIndex",
       "residents.mcpServers",

@@ -202,6 +202,12 @@ export const StorageUsageSchema = z.object({
   durationMs: z.number().int().nonnegative().nullable(),
   /** A measurement is running now. */
   measuring: z.boolean(),
+  /**
+   * When the most recent walk started, or null/absent before the first. What orders two answers
+   * about the measurement: `measuredAt` does not move when a walk starts, or when one fails, so
+   * it cannot tell a stale idle answer from the newer "measuring" one (`mergeStorageHealth`).
+   */
+  startedAt: epochMs.nullable().optional(),
   /** Why the last measurement failed or came back partial, or null. */
   error: z.string().nullable(),
   totalBytes: byteCount.nullable(),

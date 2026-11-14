@@ -296,6 +296,15 @@ export interface StateDisplay {
  * Mirrors reportBucket's precedence (see src/shared/session.ts).
  */
 export function stateDisplay(session: Session, interrupting = false): StateDisplay {
+  const base = unpausedStateDisplay(session, interrupting);
+  // A pause is the operator's, and the word says so; the TONE stays the reading underneath, so
+  // a paused card keeps its column and its place in the counts. The paused look itself (the
+  // hatched spine, the flag) is the card's, keyed on `session.pause`.
+  if (!session.pause || session.state === "exited" || session.state === "stopping") return base;
+  return { ...base, label: session.pause.phase === "pending" ? "pausing" : "paused" };
+}
+
+function unpausedStateDisplay(session: Session, interrupting: boolean): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
   if (session.state === "stopping") return { label: "stopping", tone: "working" };
   // A pending review always needs you, regardless of the agent's own state.

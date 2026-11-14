@@ -50,9 +50,35 @@ function failure(result: { error?: string; message?: string }): string {
 }
 
 /**
+ * The aggregate to show when `next` arrives from either source - the stream or a route read.
+ * It replaces what is shown, except the measurement, which is kept from whichever answer is
+ * further along: a read answered mid-walk can be delivered after the stream said that walk
+ * finished, and an idle answer from before a walk began can be delivered after the stream said
+ * it is measuring. Either, shown, would stick, since nothing further arrives to correct it.
+ *
+ * Ordered by the walk each answer describes (`usage.startedAt`), then, for the same walk, its
+ * end over its start: a finished or failed walk is further along than the same walk measuring.
+ * Not by `measuredAt`, which neither a starting nor a failing walk moves.
+ */
+export function mergeStorageHealth(shown: StorageHealth | null, next: StorageHealth): StorageHealth {
+  if (!shown) return next;
+  return measurementOrder(shown.usage, next.usage) > 0 ? { ...next, usage: shown.usage } : next;
+}
+
+/** Positive when `a` describes a later point in the measurement than `b`. */
+function measurementOrder(a: StorageHealth["usage"], b: StorageHealth["usage"]): number {
+  const started = (a.startedAt ?? -1) - (b.startedAt ?? -1);
+  if (started !== 0) return started;
+  const ended = (a.measuring ? 0 : 1) - (b.measuring ? 0 : 1);
+  if (ended !== 0) return ended;
+  return (a.measuredAt ?? -1) - (b.measuredAt ?? -1);
+}
+
+/**
  * `live` is `MissionState.storageHealth`. Each source replaces the shown aggregate when it
  * delivers a new value, so neither a stale stream value nor an old route read can outrank a
- * newer answer from the other.
+ * newer answer from the other - and a stale measurement cannot outrank a newer one
+ * (`mergeStorageHealth`).
  */
 export function useStorage(
   live: StorageHealth | null,
@@ -90,10 +116,10 @@ export function useStorage(
   }, [reload, configRevision]);
 
   useEffect(() => {
-    if (live) setHealth(live);
+    if (live) setHealth((shown) => mergeStorageHealth(shown, live));
   }, [live]);
   useEffect(() => {
-    if (view) setHealth(view.health);
+    if (view) setHealth((shown) => mergeStorageHealth(shown, view.health));
   }, [view]);
 
   const save = useCallback(async (patch: DatabaseBackupsConfigPatch, expectRemove: string[]): Promise<boolean> => {

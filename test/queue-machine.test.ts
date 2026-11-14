@@ -537,6 +537,18 @@ test("tickTargets skips an uninvited PROMPTED wrap-up candidate", () => {
   );
 });
 
+test("decideQueueTick neither triages nor sends to a paused session that needs you", () => {
+  // Read as needing you after the pause began: triage would run a review whose answer the
+  // paused session refuses, so the pause holds triage as it holds the queue.
+  const paused = { pause: { reason: "operator", phase: "frozen", since: NOW - 1, interrupted: null, stopped: true } } as const;
+  assert.deepEqual(tick({ session: paused, bucket: "needs-you", items: [mkItem()] }), { kind: "none" });
+  assert.equal(
+    tick({ bucket: "needs-you", items: [mkItem()] }).kind,
+    "triage",
+    "the same session unpaused is triaged",
+  );
+});
+
 test("decideQueueTick will not triage an uninvited session's question", () => {
   // The machine's own copy of the gate, independent of the selector that feeds it: an
   // unanswered question on an uninvited session is not Foreman's to answer. Both call
@@ -1042,6 +1054,24 @@ test("awaiting_pickup: the window expiring with the session still idle -> resend
   const item = mkItem({ state: "awaiting_pickup", sentAt: NOW - 60_000, sendAttempts: 1 });
   const a = tick({ items: [item], session: { lastActivity: NOW - 90_000 } });
   assert.equal(a.kind, "resend");
+});
+
+test("awaiting_pickup: a pause longer than the window does not count against the pickup", () => {
+  // Sent, then the session was paused for an hour and has just resumed: the agent has had no
+  // chance to read the prompt yet. Measured from the send, this tick would resend it (or, at
+  // the cap, escalate) and the agent could read it twice.
+  const item = mkItem({ state: "awaiting_pickup", sentAt: NOW - 3_600_000, sendAttempts: 1 });
+  const justResumed = tick({ items: [item], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 5_000 } });
+  assert.equal(justResumed.kind, "none", "the window opened at the resume");
+  const atCap = mkItem({ state: "awaiting_pickup", sentAt: NOW - 3_600_000, sendAttempts: SEND_ATTEMPT_CAP });
+  assert.equal(tick({ items: [atCap], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 5_000 } }).kind, "none", "nor escalates");
+
+  // Once a whole window has passed since the resume, the usual timeout applies.
+  const later = tick({ items: [item], session: { lastActivity: NOW - 3_700_000, resumedAt: NOW - 60_000 } });
+  assert.equal(later.kind, "resend");
+  // And a resume before the send changes nothing.
+  const sentAfter = mkItem({ state: "awaiting_pickup", sentAt: NOW - 60_000, sendAttempts: 1 });
+  assert.equal(tick({ items: [sentAfter], session: { lastActivity: NOW - 90_000, resumedAt: NOW - 120_000 } }).kind, "resend");
 });
 
 test("awaiting_pickup: at the send cap -> escalate instead of resending forever", () => {

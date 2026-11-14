@@ -4,6 +4,7 @@ import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
 import { ModelIdSchema } from "./model-id.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
+import { SESSION_PAUSE_MODES, SESSION_PAUSE_REASONS } from "./pause.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
@@ -1864,6 +1865,8 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
 export const DispatchBacklogTaskSchema = z.object({
   defaultModel: ModelIdSchema.nullable().optional(),
   overrideDisabled: z.boolean().optional().default(false),
+  /** A person's launch, through the operator's launch hold (Pause all, priority). Foreman never sends it. */
+  overridePauseHold: z.boolean().optional().default(false),
 });
 export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
 
@@ -1893,6 +1896,8 @@ export type PipelineSettlement = z.infer<typeof PipelineSettlementSchema>;
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
   overrideDisabled: z.boolean().optional().default(false),
+  /** A person's handover, through the operator's launch hold. Foreman never sends it. */
+  overridePauseHold: z.boolean().optional().default(false),
   /**
    * The caller has accepted what the handover reset discards beyond git state - the
    * agent's work queue, its context, the branch it stands on.
@@ -4347,6 +4352,16 @@ export const UI_CONFIG_DEFAULTS = {
    */
   hiddenTopbarItems: [] as readonly string[],
   compactTopbarItems: [] as readonly string[],
+  /**
+   * Which pause controls a board card draws (`PAUSE_CARD_CONTROLS`): the run chip on the
+   * runtime row alone, out of the box. A paused card's own look is not a control and stays on.
+   */
+  pauseCardControls: ["chip"] as readonly string[],
+  /**
+   * Which pause controls the console draws (`PAUSE_CONSOLE_CONTROLS`): the tab-row toolbar
+   * button and the state badge's split half with its paused band, out of the box.
+   */
+  pauseConsoleControls: ["toolbar", "badge"] as readonly string[],
 } as const;
 
 /**
@@ -4569,6 +4584,15 @@ export const UiConfigSchema = z.object({
    * expanded, with the ladder still free to minimize it on a narrow window.
    */
   compactTopbarItems: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
+  /**
+   * The pause controls each surface draws, as lists of ENABLED ids - several at once is
+   * allowed, and none is allowed. Enabled rather than hidden because these are alternative
+   * placements of one control, and a placement a later build adds should not appear on every
+   * card unasked. Not validated against the id sets (`@shared/pause.ts`), so a retired or
+   * newer id is inert rather than a parse error.
+   */
+  pauseCardControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseCardControls]),
+  pauseConsoleControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseConsoleControls]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -9228,6 +9252,86 @@ export const SessionTransferQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(100),
 });
 
+
+// ---- Pausing sessions (`@shared/pause.ts`) ----
+
+/** Pause one session: now, or once its current turn ends. */
+export const PauseSessionRequestSchema = z.object({
+  mode: z.enum(SESSION_PAUSE_MODES).default("now"),
+}).strict();
+
+/**
+ * Pause all. `resumeAt` is an epoch ms the daemon resumes at, or null to wait for a person; it
+ * must lie in the future and within a week, so a mistyped date cannot pause a fleet for a year.
+ */
+export const FleetPauseRequestSchema = z.object({
+  holdDispatch: z.boolean().default(true),
+  resumeAt: z.number().int().positive().nullable().default(null),
+}).strict();
+
+/** The longest automatic resume a Pause all may schedule, in ms. */
+export const FLEET_PAUSE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How many paused-session records the stored pause state may hold. */
+export const PAUSE_RECORDS_MAX = 1000;
+
+/**
+ * One paused session as the daemon persists it. `pids` is what was stopped, kept so a restart
+ * can thaw a tree whose session it never sees again; `runtime` decides whether the tree
+ * survives a daemon stop (a pane does, our SDK children do not).
+ */
+export const StoredSessionPauseSchema = z.object({
+  reason: z.enum(SESSION_PAUSE_REASONS),
+  phase: z.enum(["pending", "frozen"]),
+  since: z.number(),
+  interrupted: z.string().max(500).nullable().default(null),
+  runtime: z.enum(SESSION_RUNTIMES),
+  /**
+   * Each stopped process with the digest of its start-and-command identity. A pid alone is not
+   * enough: one can be reused by an unrelated process - across a restart above all - and a
+   * resume must never SIGCONT that process. The identity is checked before every SIGCONT.
+   */
+  procs: z.array(z.object({
+    pid: z.number().int().positive(),
+    identity: z.string().regex(/^[0-9a-f]{64}$/),
+  })).max(4096).default([]),
+  /**
+   * A resume was asked for and saved, and its SIGCONT may not have been sent or may not have
+   * been saved as done. The record stays until both are true, so a restart that finds it
+   * finishes the resume - it never freezes it again, and a pid that refused stays recorded.
+   */
+  resuming: z.boolean().default(false),
+  /**
+   * How the freeze was asked for. A `now` pause whose freeze failed is retried on its timer even
+   * mid-turn; an `after-turn` one waits for the turn to end. Absent on a record written before
+   * this was saved, which reads as `after-turn`, the behaviour it was written under.
+   */
+  mode: z.enum(SESSION_PAUSE_MODES).optional(),
+  /**
+   * When the pause first settled frozen - not when it was asked for (`since`). An after-turn
+   * pause asked for early freezes when its turn ends, and the paused row stops its clock there.
+   * Absent on records written before it was saved.
+   */
+  frozenAt: z.number().nullable().optional(),
+});
+export type StoredSessionPause = z.output<typeof StoredSessionPauseSchema>;
+
+/** The `pause.state` app_config row: the fleet-wide half plus every paused session. */
+export const StoredPauseStateSchema = z.object({
+  fleet: z.object({
+    since: z.number(),
+    resumeAt: z.number().nullable(),
+    holdDispatch: z.boolean(),
+  }).nullable().default(null),
+  priority: z.object({ sessionId: z.string().min(1).max(512), since: z.number() }).nullable().default(null),
+  sessions: boundedRecord(z.string().min(1).max(512), StoredSessionPauseSchema, PAUSE_RECORDS_MAX).default({}),
+  /**
+   * When each recently resumed session resumed, epoch ms: the outbox counts a held message's
+   * escalation from it. Kept only while it can still move a deadline, so it stays small.
+   */
+  resumed: boundedRecord(z.string().min(1).max(512), z.number(), PAUSE_RECORDS_MAX).default({}),
+});
+export type StoredPauseState = z.output<typeof StoredPauseStateSchema>;
 
 /** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
 export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().guid().optional() }).strict();

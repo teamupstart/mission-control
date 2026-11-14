@@ -413,6 +413,8 @@ async function startPostMergeRetro(
 
   const dispatched = await deps.tasks.dispatch(task.id, {
     missionMcp: { tools: [COMPLETE_RETRO_NO_CHANGE_TOOL] },
+    // A retro someone asked for, not the autopilot's: the launch hold does not apply.
+    overridePauseHold: true,
   });
   if (dispatched.ok) return { kind: "started", task: dispatched.task };
 

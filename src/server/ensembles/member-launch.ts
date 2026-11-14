@@ -1,6 +1,12 @@
 import type { Registry } from "../registry.ts";
 import type { TaskManager } from "../tasks.ts";
-import type { EnsembleTaskGateway, MemberDispatchRequest, MemberTaskRequest, TaskGatewayStatus } from "./engine.ts";
+import {
+  MemberLaunchHeldError,
+  type EnsembleTaskGateway,
+  type MemberDispatchRequest,
+  type MemberTaskRequest,
+  type TaskGatewayStatus,
+} from "./engine.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./submission-tool.ts";
 
 /**
@@ -48,9 +54,14 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
     const outcome = await this.tasks.dispatch(request.taskId, {
       baseSha: request.baseSha,
       missionMcp: { tools: [SUBMIT_ENSEMBLE_RESULT_TOOL] },
+      // Only a launch a person started just now goes through the operator's launch hold; the
+      // engine waits the hold out before any other member launch, so this claim is never a default.
+      overridePauseHold: request.overridePauseHold === true,
     });
     if (!outcome.ok) {
-      throw new Error(outcome.error ?? `dispatch of member Task ${request.taskId} was refused`);
+      const why = outcome.error ?? `dispatch of member Task ${request.taskId} was refused`;
+      // The launch hold is a wait, not a failure; the engine tells them apart by this type.
+      throw outcome.launchHeld ? new MemberLaunchHeldError(why) : new Error(why);
     }
   }
 

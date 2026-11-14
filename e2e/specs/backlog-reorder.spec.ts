@@ -717,10 +717,11 @@ test.describe("dropped on an idle agent", () => {
     ).find((session) => session.task?.title === "Hand me over")?.id;
 
     // The original assign, plus one explicit reset confirmation when required, and no
-    // duplicate from the busy shortcut. Neither ending ever posts a reorder.
+    // duplicate from the busy shortcut. Neither ending ever posts a reorder. A person's
+    // handover claims both overrides: a parked task, and the launch hold of a fleet pause.
     expect(posted).toEqual([
-      `/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":false}`,
-      ...(confirmReset ? [`/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":true}`] : []),
+      `/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"overridePauseHold":true,"confirmReset":false}`,
+      ...(confirmReset ? [`/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"overridePauseHold":true,"confirmReset":true}`] : []),
     ]);
 
     // And it arrived where a handover actually ends: typed into the pane, on the far side of

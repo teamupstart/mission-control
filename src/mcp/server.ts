@@ -733,7 +733,9 @@ server.registerTool(
       "Uses the same daemon-token access as create_task; no Control other sessions opt-in is required.",
     inputSchema: {
       taskId: z.string().trim().min(1).describe("Id of the saved task to launch"),
-      ...DispatchBacklogTaskSchema.shape,
+      // Not the pause override: the operator's launch hold is not an agent's to lift, and the
+      // daemon ignores the claim from this route anyway.
+      ...DispatchBacklogTaskSchema.omit({ overridePauseHold: true }).shape,
     },
   },
   async ({ taskId, ...options }) => {

@@ -1,4 +1,5 @@
 import type { Registry } from "../registry.ts";
+import type { PauseRelease } from "../pause/release.ts";
 import { TaskIdCollisionError, type TaskManager } from "../tasks.ts";
 import type { WorkflowManager } from "../workflows/manager.ts";
 import { injectPrompt, paneAcceptsPrompt, resetToCommit } from "../actions.ts";
@@ -38,6 +39,8 @@ export function createFinalizeDeps(deps: {
   sdk?: SdkClearer;
   /** Coordinates pending delivery with the winner reset boundary. */
   pendingTurns?: PendingTurnResetBoundary;
+  /** Thaws a paused winner before its reset types into it. */
+  pause?: PauseRelease;
 }): EnsembleFinalizeDeps {
   const { registry, tasks, workflows } = deps;
 
@@ -108,6 +111,7 @@ export function createFinalizeDeps(deps: {
           resetToCommit(s, snapshotSha, clear, undefined, lockOwner, driverClear),
         driverClearFor(deps.sdk),
         deps.pendingTurns,
+        deps.pause,
       );
       if (!result.ok) {
         return { ok: false, detail: result.error ?? "the winner reset failed" };
@@ -179,8 +183,12 @@ export function createFinalizeDeps(deps: {
         const outcome = await tasks.dispatch(request.taskId, {
           baseSha: request.snapshotSha,
           missionMcp: { tools: [SUBMIT_ENSEMBLE_RESULT_TOOL] },
+          // No pause override: the engine already waits out the operator's launch hold before this
+          // step, and a hold that began since is refused here, which parks finalization until it lifts.
         });
-        if (!outcome.ok) return { ok: false, detail: outcome.error };
+        // A refusal for the launch hold is said as one, so the engine waits it out (and re-drives
+        // this step) rather than reading it as a failed replacement.
+        if (!outcome.ok) return { ok: false, detail: outcome.error, ...(outcome.launchHeld ? { launchHeld: true as const } : {}) };
       }
       return { ok: true };
     },

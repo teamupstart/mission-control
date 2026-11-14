@@ -385,6 +385,7 @@ export class StorageUsageMonitor {
       measuredAt: last?.measuredAt ?? null,
       durationMs: last?.durationMs ?? null,
       measuring: this.running !== null,
+      startedAt: this.lastMeasureStartedAt,
       error: this.error ?? last?.partial ?? null,
       totalBytes: last?.totalBytes ?? null,
       categories: last?.categories ?? [],

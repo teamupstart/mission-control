@@ -93,6 +93,8 @@ test("the tour route fixes Sol, the harmless prompt, and request_input at the se
   assert.match(String(captured.created?.intent), /request_input/);
   assert.deepEqual(captured.options, {
     overrideDisabled: true,
+    // The operator started this tour, so a Pause all or a priority session does not hold it.
+    overridePauseHold: true,
     missionMcp: { tools: ["request_input"] },
   });
   const actions = experienceFacts("mission.action.result").filter((e) => e.facts.action === "help.tour_dispatch");

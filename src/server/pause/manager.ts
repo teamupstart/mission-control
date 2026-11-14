@@ -694,11 +694,15 @@ export class PauseManager {
       // started yet. Nothing has been stopped, so it is not frozen - held, and read again on the
       // backing-off timer until it appears. Only a driver with no process of its own settles here.
       //
-      // The same for a fresh driver mid-turn: a starting session has no driver pid until its
-      // child spawns, and Pause now must not settle over a turn still using the network.
-      if (record.runtime === "sdk" && pauseFreezes(session) && (this.restoredSdk.has(session.id) || turnRunning(session))) {
+      // The same for any session with a process to stop, nothing stopped yet, and a turn
+      // running - a fresh SDK driver before its child spawns, or a terminal agent missing from
+      // one process snapshot: a pause must not settle over a turn still using the network. It
+      // is a retryable failure, read again on the backing-off timer. (With processes already
+      // recorded, an empty read means nothing more to stop, below.)
+      const restored = record.runtime === "sdk" && this.restoredSdk.has(session.id);
+      if (pauseFreezes(session) && (restored || (turnRunning(session) && record.procs.length === 0))) {
         record.phase = "pending";
-        return "its driver process has not started yet";
+        return record.runtime === "sdk" ? "its driver process has not started yet" : "its process was not found in the process table";
       }
       // A scan that found none of a recorded tree is not a replacement for it: what was stopped
       // is still the record of what to continue, and there is nothing more to stop. That holds

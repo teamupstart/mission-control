@@ -1624,3 +1624,30 @@ test("a takeover whose change of owner cannot be saved says the session is still
   assert.equal(result.ok, false);
   assert.match(result.ok ? "" : result.error, /is paused, but making it yours could not be saved/);
 });
+
+test("a working terminal agent missing from one process read is retried, never settled over", async () => {
+  const registry = new FakeRegistry([session("t", "working")]);
+  const timers: { fn: () => void; ms: number }[] = [];
+  let seen = false;
+  const stopped: number[][] = [];
+  const manager = new PauseManager({
+    registry,
+    freezer: { treeOf: async () => (seen ? refs(60, 70) : []), stop: (procs) => (stopped.push(pidsOf(procs)), []), resume: () => [] },
+    store: memoryStore(),
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  const result = await manager.pause("t", "now");
+  assert.equal(result.ok, false, "not reported as paused-and-quiet over an agent that was not found");
+  assert.equal(registry.pauses.get("t")?.phase, "pending");
+  assert.deepEqual(timers.map((t) => t.ms), [15_000], "read again on the timer");
+  seen = true;
+  timers.shift()!.fn();
+  await manager.idle();
+  assert.deepEqual(stopped, [[60, 70]]);
+  assert.equal(registry.pauses.get("t")?.phase, "frozen");
+});

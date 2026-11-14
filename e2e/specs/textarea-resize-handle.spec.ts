@@ -6,11 +6,11 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
- * Every textarea in the dashboard draws a resize grip in its corner, and for a long time
- * that grip moved nothing: the shared `:where(textarea)` rule capped every field at five
- * lines with `max-height`, and the cap clamped the browser's own drag as firmly as it
- * clamped content growth. A field already at five lines, or held at a taller `min-height`,
- * did not move at all (issue #1477).
+ * The shared `:where(textarea)` rule capped every field at five lines with `max-height`,
+ * and the cap clamped the browser's own resize drag as firmly as it clamped content
+ * growth. In fields that show a resize grip, a drag stopped at five lines, and a field
+ * already at five lines, or held at a taller `min-height`, did not move at all (issue
+ * #1477).
  *
  * The drag is the subject, so it is a real pointer drag on the grip, not a style write.
  */

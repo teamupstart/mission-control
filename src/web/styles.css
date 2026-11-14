@@ -3839,10 +3839,10 @@ button.wf-run-version:focus-visible {
    Where a field shows the corner handle, dragging it gives the field the height the person
    chose, past the five-line cap. The cap describes how far a field GROWS ON ITS OWN, so it
    must never clamp a drag - when it did, a drag stopped at five lines, and a field already
-   at the cap or held at a taller `min-height` did not move at all. The browser records a drag as an inline `height` on the element, and that is the one signal
-   the cap yields to; no component here writes an inline height of its own. The handle is
-   vertical only, because these fields fill their column and a sideways drag pushes them
-   out of it. */
+   at the cap or held at a taller `min-height` did not move at all. The browser records a
+   drag as an inline `height` on the element, and that is the one signal the cap yields to;
+   no component here writes an inline height of its own. The handle is vertical only,
+   because these fields fill their column and a sideways drag pushes them out of it. */
 :where(textarea) {
   --textarea-min-content-height: 2lh;
   --textarea-block-chrome: 18px;

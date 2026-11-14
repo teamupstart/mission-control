@@ -29,12 +29,12 @@ Everything a resident is lives in its profile. A built-in is read-only: every fi
 ## Make Agent Shepherd your own
 <!-- stage: duplicate -->
 
-A built-in is app data, and upgrading Mission Control updates it. Duplicate to edit opens an unsaved copy named Agent Shepherd copy that is yours: change its instructions, model, cadence or anything else, then Save. Upgrades never touch your copy. Every save is a new revision, and edits apply at the next launch; a resident already running keeps the revision it launched with.
+Duplicate Agent Shepherd to customize it for your specific use case. The shipped default is a good starting point.
 
 ## Or author one from scratch
 <!-- stage: new -->
 
-New opens a blank profile. Give it a name and a role: choose a Persona, write instructions, or both. The Persona list ends in Create a new Persona when the role you want does not exist yet. Your profiles are listed under Yours, beside the built-ins.
+Create your own custom persona's and apply them to Residents. Keep your Resident's scoped to specific domains for best results and to avoid context bloat.
 
 ## How a resident keeps working
 <!-- stage: loop -->

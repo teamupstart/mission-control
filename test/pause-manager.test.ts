@@ -1400,3 +1400,44 @@ test("a pause of one session that cannot be saved leaves nothing held and nothin
   assert.equal(registry.pauses.get("a") ?? null, null);
   assert.deepEqual(stopped, [], "nothing was frozen");
 });
+
+test("making a paused session the priority commits before thawing it: an unsaved change leaves it paused", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const { freezer, resumed } = recordingFreezer({ a: [70], b: [80] });
+  const store = flakyStore();
+  const manager = new PauseManager({ registry, freezer, store, now: () => 1_000_000, log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  assert.deepEqual(await manager.pause("a", "now"), { ok: true });
+
+  store.failSaves(1);
+  assert.equal((await manager.setPriority("a")).ok, false, "the operator is told it was not saved");
+  assert.deepEqual(resumed, [], "nothing was continued before the change could be committed");
+  assert.equal(registry.pauses.get("a")?.phase, "frozen", "the session keeps the pause it had");
+  assert.equal(store.get()?.sessions.a?.resuming, false, "and its saved record is untouched");
+  assert.equal(manager.state().priority, null);
+  assert.equal(registry.pauses.get("b") ?? null, null, "nothing else was held for it");
+
+  // Saved, it goes through: the target is continued and the others paused for it.
+  assert.deepEqual(await manager.setPriority("a"), { ok: true });
+  assert.deepEqual(resumed, [[70]]);
+  assert.equal(registry.pauses.get("a") ?? null, null);
+  assert.equal(registry.pauses.get("b")?.reason, "priority");
+});
+
+test("a priority session that could not be continued is not made the priority", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const { freezer, stopped } = recordingFreezer({ a: [70], b: [80] }, [], [70]);
+  const manager = new PauseManager({ registry, freezer, store: memoryStore(), now: () => 1_000_000, log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  await manager.pause("a", "now");
+
+  const result = await manager.setPriority("a");
+  assert.equal(result.ok, false, "pid 70 would not continue");
+  assert.equal(manager.state().priority, null, "so no priority stands");
+  assert.equal(registry.pauses.get("b") ?? null, null, "and nothing was held or frozen for it");
+  assert.deepEqual(stopped, [[70]], "only the original pause ever stopped anything");
+});

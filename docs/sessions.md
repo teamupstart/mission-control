@@ -719,6 +719,7 @@ where it stopped. There are three ways to pause:
   after this turn** lets the current turn finish and freezes it then; a turn waiting on your
   answer to a question is not finished, so you can still answer it.
 - **Pause all**, the two-bar button in the title bar. It pauses every live session at once.
+  With nothing running it can still hold automatic launches, so the autopilot starts nothing.
   Its confirm can also hold automatic launches, so the backlog autopilot starts nothing new
   until you resume. It can also resume everything automatically in 1 hour, in 4 hours or
   tomorrow at 8:00 am. A banner under the title bar says what is paused and offers **Resume
@@ -782,7 +783,9 @@ its current turn ends it starts nothing new until you resume.
 it is reported, even when there is nothing left for it to resume, so its launch hold does not
 come back after a restart. Ending priority, Resume all and the scheduled
 morning resume each lift only what they paused. A session you paused yourself stays paused
-until you resume it. Pausing a session that Pause all or priority already holds makes it yours
+until you resume it. Making a paused session the priority is saved before that session is
+continued: if it cannot be saved, or the session would not continue, nothing changes. Pausing a
+session that Pause all or priority already holds makes it yours
 only once that is saved: if it cannot be, the control says so and the session stays theirs, so
 Resume all still brings it back. Resuming one session lifts it whatever paused it.
 

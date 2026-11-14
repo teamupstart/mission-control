@@ -462,16 +462,34 @@ export class PauseManager {
       // A new priority session replaces the old one: the old one is never paused, so it is a
       // bulk target like any other running session, and anything already paused for priority
       // stays paused for the new one.
-      if (this.records.has(sessionId)) {
-        const failed = this.liftAll([sessionId]);
-        if (failed) return failed;
-      }
+      //
+      // Committed before anything is thawed. The new priority, the holds on the others and the
+      // target's resume (as a saved intent, `resuming`) go into ONE save; until it lands nothing
+      // has changed, so a save that fails undoes it all and the target stays paused as it was.
+      // Only then is the target continued.
+      const target = this.records.get(sessionId);
+      const targetWasResuming = target?.resuming ?? false;
       const previousPriority = this.priority;
       this.priority = { sessionId, since: this.now() };
+      if (target) target.resuming = true;
       const held = this.holdAllSaved(bulkPauseTargets(this.liveWithPause(), sessionId), "priority", () => {
         this.priority = previousPriority;
+        if (target) target.resuming = targetWasResuming;
       });
       if (!held) return UNSAVED;
+      if (target) {
+        const failed = this.liftAll([sessionId]);
+        if (failed) {
+          // The priority session could not be continued, so it cannot have the machine: the
+          // priority is withdrawn before anything is frozen for it. Its own failed resume stays
+          // recorded, as any failed resume does, so Resume can finish it.
+          this.dropHolds(held);
+          this.priority = previousPriority;
+          this.publishFleet();
+          this.persist();
+          return failed;
+        }
+      }
       const failures = await this.freezeAll(held);
       this.publishFleet();
       if (!this.persist()) return UNSAVED;
@@ -548,14 +566,19 @@ export class PauseManager {
   ): Array<readonly [Session, StoredSessionPause]> | null {
     const held = targets.map((session) => [session, this.holdOnly(session, reason, "now")] as const);
     if (this.persist()) return held;
+    this.dropHolds(held);
+    undo();
+    this.publishFleet();
+    return null;
+  }
+
+  /** Drop holds that froze nothing yet: each record this call made, if it is still the one held. */
+  private dropHolds(held: ReadonlyArray<readonly [Session, StoredSessionPause]>): void {
     for (const [session, record] of held) {
       if (this.records.get(session.id) !== record) continue;
       this.records.delete(session.id);
       this.publishSession(session.id);
     }
-    undo();
-    this.publishFleet();
-    return null;
   }
 
   private async holdAll(targets: readonly Session[], reason: SessionPauseReason): Promise<string[]> {

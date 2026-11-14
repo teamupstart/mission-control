@@ -409,3 +409,24 @@ test("the narrowest title bar gives Pause all's button way, and the banner keeps
   await banner.getByRole("button", { name: /Resume all now/ }).click();
   await expect(banner).toBeHidden();
 });
+
+test("with nothing running, Pause all can still hold automatic launches", async ({ dashboard: page, daemon }) => {
+  // Set before the autopilot starts something: no session to freeze, but the hold is the point.
+  await page.getByRole("button", { name: "Pause all", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "Pause all" });
+  await expect(confirm).toContainText("nothing is running");
+  const hold = confirm.getByRole("button", { name: "Hold launches" });
+  await expect(hold).toBeEnabled();
+  // Unticked, there is nothing left for it to do.
+  await confirm.getByRole("checkbox", { name: /Hold automatic launches too/ }).uncheck();
+  await expect(hold).toBeDisabled();
+  await confirm.getByRole("checkbox", { name: /Hold automatic launches too/ }).check();
+  await hold.click();
+
+  const banner = page.getByRole("status", { name: "Everything is paused" });
+  await expect(banner).toContainText("automatic launches are held");
+  const state = (await (await fetch(`${daemon.baseURL}/api/pause`)).json()) as { fleet: { holdDispatch: boolean } | null };
+  expect(state.fleet?.holdDispatch, "the daemon holds launches").toBe(true);
+  await banner.getByRole("button", { name: /Resume all now/ }).click();
+  await expect(banner).toBeHidden();
+});

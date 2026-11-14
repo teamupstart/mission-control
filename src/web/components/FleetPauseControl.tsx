@@ -134,11 +134,18 @@ export function FleetPauseControl(): React.JSX.Element {
             if (e.key === "Tab") e.stopPropagation();
           }}
         >
-          <span className="fleet-pause-title">Pause all {sessionCount(fleet.pausable)}</span>
-          <p className="fleet-pause-sub">
-            Every agent freezes where it is and its network goes quiet. Nothing is lost: each resumes exactly where
-            it stopped. Sessions you paused yourself stay paused when this lifts.
-          </p>
+          <span className="fleet-pause-title">{fleet.pausable > 0 ? `Pause all ${sessionCount(fleet.pausable)}` : "Pause all - nothing is running"}</span>
+          {fleet.pausable > 0 ? (
+            <p className="fleet-pause-sub">
+              Every agent freezes where it is and its network goes quiet. Nothing is lost: each resumes exactly where
+              it stopped. Sessions you paused yourself stay paused when this lifts.
+            </p>
+          ) : (
+            <p className="fleet-pause-sub">
+              No session is running, so nothing is frozen. Holding automatic launches keeps the backlog autopilot from
+              starting one until you resume.
+            </p>
+          )}
           {fleet.holdOnly > 0 && (
             // Said before the confirm, not after: a person pausing to free bandwidth decides on it.
             <p className="fleet-pause-sub fleet-pause-hold-note">
@@ -179,11 +186,13 @@ export function FleetPauseControl(): React.JSX.Element {
                 Cancel
               </button>
             </Tooltip>
-            <Tooltip label="Freeze every running agent now">
+            <Tooltip label={fleet.pausable > 0 ? "Freeze every running agent now" : "Hold every automatic launch until you resume"}>
               <button
                 type="button"
                 className="btn fleet-pause-confirm"
-                disabled={busy || fleet.pausable === 0}
+                // With nothing running there is nothing to freeze, but the launch hold is still worth
+                // setting before the autopilot starts something: allowed whenever it is ticked.
+                disabled={busy || (fleet.pausable === 0 && !holdDispatch)}
                 onClick={() =>
                   void act(() =>
                     api.pauseFleet({
@@ -193,7 +202,7 @@ export function FleetPauseControl(): React.JSX.Element {
                   )
                 }
               >
-                <PauseGlyph kind="pause" size={10} /> Pause {sessionCount(fleet.pausable)}
+                <PauseGlyph kind="pause" size={10} /> {fleet.pausable > 0 ? `Pause ${sessionCount(fleet.pausable)}` : "Hold launches"}
               </button>
             </Tooltip>
           </div>

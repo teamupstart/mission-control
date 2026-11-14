@@ -14,7 +14,7 @@ export function ResidentState({ profileId }: { profileId: string }): React.JSX.E
     try { await action(); } catch (err) { setError(err instanceof Error ? err.message : "State unavailable"); }
     finally { setBusy(false); }
   }
-  return <section className="resident-section resident-state" aria-label="Durable resident state">
+  return <section className="resident-section resident-editor-card resident-editor-card-state resident-state" aria-label="Durable resident state">
     <h4>Durable state</h4>
     <p className="resident-section-blurb">Notes, watermarks and Claude auto-memory survive restarts. Copies of this profile start with separate state.</p>
     <div className="resident-editor-actions">

@@ -193,6 +193,25 @@ The default is off for every install, including upgrades. There is no migration:
 `terminals` blob without the key parses as off. On the first sweep after upgrade, outside
 sessions leave through the normal eviction lifecycle.
 
+## Publication model (recorded human decisions)
+
+- **Home repository.** This laptop cannot write to `teamupstart/mission-control`: the org enforces
+  SAML SSO and neither this machine's SSH key nor its `gh` token is authorized. The human forked
+  the repository to `dweebo/mission-control` and chose to make the fork `origin`, with
+  `teamupstart/mission-control` kept as `upstream`. Mission Control's publication and scheduling
+  conditions therefore refer to `origin`.
+- **Plan publication.** The plan is published by a fast-forward push to `origin/main`, which
+  satisfies push-before-scheduling for Phase 1. A direct push to `upstream` was attempted and
+  refused by SSO.
+- **Upstream publication.** The human opens pull requests into `teamupstart/mission-control`
+  from their work laptop, where SSO is authorized, using a fork branch as the head: first
+  `dweebo:plan/hide-outside-sessions` for the plan, then the Phase 1 branch for the
+  implementation. Upstream merge is not a precondition for Phase 1, by the human's choice of the
+  fork as home base. Mission Control on this laptop cannot observe teamupstart, so it could not
+  release a task on an upstream merge in any case.
+- **Phase 1 start.** The Phase 1 task has no automatic dependency and its autopilot is off. The
+  human starts it manually after plan validation passes.
+
 ## Adopted decisions (review of revision 2)
 
 1. **Upgrade behavior:** off for everyone, including upgrades.
@@ -215,3 +234,10 @@ sessions leave through the normal eviction lifecycle.
   fast-forward push to the fork's `main`, not by a planning PR merge. Phase 1's release
   condition is that the plan files resolve on `origin/main`, and its task carries no
   dependency on the planning session's PR.
+
+## Repairs in revision 6 (plan validation, round 2)
+
+- Added the publication model above. It records the human's decision to make the fork `origin`,
+  explains that pushing to `teamupstart/mission-control` is refused by SSO from this machine,
+  and states how upstream publication happens (the human opens PRs from fork branches on their
+  work laptop) and why it is not a Phase 1 precondition.

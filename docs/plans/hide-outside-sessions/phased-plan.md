@@ -68,8 +68,15 @@ No concurrency: there is one phase.
 `origin/main`, not by a planning PR merge. Phase 1 may start once
 `docs/plans/hide-outside-sessions/{plan,phased-plan,phase-1-launch-ownership-admission-and-setting}.md`
 resolve on `origin/main` at their latest approved revision. Its task therefore has no dependency
-on the planning session. Implementation still happens on its own phase branch and pull request,
-as the human chose.
+on the planning session, and its autopilot is off: the human starts it manually after plan
+validation passes. Implementation still happens on its own phase branch and pull request, as
+the human chose.
+
+**Upstream publication.** Pushing to `teamupstart/mission-control` is refused by SAML SSO from
+this machine (attempted and refused). By the human's decision, the fork is the home repository,
+and upstream publication is a pull request the human opens from their SSO-authorized work laptop
+with `dweebo:plan/hide-outside-sessions` (and later the Phase 1 branch) as the head. It is not a
+Phase 1 precondition. See the root plan's publication model.
 
 ## Cross-phase contracts
 

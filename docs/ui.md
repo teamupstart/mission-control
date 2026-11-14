@@ -464,7 +464,10 @@ is settled once any window's picker opening saves its record write, or the tour 
 a record write settles only the reminders that existed when it began, so a midway Exit made while
 it was still in flight stays owed. Every picker opening reads the debt afresh, including the automatic
 one at startup when it had to wait behind another dialog, so a tour another window has already
-announced and settled is not featured, recorded, or opened past an opt-out a second time.
+announced and settled is not featured, recorded, or opened past an opt-out a second time. An
+automatic opening on account of an announcement also re-reads `announcedTours` from the daemon
+just before it opens, because preferences do not live-sync between windows and another window
+may have announced the tour meanwhile.
 It can only make a tour owed again, never mark one as seen, and a different browser does not
 see it.
 

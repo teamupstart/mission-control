@@ -104,6 +104,7 @@ import {
   NO_CARD_SHORTCUTS,
 } from "./lib/card-shortcuts.ts";
 import {
+  refreshAnnouncedTours,
   uiConfig,
   uiConfigHydrated,
   updateUiConfig,
@@ -1034,6 +1035,15 @@ export function App(): React.JSX.Element {
       : null
   ), [catalog]);
   const startupTourHandled = useRef(false);
+  /**
+   * The daemon's `announcedTours` has been re-read for the automatic opening about to happen.
+   * Cleared whenever that opening has to wait again, so the record is confirmed at the moment it
+   * opens rather than at some earlier one.
+   */
+  const startupAnnouncementConfirmed = useRef(false);
+  const startupAnnouncementChecking = useRef(false);
+  /** Re-runs the startup decision once a confirming read lands. */
+  const [startupRecheck, setStartupRecheck] = useState(0);
   const [tourPickerOpen, setTourPickerOpen] = useState(false);
   /** The tour the open picker announces, captured as it opened. */
   const [tourPickerFeatured, setTourPickerFeatured] = useState<TourId | null>(null);
@@ -1364,7 +1374,24 @@ export function App(): React.JSX.Element {
       busy: overlaysRef.current.anyOpen || activeTour !== null,
     });
     if (decision === "settle") startupTourHandled.current = true;
-    if (decision === "open") openTourPicker(captureFocusBookmark(null));
+    if (decision === "wait") startupAnnouncementConfirmed.current = false;
+    if (decision !== "open") return;
+    // Opening on account of an announcement: confirm the daemon still owes it. Preferences do
+    // not live-sync between windows, so another window may have announced the tour while this
+    // one loaded or waited behind a dialog, and opening past an opt-out to announce it twice is
+    // exactly what this must not do. A daemon that cannot answer leaves the loaded record in
+    // force, which errs toward one more showing rather than none.
+    if (owedTourAnnouncement() !== null && !startupAnnouncementConfirmed.current) {
+      if (startupAnnouncementChecking.current) return;
+      startupAnnouncementChecking.current = true;
+      void refreshAnnouncedTours().finally(() => {
+        startupAnnouncementChecking.current = false;
+        startupAnnouncementConfirmed.current = true;
+        setStartupRecheck((n) => n + 1);
+      });
+      return;
+    }
+    openTourPicker(captureFocusBookmark(null));
   }, [
     activeTour,
     announcedTours,
@@ -1373,6 +1400,7 @@ export function App(): React.JSX.Element {
     overlays.anyOpen,
     owedTourAnnouncement,
     showToursOnStartup,
+    startupRecheck,
     tourPreferenceHydrated,
   ]);
 

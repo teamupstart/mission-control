@@ -156,6 +156,26 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
   return true;
 }
 
+/**
+ * Re-read `announcedTours` from the daemon and adopt it, for the one automatic decision that
+ * must not act on a stale copy: opening the startup picker on account of a new-tour
+ * announcement. Preferences do not live-sync between windows, so a window that waited behind a
+ * dialog can still hold a record another window has since announced the tour into.
+ *
+ * Only this field is adopted, and not when a write of it from this window began meanwhile -
+ * that write is newer than the read. Resolves to whether the daemon answered.
+ */
+export async function refreshAnnouncedTours(): Promise<boolean> {
+  const generation = writeGeneration.get("announcedTours") ?? 0;
+  const view = await fetchUiConfig();
+  if (!view) return false;
+  if ((writeGeneration.get("announcedTours") ?? 0) !== generation) return true;
+  if (!Object.is(current.announcedTours, view.config.announcedTours)) {
+    commit({ ...current, announcedTours: view.config.announcedTours });
+  }
+  return true;
+}
+
 // Stable references for useSyncExternalStore, so it doesn't drop and re-add the listener
 // on every render (an inline arrow would).
 function subscribe(cb: () => void): () => void {

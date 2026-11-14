@@ -462,8 +462,9 @@ The daemon is never asked to take the tour back off `announcedTours`: that list 
 so a re-arm landing late could undo an announcement another window had already shown. The debt
 is settled once any window's picker opening saves its record write, or the tour is seen through;
 a record write settles only the reminders that existed when it began, so a midway Exit made while
-it was still in flight stays owed. Every picker opening reads the debt afresh, so a tour another
-window has already announced and settled is not featured or recorded a second time.
+it was still in flight stays owed. Every picker opening reads the debt afresh, including the automatic
+one at startup when it had to wait behind another dialog, so a tour another window has already
+announced and settled is not featured, recorded, or opened past an opt-out a second time.
 It can only make a tour owed again, never mark one as seen, and a different browser does not
 see it.
 

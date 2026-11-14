@@ -1015,23 +1015,24 @@ export function App(): React.JSX.Element {
   const { showToursOnStartup, announcedTours } = useUiConfig();
   const tourPreferenceHydrated = useUiConfigHydrated();
   const catalog = useMemo(() => tourCatalog(), []);
-  /**
-   * Announcements this browser owes after a midway dismissal, as this document last read them:
-   * at load, and again whenever the picker opens, because another window may have settled one.
-   * Settled when a picker opening's record write is saved or the tour is seen through.
-   */
-  const [owedAnnouncements, setOwedAnnouncements] = useState(readOwedAnnouncements);
-  const tourAnnouncement = useMemo(
-    () => (tourPreferenceHydrated
-      ? pendingTourAnnouncement(
-        withOwedAnnouncements(announcedTours, owedAnnouncements),
-        catalog.map((entry) => entry.id),
-      )
-      : null),
-    [announcedTours, catalog, owedAnnouncements, tourPreferenceHydrated],
-  );
   const announcedToursRef = useRef(announcedTours);
   announcedToursRef.current = announcedTours;
+  /**
+   * The new tour this profile is owed an announcement of, or null - from the daemon's record and
+   * this browser's midway-dismissal debt, read afresh on every ask. The debt lives in shared
+   * `localStorage`, and another window can announce the tour and settle it at any moment, so no
+   * copy of it is kept: a startup opening that waited behind another dialog, and a Browse tours
+   * opening, both decide from what is owed now. Nothing is owed before hydration, because the
+   * cache cannot say whether a profile predates a tour.
+   */
+  const owedTourAnnouncement = useCallback((): TourId | null => (
+    uiConfigHydrated()
+      ? pendingTourAnnouncement(
+        withOwedAnnouncements(announcedToursRef.current, readOwedAnnouncements()),
+        catalog.map((entry) => entry.id),
+      )
+      : null
+  ), [catalog]);
   const startupTourHandled = useRef(false);
   const [tourPickerOpen, setTourPickerOpen] = useState(false);
   /** The tour the open picker announces, captured as it opened. */
@@ -1055,17 +1056,7 @@ export function App(): React.JSX.Element {
     // Whichever way the picker opens, the first opening that features a new tour is its
     // announcement, and recording it lets the next window honor the startup preference again.
     // A refused write rolls back and the next window announces it once more; nothing to report.
-    // The browser-local debt is read afresh here, not taken from this document's copy: another
-    // window may have announced the tour and settled it since, and featuring it again would
-    // record a second announcement for one midway dismissal.
-    const owedNow = readOwedAnnouncements();
-    setOwedAnnouncements(owedNow);
-    const featured = uiConfigHydrated()
-      ? pendingTourAnnouncement(
-        withOwedAnnouncements(announcedToursRef.current, owedNow),
-        catalog.map((entry) => entry.id),
-      )
-      : null;
+    const featured = owedTourAnnouncement();
     setTourPickerFeatured(featured);
     if (featured) {
       const recorded = recordTourAnnouncements(announcedToursRef.current);
@@ -1074,11 +1065,11 @@ export function App(): React.JSX.Element {
       // newer dismissal must survive it.
       const mark = owedAnnouncementsMark();
       void updateUiConfig({ announcedTours: recorded }).then((saved) => {
-        if (saved) setOwedAnnouncements(settleOwedAnnouncements(recorded, undefined, mark));
+        if (saved) settleOwedAnnouncements(recorded, undefined, mark);
       });
     }
     setTourPickerOpen(true);
-  }, [catalog]);
+  }, [owedTourAnnouncement]);
 
   const closeTourPicker = useCallback((): void => {
     setTourPickerOpen(false);
@@ -1366,7 +1357,9 @@ export function App(): React.JSX.Element {
       handled: startupTourHandled.current,
       hydrated: tourPreferenceHydrated,
       enabled: showToursOnStartup,
-      announcing: tourAnnouncement !== null,
+      // Read now rather than when this document loaded: an opening that waited behind another
+      // dialog must not open past an opt-out for a debt another window has since settled.
+      announcing: owedTourAnnouncement() !== null,
       hasTours: catalog.length > 0,
       busy: overlaysRef.current.anyOpen || activeTour !== null,
     });
@@ -1374,11 +1367,12 @@ export function App(): React.JSX.Element {
     if (decision === "open") openTourPicker(captureFocusBookmark(null));
   }, [
     activeTour,
+    announcedTours,
     catalog,
     openTourPicker,
     overlays.anyOpen,
+    owedTourAnnouncement,
     showToursOnStartup,
-    tourAnnouncement,
     tourPreferenceHydrated,
   ]);
 
@@ -1697,9 +1691,8 @@ export function App(): React.JSX.Element {
     // to take the tour back off `announcedTours`: that list is written whole, so a late re-arm
     // could land after another window had already announced the tour and quietly owe it a
     // second time. A picker opening's own record write, or a run seen through, settles it.
-    setOwedAnnouncements(residentsTourReachedEnd.current
-      ? settleOwedAnnouncements(["residents"])
-      : oweAnnouncement("residents"));
+    if (residentsTourReachedEnd.current) settleOwedAnnouncements(["residents"]);
+    else oweAnnouncement("residents");
     residentsTourReachedEnd.current = false;
   }, []);
 

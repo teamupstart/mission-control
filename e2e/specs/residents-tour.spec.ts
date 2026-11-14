@@ -592,6 +592,62 @@ test("a picker save still in flight cannot clear a midway dismissal made after i
   await expect.poll(() => owedAnnouncements(page)).toEqual([]);
 });
 
+test("a startup opening that waited behind a dialog honors a debt another window settled", async ({
+  dashboard: page,
+  daemon,
+  context,
+}) => {
+  // Window A owes the residents announcement from an earlier midway dismissal, and its saved
+  // preference has the picker switched off: the debt is the only reason to open it.
+  await page.evaluate(() => localStorage.setItem(
+    "mission.tourAnnouncementsOwed",
+    JSON.stringify({ seq: 1, owed: { residents: 1 } }),
+  ));
+  expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
+  // Hold A's settings until a dialog is open, so its startup opening has to wait behind it.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let holding = true;
+  await page.route("**/api/ui/config", async (route) => {
+    if (holding && route.request().method() === "GET") {
+      holding = false;
+      await held;
+    }
+    await route.continue();
+  });
+  await page.reload();
+  await expectDashboardReady(page);
+  await page.keyboard.press("Meta+k");
+  const palette = page.getByRole("dialog", { name: "Search everything" });
+  await expect(palette).toBeVisible();
+  release();
+  const picker = page.getByRole("dialog", { name: PICKER });
+  await expect(picker).toBeHidden();
+
+  // Meanwhile window B features the tour, records it, and settles the shared debt.
+  const second = await context.newPage();
+  const secondPicker = second.getByRole("dialog", { name: PICKER });
+  await second.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(secondPicker).toBeVisible();
+  await expect(secondPicker).toContainText("New tour: Meet your residents.");
+  await expect.poll(() => owedAnnouncements(second)).toEqual([]);
+  await second.close();
+
+  // A's dialog closes. Its opening re-reads what is owed, finds nothing, and honors the opt-out
+  // rather than opening an ordinary picker nobody asked for.
+  await page.bringToFront();
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
+  await expect(picker).toBeHidden();
+  // Settled for the document: a later dialog closing does not open it either.
+  await page.keyboard.press("Meta+k");
+  await expect(palette).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await expect(picker).toBeHidden();
+});
+
 test("a fresh profile is not told a tour is new", async ({ page, daemon }) => {
   // Every PUT the fixture made leaves a record born with every tour already announced.
   expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);

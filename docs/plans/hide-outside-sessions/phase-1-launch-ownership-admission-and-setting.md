@@ -11,7 +11,9 @@ default and carries a warning. Hidden sessions cost no pane capture, `gitInfo`, 
 
 ## Entry criteria
 
-- The planning PR that adds `docs/plans/hide-outside-sessions/` has merged.
+- The three plan files under `docs/plans/hide-outside-sessions/` resolve on `origin/main` (the
+  human's fork, `dweebo/mission-control`), published by a direct fast-forward push rather than
+  a planning PR merge.
 - No other phase.
 
 ## Scope
@@ -134,6 +136,9 @@ Add focused tests in `test/`, run with
   are admitted, while an outside session (including one that already has a work episode) and a session in the repository root beside a run
   worktree are not. With the setting on, all are admitted. Hidden sessions do not reach the
   annotation seams.
+- Invite-only admission: with the setting off, a session that is not Mission-launched, not any
+  task's `sessionId`, and not in a pipeline worktree, but holds a `"dispatch"` Foreman invite, is
+  admitted. The same session without the invite is not.
 - Eviction: switching the setting off evicts an existing outside card via `beginEviction` and
   emits `session_remove`.
 - Config: the default is off, a patch round-trips, an empty patch is refused, and a snapshot
@@ -176,3 +181,6 @@ predicate together with its launch-path test.
 - Revision 4: dropped the work-episode admission signal, switched the resume-guard match to a
   full-string comparison, and unified the helper name `hasMissionLaunchAncestor` with the
   root plan.
+- Revision 5: added the invite-only admission test, and changed the entry criterion from a
+  planning PR merge to the plan files resolving on `origin/main`, matching how the plan was
+  actually published.

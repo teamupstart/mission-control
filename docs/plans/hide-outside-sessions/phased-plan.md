@@ -52,16 +52,24 @@ change is well within what a single agent can implement and verify.
 
 | Phase | File | Depends on | Delivers |
 |---|---|---|---|
-| 1 | [`phase-1-launch-ownership-admission-and-setting.md`](phase-1-launch-ownership-admission-and-setting.md) | planning PR merge | Predicate, admission, setting, UI, tests, docs |
+| 1 | [`phase-1-launch-ownership-admission-and-setting.md`](phase-1-launch-ownership-admission-and-setting.md) | plan files on `origin/main` | Predicate, admission, setting, UI, tests, docs |
 
 ## Dependency graph and merge order
 
 ```mermaid
 flowchart LR
-  plan[planning session PR merge] --> p1[Phase 1]
+  plan[plan files published on origin/main] --> p1[Phase 1]
 ```
 
 No concurrency: there is one phase.
+
+**Release condition.** The human made their fork (`dweebo/mission-control`) the repository's
+`origin`, and the plan is published by a fast-forward push of the planning branch to
+`origin/main`, not by a planning PR merge. Phase 1 may start once
+`docs/plans/hide-outside-sessions/{plan,phased-plan,phase-1-launch-ownership-admission-and-setting}.md`
+resolve on `origin/main` at their latest approved revision. Its task therefore has no dependency
+on the planning session. Implementation still happens on its own phase branch and pull request,
+as the human chose.
 
 ## Cross-phase contracts
 

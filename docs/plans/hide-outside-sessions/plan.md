@@ -159,6 +159,10 @@ Unit tests in `test/`, using injected process snapshots:
   session inside an observed pipeline run's worktree are admitted, and an outside one is not.
   A session in the repository root beside that worktree is not admitted. With it on, all are admitted. A hidden session never
   reaches `annotatePaneState` or `annotateCodexRollouts` (asserted through injected seams).
+- **Invite-only admission.** With the setting off, a session that is not Mission-launched, is
+  not any task's `sessionId`, and has no pipeline worktree, but holds a `"dispatch"` Foreman
+  invite, is admitted. The same session without the invite is not. This isolates rule 2's
+  invite clause from the ancestry rule.
 - **Eviction.** Flipping the setting off evicts an existing outside card through
   `beginEviction` and emits `session_remove`.
 - **Config.** The default is off. A patch round-trips. A settings snapshot without the key
@@ -202,3 +206,12 @@ sessions leave through the normal eviction lifecycle.
 - The resume-guard match compares the full command string instead of whitespace tokens, because
   packaged-app paths contain spaces.
 - The ancestor helper is named `hasMissionLaunchAncestor` everywhere.
+
+## Repairs in revision 5 (plan validation, round 1)
+
+- Added an invite-only admission test, so the `"dispatch"` Foreman invite clause is verified
+  on its own rather than through a Mission-launched session.
+- Publication changed after the human made their fork `origin`: the plan is published by a
+  fast-forward push to the fork's `main`, not by a planning PR merge. Phase 1's release
+  condition is that the plan files resolve on `origin/main`, and its task carries no
+  dependency on the planning session's PR.

@@ -537,6 +537,18 @@ test("tickTargets skips an uninvited PROMPTED wrap-up candidate", () => {
   );
 });
 
+test("decideQueueTick neither triages nor sends to a paused session that needs you", () => {
+  // Read as needing you after the pause began: triage would run a review whose answer the
+  // paused session refuses, so the pause holds triage as it holds the queue.
+  const paused = { pause: { reason: "operator", phase: "frozen", since: NOW - 1, interrupted: null, stopped: true } } as const;
+  assert.deepEqual(tick({ session: paused, bucket: "needs-you", items: [mkItem()] }), { kind: "none" });
+  assert.equal(
+    tick({ bucket: "needs-you", items: [mkItem()] }).kind,
+    "triage",
+    "the same session unpaused is triaged",
+  );
+});
+
 test("decideQueueTick will not triage an uninvited session's question", () => {
   // The machine's own copy of the gate, independent of the selector that feeds it: an
   // unanswered question on an uninvited session is not Foreman's to answer. Both call

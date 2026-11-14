@@ -26,7 +26,7 @@ export function registerPauseRoutes(app: Hono, pauses: PauseManager | undefined)
     const refusal = sessionControlCallerRefusal(c);
     if (refusal) return c.json({ ok: false, error: refusal === "forbidden" ? refusal : "Only the operator can pause a session" }, 403);
     if (!pauses) return c.json({ ok: false, error: "pause manager unavailable" }, 503);
-    const parsed = await parseBody(c, PauseSessionRequestSchema);
+    const parsed = await parseBody(c, PauseSessionRequestSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
     const { body, status } = reply(await pauses.pause(id, parsed.data.mode));
@@ -66,7 +66,7 @@ export function registerPauseRoutes(app: Hono, pauses: PauseManager | undefined)
     const refusal = sessionControlCallerRefusal(c);
     if (refusal) return c.json({ ok: false, error: refusal === "forbidden" ? refusal : "Only the operator can pause every session" }, 403);
     if (!pauses) return c.json({ ok: false, error: "pause manager unavailable" }, 503);
-    const parsed = await parseBody(c, FleetPauseRequestSchema);
+    const parsed = await parseBody(c, FleetPauseRequestSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     const { body, status } = reply(await pauses.pauseFleet(parsed.data));
     return c.json(body, status);

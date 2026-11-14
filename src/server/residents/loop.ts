@@ -126,6 +126,10 @@ export class ResidentLoop {
       this.publish(id);
     }
     if (run.loopState === "paused") { this.cancelTimer(id); return; }
+    // The operator paused this session: hold every wake, keeping a queued Run now and the pacing
+    // intent, until the `session_upsert` that lifts the pause observes it again. Without this a
+    // Run now held by the pause re-woke itself here, through microtasks, without ever yielding.
+    if (session.pause) { this.cancelTimer(id); return; }
     // A request holds delivery without discarding the durable wake or pacing intent.
     if (reportBucket(session) === "needs-you") { this.cancelTimer(id); return; }
     if (session.pendingTurns.length > 0) {

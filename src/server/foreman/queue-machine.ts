@@ -337,6 +337,12 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     return { kind: "none" };
   }
 
+  // Paused: hold the queue and triage where they are. A send now would spend an attempt and
+  // escalate an item that is only waiting for the operator to resume this session, and a
+  // triage would run a review whose answer the paused session refuses. Above triage for that
+  // reason: a session read as needing you after the pause began is still paused.
+  if (isPaused(session)) return { kind: "none" };
+
   // 2. An unanswered question blocks the item anyway, so let triage own that
   //    episode. This sits above the in-flight branch on purpose: an item in
   //    `in_progress` whose agent is asking something must not be "verified" as
@@ -346,9 +352,6 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   // 2b. A durable blocker holds the queue whole: no next item, no in-flight verdict and no
   //     wrap-up. Items stay queued exactly as they are until the blocker is cleared.
   if (hasBlocker(session)) return { kind: "none" };
-  // Paused: hold the queue where it is. A send now would spend an attempt and escalate an
-  // item that is only waiting for the operator to resume this session.
-  if (isPaused(session)) return { kind: "none" };
 
   // 3. No hooks means no pickup signal and no completion signal - the queue has
   //    nothing to gate on, so it can never advance. Say so rather than stalling.

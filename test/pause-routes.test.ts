@@ -107,6 +107,22 @@ test("a malformed or impossible request is refused with the reason", async () =>
   assert.match(((await past.json()) as { error: string }).error, /future and within a week/);
 });
 
+test("a garbled body pauses nothing, while an empty one still takes the defaults", async () => {
+  // Read as `{}`, a body cut off mid-flight would pause now - or pause the whole fleet with
+  // launches held - which is exactly what the request did not say.
+  const { app, pauses, manager } = harness();
+  const garbled = await app.request("/api/sessions/s1/pause", { method: "POST", headers: HEADERS, body: "{" });
+  assert.equal(garbled.status, 400);
+  assert.match(((await garbled.json()) as { error: string }).error, /not valid JSON/);
+  assert.equal(pauses.get("s1") ?? null, null, "nothing was paused");
+  const garbledFleet = await app.request("/api/pause/fleet", { method: "POST", headers: HEADERS, body: "{\"holdDispatch\": tr" });
+  assert.equal(garbledFleet.status, 400);
+  assert.equal(manager.state().fleet, null, "the fleet was not paused");
+
+  const empty = await app.request("/api/sessions/s1/pause", { method: "POST", headers: HEADERS });
+  assert.equal(empty.status, 200, "no body at all is the default pause");
+});
+
 test("Pause all and its state read back through the routes", async () => {
   const { app } = harness();
   const res = await app.request("/api/pause/fleet", { method: "POST", headers: HEADERS, body: JSON.stringify({ holdDispatch: true }) });

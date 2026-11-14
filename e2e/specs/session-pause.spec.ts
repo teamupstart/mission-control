@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -206,9 +206,25 @@ test("every pause control is a Display choice with its own preview, and the boar
   await expect.poll(async () => (await sessionById(daemon, session.id))?.pause?.phase).toBe("frozen");
   // A paused card keeps its one-click way back: the corner's play button and the menu's pill.
   await expect(card.getByRole("button", { name: "Resume", exact: true })).toHaveCount(2);
+  // Paused is said by the border, tint, spine and flag; the card's text keeps full contrast.
+  await expect(card.locator(".tile-goal")).toHaveCSS("opacity", "1");
   await shoot(page, card, "card-corner-and-menu-paused");
   await card.locator(".pause-pill").click();
   await expect.poll(async () => (await sessionById(daemon, session.id))?.pause ?? null).toBeNull();
+
+  // The priority corner button is filled with the ink an idle button turns on hover; pointed
+  // at, its glyph must still read against its own fill.
+  await card.hover();
+  await card.getByRole("button", { name: "Make priority", exact: true }).click();
+  const endPriority = card.locator(".pause-corner-btn.is-priority");
+  await endPriority.hover();
+  const ink = await endPriority.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { color: style.color, fill: style.backgroundColor };
+  });
+  expect(ink.color, "the hovered priority glyph is not drawn in its own fill colour").not.toBe(ink.fill);
+  await endPriority.click();
+  await expect.poll(async () => (await fetch(`${daemon.baseURL}/api/pause`).then((r) => r.json()) as { priority: unknown }).priority).toBeNull();
 
   // The ⋯ menu pauses after the current turn too.
   await card.getByRole("button", { name: "Session actions" }).click();
@@ -268,12 +284,26 @@ test("Pause all freezes the fleet from the title bar, and priority keeps one ses
   const first = await dispatchIdle(page, daemon, "Pause fleet one");
   const second = await dispatchIdle(page, daemon, "Pause fleet two");
 
+  // With a session open in the console, where App's Tab walks the reader: the confirm takes the
+  // keyboard as it opens, and Tab walks its own controls to Pause.
+  await page.locator(".rail-row").filter({ hasText: first.name }).click();
   await page.getByRole("button", { name: "Pause all", exact: true }).click();
   const confirm = page.getByRole("dialog", { name: "Pause all" });
   await expect(confirm).toContainText("Pause all 2 sessions");
-  await expect(confirm.getByRole("checkbox", { name: /Hold automatic launches too/ })).toBeChecked();
+  const hold = confirm.getByRole("checkbox", { name: /Hold automatic launches too/ });
+  await expect(hold).toBeChecked();
+  await expect(hold, "the confirm takes focus as it opens").toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirm.getByRole("combobox")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  const pauseButton = confirm.getByRole("button", { name: "Pause 2 sessions" });
+  await expect(pauseButton, "Tab stays in the confirm instead of walking the reader").toBeFocused();
+  // The photograph blurs whatever is focused, so it is taken after the walk, not during it.
   await shoot(page, page, "fleet-pause-confirm");
-  await confirm.getByRole("button", { name: "Pause 2 sessions" }).click();
+  await pauseButton.focus();
+  await page.keyboard.press("Enter");
 
   const banner = page.getByRole("status", { name: "Everything is paused" });
   await expect(banner).toContainText("2 sessions frozen, and automatic launches are held");
@@ -304,10 +334,72 @@ test("Pause all freezes the fleet from the title bar, and priority keeps one ses
   await expect.poll(async () => (await sessionById(daemon, second.id))?.pause?.reason).toBe("priority");
   expect((await sessionById(daemon, first.id))?.pause ?? null).toBeNull();
   await expect(page.locator(".cdetail > .pause-band.is-priority")).toContainText("1 session paused");
+  // The rail's star is decorative; its accessible text names the priority session.
+  await expect(page.locator(".rail-row").filter({ hasText: first.name })).toHaveAccessibleDescription(/Priority session/);
   await expect(page.locator(".rail-row").filter({ hasText: second.name })).toHaveClass(/is-paused/);
   await shoot(page, page, "priority");
 
   await priority.getByRole("button", { name: /End priority/ }).click();
   await expect(priority).toBeHidden();
   await expect.poll(async () => (await sessionById(daemon, second.id))?.pause ?? null).toBeNull();
+});
+
+test.describe("a Pi agent", () => {
+  // The real Pi driver behind the vendor fake, as `pi-interrupt-conversation.spec.ts` runs it.
+  test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js") } });
+
+test("a Pi agent that runs inside Mission Control is offered a hold, never promised a freeze", async ({ dashboard: page, daemon }) => {
+  const installed = await page.request.post(`${daemon.baseURL}/api/setup/install`, { data: { id: "pi-integration" } });
+  expect(installed.ok(), await installed.text()).toBe(true);
+  expect((await page.request.put(`${daemon.baseURL}/api/harnesses/config`, {
+    data: { sessionRuntime: { pi: "sdk" } },
+  })).ok()).toBe(true);
+  await page.getByRole("button", { name: "Dispatch", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("chat");
+  await dialog.getByRole("textbox", { name: "What would you like to talk about?" }).fill("Pause a Pi chat");
+  await dialog.getByLabel("Agent").selectOption("pi");
+  await dialog.getByRole("combobox", { name: /^Model/ }).selectOption("amazon-bedrock/deepseek.v3.2");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(async () => {
+    const tasks = await (await page.request.get(`${daemon.baseURL}/api/tasks`)).json();
+    return tasks.find((task: { kind: string }) => task.kind === "chat")?.status;
+  }, { timeout: 60_000 }).toBe("running");
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+
+  await page.getByRole("button", { name: "Pause controls: running" }).click();
+  const menu = page.getByRole("menu", { name: "Pause" });
+  const now = menu.getByRole("menuitem", { name: /^Pause now/ });
+  await expect(now).toContainText("runs inside Mission Control");
+  await expect(now).not.toContainText("network goes quiet");
+  await expect(menu.getByRole("menuitem", { name: /^Pause after this turn/ })).toContainText("then holds it");
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "Pause all", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "Pause all" });
+  await expect(confirm, "said before the confirm, where the choice is made").toContainText(/inside Mission Control, so it is held instead/);
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+});
+});
+
+test("the narrowest title bar gives Pause all's button way, and the banner keeps Resume all", async ({ dashboard: page, daemon }) => {
+  await dispatchIdle(page, daemon, "Pause narrow ledger");
+  const bar = page.locator("header.topbar");
+  await page.setViewportSize({ width: 560, height: 800 });
+  await expect(bar).toHaveAttribute("data-rung", /\b5\b/);
+  await expect(page.getByRole("button", { name: "Pause all", exact: true })).toBeHidden();
+
+  // Engaged from a wider window, then narrowed: the way back stays on screen in the banner.
+  await page.setViewportSize({ width: 1600, height: 800 });
+  await page.getByRole("button", { name: "Pause all", exact: true }).click();
+  await page.getByRole("dialog", { name: "Pause all" }).getByRole("button", { name: /^Pause 1 session/ }).click();
+  const banner = page.getByRole("status", { name: "Everything is paused" });
+  await expect(banner).toBeVisible();
+  await page.setViewportSize({ width: 560, height: 800 });
+  await expect(banner.getByRole("button", { name: /Resume all now/ })).toBeVisible();
+  await banner.getByRole("button", { name: /Resume all now/ }).click();
+  await expect(banner).toBeHidden();
 });

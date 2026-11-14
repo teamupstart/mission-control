@@ -141,11 +141,14 @@ test("a real child process tree is stopped and continued", { skip: process.platf
     require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     setInterval(() => {}, 1000);
   `], { stdio: "ignore" });
+  // Every pid the tree read found, so a failed assertion still kills them - the grandchild
+  // included, which would otherwise outlive the run, possibly stopped, with its interval.
+  let pids: number[] = [];
   try {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const freezer = processFreezer({ sdkDriverPid: () => child.pid ?? null, log: () => {} });
     const tree = await freezer.treeOf({ id: "sdk:real", pid: 0, runtime: "sdk" } as Session);
-    const pids = pidsOf(tree);
+    pids = pidsOf(tree);
     assert.equal(pids[0], child.pid);
     assert.equal(pids.length, 2, "the grandchild is part of the tree");
     assert.ok(tree.every((p) => /^[0-9a-f]{64}$/.test(p.identity)), "each with its real identity");
@@ -153,8 +156,16 @@ test("a real child process tree is stopped and continued", { skip: process.platf
     for (const pid of pids) assert.match(processState(pid), /^T/, `pid ${pid} is stopped`);
     assert.deepEqual(freezer.resume(tree), [], "the real identities still match, so both continue");
     for (const pid of pids) assert.doesNotMatch(processState(pid), /^T/, `pid ${pid} runs again`);
-    process.kill(pids[1]!, "SIGKILL");
   } finally {
+    // SIGKILL ends a stopped process too, so no SIGCONT is needed first.
+    for (const pid of pids) {
+      if (pid === child.pid) continue;
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
     child.kill("SIGKILL");
   }
 });

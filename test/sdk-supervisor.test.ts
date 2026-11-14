@@ -3219,6 +3219,45 @@ test("a capacity failure holds the turn open and retries with progressive backof
   );
 });
 
+test("a pause that lands while the capacity retry waits its turn keeps the retry instead of settling the turn", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const HOLD = "this session is paused - resume it before sending it anything";
+  let gateReads = 0;
+  let freezeAtRead = Number.POSITIVE_INFINITY;
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, {
+    ...MISSION_TEST_MCP_DEPS,
+    pause: { releaseNow: () => null, frozenRefusal: () => (++gateReads >= freezeAtRead ? HOLD : null) },
+  });
+  const session = await supervisor.start(START);
+  handle.push({ kind: "state", state: "working", activity: null });
+  await drain();
+  const sentBefore = handle.sent.length;
+  const continuations = () =>
+    handle.sent.slice(sentBefore).filter((turn) => turn.text === CAPACITY_CONTINUATION_PROMPT).length;
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+
+  // The retry's own check and the send's first one pass; the freeze lands while the send
+  // waits its turn on the session's chain, so the execution-time gate refuses it.
+  freezeAtRead = gateReads + 3;
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "nothing reached the frozen child");
+  const card = registry.getSession(session.id);
+  assert.equal(card?.state, "working", "the turn the pause interrupted is not reported finished");
+  assert.equal(card?.workCycle?.active, true);
+
+  // Thawed: the retry that was kept fires and continues the work.
+  freezeAtRead = Number.POSITIVE_INFINITY;
+  t.mock.timers.tick(15_000);
+  await drain();
+  assert.equal(continuations(), 1, "the kept retry continues the work after the thaw");
+});
+
 test("a message delivered during the backoff replaces the retry", async (t) => {
   const { handle, registry, supervisor, session, continuations } = await startWorking(t);
   handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });

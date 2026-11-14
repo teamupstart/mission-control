@@ -32224,15 +32224,11 @@ span.line-run-prov {
   border-color: color-mix(in oklab, var(--paused) 34%, var(--border));
   background: linear-gradient(color-mix(in oklab, var(--paused) 6%, var(--panel)), var(--panel-2));
 }
-/* Hatched rather than solid, so a paused spine never reads as a solid tone at a glance. */
+/* Hatched rather than solid, so a paused spine never reads as a solid tone at a glance. The
+   card's text and its runtime controls are NOT dimmed: the border, the tint, this spine and the
+   flag say paused, and faded text would take the muted lines under 4.5:1 contrast. */
 .tile.is-paused::before {
   background: repeating-linear-gradient(180deg, var(--paused) 0 5px, transparent 5px 8px);
-}
-.tile.is-paused .tile-goal,
-.tile.is-paused .card-runtime,
-.tile.is-paused .tile-branch,
-.tile.is-paused .tile-worktree {
-  opacity: 0.62;
 }
 .tile.is-priority {
   border-color: color-mix(in oklab, var(--fg) 46%, var(--border));
@@ -32314,10 +32310,16 @@ span.line-run-prov {
   border-radius: 6px;
   cursor: pointer;
 }
-.pause-corner-btn:hover:not(:disabled),
-.pause-corner-btn:focus-visible {
+/* Only an idle button takes the hover ink. A paused or priority one keeps its own: `--fg` on
+   the priority button's `--fg` fill would erase the glyph. Those brighten their ring instead. */
+.pause-corner-btn:not(.is-paused):not(.is-priority):hover:not(:disabled),
+.pause-corner-btn:not(.is-paused):not(.is-priority):focus-visible {
   color: var(--fg);
   border-color: color-mix(in oklab, var(--fg) 40%, var(--border));
+}
+.pause-corner-btn:is(.is-paused, .is-priority):hover:not(:disabled),
+.pause-corner-btn:is(.is-paused, .is-priority):focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--fg) 35%, transparent);
 }
 .pause-corner-btn.is-paused {
   color: var(--bg);

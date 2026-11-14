@@ -743,7 +743,11 @@ resumed last, so it never notices its foreground job stop and keeps the terminal
 `SIGSTOP` (for example it belongs to another user), whatever did stop is continued again, the
 session stays held but running, and the control that asked says which process refused. The
 freeze is retried on a timer that backs off from 15 seconds to 5 minutes, never in a tight
-loop. While any Pause all session is only held, its banner reads "Paused, but not everything is
+loop. A **Pause now** keeps retrying even while its turn runs; only **Pause after this turn**
+waits for the turn to end. After every stop the tree is read again, so a tool the agent started
+in the instant before it stopped, or a process that replaced its own program in that instant, is
+stopped and recorded too; the session reads as frozen only once a read finds nothing new.
+While any Pause all session is only held, its banner reads "Paused, but not everything is
 frozen" and counts frozen and still-running sessions separately. A re-freeze after a restart
 that cannot read the process table keeps the processes an earlier freeze stopped, so resuming
 still continues them.

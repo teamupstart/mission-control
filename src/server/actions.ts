@@ -60,7 +60,7 @@ import { resetWorktreeToCommit } from "./git/ensemble-snapshot.ts";
  * a menu is how that turn gets to end. Asked of `stopped`, not of the phase, because a freeze
  * interrupted by a restart leaves stopped processes under a pending record.
  */
-function writeHold(session: Session): string | null {
+export function writeHold(session: Session): string | null {
   return transferHold(session) ?? (session.pause?.stopped ? PAUSED_SESSION_REASON : null);
 }
 
@@ -1583,6 +1583,12 @@ export async function selectPaneOption(
   session: Session,
   target: OptionTarget,
   deps: PaneDeps = defaultPaneDeps,
+  /**
+   * Asked again immediately before the Enter, the one keystroke that answers. The `session`
+   * passed in is the caller's snapshot from before the captures and the cursor walk; a pause
+   * that froze the agent meanwhile is only visible to a caller that reads the live session.
+   */
+  beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
   const held = writeHold(session);
   if (held) return { ok: false, error: held };
@@ -1595,7 +1601,7 @@ export async function selectPaneOption(
   return withPaneLock<ActionResult>(
     session,
     () => ({ ok: false, error: PANE_BUSY }),
-    () => selectOptionLocked(session, target, deps),
+    () => selectOptionLocked(session, target, deps, beforeWrite),
   );
 }
 
@@ -1603,6 +1609,7 @@ async function selectOptionLocked(
   session: Session,
   target: OptionTarget,
   deps: PaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
   const dialog = readPaneDialog(session, await deps.capture(session));
   if (!dialog) return { ok: false, error: NO_MENU };
@@ -1630,7 +1637,7 @@ async function selectOptionLocked(
   if (!final || final.highlighted !== target.number || optionRowMiss(final, target)) {
     return { ok: false, error: "the menu changed before the selection could be confirmed" };
   }
-  return injectEnter(session, deps);
+  return injectEnter(session, deps, beforeWrite);
 }
 
 const IS_A_FORM =
@@ -1744,6 +1751,8 @@ export async function submitPaneForm(
   session: Session,
   targets: FormTarget[],
   deps: PaneDeps = defaultPaneDeps,
+  /** Asked again before every Enter the form presses; see `selectPaneOption`. */
+  beforeWrite?: PromptWriteGuard,
 ): Promise<FormResult> {
   if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
   const held = writeHold(session);
@@ -1752,7 +1761,7 @@ export async function submitPaneForm(
   return withPaneLock<FormResult>(
     session,
     () => ({ ok: false, error: PANE_BUSY }),
-    () => submitFormLocked(session, targets, deps),
+    () => submitFormLocked(session, targets, deps, beforeWrite),
   );
 }
 
@@ -1760,6 +1769,7 @@ async function submitFormLocked(
   session: Session,
   targets: FormTarget[],
   deps: PaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<FormResult> {
   let dialog = readPaneDialog(session, await deps.capture(session));
   if (!dialog) return { ok: false, error: NO_MENU };
@@ -1780,7 +1790,7 @@ async function submitFormLocked(
     if (row.checked === t.checked) continue;
     const walked = await walkCursorTo(session, dialog, t.number, deps);
     if (!walked.ok) return walked;
-    const sent = await injectEnter(session, deps);
+    const sent = await injectEnter(session, deps, beforeWrite);
     if (!sent.ok) return sent;
     // The box is the receipt. Without this the walk would type Enters into a form that
     // stopped responding and call the result a filled-in answer.
@@ -1815,7 +1825,7 @@ async function submitFormLocked(
   if (!final || !stillThere || final.highlighted !== stillThere.number) {
     return { ok: false, error: "the review screen changed before the answers could be sent" };
   }
-  const done = await injectEnter(session, deps);
+  const done = await injectEnter(session, deps, beforeWrite);
   return done.ok ? { ok: true, outcome: "submitted" } : done;
 }
 
@@ -1899,12 +1909,12 @@ async function awaitDialogChange(
 const NO_MENU = "no option menu is on this session's screen";
 
 /** Press Enter, with no text before it - the confirm half of a menu selection. */
-async function injectEnter(session: Session, deps: PaneDeps): Promise<ActionResult> {
+async function injectEnter(session: Session, deps: PaneDeps, beforeWrite?: PromptWriteGuard): Promise<ActionResult> {
   const held = writeHold(session);
   if (held) return { ok: false, error: held };
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
-  return sendKeys(pane, ["enter"]);
+  return sendKeys(pane, ["enter"], undefined, beforeWrite);
 }
 
 /** Explain an unreachable target, naming the flag that would put it in the cycle. */

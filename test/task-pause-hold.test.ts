@@ -108,3 +108,38 @@ test("the dashboard claims the pause override, and Foreman's client never does",
   const foreman = await readFile(new URL("../src/server/foreman/client.ts", import.meta.url), "utf8");
   assert.ok(!foreman.includes("overridePauseHold"), "the backlog autopilot must never lift the hold it is gated by");
 });
+
+test("a hold that begins while stacked readiness waits on GitHub still holds the launch", async () => {
+  const registry = new Registry();
+  let hold: string | null = null;
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, {}, undefined, undefined, {
+    launchHoldReason: () => hold,
+    releaseNow: () => null,
+  });
+  registry.upsertTask(mkTask({ id: "t1", status: "backlog" }));
+  let launches = 0;
+  (tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher.dispatch = async () => {
+    launches++;
+  };
+  // Readiness answers after the operator has pressed Pause all.
+  (tasks as unknown as { stackReadiness: { planStackedDispatch(): Promise<null> } }).stackReadiness.planStackedDispatch =
+    async () => {
+      hold = HELD;
+      return null;
+    };
+  const outcome = await tasks.dispatch("t1");
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.ok ? null : outcome.error, HELD);
+  assert.equal(outcome.ok ? undefined : outcome.launchHeld, true, "the same refusal shape as the first check");
+  assert.equal(launches, 0, "nothing launched");
+
+  hold = null;
+  (tasks as unknown as { stackReadiness: { planStackedDispatch(): Promise<null> } }).stackReadiness.planStackedDispatch =
+    async () => {
+      hold = HELD;
+      return null;
+    };
+  const claimed = await tasks.dispatch("t1", { overridePauseHold: true });
+  assert.equal(claimed.ok, true, "a launch that claims the override still goes");
+  assert.equal(launches, 1);
+});

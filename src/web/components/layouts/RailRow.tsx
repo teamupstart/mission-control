@@ -141,7 +141,9 @@ export function RailRow({
   // The card's `residentMarker` item governs the rail's accent edge and chip too, the way
   // `cardShortcut` governs both keycaps: one resident marker, drawn on both surfaces.
   const residentMark = useDisplayItems()("residentMarker") ? resident : null;
-  const description = `${session.name || "(unnamed)"} - ${st.label}${
+  // The priority mark is aria-hidden, and the state word says only "working", so the priority
+  // session is named here, or a screen reader cannot tell it from the rest of the rail.
+  const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }`;
   const descriptionId = useId();

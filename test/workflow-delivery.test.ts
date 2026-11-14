@@ -699,7 +699,7 @@ test("archiving cancels retryable packets and makes an in-flight send uncertain"
   );
 });
 
-test("a packet for a paused session stays prepared, unrefused, and is delivered once the session resumes", async () => {
+async function pausedPacketRound(k: string, pauseWhile: "before the offer" | "typing") {
   const { openDb } = await import("../src/server/db.ts");
   const { Registry } = await import("../src/server/registry.ts");
   const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
@@ -730,18 +730,18 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
     `INSERT INTO workflow_definitions (
        id, name, normalized_name, description, draft_graph_json, completion_policy_json,
        binding_defaults_json, draft_revision, current_version_id, archived_at, created_at, updated_at
-     ) VALUES ('paused-workflow', 'Paused review', 'paused review', '', '{"nodes":[],"edges":[]}', '{"kind":"none"}', ?, 1, 'paused-version', NULL, 1, 1)`,
-  ).run(defaults);
+     ) VALUES (?, 'Paused review', ?, '', '{"nodes":[],"edges":[]}', '{"kind":"none"}', ?, 1, ?, NULL, 1, 1)`,
+  ).run(`paused-workflow-${k}`, `paused review ${k}`, defaults, `paused-version-${k}`);
   db.prepare(
     `INSERT INTO workflow_versions (
        id, workflow_id, version, source_draft_revision, graph_json,
        completion_policy_json, binding_defaults_json, published_at
-     ) VALUES ('paused-version', 'paused-workflow', 1, 1, ?, '{"kind":"none"}', ?, 1)`,
-  ).run(JSON.stringify(graph), defaults);
+     ) VALUES (?, ?, 1, 1, ?, '{"kind":"none"}', ?, 1)`,
+  ).run(`paused-version-${k}`, `paused-workflow-${k}`, JSON.stringify(graph), defaults);
   setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   const registry = new Registry();
   registry.applyDiscovery([{
-    syntheticId: "paused-session",
+    syntheticId: `paused-session-${k}`,
     agent: "claude",
     name: "work",
     nameSource: "process",
@@ -750,11 +750,13 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
     gitRoot: "/repo",
     repoRoot: "/repo",
     pid: 89,
-    tty: "tty-paused",
+    tty: `tty-paused-${k}`,
     terminals: [],
     startedAt: 1,
   } as DiscoveredSession]);
+  const PAUSED = { reason: "operator", phase: "frozen", since: Date.now(), interrupted: null, stopped: true } as const;
   const injected: string[] = [];
+  let pausedMidWrite = false;
   const fakeRunner: LlmRunner = {
     id: "claude",
     label: "fake",
@@ -785,6 +787,11 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
       _deps?: InjectDeps,
       beforeWrite?: PromptWriteGuard,
     ) => {
+      // Paused while this packet was on its way: after the offer's own check, before the write.
+      if (pauseWhile === "typing" && !pausedMidWrite) {
+        pausedMidWrite = true;
+        registry.setSessionPause(`paused-session-${k}`, PAUSED);
+      }
       const blocked = beforeWrite?.();
       if (blocked) return { ok: false, error: blocked, pasted: false, submitVerified: false };
       injected.push(payload);
@@ -836,8 +843,8 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
     },
   });
   const binding = manager.createBinding({
-    workflowVersionId: "paused-version",
-    sessionId: "paused-session",
+    workflowVersionId: `paused-version-${k}`,
+    sessionId: `paused-session-${k}`,
     triggerMode: "manual",
     deliveryMode: "live",
     maxRepairRounds: 2,
@@ -846,8 +853,8 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
   manager.start();
 
   // Paused by the operator before the review returns its repair packet.
-  registry.setSessionPause("paused-session", { reason: "operator", phase: "frozen", since: Date.now(), interrupted: null, stopped: true });
-  const submitted = await manager.submit(binding.ok ? binding.value.id : "", { requestId: "paused-submit" });
+  if (pauseWhile === "before the offer") registry.setSessionPause(`paused-session-${k}`, PAUSED);
+  const submitted = await manager.submit(binding.ok ? binding.value.id : "", { requestId: `paused-submit-${k}` });
   assert.equal(submitted.ok, true);
   const runId = submitted.ok ? submitted.value.run.id : "";
   const prepared = Date.now();
@@ -858,7 +865,7 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
   // Long enough for the offer that follows preparation to have run and been held.
   await new Promise((resolve) => setTimeout(resolve, 150));
   const held = manager.store.listDeliveries(runId)[0]!;
-  assert.equal(held.state, "prepared", "a paused session's packet is held, not refused");
+  assert.equal(held.state, "prepared", `a packet paused ${pauseWhile} is held, not refused`);
   assert.equal(held.error, null, "no refusal reason was recorded");
   assert.deepEqual(injected, [], "nothing was typed into the paused session");
   const heldRun = manager.store.getRun(runId)!;
@@ -866,7 +873,7 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
   assert.notEqual(heldRun.currentPhase, "delivery_blocked");
 
   // Resuming offers the same packet again, on its own, and it is typed exactly once.
-  registry.setSessionPause("paused-session", null);
+  registry.setSessionPause(`paused-session-${k}`, null);
   const resumed = Date.now();
   while (manager.store.getDelivery(held.id)?.state !== "delivered") {
     if (Date.now() - resumed > 3_000) throw new Error("timed out waiting for delivery after resume");
@@ -877,4 +884,12 @@ test("a packet for a paused session stays prepared, unrefused, and is delivered 
   assert.equal(injected.length, 1, "the resume did not offer it twice");
   await manager.stop();
   setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
+}
+
+test("a packet for a paused session stays prepared, unrefused, and is delivered once the session resumes", async () => {
+  await pausedPacketRound("before", "before the offer");
+});
+
+test("a pause that lands while the packet is being typed holds it the same way, and resume delivers it", async () => {
+  await pausedPacketRound("typing", "typing");
 });

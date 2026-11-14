@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import { canPause, countFrozenFor, countPausedFor, EMPTY_PAUSE_STATE, isPaused, type PauseState } from "@shared/pause.ts";
+import { canPause, countFrozenFor, countPausedFor, EMPTY_PAUSE_STATE, isPaused, pauseFreezes, type PauseState } from "@shared/pause.ts";
 import type { Session } from "@shared/types.ts";
 
 /**
@@ -24,6 +24,8 @@ export interface FleetPauseView {
   frozenForPriority: number;
   /** Live sessions Pause all would take right now. */
   pausable: number;
+  /** Of those, the ones a pause can only hold, not freeze (`pauseFreezes`). */
+  holdOnly: number;
   /** The priority session's name, for the banner; null without one. */
   priorityName: string | null;
 }
@@ -37,6 +39,7 @@ export const EMPTY_FLEET_PAUSE: FleetPauseView = {
   frozenForFleet: 0,
   frozenForPriority: 0,
   pausable: 0,
+  holdOnly: 0,
   priorityName: null,
 };
 
@@ -51,6 +54,7 @@ export function fleetPauseView(sessions: readonly Session[], state: PauseState):
     frozenForFleet: countFrozenFor(live, "fleet"),
     frozenForPriority: countFrozenFor(live, "priority"),
     pausable: live.filter((s) => !isPaused(s)).length,
+    holdOnly: live.filter((s) => !isPaused(s) && !pauseFreezes(s)).length,
     priorityName: state.priority ? (live.find((s) => s.id === state.priority!.sessionId)?.name ?? null) : null,
   };
 }

@@ -40,6 +40,14 @@ export function FleetPauseControl(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
+  // Opened: put the keyboard inside, as the Residents dock does, so the confirm can be worked
+  // without a pointer. After the render that mounted it, the first moment it has a control.
+  useEffect(() => {
+    if (!open) return;
+    popRef.current?.querySelector<HTMLElement>("input, select, button:not(:disabled)")?.focus();
+  }, [open]);
 
   // The other topbar popovers' dismissal, exactly: not an overlay, so it closes itself on an
   // outside press and on Escape, and stops that Escape before App's global handler moves the
@@ -114,12 +122,31 @@ export function FleetPauseControl(): React.JSX.Element {
         </button>
       </Tooltip>
       {open && (
-        <div className="fleet-pause-pop" role="dialog" aria-label="Pause all">
+        <div
+          ref={popRef}
+          className="fleet-pause-pop"
+          role="dialog"
+          aria-label="Pause all"
+          // Tab walks the confirm's own controls. Stopped here because App's window handler
+          // otherwise takes Tab to walk the console reader whenever a session is open, and the
+          // confirm's buttons are not text fields its typing guard would leave alone.
+          onKeyDown={(e) => {
+            if (e.key === "Tab") e.stopPropagation();
+          }}
+        >
           <span className="fleet-pause-title">Pause all {sessionCount(fleet.pausable)}</span>
           <p className="fleet-pause-sub">
             Every agent freezes where it is and its network goes quiet. Nothing is lost: each resumes exactly where
             it stopped. Sessions you paused yourself stay paused when this lifts.
           </p>
+          {fleet.holdOnly > 0 && (
+            // Said before the confirm, not after: a person pausing to free bandwidth decides on it.
+            <p className="fleet-pause-sub fleet-pause-hold-note">
+              {fleet.holdOnly === fleet.pausable ? "All of them run" : `${sessionCount(fleet.holdOnly)} of them ${fleet.holdOnly === 1 ? "runs" : "run"}`}{" "}
+              inside Mission Control, so {fleet.holdOnly === 1 ? "it is" : "they are"} held instead: each finishes its current
+              turn, using the network until it does, and then starts nothing new.
+            </p>
+          )}
           <label className="fleet-pause-check">
             <Tooltip label={holdDispatch ? "Let the backlog autopilot keep launching while paused" : "Hold every automatic launch until you resume"}>
               <input type="checkbox" checked={holdDispatch} onChange={(e) => setHoldDispatch(e.target.checked)} />

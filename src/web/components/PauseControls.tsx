@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { canPause, pauseAge, pauseFlagLabel, type SessionPauseMode } from "@shared/pause.ts";
+import { canPause, pauseAge, pauseFlagLabel, pauseFreezes, type SessionPauseMode } from "@shared/pause.ts";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { isPrioritySession, sessionCount, useFleetPause, type FleetPauseView } from "../lib/fleet-pause.ts";
@@ -125,6 +125,7 @@ function PauseMenuRows({ session, close }: { session: Session; close: () => void
   const { busy, error, run } = usePauseActions(session);
   const at = standing(session, fleet);
   const others = fleet.pausable - (session.pause ? 0 : 1);
+  const freezes = pauseFreezes(session);
   const act = (action: PauseAction) => async () => {
     if (await run(action)) close();
   };
@@ -163,8 +164,10 @@ function PauseMenuRows({ session, close }: { session: Session; close: () => void
         row("pause-now", "pause", "Pause now", "Freeze it now instead of waiting for the turn to end.", { kind: "pause", mode: "now" })}
       {at === "running" && (
         <>
-          {row("pause-now", "pause", "Pause now", "Freezes the agent where it is. Its network goes quiet at once.", { kind: "pause", mode: "now" })}
-          {row("pause-after", "after-turn", "Pause after this turn", "Lets the current turn finish, then freezes it.", { kind: "pause", mode: "after-turn" })}
+          {freezes
+            ? row("pause-now", "pause", "Pause now", "Freezes the agent where it is. Its network goes quiet at once.", { kind: "pause", mode: "now" })
+            : row("pause-now", "pause", "Pause now", "Holds it: this agent runs inside Mission Control, so its current turn finishes first, then nothing new is sent.", { kind: "pause", mode: "now" })}
+          {row("pause-after", "after-turn", "Pause after this turn", freezes ? "Lets the current turn finish, then freezes it." : "Lets the current turn finish, then holds it.", { kind: "pause", mode: "after-turn" })}
         </>
       )}
       {at !== "priority" &&

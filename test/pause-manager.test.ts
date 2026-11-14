@@ -891,13 +891,14 @@ test("reconciliation runs once, and a later observation rescans nothing", async 
   manager.start();
   registry.sweep();
   await manager.idle();
-  assert.equal(reads, 1, "only the restored SDK driver is read; the still-stopped pane agent is not");
+  // Two reads: the freeze, and the one after its stop that confirms the tree started nothing.
+  assert.equal(reads, 2, "only the restored SDK driver is read; the still-stopped pane agent is not");
   assert.deepEqual(signals, ["stop 32"]);
   for (let i = 0; i < 3; i++) {
     registry.reobserve();
     await manager.idle();
   }
-  assert.equal(reads, 1, "no rescan for the length of the pause");
+  assert.equal(reads, 2, "no rescan for the length of the pause");
   assert.deepEqual(signals, ["stop 32"], "and no repeated signals");
 });
 
@@ -1135,4 +1136,165 @@ test("a pause that takes a session from Pause all and is saved keeps it through 
   await manager.resumeFleet();
   assert.equal(registry.pauses.get("a")?.reason, "operator", "a person's own pause outlasts Resume all");
   assert.equal(registry.pauses.get("b") ?? null, null);
+});
+
+test("a `now` pause whose freeze failed keeps retrying while its turn runs", async () => {
+  // Pausing now is asking for the network to go quiet now; a failed freeze must not quietly
+  // become "after this turn" just because the turn is still running when the timer fires.
+  const registry = new FakeRegistry([session("w", "working")]);
+  const timers: { fn: () => void; ms: number }[] = [];
+  let reads = 0;
+  const stopped: number[][] = [];
+  const manager = new PauseManager({
+    registry,
+    freezer: {
+      treeOf: async () => {
+        reads++;
+        if (reads === 1) throw new Error("ps timed out");
+        return refs(90);
+      },
+      stop: (procs) => (stopped.push(pidsOf(procs)), []),
+      resume: () => [],
+    },
+    store: memoryStore(),
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  assert.equal((await manager.pause("w", "now")).ok, false);
+  assert.deepEqual(timers.map((t) => t.ms), [15_000]);
+  timers.shift()!.fn();
+  await manager.idle();
+  assert.deepEqual(stopped, [[90]], "the retry froze it mid-turn");
+  assert.equal(registry.pauses.get("w")?.phase, "frozen");
+});
+
+test("an after-turn pause still waits for its turn rather than retrying into it", async () => {
+  const registry = new FakeRegistry([session("w", "working")]);
+  const timers: { fn: () => void; ms: number }[] = [];
+  let reads = 0;
+  const manager = new PauseManager({
+    registry,
+    freezer: { treeOf: async () => (reads++, refs(90)), stop: () => [], resume: () => [] },
+    store: memoryStore(),
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: () => {},
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  assert.deepEqual(await manager.pause("w", "after-turn"), { ok: true });
+  assert.equal(reads, 0);
+  assert.equal(registry.pauses.get("w")?.phase, "pending");
+});
+
+test("a `now` pause left pending by a failed freeze is frozen at restart, though its turn still reads running", async () => {
+  const stored: StoredPauseState = {
+    fleet: null,
+    priority: null,
+    sessions: { w: { reason: "operator", phase: "pending", since: 1, interrupted: null, runtime: "terminal", procs: [], resuming: false, mode: "now" } },
+    resumed: {},
+  };
+  const { stopped, registry } = harness([session("w", "working")], { w: [90] }, stored);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(stopped, [[90]]);
+  assert.equal(registry.pauses.get("w")?.phase, "frozen");
+});
+
+test("an SDK pid this daemon stopped and could not continue is gated; a restored driver's old pids are not", async () => {
+  // A live SDK session: the stop refuses one pid, and the rollback cannot continue the other.
+  const registry = new FakeRegistry([session("sdk", "idle", { runtime: "sdk" })]);
+  const manager = new PauseManager({
+    registry,
+    freezer: {
+      treeOf: async () => refs(80, 81),
+      stop: () => [{ pid: 81, code: "EPERM" }],
+      resume: (procs) => procs.filter((p) => p.pid === 80).map((p) => ({ pid: p.pid, code: "EPERM" })),
+    },
+    store: memoryStore(),
+    setTimer: () => ({}),
+    clearTimer: () => {},
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  await manager.pause("sdk", "now");
+  assert.equal(registry.pauses.get("sdk")?.phase, "pending");
+  assert.equal(registry.pauses.get("sdk")?.stopped, true, "pid 80 is stopped, so writes are refused");
+  assert.equal(manager.frozenRefusal("sdk"), PAUSED_SESSION_REASON);
+
+  // A restored SDK record whose re-freeze read fails: its pids are the previous driver's.
+  const restored = new FakeRegistry([session("sdk2", "idle", { runtime: "sdk" })]);
+  const later = new PauseManager({
+    registry: restored,
+    freezer: { treeOf: async () => { throw new Error("ps timed out"); }, stop: () => [], resume: () => [] },
+    store: memoryStore({
+      fleet: null,
+      priority: null,
+      sessions: { sdk2: { reason: "operator", phase: "frozen", since: 1, interrupted: null, runtime: "sdk", procs: refs(700), resuming: false } },
+      resumed: {},
+    }),
+    setTimer: () => ({}),
+    clearTimer: () => {},
+    log: () => {},
+  });
+  later.start();
+  restored.sweep();
+  await later.idle();
+  assert.equal(restored.pauses.get("sdk2")?.phase, "pending");
+  assert.equal(restored.pauses.get("sdk2")?.stopped, false, "the restored driver's continuation still lands");
+  assert.equal(later.frozenRefusal("sdk2"), null);
+});
+
+test("a freeze rescans after its stop: a child spawned meanwhile is stopped, and an exec'd pid is recorded as it is now", async () => {
+  // Between the snapshot and the SIGSTOP, pid 71 exec'd (same pid, new command line) and pid 70
+  // spawned 72. The rescan finds both: 72 is saved and stopped, and 71's identity is the one a
+  // resume will match.
+  const registry = new FakeRegistry([session("t", "working")]);
+  const store = memoryStore();
+  let reads = 0;
+  const stopped: number[][] = [];
+  const execd = { pid: 71, identity: "e".repeat(64) };
+  const manager = new PauseManager({
+    registry,
+    freezer: {
+      treeOf: async () => {
+        reads++;
+        return reads === 1 ? refs(70, 71) : [...refs(70), execd, ...refs(72)];
+      },
+      stop: (procs) => (stopped.push(pidsOf(procs)), []),
+      resume: () => [],
+    },
+    store,
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  assert.deepEqual(await manager.pause("t", "now"), { ok: true });
+  assert.deepEqual(stopped, [[70, 71], [72]], "the child spawned meanwhile is stopped too");
+  assert.equal(registry.pauses.get("t")?.phase, "frozen");
+  const saved = store.get()?.sessions.t?.procs ?? [];
+  assert.deepEqual(pidsOf(saved), [70, 71, 72]);
+  assert.equal(saved.find((p) => p.pid === 71)?.identity, execd.identity, "recorded as the process it is now");
+});
+
+test("a tree that keeps spawning is never called frozen", async () => {
+  const registry = new FakeRegistry([session("t", "working")]);
+  let next = 100;
+  const manager = new PauseManager({
+    registry,
+    freezer: { treeOf: async () => refs(70, next++), stop: () => [], resume: () => [] },
+    store: memoryStore(),
+    setTimer: () => ({}),
+    clearTimer: () => {},
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  const result = await manager.pause("t", "now");
+  assert.equal(result.ok, false);
+  assert.equal(registry.pauses.get("t")?.phase, "pending");
+  assert.equal(registry.pauses.get("t")?.stopped, true, "what it did stop stays gated");
 });

@@ -9294,6 +9294,12 @@ export const StoredSessionPauseSchema = z.object({
    * finishes the resume - it never freezes it again, and a pid that refused stays recorded.
    */
   resuming: z.boolean().default(false),
+  /**
+   * How the freeze was asked for. A `now` pause whose freeze failed is retried on its timer even
+   * mid-turn; an `after-turn` one waits for the turn to end. Absent on a record written before
+   * this was saved, which reads as `after-turn`, the behaviour it was written under.
+   */
+  mode: z.enum(SESSION_PAUSE_MODES).optional(),
 });
 export type StoredSessionPause = z.output<typeof StoredSessionPauseSchema>;
 

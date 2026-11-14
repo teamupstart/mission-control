@@ -627,6 +627,7 @@ import {
   formDelivered,
   type PaneDeps,
   submitPaneForm,
+  writeHold,
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
@@ -6106,7 +6107,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
-    const r = await selectPaneOption(session, parsed.data, panes);
+    // Re-read at the Enter: the walk to the row takes captures, and a pause can freeze the
+    // agent in between. `session` is the snapshot from before it.
+    const r = await selectPaneOption(session, parsed.data, panes, () => writeHold(registry.getSession(session.id) ?? session));
     if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
     observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
@@ -6160,7 +6163,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         409,
       );
     }
-    const r = await submitPaneForm(session, options, panes);
+    const r = await submitPaneForm(session, options, panes, () => writeHold(registry.getSession(session.id) ?? session));
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
     if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);

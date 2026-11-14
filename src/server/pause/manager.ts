@@ -159,7 +159,7 @@ function bulkResult(failures: readonly string[]): PauseResult {
  * the record pending for good: it is completed now.
  */
 function needsFreezeAfterRestart(record: StoredSessionPause, session: Session): boolean {
-  if (record.phase === "pending") return record.procs.length > 0 || !turnRunning(session);
+  if (record.phase === "pending") return record.procs.length > 0 || waitsForNothing(record, session);
   if (record.runtime === "sdk") return true;
   return record.procs.length === 0;
 }
@@ -167,14 +167,27 @@ function needsFreezeAfterRestart(record: StoredSessionPause, session: Session): 
 /**
  * Whether this record's processes are stopped, as far as a write into the session goes: every
  * write gate refuses on this. A frozen record with processes is; so is a pending one, whose
- * freeze was begun and not finished. The exception is a restored SDK driver: it is a new
- * process, the pids its record lists belong to the driver before it, and its restart
- * continuation has to land until its own freeze succeeds.
+ * freeze was begun and not finished. The exception is a restored SDK driver (`restored`) that
+ * this daemon has stopped nothing of yet: it is a new process, the pids its record lists belong
+ * to the driver before it, and its restart continuation has to land until its own freeze does.
+ * Once this daemon has stopped any of its processes - even a freeze rolled back with a pid that
+ * would not continue - those are real stopped processes, and it is gated like any other.
  */
-function processesStopped(record: StoredSessionPause): boolean {
+function processesStopped(record: StoredSessionPause, restored: boolean): boolean {
   if (record.procs.length === 0) return false;
-  return record.phase === "frozen" || record.runtime !== "sdk";
+  return record.phase === "frozen" || record.runtime !== "sdk" || !restored;
 }
+
+/**
+ * A pending pause with nothing to wait for: the turn is over, or it was a `now` pause whose
+ * freeze failed and is owed again whatever the session is doing.
+ */
+function waitsForNothing(record: StoredSessionPause, session: Session): boolean {
+  return record.mode === "now" || !turnRunning(session);
+}
+
+/** How many rescans a freeze makes after its stop, to catch what the tree spawned meanwhile. */
+const SETTLE_PASSES = 4;
 
 /** States in which a turn is still running, so an after-turn pause keeps waiting. */
 function turnRunning(session: Session): boolean {
@@ -204,6 +217,12 @@ export class PauseManager {
    * attempt IS a `session_upsert`: retrying on it would hammer the process table in a loop.
    */
   private freezeRetries = new Map<string, { attempt: number; timer: unknown }>();
+  /**
+   * SDK records that came back from the last daemon and whose current driver this daemon has
+   * not stopped anything of yet (`processesStopped`). In memory on purpose: "restored" is a fact
+   * about this start, and a record leaves the set the moment this daemon stops one of its pids.
+   */
+  private restoredSdk = new Set<string>();
   private fleet: StoredPauseState["fleet"] = null;
   private priority: StoredPauseState["priority"] = null;
   private resumeTimer: unknown = null;
@@ -240,7 +259,10 @@ export class PauseManager {
     if (stored) {
       this.fleet = stored.fleet;
       this.priority = stored.priority;
-      for (const [id, record] of Object.entries(stored.sessions)) this.records.set(id, record);
+      for (const [id, record] of Object.entries(stored.sessions)) {
+        this.records.set(id, record);
+        if (record.runtime === "sdk") this.restoredSdk.add(id);
+      }
       for (const [id, at] of Object.entries(stored.resumed)) this.resumed.set(id, at);
     }
     this.pruneResumed();
@@ -302,7 +324,7 @@ export class PauseManager {
    */
   frozenRefusal(sessionId: string): string | null {
     const record = this.records.get(sessionId);
-    return record && processesStopped(record) ? PAUSED_SESSION_REASON : null;
+    return record && processesStopped(record, this.restoredSdk.has(sessionId)) ? PAUSED_SESSION_REASON : null;
   }
 
   /** Whether automatic launches (backlog autopilot, recurring missions) are held right now. */
@@ -337,6 +359,7 @@ export class PauseManager {
       if (existing) {
         // Already held. A person's own pause takes ownership, so a later bulk lift leaves it;
         // asking for `now` on a session still waiting for its turn freezes it at once.
+        if (mode === "now") existing.mode = "now";
         const failed = mode === "now" && existing.phase === "pending" ? await this.attemptFreeze(session, existing) : null;
         // The owner changes only with a save behind it. Unsaved, a restart would bring back the
         // old owner, so this daemon keeps it too: Resume all or ending priority still lifts the
@@ -449,12 +472,12 @@ export class PauseManager {
    * very turn the operator just paused.
    */
   private async hold(session: Session, reason: SessionPauseReason, mode: SessionPauseMode): Promise<string | null> {
-    const record = this.holdOnly(session, reason);
+    const record = this.holdOnly(session, reason, mode);
     return this.freezeHeld(session, record, mode);
   }
 
   /** The hold alone: recorded and published, nothing awaited. */
-  private holdOnly(session: Session, reason: SessionPauseReason): StoredSessionPause {
+  private holdOnly(session: Session, reason: SessionPauseReason, mode: SessionPauseMode): StoredSessionPause {
     const record: StoredSessionPause = {
       reason,
       phase: "pending",
@@ -463,7 +486,10 @@ export class PauseManager {
       runtime: session.runtime,
       procs: [],
       resuming: false,
+      mode,
     };
+    // A hold this daemon makes is never a restored driver's, whatever the id held before.
+    this.restoredSdk.delete(session.id);
     this.records.set(session.id, record);
     this.publishSession(session.id);
     return record;
@@ -483,7 +509,7 @@ export class PauseManager {
    * sessions whose freeze failed.
    */
   private async holdAll(targets: readonly Session[], reason: SessionPauseReason): Promise<string[]> {
-    const held = targets.map((session) => [session, this.holdOnly(session, reason)] as const);
+    const held = targets.map((session) => [session, this.holdOnly(session, reason, "now")] as const);
     const failures: string[] = [];
     for (const [session, record] of held) {
       if (this.records.get(session.id) !== record) continue;
@@ -528,9 +554,10 @@ export class PauseManager {
       this.clearRetry(sessionId);
       return;
     }
-    if (turnRunning(live) && record.procs.length === 0) {
-      // A turn started meanwhile: its end is the next attempt, through `onEvent`. Not when
-      // processes are already recorded: stopped, they cannot end the turn the session reports.
+    if (record.procs.length === 0 && !waitsForNothing(record, live)) {
+      // An after-turn pause whose turn started meanwhile: its end is the next attempt, through
+      // `onEvent`. Not a `now` pause, which keeps its timer whatever the turn is doing, and not
+      // when processes are already recorded: stopped, they cannot end the turn it reports.
       this.clearRetry(sessionId);
       return;
     }
@@ -603,16 +630,85 @@ export class PauseManager {
     const refused = this.freezer.stop(tree);
     if (refused.length > 0) {
       const stuck = this.freezer.resume(fresh);
-      // Anything that would not continue again is still stopped, so it stays recorded.
-      record.procs = [...kept, ...stuckOf(fresh, stuck)];
+      // Anything that would not continue again is still stopped, so it stays recorded - and
+      // is this daemon's own stopped process, so the write gates hold it from here on.
+      const stillStopped = stuckOf(fresh, stuck);
+      if (stillStopped.length > 0) this.restoredSdk.delete(session.id);
+      record.procs = [...kept, ...stillStopped];
       if (record.procs.length === 0) record.phase = "pending";
       this.persist();
       const why = `${described(refused)} refused to stop`;
       this.log(`${session.id}: ${why}`);
       return why;
     }
+    this.restoredSdk.delete(session.id);
+    const unsettled = await this.settle(session, record);
+    if (unsettled !== undefined) return unsettled;
     record.phase = "frozen";
     return null;
+  }
+
+  /**
+   * After a stop, read the tree again until nothing in it is new. A process the walk had not
+   * reached yet could spawn a child between the snapshot and its own SIGSTOP, and that child is
+   * still running. A process that exec'd in that window keeps its pid and its place in the tree
+   * but not its command line, so the identity read before the stop would never match it again
+   * and a resume would leave it stopped; stopped now, it cannot change again, so the identity
+   * read here is the one recorded. Each new process is saved before it is stopped, as in the
+   * first pass. Answers undefined once the tree is settled, null when the pause was lifted
+   * meanwhile, or why it could not be confirmed - the record then pending, for the retry.
+   */
+  private async settle(session: Session, record: StoredSessionPause): Promise<string | null | undefined> {
+    for (let pass = 0; pass < SETTLE_PASSES; pass++) {
+      let tree: ProcessRef[];
+      try {
+        tree = await this.freezer.treeOf(session);
+      } catch (error) {
+        if (this.records.get(session.id) !== record) return null;
+        record.phase = "pending";
+        this.persist();
+        const why = `its process tree could not be read again after the stop (${error instanceof Error ? error.message : String(error)})`;
+        this.log(`${session.id}: ${why}`);
+        return why;
+      }
+      if (this.records.get(session.id) !== record) return null;
+      const now = new Map(tree.map((p) => [p.pid, p]));
+      const before = record.procs;
+      const restamped = before.map((p) => now.get(p.pid) ?? p);
+      const changed = restamped.some((p, i) => p.identity !== before[i]!.identity);
+      const known = new Set(before.map((p) => p.pid));
+      const fresh = tree.filter((p) => !known.has(p.pid));
+      if (fresh.length === 0) {
+        if (changed) {
+          record.procs = restamped;
+          this.persist();
+        }
+        return undefined;
+      }
+      record.procs = [...restamped, ...fresh];
+      if (!this.persist()) {
+        record.procs = before;
+        record.phase = "pending";
+        return "the pause could not be saved, so the processes its tree started meanwhile were not frozen";
+      }
+      const refused = this.freezer.stop(fresh);
+      if (refused.length > 0) {
+        const stuck = this.freezer.resume(fresh);
+        record.procs = [...restamped, ...stuckOf(fresh, stuck)];
+        record.phase = "pending";
+        this.persist();
+        const why = `${described(refused)} refused to stop`;
+        this.log(`${session.id}: ${why}`);
+        return why;
+      }
+    }
+    // Still finding new processes after every pass: something keeps spawning. Held and retried,
+    // never called frozen over processes that may still be running.
+    record.phase = "pending";
+    this.persist();
+    const why = "its process tree kept starting new processes while it was being stopped";
+    this.log(`${session.id}: ${why}`);
+    return why;
   }
 
   /**
@@ -891,7 +987,7 @@ export class PauseManager {
       phase: record.phase,
       since: record.since,
       interrupted: record.interrupted,
-      stopped: processesStopped(record),
+      stopped: processesStopped(record, this.restoredSdk.has(sessionId)),
     };
   }
 

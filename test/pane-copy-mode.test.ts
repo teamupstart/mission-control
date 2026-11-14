@@ -353,3 +353,20 @@ test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", {
     }
   }
 });
+
+test("the Enter that answers a menu asks the caller's live guard last, so a pause in between refuses it", async () => {
+  // The caller's `session` is the snapshot from before the captures and the cursor walk. A
+  // pause that froze the agent meanwhile shows only on the live session, which is what the
+  // route's guard reads; it is asked immediately before the Enter.
+  const h = harness("0", "copy-mode", menu(1));
+  const paused = "this session is paused - resume it before sending it anything";
+  const r = await selectPaneOption(tmuxSession(), { number: 1, label: "Ship it" }, paneDeps(h), () => paused);
+  assert.deepEqual(r, { ok: false, error: paused });
+  assert.deepEqual(h.argv, [], "no Enter was pressed into a paused agent");
+
+  // The control: the same menu with the guard open is answered.
+  const open = harness("0", "copy-mode", menu(1));
+  const answered = await selectPaneOption(tmuxSession(), { number: 1, label: "Ship it" }, paneDeps(open), () => null);
+  assert.equal(answered.ok, true);
+  assert.equal(open.argv.length, 1, "the Enter went through");
+});

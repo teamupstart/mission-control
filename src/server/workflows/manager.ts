@@ -1,3 +1,4 @@
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
@@ -6485,6 +6486,20 @@ export class WorkflowManager {
         // outcome here is ambiguous and keeps it: an echo that may still arrive must find
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
         releaseInjection(session.id, sending.payload);
+        // The operator paused the session while this packet was on its way: the guard refused
+        // for the pause, not for anything wrong with the packet. Held exactly as the check at
+        // the top holds one - back to `prepared`, the run left as it is, offered again when the
+        // pause lifts - never refused with the run blocked.
+        if (result.error === PAUSED_SESSION_REASON) {
+          if (this.store.getDelivery(sending.id)?.state === "sending") {
+            this.store.setDeliveryState(sending.id, "prepared", null);
+            this.pausedDeliveries.add(sending.id);
+            // Lifted while the write was in flight: the resume that would offer it has passed.
+            if (!this.registry.getSession(sending.sessionId)?.pause) this.offerResumedDeliveries(sending.sessionId);
+          }
+          this.publishRun(sending.runId);
+          return;
+        }
         const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
         const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
         if (!refused) return;

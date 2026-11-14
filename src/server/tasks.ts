@@ -3678,6 +3678,12 @@ export class TaskManager {
       // again. The launch-only value now travels with the launch, and an unpinned task stays
       // unpinned; the model a session actually ran on is recorded on the SESSION, which is
       // where it belongs and where the card reads it from.
+      //
+      // The launch hold asked again, in front of the launch: stacked readiness above can wait
+      // on GitHub, and Pause all or a priority session may have begun meanwhile. The same claim
+      // and the same refusal as the first check.
+      const heldNow = options.overridePauseHold === true ? null : this.launchHold();
+      if (heldNow) return { ok: false, error: heldNow, task: this.registry.getTask(id) ?? t, launchHeld: true };
       void this.dispatcher.dispatch(id, launch);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };

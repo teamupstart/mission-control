@@ -576,6 +576,14 @@ export type ModelDiscoverySpec =
  * vocabulary to learn.
  */
 interface HarnessCapabilitiesBase {
+  /**
+   * Whether this harness's Agent SDK driver is a process of its own that a pause can stop
+   * (`src/server/pause/freezer.ts` freezes the daemon's child). False for a driver that runs
+   * inside the daemon, which has nothing to stop: pausing it holds the session - nothing new is
+   * sent and its current turn finishes - but freezes nothing, and its network stays in use
+   * until that turn ends. Only the `sdk` runtime is asked; a terminal agent is always a process.
+   */
+  sdkDriverStoppable: boolean;
   /** Measured resident maintenance layers. Claude native threshold failed the 2.1.310 probe. */
   residentCompaction: { betweenIterations: boolean; nativeBackstop: boolean } | null;
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
@@ -679,6 +687,7 @@ export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
 export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   claude: {
     id: "claude",
+    sdkDriverStoppable: true,
     // The list declares what the harness supports; dispatch takes the configured runtime.
     // `"sdk"` here and `HARNESSES.claude.sdk` are one fact in two files
     // (`harness-sdk.test.ts`).
@@ -829,6 +838,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   codex: {
     id: "codex",
+    sdkDriverStoppable: true,
     // `codex app-server` JSON-RPC, behind `HARNESSES.codex.sdk` - one fact in two files
     // (`harness-sdk.test.ts`). This list declares support, not a preference order.
     runtimes: ["terminal", "sdk"],
@@ -987,6 +997,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   pi: {
     id: "pi",
+    // Pi's `AgentSessionRuntime` runs inside the daemon (`SdkSupervisor.driverProcessId` is null).
+    sdkDriverStoppable: false,
     // Both, since Pi's own SDK landed behind `HARNESSES.pi.sdk`. ONE fact in two files
     // (`harness-sdk.test.ts`), and the driver is the package's `AgentSessionRuntime` rather
     // than the `--mode rpc` transport an older phase proposed - see the note on that slot.

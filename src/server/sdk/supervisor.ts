@@ -191,6 +191,13 @@ export interface SupervisorPause extends PauseRelease {
 /** How often a capacity retry held by a frozen session looks again for the thaw. */
 const PAUSED_RETRY_RECHECK_MS = 15_000;
 
+/**
+ * A write refused because the operator's pause has the session's child stopped. Its own type,
+ * so a caller that owns unfinished work - the capacity retry - can tell "wait for the thaw" from
+ * a refusal that ends the work, from the refusal itself rather than by asking the pause again.
+ */
+class SessionFrozenError extends Error {}
+
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
@@ -1345,7 +1352,7 @@ export class SdkSupervisor {
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
     if (transferForSource(id)) return Promise.reject(new Error(TRANSFER_HOLD_REASON));
     const frozen = this.pauseGate(id);
-    if (frozen) return Promise.reject(new Error(frozen));
+    if (frozen) return Promise.reject(new SessionFrozenError(frozen));
     if (!handle || this.stopping.has(id) || taskSessionClosureForSession(id)) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
@@ -1356,7 +1363,7 @@ export class SdkSupervisor {
       // alone would let a queued turn land on the half of a terminal handoff being torn down.
       if (transferForSource(id)) throw new Error(TRANSFER_HOLD_REASON);
       const frozenNow = this.pauseGate(id);
-      if (frozenNow) throw new Error(frozenNow);
+      if (frozenNow) throw new SessionFrozenError(frozenNow);
       if (this.handles.get(id) !== handle || this.stopping.has(id) || taskSessionClosureForSession(id)) throw noLiveDriver();
       return op(handle);
     });
@@ -1890,6 +1897,18 @@ export class SdkSupervisor {
       // That already-running turn continues the work and its own completion settles the
       // card, so there is nothing left to retry.
       if (err === busy) return;
+      // Frozen while this send waited its turn on the session's chain: the turn the pause
+      // interrupted is not over, so the retry is put back at the same attempt to wait for the
+      // thaw, exactly as the check above would have, rather than the card being settled.
+      if (err instanceof SessionFrozenError && this.handles.get(id) === handle && !this.shuttingDown) {
+        if (!this.capacityRetries.has(id)) {
+          const next = {};
+          const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, next), PAUSED_RETRY_RECHECK_MS);
+          timer.unref?.();
+          this.capacityRetries.set(id, { token: next, timer, attempt: waiting.attempt, reason: waiting.reason });
+        }
+        return;
+      }
       console.error(
         `[sdk] capacity retry for ${id} could not be delivered:`,
         err instanceof Error ? err.message : String(err),

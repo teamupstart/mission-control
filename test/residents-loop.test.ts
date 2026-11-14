@@ -170,6 +170,25 @@ test("pending pacing survives restart and continuation under a later generation"
   f.advance(1000); f.loop(); f.complete(4); await flush(); assert.equal(f.run().nextWakeAt, f.now + 1_200_000);
 });
 
+test("Run now on a paused idle session waits for the resume instead of re-waking itself", async t => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  // Bounded, so a regression fails here instead of starving the event loop for good.
+  const forward = globalThis.queueMicrotask.bind(globalThis);
+  let enqueued = 0;
+  t.mock.method(globalThis, "queueMicrotask", (fn: () => void) => { enqueued++; if (enqueued <= 200) forward(fn); });
+  f.patch({ pause: { reason: "operator", phase: "frozen", since: f.now, interrupted: null, stopped: true } });
+  assert.equal(await loop.runNow("run"), "queued");
+  await flush();
+  assert.ok(enqueued < 20, `observation re-woke the run ${enqueued} times`);
+  assert.deepEqual(f.calls, [], "nothing is sent into a paused session");
+  assert.notEqual(f.run().runRequestedAt, null, "the queued Run now is kept for the resume");
+  t.mock.restoreAll();
+  f.patch({ pause: null });
+  await flush();
+  assert.equal(f.calls.length, 1, "lifting the pause sends it");
+  assert.equal(f.run().runRequestedAt, null);
+});
+
 test("human precedence cancels pacing and uses a fresh default cadence", async () => {
   const f = fixture(); const loop = f.loop(); await flush();
   loop.schedule(f.session, { callId: "late", delaySeconds: 60, reason: "old" });

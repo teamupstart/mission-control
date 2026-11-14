@@ -5,6 +5,7 @@
 // a bulk lift resumes only what that bulk action paused. Ending priority does not resume a
 // session you paused yourself, and the fleet's morning resume does not either.
 
+import { capabilitiesFor } from "./harness-capabilities.ts";
 import type { Session } from "./types.ts";
 
 /**
@@ -171,4 +172,14 @@ export function countPausedFor(
   let n = 0;
   for (const session of sessions) if (session.pause?.reason === reason) n += 1;
   return n;
+}
+
+/**
+ * Whether pausing this session freezes a process, or only holds it. A terminal agent is always
+ * its own process; an SDK session is when its harness's driver is (`sdkDriverStoppable`). Held
+ * only, its current turn finishes and keeps using the network until it does, so every control
+ * says "holds", never "freezes", for it.
+ */
+export function pauseFreezes(session: Pick<Session, "runtime" | "agent">): boolean {
+  return session.runtime !== "sdk" || capabilitiesFor(session.agent).sdkDriverStoppable;
 }

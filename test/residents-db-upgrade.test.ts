@@ -192,7 +192,7 @@ test("schema 12 upgrade captures recovery and leaves old SDK native limits unkno
   assert.equal(getSdkSession("native-backstop")!.residentCompactionTokenLimit, 180880);
 });
 
-test("schema 30 upgrade captures recovery and leaves every run owing no restatement until it compacts", async () => {
+test("schema 31 upgrade captures recovery and leaves every run owing no restatement until it compacts", async () => {
   const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
   openDb().prepare(`INSERT INTO resident_iterations (run_id, seq, trigger, delivery, claimed_at)
     VALUES ('live', 7, 'loop', 'sent', 100)`).run();
@@ -202,7 +202,7 @@ test("schema 30 upgrade captures recovery and leaves every run owing no restatem
     ALTER TABLE resident_runs DROP COLUMN reanchored_epoch;
     ALTER TABLE resident_iterations DROP COLUMN wake_text;
     ALTER TABLE resident_iterations DROP COLUMN reanchor_epoch;
-    PRAGMA user_version = 30;`);
+    PRAGMA user_version = 31;`);
   previous.close();
   const backupRoot = join(home, "backups", "database");
   const before = new Set(readdirSync(backupRoot));

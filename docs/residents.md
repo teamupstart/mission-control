@@ -58,6 +58,9 @@ unsaved profile named `<name> copy` with the same settings. Your copy is an ordi
 editable, archivable, and never touched by an upgrade. Every saved profile also offers
 **Duplicate**.
 
+Agent Shepherd ships with a **$40 spend cap per rolling 24 hours**. New custom profiles default
+to $20.
+
 A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
 ships different settings, the daemon writes them as the built-in's next revision at startup. A
 resident already running keeps the revision it launched with. Use **Restart on new profile** to
@@ -638,6 +641,19 @@ profile, marked *loads natively*, and comes back into the set if you switch to *
 launch**. A global server residents cannot carry no longer refuses the launch, because Mission
 Control does not resolve it. A custom server named like one of Claude Code's global servers is
 still refused, because both would load under one name.
+
+If plugin MCP tools disappear when the account has a claude.ai connector for the same server,
+enable **Disable claude.ai connectors** under **MCP servers**. Claude Code can suppress both
+copies during non-interactive startup. This opt-in workaround passes
+`ENABLE_CLAUDEAI_MCP_SERVERS=false` through the run's launch-scoped settings, keeping native
+plugin sources enabled. It disables **every** claude.ai connector for that resident, including
+Claude Docs. It does not change the machine's Claude settings or other sessions.
+
+The checkbox is off by default and applies only with **All native sources (not pinned)**.
+Dispatch shows **claude.ai connectors off** when enabled. Save the profile and launch a new
+resident to apply a change; an existing run keeps its launch revision's choice on resume.
+Switching to **Pinned at launch** keeps the checkbox's saved preference for a later switch
+back, but the pinned set continues to exclude native plugins and cloud connectors as before.
 
 ### What a run starts
 

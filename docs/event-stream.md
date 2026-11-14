@@ -97,6 +97,21 @@ shows whichever of the two arrived last, so its re-read after a write is not hid
 stream value while the stream is down. Each problem's id names one occurrence and is built only from durable
 state, so a daemon restart never changes it. See [Backup and restore](sqlite-database.html#backup).
 
+Saving the indexed directories through `PUT /api/repo-index` emits `repo_index_changed`,
+carrying only the new index identity: a 16-character hash of the effective directories and
+depth limit, also sent as `x-repo-index-identity` on every `GET /api/repos` answer. Each open
+window drops the repository list it keeps for the Dispatch picker unless that list answers for
+the announced identity, and a Dispatch form already open lets go of it at once and asks again.
+`settings_restored` drops the list outright, since a restore can replace the directories too.
+
+The snapshot carries the same `repoIndexIdentity`, which is what a window disconnected during
+the save relies on: it never saw `repo_index_changed`, so on reconnect it compares its list
+against the snapshot's identity and drops it on a mismatch. A reconnect with nothing changed
+keeps the list - a daemon under load drops connections, which is exactly when the picker needs
+the list it already has. When the daemon cannot read its index config, the snapshot logs why and
+carries `REPO_INDEX_IDENTITY_UNKNOWN` instead of omitting the field: the window drops its list,
+since nothing vouches for it, and takes the next real answer.
+
 The backup config is not part of that aggregate. Saving it through
 `PUT /api/storage/backups/config` emits the content-free `storage_config_changed`, and the
 hook's `storageConfigRevision` counter, bumped on that event and on every reconnect, makes each

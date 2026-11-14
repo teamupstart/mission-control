@@ -4,7 +4,7 @@ import { missionToolsAvailability } from "./mission-tools.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { AgentType, TaskKind } from "@shared/types.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
-import { listRepos, resolveTaskRepoRoot, resolveTaskRepoSet } from "./repos.ts";
+import { isScanUnavailable, listRepos, resolveTaskRepoRoot, resolveTaskRepoSet } from "./repos.ts";
 
 export type PreparedTaskRepositories =
   | { ok: true; repoRoot: string; extraRepoRoots: string[]; agent: AgentType }
@@ -24,7 +24,25 @@ export async function resolveTaskRepositorySelector(selector: string): Promise<
 > {
   if (isAbsolute(selector)) return { ok: true, path: selector };
 
-  const matches = (await listRepos()).filter((repo) => basename(repo) === selector);
+  // A short name is resolved once, at filing time. The cached list answers the common case
+  // without a walk; a name it does not know may be a checkout cloned since that scan, which
+  // only a walk started now can see (`fresh` would still answer from inside the TTL), so a
+  // miss asks once more with `rescan` before refusing the name.
+  const named = (repos: string[]): string[] => repos.filter((repo) => basename(repo) === selector);
+  let matches: string[];
+  try {
+    matches = named(await listRepos({ fresh: true }));
+    if (matches.length === 0) matches = named(await listRepos({ rescan: true }));
+  } catch (error) {
+    // No scan could run and none is held (a stalled mount): the name cannot be looked up
+    // right now, which is not the same as there being no such repository.
+    if (!isScanUnavailable(error)) throw error;
+    return {
+      ok: false,
+      status: 409,
+      error: `could not look up a repository named "${selector}": workspace scan unavailable: ${error.message}`,
+    };
+  }
   const candidates = new Set<string>();
   for (const match of matches) {
     const resolved = await resolveTaskRepoRoot(match);

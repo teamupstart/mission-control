@@ -135,7 +135,9 @@ export interface McpSelectionSpec {
  * - `lift-strict-mcp-config`: the launch leaves out `strictMcpConfig` and
  *   `disableClaudeAiConnectors`, so Claude Code loads its own configuration and connectors at
  *   every start, as a terminal session does, beside Mission's server and the snapshot of the
- *   profile's custom servers in `mcpServers`. That is the MCP launch every other Agent SDK
+ *   profile's custom servers in `mcpServers`. A profile may opt out of cloud connectors with
+ *   a launch-scoped environment setting while retaining these native sources.
+ *   That is otherwise the MCP launch every other Agent SDK
  *   session already makes, so there is no isolation to probe.
  */
 export interface AllNativeMcpSourcesSpec {

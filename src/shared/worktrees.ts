@@ -159,6 +159,18 @@ export interface NativeWorktreeSlotView {
   processes: WorktreeProcessSummary;
   diskBytes: number | null;
   quarantineReason: string | null;
+  /**
+   * When the slot entered quarantine. Null when it is not quarantined, or when it was
+   * quarantined by a build that did not record the time.
+   */
+  quarantinedAt: number | null;
+  /**
+   * Whether Reconcile returns this quarantined slot to available once every safety fact is
+   * proven again (a failed observation, holding no lease), or it stays until an operator acts:
+   * a positively bad fact, an unproven mutation, or any quarantine that still holds a lease,
+   * which recovery never releases. Null when the slot is not quarantined.
+   */
+  quarantineRecoverable: boolean | null;
   diagnostic: string | null;
   actions: Array<"return" | "destroy">;
   /** Null when the pool has no dependency claim configured. */

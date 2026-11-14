@@ -72,7 +72,7 @@ export const personaInstructionsContributor: ResidentLaunchContributor = {
 export const mcpContributor: ResidentLaunchContributor = {
   id: "mcp",
   contribute({ run }) {
-    return { residentMcp: residentMcpLaunchForRun(run.id, run.settings.mcp.nativeSources) };
+    return { residentMcp: residentMcpLaunchForRun(run.id, run.settings.mcp.nativeSources, run.settings.mcp.disableClaudeAiConnectors) };
   },
 };
 

@@ -88,6 +88,14 @@ test("worktree invalidation is content-free and delivered synchronously", () => 
   assert.deepEqual(Object.keys(seen[0]!), ["type"]);
 });
 
+test("repository index invalidation is content-free and delivered synchronously", () => {
+  const registry = new Registry();
+  const seen: ServerEvent[] = [];
+  registry.subscribe((event) => seen.push(event));
+  registry.emitRepoIndexChanged("0123456789abcdef");
+  assert.deepEqual(seen, [{ type: "repo_index_changed", identity: "0123456789abcdef" }]);
+});
+
 test("storage config invalidation is content-free and delivered synchronously", () => {
   const registry = new Registry();
   const seen: ServerEvent[] = [];

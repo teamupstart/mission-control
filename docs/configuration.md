@@ -13,6 +13,8 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before version-manager locations and inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
 | `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for the **Repositories** family in **Settings → Setup**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
 | `MISSION_REPOS_MAX_DEPTH` | unset | optional non-negative integer limit below each indexed directory; the indexed root is depth 0. Unset, blank, or invalid values scan all depths. Discovery stops at repository boundaries, skips dependency directories and descendant symlinks, and recognizes bare repositories including `.bare` layouts |
+| `MISSION_REPOS_CACHE_MS` | `30000` | age at which a repository-index read starts a rescan behind the answer it gives. Ordinary reads never wait on it. Settings → Repositories after a change or **Rescan now** waits for a scan inside it, and the Dispatch form's second read on each open waits for a scan started after the request whatever its value. `0` turns the cache off, so every read waits for a current scan. A value that is not a number, or is negative, falls back to the default |
+| `MISSION_REPOS_SCAN_TIMEOUT_MS` | `60000` | how long one repository-index walk may run. Walks of the same directories never overlap, so past this bound a stuck walk (a stalled network mount, a wedged FUSE directory under an indexed root) is abandoned and logged, and the queue moves on; every read then answers from the last completed scan of those directories, and only when there is none is it told the scan is unavailable - **Settings → Setup → Repositories** still opens, with the count marked unknown, so the stalled directory can be removed. Its blocked read cannot be cancelled, so no new walk of the same directories starts until it returns - a stalled mount pins one pool thread, not one per Dispatch open - and removing the stalled directory from the index recovers at once. A value that is not a number, or is negative or zero, falls back to the default |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
 | `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the 30-day rule runs on its own fixed internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
@@ -102,6 +104,34 @@ desktop launchers, and the bounded process utilities Mission Control invokes. Ex
 resolved in the shared executable environment. **Settings > Setup** shows the selected absolute
 path and its source. See [Harnesses and terminal backends](harnesses-and-terminals.md) for the
 complete deterministic resolution order and refresh behavior.
+
+**Go build cache for agent processes.** Mission Control supplies a default `GOCACHE` in its
+shared child-process environment,
+including terminal dispatch, Codex app-server, Claude SDK sessions and workflow checks.
+It uses `<temporary directory>/mission-control-go-build-<user id>`, where the temporary
+directory is Node's `os.tmpdir()` (normally `$TMPDIR` on macOS and `/tmp` on Linux).
+Creation requests mode `0700` (owner-only permissions). Existing directories are checked
+for directory type and, where UID ownership is available, matching user ownership; their
+permission bits are neither checked nor changed. The cache is shared across tasks and
+worktrees for that user.
+It lives outside disposable session state, so finishing a task does not delete another
+task's cache. Go handles concurrent use and trims old entries as the cache is reused.
+
+Sandbox writability was verified on 2026-11-13 with `codex-cli 0.166.0` on macOS
+(Apple Silicon). A token-free `codex sandbox` probe in `workspace-write` mode used the
+production SDK and terminal launch environment builders to write Node-created files into
+the cache, reuse them after session cleanup, and write with a multi-repository
+`writable_roots` override. Go was unavailable, so this probe did not run `go build` or
+`go test`. These results do not establish writability on other platforms or Codex versions.
+
+A nonempty `GOCACHE` in the child environment takes precedence, including `off`. Terminal
+launch wrappers also preserve a nonempty value inherited from the terminal's shell unless
+an explicit launch override was supplied. Codex's own `shell_environment_policy` and
+Claude's settings still apply after launch; Mission Control does not rewrite those settings.
+If you exclude temporary directories from Codex's sandbox or filter `GOCACHE` out of its
+shell environment, configure a cache location and write access consistent with that policy.
+This default does not change multi-repository writable-root overrides or remove historical
+task-created cache folders. Existing sessions pick it up on relaunch.
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
 shortcuts, alert delivery, and message formatting all live in the

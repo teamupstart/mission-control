@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { join } from "node:path";
 
 import { credentialShapedName, scrubCheckEnv } from "../src/server/workflows/check-env.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
@@ -12,6 +14,7 @@ import { executableLocator } from "../src/server/executables/locator.ts";
 // whose name merely looks like one. Both directions are asserted, because a deny-list that is
 // too eager breaks a build with no legible reason and a deny-list that is too shy leaks.
 
+const goCache = join(tmpdir(), `mission-control-go-build-${userInfo().uid}`);
 /** A realistic minted token: 24 random bytes as hex, which is what `ensureToken` produces. */
 const TOKEN = "4f3c2b1a9e8d7c6b5a4938271605f4e3d2c1b0a998877665";
 
@@ -35,6 +38,7 @@ const CASES: ReadonlyArray<{ name: string; value?: string; kept: boolean; why: s
   { name: "HTTP_PROXY", kept: true, why: "a dependency fetch behind a proxy needs it" },
   { name: "HTTPS_PROXY", kept: true, why: "same" },
   { name: "NO_PROXY", kept: true, why: "same" },
+  { name: "GOCACHE", kept: true, why: "explicit cache settings survive credential scrubbing" },
   { name: "CI", kept: true, why: "ordinary build switch" },
   { name: "NODE_ENV", kept: true, why: "ordinary build switch" },
   { name: "SSH_AUTH_SOCK", kept: true, why: "a git fetch over ssh needs the agent, and the rule is deliberately not 'auth'" },
@@ -102,7 +106,7 @@ test("the daemon's token is dropped by VALUE, whatever the variable is called", 
   );
   assert.deepEqual(
     Object.keys(scrubbed).filter((name) => name !== "MISSION_HOME"),
-    ["KEPT", "PATH"],
+    ["KEPT", "PATH", "GOCACHE"],
   );
   assert.ok(scrubbed.PATH, "workflow checks inherit the shared executable search path");
 });
@@ -117,7 +121,7 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
   );
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), GOCACHE: goCache, MISSION_HOME: undefined },
   );
 
   // Down to a single character, which is where the collateral is worst and the ordering is
@@ -125,7 +129,7 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
   const single = scrubCheckEnv({ PATH: "/usr/bin", A: "a" }, "a");
   assert.deepEqual(
     { ...single, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 
@@ -135,7 +139,7 @@ test("a whitespace-only token scrubs nothing, like an unminted one", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", SPACED: "a b" }, "   ");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), SPACED: "a b", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), SPACED: "a b", GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 
@@ -146,7 +150,7 @@ test("an unminted token scrubs no values, rather than every value", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", HOME: "/home/me" }, "");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), HOME: "/home/me", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), HOME: "/home/me", GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 
@@ -161,7 +165,7 @@ test("an undefined value is dropped rather than passed through as undefined", ()
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", EMPTY: undefined }, TOKEN);
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: canonicalPath(), MISSION_HOME: undefined },
+    { PATH: canonicalPath(), GOCACHE: goCache, MISSION_HOME: undefined },
   );
 });
 

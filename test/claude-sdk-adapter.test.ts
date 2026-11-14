@@ -549,10 +549,20 @@ test("SDK usage refuses unavailable, incomplete, or out-of-range plan windows", 
       seven_day: { utilization: 101, resets_at: "2026-08-02T04:00:00.000Z" },
     },
   }), null);
-  assert.deepEqual(claudeSdkRateLimits({
+  // A malformed five-hour window is not evidence the limit is gone: a seven-day-only
+  // reading would clear the saved five-hour bar, so the whole reading is rejected.
+  assert.equal(claudeSdkRateLimits({
     rate_limits_available: true,
     rate_limits: {
       five_hour: { utilization: -1, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 100, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  }, 123), null);
+  // An absent five-hour window is that evidence, and keeps the seven-day reading.
+  assert.deepEqual(claudeSdkRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: null,
       seven_day: { utilization: 100, resets_at: "2026-08-02T04:00:00.000Z" },
     },
   }, 123), {

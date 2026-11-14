@@ -485,7 +485,12 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
+import {
+  REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
+  REPOS_SCANNED_AT_HEADER,
+  RepoIndexConfigPatchSchema,
+} from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
@@ -627,6 +632,9 @@ import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
   listRepos,
+  isScanUnavailable,
+  listReposScan,
+  repoIndexIdentity,
   resolveRepoPath,
   resolveRepoRoot,
   resolveTaskExtraRepoRoots,
@@ -1672,6 +1680,44 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * Named only. See `resolveRouteDeps` for why the 27-argument positional form was removed
  * rather than kept for compatibility.
  */
+/**
+ * The answer for a route that needed a workspace scan and could not get one: the walk timed
+ * out or is refused over one still stuck (a stalled mount), and no earlier scan of these
+ * directories is held to answer from. 503 with the reason, rather than a bare 500 - the
+ * operator's fix is to remove the stalled directory in Settings, which still opens. Any other
+ * error is not this and is rethrown.
+ */
+/**
+ * Tell every window the indexed directories changed, after a save that already succeeded.
+ *
+ * Never throws: the write is persisted, and a failure here must not be reported to the caller
+ * as a failed save. If the new identity cannot be computed, windows are told it is unknown -
+ * which still makes them drop their lists, the point of the event - and the cause is logged.
+ */
+function announceRepoIndexChanged(registry: Registry): void {
+  let identity: string;
+  try {
+    identity = repoIndexIdentity();
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not compute its identity; telling windows it is unknown: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    identity = REPO_INDEX_IDENTITY_UNKNOWN;
+  }
+  try {
+    registry.emitRepoIndexChanged(identity);
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not announce it to open windows: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function scanUnavailableAnswer(c: Context, error: unknown): Response {
+  if (!isScanUnavailable(error)) throw error;
+  return c.json({ error: `workspace scan unavailable: ${error.message}` }, 503);
+}
+
 export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // JavaScript would discard these in silence. The count is named because it is what locates
   // the mistake for the caller.
@@ -4254,8 +4300,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
   });
-  // Git repos under the workspace roots - the pickable bases for a new dispatch.
-  app.get("/api/repos", async (c) => c.json(await listRepos()));
+  // Git repos under the workspace roots - the pickable bases for a new dispatch. Answers
+  // from the last scan and rescans behind it; `?rescan=1` waits for a scan started after the
+  // request instead. The header orders scans, so a browser holding two answers keeps the
+  // newer one rather than whichever arrived last.
+  app.get("/api/repos", async (c) => {
+    try {
+      const { repos, scannedAt, identity } = await listReposScan({ rescan: c.req.query("rescan") === "1" });
+      c.header(REPOS_SCANNED_AT_HEADER, String(scannedAt));
+      c.header(REPO_INDEX_IDENTITY_HEADER, identity);
+      return c.json(repos);
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+  });
 
   // The machine-local source of those workspace roots. The environment remains the
   // launch-time authority; when present, the view says so and the saved list is read-only.
@@ -4271,13 +4329,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     try {
       setRepoIndexConfig(parsed.data);
-      return c.json(await repoIndexView());
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {
         return c.json({ error: error.message }, 400);
       }
       throw error;
     }
+    // The save is persisted from here on, so nothing below may answer as if it failed - a
+    // client told "rejected" would keep showing the directories it just replaced.
+    announceRepoIndexChanged(registry);
+    return c.json(await repoIndexView());
   });
   app.post("/api/repo-index/rescan", async (c) => {
     invalidateReposCache();
@@ -8033,7 +8094,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!isPipelineProviderId(provider)) {
       return c.json({ error: "no such pipeline provider" }, 400);
     }
-    return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    try {
+      return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
   });
 
   /**
@@ -8047,7 +8112,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, PipelineInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
     const body = parsed.data;
-    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos());
+    // `fresh`: the launch re-verifies the checkout against the catalog, and must not accept one
+    // from a scan that predates a removal. The candidate list above is a picker and stays instant.
+    let catalog: string[];
+    try {
+      catalog = await listRepos({ fresh: true });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, catalog);
     if (!launch.ok) {
       const answer: PipelineInstallerLaunchResult = {
         ok: false,
@@ -8718,18 +8791,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
-    const result = await executeSetupInstall(parsed.data, {
-      catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
-      homeDir: setupInstallDeps?.homeDir ?? homedir(),
-      listRepoRoots: setupInstallDeps?.listRepoRoots ?? listRepos,
-      listProviderInstallers:
-        setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
-      prepareProviderInstaller:
-        setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
-      resolveExecutable:
-        setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
-      launchTerminal: terminalLauncher,
-    });
+    let result: Awaited<ReturnType<typeof executeSetupInstall>>;
+    try {
+      result = await executeSetupInstall(parsed.data, {
+        catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+        homeDir: setupInstallDeps?.homeDir ?? homedir(),
+        // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
+        // the catalog rather than offering it.
+        listRepoRoots: setupInstallDeps?.listRepoRoots ?? (() => listRepos({ fresh: true })),
+        listProviderInstallers:
+          setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
+        prepareProviderInstaller:
+          setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+        resolveExecutable:
+          setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
+        launchTerminal: terminalLauncher,
+      });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
     return c.json(result.body, result.status as ContentfulStatusCode);
   });
 

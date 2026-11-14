@@ -44,6 +44,8 @@ const overCapacityPool: WorktreeRepositoryView = {
     processes: { state: "known", count: 1, reason: null },
     diskBytes: 4096,
     quarantineReason: null,
+    quarantinedAt: null,
+    quarantineRecoverable: null,
     diagnostic: null,
     dependencies: null,
     actions: ["return", "destroy"],

@@ -3595,6 +3595,14 @@ export type ServerEvent =
   | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
+      /**
+       * The current index identity (`repoIndexIdentity`), or `REPO_INDEX_IDENTITY_UNKNOWN`
+       * when the daemon could not read it. Added by the stream, not the registry; optional
+       * only so the registry's own snapshot type, which never carries it, still fits. A window reconnecting after it missed
+       * a `repo_index_changed` compares its repository list against this and drops it on a
+       * mismatch - and keeps it on a match, which is the common reconnect under load.
+       */
+      repoIndexIdentity?: string;
       /** At most 100 unresolved summaries, with a count for the paginated remainder. */
       sessionTransfers?: import("./session-transfer.ts").SessionTransferPage;
       sessions: Session[];
@@ -3893,6 +3901,14 @@ export type ServerEvent =
    * leaves the aggregate unchanged and publishes no frame.
    */
   | { type: "storage_config_changed" }
+  /**
+   * The indexed directories (Settings > Repositories) were saved. Carries only the new index
+   * identity (`repoIndexIdentity`, 16 hex characters): every open window drops the repository
+   * list it holds for the Dispatch picker unless that list answers for this identity. The
+   * window that saved forgets before it even writes; this is how every OTHER window stops
+   * offering a repository from a removed directory.
+   */
+  | { type: "repo_index_changed"; identity: string }
   /**
    * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
    * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the

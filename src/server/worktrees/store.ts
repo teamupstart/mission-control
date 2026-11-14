@@ -42,6 +42,64 @@ export function depsCutOff(state: string | null): boolean {
   return state !== null && state !== "current" && state !== "failed";
 }
 
+/**
+ * Why a slot was quarantined, as a category of fact rather than its prose. Persisted in
+ * `worktree_slots.quarantine_category` and append-only, like the slot states: a later build adds
+ * a value, it never renames, reorders or reuses one. A NULL column is a quarantine recorded
+ * before categories existed that the migration could not classify, and it is never recovered
+ * automatically.
+ *
+ * - `observation`: an observer did not answer - the process listing, a Git read, the worktree
+ *   registration list, or a domain-ownership lookup. Nothing is known to be wrong with the slot.
+ * - `state`: a positively observed fact makes the slot unsafe to hand out - dirty or untracked
+ *   work, an occupant, a wrong path or common directory, a moved HEAD, a missing or unsafe
+ *   registration, or lease identity that is stale or incomplete.
+ * - `transition`: an allocator or operator-authored mutation failed or its outcome could not be
+ *   proven - a reset, creation, setup command, dependency claim record, lease commit, return,
+ *   removal, or an intent startup found interrupted.
+ */
+export const WORKTREE_QUARANTINE_CATEGORIES = ["observation", "state", "transition"] as const;
+export type WorktreeQuarantineCategory = (typeof WORKTREE_QUARANTINE_CATEGORIES)[number];
+
+/**
+ * Which categories reconciliation may return to `available` once every safety fact is proven
+ * again. Only a failed observation: it never said anything about the slot, so a later
+ * observation that proves it idle is the whole of the evidence. A positively bad fact or an
+ * unproven mutation stays quarantined until an operator acts on it.
+ */
+const QUARANTINE_RECOVERABLE: Record<WorktreeQuarantineCategory, boolean> = {
+  observation: true,
+  state: false,
+  transition: false,
+};
+
+/** The recoverable categories, for the recovery compare-and-swap. */
+export const RECOVERABLE_QUARANTINE_CATEGORIES = WORKTREE_QUARANTINE_CATEGORIES
+  .filter((category) => QUARANTINE_RECOVERABLE[category]);
+
+/**
+ * Whether a stored category is one recovery may act on - a necessary condition only. A slot
+ * that still holds a lease is never recovered whatever its category, so a caller asking whether
+ * a slot will come back uses `quarantineAutoRecoverable`. Read as a string, so NULL and a value
+ * a newer build wrote both fail closed.
+ */
+export function quarantineRecoverable(category: string | null): boolean {
+  return (RECOVERABLE_QUARANTINE_CATEGORIES as readonly string[]).includes(category ?? "");
+}
+
+/**
+ * Whether reconciliation could ever return this quarantined slot to `available` on its own: a
+ * recoverable category AND no active lease identity at all, which `recoverQuarantined` also
+ * requires. A slot quarantined while it held a lease - a leased slot whose owner lookup did not
+ * answer, or a legacy reservation stranded by an unanswered recheck - keeps that lease until
+ * its owner returns it or an operator destroys it, so it is never promised a recovery.
+ */
+export function quarantineAutoRecoverable(slot: Pick<WorktreeSlotRow,
+  "quarantineCategory" | "activeLeaseId" | "activeOwnerKind" | "activeOwnerKey">): boolean {
+  return quarantineRecoverable(slot.quarantineCategory) &&
+    slot.activeLeaseId === null && slot.activeOwnerKind === null && slot.activeOwnerKey === null;
+}
+
 export interface WorktreePoolRow {
   id: string;
   gitCommonDirectory: string;
@@ -73,6 +131,16 @@ export interface WorktreeSlotRow {
   lastReleasedOwnerKey: string | null;
   lastUsedAt: number | null;
   quarantineReason: string | null;
+  /**
+   * Read as string for the same fail-closed reason as `state`: only `quarantineRecoverable`
+   * interprets it. Null on every slot that is not quarantined, and on a legacy quarantine.
+   */
+  quarantineCategory: string | null;
+  /**
+   * When the slot entered quarantine. Only that transition writes it, and every transition out
+   * clears it; observation refreshes never touch it. Null on a legacy quarantine.
+   */
+  quarantinedAt: number | null;
   lastError: string | null;
   /** Read as string for the same fail-closed reason as `state`. Null is never claimed. */
   depsState: string | null;
@@ -126,6 +194,10 @@ function slotRow(row: Record<string, unknown>): WorktreeSlotRow {
       row.last_released_owner_key === null ? null : String(row.last_released_owner_key),
     lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
     quarantineReason: row.quarantine_reason === null ? null : String(row.quarantine_reason),
+    quarantineCategory: nullableString(row.quarantine_category),
+    quarantinedAt: row.quarantined_at === null || row.quarantined_at === undefined
+      ? null
+      : Number(row.quarantined_at),
     lastError: row.last_error === null ? null : String(row.last_error),
     depsState: nullableString(row.deps_state),
     depsFingerprint: nullableString(row.deps_fingerprint),
@@ -335,7 +407,8 @@ export class WorktreeStore {
         `UPDATE worktree_slots SET
            state = 'provisioning', version = version + 1, requested_head_sha = ?,
            active_lease_id = ?, active_owner_kind = ?, active_owner_key = ?, leased_at = ?,
-           quarantine_reason = NULL, last_error = NULL, updated_at = ?
+           quarantine_reason = NULL, quarantine_category = NULL,
+           quarantined_at = NULL, last_error = NULL, updated_at = ?
          WHERE id = ? AND state = 'available' AND version = ?`,
       )
       .run(
@@ -357,7 +430,8 @@ export class WorktreeStore {
         `UPDATE worktree_slots SET
            state = 'leased', version = version + 1, current_head_sha = ?, last_used_at = ?,
            last_released_lease_id = NULL, last_released_owner_kind = NULL,
-           last_released_owner_key = NULL, quarantine_reason = NULL, last_error = NULL,
+           last_released_owner_key = NULL, quarantine_reason = NULL, quarantine_category = NULL,
+           quarantined_at = NULL, last_error = NULL,
            updated_at = ?
          WHERE id = ? AND state = 'provisioning' AND version = ?`,
       )
@@ -386,7 +460,8 @@ export class WorktreeStore {
            last_released_owner_kind = active_owner_kind,
            last_released_owner_key = active_owner_key,
            active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
-           leased_at = NULL, last_used_at = ?, quarantine_reason = NULL, last_error = NULL,
+           leased_at = NULL, last_used_at = ?, quarantine_reason = NULL, quarantine_category = NULL,
+           quarantined_at = NULL, last_error = NULL,
            updated_at = ?
          WHERE id = ? AND state = 'returning' AND version = ?`,
       )
@@ -394,14 +469,40 @@ export class WorktreeStore {
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
-  /** The manager has re-proven safety; recovery never clears an active lease or its history. */
+  /**
+   * Return a quarantined slot to `available` once the manager has re-proven every safety fact.
+   * The compare-and-swap repeats the parts of that proof the row itself can state, so no caller
+   * can recover a slot they do not cover: only a recoverable category, only a slot with no
+   * active lease, and only at the HEAD the allocator last recorded for it. Release history is
+   * kept, so a late return of the last lease still answers `alreadyReleased`.
+   */
   recoverQuarantined(slotId: string, version: number, head: string, now: number): WorktreeSlotRow | null {
     const changed = this.db.prepare(
       `UPDATE worktree_slots SET state = 'available', version = version + 1,
-         current_head_sha = ?, quarantine_reason = NULL, last_error = NULL, updated_at = ?
+         quarantine_reason = NULL, quarantine_category = NULL, quarantined_at = NULL,
+         last_error = NULL, updated_at = ?
        WHERE id = ? AND state = 'quarantined' AND version = ?
+         AND quarantine_category IN (${RECOVERABLE_QUARANTINE_CATEGORIES.map(() => "?").join(", ")})
+         AND current_head_sha = ?
          AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
-    ).run(head, now, slotId, version);
+    ).run(now, slotId, version, ...RECOVERABLE_QUARANTINE_CATEGORIES, head);
+    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  }
+
+  /**
+   * Undo a reservation of an available slot before anything touched it: the lease was never
+   * granted, so the slot goes back exactly as it was screened, with its release history. Only
+   * the reservation still provisioning at its own version, under its own lease, with no
+   * dependency claim begun, can be undone.
+   */
+  cancelReservation(slotId: string, version: number, leaseId: string, now: number): WorktreeSlotRow | null {
+    const changed = this.db.prepare(
+      `UPDATE worktree_slots SET state = 'available', version = version + 1,
+         active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
+         leased_at = NULL, updated_at = ?
+       WHERE id = ? AND state = 'provisioning' AND version = ? AND active_lease_id = ?
+         AND COALESCE(deps_state, '') NOT IN (${WORKTREE_DEPS_WRITE_AHEAD_STATES.map(() => "?").join(", ")})`,
+    ).run(now, slotId, version, leaseId, ...WORKTREE_DEPS_WRITE_AHEAD_STATES);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
@@ -417,8 +518,15 @@ export class WorktreeStore {
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
+  /**
+   * The one transition into quarantine. A slot already quarantined is refused rather than
+   * rewritten, so its first reason, category and time stand: a later observation can never
+   * relabel a positively unsafe slot as a recoverable one, and `quarantined_at` is only ever
+   * the moment it entered.
+   */
   quarantine(
     slotId: string,
+    category: WorktreeQuarantineCategory,
     reason: string,
     error: string | null,
     now: number,
@@ -426,12 +534,14 @@ export class WorktreeStore {
   ): WorktreeSlotRow | null {
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
     const args = expectedVersion === undefined
-      ? [reason, error, now, slotId]
-      : [reason, error, now, slotId, expectedVersion];
+      ? [reason, category, now, error, now, slotId]
+      : [reason, category, now, error, now, slotId, expectedVersion];
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
-           quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
+           quarantine_reason = ?, quarantine_category = ?, quarantined_at = ?,
+           last_error = ?, updated_at = ?
+         WHERE ${where} AND state <> 'quarantined'`,
       )
       .run(...args);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
@@ -553,6 +663,11 @@ export class WorktreeStore {
     return Number(changed.changes) === 1;
   }
 
+  /**
+   * Record what an observation saw. Never a state transition, so it leaves the version and
+   * every quarantine column alone: a quarantined slot keeps the reason, category and time it
+   * entered with, however often it is observed.
+   */
   updateObserved(slotId: string, currentHeadSha: string | null, error: string | null, now: number): void {
     this.db
       .prepare(`UPDATE worktree_slots SET current_head_sha = ?, last_error = ?, updated_at = ? WHERE id = ?`)

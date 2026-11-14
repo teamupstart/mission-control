@@ -304,6 +304,38 @@ test("Claude utilization survives a daemon restart and missing reports, and refr
   await expect(longWindow).toContainText("98%");
 });
 
+test("an account with no five-hour window loses its stale 5-hr bar", async ({ dashboard, daemon }) => {
+  // Ultra (formerly Max 20x) has no five-hour limit, so Claude stops reporting that window.
+  // A reading saved before the change must go on the first seven-day-only report, even
+  // though its old reset time has not passed yet.
+  const nowSec = Math.floor(Date.now() / 1000);
+  await post(daemon, "/statusline", {
+    sessionId: "pre-ultra", env: {},
+    rateLimits: {
+      fiveHour: { usedPercentage: 3, resetsAt: nowSec + 3600 },
+      sevenDay: { usedPercentage: 40, resetsAt: nowSec + 86_400 },
+    },
+  });
+  const chip = dashboard.getByRole("button", { name: /^Spend - / });
+  const popover = dashboard.getByRole("dialog", { name: "Spend today" });
+  const shortWindow = popover.locator(".spend-runway", { hasText: "Claude · 5-hr window" });
+  const longWindow = popover.locator(".spend-runway", { hasText: "Claude · 7-day window" });
+  await chip.click();
+  await expect(shortWindow).toContainText("3%");
+
+  await post(daemon, "/statusline", {
+    sessionId: "ultra", env: {},
+    rateLimits: { sevenDay: { usedPercentage: 41, resetsAt: nowSec + 86_400 } },
+  });
+  await expect(shortWindow).toHaveCount(0);
+  await expect(longWindow).toContainText("41%");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/claude-utilization", { recursive: true });
+    await popover.getByRole("heading", { name: "Spend · today" }).click();
+    await popover.screenshot({ path: "e2e/.artifacts/claude-utilization/no-five-hour-window.png" });
+  }
+});
+
 test("the spend popover explains when Claude has never reported utilization", async ({ dashboard, daemon }) => {
   await post(daemon, "/v1/metrics", costMetrics("no-claude-quota", 2));
   await dashboard.getByRole("button", { name: /^Spend - / }).click();

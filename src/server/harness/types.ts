@@ -814,6 +814,8 @@ export type ResidentMcpEntry = { name: string; options: ResidentMcpOptions } & (
 export interface ResidentMcpLaunch {
   /** From the run's pinned revision. Only a harness with `allNativeSources` is ever handed `all`. */
   nativeSources: ResidentMcpNativeSources;
+  /** Opt-in connector workaround, pinned with the run's profile revision. */
+  disableClaudeAiConnectors?: boolean;
   /** The run's names, for verifying what actually started. Never includes Mission's. */
   names: readonly string[];
   /**

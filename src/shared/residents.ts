@@ -240,6 +240,8 @@ export type ResidentMcpNativeSources = (typeof RESIDENT_MCP_NATIVE_SOURCES)[numb
 export const ResidentMcpSectionSchema = z
   .object({
     nativeSources: z.enum(RESIDENT_MCP_NATIVE_SOURCES).default("pinned"),
+    /** Opt-in workaround for Claude's plugin/connector double suppression. Only applies to all native sources. */
+    disableClaudeAiConnectors: z.boolean().optional(),
     inheritDefaults: z.boolean().default(true),
     selected: z
       .array(ResidentMcpServerRefSchema)
@@ -723,7 +725,7 @@ export type ResidentLaunchResult =
 export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[]): string {
   const resolved = labels && labels.length === mcp.selected.length ? labels : null;
   if (mcp.nativeSources === "all") {
-    const base = "MCP: all native sources (not pinned)";
+    const base = `MCP: all native sources (not pinned)${mcp.disableClaudeAiConnectors ? ", claude.ai connectors off" : ""}`;
     const custom = mcp.selected.flatMap((ref, at) => (ref.source === "custom" ? [at] : []));
     if (custom.length === 0) return base;
     return `${base} + ${resolved ? custom.map((at) => resolved[at]).join(", ") : `${custom.length} custom`}`;

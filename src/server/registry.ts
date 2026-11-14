@@ -637,6 +637,7 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // Deliberately absent: worktree inventory and policy do not feed the Line's execution
   // fold. Its content-free event only tells an open Settings panel to re-observe.
   // `storage_config_changed` is absent for the same reason: backup counts are no Line input.
+  // `repo_index_changed` too: which directories are indexed feeds the Dispatch picker only.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -1408,6 +1409,11 @@ export class Registry extends EventEmitter {
   /** Announce that the bounded Worktrees route should be re-observed. */
   emitWorktreesChanged(): void {
     this.emitEvent({ type: "worktrees_changed" });
+  }
+
+  /** Announce saved indexed directories, so every open window drops a list that no longer applies. */
+  emitRepoIndexChanged(identity: string): void {
+    this.emitEvent({ type: "repo_index_changed", identity });
   }
 
   /** Announce a saved database backup config, so every open Storage panel re-reads it. */
@@ -6240,6 +6246,16 @@ export class Registry extends EventEmitter {
    * actually carries windows updates them; nothing takes them away but their own reset
    * time passing (applied where the value is read, in `fleetCostNow`).
    *
+   * The one exception is a reading that carries the seven-day window but no five-hour
+   * window. Both transports read the two windows from one payload, so this method treats a
+   * seven-day-only reading as the signal that the account has no five-hour limit, which is
+   * what Ultra (formerly Max 20x) looks like. That is an interpretation, not a documented
+   * Claude guarantee: a Pro or Max reading that ever omitted the window would hide its bar
+   * until the next reading that carries it. The held five-hour value is dropped there, expired or
+   * not, so the popover never shows a bar for a window the account no longer has. The
+   * reverse is not true: a five-hour-only reading still holds the seven-day window,
+   * because every plan has a weekly limit.
+   *
    * A payload that RESTATES the windows we already hold is not a change and is dropped
    * here, before `updatedAt` is restamped. That matters more than it looks: the
    * forwarder posts on every terminal render, `updatedAt` is a reading timestamp rather
@@ -6252,10 +6268,11 @@ export class Registry extends EventEmitter {
   ): void {
     if (!rl) return;
     if (!rl.fiveHour && !rl.sevenDay) return;
-    // One window present without the other is ordinary, not an error: keep whichever
-    // this payload carried and hold the last known value of the one it didn't.
+    // A five-hour-only reading holds the last known seven-day window. A reading with no
+    // five-hour window must carry a seven-day one (see the guard above), so it means the
+    // account has no five-hour limit, and nothing is held for it (see above).
     const prev = this.latestRateLimits;
-    const fiveHour = rl.fiveHour ?? prev?.fiveHour ?? null;
+    const fiveHour = rl.fiveHour ?? null;
     const sevenDay = rl.sevenDay ?? prev?.sevenDay ?? null;
     if (prev && rateWindowEqual(prev.fiveHour, fiveHour) && rateWindowEqual(prev.sevenDay, sevenDay)) {
       return;

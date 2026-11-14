@@ -312,3 +312,34 @@ test("Cleanup says why nothing more is offered when warm or blocked slots keep t
   assert.doesNotMatch(body, /already fit the budget/);
   assert.match(body, /Nothing more can be removed, though the idle caches are 1\.0 GiB over the budget: what remains is the 2 most recently used slots each pool keeps warm and the 1 blocked slot below\./);
 });
+
+test("Overview's backup reclaimable comes from the saved limits, and says within limits only when they remove nothing", () => {
+  const overview = (state: ReturnType<typeof storageStateFixture>) => text(renderToStaticMarkup(createElement(StorageSettingsPanelView, {
+    state,
+    actions: STORAGE_ACTIONS,
+    idle: idleStateFixture(IDLE_PLAN),
+    idleActions: IDLE_ACTIONS,
+    onNavigate: () => {},
+    jumpAnchor: STORAGE_TABS[0]!.anchor,
+    jumpRequestId: 1,
+    now: NOW,
+  })));
+  const withConfig = (config: Partial<NonNullable<ReturnType<typeof storageStateFixture>["view"]>["config"]>, health = storageHealthFixture()) => {
+    const state = storageStateFixture(health);
+    return { ...state, view: { ...state.view!, config: { ...state.view!.config, ...config } } };
+  };
+
+  assert.match(overview(storageStateFixture()), /Database backups[^]*?Within limits/);
+  // Two scheduled copies past a saved count of 1: Overview names their disk space, as the
+  // Backups tab would delete them, instead of claiming the copies are within limits.
+  const over = overview(withConfig({ scheduledCount: 1 }));
+  assert.match(over, /Database backups[^]*?1\.0 GiB in 2 copies/);
+  assert.doesNotMatch(over, /Within limits/);
+  // Only the always-kept copies remain, and they alone exceed the budget: nothing is removable,
+  // and that is not called within limits either.
+  const health = storageHealthFixture();
+  const alwaysKeptOnly = { ...health, backups: { ...health.backups, copies: [health.backups.copies[0]!, health.backups.copies[3]!] } };
+  const stuck = overview(withConfig({ maxTotalBytes: GIB / 4 }, alwaysKeptOnly));
+  assert.match(stuck, /None: the always-kept copies exceed the size budget/);
+  assert.doesNotMatch(stuck, /Within limits/);
+});

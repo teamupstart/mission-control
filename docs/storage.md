@@ -23,7 +23,10 @@ Below it, two bars:
   is set, with the warning point marked.
 
 The table lists each category, what it is, its size and share, the limit that applies to it, and
-how much that limit would reclaim now. The categories are `STORAGE_CATEGORIES` in
+how much that limit would reclaim now. For Database backups that is the disk space of the copies
+the saved limits delete at the next prune, from the same plan as the Backups tab. Copies outgrow
+the limits between prunes as they age past an age limit, so the row reads "Within limits" only
+when that plan deletes nothing. The categories are `STORAGE_CATEGORIES` in
 `src/shared/storage-health.ts`:
 
 | Category | Entries in the state directory | Limit |

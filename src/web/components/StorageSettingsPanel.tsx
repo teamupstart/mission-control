@@ -406,18 +406,24 @@ function SlotStrip({ pool, label }: { pool: IdleCachePoolView; label: string }):
 function OverviewTab({
   health,
   idle,
+  backupConfig,
   onOpen,
   onMeasure,
   now,
 }: {
   health: StorageHealth;
   idle: IdleCacheState;
+  backupConfig: DatabaseBackupsConfig | null;
   onOpen: (tab: StorageTabId) => void;
   onMeasure: () => void;
   now: number;
 }): React.JSX.Element {
   const { usage } = health;
   const plan = idle.plan;
+  // What the next prune removes under the saved limits, from the plan the Backups tab shows and
+  // the daemon applies. Copies outgrow the limits between prunes, by ageing past an age limit or
+  // by arriving from elsewhere, so nothing here assumes the last prune left them within limits.
+  const backupEffect = backupConfig ? backupDraftEffect(health.backups.copies, backupConfig, now) : null;
   const reclaimable = (id: StorageCategoryId): string => {
     if (id === "pools") {
       if (!plan) return "…";
@@ -425,7 +431,12 @@ function OverviewTab({
       if (plan.unmeasuredIdle > 0 && plan.remove.length === 0) return "Unknown until measured";
       return plan.unmeasuredIdle > 0 ? `at least ${formatBytes(plan.freesBytes)}` : formatBytes(plan.freesBytes);
     }
-    if (id === "backups") return "Within limits";
+    if (id === "backups") {
+      if (!backupEffect) return "…";
+      const going = backupEffect.plan.remove.length;
+      if (going > 0) return `${formatBytes(backupEffect.removedDiskBytes)} in ${going} ${going === 1 ? "copy" : "copies"}`;
+      return backupEffect.plan.overBudget ? "None: the always-kept copies exceed the size budget" : "Within limits";
+    }
     return "None";
   };
   return (
@@ -1268,7 +1279,7 @@ export function StorageSettingsPanelView({
         {!health ? (
           <p className="settings-hint" role="status">Checking storage…</p>
         ) : tab === "overview" ? (
-          <OverviewTab health={health} idle={idle} onOpen={choose} onMeasure={() => void actions.measure()} now={now} />
+          <OverviewTab health={health} idle={idle} backupConfig={state.view?.config ?? null} onOpen={choose} onMeasure={() => void actions.measure()} now={now} />
         ) : tab === "backups" ? (
           <BackupsTab state={state} actions={actions} now={now} />
         ) : tab === "pools" ? (

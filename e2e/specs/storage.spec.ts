@@ -374,6 +374,28 @@ test("Measure now fills Overview by category, and a free-space floor warns on th
   expect(stored.health.limits.freeFloorBytes).toBeNull();
 });
 
+test("Overview names the backup space the saved limits would reclaim, and says within limits only once nothing goes", async ({
+  dashboard,
+  daemon,
+}) => {
+  await withoutFreeSpaceFloor(dashboard, daemon);
+  // Five copies left above today's default count of 3, never pruned since: the saved limits
+  // would delete two, so Overview must not call the backups within limits.
+  seedScheduledCopies(daemon, 5);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await dashboard.getByRole("button", { name: /Measure (now|again)/ }).click();
+  const categories = dashboard.getByRole("table", { name: "What is in the state directory" });
+  const backups = categories.getByRole("row").filter({ has: dashboard.getByRole("rowheader", { name: "Database backups" }) });
+  await expect(backups).toContainText(/ in 2 copies/);
+  await expect(backups).not.toContainText("Within limits");
+
+  // Raising the count deletes nothing, and the same copies are now within the saved limits.
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/storage/backups/config`, { data: { scheduledCount: 5 } });
+  expect(saved.ok()).toBe(true);
+  await expect(backups).toContainText("Within limits");
+  expect(copiesOnDisk(daemon, "scheduled")).toHaveLength(5);
+});
+
 test("a backup size budget previews what saving deletes, then deletes exactly that, oldest first", async ({ dashboard, daemon }) => {
   // Four 200 MiB copies, sparse so the fixture costs no disk.
   mkdirSync(backupRoot(daemon), { recursive: true });

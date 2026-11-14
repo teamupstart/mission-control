@@ -53,6 +53,20 @@ export interface SessionPause {
    * falls back to `since` when it is absent.
    */
   frozenAt?: number | null;
+  /**
+   * How it was asked for. A pending `now` pause is one whose freeze failed and is being retried -
+   * the agent may still be running - which is not the same as an after-turn pause waiting for
+   * its turn to end, and the label says which. Absent reads as after-turn.
+   */
+  mode?: SessionPauseMode;
+}
+
+/**
+ * What a pending pause is doing, in the words every control uses: waiting for the turn to end,
+ * or (a `now` pause whose freeze has not succeeded yet) held while the freeze is retried.
+ */
+export function pendingPauseLabel(pause: Pick<SessionPause, "mode">): string {
+  return pause.mode === "now" ? "Held - not frozen yet" : "Pausing after this turn";
 }
 
 /** When the session actually stopped for its pause: the freeze time, else when it was asked for. */
@@ -148,7 +162,7 @@ export function bulkPauseTargets<S extends Pick<Session, "id" | "state" | "pause
 
 /** The short reason a paused card's flag prints. */
 export function pauseFlagLabel(pause: SessionPause, now: number): string {
-  if (pause.phase === "pending") return "Pausing after this turn";
+  if (pause.phase === "pending") return pendingPauseLabel(pause);
   switch (pause.reason) {
     case "priority":
       return "Paused for priority";

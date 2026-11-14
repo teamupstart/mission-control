@@ -167,3 +167,25 @@ test("a pause that settled with nothing stopped is a hold, never counted or show
   assert.equal(isFrozen(frozen), true);
   assert.equal(countFrozenFor([held, frozen], "fleet"), 1);
 });
+
+test("a pending pause says whether it waits for the turn or is a freeze being retried", () => {
+  const base = { reason: "operator" as const, phase: "pending" as const, since: NOW, interrupted: null, stopped: false };
+  assert.equal(pauseFlagLabel({ ...base, mode: "after-turn" }, NOW), "Pausing after this turn");
+  assert.equal(pauseFlagLabel(base, NOW), "Pausing after this turn", "an older record without a mode reads as after-turn");
+  assert.equal(pauseFlagLabel({ ...base, mode: "now" }, NOW), "Held - not frozen yet", "a Pause now whose freeze is being retried");
+});
+
+test("the console bands name a Pause now that is still being frozen, not a wait for the turn", async () => {
+  const { PausedBand, ComposerPausedBand } = await import("../src/web/components/PauseControls.tsx");
+  const { FleetPauseContext } = await import("../src/web/lib/fleet-pause.ts");
+  const retrying = session("r", { pause: { reason: "operator", phase: "pending", since: NOW, interrupted: null, stopped: false, mode: "now" } });
+  const waiting = session("w", { pause: { reason: "operator", phase: "pending", since: NOW, interrupted: null, stopped: false, mode: "after-turn" } });
+  const render = (component: typeof PausedBand, s: Session) =>
+    renderToStaticMarkup(createElement(FleetPauseContext.Provider, { value: fleetPauseView([s], { fleet: null, priority: null }) }, createElement(component, { session: s })));
+  for (const band of [PausedBand, ComposerPausedBand]) {
+    assert.match(render(band, retrying), /Held - not frozen yet/);
+    assert.doesNotMatch(render(band, retrying), /Pausing after this turn/);
+    assert.match(render(band, waiting), /Pausing after this turn/);
+  }
+  assert.match(render(PausedBand, retrying), /may still be running/);
+});

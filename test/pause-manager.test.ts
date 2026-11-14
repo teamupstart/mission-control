@@ -1249,10 +1249,10 @@ test("an SDK pid this daemon stopped and could not continue is gated; a restored
   assert.equal(later.frozenRefusal("sdk2"), null);
 });
 
-test("a freeze rescans after its stop: a child spawned meanwhile is stopped, and an exec'd pid is recorded as it is now", async () => {
-  // Between the snapshot and the SIGSTOP, pid 71 exec'd (same pid, new command line) and pid 70
-  // spawned 72. The rescan finds both: 72 is saved and stopped, and 71's identity is the one a
-  // resume will match.
+test("a freeze rescans after its stop: a spawned child and a pid whose identity changed are both saved and stopped", async () => {
+  // Between the snapshot and the SIGSTOP, pid 70 spawned 72, and pid 71 changed identity - it
+  // exec'd, or exited and its pid went to another process. The rescan cannot tell those apart,
+  // so it treats 71 as a new member like 72: saved with the identity it has now, then stopped.
   const registry = new FakeRegistry([session("t", "working")]);
   const store = memoryStore();
   let reads = 0;
@@ -1274,7 +1274,7 @@ test("a freeze rescans after its stop: a child spawned meanwhile is stopped, and
   manager.start();
   registry.sweep();
   assert.deepEqual(await manager.pause("t", "now"), { ok: true });
-  assert.deepEqual(stopped, [[70, 71], [72]], "the child spawned meanwhile is stopped too");
+  assert.deepEqual(stopped, [[70, 71], [71, 72]], "the changed pid and the new child are stopped as new members");
   assert.equal(registry.pauses.get("t")?.phase, "frozen");
   const saved = store.get()?.sessions.t?.procs ?? [];
   assert.deepEqual(pidsOf(saved), [70, 71, 72]);

@@ -790,36 +790,28 @@ export class PauseManager {
         return why;
       }
       if (this.records.get(session.id) !== record) return null;
-      const now = new Map(tree.map((p) => [p.pid, p]));
       const before = record.procs;
-      const restamped = before.map((p) => now.get(p.pid) ?? p);
-      const changed = restamped.some((p, i) => p.identity !== before[i]!.identity);
-      const known = new Set(before.map((p) => p.pid));
-      const fresh = tree.filter((p) => !known.has(p.pid));
-      if (fresh.length === 0) {
-        if (changed) {
-          record.procs = restamped;
-          // Saved before the freeze is called settled: a restart reads only the disk, and an old
-          // identity there would make its resume skip the very process that is stopped. Unsaved,
-          // the freeze is unfinished and retried - the retry saves these identities before its
-          // own signal, as every freeze does.
-          if (!this.persist()) {
-            record.phase = "pending";
-            return "the identities of its stopped processes could not be saved";
-          }
-        }
-        return undefined;
-      }
-      record.procs = [...restamped, ...fresh];
+      const recorded = new Map(before.map((p) => [p.pid, p.identity]));
+      // New to the tree, or a recorded pid whose identity changed. The second is not assumed to
+      // be the process that was stopped: it may have exec'd in the instant before its SIGSTOP
+      // landed, or exited and had its pid reused by a process that was never stopped. Either way
+      // it is treated as a new member - its identity saved, then stopped (`stop` checks that
+      // identity again right before the signal) - so nothing is called frozen over a running
+      // process, and no resume will later signal a process this pause never stopped.
+      const fresh = tree.filter((p) => recorded.get(p.pid) !== p.identity);
+      if (fresh.length === 0) return undefined;
+      const freshPids = new Set(fresh.map((p) => p.pid));
+      const kept = before.filter((p) => !freshPids.has(p.pid));
+      record.procs = [...kept, ...fresh];
       if (!this.persist()) {
         record.procs = before;
         record.phase = "pending";
-        return "the pause could not be saved, so the processes its tree started meanwhile were not frozen";
+        return "the pause could not be saved, so the processes its tree started or changed meanwhile were not frozen";
       }
       const refused = this.freezer.stop(fresh);
       if (refused.length > 0) {
         const stuck = this.freezer.resume(fresh);
-        record.procs = [...restamped, ...stuckOf(fresh, stuck)];
+        record.procs = [...kept, ...stuckOf(fresh, stuck)];
         record.phase = "pending";
         this.persist();
         const why = `${described(refused)} refused to stop`;
@@ -1114,6 +1106,7 @@ export class PauseManager {
       interrupted: record.interrupted,
       stopped: processesStopped(record, this.restoredSdk.has(sessionId)),
       frozenAt: record.frozenAt ?? null,
+      ...(record.mode ? { mode: record.mode } : {}),
     };
   }
 

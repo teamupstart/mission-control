@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { canPause, pauseAge, pauseFlagLabel, pauseFreezes, pausedAt, type SessionPauseMode } from "@shared/pause.ts";
+import { canPause, pauseAge, pauseFlagLabel, pauseFreezes, pausedAt, pendingPauseLabel, type SessionPauseMode } from "@shared/pause.ts";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { isPrioritySession, sessionCount, useFleetPause, type FleetPauseView } from "../lib/fleet-pause.ts";
@@ -98,7 +98,11 @@ export function usePauseActions(session: Session): {
 export function pausedSentence(session: Session, now: number): string {
   const pause = session.pause;
   if (!pause) return "";
-  if (pause.phase === "pending") return "Pausing once this turn ends. Nothing new will start.";
+  if (pause.phase === "pending") {
+    return pause.mode === "now"
+      ? "The freeze did not take yet and is being retried - it may still be running. Nothing new will start."
+      : "Pausing once this turn ends. Nothing new will start.";
+  }
   const why = pause.reason === "priority" ? "for the priority session"
     : pause.reason === "fleet" ? "with everything else"
       : "by you";
@@ -409,7 +413,7 @@ export function ComposerPausedBand({ session }: { session: Session }): React.JSX
   return (
     <div className="pause-band is-inline" role="status">
       <PauseGlyph kind="pause" size={11} />
-      <span className="pause-band-lead">{session.pause.phase === "pending" ? "Pausing after this turn" : `Paused ${pausedFor(session.pause.since, now)}`}</span>
+      <span className="pause-band-lead">{session.pause.phase === "pending" ? pendingPauseLabel(session.pause) : `Paused ${pausedFor(session.pause.since, now)}`}</span>
       <span className="pause-band-sub">Messages you send now wait in the queue and are delivered when it resumes.</span>
       <Tooltip label={error ?? "Resume this session"}>
         <button type="button" className="btn pause-band-primary" disabled={busy} onClick={() => void run({ kind: "resume" })}>
@@ -460,7 +464,7 @@ export function PausedBand({ session }: { session: Session }): React.JSX.Element
   return (
     <div className="pause-band" role="status">
       <PauseGlyph kind="pause" size={12} />
-      <span className="pause-band-lead">{pending ? "Pausing after this turn" : `Paused ${pausedFor(session.pause.since, now)}`}</span>
+      <span className="pause-band-lead">{pending ? pendingPauseLabel(session.pause) : `Paused ${pausedFor(session.pause.since, now)}`}</span>
       <span className="pause-band-sub">{pausedSentence(session, now)}</span>
       {fleet.state.fleet === null && (
         <Tooltip label={error ?? "Resume this one and pause every other running session instead"}>

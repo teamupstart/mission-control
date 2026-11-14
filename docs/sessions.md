@@ -751,8 +751,10 @@ missed;
 only **Pause after this turn** waits for the turn to end. A
 paused card and conversation say when the agent actually froze, which for an after-turn pause is
 when its turn ended, not when you asked. After every stop the tree is read again, so a tool the agent started
-in the instant before it stopped, or a process that replaced its own program in that instant, is
-stopped and recorded too; the session reads as frozen only once a read finds nothing new.
+in the instant before it stopped, or a process whose identity changed in that instant (it
+replaced its own program, or its pid went to another process), is saved and stopped as a new
+member; the session reads as frozen only once a read finds nothing new. While a **Pause now** is
+being retried, its card and console say **Held - not frozen yet**, not "Pausing after this turn".
 While any Pause all session is only held, its banner reads "Paused, but not everything is
 frozen" and counts frozen and held sessions separately; a Pi session, which has nothing to stop, is always counted as held, never as frozen. A re-freeze after a restart
 that cannot read the process table keeps the processes an earlier freeze stopped, so resuming

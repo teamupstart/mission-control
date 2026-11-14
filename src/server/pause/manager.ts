@@ -3,6 +3,7 @@ import {
   canPause,
   EMPTY_PAUSE_STATE,
   PAUSED_SESSION_REASON,
+  pauseFreezes,
   type PauseState,
   type SessionPause,
   type SessionPauseMode,
@@ -191,7 +192,9 @@ const SETTLE_PASSES = 4;
 
 /** States in which a turn is still running, so an after-turn pause keeps waiting. */
 function turnRunning(session: Session): boolean {
-  return session.state === "working" || session.state === "starting";
+  // `awaiting_input` too: the agent asked a question mid-turn, and answering it is how the turn
+  // gets to end. An after-turn pause that froze it there would leave nothing able to answer.
+  return session.state === "working" || session.state === "starting" || session.state === "awaiting_input";
 }
 
 export class PauseManager {
@@ -400,18 +403,33 @@ export class PauseManager {
       if (options.resumeAt !== null && (options.resumeAt <= now || options.resumeAt - now > FLEET_PAUSE_MAX_MS)) {
         return { ok: false, status: 400, error: "The automatic resume must be in the future and within a week" };
       }
+      const previousFleet = this.fleet;
+      const previousPriority = this.priority;
+      const converted: string[] = [];
       // Pause all supersedes priority: the priority session pauses with everything else, and
       // the sessions priority paused become the fleet's, so one Resume all brings them back.
       if (this.priority) {
         for (const [id, record] of this.records) {
           if (record.reason !== "priority") continue;
           record.reason = "fleet";
+          converted.push(id);
           this.publishSession(id);
         }
         this.priority = null;
       }
       this.fleet = { since: this.fleet?.since ?? now, resumeAt: options.resumeAt, holdDispatch: options.holdDispatch };
-      const failures = await this.holdAll(bulkPauseTargets(this.liveWithPause()), "fleet");
+      const held = this.holdAllSaved(bulkPauseTargets(this.liveWithPause()), "fleet", () => {
+        for (const id of converted) {
+          const record = this.records.get(id);
+          if (!record) continue;
+          record.reason = "priority";
+          this.publishSession(id);
+        }
+        this.fleet = previousFleet;
+        this.priority = previousPriority;
+      });
+      if (!held) return UNSAVED;
+      const failures = await this.freezeAll(held);
       this.armResumeTimer();
       this.publishFleet();
       if (!this.persist()) return UNSAVED;
@@ -438,8 +456,13 @@ export class PauseManager {
         const failed = this.liftAll([sessionId]);
         if (failed) return failed;
       }
+      const previousPriority = this.priority;
       this.priority = { sessionId, since: this.now() };
-      const failures = await this.holdAll(bulkPauseTargets(this.liveWithPause(), sessionId), "priority");
+      const held = this.holdAllSaved(bulkPauseTargets(this.liveWithPause(), sessionId), "priority", () => {
+        this.priority = previousPriority;
+      });
+      if (!held) return UNSAVED;
+      const failures = await this.freezeAll(held);
       this.publishFleet();
       if (!this.persist()) return UNSAVED;
       return bulkResult(failures);
@@ -508,8 +531,35 @@ export class PauseManager {
    * session open to automated work for as long as the earlier freezes took. Answers the
    * sessions whose freeze failed.
    */
-  private async holdAll(targets: readonly Session[], reason: SessionPauseReason): Promise<string[]> {
+  /**
+   * Hold every target and SAVE that, before anything is frozen. A bulk pause that cannot be saved
+   * is reported as failed, so it must not stand either: the holds are dropped again, `undo`
+   * restores whatever else the caller changed, and null is answered. Otherwise launches and
+   * deliveries would stay blocked behind a pause the operator was told did not happen, and a
+   * restart would silently forget it.
+   */
+  private holdAllSaved(
+    targets: readonly Session[],
+    reason: SessionPauseReason,
+    undo: () => void,
+  ): Array<readonly [Session, StoredSessionPause]> | null {
     const held = targets.map((session) => [session, this.holdOnly(session, reason, "now")] as const);
+    if (this.persist()) return held;
+    for (const [session, record] of held) {
+      if (this.records.get(session.id) !== record) continue;
+      this.records.delete(session.id);
+      this.publishSession(session.id);
+    }
+    undo();
+    this.publishFleet();
+    return null;
+  }
+
+  private async holdAll(targets: readonly Session[], reason: SessionPauseReason): Promise<string[]> {
+    return this.freezeAll(targets.map((session) => [session, this.holdOnly(session, reason, "now")] as const));
+  }
+
+  private async freezeAll(held: ReadonlyArray<readonly [Session, StoredSessionPause]>): Promise<string[]> {
     const failures: string[] = [];
     for (const [session, record] of held) {
       if (this.records.get(session.id) !== record) continue;
@@ -597,6 +647,13 @@ export class PauseManager {
     }
     if (this.records.get(session.id) !== record) return null;
     if (tree.length === 0) {
+      // A restored SDK driver that runs as a process of its own but was not found: it has not
+      // started yet. Nothing has been stopped, so it is not frozen - held, and read again on the
+      // backing-off timer until it appears. Only a driver with no process of its own settles here.
+      if (record.runtime === "sdk" && this.restoredSdk.has(session.id) && pauseFreezes(session)) {
+        record.phase = "pending";
+        return "its restored driver has not started yet";
+      }
       // A scan that found none of a recorded tree is not a replacement for it: what was stopped
       // is still the record of what to continue, and there is nothing more to stop. That holds
       // for a freeze a restart interrupted too, whose session still reports the turn it was in.

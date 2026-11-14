@@ -400,10 +400,10 @@ test("a restored driver's re-freeze whose scan fails or finds nothing keeps the 
     manager.start();
     registry.sweep();
     await manager.idle();
-    // A failed read leaves the freeze incomplete (pending, retried); an empty tree means the
-    // restored driver has nothing this daemon may stop, so it is held. Either way the saved
-    // processes stay recorded.
-    assert.equal(registry.pauses.get("a")?.phase, scan === "throws" ? "pending" : "frozen", `${scan}: never called frozen over a failed read`);
+    // A failed read leaves the freeze incomplete, and so does an empty tree: a restored driver
+    // that runs as its own process and was not found has not started yet, so nothing is
+    // stopped. Both are pending and retried, and the saved processes stay recorded.
+    assert.equal(registry.pauses.get("a")?.phase, "pending", `${scan}: never called frozen over nothing stopped`);
     assert.equal(manager.isHeld("a"), true, `${scan}: still held`);
     await manager.resume("a");
     assert.deepEqual(resumed, [[60, 61]], `${scan}: the resume still continues what was stopped`);
@@ -1297,4 +1297,90 @@ test("a tree that keeps spawning is never called frozen", async () => {
   assert.equal(result.ok, false);
   assert.equal(registry.pauses.get("t")?.phase, "pending");
   assert.equal(registry.pauses.get("t")?.stopped, true, "what it did stop stays gated");
+});
+
+test("a restored driver not found yet is retried until it appears; one with no process of its own settles", async () => {
+  for (const agent of ["claude", "pi"] as const) {
+    const stored: StoredPauseState = {
+      fleet: null,
+      priority: null,
+      sessions: { a: { reason: "operator", phase: "frozen", since: 1, interrupted: null, runtime: "sdk", procs: [], resuming: false } },
+      resumed: {},
+    };
+    const registry = new FakeRegistry([session("a", "idle", { runtime: "sdk", agent })]);
+    const timers: { fn: () => void; ms: number }[] = [];
+    let started = false;
+    const stopped: number[][] = [];
+    const manager = new PauseManager({
+      registry,
+      freezer: { treeOf: async () => (started ? refs(900) : []), stop: (procs) => (stopped.push(pidsOf(procs)), []), resume: () => [] },
+      store: memoryStore(stored),
+      setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+      clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+      log: () => {},
+    });
+    manager.start();
+    registry.sweep();
+    await manager.idle();
+    if (agent === "pi") {
+      // Pi's driver runs inside the daemon: an empty tree is the whole answer, held and settled.
+      assert.equal(registry.pauses.get("a")?.phase, "frozen", "pi: nothing of its own to stop");
+      assert.deepEqual(timers, [], "pi: nothing to retry");
+      continue;
+    }
+    assert.equal(registry.pauses.get("a")?.phase, "pending", "claude: not frozen before its driver appears");
+    assert.deepEqual(timers.map((t) => t.ms), [15_000], "claude: read again on the timer");
+    started = true;
+    timers.shift()!.fn();
+    await manager.idle();
+    assert.deepEqual(stopped, [[900]], "claude: the driver that appeared is frozen");
+    assert.equal(registry.pauses.get("a")?.phase, "frozen");
+  }
+});
+
+test("a menu question still open is an unfinished turn: an after-turn pause waits for its answer", async () => {
+  const registry = new FakeRegistry([session("q", "awaiting_input")]);
+  let reads = 0;
+  const manager = new PauseManager({
+    registry,
+    freezer: { treeOf: async () => (reads++, refs(91)), stop: () => [], resume: () => [] },
+    store: memoryStore(),
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  assert.deepEqual(await manager.pause("q", "after-turn"), { ok: true });
+  assert.equal(reads, 0, "not frozen while the operator still has to answer");
+  assert.equal(registry.pauses.get("q")?.phase, "pending");
+  registry.upsert("q", { state: "idle", activity: null });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await manager.idle();
+  assert.equal(registry.pauses.get("q")?.phase, "frozen", "frozen once the turn is over");
+});
+
+test("a Pause all or priority that cannot be saved leaves nothing paused and nothing held", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const { freezer, stopped } = recordingFreezer({ a: [70], b: [80] });
+  const store = flakyStore();
+  const manager = new PauseManager({ registry, freezer, store, now: () => 1_000_000, log: () => {} });
+  manager.start();
+  registry.sweep();
+  // Startup reconciliation saves too; let it, so the failure lands on the bulk pause's save.
+  await manager.idle();
+
+  store.failSaves(1);
+  assert.equal((await manager.pauseFleet({ holdDispatch: true, resumeAt: null })).ok, false);
+  assert.equal(manager.state().fleet, null, "Pause all did not stand");
+  assert.equal(manager.launchHoldReason(), null, "and holds no launches");
+  assert.equal(registry.pauses.get("a") ?? null, null);
+  assert.equal(registry.pauses.get("b") ?? null, null);
+  assert.equal(manager.isHeld("a"), false);
+  assert.deepEqual(stopped, [], "nothing was frozen");
+
+  store.failSaves(1);
+  assert.equal((await manager.setPriority("a")).ok, false);
+  assert.equal(manager.state().priority, null, "priority did not stand");
+  assert.equal(registry.pauses.get("b") ?? null, null);
+  assert.deepEqual(stopped, []);
 });

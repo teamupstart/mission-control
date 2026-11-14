@@ -716,7 +716,8 @@ conversation, the checkout and the task are untouched, and a resumed agent carri
 where it stopped. There are three ways to pause:
 
 - **One session**, from its card or its console. **Pause now** freezes it at once. **Pause
-  after this turn** lets the current turn finish and freezes it then.
+  after this turn** lets the current turn finish and freezes it then; a turn waiting on your
+  answer to a question is not finished, so you can still answer it.
 - **Pause all**, the two-bar button in the title bar. It pauses every live session at once.
   Its confirm can also hold automatic launches, so the backlog autopilot starts nothing new
   until you resume. It can also resume everything automatically in 1 hour, in 4 hours or
@@ -758,15 +759,18 @@ again finishes the job. A resume is saved as asked for before any `SIGCONT` is s
 record stays until the processes have continued and that is saved too. So a restart in between
 finishes the resume instead of freezing the session again, and never loses a process that
 refused. Each stopped process is saved with a fingerprint of its start time and command line,
-and checked against it before every `SIGCONT`, so a pid that an unrelated process reused while
-Mission Control was down is never continued. Kill, Complete, Interrupt and Reset do nothing if the agent could not be thawed first,
+and checked against it immediately before every `SIGSTOP` and every `SIGCONT`, so a pid that an
+unrelated process reused - in the instant between reading the tree and stopping it, or while
+Mission Control was down - is never frozen or continued. Kill, Complete, Interrupt and Reset do nothing if the agent could not be thawed first,
 and say why, because a stopped process cannot act on any of them.
 
 **Nothing is stopped that is not saved first.** The processes a freeze is about to stop are
 saved before the first `SIGSTOP`, so a daemon that exits straight afterwards leaves the next one
 a record of what to continue. The next one also finishes that freeze at once, even though the
 stopped agent still reports the turn it was in, and until it has, nothing is typed or sent into
-those stopped processes. A pause that cannot be saved stops nothing and says so. A resume
+those stopped processes. A pause that cannot be saved stops nothing and says so, and a Pause
+all or priority that cannot be saved holds nothing either: no launch or delivery waits behind a
+pause you were told did not happen. A resume
 that cannot be saved continues nothing, because a restart would otherwise freeze again what you
 resumed. A scheduled morning resume that cannot be saved leaves everything paused and tries
 again on a timer that backs off from 15 seconds to 5 minutes. A Pi session
@@ -796,8 +800,8 @@ leaves it frozen, and the next start picks the pause back up without rescanning 
 it again. An Agent SDK session is the
 daemon's own child: it is thawed so it can shut down cleanly, then frozen again once it is
 restored. Until that new freeze succeeds the session reads as pausing, never as frozen, and a failed
-attempt is retried on the same backing-off timer; the processes it listed before are kept for
-the resume. A paused session that does not come back is thawed and forgotten.
+attempt - including one made before the restored driver has started - is retried on the same
+backing-off timer; the processes it listed before are kept for the resume. A paused session that does not come back is thawed and forgotten.
 
 **Where the controls are.** Settings → Display → **Pause controls** chooses which pause
 controls the cards and the console draw, each with its own preview. Any number of each can be

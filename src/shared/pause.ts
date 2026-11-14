@@ -181,5 +181,9 @@ export function countPausedFor(
  * says "holds", never "freezes", for it.
  */
 export function pauseFreezes(session: Pick<Session, "runtime" | "agent">): boolean {
-  return session.runtime !== "sdk" || capabilitiesFor(session.agent).sdkDriverStoppable;
+  if (session.runtime !== "sdk") return true;
+  // An agent outside the registry is assumed to be a process, which is the cautious answer:
+  // it is held and retried rather than called frozen over nothing.
+  const capabilities: { sdkDriverStoppable: boolean } | undefined = capabilitiesFor(session.agent);
+  return capabilities?.sdkDriverStoppable !== false;
 }

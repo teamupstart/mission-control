@@ -130,12 +130,13 @@ export function processFreezer(deps: FreezerDeps): ProcessFreezer {
     if (identity !== null) return identityDigest(identity);
     return exists(pid) ? "unreadable" : null;
   };
+  /** The guards a pid needs before any signal: never the daemon, never a process group. */
+  const signalable = (pid: number): boolean => Number.isSafeInteger(pid) && pid > 1 && pid !== daemonPid;
   /** Signal each pid; answer the ones that refused. */
   const send = (pids: readonly number[], sig: "SIGSTOP" | "SIGCONT"): SignalFailure[] => {
     const failed: SignalFailure[] = [];
     for (const pid of pids) {
-      // The guards a pid needs before any signal: never the daemon, never a process group.
-      if (!Number.isSafeInteger(pid) || pid <= 1 || pid === daemonPid) continue;
+      if (!signalable(pid)) continue;
       try {
         signal(pid, sig);
       } catch (error) {
@@ -180,8 +181,24 @@ export function processFreezer(deps: FreezerDeps): ProcessFreezer {
       return withIdentities(agentTree(processes, root, { daemonPid, includeParentShell: true }));
     },
     stop(refs) {
-      // Freshly read by `treeOf` an instant ago, so the pids are the ones identified.
-      return send(refs.map((r) => r.pid), "SIGSTOP");
+      // Each pid checked against the identity `treeOf` recorded, immediately before its signal:
+      // a short-lived child can exit after the read and its pid be reused by an unrelated
+      // process, and SIGSTOP would freeze that one instead. A pid now naming a different process,
+      // or none, is a tree member that has gone - not a failure, and not signalled. A live pid
+      // that cannot be identified is a failure: the freeze is not called complete over it.
+      const failed: SignalFailure[] = [];
+      for (const ref of refs) {
+        if (!signalable(ref.pid)) continue;
+        const now = identityNow(ref.pid);
+        if (now === "unreadable") {
+          log(`pid ${ref.pid} could not be identified, so it was not stopped`);
+          failed.push({ pid: ref.pid, code: "UNIDENTIFIED" });
+          continue;
+        }
+        if (now !== ref.identity) continue;
+        failed.push(...send([ref.pid], "SIGSTOP"));
+      }
+      return failed;
     },
     resume(refs) {
       // Every pid is checked against the identity recorded when it was stopped, because a stored

@@ -45,6 +45,11 @@ import {
   DatabaseBackupStatusSchema,
   type DatabaseBackupsConfig,
 } from "./database-backups.ts";
+import {
+  StorageAlertStateSchema,
+  StorageLimitsConfigSchema,
+  type StorageLimitsConfig,
+} from "./storage-limits.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -309,7 +314,20 @@ const backupsFields = {
   scheduledCount: "setting",
   preMigrationCount: "setting",
   intervalHours: "setting",
+  scheduledMaxAgeDays: "setting",
+  preMigrationMaxAgeDays: "setting",
+  maxTotalBytes: "setting",
 } satisfies Record<keyof DatabaseBackupsConfig, AppConfigValueClass>;
+
+const storageLimitsFields = {
+  limitBytes: "setting",
+  warnAtPercent: "setting",
+  freeFloorBytes: "setting",
+  fleetBanner: "setting",
+  desktopNotification: "setting",
+  poolIdleBudgetBytes: "setting",
+  poolKeepWarm: "setting",
+} satisfies Record<keyof StorageLimitsConfig, AppConfigValueClass>;
 
 const ForemanLeaseSchema = z.object({
   workerId: z.string(),
@@ -404,6 +422,17 @@ export const APP_CONFIG_ENTRIES = {
    * disk, and restored onto another installation it would report captures that never ran there.
    */
   backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
+  /** Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget. */
+  storageLimits: {
+    ...fieldsEntry("storage.limits", StorageLimitsConfigSchema, "storage-limits", storageLimitsFields),
+    optionalInSnapshot: true,
+  },
+  /**
+   * When each storage warning's current occurrence began. `operational` with no backup domain,
+   * as `backups.status` is: it describes this machine's disk, and restored onto another
+   * installation it would date a warning that never happened there.
+   */
+  storageAlerts: wholeEntry("storage.alerts", StorageAlertStateSchema, "operational", null),
   /**
    * General telemetry collection and export.
    *

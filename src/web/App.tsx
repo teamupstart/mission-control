@@ -177,6 +177,7 @@ import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { SetupBanner } from "./components/SetupBanner.tsx";
+import { StorageBanner, useStorageNotifications } from "./components/StorageBanner.tsx";
 import { OrganizationTelemetryNotice } from "./components/OrganizationTelemetryNotice.tsx";
 import { useSetupChecks } from "./useSetupChecks.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
@@ -409,6 +410,8 @@ export function App(): React.JSX.Element {
   // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
   const gearDot = settingsGearDot(settingsStatus);
   const gearPhrase = gearDotPhrase(gearDot);
+  // Storage's size and free-space warnings, as a desktop notification when the operator asked.
+  useStorageNotifications(storageHealth);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
   // target of its own - what it draws is `attention` below, folded from state App already has -
@@ -4341,6 +4344,7 @@ export function App(): React.JSX.Element {
         />
         <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
         <FleetPauseBanner />
+        <StorageBanner health={storageHealth} />
         <OrganizationTelemetryNotice
           notice={settingsStatus?.telemetry?.organizationNotice ?? null}
           onDismiss={async () => {

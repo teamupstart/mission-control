@@ -20,7 +20,7 @@ import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-function bytes(value: number | null): string {
+export function bytes(value: number | null): string {
   if (value === null) return "size unknown";
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KiB`;
   if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`;
@@ -41,6 +41,7 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   reconcile: "Reconcile",
   destroy: "Destroy",
   legacyReturn: "Legacy return",
+  trimIdle: "Remove idle",
 };
 
 /**
@@ -535,6 +536,10 @@ function PoolSkeleton(): React.JSX.Element {
 
 function dialogTitle(request: WorktreeActionRequest): string {
   if (request.action === "legacyReturn") return "Return legacy worktree";
+  if (request.action === "trimIdle") {
+    const count = request.slotIds.length;
+    return `Remove ${count} idle ${count === 1 ? "slot" : "slots"}`;
+  }
   if (request.action === "destroy" && request.target.kind === "slots") {
     const count = request.target.slotIds.length;
     return `Destroy ${count} selected ${count === 1 ? "worktree" : "worktrees"}`;
@@ -542,7 +547,7 @@ function dialogTitle(request: WorktreeActionRequest): string {
   return `${ACTION_VERBS[request.action]} worktree`;
 }
 
-function ActionDialog({
+export function ActionDialog({
   preview,
   error,
   changed,

@@ -1,6 +1,7 @@
 import { LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,7 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import {
   MISSION_API_TOKEN_ENV,
@@ -33,10 +34,24 @@ export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME
 const PANE_IDENTITY_ENV_NAMES = ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID"] as const;
 
 const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
+// Outside session homes so their cleanup cannot evict another task's warm cache.
+// See docs/configuration.md for the scope of sandbox-writability verification.
+const GO_CACHE_UID = userInfo().uid;
+const SHARED_GO_BUILD_CACHE = join(tmpdir(), `mission-control-go-build-${GO_CACHE_UID}`);
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const liveDisposableStateHomes = new Set<string>();
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function sharedGoBuildCache(): string {
+  mkdirSync(SHARED_GO_BUILD_CACHE, { recursive: true, mode: 0o700 });
+  const info = lstatSync(SHARED_GO_BUILD_CACHE);
+  // A predictable name in a shared temp directory must not follow another user's link.
+  if (!info.isDirectory() || (GO_CACHE_UID !== -1 && info.uid !== GO_CACHE_UID)) {
+    throw new Error(`Go build cache is not an owned directory: ${SHARED_GO_BUILD_CACHE}`);
+  }
+  return SHARED_GO_BUILD_CACHE;
+}
 
 /** Remove only expired Pipeline caller files left by a previous daemon crash. */
 export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
@@ -144,6 +159,7 @@ export function agentSubprocessEnv(
     if (value !== undefined) env[name] = value;
   }
   Object.assign(env, options.extraEnv);
+  if (!env.GOCACHE) env.GOCACHE = sharedGoBuildCache();
   for (const name of STATE_HOME_ENV_NAMES) delete env[name];
   const stateHome = options.stateHome ?? createDisposableAgentStateHome();
   env.MISSION_HOME = stateHome;
@@ -206,11 +222,17 @@ export function agentSubprocessEnv(
  *     removed. Running it as an ordinary command also leaves the agent's exit status as the
  *     script's, which is what a backend reports.
  */
-function launchAndCleanupScript(env: Record<string, string>, argv: readonly string[]): string {
+function launchAndCleanupScript(env: Record<string, string>, argv: readonly string[], preserveShellGoCache: boolean): string {
   return [
     "#!/bin/sh",
     `unset ${STATE_HOME_ENV_NAMES.join(" ")}`,
-    ...Object.entries(env).map(([name, value]) => `export ${name}=${shellCommand([value])}`),
+    ...Object.entries(env).map(([name, value]) => {
+      const assignment = `export ${name}=${shellCommand([value])}`;
+      // Terminal servers and login shells can supply a setting the daemon never saw.
+      return name === "GOCACHE" && preserveShellGoCache
+        ? `if [ -z "\${GOCACHE:-}" ]; then ${assignment}; fi`
+        : assignment;
+    }),
     `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
     `printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}"`,
     shellCommand(argv),
@@ -231,11 +253,11 @@ export function isolatedAgentArgv(
   argv: readonly string[],
   options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
 ): string[] {
-  const env = agentSubprocessEnv({}, { ...options, loopbackAccess: true });
+  const env = agentSubprocessEnv({ GOCACHE: process.env.GOCACHE }, { ...options, loopbackAccess: true });
   const stateHome = env.MISSION_HOME!;
   const wrapper = join(stateHome, LAUNCH_SCRIPT_FILE);
   try {
-    writeFileSync(wrapper, launchAndCleanupScript(env, argv), { mode: 0o700 });
+    writeFileSync(wrapper, launchAndCleanupScript(env, argv, !options.extraEnv?.GOCACHE), { mode: 0o700 });
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;

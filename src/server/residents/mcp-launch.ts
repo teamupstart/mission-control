@@ -331,12 +331,13 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
  * one (launched before snapshots existed, or on a harness with no measured control).
  * `nativeSources` is the run's pinned revision's, so a resume keeps the choice it launched with.
  */
-export function residentMcpLaunchForRun(runId: string, nativeSources: ResidentMcpNativeSources = "pinned"): ResidentMcpLaunch | null {
+export function residentMcpLaunchForRun(runId: string, nativeSources: ResidentMcpNativeSources = "pinned", disableClaudeAiConnectors = false): ResidentMcpLaunch | null {
   if (!runId) return null;
   const snapshot = runMcpSnapshot(runId);
   if (!snapshot) return null;
   return {
     nativeSources,
+    disableClaudeAiConnectors,
     names: snapshot.map((server) => server.name),
     privateDir: residentMcpRunDir(runId),
     forStart: () => {

@@ -3840,15 +3840,25 @@ button.wf-run-version:focus-visible {
    rows its component asks for, grows with wrapped or explicit lines, and keeps five lines
    visible before it becomes its own scroller. `field-sizing` also reacts to imperative
    value changes, which matters when a queued turn is recalled into an uncontrolled
-   composer without a React render. Unsupported browsers keep the native rows-based size
-   and the existing vertical resize handle. */
+   composer without a React render. Unsupported browsers keep the native rows-based size.
+
+   Where a field shows the corner handle, dragging it gives the field the height the person
+   chose, past the five-line cap. The cap describes how far a field GROWS ON ITS OWN, so it
+   must never clamp a drag - when it did, a drag stopped at five lines, and a field already
+   at the cap or held at a taller `min-height` did not move at all. The browser records a
+   drag as an inline `height` on the element, and that is the one signal the cap yields to;
+   no component here writes an inline height of its own. The handle is vertical only,
+   because these fields fill their column and a sideways drag pushes them out of it. */
 :where(textarea) {
   --textarea-min-content-height: 2lh;
   --textarea-block-chrome: 18px;
   field-sizing: content;
   min-height: calc(var(--textarea-min-content-height) + var(--textarea-block-chrome));
-  max-height: calc(5lh + var(--textarea-block-chrome));
   overflow-y: auto;
+  resize: vertical;
+}
+:where(textarea:not([style*="height"])) {
+  max-height: calc(5lh + var(--textarea-block-chrome));
 }
 textarea[rows="1"] { --textarea-min-content-height: 1lh; }
 textarea[rows="2"] { --textarea-min-content-height: 2lh; }
@@ -7270,9 +7280,307 @@ a.btn {
 }
 .storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
 .storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.storage-problem-list li.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
+/* Storage is one category with five tabs. The tab strip sits on the pane's measure, and each
+   tab's bands stack with the same air as two settings sections. */
+.storage-panel { display: grid; gap: 0; }
+.storage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.storage-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -1px;
+  padding: 8px 12px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.storage-tab:hover { color: var(--fg); }
+.storage-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
+.storage-tab small { font-family: var(--mono); font-size: 10.5px; font-weight: 500; color: var(--dim); }
+.storage-tab small.storage-green { color: var(--idle); }
+.storage-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+.storage-band h3 { margin: 0 0 6px; }
+.storage-band + .storage-band { margin-top: 22px; }
+.storage-band .settings-blurb + .storage-config-row { margin-top: 4px; }
+.storage-muted { color: var(--muted); }
+.storage-red { color: var(--danger); }
+.storage-amber { color: var(--attention); }
+.storage-green { color: var(--idle); }
+.storage-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storage-meter { margin: 12px 0 6px; }
+.storage-meter-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.storage-meter-head strong { color: var(--fg); font-size: 13px; }
+.storage-meter-head strong.storage-red { color: var(--danger); }
+.storage-meter-head strong.storage-amber { color: var(--attention); }
+.storage-meter-head code { font-size: 11px; color: var(--dim); }
+.storage-bar {
+  position: relative;
+  display: flex;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in srgb, var(--border) 80%, transparent) 5px 7px);
+}
+.storage-bar > i { display: block; height: 100%; min-width: 2px; }
+.storage-bar > i:first-child { border-radius: 6px 0 0 6px; }
+.storage-bar > i:last-of-type { border-radius: 0 6px 6px 0; }
+.storage-tick {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--attention);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.storage-tick.is-danger { background: var(--danger); }
+/* One hue per category, all from the resident palette or a role token, none a session state,
+   so a bar segment never reads as a card's tone. */
+.storage-seg-mine, .storage-seg-pools { background: var(--working); }
+.storage-seg-others { background: color-mix(in srgb, var(--border) 85%, var(--panel)); }
+.storage-seg-free { background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--idle) 55%, transparent) 4px 6px); }
+.storage-seg-backups { background: var(--purple); }
+.storage-seg-updates { background: var(--resident-cyan); }
+.storage-seg-database { background: var(--resident-rose); }
+.storage-seg-evidence { background: var(--resident-lime); }
+.storage-seg-worktrees { background: var(--resident-teal); }
+.storage-seg-archives { background: var(--resident-orange); }
+.storage-seg-other { background: var(--neutral); }
+.storage-seg-over { background: repeating-linear-gradient(135deg, var(--attention) 0 3px, transparent 3px 6px); }
+.storage-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border-radius: 3px;
+  vertical-align: -1px;
+}
+.storage-table { margin-top: 12px; }
+/* Row headers sit in a `.storage-copies` table, whose header cells are small caps labels. A row
+   header names a thing, so it reads as body text. */
+.storage-table th[scope="row"] {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  color: var(--fg);
+}
+.storage-table th small,
+.storage-table td small {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.storage-table td small.storage-red,
+.storage-table td small.storage-muted { font-family: var(--sans); font-size: 11px; }
+.storage-table td small.storage-red { color: var(--danger); }
+.storage-table td { vertical-align: top; }
+.storage-table tr.storage-total > * { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
+.storage-measure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.storage-policy { width: 100%; margin: 10px 0 4px; border-collapse: collapse; font-size: 12.5px; border: 1px solid var(--border); }
+.storage-policy th,
+.storage-policy td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.storage-policy thead th { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.storage-policy tbody th { font-weight: 560; }
+.storage-policy tr:last-child > * { border-bottom: 0; }
+.storage-policy td.storage-num { text-align: right; }
+.storage-field { display: inline-flex; align-items: center; gap: 6px; }
+.storage-field em { font-style: normal; font-size: 11px; color: var(--dim); }
+.storage-input,
+.storage-config-row .storage-input {
+  width: 92px;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.storage-keep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--idle) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--idle) 5%, var(--panel));
+  font-size: 12px;
+}
+.storage-keep p { flex-basis: 100%; margin: 2px 0 0; font-size: 11.5px; color: var(--dim); }
+.storage-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--idle) 35%, var(--border));
+  border-radius: 20px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.storage-effect {
+  margin: 12px 0 0;
+  padding: 10px 13px;
+  border-left: 3px solid var(--attention);
+  border-radius: 0 9px 9px 0;
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.storage-effect strong { color: var(--fg); }
+.storage-effect ul { margin: 4px 0; padding-left: 18px; }
+.storage-note {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+.storage-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.storage-strip > i { width: 12px; height: 20px; border-radius: 3px; }
+.storage-strip-scheduled { background: color-mix(in srgb, var(--purple) 70%, var(--panel)); }
+.storage-strip-preMigration { background: color-mix(in srgb, var(--resident-cyan) 70%, var(--panel)); }
+.storage-strip-manual { background: color-mix(in srgb, var(--resident-blue) 70%, var(--panel)); }
+.storage-strip > i.is-go { background: transparent; border: 1.5px dashed var(--danger); }
+.storage-strip > i.is-always { box-shadow: 0 0 0 2px var(--idle); }
+.storage-status-grid article.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
+.storage-status-grid article.is-danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.storage-slots { display: flex; flex-wrap: wrap; gap: 3px; margin: 2px 0 4px; }
+.storage-slots > i { width: 11px; height: 11px; border-radius: 3px; }
+.storage-slots > .is-leased { background: var(--working); }
+.storage-slots > .is-idle { background: color-mix(in srgb, var(--working) 35%, var(--panel)); }
+.storage-slots > .is-go { border: 1.5px solid var(--idle); }
+.storage-slots > .is-quarantined {
+  background: repeating-linear-gradient(135deg, var(--attention) 0 2px, transparent 2px 4px);
+  border: 1px solid color-mix(in srgb, var(--attention) 50%, var(--border));
+}
+.storage-slots > .is-other { background: var(--neutral); }
+.storage-slots > .is-room { border: 1px dashed var(--border); }
+.storage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, auto) 1fr;
+  gap: 10px 26px;
+  margin: 12px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.storage-summary span { display: block; margin-bottom: 2px; font-size: 11px; color: var(--muted); }
+.storage-summary strong { font-size: 15px; }
+.storage-group { margin-top: 8px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); }
+.storage-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.storage-group > summary span { font-size: 11.5px; color: var(--muted); }
+.storage-group > summary em { margin-left: auto; font-family: var(--mono); font-size: 12px; font-style: normal; }
+.storage-group.is-blocked { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.storage-group.is-blocked > summary strong { color: var(--danger); }
+.storage-group > .settings-hint { margin: 8px 12px 10px; }
+.storage-rows { max-height: 300px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.storage-rows li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+.storage-rows li.is-blocked { box-shadow: inset 3px 0 0 var(--danger); }
+/* The exact copies a backup save deletes, listed inside its warning before the save. */
+.storage-delete-list {
+  margin: 8px 0 6px;
+  border: 1px solid color-mix(in srgb, var(--attention) 30%, var(--border));
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.storage-delete-list li:first-child { border-top: 0; }
+.storage-copies tr.is-going td { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.storage-rows code { font-size: 11px; overflow-wrap: anywhere; }
+.storage-why { font-size: 11.5px; color: var(--dim); }
+.storage-size { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.storage-plain { margin: 0; padding: 8px 12px 10px 30px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.storage-plain b { font-weight: 560; color: var(--fg); }
+.storage-preview-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.storage-preview-foot > span { flex: 1; font-size: 11.5px; color: var(--dim); }
+.storage-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 4px 0 0; padding: 0; border: 0; font-size: 12px; color: var(--muted); }
+.storage-checks legend { float: left; margin-right: 6px; padding: 0; font-size: 11px; color: var(--muted); }
+.storage-checks label { display: inline-flex; align-items: center; gap: 6px; }
+.app-banner-storage {
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--border));
+  background: color-mix(in oklab, var(--danger) 7%, var(--panel));
+}
+.app-banner-storage.is-warn {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--panel));
+}
 @media (max-width: 760px) {
   .storage-status-grid { grid-template-columns: 1fr; }
   .storage-problem-list li { align-items: stretch; flex-direction: column; }
+  .storage-summary { grid-template-columns: 1fr 1fr; }
+  .storage-rows li { grid-template-columns: 1fr; gap: 2px; }
 }
 /* Queue is a disclosure, not a command: it stays a plain button until the drawer is
    open, then holds the pressed tint for as long as the panel below it is showing -
@@ -17303,6 +17611,164 @@ select.ensemble-judge-persona {
 }
 .resident-instructions {
   min-height: 140px;
+}
+
+/* ---- The profile editor's card grid ----
+   Each registered section is one card. Narrow, they stack in registry order; from 860px of
+   workspace they form two bands of a wide left and a narrow right column around a full-width
+   loop card. The registry order is the reading order, so the DOM and the tab order match what
+   the grid shows. A section the areas do not name spans the full width after the rest. */
+.residents-workspace {
+  container: residents-workspace / inline-size;
+}
+.resident-editor.resident-profile-editor {
+  max-width: 1180px;
+}
+.resident-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+.resident-cards > .resident-editor-card {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+@container residents-workspace (min-width: 860px) {
+  .resident-cards {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    grid-template-areas:
+      "identity board"
+      "persona board"
+      "instructions execution"
+      "instructions workspace"
+      "loop loop"
+      "mcp authority"
+      "mcp state";
+  }
+  .resident-cards > .resident-editor-card-identity { grid-area: identity; }
+  .resident-cards > .resident-editor-card-persona { grid-area: persona; }
+  .resident-cards > .resident-editor-card-board { grid-area: board; }
+  .resident-cards > .resident-editor-card-instructions { grid-area: instructions; }
+  .resident-cards > .resident-editor-card-execution { grid-area: execution; }
+  .resident-cards > .resident-editor-card-workspace { grid-area: workspace; }
+  .resident-cards > .resident-editor-card-loop { grid-area: loop; }
+  .resident-cards > .resident-editor-card-mcp { grid-area: mcp; }
+  .resident-cards > .resident-editor-card-authority { grid-area: authority; }
+  .resident-cards > .resident-editor-card-state { grid-area: state; }
+  /* The narrow runtime card: the harness takes the line, model and effort share the next. */
+  .resident-editor-card-execution .resident-fields-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .resident-editor-card-execution .resident-fields-row > .field:first-child {
+    grid-column: 1 / -1;
+  }
+  .resident-loop {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 16px;
+  }
+  .resident-loop .resident-loop-limits {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+/* The board card's label and pin each take a line: its three-column row is the runtime card's. */
+.resident-editor-card-board .resident-fields-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* The instructions card grows with the rows beside it rather than leaving a gap under them. */
+.resident-editor-card-instructions .resident-instructions {
+  flex: 1;
+}
+.resident-editor-card-instructions > .field {
+  flex: 1;
+}
+
+/* The next launch's board card, between two plain neighbours: pinned, it sorts above them. */
+.resident-board-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-board-preview-ghost {
+  height: 30px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.resident-board-preview-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in oklab, var(--resident) 70%, var(--border));
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--resident) 45%, transparent),
+    0 0 18px color-mix(in oklab, var(--resident) 26%, transparent);
+}
+.resident-board-preview-name {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.resident-board-preview-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Loop and guardrails: the prose on the left, the six limits as tiles on the right. */
+.resident-loop-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.resident-loop-text textarea {
+  min-height: 96px;
+}
+.resident-loop-limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.resident-loop-limit {
+  justify-content: space-between;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-loop-limit .field-input {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+.resident-loop-spend {
+  grid-column: 1 / -1;
+}
+
+/* Authority widens what the resident can reach, so the granted state reads as a warning. */
+.resident-editor-card .resident-authority {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-editor-card .resident-authority:has(input:checked) {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--bg));
 }
 .resident-error {
   margin: 0;

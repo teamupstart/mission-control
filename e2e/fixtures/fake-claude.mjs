@@ -1081,6 +1081,70 @@ function replyTo(prompt) {
 }
 
 /**
+ * Opt-in test fixture for #1441. Model the reported CLI double suppression using an actual
+ * plugin manifest/MCP configuration and a connector with the same URL. This does not test
+ * upstream Claude Code's implementation; the surviving plugin is probed over real loopback MCP.
+ */
+function duplicatePluginState() {
+  const fixturePath = recordDir && join(recordDir, "duplicate-plugin-fixture.json");
+  if (!fixturePath || !existsSync(fixturePath)) return null;
+  const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+  const manifest = JSON.parse(readFileSync(join(fixture.pluginRoot, ".claude-plugin", "plugin.json"), "utf8"));
+  const config = JSON.parse(readFileSync(join(fixture.pluginRoot, ".mcp.json"), "utf8"));
+  const plugins = Object.entries(config.mcpServers).map(([name, server]) => ({
+    name: `plugin:${manifest.name}:${name}`, url: server.url,
+  }));
+  const raw = argvValue("--settings") ?? "{}";
+  const flags = raw.trimStart().startsWith("{") ? JSON.parse(raw) : {};
+  const strict = process.argv.includes("--strict-mcp-config");
+  const connectors = strict || flags.disableClaudeAiConnectors === true
+    || flags.env?.ENABLE_CLAUDEAI_MCP_SERVERS === "false" ? [] : [fixture.connector];
+  const duplicates = new Set(connectors.filter((connector) => plugins.some((plugin) => plugin.url === connector.url)).map((connector) => connector.url));
+  return {
+    duplicateConfigured: plugins.some((plugin) => plugin.url === fixture.connector.url),
+    plugins: strict ? [] : plugins.filter((plugin) => !duplicates.has(plugin.url)),
+    connectors: connectors.filter((connector) => !duplicates.has(connector.url)),
+  };
+}
+
+async function probeDuplicatePlugin() {
+  const state = duplicatePluginState();
+  const tools = [];
+  const results = [];
+  for (const plugin of state.plugins) {
+    const endpoint = new URL(plugin.url);
+    if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1") throw new Error("plugin fixture must use loopback HTTP");
+    let sequence = 0;
+    const rpc = async (method, params, notification = false) => {
+      const response = await fetch(endpoint, {
+        method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-03-26" },
+        body: JSON.stringify({ jsonrpc: "2.0", ...(notification ? {} : { id: ++sequence }), method, params }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new Error(`plugin MCP ${method}: HTTP ${response.status}`);
+      if (notification) return;
+      const message = await response.json();
+      if (message.error) throw new Error(JSON.stringify(message.error));
+      return message.result;
+    };
+    await rpc("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "duplicate-plugin-fixture", version: "1" } });
+    await rpc("notifications/initialized", {}, true);
+    const listed = await rpc("tools/list", {});
+    for (const tool of listed.tools) {
+      tools.push(`${plugin.name}/${tool.name}`);
+      const called = await rpc("tools/call", { name: tool.name, arguments: {} });
+      if (called.isError) throw new Error("plugin tool returned an error");
+      results.push(...called.content.filter((part) => part.type === "text").map((part) => part.text));
+    }
+  }
+  const proof = { duplicateConfigured: state.duplicateConfigured, connectors: state.connectors.map((server) => server.name), plugins: state.plugins.map((server) => server.name), tools, results };
+  const dir = join(recordDir, "plugin-probes");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${SESSION_ID}.json`), JSON.stringify(proof));
+  return `Duplicate MCP fixture (simulated Claude deduplication):\nConnectors: ${proof.connectors.join(", ") || "none"}\nPlugin tools: ${tools.join(", ") || "none"}\n${results.join("\n")}`;
+}
+
+/**
  * Claude Code's `Artifact` gate, as measured against the real CLI: an SDK entrypoint (the
  * Agent SDK sets `sdk-ts` when the launch did not) withholds the tool unless
  * `CLAUDE_CODE_ARTIFACT` is truthy, and an explicit falsy value withholds it everywhere. So
@@ -2056,10 +2120,15 @@ rl.on("line", (line) => {
       const settings = argvValue("--settings") ?? "{}";
       const flags = settings.trimStart().startsWith("{") ? JSON.parse(settings) : {};
       const connectors = process.argv.includes("--strict-mcp-config") || flags.disableClaudeAiConnectors === true
+        || flags.env?.ENABLE_CLAUDEAI_MCP_SERVERS === "false"
         ? []
         : [{ name: "claude.ai Slack", status: "connected" }, { name: "claude.ai Gmail", status: "needs-auth" }];
+      const nativeFixture = duplicatePluginState();
       ok(frame.request_id, {
-        mcpServers: [...Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })), ...connectors],
+        mcpServers: [...Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })),
+          ...(nativeFixture
+            ? [...nativeFixture.plugins, ...nativeFixture.connectors].map((server) => ({ name: server.name, status: "connected" }))
+            : connectors)],
       });
       return;
     }
@@ -2132,6 +2201,11 @@ rl.on("line", (line) => {
     }
     // A selection changes future turns, while a held turn keeps its original model.
     turnModel = MODEL;
+
+    if (results === 0 && duplicatePluginState()) {
+      beginHeldTurn(probeDuplicatePlugin());
+      return;
+    }
 
     // A fixture-owned permission wait: keep the SAME first turn alive until teardown, so a
     // hook a spec posts for it cannot be followed by a stale result from before the hook.

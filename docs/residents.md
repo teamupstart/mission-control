@@ -19,13 +19,22 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 |---|---|---|
 | Identity | The name (unique among live profiles) and an optional description | required |
 | Persona | The Library Persona whose guidance becomes the resident's standing role | none |
+| Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills | none |
-| Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
-| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 | MCP servers | A pinned set or, on Claude Code, all native sources; whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | pinned, inherit on, none selected |
+| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
+
+Each section is a card. When the editor has room, the cards form two columns: identity, Persona,
+instructions and MCP servers on the wide left, with board presence, the runtime, the workspace,
+authority and the profile's durable state beside them, and **Loop and guardrails** across the
+full width between the two bands, its six limits as tiles beside the loop prompt. A narrow
+editor stacks the cards in the order of the table. **Board presence** previews the board card
+the next launch draws: its glow, its label chip, its name and model, and, while pinned, its place
+above the cards around it. Granting **Control other sessions** marks its row in the attention
+color.
 
 A profile needs a Persona, profile instructions, or both: one with neither has no role and is
 refused on save and at launch. Leave the Persona at **No Persona** to run a resident on its
@@ -57,6 +66,9 @@ Archive are absent, every field is locked, and a line says why. **Duplicate to e
 unsaved profile named `<name> copy` with the same settings. Your copy is an ordinary profile:
 editable, archivable, and never touched by an upgrade. Every saved profile also offers
 **Duplicate**.
+
+Agent Shepherd ships with a **$40 spend cap per rolling 24 hours**. New custom profiles default
+to $20.
 
 A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
 ships different settings, the daemon writes them as the built-in's next revision at startup. A
@@ -608,6 +620,19 @@ profile, marked *loads natively*, and comes back into the set if you switch to *
 launch**. A global server residents cannot carry no longer refuses the launch, because Mission
 Control does not resolve it. A custom server named like one of Claude Code's global servers is
 still refused, because both would load under one name.
+
+If plugin MCP tools disappear when the account has a claude.ai connector for the same server,
+enable **Disable claude.ai connectors** under **MCP servers**. Claude Code can suppress both
+copies during non-interactive startup. This opt-in workaround passes
+`ENABLE_CLAUDEAI_MCP_SERVERS=false` through the run's launch-scoped settings, keeping native
+plugin sources enabled. It disables **every** claude.ai connector for that resident, including
+Claude Docs. It does not change the machine's Claude settings or other sessions.
+
+The checkbox is off by default and applies only with **All native sources (not pinned)**.
+Dispatch shows **claude.ai connectors off** when enabled. Save the profile and launch a new
+resident to apply a change; an existing run keeps its launch revision's choice on resume.
+Switching to **Pinned at launch** keeps the checkbox's saved preference for a later switch
+back, but the pinned set continues to exclude native plugins and cloud connectors as before.
 
 ### What a run starts
 

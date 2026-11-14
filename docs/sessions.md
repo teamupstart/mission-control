@@ -2215,6 +2215,18 @@ reported usage, the Spend popover says **Claude utilization unavailable**, with 
 zero-percent bar. The next valid report updates the display automatically. Codex windows still
 disappear when their reset time passes.
 
+Mission Control treats a report that carries the 7-day window but no 5-hour window as the
+signal that the account has no 5-hour limit, and clears the saved 5-hour window on it, even one
+whose reset has not passed. This is an interpretation, not a documented Claude guarantee. It
+rests on two observations. Both transports read the two windows from one payload: the statusLine
+`rate_limits` block and the SDK usage response. And as of 2026-11-13, Claude's pricing page lists
+a 5-hour limit for Pro and Max but "No 5-hour limit" for verified Ultra (formerly Max 20x)
+accounts. On Ultra the **Claude · 5-hr window** bar therefore goes away on the first 7-day-only
+report instead of waiting for an update that will never come. Pro and Max are expected to keep
+reporting both windows and keep their bar. If Claude ever sends one of those accounts a 7-day-only
+report, its 5-hour bar disappears until the next report that includes the window. A 5-hour-only
+report keeps the saved 7-day window, because every plan has a weekly limit.
+
 **Every dollar figure is one API-equivalent estimate.** Session surfaces mark it `≈$`; so does
 the cost chip, and the Spend popover says so once in its footer rather than five times.
 **Automation** follows the valuation described above. Claude Code calculates its rows from request usage; Mission Control prices

@@ -2744,46 +2744,7 @@ export class WorktreeManager {
 
   /** Preview-only safe prune and right-size candidates. No filesystem mutation occurs. */
   async planMaintenance(): Promise<NativeMaintenanceCandidate[]> {
-    const status = await this.status();
-    const candidates: NativeMaintenanceCandidate[] = [];
-    for (const poolStatus of status) {
-      const overCapacity = Math.max(0, poolStatus.slots.length - poolStatus.policy.maxSlots);
-      const rightSizeIds = new Set(
-        [...poolStatus.slots]
-          .sort((a, b) => b.slot.ordinal - a.slot.ordinal)
-          .slice(0, overCapacity)
-          .map((entry) => entry.slot.id),
-      );
-      for (const entry of poolStatus.slots) {
-        let reason: string | null = null;
-        if (!poolStatus.identityValid) reason = "pool repository identity is not proven";
-        else if (!poolStatus.markerValid) reason = "native pool marker is not proven";
-        else if (!entry.nativePath) reason = "slot path is outside its exact native pool location";
-        else if (entry.repositoryMatches !== true) reason = "slot repository ownership is not proven";
-        else if (entry.slot.state !== "available") reason = `slot is ${entry.slot.state}`;
-        else if (entry.ownerReferenced !== false) reason = "domain ownership is referenced or unknown";
-        else if (entry.registered !== true) reason = "Git registration is not proven";
-        else if (entry.dirty !== false) reason = "slot cleanliness is not proven";
-        else if (entry.occupancy.status === "unknown") reason = entry.occupancy.reason;
-        else if (entry.occupancy.occupants.length > 0) reason = "slot is occupied";
-        else if (!poolStatus.observedDefaultSha) reason = "remote default branch is unknown";
-        else if (entry.mergedIntoDefault !== true) {
-          reason = entry.mergedIntoDefault === false
-            ? "slot HEAD is not merged into the observed remote default"
-            : "slot merge relationship is unknown";
-        }
-        candidates.push({
-          poolId: poolStatus.pool.id,
-          slotId: entry.slot.id,
-          slotVersion: entry.slot.version,
-          path: entry.slot.path,
-          rightSize: rightSizeIds.has(entry.slot.id),
-          safe: reason === null,
-          reason,
-        });
-      }
-    }
-    return candidates;
+    return maintenanceCandidates(await this.status());
   }
 
   startMaintenance(reclaimDomainLeases: () => Promise<void> = async () => {}): void {
@@ -2835,4 +2796,51 @@ export class WorktreeManager {
     this.timer = null;
     await this.maintenance;
   }
+}
+
+/**
+ * Every slot of an observation judged against the Safe prune bar, with the first reason a slot
+ * fails it. Pure over one `status()` result, so a caller that already observed (Settings >
+ * Storage's idle-cache plan) judges exactly what it shows without observing twice.
+ */
+export function maintenanceCandidates(status: NativePoolStatus[]): NativeMaintenanceCandidate[] {
+  const candidates: NativeMaintenanceCandidate[] = [];
+  for (const poolStatus of status) {
+    const overCapacity = Math.max(0, poolStatus.slots.length - poolStatus.policy.maxSlots);
+    const rightSizeIds = new Set(
+      [...poolStatus.slots]
+        .sort((a, b) => b.slot.ordinal - a.slot.ordinal)
+        .slice(0, overCapacity)
+        .map((entry) => entry.slot.id),
+    );
+    for (const entry of poolStatus.slots) {
+      let reason: string | null = null;
+      if (!poolStatus.identityValid) reason = "pool repository identity is not proven";
+      else if (!poolStatus.markerValid) reason = "native pool marker is not proven";
+      else if (!entry.nativePath) reason = "slot path is outside its exact native pool location";
+      else if (entry.repositoryMatches !== true) reason = "slot repository ownership is not proven";
+      else if (entry.slot.state !== "available") reason = `slot is ${entry.slot.state}`;
+      else if (entry.ownerReferenced !== false) reason = "domain ownership is referenced or unknown";
+      else if (entry.registered !== true) reason = "Git registration is not proven";
+      else if (entry.dirty !== false) reason = "slot cleanliness is not proven";
+      else if (entry.occupancy.status === "unknown") reason = entry.occupancy.reason;
+      else if (entry.occupancy.occupants.length > 0) reason = "slot is occupied";
+      else if (!poolStatus.observedDefaultSha) reason = "remote default branch is unknown";
+      else if (entry.mergedIntoDefault !== true) {
+        reason = entry.mergedIntoDefault === false
+          ? "slot HEAD is not merged into the observed remote default"
+          : "slot merge relationship is unknown";
+      }
+      candidates.push({
+        poolId: poolStatus.pool.id,
+        slotId: entry.slot.id,
+        slotVersion: entry.slot.version,
+        path: entry.slot.path,
+        rightSize: rightSizeIds.has(entry.slot.id),
+        safe: reason === null,
+        reason,
+      });
+    }
+  }
+  return candidates;
 }

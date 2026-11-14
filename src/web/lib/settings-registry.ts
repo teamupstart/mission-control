@@ -247,7 +247,7 @@ export const SETTINGS_CATEGORIES = [
     id: "storage",
     label: "Storage",
     icon: "◫",
-    blurb: "Database backups, what they keep, and storage problems",
+    blurb: "Disk use, backup limits, the idle-cache budget, cleanup and low-space warnings",
     // `sessions` / `machine`, beside Restore: both are about recovery points on this machine,
     // and keeping them adjacent is what tells the two kinds of backup apart. Everything here
     // is daemon-backed and local; nothing leaves the machine.
@@ -263,6 +263,12 @@ export const SETTINGS_CATEGORIES = [
       "back up now",
       "problem",
       "sqlite",
+      "limit",
+      "warning",
+      "free space",
+      "cleanup",
+      "pool",
+      "cache",
     ],
   },
   {

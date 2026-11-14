@@ -105,6 +105,34 @@ resolved in the shared executable environment. **Settings > Setup** shows the se
 path and its source. See [Harnesses and terminal backends](harnesses-and-terminals.md) for the
 complete deterministic resolution order and refresh behavior.
 
+**Go build cache for agent processes.** Mission Control supplies a default `GOCACHE` in its
+shared child-process environment,
+including terminal dispatch, Codex app-server, Claude SDK sessions and workflow checks.
+It uses `<temporary directory>/mission-control-go-build-<user id>`, where the temporary
+directory is Node's `os.tmpdir()` (normally `$TMPDIR` on macOS and `/tmp` on Linux).
+Creation requests mode `0700` (owner-only permissions). Existing directories are checked
+for directory type and, where UID ownership is available, matching user ownership; their
+permission bits are neither checked nor changed. The cache is shared across tasks and
+worktrees for that user.
+It lives outside disposable session state, so finishing a task does not delete another
+task's cache. Go handles concurrent use and trims old entries as the cache is reused.
+
+Sandbox writability was verified on 2026-11-13 with `codex-cli 0.166.0` on macOS
+(Apple Silicon). A token-free `codex sandbox` probe in `workspace-write` mode used the
+production SDK and terminal launch environment builders to write Node-created files into
+the cache, reuse them after session cleanup, and write with a multi-repository
+`writable_roots` override. Go was unavailable, so this probe did not run `go build` or
+`go test`. These results do not establish writability on other platforms or Codex versions.
+
+A nonempty `GOCACHE` in the child environment takes precedence, including `off`. Terminal
+launch wrappers also preserve a nonempty value inherited from the terminal's shell unless
+an explicit launch override was supplied. Codex's own `shell_environment_policy` and
+Claude's settings still apply after launch; Mission Control does not rewrite those settings.
+If you exclude temporary directories from Codex's sandbox or filter `GOCACHE` out of its
+shell environment, configure a cache location and write access consistent with that policy.
+This default does not change multi-repository writable-root overrides or remove historical
+task-created cache folders. Existing sessions pick it up on relaunch.
+
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
 shortcuts, alert delivery, and message formatting all live in the
 daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, Task sources, Models, Conductor, and

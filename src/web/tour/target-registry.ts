@@ -115,6 +115,29 @@ export const TOUR_TARGET_NAMESPACES = {
     "trust-matrix": "page",
     "trust-add": "page",
   },
+  /**
+   * Residents' targets are two surfaces and the way between them: the Residents page where a
+   * profile is read and authored - its rail, the New button, the open editor and the editor's
+   * Duplicate and Launch buttons - then the top bar's Residents button and the drawer it opens,
+   * with the drawer's Pin. The Agent Shepherd row and the editor's Loop section are resolved
+   * INSIDE the registered rail and editor rather than owning targets of their own, the way the
+   * workflows tour reads stages inside its strip: they are one row and one section of a list
+   * the page already draws.
+   *
+   * The Residents button is registered by App rather than by the dock that renders it,
+   * because Settings > Display draws a second, preview top bar whose dock would otherwise
+   * overwrite the real one's registration.
+   */
+  "residents": {
+    "rail": "page",
+    "new": "page",
+    "editor": "page",
+    "duplicate": "page",
+    "launch": "page",
+    "topbar-button": "page",
+    "drawer": "page",
+    "drawer-pin": "page",
+  },
 } as const satisfies Record<TourId, Readonly<Record<string, TourTargetScope>>>;
 
 type Namespaces = typeof TOUR_TARGET_NAMESPACES;

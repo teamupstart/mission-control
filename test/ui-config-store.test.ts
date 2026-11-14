@@ -21,7 +21,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getUiConfig, setUiConfig, uiConfigView } = await import("../src/server/ui-config.ts");
-const { DISPLAY_ITEM_SEEDS, UI_CONFIG_DEFAULTS } = await import(
+const { ANNOUNCED_TOURS, DISPLAY_ITEM_SEEDS, UI_CONFIG_DEFAULTS } = await import(
   "../src/shared/protocol.ts",
 );
 
@@ -214,6 +214,25 @@ test("startup tours default on for fresh and upgraded profiles independently of 
   assert.equal(getUiConfig().showToursOnStartup, false);
 });
 
+test("a profile stored before announced tours existed is owed every one, a fresh one none", () => {
+  // Fresh: nothing in the catalog is news to someone opening it for the first time.
+  assert.deepEqual(getUiConfig().announcedTours, [...ANNOUNCED_TOURS]);
+  // Upgraded: the key's absence on a stored record is the signal, whatever else it says -
+  // including an explicit startup opt-out, which the announcement opens the picker past once.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board", showToursOnStartup: false } as never);
+  assert.deepEqual(getUiConfig().announcedTours, []);
+  assert.equal(getUiConfig().showToursOnStartup, false);
+  // The migration is persisted, so an unrelated write cannot re-derive it as the default.
+  assert.deepEqual((getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>).announcedTours, []);
+  setUiConfig({ richText: false });
+  assert.deepEqual(getUiConfig().announcedTours, []);
+  // Recording an announcement is an ordinary whole-list write, and ids it does not know survive.
+  setUiConfig({ announcedTours: ["residents", "from-a-newer-build"] });
+  setUiConfig({ richText: true });
+  assert.deepEqual(getUiConfig().announcedTours, ["residents", "from-a-newer-build"]);
+  assert.throws(() => setUiConfig({ announcedTours: "residents" } as never));
+});
+
 test("a key from a retired preference is dropped rather than carried forever", () => {
   // `usageBarCollapsed` folded the topbar's second row, which the spend popover retired.
   // The schema is not `.strict()`, so a config saved by an older build still OPENS - the
@@ -231,6 +250,8 @@ test("a stored Cards preference is rewritten to the shipped default", () => {
     ...UI_CONFIG_DEFAULTS,
     richText: false,
     guidedTour: false,
+    // A record an older build wrote predates every announced tour.
+    announcedTours: [],
   });
 });
 

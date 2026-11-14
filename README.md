@@ -89,7 +89,9 @@ Each new dashboard window or reload offers a tour picker with a list and preview
 **See the work**, **Author what runs**, or the recommended **Set up this machine**, then
 explicitly select **Start this tour**. No tour starts just from opening or browsing the picker.
 
-Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home.
+Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home; a
+newly added tour, such as **Meet your residents**, is still announced in the picker once, and
+again after you leave that tour midway.
 **Browse tours** in **Settings > Help & tours** or the command palette always reopens it.
 Tours start at their first stop and do not save progress or resume. See the
 [guided tours reference](docs/ui.md#guided-tours) for details.

@@ -288,6 +288,7 @@ const uiFields = {
   guidedDispatch: "setting",
   guidedTour: "setting",
   showToursOnStartup: "setting",
+  announcedTours: "setting",
   trustStaged: "setting",
   hiddenDisplayItems: "setting",
   hiddenDisplayItemsSeed: "setting",

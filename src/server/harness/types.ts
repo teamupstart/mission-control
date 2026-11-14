@@ -1178,6 +1178,12 @@ export type SdkEvent =
    * persisting it, and a driver whose process is replaced starts again from null.
    */
   | { kind: "subagents"; subagents: import("@shared/types.ts").SubagentSummary | null }
+  /**
+   * The harness compacted this conversation: its history is now a summary. Emitted for every
+   * compaction the driver observes, whoever asked for it - a maintenance `/compact`, the
+   * harness's own auto-compact or native backstop, or a command the operator typed.
+   */
+  | { kind: "compacted" }
   | { kind: "exited"; reason: string; resumable: boolean };
 
 /**

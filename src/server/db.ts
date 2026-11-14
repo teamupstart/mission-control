@@ -239,7 +239,10 @@ let db: DatabaseSync | undefined;
 //     The category is backfilled once for quarantines whose recorded reason is one this
 //     allocator only ever wrote for an observer that did not answer, so this one rewrites rows.
 //     Every other legacy quarantine, and every legacy time, stays NULL: neither was recorded.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 31;
+// 32: resident compaction epochs (`resident_runs.compaction_epoch`, `reanchored_epoch`) and a
+//     restating wake's exact text (`resident_iterations.wake_text`, `reanchor_epoch`). Zero and
+//     NULL with no backfill: no run owes a restatement until its conversation next compacts.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 32;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3539,6 +3542,14 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_runs", "run_requested_at", "INTEGER");
   // Consecutive failed compactions before a wake; reset by a measured success or Resume.
   addColumn(d, "resident_runs", "compaction_failures", "INTEGER NOT NULL DEFAULT 0");
+  // Compactions of the run's conversation, and the newest one a delivered wake has restated
+  // the standing task after. Zero on every existing run, which owes nothing until it compacts.
+  addColumn(d, "resident_runs", "compaction_epoch", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "resident_runs", "reanchored_epoch", "INTEGER NOT NULL DEFAULT 0");
+  // A wake's exact text when it restated the standing task, and the compaction it restated
+  // after. NULL on every other wake, whose text is still its marker and the loop prompt.
+  addColumn(d, "resident_iterations", "wake_text", "TEXT");
+  addColumn(d, "resident_iterations", "reanchor_epoch", "INTEGER");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");

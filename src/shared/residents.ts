@@ -304,6 +304,20 @@ export function residentMarker(settings: Pick<ResidentProfileRevision, "identity
  */
 export const RESIDENT_LOOP_PROMPT = "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.";
 
+/**
+ * Sent with every resident `/compact`, ahead of the profile's own focus.
+ *
+ * Without it the summarizer's generic template names "Begin your standing task." as the
+ * primary request and the last item in flight as the next step, so the resident resumes that
+ * item rather than its mandate. One line, because it rides on the command's argument line.
+ */
+export const RESIDENT_COMPACTION_FOCUS = "This is a long-running resident whose standing task is defined in its standing instructions. Under the primary request, restate that standing task and every instruction, correction or decision the operator gave in this conversation verbatim, not paraphrased. Report the most recent item only as current work, never as the primary request.";
+
+/** The focus a resident's compaction is sent with: the built-in focus, then the profile's own. */
+export function residentCompactionFocus(profileFocus: string): string {
+  return [RESIDENT_COMPACTION_FOCUS, profileFocus.trim()].filter(Boolean).join(" ");
+}
+
 export const ResidentLoopSectionSchema = z.object({
   prompt: z.string().trim().min(1).max(8_000).default(RESIDENT_LOOP_PROMPT),
   delaySeconds: z.number().int().min(1).max(604_800).default(300),

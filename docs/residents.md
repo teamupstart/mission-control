@@ -118,7 +118,9 @@ A launch is a task of kind `resident`:
   [repository standing instructions](skills-and-settings.md), on the harness's own channel:
   `systemPrompt.append` for Claude Code and developer instructions for Codex. They are recorded
   once at launch, shown under the session's **See standing instructions** control, and replayed on
-  resume, so compaction or a daemon restart never loses who the agent is.
+  resume, so compaction or a daemon restart never loses who the agent is. After a compaction the
+  next wake also restates them in the conversation; see
+  [Keeping the mission through compaction](#keeping-the-mission-through-compaction).
 - It has no backlog, dependencies, schedule, autopilot, after-work Workflow or task-kind contract.
   Single agent Dispatch, MCP `create_task`, recurring missions and task sources do not offer it.
 
@@ -480,6 +482,34 @@ The editor and every live-run surface name the active compaction layers:
   Older sessions without a saved limit must resolve it from the catalog once.
   Codex's compact operation does not accept a focus instruction;
   the focus field is used by Claude.
+
+#### Keeping the mission through compaction
+
+The standing instructions ride on the harness's own channel, so a compaction never deletes them.
+What a compaction does remove is everything in the conversation that pointed at them. The opening
+turn is only "Begin your standing task." and every wake says "Continue your standing task", so
+once the history is a summary, the most specific thing left is the summary's current work and
+next step. A resident that acted on that alone would carry on with the last item in flight
+instead of its role. Two things keep it on its role:
+
+- **A mission-preserving focus.** Every compaction the daemon starts is sent with a built-in
+  focus that asks the summary to restate the standing task and every instruction, correction or
+  decision you gave in the conversation word for word, and to report the latest item only as
+  current work. The profile's **Compaction focus** is added after it, never instead of it.
+  Claude Code uses the focus; Codex compacts without one.
+- **A restated wake.** The first wake after any compaction opens with **Your standing task,
+  restated after compaction**: a line saying the summary is context rather than the mission,
+  then the run's resident section exactly as its launch composed it (Persona guidance, profile
+  instructions, run instructions and the durable-state note), then the loop prompt. That covers
+  compactions the daemon did not start too: Claude Code's own auto-compact, Codex's native
+  backstop, and a `/compact` you typed. Repository standing instructions are not repeated,
+  because they are not the resident's role.
+
+The restatement appears once per compaction, as the resident's wake in the conversation. Only a
+delivered wake settles it. A wake that was released before sending, or whose delivery is
+unconfirmed after a restart, leaves it owed, so the next wake restates it again rather than risk
+none. A compaction during the restated wake's own turn owes another. Restart recovery confirms a
+restated wake by the exact text it recorded, so it is never resent and never counted twice.
 
 The default rolling 24-hour limits are **200 iterations** and **$20**. Clearing either cap in
 the editor disables that cap for new runs. Launch is iteration one only after the session

@@ -2357,6 +2357,22 @@ rl.on("line", (line) => {
       openTurn = { prompts: [prompt] };
       return;
     }
+    // A `/compact` the CLI finishes, in the shape of the real CLI's stream: the boundary frame
+    // carrying the measured context after compaction, then the command's result. The command,
+    // focus and all, is recorded so a spec can read what the daemon asked the summary to keep.
+    if (prompt.startsWith("/compact")) {
+      if (process.env.MC_E2E_RECORD_DIR) {
+        appendFileSync(join(process.env.MC_E2E_RECORD_DIR, "claude-compactions.jsonl"), `${JSON.stringify({ prompt })}\n`);
+      }
+      emit({
+        type: "system",
+        subtype: "compact_boundary",
+        session_id: SESSION_ID,
+        compact_metadata: { trigger: "manual", pre_tokens: 184_000, post_tokens: 2_000 },
+      });
+      emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+      return;
+    }
     if (prompt.includes(RELEASED_TURN)) {
       const turnState = { prompts: [prompt] };
       turnState.timer = setInterval(() => {

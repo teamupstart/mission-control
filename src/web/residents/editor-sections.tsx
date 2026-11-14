@@ -26,6 +26,13 @@ import { residentAccentStyle } from "./marker.ts";
 import { McpAllSourcesConfirm } from "./McpAllSourcesConfirm.tsx";
 import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } from "./mcp-catalog.ts";
 
+/**
+ * What Compaction focus adds to, and what every compaction is followed by. The daemon sends a
+ * built-in focus with each resident `/compact` (`residentCompactionFocus`) and restates the
+ * standing task on the first wake after any compaction, so an empty field is not "no focus".
+ */
+const RESIDENT_COMPACTION_FOCUS_HINT = "Added to the built-in focus, which asks the summary to keep the standing task and your instructions word for word. Claude Code uses it; Codex compacts without one. After any compaction, the next wake restates the standing task in full.";
+
 /** What every section editor is handed. Each writes only its own slice of the draft. */
 export interface ResidentEditorSectionProps {
   draft: ResidentProfileRevision;
@@ -578,9 +585,10 @@ function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: Resi
           onChange={(e) => update("loop", { ...loop, prompt: e.target.value })} />
       </label>
       <label className="field"><span className="field-label">Compaction focus</span>
-        <input className="field-input" value={loop.compactionFocus} disabled={disabled}
+        <input className="field-input" value={loop.compactionFocus} disabled={disabled} aria-describedby="resident-compaction-focus-hint"
           onChange={(e) => update("loop", { ...loop, compactionFocus: e.target.value })} />
       </label>
+      <p id="resident-compaction-focus-hint" className="field-hint">{RESIDENT_COMPACTION_FOCUS_HINT}</p>
       <p className="field-hint">Compaction before wakes is active. Native backstop: {capabilitiesFor(draft.execution.agent).residentCompaction?.nativeBackstop ? "active" : "unavailable on this harness"}.</p>
       <p className="field-hint">Guardrails pause the resident. Clear a cap to disable it. Profile edits apply on the next launch.</p>
     </div>

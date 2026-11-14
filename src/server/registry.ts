@@ -360,6 +360,11 @@ export interface PrOpened {
  * asks of it is "was this the turn I am waiting on" - and the id is the correlation every
  * caller of `submit()` already holds. `pending_turns` gains no column for this.
  */
+/** A driver-run session's conversation was compacted. See `Registry.onCompacted`. */
+export interface SessionCompacted {
+  sessionId: string;
+}
+
 export interface TurnDelivered {
   sessionId: string;
   /** The `pending_turns` row id returned by `submit()`. */
@@ -1970,6 +1975,15 @@ export class Registry extends EventEmitter {
     this.emit("turn_delivered", e);
   }
 
+  /**
+   * A driver-run session's conversation was compacted. Internal, like `onTurnDelivered`: the
+   * resident loop owes the next wake a restatement of the standing task. Listeners must not throw.
+   */
+  onCompacted(fn: (e: SessionCompacted) => void): () => void {
+    this.on("session_compacted", fn);
+    return () => this.off("session_compacted", fn);
+  }
+
   /** Internal Inspector-to-workflow wakeup. This is deliberately not browser SSE. */
   onInspectionUpdated(fn: (e: InspectionUpdated) => void): () => void {
     this.on("inspection_updated", fn);
@@ -3194,6 +3208,9 @@ export class Registry extends EventEmitter {
         return;
       case "subagents":
         this.setSubagents(id, evt.subagents);
+        return;
+      case "compacted":
+        this.emit("session_compacted", { sessionId: id } satisfies SessionCompacted);
         return;
       case "exited":
         // The same exited-then-linger-then-`session_remove` sequence a vanished pane gets.

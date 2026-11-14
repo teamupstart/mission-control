@@ -1075,6 +1075,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
     if (message.type === "system" && message.subtype === "compact_boundary") {
       const metadata = message.compact_metadata as { post_tokens?: number } | undefined;
       this.compaction.observe(metadata?.post_tokens ?? null, defaultWindowForModel(this.modelId));
+      // Every boundary, manual or automatic: the history is a summary from here on.
+      this.out.emit({ kind: "compacted" });
     }
     if (message.type === "assistant" && message.error === "authentication_failed") {
       this.authenticationFailed = true;

@@ -3,7 +3,6 @@ import test from "node:test";
 import { ANNOUNCED_TOURS } from "../src/shared/protocol.ts";
 import {
   pendingTourAnnouncement,
-  rearmTourAnnouncement,
   recordTourAnnouncements,
   startupTourDecision,
 } from "../src/web/tour/startup.ts";
@@ -62,15 +61,4 @@ test("the residents tour is announced to a profile that predates it, and only on
     "residents",
   ]);
   assert.equal(pendingTourAnnouncement(recordTourAnnouncements([]), available), null);
-});
-
-test("dismissing the residents tour midway makes its announcement owed again", () => {
-  const available = TOUR_ENTRIES.map((entry) => entry.id);
-  const seen = recordTourAnnouncements(["from-a-newer-build"]);
-  const rearmed = rearmTourAnnouncement(seen, "residents");
-  assert.deepEqual(rearmed, ["from-a-newer-build"]);
-  assert.equal(pendingTourAnnouncement(rearmed, available), "residents");
-  // Already owed, or not an announced tour at all: the same list back, so App skips the write.
-  assert.equal(rearmTourAnnouncement(rearmed, "residents"), rearmed);
-  assert.equal(rearmTourAnnouncement(seen, "setup"), seen);
 });

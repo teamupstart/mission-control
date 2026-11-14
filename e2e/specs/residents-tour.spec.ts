@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import type { Locator, Page, Route } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
@@ -103,6 +103,17 @@ async function rejectAnnouncementWrites(page: Page): Promise<{
     } else await route.continue();
   });
   return { rejected, count: () => count, release: () => page.unroute("**/api/ui/config") };
+}
+
+/** Every `announcedTours` write this page sends to the daemon, by method and body. */
+function recordAnnouncementWrites(page: Page): () => string[] {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET" || !request.url().includes("/api/ui/config")) return;
+    const body = request.postData() ?? "";
+    if (body.includes("announcedTours")) writes.push(`${request.method()} ${body}`);
+  });
+  return () => writes;
 }
 
 /** The `announcedTours` this browser's own cache holds: where a refused write's rollback lands. */
@@ -360,16 +371,19 @@ test("dismissing the tour midway shows it again in the next window, and seeing i
   // The dashboard fixture's profile: picker opted out, every tour already announced.
   const picker = page.getByRole("dialog", { name: PICKER });
   expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  const writes = recordAnnouncementWrites(page);
   await startFromPalette(page);
   await tourStep(page, "Agents that stay on the job").getByRole("button", { name: "Next" }).click();
   const midway = tourStep(page, "Agent Shepherd ships ready to launch");
   await expect(midway).toContainText("Step 2 of 10");
   await midway.getByRole("button", { name: "Exit tour" }).click();
   await expect(midway).toBeHidden();
-  // Dismissed midway: owed again, and nothing else about the profile changes. The daemon holds
-  // the debt now, so the browser's own copy of it is settled.
-  await expect.poll(async () => (await uiConfig(daemon)).announcedTours).toEqual([]);
-  await expect.poll(() => owedAnnouncements(page)).toEqual([]);
+  // Dismissed midway: owed again in this browser. Nothing is sent to the daemon, whose record
+  // still reads the tour as announced, and nothing else about the profile changes.
+  await expect.poll(() => owedAnnouncements(page)).toEqual(["residents"]);
+  await expect.poll(() => hash(page)).toBe("#/fleet");
+  expect(writes()).toEqual([]);
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
   expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
   await expect(picker).toBeHidden();
 
@@ -379,6 +393,8 @@ test("dismissing the tour midway shows it again in the next window, and seeing i
   await expect(picker).toContainText("New tour: Meet your residents.");
   await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
   await shoot(page, "residents-tour-shown-again");
+  // Opening it is the announcement: saved, which settles this browser's debt.
+  await expect.poll(() => owedAnnouncements(page)).toEqual([]);
   await picker.getByRole("button", { name: "Start this tour" }).click();
 
   // Seen through this time: every stop to Finish, which records nothing new to owe.
@@ -456,101 +472,41 @@ test("a refused announcement write leaves the tour owed, so the next window feat
   await expect(picker).toBeHidden();
 });
 
-test("a refused midway write is still owed, so the next window features the tour again", async ({
-  dashboard: page,
-  daemon,
-}) => {
-  // The dashboard fixture's profile: picker opted out, every tour already announced.
-  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
-  const writes = await rejectAnnouncementWrites(page);
-  const picker = page.getByRole("dialog", { name: PICKER });
-  await startFromPalette(page);
-  await tourStep(page, "Agents that stay on the job").getByRole("button", { name: "Next" }).click();
-  const midway = tourStep(page, "Agent Shepherd ships ready to launch");
-  await expect(midway).toBeVisible();
-  await midway.getByRole("button", { name: "Exit tour" }).click();
-  await expect(midway).toBeHidden();
-  await writes.rejected;
-  expect(writes.count()).toBe(1);
-
-  // Refused: the daemon still records the tour as announced and the browser's copy of the
-  // preference rolled back to match it, but this browser keeps the reminder it could not save.
-  // The tour still ends where it hands over, with nothing reported and nothing retried.
-  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
-  await expect.poll(() => cachedAnnouncedTours(page)).toEqual(["residents"]);
-  await expect.poll(() => owedAnnouncements(page)).toEqual(["residents"]);
-  await expect.poll(() => hash(page)).toBe("#/fleet");
-  await expect(page.getByText(PREFERENCE_ERROR)).toHaveCount(0);
-  await expect(picker).toBeHidden();
-  expect(writes.count()).toBe(1);
-
-  // The next window features the tour again, past the saved opt-out, even though the daemon
-  // never heard about the midway dismissal.
-  await writes.release();
-  await page.reload();
-  await expect(picker).toBeVisible();
-  await expect(picker).toContainText("New tour: Meet your residents.");
-  await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
-  await expect(picker.getByRole("checkbox", { name: "Show tours when Mission Control opens" })).not.toBeChecked();
-  await shoot(page, "residents-tour-shown-again-after-refusal");
-  // That opening is the announcement, and once it is saved the browser's debt is settled.
-  await expect.poll(() => owedAnnouncements(page)).toEqual([]);
-  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
-  expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
-  await picker.getByRole("button", { name: "Dismiss", exact: true }).click();
-  await page.reload();
-  await expectDashboardReady(page);
-  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
-  await expect(picker).toBeHidden();
-});
-
-test("a window opened while the midway write is in flight still features the tour", async ({
+test("a midway dismissal in one window cannot undo another window's announcement", async ({
   dashboard: page,
   daemon,
   context,
 }) => {
-  // Hold the midway write unanswered, as a slow daemon would, and refuse it only later.
-  let held!: Route;
-  let arrived!: () => void;
-  const pending = new Promise<void>((resolve) => { arrived = resolve; });
-  await page.route("**/api/ui/config", async (route) => {
-    const request = route.request();
-    if (request.method() === "PUT" && "announcedTours" in (request.postDataJSON() ?? {})) {
-      held = route;
-      arrived();
-    } else await route.continue();
-  });
-  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  // Window A leaves the tour midway. A whole-list write from it landing late could take the
+  // tour back off `announcedTours` after window B had already announced it; there is no such
+  // write to land, because the debt lives in this browser only.
+  const writes = recordAnnouncementWrites(page);
   await startFromPalette(page);
   await tourStep(page, "Agents that stay on the job").getByRole("button", { name: "Next" }).click();
   const midway = tourStep(page, "Agent Shepherd ships ready to launch");
   await expect(midway).toBeVisible();
   await midway.getByRole("button", { name: "Exit tour" }).click();
   await expect(midway).toBeHidden();
-  await pending;
+  await expect.poll(() => owedAnnouncements(page)).toEqual(["residents"]);
 
-  // The write has not landed - the daemon still reads the tour as seen - but the reminder was
-  // kept the moment the tour was left, so a second window opened now still features it.
-  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
-  expect(await owedAnnouncements(page)).toEqual(["residents"]);
+  // Window B opens, features the tour, and records it; that settles the debt for this browser.
   const second = await context.newPage();
   const secondPicker = second.getByRole("dialog", { name: PICKER });
   await second.goto(`${daemon.baseURL}/#/fleet`);
   await expect(secondPicker).toBeVisible();
   await expect(secondPicker).toContainText("New tour: Meet your residents.");
-  await expect(secondPicker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeChecked();
-  // That window's announcement is saved, which settles the reminder for this browser.
   await expect.poll(() => owedAnnouncements(second)).toEqual([]);
-  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await secondPicker.getByRole("button", { name: "Dismiss", exact: true }).click();
 
-  // The first window's held write is refused afterwards: the tour was already announced, and
-  // the refusal neither brings the reminder back nor surfaces an error.
-  await held.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
-  await page.unroute("**/api/ui/config");
-  await expect.poll(() => cachedAnnouncedTours(page)).toEqual(["residents"]);
-  expect(await owedAnnouncements(page)).toEqual([]);
-  await expect(page.getByText(PREFERENCE_ERROR)).toHaveCount(0);
+  // Window A never sent anything that could arrive afterwards, so the announcement stands: the
+  // daemon still reads it as seen, and the next window honors the opt-out.
+  expect(writes()).toEqual([]);
   expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  const third = await context.newPage();
+  await third.goto(`${daemon.baseURL}/#/fleet`);
+  await expectDashboardReady(third);
+  await expect(third.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  await expect(third.getByRole("dialog", { name: PICKER })).toBeHidden();
 });
 
 test("a fresh profile is not told a tour is new", async ({ page, daemon }) => {

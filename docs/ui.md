@@ -456,12 +456,13 @@ picker with **Set up this machine** previewed. A profile saved by a build before
 reaches operators who dismissed the picker and opted out before it shipped. Dismissing **Meet
 your residents** midway - Exit before its last stop, however it was started - makes it owed
 again, so the next window's picker features it once more; reaching **Pin it open** is seeing it
-through, and Finish or Exit there leaves the record alone. The browser records that debt under
-`mission.tourAnnouncementsOwed` in `localStorage` at the moment of the midway Exit, before the
-daemon is asked, so a window opened while that write is in flight, or after the daemon refuses
-it, still features the tour. The browser's copy is settled once the daemon saves the debt, once
-a picker opening's own record write is saved, or once the tour is seen through. It can only make a tour owed
-again, never mark one as seen.
+through, and Finish or Exit there leaves the record alone. That debt lives only in this browser,
+under `mission.tourAnnouncementsOwed` in `localStorage`, written at the moment of the midway Exit.
+The daemon is never asked to take the tour back off `announcedTours`: that list is written whole,
+so a re-arm landing late could undo an announcement another window had already shown. The debt
+is settled once any window's picker opening saves its record write, or the tour is seen through.
+It can only make a tour owed again, never mark one as seen, and a different browser does not
+see it.
 
 **Dismiss**, the close button, Escape, or the backdrop closes the picker for the current
 document. Refocusing, navigating, or reconnecting does not reopen it. **Browse tours** in

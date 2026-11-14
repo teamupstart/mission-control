@@ -50,20 +50,11 @@ export function recordTourAnnouncements(announced: readonly string[]): string[] 
   return [...new Set([...announced, ...ANNOUNCEMENTS])];
 }
 
-/**
- * The record after an announced tour was dismissed midway: owed again, so the next window's
- * picker features it once more. A tour that is not announced, or not yet recorded, has nothing
- * to give back, and the same list is returned so the caller can skip the write.
- */
-export function rearmTourAnnouncement(announced: readonly string[], id: TourId): readonly string[] {
-  if (!ANNOUNCEMENTS.includes(id) || !announced.includes(id)) return announced;
-  return announced.filter((candidate) => candidate !== id);
-}
 
 /**
  * The daemon's record with this browser's owed announcements taken back out of it: what the
- * startup picker reads when a midway dismissal could not be saved. Owed ids only ever make a
- * tour owed again; they never mark one as seen.
+ * startup picker reads after a midway dismissal. Owed ids only ever make a tour owed again;
+ * they never mark one as seen.
  */
 export function withOwedAnnouncements(
   announced: readonly string[],

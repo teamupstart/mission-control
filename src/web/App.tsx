@@ -185,7 +185,6 @@ import { TourPreferenceNotice } from "./components/TourPreferenceNotice.tsx";
 import { tourCatalog } from "./tour/catalog.ts";
 import {
   pendingTourAnnouncement,
-  rearmTourAnnouncement,
   recordTourAnnouncements,
   startupTourDecision,
   withOwedAnnouncements,
@@ -1003,9 +1002,8 @@ export function App(): React.JSX.Element {
   const tourPreferenceHydrated = useUiConfigHydrated();
   const catalog = useMemo(() => tourCatalog(), []);
   /**
-   * Announcements this browser owes after a midway dismissal, kept until the daemon's record
-   * owes them itself. Read once per document and settled as they are saved, announced, or seen
-   * through.
+   * Announcements this browser owes after a midway dismissal. Read once per document, and
+   * settled when a picker opening's record write is saved or the tour is seen through.
    */
   const [owedAnnouncements, setOwedAnnouncements] = useState(readOwedAnnouncements);
   const tourAnnouncement = useMemo(
@@ -1669,23 +1667,13 @@ export function App(): React.JSX.Element {
     }
     residentsTourOpenedDrawer.current = false;
     // Dismissed midway: the tour is owed its announcement again, so the next window's picker
-    // features it once more. The debt is kept in this browser FIRST, before the daemon is
-    // asked, so a window opened while that write is in flight - or after it is refused and
-    // rolled back to "seen" - still features the tour. Once the daemon holds the debt itself,
-    // the browser's copy is settled. Seen through, nothing is written, and anything this
-    // browser still owed is settled.
-    if (!residentsTourReachedEnd.current) {
-      const announced = uiConfig().announcedTours;
-      const rearmed = rearmTourAnnouncement(announced, "residents");
-      if (rearmed !== announced) {
-        setOwedAnnouncements(oweAnnouncement("residents"));
-        void updateUiConfig({ announcedTours: [...rearmed] }).then((saved) => {
-          if (saved) setOwedAnnouncements(settleOwedAnnouncements(["residents"]));
-        });
-      }
-    } else {
-      setOwedAnnouncements(settleOwedAnnouncements(["residents"]));
-    }
+    // features it once more. The debt lives in this browser only, and the daemon is never asked
+    // to take the tour back off `announcedTours`: that list is written whole, so a late re-arm
+    // could land after another window had already announced the tour and quietly owe it a
+    // second time. A picker opening's own record write, or a run seen through, settles it.
+    setOwedAnnouncements(residentsTourReachedEnd.current
+      ? settleOwedAnnouncements(["residents"])
+      : oweAnnouncement("residents"));
     residentsTourReachedEnd.current = false;
   }, []);
 

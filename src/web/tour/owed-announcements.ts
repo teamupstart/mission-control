@@ -1,11 +1,12 @@
 /**
- * Tour announcements this browser still owes, when the daemon could not be told.
+ * Tour announcements this browser still owes after a midway dismissal.
  *
- * Dismissing Meet your residents midway gives its announcement back by removing it from the
- * daemon's `announcedTours`. When that write is refused, the daemon's record still reads the
- * tour as seen, and nothing in it can bring the tour back - so the debt is kept here, beside the
- * UI cache, and the next window on this dashboard features the tour anyway. It is settled the
- * moment a picker opening's own record write lands, or the tour is seen through.
+ * Dismissing Meet your residents before its last stop makes the next window's startup picker
+ * feature it again. The debt is kept here, beside the UI cache, rather than by taking the tour
+ * back off the daemon's `announcedTours`: that list is written whole, so a re-arm landing late
+ * could undo another window's announcement and owe the tour twice. Nothing here is ever sent
+ * anywhere. It is settled the moment a picker opening's own record write is saved, in any
+ * window of this browser, or the tour is seen through.
  *
  * Deliberately not a second source of truth for the preference: it can only ADD an owed
  * announcement on top of the daemon's record, never hide one, and an unreadable entry reads as

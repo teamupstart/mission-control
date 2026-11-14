@@ -227,7 +227,7 @@ test("a resumed resident retains its measured native backstop after the catalog 
 
 test("resident compaction uses thread/compact/start and measured contextCompaction completion", async () => {
   const server = new FakeServer(defaultReplies({ "thread/compact/start": {} }));
-  const { handle, drained } = await launch(server, { prompt: "" });
+  const { handle, events, drained } = await launch(server, { prompt: "" });
   const operation = handle.compact!("focus");
   await settle();
   assert.deepEqual(server.calls("thread/compact/start")[0]?.params, { threadId: THREAD.id });
@@ -236,6 +236,20 @@ test("resident compaction uses thread/compact/start and measured contextCompacti
   for (const frame of fixture) server.notify(frame.method, { ...frame.params, threadId: THREAD.id });
   assert.deepEqual(await operation, { contextTokens: 14385, contextWindow: 258400 });
   await handle.stop(); await drained;
+  // Announced for the resident loop, which owes its next wake a restatement of the standing task.
+  assert.equal(events.filter(e => e.kind === "compacted").length, 1);
+});
+
+test("the native backstop's own compaction is announced, and another thread's is not", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server, { prompt: "" });
+  await settle();
+  const item = { type: "contextCompaction", id: "auto-compaction" };
+  server.notify("item/completed", { threadId: "another-thread", turnId: "other", item });
+  server.notify("item/completed", { threadId: THREAD.id, turnId: "long-turn", item });
+  await settle();
+  await handle.stop(); await drained;
+  assert.equal(events.filter(e => e.kind === "compacted").length, 1);
 });
 
 test("a stalled resident compaction interrupts the Codex compaction turn and reports a retryable stall", async (t) => {

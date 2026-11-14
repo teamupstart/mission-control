@@ -1,5 +1,4 @@
-import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
-import { residentWakeMarker } from "@shared/resident-turn.ts";
+import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentCompactionFocus, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
 import { sessionMessages, type SessionMessages } from "../harness/index.ts";
@@ -9,11 +8,12 @@ import { noteKeyFor } from "../registry.ts";
 import type { SdkSupervisor } from "../sdk/supervisor.ts";
 import { adoptResidentLaunch, getResidentRun, listOpenResidentRuns, residentRunForTask } from "./store.ts";
 import { CompactionError } from "../harness/compaction.ts";
+import { residentStandingRestatement } from "./launch.ts";
 import {
   ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, clearResidentRunRequest, completeResidentCompaction,
-  completeResidentGeneration, humanResidentTurn, liveRun, paceResident, pauseResident, pruneResidentLoop, recordResidentCompactionFailure,
-  requestResidentRun, residentClaims, residentGuardrail, releaseResidentReviewPause, resumeResident, retryResidentCompaction,
-  settleResidentClaim, type ResidentIteration,
+  completeResidentGeneration, humanResidentTurn, liveRun, markResidentCompacted, paceResident, pauseResident, pruneResidentLoop,
+  recordResidentCompactionFailure, requestResidentRun, residentClaims, residentGuardrail, residentRestatementOwed, residentWakeTextFor,
+  releaseResidentReviewPause, resumeResident, retryResidentCompaction, settleResidentClaim, type ResidentIteration,
 } from "./loop-store.ts";
 
 const BUSY_BLOCKER = "A human message or active turn has priority.";
@@ -21,7 +21,7 @@ const BUSY_BLOCKER = "A human message or active turn has priority.";
 export const RESIDENT_COMPACTION_RETRY_DELAYS_S = [60, 300, 900] as const;
 
 interface LoopDeps {
-  registry: Pick<Registry, "subscribe" | "getTask" | "getSession" | "upsertResidentRun" | "onTurnDelivered">;
+  registry: Pick<Registry, "subscribe" | "getTask" | "getSession" | "upsertResidentRun" | "onTurnDelivered" | "onCompacted">;
   sdk: Pick<SdkSupervisor, "sendWhenIdle" | "compact">;
   refreshSession: (session: Session) => void;
   now?: () => number;
@@ -75,6 +75,14 @@ export class ResidentLoop {
         this.publish(run.id);
         this.enqueue(run.id);
       }
+    }));
+    // The one path that records a compaction: every one the driver observes, this loop's own
+    // maintenance `/compact` included, as well as the harness's auto-compact, Codex's native
+    // backstop, or a `/compact` the operator typed. Completion only settles loop state.
+    this.subscriptions.push(this.deps.registry.onCompacted(({ sessionId }) => {
+      const session = this.deps.registry.getSession(sessionId);
+      const run = session?.task?.kind === "resident" ? residentRunForTask(session.task.id)?.run : undefined;
+      if (run && run.endedAt === null && markResidentCompacted(run.id)) this.publish(run.id);
     }));
     for (const { run } of listOpenResidentRuns()) {
       if (run.launchState !== "launched") continue;
@@ -274,7 +282,7 @@ export class ResidentLoop {
       this.publish(id);
       let compactedPct: number;
       try {
-        compactedPct = await this.deps.sdk.compact(session.id, run.settings.loop.compactionFocus, () => this.blocker(run, session));
+        compactedPct = await this.deps.sdk.compact(session.id, residentCompactionFocus(run.settings.loop.compactionFocus), () => this.blocker(run, session));
       } catch (error) {
         run = liveRun(id);
         // A delivered human turn moved the loop to working; its completion schedules the next wake.
@@ -309,9 +317,9 @@ export class ResidentLoop {
     if (afterCompaction) { this.pause(id, afterCompaction); return; }
     let offset: number | null = null;
     try { const transcript = this.messages(session); offset = transcript?.read.size(transcript.path) ?? null; } catch { /* unknown evidence is explicit */ }
-    const claim = claimResidentWake(id, trigger, offset, this.now(), noteKeyFor(session));
+    const claim = claimResidentWake(id, trigger, offset, this.now(), noteKeyFor(session), this.restatement(run));
     if (!claim) return;
-    const text = `${residentWakeMarker(id, claim.seq)}\n${run.settings.loop.prompt}`;
+    const text = residentWakeTextFor(claim, run);
     let crossed = false;
     reserveInjection(session.id, text, "resident");
     try {
@@ -349,12 +357,22 @@ export class ResidentLoop {
     });
     this.publish(id);
   }
+  /**
+   * The standing task to restate on this wake, when a compaction owes one. A restatement that
+   * cannot be composed is skipped rather than holding the wake: the role still rides on the
+   * harness's own channel, and the debt stays owed for the next wake to try again.
+   */
+  private restatement(run: ResidentRun): string | null {
+    if (!residentRestatementOwed(run.id)) return null;
+    try { return residentStandingRestatement(run); }
+    catch (error) { console.error(`[residents] could not restate the standing task for run ${run.id}:`, error); return null; }
+  }
   private findMarker(session: Session, claim: ResidentIteration, run: ResidentRun): number | null {
     if (claim.transcript_offset === null) return null;
     try {
       const transcript = this.messages(session);
       if (!transcript) return null;
-      const expected = `${residentWakeMarker(claim.run_id, claim.seq)}\n${run.settings.loop.prompt}`;
+      const expected = residentWakeTextFor(claim, run);
       let offset = claim.transcript_offset;
       for (;;) {
         const page = transcript.read.after(transcript.path, offset, 50);

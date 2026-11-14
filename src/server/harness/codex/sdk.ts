@@ -1015,6 +1015,8 @@ class CodexSdkSession implements SdkSessionHandle {
         const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
         if (method === "item/completed" && item.type === "contextCompaction" && this.isCurrentThread(params)) {
           this.compaction.observe(this.compactContext?.tokens ?? null, this.compactContext?.window ?? null);
+          // Every compaction, requested or the native backstop's: the history is a summary now.
+          this.out.emit({ kind: "compacted" });
         }
         if (item.type === "fileChange") {
           if (method === "item/started") {

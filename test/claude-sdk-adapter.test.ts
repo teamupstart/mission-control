@@ -205,6 +205,20 @@ test("resident compaction waits for the observed native boundary and result", as
   const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/claude-manual.json", import.meta.url), "utf8")) as ClaudeSdkMessage[];
   for (const frame of fixture) query.emit(frame);
   assert.deepEqual(await operation, { contextTokens: 494, contextWindow: 1_000_000 });
+  // The boundary is also announced, so the resident loop owes its next wake a restatement.
+  assert.ok((await collect(handle.events, e => e.kind === "compacted")).some(e => e.kind === "compacted"));
+  await handle.stop();
+});
+
+test("a compaction nobody requested is announced the same way: the CLI's own auto-compact", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  query.emit({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 900_000, post_tokens: 12_000 } } as ClaudeSdkMessage);
+  const seen = await collect(handle.events, e => e.kind === "compacted");
+  assert.equal(seen.at(-1)?.kind, "compacted");
   await handle.stop();
 });
 

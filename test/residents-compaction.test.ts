@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { codexResidentCompactionArgs } from "../src/server/harness/codex/compaction.ts";
-import { composeResidentLaunch } from "../src/server/residents/launch.ts";
-import { ResidentProfileRevisionSchema, type ResidentRun } from "../src/shared/residents.ts";
+import { RESIDENT_RESTATEMENT_HEADING, RESIDENT_STANDING_HEADING, composeResidentLaunch, residentStandingRestatement, residentStandingSection } from "../src/server/residents/launch.ts";
+import { RESIDENT_COMPACTION_FOCUS, ResidentProfileRevisionSchema, residentCompactionFocus, type ResidentRun } from "../src/shared/residents.ts";
 import { HARNESS_MODEL_CATALOG_LIMITS } from "../src/shared/protocol.ts";
+import { Registry, type SessionCompacted } from "../src/server/registry.ts";
 
 test("Codex compaction refuses an oversized native model catalog", (t) => {
   const home = mkdtempSync(join(tmpdir(), "resident-model-window-bound-"));
@@ -46,4 +47,46 @@ test("the pinned launch contributor enables only the proven native layer", () =>
   const repository = { text: "", mechanism: "none" as const, sources: [] };
   assert.deepEqual(composeResidentLaunch({ run, agent: "codex", runtime: "sdk" }, repository).residentCompaction, { threshold: 42 });
   assert.equal(composeResidentLaunch({ run, agent: "claude", runtime: "sdk" }, repository).residentCompaction, undefined);
+});
+
+test("the restatement is the resident section its launch delivered, verbatim, after the repository rules", () => {
+  const run = {
+    profileId: "restatement-profile",
+    persona: { personaId: "p", name: "Shepherd", guidanceMarkdown: "Watch every running task." },
+    runInstructions: "Focus on the release branch today.",
+    settings: ResidentProfileRevisionSchema.parse({ identity: { name: "Shepherd" }, persona: { personaId: "p" },
+      instructions: { markdown: "Unblock stuck work.\n\n- Never merge." } }),
+  } as ResidentRun;
+  const repository = { text: "Repository rule: run the linter.", mechanism: "claude-sdk-system-prompt-append" as const, sources: [] };
+  const delivered = composeResidentLaunch({ run, agent: "claude", runtime: "sdk" }, repository).standing.text;
+  const section = residentStandingSection(run);
+  assert.ok(section.startsWith(`${RESIDENT_STANDING_HEADING}: Shepherd\n\nWatch every running task.`));
+  for (const part of ["### Profile instructions\n\nUnblock stuck work.\n\n- Never merge.", "### Instructions for this run\n\nFocus on the release branch today.", "### Durable resident state"]) {
+    assert.ok(section.includes(part), part);
+  }
+  assert.equal(delivered, `${repository.text}\n\n${section}`, "the launch delivered exactly this section after the repository rules");
+  assert.ok(!section.includes(repository.text), "repository rules are not restated: they never left the conversation's instructions");
+  const restatement = residentStandingRestatement(run);
+  assert.ok(restatement.startsWith(`${RESIDENT_RESTATEMENT_HEADING}\n\n`));
+  assert.ok(restatement.includes(`\n\n${section}\n\n---`), "the section is carried whole, not summarized");
+});
+
+test("every resident compaction carries the mission-preserving focus ahead of the profile's own", () => {
+  assert.equal(residentCompactionFocus(""), RESIDENT_COMPACTION_FOCUS);
+  assert.equal(residentCompactionFocus("  "), RESIDENT_COMPACTION_FOCUS);
+  assert.equal(residentCompactionFocus(" Keep the release list. "), `${RESIDENT_COMPACTION_FOCUS} Keep the release list.`);
+  assert.doesNotMatch(RESIDENT_COMPACTION_FOCUS, /\n/, "it rides on the /compact argument line");
+});
+
+test("a driver's compaction reaches the registry's internal listeners, and only an SDK session's does", () => {
+  const registry = new Registry();
+  const heard: SessionCompacted[] = [];
+  const unsubscribe = registry.onCompacted((event) => heard.push(event));
+  registry.registerSdkSession({ id: "sdk:compacting", agent: "claude", name: "compacting", cwd: tmpdir() });
+  registry.applyDriverEvent("sdk:compacting", { kind: "compacted" });
+  registry.applyDriverEvent("sdk:unknown", { kind: "compacted" });
+  assert.deepEqual(heard, [{ sessionId: "sdk:compacting" }]);
+  unsubscribe();
+  registry.applyDriverEvent("sdk:compacting", { kind: "compacted" });
+  assert.equal(heard.length, 1, "unsubscribed listeners hear nothing");
 });

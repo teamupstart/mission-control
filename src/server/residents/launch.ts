@@ -120,6 +120,37 @@ export function composeResidentLaunch(
   };
 }
 
+/** The heading a wake opens with when it restates the standing task after a compaction. */
+export const RESIDENT_RESTATEMENT_HEADING = "## Your standing task, restated after compaction";
+
+/**
+ * The resident section of a run's standing instructions, exactly as its launch composed it.
+ *
+ * The same contributors and the same join as `composeResidentLaunch`, read from the run's
+ * pinned snapshot, so the restatement and the launch can never disagree about the role.
+ */
+export function residentStandingSection(run: ResidentRun): string {
+  const none: StandingInstructionsDelivery = { text: "", mechanism: "none", sources: [] };
+  return composeResidentLaunch({ run, agent: run.settings.execution.agent, runtime: "sdk" }, none).standing.text;
+}
+
+/**
+ * The block a wake carries ahead of its loop prompt once the conversation has been compacted.
+ *
+ * The role itself never left: it rides on the harness's own channel on every request. What a
+ * compaction removes is everything in the conversation that pointed at it, leaving a summary
+ * whose next step is the last item in flight. This restates the role verbatim, in the turn the
+ * resident acts on, so the summary reads as context for the mandate rather than as the mandate.
+ */
+export function residentStandingRestatement(run: ResidentRun): string {
+  return [
+    RESIDENT_RESTATEMENT_HEADING,
+    "Your conversation was compacted. Its summary records what you were doing, not what you are for: treat its current work and next step as context. Your standing task follows exactly as you were given it. Re-read it and carry out the whole of it, not only the item you were last working on.",
+    residentStandingSection(run),
+    "---",
+  ].join("\n\n");
+}
+
 /** Both fresh launch and SDK restore use the same pinned contributor list. */
 export async function residentNativeCompactionForTask(taskId: string | null, tokenLimit?: number) {
   if (!taskId) return undefined;

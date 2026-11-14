@@ -135,6 +135,9 @@ export function claudeSdkRateLimits(
 ): RateLimits | null {
   if (!usage.rate_limits_available || !usage.rate_limits) return null;
   const fiveHour = sdkUsageWindow(usage.rate_limits.five_hour);
+  // A seven-day-only reading tells the registry the account has no five-hour limit, so a
+  // five-hour window that is present but unreadable rejects the whole reading instead.
+  if (usage.rate_limits.five_hour != null && !fiveHour) return null;
   const sevenDay = sdkUsageWindow(usage.rate_limits.seven_day);
   if (!fiveHour && !sevenDay) return null;
   return { fiveHour, sevenDay, updatedAt: now };

@@ -189,3 +189,12 @@ test("the console bands name a Pause now that is still being frozen, not a wait 
   }
   assert.match(render(PausedBand, retrying), /may still be running/);
 });
+
+test("a paused age counts from when the agent froze, not from when the pause was asked for", () => {
+  // Pause after this turn, asked for an hour ago; the turn ended and it froze two minutes ago.
+  const asked = NOW - 60 * 60_000;
+  const froze = NOW - 2 * 60_000;
+  const pause = { reason: "operator" as const, phase: "frozen" as const, since: asked, interrupted: null, stopped: true, frozenAt: froze };
+  assert.equal(pauseFlagLabel(pause, NOW), "Paused · 2m");
+  assert.equal(pauseFlagLabel({ ...pause, frozenAt: null }, NOW), "Paused · 1h", "an older record without a freeze time falls back to the request");
+});

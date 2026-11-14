@@ -169,7 +169,8 @@ export function pauseFlagLabel(pause: SessionPause, now: number): string {
     case "fleet":
       return "Fleet paused";
     case "operator":
-      return `Paused · ${pauseAge(pause.since, now)}`;
+      // From when it actually froze: an after-turn pause asked for an hour ago is not an hour old.
+      return `Paused · ${pauseAge(pausedAt(pause), now)}`;
   }
 }
 

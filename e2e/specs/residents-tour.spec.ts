@@ -508,6 +508,25 @@ test("a midway dismissal in one window cannot undo another window's announcement
   await expectDashboardReady(third);
   await expect(third.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
   await expect(third.getByRole("dialog", { name: PICKER })).toBeHidden();
+  await third.close();
+
+  // Window A still holds the copy of the debt it read when it owed it. Browse tours there
+  // reads the shared debt afresh, so the settled tour is an ordinary row: not featured, not
+  // tagged New, and not recorded a second time.
+  await page.bringToFront();
+  await page.keyboard.press("Meta+k");
+  const palette = page.getByRole("dialog", { name: "Search everything" });
+  await palette.getByRole("combobox").fill("Browse tours");
+  await palette.getByRole("option", { name: /Browse tours, command/ }).click();
+  const firstPicker = page.getByRole("dialog", { name: PICKER });
+  await expect(firstPicker).toBeVisible();
+  await expect(firstPicker.getByText("New", { exact: true })).toHaveCount(0);
+  await expect(firstPicker).not.toContainText("New tour:");
+  await expect(firstPicker.getByRole("radio", { name: "Set up this machine", exact: true })).toBeChecked();
+  expect(writes()).toEqual([]);
+  await firstPicker.getByRole("button", { name: "Dismiss", exact: true }).click();
+  expect(writes()).toEqual([]);
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
 });
 
 test("a picker save still in flight cannot clear a midway dismissal made after it began", async ({

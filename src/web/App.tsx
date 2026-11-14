@@ -103,7 +103,13 @@ import {
   cardShortcutTarget,
   NO_CARD_SHORTCUTS,
 } from "./lib/card-shortcuts.ts";
-import { uiConfig, updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
+import {
+  uiConfig,
+  uiConfigHydrated,
+  updateUiConfig,
+  useUiConfig,
+  useUiConfigHydrated,
+} from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
@@ -1010,8 +1016,9 @@ export function App(): React.JSX.Element {
   const tourPreferenceHydrated = useUiConfigHydrated();
   const catalog = useMemo(() => tourCatalog(), []);
   /**
-   * Announcements this browser owes after a midway dismissal. Read once per document, and
-   * settled when a picker opening's record write is saved or the tour is seen through.
+   * Announcements this browser owes after a midway dismissal, as this document last read them:
+   * at load, and again whenever the picker opens, because another window may have settled one.
+   * Settled when a picker opening's record write is saved or the tour is seen through.
    */
   const [owedAnnouncements, setOwedAnnouncements] = useState(readOwedAnnouncements);
   const tourAnnouncement = useMemo(
@@ -1023,8 +1030,6 @@ export function App(): React.JSX.Element {
       : null),
     [announcedTours, catalog, owedAnnouncements, tourPreferenceHydrated],
   );
-  const tourAnnouncementRef = useRef(tourAnnouncement);
-  tourAnnouncementRef.current = tourAnnouncement;
   const announcedToursRef = useRef(announcedTours);
   announcedToursRef.current = announcedTours;
   const startupTourHandled = useRef(false);
@@ -1050,7 +1055,17 @@ export function App(): React.JSX.Element {
     // Whichever way the picker opens, the first opening that features a new tour is its
     // announcement, and recording it lets the next window honor the startup preference again.
     // A refused write rolls back and the next window announces it once more; nothing to report.
-    const featured = tourAnnouncementRef.current;
+    // The browser-local debt is read afresh here, not taken from this document's copy: another
+    // window may have announced the tour and settled it since, and featuring it again would
+    // record a second announcement for one midway dismissal.
+    const owedNow = readOwedAnnouncements();
+    setOwedAnnouncements(owedNow);
+    const featured = uiConfigHydrated()
+      ? pendingTourAnnouncement(
+        withOwedAnnouncements(announcedToursRef.current, owedNow),
+        catalog.map((entry) => entry.id),
+      )
+      : null;
     setTourPickerFeatured(featured);
     if (featured) {
       const recorded = recordTourAnnouncements(announcedToursRef.current);
@@ -1063,7 +1078,7 @@ export function App(): React.JSX.Element {
       });
     }
     setTourPickerOpen(true);
-  }, []);
+  }, [catalog]);
 
   const closeTourPicker = useCallback((): void => {
     setTourPickerOpen(false);

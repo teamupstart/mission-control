@@ -407,10 +407,30 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
           </label>
         </fieldset>
       )}
+      {importsAll && allSources && (
+        <div>
+          <label className="alert-row">
+            <Tooltip label="Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident">
+              <input
+                type="checkbox"
+                checked={mcp.disableClaudeAiConnectors === true}
+                disabled={locked}
+                onChange={(event) => set({ ...mcp, disableClaudeAiConnectors: event.target.checked })}
+              />
+            </Tooltip>
+            <span>Disable claude.ai connectors</span>
+          </label>
+          <p className="field-hint">
+            Use this if plugin MCP tools disappear because they duplicate claude.ai connectors.
+            Installed plugin servers still load. All claude.ai connectors are disabled for this
+            resident, including Claude Docs. Applies on the next launch.
+          </p>
+        </div>
+      )}
       {importsAll ? (
         allSources ? (
           <p className="field-hint">
-            {label} loads its own {allSources.sources} at every start, as a terminal session does, so
+            {label} loads its native MCP configuration at every start, with the connector preference above, so
             the global servers it configures need no inheriting or selecting. Mission Control's own
             server and the custom servers below are always attached, and only they must connect
             before the resident starts. The set is not pinned: a native change reaches a running

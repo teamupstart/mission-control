@@ -408,6 +408,55 @@ test("a resident on all native sources lifts strict MCP config and the connector
   await strict.stop();
 });
 
+test("the connector opt-out reaches each Claude start without pinning plugins or losing other settings", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ options }) => {
+      seen.push(options as unknown as Record<string, unknown>);
+      return idleQuery(() => Object.keys(options.mcpServers ?? {})) as never;
+    },
+  });
+  for (const resume of [null, "resident-native-id"]) {
+    const handle = await spec.launch(sdkOptions({
+      resume,
+      residentMcp: { ...residentLaunch([], () => [], () => {}, "all"), disableClaudeAiConnectors: true },
+      advisorModel: "opus",
+      residentStateDir: "/state",
+    }));
+    const options = seen.at(-1)!;
+    assert.equal("strictMcpConfig" in options, false, "plugins must still load natively");
+    assert.deepEqual(options.settings, {
+      env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+      advisorModel: "opus", autoMemoryDirectory: "/state", autoMemoryEnabled: true,
+    });
+    await handle.stop();
+  }
+});
+
+test("a pinned resident keeps strict MCP configuration when its saved connector opt-out is true", async (t) => {
+  const seen: Array<Record<string, unknown>> = [];
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ options }) => {
+      seen.push(options as unknown as Record<string, unknown>);
+      return idleQuery(() => Object.keys(options.mcpServers ?? {})) as never;
+    },
+  });
+  // Switching back to pinned sources retains the saved preference, but must not apply it.
+  const handle = await spec.launch(sdkOptions({
+    residentMcp: { ...residentLaunch([], () => [], () => {}, "pinned"), disableClaudeAiConnectors: true },
+  }));
+  t.after(() => handle.stop());
+  const options = seen.at(-1)!;
+  assert.equal(options.strictMcpConfig, true);
+  assert.deepEqual(options.settings, { disableClaudeAiConnectors: true }, "pinned settings contain no opt-out environment override");
+  assert.equal((options.env as Record<string, string | undefined>).ENABLE_CLAUDEAI_MCP_SERVERS, undefined,
+    "the saved preference must not add the opt-out to the child environment either");
+});
+
 test("a resident on all native sources is checked only for the servers Mission Control put in its set", async () => {
   const launchWith = (statuses: Array<{ name: string; status: string }>) => claudeSdkSpec({
     executable: async () => "/fake/claude",

@@ -79,7 +79,11 @@ export interface EnsembleReviewDeps {
 }
 
 /** A finalization side effect either happened or is refused with a sentence the operator can act on. */
-export type FinalizeStepResult = { ok: true } | { ok: false; detail: string };
+/**
+ * `launchHeld`: a replacement launch TaskManager refused only for the operator's launch hold - a
+ * wait, not a failure; see `ensureWinnerReady`.
+ */
+export type FinalizeStepResult = { ok: true } | { ok: false; detail: string; launchHeld?: true };
 export type ContinuationDeliveryResult =
   | { ok: true }
   | { ok: false; retryable: boolean; detail: string };
@@ -3082,6 +3086,20 @@ export class EnsembleEngine {
       effort: winnerAttempt?.requestedEffort ?? role?.effort ?? null,
       snapshotSha,
     });
+    if (!materialize.ok && materialize.launchHeld) {
+      // The hold began between this engine's check above and TaskManager's. Parked like the check
+      // would have parked it - and woken once it is parked: if the hold already lifted, the wake
+      // its pause_state sent has come and gone, and nothing else would re-drive this step. The
+      // wake takes the run lock, so it runs after this pass; if the hold still stands, the check
+      // above parks it again without a launch, and the hold's own lift wakes it later.
+      void this.wake(run.id);
+      return {
+        ok: false,
+        winner: { mode: "replacement", ready: false },
+        detail: `the selected result's replacement task starts when the launch hold lifts: ${materialize.detail}`,
+        continuationInIntent,
+      };
+    }
     if (!materialize.ok) {
       return {
         ok: false,

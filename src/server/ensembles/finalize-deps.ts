@@ -186,7 +186,9 @@ export function createFinalizeDeps(deps: {
           // No pause override: the engine already waits out the operator's launch hold before this
           // step, and a hold that began since is refused here, which parks finalization until it lifts.
         });
-        if (!outcome.ok) return { ok: false, detail: outcome.error };
+        // A refusal for the launch hold is said as one, so the engine waits it out (and re-drives
+        // this step) rather than reading it as a failed replacement.
+        if (!outcome.ok) return { ok: false, detail: outcome.error, ...(outcome.launchHeld ? { launchHeld: true as const } : {}) };
       }
       return { ok: true };
     },

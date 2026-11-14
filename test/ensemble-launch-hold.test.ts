@@ -228,6 +228,44 @@ test("the winner's replacement task waits out the hold, the run stays finalizing
   assert.equal(store.getRun(run.id)!.status, "completed");
 });
 
+test("a replacement launch refused for a hold that already lifted is re-driven, not left finalizing", async () => {
+  // TaskManager saw a hold the engine's check did not, and the hold lifted before the run parked:
+  // the lift's wake has already passed, so the refusal itself has to re-drive the step.
+  class HeldOnce extends FakeFinalize {
+    refusals = 0;
+    override async materializeReplacement(request: Parameters<InstanceType<typeof FakeFinalize>["materializeReplacement"]>[0]) {
+      if (this.refusals === 0) {
+        this.refusals += 1;
+        return { ok: false as const, detail: HOLD, launchHeld: true as const };
+      }
+      return super.materializeReplacement(request);
+    }
+  }
+  const finalize = new HeldOnce();
+  finalize.safeIdle = false;
+  const { store, gateway, engine } = harness({ finalize });
+  const { run } = store.createRun(runInsert(decidePlan(2, 2)));
+  await engine.launch(run.id, { byOperator: true });
+  for (const dispatch of gateway.dispatched.slice()) await settle(engine, gateway, store, run.id, dispatch.taskId);
+  const winnerMember = store.listMembers(run.id).find((m) => m.ordinal === 1)!;
+  const winnerAttempts = new Set(store.listAttempts(run.id).filter((a) => a.memberId === winnerMember.id).map((a) => a.id));
+  const artifact = store
+    .listArtifacts(run.id)
+    .find((a) => a.status === "ready" && a.kind === "commit" && a.attemptId !== null && winnerAttempts.has(a.attemptId))!;
+  await engine.decide({
+    runId: run.id,
+    requestId: "req-held-once",
+    expectedStatus: "awaiting_decision",
+    selection: { kind: "selected", artifactId: artifact.id },
+    rationale: "it is the better one",
+    actorId: null,
+  });
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finalize.refusals, 1);
+  assert.equal(finalize.materialized.length, 1, "the refusal's own wake started the replacement");
+  assert.equal(store.getRun(run.id)!.status, "completed");
+});
+
 test("the manager wakes a run left waiting the moment the hold lifts, and not while it stands", async () => {
   const registry = new Registry();
   const store = new EnsembleStore(db);

@@ -51,16 +51,27 @@ function failure(result: { error?: string; message?: string }): string {
 
 /**
  * The aggregate to show when `next` arrives from either source - the stream or a route read.
- * It replaces what is shown, except the measurement: a read answered while a walk was still
- * running can be delivered after the stream has already said that walk finished, and showing it
- * would leave the page on "Measuring…" with nothing left to correct it. So the measurement is
- * kept from whichever answer finished one more recently (`usage.measuredAt`).
+ * It replaces what is shown, except the measurement, which is kept from whichever answer is
+ * further along: a read answered mid-walk can be delivered after the stream said that walk
+ * finished, and an idle answer from before a walk began can be delivered after the stream said
+ * it is measuring. Either, shown, would stick, since nothing further arrives to correct it.
+ *
+ * Ordered by the walk each answer describes (`usage.startedAt`), then, for the same walk, its
+ * end over its start: a finished or failed walk is further along than the same walk measuring.
+ * Not by `measuredAt`, which neither a starting nor a failing walk moves.
  */
 export function mergeStorageHealth(shown: StorageHealth | null, next: StorageHealth): StorageHealth {
   if (!shown) return next;
-  const shownAt = shown.usage.measuredAt ?? -1;
-  const nextAt = next.usage.measuredAt ?? -1;
-  return shownAt > nextAt ? { ...next, usage: shown.usage } : next;
+  return measurementOrder(shown.usage, next.usage) > 0 ? { ...next, usage: shown.usage } : next;
+}
+
+/** Positive when `a` describes a later point in the measurement than `b`. */
+function measurementOrder(a: StorageHealth["usage"], b: StorageHealth["usage"]): number {
+  const started = (a.startedAt ?? -1) - (b.startedAt ?? -1);
+  if (started !== 0) return started;
+  const ended = (a.measuring ? 0 : 1) - (b.measuring ? 0 : 1);
+  if (ended !== 0) return ended;
+  return (a.measuredAt ?? -1) - (b.measuredAt ?? -1);
 }
 
 /**

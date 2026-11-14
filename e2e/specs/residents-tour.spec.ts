@@ -182,12 +182,18 @@ test("the tour advertises Agent Shepherd, walks authoring, and hands over the op
   await step.getByRole("button", { name: "Next" }).click();
   step = tourStep(page, "Make Agent Shepherd your own");
   await expect(step).toBeVisible();
+  await expect(step).toContainText(
+    "Duplicate Agent Shepherd to customize it for your specific use case. The shipped default is a good starting point.",
+  );
   await expectSpotlight(editor.getByRole("button", { name: "Duplicate to edit" }));
   await shoot(page, "residents-tour-duplicate");
 
   await step.getByRole("button", { name: "Next" }).click();
   step = tourStep(page, "Or author one from scratch");
   await expect(step).toBeVisible();
+  await expect(step).toContainText(
+    "Create your own custom persona's and apply them to Residents. Keep your Resident's scoped to specific domains for best results and to avoid context bloat.",
+  );
   await expectSpotlight(rail.getByRole("button", { name: "New", exact: true }));
 
   await step.getByRole("button", { name: "Next" }).click();

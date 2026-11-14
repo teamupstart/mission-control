@@ -648,10 +648,29 @@ test("a startup opening that waited behind a dialog honors a debt another window
   await expect(picker).toBeHidden();
 });
 
-test("a fresh profile is not told a tour is new", async ({ page, daemon }) => {
-  // Every PUT the fixture made leaves a record born with every tour already announced.
-  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
-  await page.goto(`${daemon.baseURL}/#/fleet`);
-  await expectDashboardReady(page);
-  await expect(page.getByRole("dialog", { name: PICKER })).toBeHidden();
+test.describe("a fresh profile", () => {
+  // The product's own startup default: no preference pinned and no UI record written, so the
+  // picker opens on its ordinary first-run path.
+  test.use({ startupPicker: true });
+
+  test("is offered the ordinary picker, not told a tour is new", async ({ page, daemon }) => {
+    const before = await fetch(`${daemon.baseURL}/api/ui/config`);
+    expect(((await before.json()) as { configured: boolean }).configured).toBe(false);
+    const writes = recordAnnouncementWrites(page);
+    const picker = page.getByRole("dialog", { name: PICKER });
+    await page.goto(`${daemon.baseURL}/#/fleet`);
+    await expect(picker).toBeVisible();
+    // Every tour is news to someone opening the catalog for the first time, so none is
+    // announced: no New tag, no "New tour:" header, and the recommendation is previewed.
+    await expect(picker.getByRole("radio", { name: "Meet your residents", exact: true })).toBeVisible();
+    await expect(picker.getByText("New", { exact: true })).toHaveCount(0);
+    await expect(picker).not.toContainText("New tour:");
+    await expect(picker.getByRole("radio", { name: "Set up this machine", exact: true })).toBeChecked();
+    await expect(picker.getByRole("radio", { name: "Set up this machine", exact: true })).toBeFocused();
+    await picker.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect(picker).toBeHidden();
+    // Nothing was owed, so nothing was recorded.
+    expect(writes()).toEqual([]);
+    expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  });
 });

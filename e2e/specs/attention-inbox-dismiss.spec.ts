@@ -478,10 +478,18 @@ test.describe("a blocked session row", () => {
     // After the reload the snapshot arrives at once, but the dashboard's first three reads of the
     // stored dismissals fail. Until one succeeds the dashboard does not know the row is dismissed,
     // and must not count it - nor give up after the first failure.
+    //
+    // The reads keep failing until this spec has SEEN that held state, rather than for a fixed
+    // three. Retries back off at half a second, one and two, so three fixed failures were over
+    // in about three and a half seconds - and on a loaded runner the reload's own readiness
+    // wait could outlast them, leaving the unavailable pulse already gone by the time it was
+    // looked for. The state was right; the spec just arrived after it.
     let reads = 0;
+    let failing = true;
     await dashboard.route("**/api/attention/dismissals", async (route) => {
       if (route.request().method() !== "GET") return route.continue();
-      if (++reads <= 3) {
+      reads++;
+      if (failing) {
         await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"not yet"}' });
         return;
       }
@@ -494,14 +502,19 @@ test.describe("a blocked session row", () => {
     // so an empty pulse is never mistaken for nothing waiting.
     const unavailable = dashboard.locator(".pulse-seg", { hasText: "inbox unavailable" });
     await expect(unavailable).toBeVisible();
+    // ...and it does not give up after the first failure.
+    await expect.poll(() => reads, { message: "the dashboard retried a failed read" }).toBeGreaterThanOrEqual(3);
     await shoot(dashboard, "inbox-unavailable-while-retrying", dashboard.locator(".pulse"));
+    let counted = (await pulseCount(dashboard, "to answer")) === beforeOwed + 1;
+    const failedReads = reads;
+    failing = false;
 
-    let counted = false;
+    // The next retry is the first read allowed through; until it lands the row stays uncounted.
     await expect.poll(async () => {
       if ((await pulseCount(dashboard, "to answer")) === beforeOwed + 1) counted = true;
       return reads;
     }, { intervals: [100], timeout: 30_000, message: "the dashboard retried until a read succeeded" })
-      .toBeGreaterThanOrEqual(4);
+      .toBeGreaterThan(failedReads);
     expect(counted, "the dismissed row was counted while its dismissal was unknown").toBe(false);
     await expect(unavailable).toHaveCount(0);
     await holdsSteady(

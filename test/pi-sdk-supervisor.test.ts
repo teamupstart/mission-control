@@ -100,7 +100,13 @@ async function drain(times = 40): Promise<void> {
   for (let i = 0; i < times; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+/**
+ * Poll until `check` holds. The cap is a hang guard, never a speed assertion: it returns the
+ * moment the supervisor catches up. A launch through the fake SDK measured up to 912 ms on a
+ * machine at load average 33, and the full suite's concurrency pushed three launches past the
+ * old 2 s cap, so it is sized for a loaded runner rather than an idle one.
+ */
+async function waitFor(check: () => boolean, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (check()) return;

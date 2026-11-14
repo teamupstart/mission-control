@@ -530,31 +530,45 @@ setInterval(() => {
 server.listen(socketPath);
 `;
 
-const FAKE_WEZTERM = `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require("node:fs");
-const { createConnection } = require("node:net");
-const { join } = require("node:path");
-const dir = process.env.MC_E2E_RECORD_DIR;
-if (dir) {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, \`wezterm-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv: process.argv.slice(2) }, null, 2));
-}
-const args = process.argv.slice(2);
-if (args.includes("cli")) {
-  const socket = process.env.WEZTERM_UNIX_SOCKET || process.env.MC_E2E_WEZTERM_SOCKET;
-  if (!socket) process.exit(1);
-  const client = createConnection(socket);
-  client.once("error", () => { process.exitCode = 1; });
-  client.once("connect", () => {
-    if (process.env.WEZTERM_LOG === "wezterm_client::client=trace") {
-      process.stderr.write("TRACE wezterm_client::client > connect to Socket(" + JSON.stringify(socket) + ")\\n");
-    }
-    if (args.includes("list")) process.stdout.write("[]\\n");
-    if (args.includes("spawn")) process.stdout.write("0\\n");
-    client.end();
-  });
-}
-`;
+/**
+ * The stand-in `wezterm` CLI. It records each argv, and for `cli` it identifies the fixture's
+ * socket the way the real client does - the trace line Mission Control reads to find and pin
+ * it - then answers `list` with no panes and `spawn` with pane 0.
+ *
+ * Bash rather than Node, for speed. Every WezTerm operation first runs `wezterm cli list` to
+ * locate the socket, under a 2.5 s budget sized for a real CLI; a fake that was itself a cold
+ * Node start overran it under four browser workers, so a Herdr launch failed as "pane identity
+ * is stale" and a focus opened no window, at random. `[ -S ]` stands in for the connect: the
+ * fixture's listener lives as long as the daemon, so a socket of the right type is exactly what
+ * a connect would prove. Bash, not `/bin/sh`, for the string substitution the escaping needs -
+ * Linux CI's `/bin/sh` is dash.
+ */
+const FAKE_WEZTERM = [
+  "#!/usr/bin/env bash",
+  "# One JSON string, escaped without a subprocess: an argv here carries paths and titles.",
+  // Quoted pattern and replacement are literal in every bash this runs under (3.2 on macOS,
+  // 5.x on Linux CI); an unquoted backslash in a replacement is not.
+  "bs='\\'; q='\"'",
+  "json() { local s=${1//\"$bs\"/\"$bs$bs\"}; s=${s//\"$q\"/\"$bs$q\"}; out=\"$q$s$q\"; }",
+  "has() { local want=$1; shift; for a in \"$@\"; do [ \"$a\" = \"$want\" ] && return 0; done; return 1; }",
+  "if [ -n \"$MC_E2E_RECORD_DIR\" ]; then",
+  "  mkdir -p \"$MC_E2E_RECORD_DIR\"",
+  "  record='{\"argv\":['; sep=",
+  "  for arg in \"$@\"; do json \"$arg\"; record+=\"$sep$out\"; sep=,; done",
+  "  printf '%s]}\\n' \"$record\" > \"$MC_E2E_RECORD_DIR/wezterm-$$-$RANDOM.json\"",
+  "fi",
+  "has cli \"$@\" || exit 0",
+  "socket=${WEZTERM_UNIX_SOCKET:-$MC_E2E_WEZTERM_SOCKET}",
+  "[ -n \"$socket\" ] && [ -S \"$socket\" ] || exit 1",
+  "if [ \"$WEZTERM_LOG\" = \"wezterm_client::client=trace\" ]; then",
+  "  json \"$socket\"",
+  "  printf 'TRACE wezterm_client::client > connect to Socket(%s)\\n' \"$out\" >&2",
+  "fi",
+  "has list \"$@\" && printf '[]\\n'",
+  "has spawn \"$@\" && printf '0\\n'",
+  "exit 0",
+  "",
+].join("\n");
 
 /**
  * The stand-in `gh`, so a spec can watch what the daemon asks GitHub to do - and so that it

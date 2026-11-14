@@ -530,8 +530,8 @@ test("reconciliation recovers a process-failure quarantine before safe prune", a
     owner: { kind: "task", key: "recovery" },
   }));
   assert.equal((await manager.release(lease)).outcome, "released");
-  // A quarantine persisted by the older daemon must still recover after an upgrade.
-  manager.store.quarantine(lease.slotId, "slot process occupancy is unknown", "cwd listing omitted a ps-listed PID", Date.now());
+  // A new manager below proves recovery reads only the durable row, never in-memory history.
+  manager.store.quarantine(lease.slotId, "observation", "slot process occupancy is unknown", "cwd listing omitted a ps-listed PID", Date.now());
   occupancy.set(lease.path, { status: "unknown", reason: "cwd listing omitted a ps-listed PID" });
   await manager.reconcile();
   const before = manager.store.slot(lease.slotId)!;
@@ -579,7 +579,7 @@ for (const blocker of [
     }));
     if (blocker !== "active lease") assert.equal((await manager.release(lease)).outcome, "released");
     const slot = manager.store.slot(lease.slotId)!;
-    manager.store.quarantine(slot.id, "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+    manager.store.quarantine(slot.id, "observation", "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
     const original = manager.store.slot(slot.id)!;
     const occupied: WorktreeOccupancy = { status: "known", occupants: [{
       pid: 99, ppid: 1, startRaw: "fixture", startMs: 1, command: "helper", cwd: lease.path, knownOwner: null,
@@ -657,7 +657,7 @@ for (const change of ["HEAD", "dirty work", "unknown inspection", "thrown inspec
     }));
     assert.equal((await manager.release(lease)).outcome, "released");
     const slot = manager.store.slot(lease.slotId)!;
-    manager.store.quarantine(slot.id, "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+    manager.store.quarantine(slot.id, "observation", "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
     const quarantined = manager.store.slot(slot.id)!;
     const mergedInto = git.mergedInto.bind(git);
     git.mergedInto = async (...args) => {
@@ -709,8 +709,11 @@ test("quarantine recovery proves the inspected commit even when HEAD changes awa
   assert.equal((await manager.release(lease)).outcome, "released");
   gitIn(lease.path, "commit", "--allow-empty", "-qm", "unmerged commit A");
   const unmerged = gitIn(lease.path, "rev-parse", "HEAD");
+  // Record A as the allocator's own HEAD so this reaches the merge proof rather than stopping
+  // at the moved-HEAD proof before it.
+  db.prepare("UPDATE worktree_slots SET current_head_sha = ? WHERE id = ?").run(unmerged, lease.slotId);
   const slot = manager.store.slot(lease.slotId)!;
-  manager.store.quarantine(slot.id, "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
+  manager.store.quarantine(slot.id, "observation", "slot process occupancy is unknown", "process-list timeout", Date.now(), slot.version);
   const mergedInto = git.mergedInto.bind(git);
   git.mergedInto = async (...args) => {
     // Inspection saw A. A concurrent checkout temporarily exposes merged B while the

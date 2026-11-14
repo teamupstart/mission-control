@@ -431,9 +431,18 @@ test("a queued comment on a file this diff does not hold opens that file in the 
   await diff.getByRole("button", { name: "Comment on line 3" }).click();
   await diff.getByRole("textbox", { name: "Comment on line 3" }).fill(README_COMMENT);
   await diff.getByRole("button", { name: "Send", exact: true }).click();
+  // Delivered, not merely sent. A `sending` comment whose outbox turn is dropped before the
+  // agent confirms it goes back to the queue by design, and a review paused at that moment
+  // then holds it there for good - which is how this spec once failed under load, with README
+  // still `queued` thirty seconds on. Delivery is the line Pause never reaches back across, so
+  // from `awaiting` - or already past it, since the fake agent can answer at once - the
+  // comment can only finish.
   await expect
-    .poll(() => threadOn(daemon, "README.md").status, { message: "the comment never went out" })
-    .toMatch(/^(sending|awaiting)$/);
+    .poll(() => threadOn(daemon, "README.md").status, {
+      message: "the comment never reached the agent",
+      timeout: 30_000,
+    })
+    .toMatch(/^(awaiting|answered|unanswered)$/);
 
   // Paused from the diff's own queue, so the comment written next stays queued: nothing can go
   // out and take the Files tab to its file on its own. Whatever opens notes.md below is the

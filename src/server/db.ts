@@ -235,7 +235,11 @@ let db: DatabaseSync | undefined;
 // 30: a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task filed
 //     before it started without grilling; and the Grill action's operator text
 //     (`builtin_session_action_overrides`), a new empty table on an upgraded database.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 30;
+// 31: quarantine categories and times (`worktree_slots.quarantine_category`, `quarantined_at`).
+//     The category is backfilled once for quarantines whose recorded reason is one this
+//     allocator only ever wrote for an observer that did not answer, so this one rewrites rows.
+//     Every other legacy quarantine, and every legacy time, stays NULL: neither was recorded.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 31;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -982,6 +986,11 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       last_released_owner_key   TEXT,
       last_used_at              INTEGER,
       quarantine_reason         TEXT,
+      -- Why and when the slot entered quarantine. The category vocabulary is append-only
+      -- (WORKTREE_QUARANTINE_CATEGORIES) and decides whether reconciliation may recover it.
+      -- Only the transition into quarantine writes either; every transition out clears both.
+      quarantine_category       TEXT,
+      quarantined_at            INTEGER,
       last_error                TEXT,
       -- Dependency claim state. NULL is "never claimed". The vocabulary is append-only
       -- (WORKTREE_DEPS_STATES). A claim writes its intent and clears the fingerprint in one
@@ -3542,6 +3551,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "worktree_slots", "deps_fingerprint_sha", "TEXT");
   addColumn(d, "worktree_slots", "deps_claimed_at", "INTEGER");
   addColumn(d, "worktree_slots", "deps_last_error", "TEXT");
+  migrateWorktreeQuarantineCategory(d);
+  addColumn(d, "worktree_slots", "quarantined_at", "INTEGER");
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
   // puts several elements on one line, that cannot distinguish a paragraph from its inline
@@ -4998,6 +5009,70 @@ function backfillInspectorLegacyPosted(d: DatabaseSync): void {
                WHEN status = 'drafted' THEN 'unposted'
                ELSE 'unknown'
              END`);
+}
+
+/**
+ * Add `quarantine_category` and run its backfill in one transaction, for the same reason as
+ * `migrateInspectorLegacyPosted`: the column is new exactly once.
+ */
+function migrateWorktreeQuarantineCategory(d: DatabaseSync): void {
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    if (addColumn(d, "worktree_slots", "quarantine_category", "TEXT")) backfillWorktreeQuarantineCategory(d);
+    d.exec("COMMIT;");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw err;
+  }
+}
+
+/**
+ * The quarantine reasons earlier builds wrote only when an observer did not answer: the
+ * process listing, a Git read, the registration list, or a domain-ownership lookup. Exact text,
+ * or a prefix where the reason carried its detail. This is the one place reason text is ever
+ * read for meaning, and only because a legacy row has nothing else; a new quarantine records
+ * its category directly and is never classified from prose.
+ */
+const LEGACY_OBSERVATION_QUARANTINE_REASONS = [
+  "slot process occupancy is unknown",
+  "slot Git state is unknown",
+  "slot Git state could not be inspected",
+  "Git registrations could not be read",
+  "last-released domain ownership could not be read",
+  "last-released domain ownership is unknown",
+  "leased domain ownership is unknown",
+] as const;
+const LEGACY_OBSERVATION_QUARANTINE_PREFIXES = [
+  "slot occupancy became unknown before ",
+  "Git worktree registrations are unknown: ",
+] as const;
+
+/**
+ * Classify the quarantines that predate the category. Runs once, in the migration that adds
+ * the column, so it only ever sees legacy rows. A legacy reason it does not recognize stays
+ * NULL, which is never recovered automatically. Recovery still re-proves every fact, so a
+ * classified slot that is in fact dirty, occupied, moved or leased stays quarantined.
+ */
+//
+// Category is not the whole of recoverability. The "slot occupancy became unknown before ..."
+// rows this classifies as observations usually still hold the reservation an older build never
+// undid, and recovery never releases a lease, so they can never come back on their own. Any
+// consumer asking "will Reconcile recover this slot?" must use `quarantineAutoRecoverable`
+// (category AND no active lease, the same rule `recoverQuarantined` enforces), never
+// `quarantineRecoverable` on the category alone.
+function backfillWorktreeQuarantineCategory(d: DatabaseSync): void {
+  const exact = LEGACY_OBSERVATION_QUARANTINE_REASONS.map(() => "?").join(", ");
+  // `substr` rather than LIKE: a reason may contain `%` or `_`, and this must be exact.
+  const prefixes = LEGACY_OBSERVATION_QUARANTINE_PREFIXES.map(() => "substr(quarantine_reason, 1, ?) = ?").join(" OR ");
+  d.prepare(
+    `UPDATE worktree_slots SET quarantine_category = 'observation'
+      WHERE state = 'quarantined' AND (quarantine_reason IN (${exact}) OR ${prefixes})`,
+  ).run(
+    ...LEGACY_OBSERVATION_QUARANTINE_REASONS,
+    ...LEGACY_OBSERVATION_QUARANTINE_PREFIXES.flatMap((prefix) => [prefix.length, prefix]),
+  );
 }
 
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {

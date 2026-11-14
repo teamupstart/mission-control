@@ -566,8 +566,8 @@ daemon refuses an autopilot launch itself while the hold stands, so a Foreman wo
 than the daemon is held too. A launch you start yourself (Dispatch, **launch anyway**, a drag
 onto a running agent, a retro or a tour) claims its own pause override and is not held. That
 override is separate from the one that starts a parked task: one never implies the other. An
-agent dispatching through the `dispatch_task` tool cannot claim it, so it is held like the
-autopilot. An ensemble works the same way: launching one yourself, or pressing **Retry** on one
+agent dispatching through the `dispatch_task` tool cannot claim it, nor can anything that calls
+the daemon with its token, so it is held like the autopilot. An ensemble works the same way: launching one yourself, or pressing **Retry** on one
 of its members, is your own launch and is not held. A member the ensemble starts later on its own,
 when a slot frees, and the task it starts for the result you selected wait for the hold to lift,
 then launch without being asked again. Nothing in the ensemble fails for having waited. See

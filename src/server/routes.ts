@@ -9155,7 +9155,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (!filed.ok) return c.json({ error: filed.error }, 409);
       }
       // The operator's own retry of a failed launch: it is neither held as parked nor by a pause.
-      const r = await tasks.dispatch(task.id, { overrideDisabled: true, overridePauseHold: true });
+      // Only the operator's: an agent calling this route is held like any other launch.
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true, overridePauseHold: mayOverridePauseHold(c) });
       return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
     }
     const workKey = launchWorkKey(task);
@@ -9398,8 +9399,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
       overrideDisabled: recipe.dispatch.overrideDisabled,
-      // A tour the operator started: theirs to launch whatever is paused.
-      overridePauseHold: true,
+      // A tour the operator started: theirs to launch whatever is paused. Not a token caller's.
+      overridePauseHold: mayOverridePauseHold(c),
       missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
@@ -9616,14 +9617,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
+  /**
+   * Whether this request may lift the operator's launch hold (`overridePauseHold`): only the
+   * operator's own, by the same test the pause routes apply. An agent holding the daemon token
+   * can call any of these routes directly, so a flag in the body is never trusted on its own.
+   */
+  const mayOverridePauseHold = (c: Context): boolean => sessionControlCallerRefusal(c) === null;
+
   async function dispatchSavedTask(c: Context, id: string, caller: "dashboard" | "agent" = "dashboard") {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
     // An agent may not lift the operator's launch hold for itself: the pause is the operator's,
-    // unlike `overrideDisabled`, which the MCP tool documents as the agent's to set.
-    const options = caller === "agent" ? { ...parsed.data, overridePauseHold: false } : parsed.data;
+    // unlike `overrideDisabled`, which the MCP tool documents as the agent's to set. Checked at
+    // this boundary, not only on the MCP route: the dashboard route is reachable with the token.
+    const operator = caller === "dashboard" && mayOverridePauseHold(c);
+    const options = operator ? parsed.data : { ...parsed.data, overridePauseHold: false };
     const r = await tasks.dispatch(id, options);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
@@ -9740,7 +9750,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const r = await tasks.assign(id, parsed.data.sessionId, {
       overrideDisabled: parsed.data.overrideDisabled,
-      overridePauseHold: parsed.data.overridePauseHold,
+      overridePauseHold: parsed.data.overridePauseHold === true && mayOverridePauseHold(c),
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);

@@ -1651,3 +1651,31 @@ test("a working terminal agent missing from one process read is retried, never s
   assert.deepEqual(stopped, [[60, 70]]);
   assert.equal(registry.pauses.get("t")?.phase, "frozen");
 });
+
+test("an idle agent missing from one process read is retried, never settled over", async () => {
+  for (const runtime of ["terminal", "sdk"] as const) {
+    const registry = new FakeRegistry([session("i", "idle", { runtime, agent: "claude" })]);
+    const timers: { fn: () => void; ms: number }[] = [];
+    let seen = false;
+    const stopped: number[][] = [];
+    const manager = new PauseManager({
+      registry,
+      freezer: { treeOf: async () => (seen ? refs(88) : []), stop: (procs) => (stopped.push(pidsOf(procs)), []), resume: () => [] },
+      store: memoryStore(),
+      setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+      clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+      log: () => {},
+    });
+    manager.start();
+    registry.sweep();
+    await manager.idle();
+    assert.equal((await manager.pause("i", "now")).ok, false, `${runtime}: not called paused over an agent that was not found`);
+    assert.equal(registry.pauses.get("i")?.phase, "pending");
+    assert.deepEqual(timers.map((t) => t.ms), [15_000], `${runtime}: read again on the timer`);
+    seen = true;
+    timers.shift()!.fn();
+    await manager.idle();
+    assert.deepEqual(stopped, [[88]], `${runtime}: frozen once found`);
+    assert.equal(registry.pauses.get("i")?.phase, "frozen");
+  }
+});

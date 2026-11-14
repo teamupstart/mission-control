@@ -143,3 +143,21 @@ test("a hold that begins while stacked readiness waits on GitHub still holds the
   assert.equal(claimed.ok, true, "a launch that claims the override still goes");
   assert.equal(launches, 1);
 });
+
+test("a token caller cannot lift the pause hold through the dashboard's own routes either", async () => {
+  // The MCP route strips the flag, but an agent holding the daemon token can call the dashboard
+  // routes directly. The override is honoured only for the operator's own request.
+  const { post, launches } = setup();
+  const token = { ...HEADERS, "x-harness-token": ensureToken() };
+  const dispatch = await post("/api/tasks/t1/dispatch", { overridePauseHold: true }, token);
+  assert.equal(dispatch.status, 409);
+  assert.match((await dispatch.json() as { error: string }).error, /automatic launches are held/);
+  const assign = await post("/api/tasks/t1/assign", { sessionId: "missing-session", overridePauseHold: true }, token);
+  assert.equal(assign.status, 409);
+  assert.match((await assign.json() as { error: string }).error, /automatic launches are held/);
+  assert.equal(launches(), 0, "nothing launched for the agent");
+  // The operator's same request still goes.
+  const operator = await post("/api/tasks/t1/dispatch", { overridePauseHold: true });
+  assert.equal(operator.status, 200);
+  assert.equal(launches(), 1);
+});

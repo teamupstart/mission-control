@@ -694,13 +694,14 @@ export class PauseManager {
       // started yet. Nothing has been stopped, so it is not frozen - held, and read again on the
       // backing-off timer until it appears. Only a driver with no process of its own settles here.
       //
-      // The same for any session with a process to stop, nothing stopped yet, and a turn
-      // running - a fresh SDK driver before its child spawns, or a terminal agent missing from
-      // one process snapshot: a pause must not settle over a turn still using the network. It
-      // is a retryable failure, read again on the backing-off timer. (With processes already
-      // recorded, an empty read means nothing more to stop, below.)
+      // The same for any session with a process to stop and nothing stopped yet, idle or mid-
+      // turn - a fresh SDK driver before its child spawns, or an agent one read of the process
+      // table missed: a pause must not settle over an agent that is still running. It is a
+      // retryable failure, read again on the backing-off timer. (With processes already
+      // recorded, an empty read means nothing more to stop, below.) Only an agent with no
+      // process of its own to stop (`pauseFreezes`, Pi) settles as a hold.
       const restored = record.runtime === "sdk" && this.restoredSdk.has(session.id);
-      if (pauseFreezes(session) && (restored || (turnRunning(session) && record.procs.length === 0))) {
+      if (pauseFreezes(session) && (restored || record.procs.length === 0)) {
         record.phase = "pending";
         return record.runtime === "sdk" ? "its driver process has not started yet" : "its process was not found in the process table";
       }

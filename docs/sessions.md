@@ -746,7 +746,8 @@ resumed last, so it never notices its foreground job stop and keeps the terminal
 session stays held but running, and the control that asked says which process refused. The
 freeze is retried on a timer that backs off from 15 seconds to 5 minutes, never in a tight
 loop. A **Pause now** keeps retrying even while its turn runs, including on an SDK session whose
-driver process has not started yet or a terminal agent that one read of the process table missed;
+driver process has not started yet or an agent, idle or not, that one read of the process table
+missed;
 only **Pause after this turn** waits for the turn to end. A
 paused card and conversation say when the agent actually froze, which for an after-turn pause is
 when its turn ended, not when you asked. After every stop the tree is read again, so a tool the agent started

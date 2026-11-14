@@ -799,7 +799,14 @@ export class PauseManager {
       if (fresh.length === 0) {
         if (changed) {
           record.procs = restamped;
-          this.persist();
+          // Saved before the freeze is called settled: a restart reads only the disk, and an old
+          // identity there would make its resume skip the very process that is stopped. Unsaved,
+          // the freeze is unfinished and retried - the retry saves these identities before its
+          // own signal, as every freeze does.
+          if (!this.persist()) {
+            record.phase = "pending";
+            return "the identities of its stopped processes could not be saved";
+          }
         }
         return undefined;
       }

@@ -1679,3 +1679,38 @@ test("an idle agent missing from one process read is retried, never settled over
     assert.equal(registry.pauses.get("i")?.phase, "frozen");
   }
 });
+
+test("a restamped identity that cannot be saved leaves the freeze unsettled until it is", async () => {
+  // Pid 71 exec'd between the stop and the settle read. Its new identity must reach the disk
+  // before the pause is called frozen, or a restart's resume would skip that stopped process.
+  const registry = new FakeRegistry([session("a", "idle")]);
+  const store = countingStore();
+  const timers: { fn: () => void; ms: number }[] = [];
+  const execd = { pid: 71, identity: "e".repeat(64) };
+  let reads = 0;
+  const manager = new PauseManager({
+    registry,
+    freezer: { treeOf: async () => (++reads === 1 ? refs(70, 71) : [...refs(70), execd]), stop: () => [], resume: () => [] },
+    store,
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+
+  // Save 1 is the hold, 2 the pids before SIGSTOP, 3 the restamped identity.
+  store.arm([3]);
+  const result = await manager.pause("a", "now");
+  assert.equal(result.ok, false, "not reported frozen over an identity the disk does not have");
+  assert.equal(registry.pauses.get("a")?.phase, "pending");
+  // The closing save after it carries the new identity, still as an unfinished freeze.
+  assert.equal(store.get()?.sessions.a?.phase, "pending", "on disk too, never frozen before the identity landed");
+  assert.deepEqual(timers.map((t) => t.ms), [15_000], "and the freeze is retried");
+
+  timers.shift()!.fn();
+  await manager.idle();
+  assert.equal(registry.pauses.get("a")?.phase, "frozen");
+  assert.equal(store.get()?.sessions.a?.procs.find((p) => p.pid === 71)?.identity, execd.identity, "saved as the process it is now");
+});

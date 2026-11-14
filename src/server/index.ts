@@ -16,7 +16,7 @@ import type { Context } from "hono";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
+import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
@@ -102,7 +102,7 @@ import { TaskManagerGateway } from "./ensembles/member-launch.ts";
 import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/finalize-deps.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
-import { WorktreeManager } from "./worktrees/manager.ts";
+import { WorktreeManager, type NativePoolStatus } from "./worktrees/manager.ts";
 import {
   LegacyTreehouseService,
   warnRetiredTreehouseCadence,
@@ -121,6 +121,9 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService } from "./storage-health.ts";
+import { getStorageAlertState, getStorageLimitsConfig, setStorageAlertState } from "./storage-limits.ts";
+import { remeasureGrowthFor, StorageUsageMonitor } from "./storage-usage.ts";
+import { idleCacheSelection } from "./storage-pools.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import {
   attachSessionTelemetry,
@@ -329,6 +332,12 @@ try {
 } catch (err) {
   console.error("[mission-control] could not reconcile check leases:", err);
 }
+// Assigned once Settings > Storage's measurer exists, below: a cleanup that removed slots
+// lowers its totals at once instead of at the next measurement.
+let onWorktreesChanged = () => {};
+// Likewise: the slots the saved idle-cache budget removes, which a `trimIdle` removal is checked
+// against when it is previewed and again, on the daemon, when it is executed.
+let currentIdleSelection: (status: NativePoolStatus[]) => ReadonlySet<string> = () => new Set();
 const worktreeOperations = new WorktreeOperationsService(worktrees, {
   legacy: legacyWorktrees,
   tasks: {
@@ -362,7 +371,11 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   },
   checks: checkLeases,
   checkRecovery: checkRuntime.groupRecovery,
-  notifyChanged: () => registry.emitWorktreesChanged(),
+  notifyChanged: () => {
+    registry.emitWorktreesChanged();
+    onWorktreesChanged();
+  },
+  trimIdleSelection: (status) => currentIdleSelection(status),
 });
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
@@ -440,11 +453,40 @@ const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
 // and the backup loop's startup prune seeds it.
-const storageHealth = new StorageHealthService({
+// The state directory's measured size and its volume's free space. `storageHealth` is assigned
+// on the next line, before any measurement or volume check can finish and call back.
+const storageUsage: StorageUsageMonitor = new StorageUsageMonitor({
+  root: STATE_DIR,
+  onChange: () => storageHealth.recompute(),
+  // While a storage limit is set, losing as much free space as is left before the next threshold
+  // (at most a GiB) starts an early walk, so the limit warning does not wait for the six-hourly one.
+  remeasureGrowthBytes: (measured) => remeasureGrowthFor(getStorageLimitsConfig(), measured),
+  // The floor is judged on every free-space check, not only once the reading moves 64 MiB.
+  volumeThresholds: () => {
+    const floor = getStorageLimitsConfig().freeFloorBytes;
+    return floor === null ? [] : [floor];
+  },
+});
+const storageHealth: StorageHealthService = new StorageHealthService({
   backups: databaseBackups,
+  usage: storageUsage,
+  limits: getStorageLimitsConfig,
+  alerts: { read: getStorageAlertState, write: setStorageAlertState },
   publish: (health) => registry.setStorageHealth(health),
 });
 databaseBackups.onChange(() => storageHealth.recompute());
+onWorktreesChanged = () => storageUsage.forgetRemovedSlots();
+currentIdleSelection = (status) => {
+  const limits = getStorageLimitsConfig();
+  return idleCacheSelection({
+    status,
+    slotBytes: (path) => storageUsage.slotBytes(path),
+    sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+    budgetBytes: limits.poolIdleBudgetBytes,
+    keepWarm: limits.poolKeepWarm,
+  });
+};
+let stopStorageUsage = () => {};
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -757,6 +799,7 @@ const app = buildApp({
   settingsBackups,
   databaseBackups,
   storageHealth,
+  storageUsage,
 });
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -816,6 +859,13 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
   }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
+  // The first walk waits out startup's own disk work; then one every six hours, and the free
+  // space every minute, which is cheap and is what a low-space warning needs to be timely.
+  stopStorageUsage = storageUsage.start({
+    firstMeasureMs: 2 * 60 * 1_000,
+    measureEveryMs: 6 * 60 * 60 * 1_000,
+    volumeEveryMs: 60 * 1_000,
+  });
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
   // `recoverSendingPendingTurns` has just turned any in-flight row `uncertain`, which lands on
@@ -957,6 +1007,7 @@ async function shutdown(): Promise<void> {
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();
+  stopStorageUsage();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();

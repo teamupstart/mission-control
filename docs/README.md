@@ -33,6 +33,7 @@ Mission Control's product reference is organized by feature below.
 - [User interface](ui.md)
 - [GitHub Inspector and shipping](inspector-and-shipping.md)
 - [Worktrees and checks](worktrees-and-checks.md)
+- [Storage](storage.md): disk use by category, backup and idle-cache limits, cleanup, and low-space warnings.
 - [Running Mission Control at Upstart](upstart.md)
 - [Configuration and commands](configuration.md)
 - [Demo mode](demo-mode.md)

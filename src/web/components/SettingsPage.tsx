@@ -57,7 +57,7 @@ import {
   settingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
-import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
+import { settingsRailDot, storageDotTone, type SettingsDotTone } from "../lib/settings-dots.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES } from "../tour/entries.ts";
@@ -125,10 +125,12 @@ function dotLabel(
       return "GitHub Inspector is live - reviews post to GitHub";
     }
     case "armed":
+      if (category === "storage") return "Mission Control is near its storage limit";
       return category === "trust"
         ? "Trust needs a look - a repository grant is armed"
         : "YOLO mode is armed - clean pull requests may merge themselves";
     case "failing": {
+      if (category === "storage") return "Storage needs attention: free space is low or a backup failed";
       if (category === "telemetry") {
         return "A telemetry destination stopped or is not getting through";
       }
@@ -671,7 +673,10 @@ export function SettingsPage({
           <StorageSettingsPanel
             health={storageHealth}
             configRevision={storageConfigRevision}
+            worktreesRevision={worktreesRevision}
             onNavigate={navigateWithAnchor}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
           />
         );
       case "restore":
@@ -789,6 +794,7 @@ export function SettingsPage({
                         foremanEnabled,
                         trustBlindSpot,
                         trustCheckExecution,
+                        storageTone: storageDotTone(storageHealth),
                       })}
                       status={settingsStatus}
                       category={c.id}

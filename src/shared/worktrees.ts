@@ -263,7 +263,13 @@ export type WorktreeActionRequest =
   | {
       action: "legacyReturn";
       owner: { kind: "task" | "check"; id: string; position?: number };
-    };
+    }
+  /**
+   * Remove exactly these idle slots, the set Settings > Storage's idle-cache budget chose.
+   * Every one must still be a safe prune candidate when the preview is built and again when
+   * it runs; one that is not blocks the preview rather than being dropped from it.
+   */
+  | { action: "trimIdle"; slotIds: string[] };
 
 export interface WorktreeActionRisk {
   key: WorktreeRiskKey;
@@ -343,8 +349,12 @@ export interface WorktreeOperationView {
  */
 export function worktreeRetryRequest(operation: WorktreeOperationView): WorktreeActionRequest | null {
   const request = operation.request;
-  if (request.action !== "destroy") return request;
   const removed = new Set(operation.completed.map((target) => target.id));
+  if (request.action === "trimIdle") {
+    const remaining = request.slotIds.filter((id) => !removed.has(id));
+    return remaining.length === 0 ? null : { action: "trimIdle", slotIds: remaining };
+  }
+  if (request.action !== "destroy") return request;
   if (request.target.kind === "slot") return removed.has(request.target.slotId) ? null : request;
   const original = request.target.kind === "slots"
     ? request.target.slotIds

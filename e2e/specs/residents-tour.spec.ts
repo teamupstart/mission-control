@@ -122,8 +122,9 @@ const cachedAnnouncedTours = (page: Page) => page.evaluate(() =>
     .announcedTours);
 
 /** What this browser owes because the daemon refused the write that would have owed it there. */
-const owedAnnouncements = (page: Page) => page.evaluate(() =>
-  JSON.parse(localStorage.getItem("mission.tourAnnouncementsOwed") ?? "[]") as string[]);
+const owedAnnouncements = (page: Page) => page.evaluate(() => Object.keys(
+  (JSON.parse(localStorage.getItem("mission.tourAnnouncementsOwed") ?? "{}") as { owed?: object })
+    .owed ?? {}));
 
 const PREFERENCE_ERROR = "Could not save your tour preference";
 
@@ -507,6 +508,63 @@ test("a midway dismissal in one window cannot undo another window's announcement
   await expectDashboardReady(third);
   await expect(third.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
   await expect(third.getByRole("dialog", { name: PICKER })).toBeHidden();
+});
+
+test("a picker save still in flight cannot clear a midway dismissal made after it began", async ({
+  page,
+  daemon,
+}) => {
+  // A profile owed the announcement: the picker features the tour and writes the record.
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO app_config (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run("ui", JSON.stringify({ showToursOnStartup: false, residentPlacement: "drawer" }));
+  });
+  // Hold that record write unanswered, as a slow daemon would.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let arrived!: () => void;
+  const held = new Promise<void>((resolve) => { arrived = resolve; });
+  await page.route("**/api/ui/config", async (route) => {
+    const request = route.request();
+    if (request.method() === "PUT" && "announcedTours" in (request.postDataJSON() ?? {})) {
+      arrived();
+      await released;
+    }
+    await route.continue();
+  });
+  const picker = page.getByRole("dialog", { name: PICKER });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  await held;
+
+  // While it is in flight, the operator starts the tour from that picker and leaves it midway.
+  await picker.getByRole("button", { name: "Start this tour" }).click();
+  await tourStep(page, "Agents that stay on the job").getByRole("button", { name: "Next" }).click();
+  const midway = tourStep(page, "Agent Shepherd ships ready to launch");
+  await expect(midway).toBeVisible();
+  await midway.getByRole("button", { name: "Exit tour" }).click();
+  await expect(midway).toBeHidden();
+  await expect.poll(() => owedAnnouncements(page)).toEqual(["residents"]);
+
+  // The held write now lands and is saved. It settles only what was owed when it began, which
+  // was nothing in this browser, so the newer midway dismissal is still owed.
+  const landed = page.waitForResponse((response) =>
+    response.request().method() === "PUT" && response.url().includes("/api/ui/config"));
+  release();
+  expect((await landed).ok()).toBe(true);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  expect(await owedAnnouncements(page)).toEqual(["residents"]);
+  await page.unroute("**/api/ui/config");
+
+  // So the next window features it again, past the opt-out.
+  await page.reload();
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("New tour: Meet your residents.");
+  await expect.poll(() => owedAnnouncements(page)).toEqual([]);
 });
 
 test("a fresh profile is not told a tour is new", async ({ page, daemon }) => {

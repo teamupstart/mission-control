@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   oweAnnouncement,
+  owedAnnouncementsMark,
   readOwedAnnouncements,
   settleOwedAnnouncements,
 } from "../src/web/tour/owed-announcements.ts";
@@ -31,16 +32,43 @@ test("a refused midway write is owed in this browser until it is announced or se
   assert.deepEqual(oweAnnouncement("residents", store), ["residents"]);
   // Owing it twice is still one debt.
   assert.deepEqual(oweAnnouncement("residents", store), ["residents"]);
-  assert.equal(store.data.get(KEY), JSON.stringify(["residents"]));
+  assert.deepEqual(JSON.parse(store.data.get(KEY)!), { seq: 2, owed: { residents: 2 } });
   // A fresh read, as the next window makes it.
   assert.deepEqual(readOwedAnnouncements(store), ["residents"]);
-  // Settled: nothing is left behind in storage.
+  // Settled: nothing is owed, and the sequence is kept so an older mark stays older.
   assert.deepEqual(settleOwedAnnouncements(["residents"], store), []);
-  assert.equal(store.data.has(KEY), false);
+  assert.deepEqual(JSON.parse(store.data.get(KEY)!), { seq: 2, owed: {} });
+});
+
+test("a record write settles only what was owed when it began, never a later dismissal", () => {
+  const store = memoryStorage();
+  // A picker opening, featuring a tour owed from an earlier midway Exit, captures its mark.
+  oweAnnouncement("residents", store);
+  const mark = owedAnnouncementsMark(store);
+  // Before its write lands, the operator starts the tour from that picker and leaves it midway.
+  oweAnnouncement("residents", store);
+  assert.ok(owedAnnouncementsMark(store) > mark);
+  // The write lands: the newer dismissal is still owed.
+  assert.deepEqual(settleOwedAnnouncements(["residents"], store, mark), ["residents"]);
+  assert.deepEqual(readOwedAnnouncements(store), ["residents"]);
+  // A write that began after it, or a run seen through, settles it.
+  assert.deepEqual(settleOwedAnnouncements(["residents"], store, owedAnnouncementsMark(store)), []);
+  // An empty store's mark is zero, and a debt owed after settling everything is newer than it.
+  const fresh = memoryStorage();
+  assert.equal(owedAnnouncementsMark(fresh), 0);
+  assert.deepEqual(settleOwedAnnouncements(["residents"], fresh, 0), []);
+  oweAnnouncement("residents", fresh);
+  assert.deepEqual(settleOwedAnnouncements(["residents"], fresh, 0), ["residents"]);
 });
 
 test("an unreadable or absent store owes nothing rather than failing the dashboard", () => {
-  for (const raw of ["not json", "{\"residents\":true}", "[7, \"\", null]"]) {
+  for (const raw of [
+    "not json",
+    "{\"residents\":true}",
+    "[7, \"\", null]",
+    "[\"residents\"]",
+    "{\"seq\":3,\"owed\":{\"residents\":\"3\"}}",
+  ]) {
     assert.deepEqual(readOwedAnnouncements(memoryStorage({ [KEY]: raw })), [], raw);
   }
   assert.deepEqual(readOwedAnnouncements(null), []);

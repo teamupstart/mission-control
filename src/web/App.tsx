@@ -191,6 +191,7 @@ import {
 } from "./tour/startup.ts";
 import {
   oweAnnouncement,
+  owedAnnouncementsMark,
   readOwedAnnouncements,
   settleOwedAnnouncements,
 } from "./tour/owed-announcements.ts";
@@ -1046,9 +1047,12 @@ export function App(): React.JSX.Element {
     setTourPickerFeatured(featured);
     if (featured) {
       const recorded = recordTourAnnouncements(announcedToursRef.current);
+      // Only debts that existed as this write began are its to settle: the operator can start
+      // the tour from this very picker and leave it midway before the write lands, and that
+      // newer dismissal must survive it.
+      const mark = owedAnnouncementsMark();
       void updateUiConfig({ announcedTours: recorded }).then((saved) => {
-        // Announced and saved: whatever this browser still owed is settled too.
-        if (saved) setOwedAnnouncements(settleOwedAnnouncements(recorded));
+        if (saved) setOwedAnnouncements(settleOwedAnnouncements(recorded, undefined, mark));
       });
     }
     setTourPickerOpen(true);

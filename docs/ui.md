@@ -460,7 +460,9 @@ through, and Finish or Exit there leaves the record alone. That debt lives only 
 under `mission.tourAnnouncementsOwed` in `localStorage`, written at the moment of the midway Exit.
 The daemon is never asked to take the tour back off `announcedTours`: that list is written whole,
 so a re-arm landing late could undo an announcement another window had already shown. The debt
-is settled once any window's picker opening saves its record write, or the tour is seen through.
+is settled once any window's picker opening saves its record write, or the tour is seen through;
+a record write settles only the reminders that existed when it began, so a midway Exit made while
+it was still in flight stays owed.
 It can only make a tour owed again, never mark one as seen, and a different browser does not
 see it.
 

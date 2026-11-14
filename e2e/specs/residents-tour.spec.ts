@@ -759,6 +759,69 @@ test("a startup refresh the daemon cannot answer opens on the loaded record and 
   await expect(picker).toBeHidden();
 });
 
+test("a re-check that was out while a dialog came and went is read again before the picker opens", async ({
+  page,
+  daemon,
+  context,
+}) => {
+  // A profile saved before the tour shipped, opted out of the picker: owed the announcement.
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO app_config (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run("ui", JSON.stringify({ showToursOnStartup: false, residentPlacement: "drawer" }));
+  });
+  // Window A hydrates normally. Its pre-opening re-check is answered by the daemon at once -
+  // the tour still owed - but that answer is delivered only when the test releases it.
+  let reads = 0;
+  let arrived!: () => void;
+  const checking = new Promise<void>((resolve) => { arrived = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/ui/config", async (route) => {
+    if (route.request().method() === "GET" && reads++ === 1) {
+      const answer = await route.fetch();
+      arrived();
+      await released;
+      await route.fulfill({ response: answer });
+    } else await route.continue();
+  });
+  const writes = recordAnnouncementWrites(page);
+  const picker = page.getByRole("dialog", { name: PICKER });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expectDashboardReady(page);
+  await checking;
+
+  // While that answer is out, a dialog opens in A, window B announces the tour and records it,
+  // and A's dialog closes again.
+  await page.keyboard.press("Meta+k");
+  const palette = page.getByRole("dialog", { name: "Search everything" });
+  await expect(palette).toBeVisible();
+  const second = await context.newPage();
+  const secondPicker = second.getByRole("dialog", { name: PICKER });
+  await second.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(secondPicker).toBeVisible();
+  await expect(secondPicker).toContainText("New tour: Meet your residents.");
+  await expect.poll(async () => (await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  await second.close();
+  await page.bringToFront();
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
+  await expect(picker).toBeHidden();
+
+  // The stale answer lands. A wait came between the re-check and its answer, so it does not
+  // count: A reads again, finds the tour announced, and honors the opt-out - no picker, and no
+  // second announcement write.
+  release();
+  await expect.poll(() => reads).toBeGreaterThan(2);
+  await expect.poll(() => cachedAnnouncedTours(page)).toEqual(["residents"]);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await expect(picker).toBeHidden();
+  expect(writes()).toEqual([]);
+  expect((await uiConfig(daemon)).announcedTours).toEqual(["residents"]);
+  expect((await uiConfig(daemon)).showToursOnStartup).toBe(false);
+});
+
 test.describe("a fresh profile", () => {
   // The product's own startup default: no preference pinned and no UI record written, so the
   // picker opens on its ordinary first-run path.

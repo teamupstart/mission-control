@@ -1042,6 +1042,13 @@ export function App(): React.JSX.Element {
    */
   const startupAnnouncementConfirmed = useRef(false);
   const startupAnnouncementChecking = useRef(false);
+  /**
+   * Counts every time the startup opening is made to wait. A confirming read counts only if no
+   * wait happened between its start and its landing: a dialog that opened meanwhile can stay open
+   * while another window announces the tour, so that read says nothing about the moment the
+   * picker can actually open, and the decision reads again then.
+   */
+  const startupAnnouncementWaits = useRef(0);
   /** Re-runs the startup decision once a confirming read lands. */
   const [startupRecheck, setStartupRecheck] = useState(0);
   const [tourPickerOpen, setTourPickerOpen] = useState(false);
@@ -1374,7 +1381,10 @@ export function App(): React.JSX.Element {
       busy: overlaysRef.current.anyOpen || activeTour !== null,
     });
     if (decision === "settle") startupTourHandled.current = true;
-    if (decision === "wait") startupAnnouncementConfirmed.current = false;
+    if (decision === "wait") {
+      startupAnnouncementConfirmed.current = false;
+      startupAnnouncementWaits.current += 1;
+    }
     if (decision !== "open") return;
     // Opening on account of an announcement: confirm the daemon still owes it. Preferences do
     // not live-sync between windows, so another window may have announced the tour while this
@@ -1384,9 +1394,10 @@ export function App(): React.JSX.Element {
     if (owedTourAnnouncement() !== null && !startupAnnouncementConfirmed.current) {
       if (startupAnnouncementChecking.current) return;
       startupAnnouncementChecking.current = true;
+      const waitsAtStart = startupAnnouncementWaits.current;
       void refreshAnnouncedTours().finally(() => {
         startupAnnouncementChecking.current = false;
-        startupAnnouncementConfirmed.current = true;
+        startupAnnouncementConfirmed.current = startupAnnouncementWaits.current === waitsAtStart;
         setStartupRecheck((n) => n + 1);
       });
       return;

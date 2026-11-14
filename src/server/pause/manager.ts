@@ -122,6 +122,13 @@ const UNSAVED: PauseResult = {
   error: "The pause could not be saved, so a restart of Mission Control would forget it. Try again.",
 };
 
+/** A pause that stands, but whose change of owner to you could not be saved. */
+const OWNER_UNSAVED: PauseResult = {
+  ok: false,
+  status: 500,
+  error: "This session is paused, but making it yours could not be saved, so Resume all or ending priority will still resume it. Try again.",
+};
+
 /** The first retry of a freeze that failed, and the longest wait between retries. */
 const FREEZE_RETRY_BASE_MS = 15_000;
 const FREEZE_RETRY_MAX_MS = 5 * 60_000;
@@ -227,6 +234,8 @@ export class PauseManager {
    * about this start, and a record leaves the set the moment this daemon stops one of its pids.
    */
   private restoredSdk = new Set<string>();
+  /** The pending retry of a final save that failed after a freeze (`persistSettled`), or null. */
+  private saveRetry: unknown = null;
   private fleet: StoredPauseState["fleet"] = null;
   private priority: StoredPauseState["priority"] = null;
   private resumeTimer: unknown = null;
@@ -297,6 +306,8 @@ export class PauseManager {
     if (this.resumeTimer !== null) this.clearTimer(this.resumeTimer);
     this.resumeTimer = null;
     for (const id of [...this.freezeRetries.keys()]) this.clearRetry(id);
+    if (this.saveRetry !== null) this.clearTimer(this.saveRetry);
+    this.saveRetry = null;
     await this.chain.catch(() => {});
     for (const [id, record] of this.records) {
       if (record.runtime !== "sdk" || record.procs.length === 0) continue;
@@ -373,7 +384,7 @@ export class PauseManager {
         if (!this.persist()) {
           existing.reason = previous;
           this.publishSession(sessionId);
-          return UNSAVED;
+          return OWNER_UNSAVED;
         }
         this.publishSession(sessionId);
         return failed ? heldButRunning(failed) : { ok: true };
@@ -389,7 +400,10 @@ export class PauseManager {
         return UNSAVED;
       }
       const failed = await this.freezeHeld(session, record, mode);
-      if (!this.persist()) return UNSAVED;
+      // The hold and the processes it stopped are already saved (the freeze saves them before
+      // its SIGSTOP), so what happened stands whatever this last save does: it is reported as
+      // it is, and the save is retried rather than the operator told the pause did not happen.
+      this.persistSettled();
       return failed ? heldButRunning(failed) : { ok: true };
     });
   }
@@ -443,7 +457,9 @@ export class PauseManager {
       const failures = await this.freezeAll(held);
       this.armResumeTimer();
       this.publishFleet();
-      if (!this.persist()) return UNSAVED;
+      // As for one session: the holds and every freeze are already saved; only the final state
+      // write remains, and it is retried rather than reported as a pause that did not happen.
+      this.persistSettled();
       return bulkResult(failures);
     });
   }
@@ -493,7 +509,7 @@ export class PauseManager {
       }
       const failures = await this.freezeAll(held);
       this.publishFleet();
-      if (!this.persist()) return UNSAVED;
+      this.persistSettled();
       return bulkResult(failures);
     });
   }
@@ -640,7 +656,7 @@ export class PauseManager {
     }
     await this.attemptFreeze(live, record);
     this.publishSession(sessionId);
-    this.persist();
+    this.persistSettled();
   }
 
   /**
@@ -990,7 +1006,7 @@ export class PauseManager {
         if (this.freezeRetries.has(live.id)) return;
         await this.attemptFreeze(live, record);
         this.publishSession(live.id);
-        this.persist();
+        this.persistSettled();
       });
     }
   }
@@ -1063,7 +1079,7 @@ export class PauseManager {
       if (failed && !failed.ok) this.log(`ending priority after a restart: ${failed.error}`);
     }
     this.publishFleet();
-    this.persist();
+    this.persistSettled();
   }
 
   /** Forget resume times too old to move any deadline: past the interrupt, both clocks agree. */
@@ -1098,6 +1114,28 @@ export class PauseManager {
   }
 
   /** Save the whole state; false when it could not be written. */
+  /**
+   * The save after a freeze that already happened. Everything a restart needs to recover is
+   * saved before each SIGSTOP, so this write's failure undoes nothing and is not the operator's
+   * problem to retry: it is retried here on the backing-off timer until a save lands. Any later
+   * successful save covers it too, and cancels the retry (`persist`).
+   */
+  private persistSettled(): void {
+    if (!this.persist()) this.scheduleSaveRetry(1);
+  }
+
+  private scheduleSaveRetry(attempt: number): void {
+    if (this.stopped) return;
+    if (this.saveRetry !== null) this.clearTimer(this.saveRetry);
+    const delay = Math.min(FREEZE_RETRY_BASE_MS * 2 ** (attempt - 1), FREEZE_RETRY_MAX_MS);
+    this.saveRetry = this.setTimer(() => {
+      void this.serialize(() => {
+        this.saveRetry = null;
+        if (!this.persist()) this.scheduleSaveRetry(attempt + 1);
+      });
+    }, delay);
+  }
+
   private persist(): boolean {
     try {
       this.pruneResumed();
@@ -1107,6 +1145,10 @@ export class PauseManager {
         sessions: Object.fromEntries(this.records),
         resumed: Object.fromEntries(this.resumed),
       });
+      if (this.saveRetry !== null) {
+        this.clearTimer(this.saveRetry);
+        this.saveRetry = null;
+      }
       return true;
     } catch (error) {
       this.log(`could not save pause state: ${String(error)}`);

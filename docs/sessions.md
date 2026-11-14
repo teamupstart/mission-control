@@ -773,7 +773,10 @@ saved before the first `SIGSTOP`, so a daemon that exits straight afterwards lea
 a record of what to continue. The next one also finishes that freeze at once, even though the
 stopped agent still reports the turn it was in, and until it has, nothing is typed or sent into
 those stopped processes. A pause that cannot be saved stops and holds nothing, and says so, and
-a Pause all or priority that cannot be saved holds nothing either: no launch or delivery waits behind a
+a Pause all or priority that cannot be saved holds nothing either. Once a freeze has happened,
+what it stopped is already saved, so a failure of the last save after it is not reported as a
+pause that did not happen: the pause is reported as it stands and that save is retried on the
+backing-off timer. Either way: no launch or delivery waits behind a
 pause you were told did not happen. A resume
 that cannot be saved continues nothing, because a restart would otherwise freeze again what you
 resumed. A scheduled morning resume that cannot be saved leaves everything paused and tries

@@ -1530,3 +1530,97 @@ test("an after-turn pause records when it froze, not only when it was asked for"
   assert.equal(pause?.since, 1_000, "asked for at the start");
   assert.equal(pause?.frozenAt, 61_000, "frozen when its turn ended");
 });
+
+/** A store that fails exactly the saves whose 1-based numbers are given, counted from `arm()`. */
+function countingStore(initial?: StoredPauseState) {
+  let saved = initial ? structuredClone(initial) : undefined;
+  let count = 0;
+  let failing = new Set<number>();
+  return {
+    load: () => (saved ? structuredClone(saved) : undefined),
+    save: (state: StoredPauseState) => {
+      count += 1;
+      if (failing.has(count)) throw new Error("disk full");
+      saved = structuredClone(state);
+    },
+    arm: (fail: number[]) => { count = 0; failing = new Set(fail); },
+    count: () => count,
+    get: () => saved,
+  };
+}
+
+test("a pause whose freeze happened is reported as it is when only the final save fails, and that save is retried", async () => {
+  const registry = new FakeRegistry([session("a", "idle")]);
+  const { freezer, stopped } = recordingFreezer({ a: [70] });
+  const store = countingStore();
+  const timers: { fn: () => void; ms: number }[] = [];
+  const manager = new PauseManager({
+    registry,
+    freezer,
+    store,
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+
+  // Save 1 is the hold, 2 the pids before SIGSTOP, 3 the settled state.
+  store.arm([3]);
+  assert.deepEqual(await manager.pause("a", "now"), { ok: true }, "the agent is paused, and the operator is told so");
+  assert.deepEqual(stopped, [[70]]);
+  assert.equal(registry.pauses.get("a")?.phase, "frozen");
+  assert.equal(store.get()?.sessions.a?.phase, "pending", "on disk: the freeze a restart would finish");
+  assert.deepEqual(pidsOf(store.get()?.sessions.a?.procs), [70]);
+  assert.deepEqual(timers.map((t) => t.ms), [15_000], "the final save is retried");
+
+  timers.shift()!.fn();
+  await manager.idle();
+  assert.equal(store.get()?.sessions.a?.phase, "frozen", "and lands");
+  assert.deepEqual(timers, []);
+});
+
+test("a Pause all whose freezes happened is reported as it is when only the final save fails", async () => {
+  const registry = new FakeRegistry([session("a", "idle"), session("b", "idle")]);
+  const { freezer, stopped } = recordingFreezer({ a: [70], b: [80] });
+  const store = countingStore();
+  const timers: { fn: () => void; ms: number }[] = [];
+  const manager = new PauseManager({
+    registry,
+    freezer,
+    store,
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    clearTimer: (handle) => { const at = timers.indexOf(handle as (typeof timers)[number]); if (at >= 0) timers.splice(at, 1); },
+    log: () => {},
+  });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+
+  // Save 1 is the holds, 2 and 3 each session's pids before its SIGSTOP, 4 the settled state.
+  store.arm([4]);
+  assert.deepEqual(await manager.pauseFleet({ holdDispatch: true, resumeAt: null }), { ok: true });
+  assert.equal(store.count(), 4);
+  assert.deepEqual(stopped, [[70], [80]]);
+  assert.notEqual(manager.state().fleet, null, "Pause all stands, as reported");
+  assert.deepEqual(timers.map((t) => t.ms), [15_000], "the final save is retried");
+  timers.shift()!.fn();
+  await manager.idle();
+  assert.equal(store.get()?.sessions.b?.phase, "frozen");
+});
+
+test("a takeover whose change of owner cannot be saved says the session is still paused", async () => {
+  const registry = new FakeRegistry([session("a", "idle")]);
+  const { freezer } = recordingFreezer({ a: [70] });
+  const store = countingStore();
+  const manager = new PauseManager({ registry, freezer, store, log: () => {} });
+  manager.start();
+  registry.sweep();
+  await manager.idle();
+  await manager.pauseFleet({ holdDispatch: false, resumeAt: null });
+  store.arm([1]);
+  const result = await manager.pause("a", "now");
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? "" : result.error, /is paused, but making it yours could not be saved/);
+});

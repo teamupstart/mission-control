@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
+import type { Page } from "@playwright/test";
+
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
@@ -27,6 +29,20 @@ const WARNING =
   "started yourself in a terminal. This works poorly on some setups: cards can show the wrong " +
   "state, name, or pane, and sending to them can fail. Sessions Mission Control starts are " +
   "always shown.";
+
+/**
+ * Screenshot the switch once the rows above it have stopped moving. The machine check renders
+ * its rows after the switch, and shifts it down; captured before that, the picture is of
+ * whichever row slid into its place.
+ */
+async function settledShot(page: Page, path: string): Promise<void> {
+  await expect(page.locator(".setup-pane .setup-loading")).toHaveCount(0);
+  await expect(page.locator(".setup-pane .setup-row").first()).toBeVisible();
+  const block = page.locator(".setup-external-sessions");
+  await block.scrollIntoViewIfNeeded();
+  await page.mouse.move(0, 0);
+  await block.screenshot({ path, animations: "disabled" });
+}
 
 test("the outside-sessions switch starts off, warns, and keeps each change across a reload", async ({
   page,
@@ -60,7 +76,7 @@ test("the outside-sessions switch starts off, warns, and keeps each change acros
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("external-sessions-setting");
     mkdirSync(evidence, { recursive: true });
-    await page.locator(".setup-external-sessions").screenshot({ path: join(evidence, "terminals-switch-on.png") });
+    await settledShot(page, join(evidence, "terminals-switch-on.png"));
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/external-sessions-setting/terminals-switch-on.png");
   }
@@ -81,7 +97,7 @@ test("the outside-sessions switch starts off, warns, and keeps each change acros
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("external-sessions-setting");
-    await page.locator(".setup-external-sessions").screenshot({ path: join(evidence, "terminals-switch-off.png") });
+    await settledShot(page, join(evidence, "terminals-switch-off.png"));
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/external-sessions-setting/terminals-switch-off.png");
   }

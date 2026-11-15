@@ -1001,7 +1001,7 @@ export class Registry extends EventEmitter {
    */
   private invites = new Map<string, ForemanInviteRow>();
   /** `lastAgentBinding` per synthetic id, as `discoveryAdmission` read it. See there. */
-  private admissionBindings = new Map<string, string | null>();
+  private admissionBindings = new Map<string, string>();
   /**
    * Launch presentation markers, keyed by the SAME note key. In memory like notes, goals
    * and invites because `launchTurnFor` is consulted once per transcript frame - every SSE
@@ -2591,14 +2591,20 @@ export class Registry extends EventEmitter {
       if (live) return dispatchKeys.has(noteKeyFor(live));
       if (unresolved.size === 0) return false;
       // After a restart the map is empty, and a pane's invite sits under its agent's session
-      // id. Cached per synthetic id: a hidden session never gains a binding, so this is
-      // asked once rather than every 1.5 seconds.
-      if (!this.admissionBindings.has(id)) {
-        if (this.admissionBindings.size >= 1024) this.admissionBindings.clear();
-        this.admissionBindings.set(id, lastAgentBinding(id));
+      // id. Only a FOUND binding is cached: a miss is asked again next sweep, because the
+      // binding can be recorded after the first sweep, and a cached miss would hide that
+      // invited session for good. Misses only cost a query while some dispatch invite has no
+      // live card (`unresolved`), and `rememberAgentSession` drops a cached binding it changes.
+      let binding = this.admissionBindings.get(id);
+      if (binding === undefined) {
+        const stored = lastAgentBinding(id);
+        if (stored !== null) {
+          if (this.admissionBindings.size >= 1024) this.admissionBindings.clear();
+          this.admissionBindings.set(id, stored);
+        }
+        binding = stored ?? undefined;
       }
-      const binding = this.admissionBindings.get(id);
-      return binding != null && unresolved.has(binding);
+      return binding !== undefined && unresolved.has(binding);
     };
     return (candidate) =>
       candidate.missionLaunched ||
@@ -6278,6 +6284,8 @@ export class Registry extends EventEmitter {
   private rememberAgentSession(s: Session, prev: string | null): void {
     if (s.agentSessionId && s.agentSessionId !== prev) {
       recordAgentBinding(s.id, s.agentSessionId, Date.now());
+      // `discoveryAdmission` caches what it read; the row it read just changed.
+      this.admissionBindings.delete(s.id);
     }
   }
 

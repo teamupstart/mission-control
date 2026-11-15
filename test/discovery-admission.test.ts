@@ -72,6 +72,7 @@ const PIPELINE = 4;
 const REPO_ROOT = 5;
 const INVITED = 6;
 const RESTARTED = 7;
+const LATE_BOUND = 12;
 // The same rule for every harness: one Mission-launched and one hand-started session each.
 const CODEX_MISSION = 8;
 const CODEX_OUTSIDE = 9;
@@ -92,6 +93,7 @@ const CWDS: Record<number, string> = {
   [REPO_ROOT]: REPO,
   [INVITED]: "/work/invited",
   [RESTARTED]: "/work/restarted",
+  [LATE_BOUND]: "/work/late-bound",
   [CODEX_MISSION]: "/work/codex-mission",
   [CODEX_OUTSIDE]: "/work/codex-outside",
   [PI_MISSION]: "/work/pi-mission",
@@ -268,6 +270,25 @@ test("off, after a restart: a dispatch invite stored under the agent's session i
   const { find } = machine([RESTARTED, OUTSIDE]);
   await pollOnce(registry, find);
   assert.deepEqual(shown(registry), [idOf(RESTARTED)]);
+});
+
+test("off, after a restart: a binding recorded after the first sweep still admits its invited session", async () => {
+  setTerminalsConfig({ externalSessions: false });
+  // The invite already sits under the agent's session id, but the synthetic-to-agent binding
+  // that leads there has not been recorded yet, so the first sweep cannot admit it.
+  const agentSessionId = "agent-session-late-binding-1";
+  upsertForemanInvite(agentSessionId, "dispatch", 1000);
+  const registry = new Registry();
+  const { find } = machine([LATE_BOUND, OUTSIDE]);
+  await pollOnce(registry, find);
+  assert.deepEqual(shown(registry), [], "nothing leads from this session to its invite yet");
+
+  recordAgentBinding(idOf(LATE_BOUND), agentSessionId, 2000);
+  await pollOnce(registry, find);
+  // The first sweep's miss was not kept: the next one reads the binding and admits it.
+  assert.deepEqual(shown(registry), [idOf(LATE_BOUND)]);
+  await pollOnce(registry, find);
+  assert.deepEqual(shown(registry), [idOf(LATE_BOUND)], "and keeps it");
 });
 
 test("turning the setting off evicts an outside card through the one eviction path", async (t) => {

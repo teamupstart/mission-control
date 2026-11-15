@@ -30,12 +30,14 @@ all, and the PR poller finds a session's pull request by asking
 
 ### Sessions started outside Mission Control
 
-By default the sweep shows only sessions Mission Control started: dispatched tasks, the agent
-button and terminal chooser, managed resume, **Continue in terminal**, and Agent SDK sessions.
-It recognizes its own terminal launches by the private wrapper each one runs beneath, read from
-the same process table (`isMissionLaunchProcess` in `src/server/terminal/launch-process.ts`), so
-they stay on the dashboard across a daemon restart. Two fallbacks also keep a session: being a
-running task's session or holding a dispatch Foreman invite, and working inside an observed
+By default the sweep admits only the terminal sessions Mission Control started: dispatched
+tasks, the agent button and terminal chooser, managed resume, and **Continue in terminal**.
+Agent SDK sessions never pass through the sweep: the daemon registers them itself when it starts
+them, so they are shown whichever way the setting below is set. The sweep recognizes its own
+terminal launches by the private wrapper each one runs beneath, read from the same process table
+(`isMissionLaunchProcess` in `src/server/terminal/launch-process.ts`), so they stay on the
+dashboard across a daemon restart. Two fallbacks also admit a terminal session: being a running
+task's session or holding a dispatch Foreman invite, and working inside an observed
 [pipeline run's](pipelines.md) worktree, since an external engine starts those workers.
 
 Any other `claude`, `codex`, or `pi` process is skipped before its pane is captured, its Git

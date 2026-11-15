@@ -30,7 +30,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * session name it generated, for the reason `session-interrupt-terminal.spec.ts` gives.
  */
 
-test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+// The agent here is started by hand, not by Mission Control, so it is an outside session:
+// discovery shows it only with Show sessions started outside Mission Control on.
+test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
 
 const EVIDENCE = artifactsDir("board-terminal-background-agents");
 const DISCOVERY_TIMEOUT = 20_000;

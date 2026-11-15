@@ -36,14 +36,23 @@ export const test = base.extend<{
    * role selectors remain about the surface they were written to exercise.
    */
   setupReminder: boolean;
+  /**
+   * Turn on **Show sessions started outside Mission Control** before the test runs. A spec that
+   * starts an agent by hand in a terminal (a fake binary in a tmux or Herdr pane) is starting an
+   * outside session, which discovery hides by default. One that dispatches, resumes, or works
+   * in an observed pipeline worktree must NOT set this: those sessions are shown with it off,
+   * and that is what such a spec should keep proving.
+   */
+  outsideSessions: boolean;
   daemon: DaemonHandle;
   dashboard: Page;
 }>({
   daemonEnv: [{}, { option: true }],
   startupPicker: [false, { option: true }],
   setupReminder: [false, { option: true }],
+  outsideSessions: [false, { option: true }],
 
-  daemon: async ({ daemonEnv, startupPicker, setupReminder }, use, info) => {
+  daemon: async ({ daemonEnv, startupPicker, setupReminder, outsideSessions }, use, info) => {
     const daemon = await startDaemon(daemonEnv);
     try {
       if (!startupPicker) {
@@ -72,6 +81,14 @@ export const test = base.extend<{
         if (!acknowledged.ok) {
           throw new Error("the daemon should accept the first-launch Setup acknowledgement");
         }
+      }
+      if (outsideSessions) {
+        const shown = await fetch(`${daemon.baseURL}/api/terminals/config`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ externalSessions: true }),
+        });
+        if (!shown.ok) throw new Error("the daemon should accept showing outside sessions");
       }
       await use(daemon);
     } finally {

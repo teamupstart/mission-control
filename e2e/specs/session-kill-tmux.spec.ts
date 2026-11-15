@@ -44,6 +44,9 @@ const test = base.extend<{ terminal: TmuxFixture }>({
 });
 
 test.describe("Kill in tmux", () => {
+  // The agent here is started by hand, not by Mission Control, so it is an outside session:
+  // discovery shows it only with Show sessions started outside Mission Control on.
+  test.use({ outsideSessions: true });
   test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is not installed");
 
   for (const shared of [true, false]) {

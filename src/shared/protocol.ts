@@ -3785,7 +3785,8 @@ export const DEFAULT_MULTIPLEXER_TERMINALS = {
 } as const satisfies Record<MultiplexerId, EmulatorId | null>;
 
 /**
- * The "Terminals" settings blob: what a multiplexer's sessions open in.
+ * The "Terminals" settings blob: terminal settings. What a multiplexer's sessions open in,
+ * and whether discovery shows sessions Mission Control did not start.
  *
  * Deliberately NOT part of `HarnessesConfig`, which answers a different question with a
  * different key. That object says which backend hosts a DISPATCHED session, keyed per agent
@@ -3805,6 +3806,12 @@ export const TerminalsConfigSchema = z.object({
     // build still cannot create one.
     .catchall(StoredEmulatorBackendSchema)
     .prefault(DEFAULT_MULTIPLEXER_TERMINALS),
+  /**
+   * Show Claude, Codex, and Pi sessions started outside Mission Control, which passive
+   * discovery would otherwise skip (`Registry.discoveryAdmission`). Off for every install,
+   * upgrades included: a stored blob or settings snapshot without the key parses as off.
+   */
+  externalSessions: z.boolean().default(false),
 });
 export type TerminalsConfig = z.infer<typeof TerminalsConfigSchema>;
 
@@ -3826,6 +3833,7 @@ export const TerminalsConfigPatchSchema = z
         message: "empty multiplexer terminal update",
       })
       .optional(),
+    externalSessions: z.boolean().optional(),
   })
   .strict()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });

@@ -7,7 +7,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 // Discovery is required for terminal sessions. Address only our unique tmux card,
 // never the rest of the fleet discovered on a developer's machine.
-test.use({ daemonEnv: { MISSION_POLL_MS: "400", MISSION_RUNTIME_META_POLL_MS: "500" } });
+// The agent here is started by hand, not by Mission Control, so it is an outside session:
+// discovery shows it only with Show sessions started outside Mission Control on.
+test.use({ daemonEnv: { MISSION_POLL_MS: "400", MISSION_RUNTIME_META_POLL_MS: "500" }, outsideSessions: true });
 test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is required");
 
 // The fake's whole response is one append: a passive read can never catch it working.

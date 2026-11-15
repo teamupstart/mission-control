@@ -143,6 +143,10 @@ test("a Ghostty dispatch keeps its task name through tab rewrites and daemon res
   }
 });
 
+test.describe("an outside Ghostty session", () => {
+  // This session is deliberately not Mission Control's own, so it is shown only with
+  // Show sessions started outside Mission Control on.
+  test.use({ outsideSessions: true });
 test("an external Ghostty session sharing a pane cwd has no writable destination", async ({ dashboard, daemon }) => {
   writeFileSync(join(daemon.home, "terminal-boundary.json"), JSON.stringify({
     cwd: daemon.repo, requestedTitle: "", tabTitle: "an unrelated shell at the same cwd",
@@ -159,6 +163,7 @@ test("an external Ghostty session sharing a pane cwd has no writable destination
     mkdirSync("e2e/.artifacts/terminal-session-name", { recursive: true });
     await dashboard.screenshot({ path: "e2e/.artifacts/terminal-session-name/ghostty-unverified.png" });
   }
+});
 });
 
 test.describe("managed terminal continuation", () => {

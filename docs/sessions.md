@@ -4,7 +4,7 @@ Three layers, most-to-least automatic:
 
 | Layer | Setup | Gives you |
 |-------|-------|-----------|
-| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on |
+| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on - for the sessions Mission Control started, and for every session once [outside sessions](#sessions-started-outside-mission-control) are shown |
 | **Claude hooks** | `npm run install-hooks` | precise state (working / idle / needs-input) + activity |
 | **MCP review channel** | `claude mcp add …` (see below) | agents push diffs / plans / questions for you to decide |
 
@@ -27,6 +27,29 @@ restoration and refreshed on the same cadence.
 This keeps the **PR chip** honest without a terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking
 `gh pr list --head <branch>`. Capturing either fact only once would leave live changes invisible.
+
+### Sessions started outside Mission Control
+
+By default the sweep shows only sessions Mission Control started: dispatched tasks, the agent
+button and terminal chooser, managed resume, **Continue in terminal**, and Agent SDK sessions.
+It recognizes its own terminal launches by the private wrapper each one runs beneath, read from
+the same process table (`isMissionLaunchProcess` in `src/server/terminal/launch-process.ts`), so
+they stay on the dashboard across a daemon restart. Two fallbacks also keep a session: being a
+running task's session or holding a dispatch Foreman invite, and working inside an observed
+[pipeline run's](pipelines.md) worktree, since an external engine starts those workers.
+
+Any other `claude`, `codex`, or `pi` process is skipped before its pane is captured, its Git
+facts are read, or its Codex rollout is looked up with `lsof`. One batched `lsof` still reads
+every agent's working directory, because the pipeline rule needs it. A skipped session is
+simply absent from the sweep, so a card it already had leaves through the ordinary exit and
+eviction lifecycle, and a hook from it finds no card, as any unmatched hook does.
+
+**Settings > Setup > Terminals > Show sessions started outside Mission Control** turns the old
+behavior back on, and the next sweep cards them again. It is off for every install, including
+upgrades, and it carries a warning: on some setups those cards show the wrong state, name, or
+pane, and sending to them can fail. It is stored in the `terminals` settings-backup domain. An
+agent started from a shell inside a Mission-launched session, such as one opened by the
+**Terminal** button, runs beneath that wrapper and counts as Mission-launched.
 
 The chip is that one pull request: the one on the branch of the checkout the session is
 standing in. A session running a

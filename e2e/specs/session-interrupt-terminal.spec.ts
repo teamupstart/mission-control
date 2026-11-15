@@ -45,7 +45,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
  */
 
 /** Discovery, on and brisk - this file's daemon only. See the header for why that is safe. */
-test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+// The agent here is started by hand, not by Mission Control, so it is an outside session:
+// discovery shows it only with Show sessions started outside Mission Control on.
+test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
 
 const INTERRUPT = "Control+c";
 const EVIDENCE = artifactsDir("session-interrupt-terminal");

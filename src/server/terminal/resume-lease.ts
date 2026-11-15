@@ -61,13 +61,27 @@ function record<T>(path: string): T | null {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
-export function resumeLeaseRoot(stateDir: string): string {
+/** Whether a token can name a managed resume attempt. */
+export function isResumeLeaseId(id: string): boolean {
+  return ID.test(id);
+}
+
+/**
+ * Where `resumeLeaseRoot` puts this state directory's leases, computed without creating
+ * anything. Discovery reads it on every sweep to recognize a running resume guard, and a
+ * sweep must never mkdir; throws when either directory cannot be resolved.
+ */
+export function resumeLeaseRootPath(stateDir: string): string {
   // Canonical daemon state identity partitions both control records and disposable homes.
   const identity = createHash("sha256").update(realpathSync(stateDir)).digest("hex");
-  const parent = join(realpathSync(tmpdir()), "mission-control-resumes");
+  return join(realpathSync(tmpdir()), "mission-control-resumes", identity);
+}
+
+export function resumeLeaseRoot(stateDir: string): string {
+  const root = resumeLeaseRootPath(stateDir);
+  const parent = dirname(root);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   directory(parent);
-  const root = join(parent, identity);
   for (const path of [root, join(root, "leases"), join(root, "homes")]) {
     mkdirSync(path, { mode: 0o700, recursive: true });
     directory(path);

@@ -125,7 +125,8 @@ import {
   modelLabel,
   parseContextWindowSize,
 } from "@shared/model.ts";
-import type { DiscoveredSession } from "./discovery/correlate.ts";
+import type { DiscoveredSession, DiscoveryAdmit } from "./discovery/correlate.ts";
+import { getTerminalsConfig } from "./terminals-config.ts";
 import type { TerminalEnumeration } from "./terminal/enumerate.ts";
 import type { SpawnedHome } from "./terminal/home.ts";
 import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
@@ -999,6 +1000,8 @@ export class Registry extends EventEmitter {
    * tombstones included - resolution, not storage, is where the tombstone becomes null.
    */
   private invites = new Map<string, ForemanInviteRow>();
+  /** `lastAgentBinding` per synthetic id, as `discoveryAdmission` read it. See there. */
+  private admissionBindings = new Map<string, string | null>();
   /**
    * Launch presentation markers, keyed by the SAME note key. In memory like notes, goals
    * and invites because `launchTurnFor` is consulted once per transcript frame - every SSE
@@ -2550,6 +2553,59 @@ export class Registry extends EventEmitter {
   }
 
   // ---- passive discovery ----
+
+  /**
+   * Which discovered sessions this sweep may show, or undefined to show every one.
+   *
+   * Read once per tick by the poller, before the sweep, so the setting, the task bindings,
+   * the invites and the observed pipeline runs are one snapshot. With **Show sessions started
+   * outside Mission Control** on (`TerminalsConfig.externalSessions`) everything is admitted,
+   * which is the old behavior. Off, a session is admitted when:
+   *
+   * 1. it runs beneath one of Mission Control's own launch wrappers (`missionLaunched`);
+   * 2. it is a live task's `sessionId`, or holds a `"dispatch"` Foreman invite - a fallback,
+   *    so a wrapper the predicate fails to recognize degrades to a card shown rather than a
+   *    task's session evicted. Not a work episode: `mergeDiscovered` opens one for every
+   *    session it merges, so an episode says nothing about who launched it; or
+   * 3. its cwd is inside an observed pipeline run's worktree (`pipelineLinkFor`). Pipeline
+   *    workers are spawned by an external engine, and pipelines are already opt-in.
+   *
+   * There is no eviction here. A refused session is absent from the sweep, and the unseen
+   * loop in `applyDiscovery` hands any card it had to `beginEviction`, like any other exit.
+   */
+  discoveryAdmission(): DiscoveryAdmit | undefined {
+    if (getTerminalsConfig().externalSessions) return undefined;
+    const bound = new Set<string>();
+    for (const task of this.tasks.values()) {
+      if (task.sessionId && isActiveTask(task.status)) bound.add(task.sessionId);
+    }
+    const dispatchKeys = new Set<string>();
+    for (const [key, row] of this.invites) if (row.source === "dispatch") dispatchKeys.add(key);
+    // Invite keys no live card accounts for. Only these can need the stored binding, so a
+    // steady fleet asks the database nothing.
+    const unresolved = new Set(dispatchKeys);
+    for (const live of this.sessions.values()) unresolved.delete(noteKeyFor(live));
+    const invited = (id: string): boolean => {
+      if (dispatchKeys.has(id)) return true;
+      const live = this.sessions.get(id);
+      if (live) return dispatchKeys.has(noteKeyFor(live));
+      if (unresolved.size === 0) return false;
+      // After a restart the map is empty, and a pane's invite sits under its agent's session
+      // id. Cached per synthetic id: a hidden session never gains a binding, so this is
+      // asked once rather than every 1.5 seconds.
+      if (!this.admissionBindings.has(id)) {
+        if (this.admissionBindings.size >= 1024) this.admissionBindings.clear();
+        this.admissionBindings.set(id, lastAgentBinding(id));
+      }
+      const binding = this.admissionBindings.get(id);
+      return binding != null && unresolved.has(binding);
+    };
+    return (candidate) =>
+      candidate.missionLaunched ||
+      bound.has(candidate.syntheticId) ||
+      invited(candidate.syntheticId) ||
+      this.pipelineLinkFor(candidate.cwd) !== null;
+  }
 
   applyDiscovery(discovered: DiscoveredSession[], terminals: readonly TerminalEnumeration[] = []): void {
     this.terminalInventory = terminals;

@@ -478,6 +478,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("terminals"),
   },
   {
+    id: "external-sessions",
+    label: "Show sessions started outside Mission Control",
+    description: "Also show Claude, Codex, and Pi sessions you started yourself in a terminal.",
+    category: "setup",
+    anchor: "setup/external-sessions",
+    keywords: ["outside", "external", "discovery", "hand-started", "manual", "terminal", "tmux", "hide", "sessions"],
+    kind: "toggle",
+    backup: backupDomains("terminals"),
+  },
+  {
     id: "auto-mode",
     label: "Auto mode on dispatch",
     description: "Launch every dispatched session in its most autonomous permission mode.",

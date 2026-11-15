@@ -1,4 +1,4 @@
-import { LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
+import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
 import {
   existsSync,
   lstatSync,
@@ -33,7 +33,6 @@ export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME
 /** Terminal pane identifiers that a headless or SDK child must never inherit. */
 const PANE_IDENTITY_ENV_NAMES = ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID"] as const;
 
-const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
 // Outside session homes so their cleanup cannot evict another task's warm cache.
 // See docs/configuration.md for the scope of sandbox-writability verification.
 const GO_CACHE_UID = userInfo().uid;

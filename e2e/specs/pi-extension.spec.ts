@@ -22,6 +22,9 @@ test.use({ daemonEnv: async ({}, use) => {
     rmSync(dir, { recursive: true, force: true });
   }
 } });
+// The agent here is started by hand, not by Mission Control, so it is an outside session:
+// discovery shows it only with Show sessions started outside Mission Control on.
+test.use({ outsideSessions: true });
 const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 

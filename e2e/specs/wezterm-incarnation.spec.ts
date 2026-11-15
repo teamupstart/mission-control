@@ -5,9 +5,11 @@ import { join } from "node:path";
 import type { Session } from "../../src/shared/types.ts";
 import { test, expect } from "../fixtures/test.ts";
 
+// The scripted WezTerm session runs under no Mission launch wrapper, so it is an outside
+// session: discovery shows it only with Show sessions started outside Mission Control on.
 test.use({ daemonEnv: {
   MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_WEZTERM_BOUNDARY: "1", MISSION_POLL_MS: "100",
-} });
+}, outsideSessions: true });
 
 test("a stale WezTerm action reports refusal and fresh discovery restores delivery", async ({ dashboard, daemon }) => {
   const directory = mkdtempSync(join(tmpdir(), "mc-wz-"));

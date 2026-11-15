@@ -57,8 +57,6 @@ import { selectConductorRepo, toggleConductorObservation } from "../fixtures/con
  * allows. This file's daemon only - see the header for why that is safe, and
  * `settings-conductor.spec.ts` for why a shared override would be a cost fifty specs pay.
  */
-// The ordinary agent beside the engine-driven one is started by hand, so it is an outside
-// session. The engine's own worker would be shown anyway, inside its run's worktree.
 test.use({ daemonEnv: { MISSION_POLL_MS: "400", MISSION_PIPELINE_TICK_MS: "1000" }, outsideSessions: true });
 
 const EVIDENCE = artifactsDir("session-driven-by-engine");

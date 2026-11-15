@@ -239,12 +239,11 @@ there is nothing to set a preference for yet.
 ## Sessions started outside Mission Control
 
 **Settings > Setup > Terminals** also holds **Show sessions started outside Mission Control**,
-below the multiplexer rows. Off, which is the default for every install including upgrades,
-discovery shows only the terminal sessions Mission Control launched, plus pipeline workers in
-an observed run's worktree. On, it also shows Claude, Codex, and Pi sessions started by hand in
-any terminal, as it always used to. The warning under the switch is always shown, because those
-cards rely on the least reliable reads discovery makes. It is stored in the `terminals` blob
-(`externalSessions`) and recorded in settings backups under the `terminals` domain. See
+below the multiplexer rows. It is off by default for every install, including upgrades. On, it
+also shows Claude, Codex, and Pi sessions started by hand in any terminal. The warning under the
+switch is always shown, because those cards rely on the least reliable reads discovery makes.
+It is stored in the `terminals` blob (`externalSessions`) and recorded in settings backups under
+the `terminals` domain. Which sessions are shown while it is off is defined in
 [sessions started outside Mission Control](sessions.md#sessions-started-outside-mission-control).
 
 ## Herdr

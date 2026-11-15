@@ -268,8 +268,6 @@ const RESERVED = [
  * `harnessOf` detects - running a script that only stays alive.
  */
 test.describe("an agent with no lifecycle reading", () => {
-  // The agent here is started by hand, not by Mission Control, so it is an outside session:
-  // discovery shows it only with Show sessions started outside Mission Control on.
   test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
   test.skip(
     spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0,

@@ -25,8 +25,6 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
  * is where a second backend's own discovery is proven.
  */
 
-// The agent here is started by hand, not by Mission Control, so it is an outside session:
-// discovery shows it only with Show sessions started outside Mission Control on.
 test.use({ daemonEnv: { MISSION_POLL_MS: "300", MISSION_USAGE_POLL_MS: "300" }, outsideSessions: true });
 const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;

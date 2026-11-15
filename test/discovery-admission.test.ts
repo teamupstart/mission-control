@@ -26,7 +26,7 @@ const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts
 const { mergeSettingPayload } = await import("../src/server/settings-backups/config-registry.ts");
 import type { DiscoveredSession, DiscoverDeps, DiscoveryAdmit } from "../src/server/discovery/correlate.ts";
 import type { Proc } from "../src/server/discovery/processes.ts";
-import type { ServerEvent } from "../src/shared/types.ts";
+import type { AgentType, ServerEvent } from "../src/shared/types.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
@@ -36,7 +36,8 @@ const REPO = "/repo/demo";
 const WORKTREE = `${REPO}/.worktrees/add-widgets`;
 
 /** One shell and one agent on a tty, optionally beneath a Mission launch wrapper. */
-function sessionProcs(n: number, opts: { wrapper?: boolean } = {}): Proc[] {
+function sessionProcs(n: number, opts: { wrapper?: boolean; agent?: AgentType } = {}): Proc[] {
+  const kind = opts.agent ?? "claude";
   const tty = `ttys${n}`;
   const parent: Proc = {
     pid: n * 100,
@@ -56,8 +57,8 @@ function sessionProcs(n: number, opts: { wrapper?: boolean } = {}): Proc[] {
     tty,
     startRaw: "",
     startMs: 1000,
-    command: "claude",
-    agent: "claude",
+    command: kind,
+    agent: kind,
     agentNative: true,
   };
   return [parent, agent];
@@ -71,6 +72,18 @@ const PIPELINE = 4;
 const REPO_ROOT = 5;
 const INVITED = 6;
 const RESTARTED = 7;
+// The same rule for every harness: one Mission-launched and one hand-started session each.
+const CODEX_MISSION = 8;
+const CODEX_OUTSIDE = 9;
+const PI_MISSION = 10;
+const PI_OUTSIDE = 11;
+const AGENT_OF: Record<number, AgentType> = {
+  [CODEX_MISSION]: "codex",
+  [CODEX_OUTSIDE]: "codex",
+  [PI_MISSION]: "pi",
+  [PI_OUTSIDE]: "pi",
+};
+const WRAPPED = new Set([MISSION, CODEX_MISSION, PI_MISSION]);
 const CWDS: Record<number, string> = {
   [MISSION]: "/work/mission",
   [OUTSIDE]: "/work/outside",
@@ -79,13 +92,17 @@ const CWDS: Record<number, string> = {
   [REPO_ROOT]: REPO,
   [INVITED]: "/work/invited",
   [RESTARTED]: "/work/restarted",
+  [CODEX_MISSION]: "/work/codex-mission",
+  [CODEX_OUTSIDE]: "/work/codex-outside",
+  [PI_MISSION]: "/work/pi-mission",
+  [PI_OUTSIDE]: "/work/pi-outside",
 };
 /** Every kind but RESTARTED, which only the restart case puts on the machine. */
 const EVERY = [MISSION, OUTSIDE, TASK_BOUND, PIPELINE, REPO_ROOT, INVITED];
 
 /** A machine with every kind of session on it, and seams recording what each read touched. */
 function machine(present: number[] = EVERY) {
-  const procs = present.flatMap((n) => sessionProcs(n, { wrapper: n === MISSION }));
+  const procs = present.flatMap((n) => sessionProcs(n, { wrapper: WRAPPED.has(n), agent: AGENT_OF[n] }));
   const annotated = { rollouts: new Set<string>(), panes: new Set<string>() };
   const deps: DiscoverDeps = {
     gather: async () => ({ procs, terminals: [] }),
@@ -189,6 +206,30 @@ test("off: a work episode is not launch evidence", async () => {
   setTerminalsConfig({ externalSessions: false });
   const admit = registry.discoveryAdmission()!;
   assert.equal(admit({ syntheticId: idOf(OUTSIDE), agent: "claude", cwd: CWDS[OUTSIDE]!, missionLaunched: false }), false);
+});
+
+test("off hides outside Codex and Pi sessions too, and on shows them", async () => {
+  const harnesses = [CODEX_MISSION, CODEX_OUTSIDE, PI_MISSION, PI_OUTSIDE];
+  setTerminalsConfig({ externalSessions: false });
+  const registry = fleet();
+  const { find, annotated } = machine(harnesses);
+  await pollOnce(registry, find);
+  // Only the two launched beneath a Mission wrapper, one per harness.
+  assert.deepEqual(shown(registry), [idOf(CODEX_MISSION), idOf(PI_MISSION)].sort());
+  assert.equal(registry.getSession(idOf(CODEX_MISSION))?.agent, "codex");
+  assert.equal(registry.getSession(idOf(PI_MISSION))?.agent, "pi");
+  assert.equal(registry.getSession(idOf(CODEX_OUTSIDE)), undefined);
+  assert.equal(registry.getSession(idOf(PI_OUTSIDE)), undefined);
+  // Neither hidden session reached a pane capture or a Codex rollout read.
+  assert.deepEqual([...annotated.rollouts].sort(), [idOf(CODEX_MISSION), idOf(PI_MISSION)].sort());
+  assert.deepEqual([...annotated.panes].sort(), [idOf(CODEX_MISSION), idOf(PI_MISSION)].sort());
+
+  setTerminalsConfig({ externalSessions: true });
+  await pollOnce(registry, find);
+  assert.deepEqual(shown(registry), harnesses.map(idOf).sort());
+  assert.equal(registry.getSession(idOf(CODEX_OUTSIDE))?.agent, "codex");
+  assert.equal(registry.getSession(idOf(PI_OUTSIDE))?.agent, "pi");
+  setTerminalsConfig({ externalSessions: false });
 });
 
 test("on: every session is shown, as before", async () => {

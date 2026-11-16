@@ -377,6 +377,67 @@ function ServiceRemedy({
   );
 }
 
+/**
+ * Install Mission Control's own Claude integrations with one press, then re-read the machine.
+ *
+ * The desktop shell owns the installer, so a dashboard opened in a plain browser has no button
+ * to offer. It says where the button is instead, and keeps the checkout command copyable for
+ * an operator who runs Mission Control from one.
+ */
+function IntegrationsRemedy({
+  note,
+  fallback,
+  onRepaired,
+}: {
+  note: string;
+  fallback: { argv: readonly string[]; note: string };
+  onRepaired(): void;
+}): React.JSX.Element {
+  const [installing, setInstalling] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const install = typeof window !== "undefined" ? window.missionDesktop?.installIntegrations : undefined;
+
+  if (!install) {
+    return (
+      <div className="setup-remedy-actions">
+        <p className="setup-remedy-hint">
+          Open Settings &gt; Setup in the Mission Control desktop app and press Install, or run this
+          from a Mission Control checkout:
+        </p>
+        <CopyCommand argv={fallback.argv} note={fallback.note} />
+      </div>
+    );
+  }
+
+  async function run(): Promise<void> {
+    setInstalling(true);
+    setResult(null);
+    try {
+      const next = await install!();
+      setResult(next);
+      // Re-read even after a refusal: a partial install can still have repaired this row.
+      onRepaired();
+    } catch {
+      setResult({ ok: false, message: "The install could not finish. Check the app log and retry." });
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button type="button" className="btn btn-primary" disabled={installing} onClick={() => void run()}>
+            {installing ? "Installing..." : "Install"}
+          </button>
+        </Tooltip>
+      </div>
+      {result && <RemedyNotice tone={result.ok ? "attention" : "error"} detail={result.message} />}
+    </div>
+  );
+}
+
 interface ProviderRead {
   loading: boolean;
   result: PipelineInstallerCandidatesResult | null;
@@ -498,6 +559,9 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
         onRepaired={onRepaired}
       />
     );
+  }
+  if (remedy.kind === "integrations") {
+    return <IntegrationsRemedy note={remedy.note} fallback={remedy.fallback} onRepaired={onRepaired} />;
   }
   if (remedy.kind === "command") {
     return row.rowId.source === "dependency"

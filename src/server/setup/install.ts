@@ -185,6 +185,10 @@ export async function executeSetupInstall(
       // A service starts in the daemon, not in a window. `POST /api/setup/service` owns it,
       // and this route will not open a terminal that has nothing to show.
       return refused(body.id, info.label, "This setup remedy starts a background service and opens no terminal.");
+    case "integrations":
+      // The desktop app installs Mission Control's own integrations in-process; there is no
+      // terminal for this route to open.
+      return refused(body.id, info.label, "This setup remedy is installed by the Mission Control desktop app and opens no terminal.");
     case "provider-installer": {
       const repoRoots = await deps.listRepoRoots();
       const installers = await deps.listProviderInstallers(remedy.provider, repoRoots);

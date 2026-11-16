@@ -219,7 +219,12 @@ export type SetupRemedy =
   // The one remedy that is not an installation. It carries no argv for the same reason
   // `provider-installer` does not: the browser names the service, and the daemon owns how
   // that service is started.
-  | { kind: "service"; service: SetupServiceId; label: string; note: string };
+  | { kind: "service"; service: SetupServiceId; label: string; note: string }
+  // Mission Control's own Claude integrations, installed by the desktop app with one press.
+  // Like `service`, the browser carries no argv to run: it names the action and the desktop
+  // shell owns the installer. `fallback` is copy-only text for a dashboard opened outside
+  // the desktop app, whose operator may be running Mission Control from a checkout instead.
+  | { kind: "integrations"; note: string; fallback: { argv: readonly string[]; note: string } };
 
 /**
  * Start Herdr's default server, offered in place of the install link while the CLI is
@@ -631,6 +636,19 @@ export interface SetupBannerView {
   attentionCount: number;
 }
 
+/**
+ * Reinstall Mission Control's Claude Code hooks, shared by both hook rows because the same
+ * installer writes the whole current event list and a path that exists.
+ */
+export const HOOK_INSTALL_REMEDY = {
+  kind: "integrations",
+  note: "Install Mission Control's Claude Code hooks and MCP server using this app's runtime, preserving your other settings.",
+  fallback: {
+    argv: ["npm", "run", "install-hooks"],
+    note: "Run from a durable Mission Control checkout rather than a pooled worktree.",
+  },
+} as const satisfies SetupRemedy;
+
 /** Metadata the narrower environment-check contract does not carry itself. */
 export const ENVIRONMENT_ROW_METADATA: Record<
   EnvironmentCheckId,
@@ -675,20 +693,11 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     family: "extensions",
     requirement: "required",
     enables: "While a hook path is dead, every Claude hook event on this machine fails and terminal sessions report no state.",
-    // The note carries BOTH repairs because the row cannot tell which installer wrote the
-    // dead path. The check fires identically for this repo's `hooks/harness-hook.mjs` and
-    // for the packaged app's `dist/satellites/hook.mjs`, and someone who only ever pressed
-    // "Install Claude integrations" may have no checkout to run an npm script in at all.
-    // Offering them a command they cannot run, with no hint that a button exists, is a
-    // required row they can only dismiss. Conditioning the structured remedy on the missing
-    // script would mean carrying a remedy on `EnvironmentCheckView`, which is a wire
-    // contract change for one row; naming both here costs a sentence.
-    remedy: {
-      kind: "command",
-      purpose: "install",
-      argv: ["npm", "run", "install-hooks"],
-      note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings instead.",
-    },
+    // One press in the desktop app, because the operator who hits this is most often running
+    // the packaged app and has no checkout to run an npm script in. The check fires the same
+    // way for this repo's `hooks/harness-hook.mjs` and the app's `dist/satellites/hook.mjs`,
+    // so the checkout command stays as the fallback a browser-opened dashboard shows.
+    remedy: HOOK_INSTALL_REMEDY,
   },
   // `optional`, unlike the dead-path row above it. These hooks still work: every installed event
   // reports, and the session's state is right. What is missing is an event added since they were
@@ -699,12 +708,7 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     family: "extensions",
     requirement: "optional",
     enables: "Until the hooks are reinstalled, terminal Claude sessions do not report the events they lack, such as a background sub-agent starting.",
-    remedy: {
-      kind: "command",
-      purpose: "install",
-      argv: ["npm", "run", "install-hooks"],
-      note: "Re-install the hooks so they cover every event this build listens for, from a durable clone rather than a pooled worktree. If you installed from the desktop app, press Install Claude integrations in Settings instead.",
-    },
+    remedy: HOOK_INSTALL_REMEDY,
   },
 };
 

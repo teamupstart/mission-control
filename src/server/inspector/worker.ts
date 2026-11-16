@@ -628,6 +628,68 @@ function diffOncePerTick(dir: string, pr: InspectorPr): TickDiff {
   return () => (fetched ??= fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES));
 }
 
+/**
+ * Record what one GitHub read said about a pull request, on its ledger row.
+ *
+ * `reopen` un-retires a row GitHub now reports open. Only `reobserveInspectorPr` asks for it:
+ * the sweep never reads a retired row, so it has nothing to reopen.
+ */
+function recordPrObservation(key: string, s: PrSnapshot, now: number, reopen = false): void {
+  updateInspectorPr(
+    key,
+    {
+      observedHeadSha: s.headSha || null,
+      observedState: s.state,
+      observedAt: now,
+      headRefName: s.headRefName || null,
+      baseRefName: s.baseRefName || null,
+      mergeCommitSha: s.mergeCommitSha ?? null,
+      // Re-recorded on every read rather than written once, because a pull request gets
+      // renamed - most often from the placeholder its author opened it with. The empty
+      // string `normalizePr` yields for a missing title collapses to null so the ledger
+      // has one reading of "we do not know what this is called", and the renderers'
+      // branch fallback covers it either way.
+      title: s.title || null,
+      ...(reopen && s.state === "OPEN" ? { state: "open" as const } : {}),
+    },
+    now,
+  );
+}
+
+/** What an on-demand read of one adopted pull request found. */
+export type InspectorReobservation =
+  | { ok: true; state: PrSnapshot["state"] }
+  | { ok: false; error: string };
+
+/**
+ * Read one adopted pull request from GitHub now, outside the sweep, and report what it said.
+ *
+ * The sweep reads only open rows, so a row it retired on a closed read is never read again -
+ * and a workflow gate blocked as closed on such a row had no way to learn that the pull request
+ * is open. This is that way: an operator's recheck of a closed-PR block calls it. A row GitHub
+ * reports open is un-retired, so the sweep owns it again from its next pass. A closed or merged
+ * answer is recorded and changes nothing else; the sweep retires an open row on its own read.
+ *
+ * Either answer is signalled like a sweep observation, so the gate evaluates it the same way. A
+ * failed read records nothing and signals nothing, because it observed nothing.
+ */
+export async function reobserveInspectorPr(
+  registry: Registry,
+  prKey: string,
+  now = Date.now(),
+): Promise<InspectorReobservation> {
+  const pr = getInspectorPr(prKey);
+  if (!pr) return { ok: false, error: "the pull request is not adopted" };
+  const snap = await fetchPr(liveDir(pr), pr.owner, pr.repo, pr.number);
+  if (!snap.ok || !snap.value) {
+    return { ok: false, error: snap.error ?? "could not read the pull request" };
+  }
+  recordPrObservation(prKey, snap.value, now, true);
+  registry.refreshInspections();
+  notifyInspection(registry, prKey, snap.value.headSha || null, snap.value.state, now);
+  return { ok: true, state: snap.value.state };
+}
+
 /** Run one PR through the whole cycle. Returns true when it did something. */
 async function processPr(
   cfg: InspectorConfig,
@@ -675,24 +737,7 @@ async function processPr(
   // beside the fetch that produced it, means every path below - retire the row, take the
   // backoff, run a review, sit the tick out - has already told the truth about what GitHub
   // said, rather than only the paths that happen to run to completion.
-  updateInspectorPr(
-    pr.key,
-    {
-      observedHeadSha: s.headSha || null,
-      observedState: s.state,
-      observedAt: now,
-      headRefName: s.headRefName || null,
-      baseRefName: s.baseRefName || null,
-      mergeCommitSha: s.mergeCommitSha ?? null,
-      // Re-recorded on every tick rather than written once, because a pull request gets
-      // renamed - most often from the placeholder its author opened it with. The empty
-      // string `normalizePr` yields for a missing title collapses to null so the ledger
-      // has one reading of "we do not know what this is called", and the renderers'
-      // branch fallback covers it either way.
-      title: s.title || null,
-    },
-    now,
-  );
+  recordPrObservation(pr.key, s, now);
   onObserved?.(s, now);
 
   // Stacked pull requests: observe the child and its current parent, reconcile the child's

@@ -498,7 +498,13 @@ export async function fetchPr(
     }
     const pr = json.data?.repository?.pullRequest;
     if (!pr) return { ok: false, error: "no such pull request" };
-    return { ok: true, value: { ...toSnapshot(pr),
+    // A read that cannot say which state the pull request is in observed nothing. Defaulting
+    // it to CLOSED retired an open pull request's row for good: the tick stops polling a
+    // retired row, and the workflow gate pinned to it blocked as closed.
+    if (!isPrState(pr.state)) {
+      return { ok: false, error: "GitHub's answer did not say whether the pull request is open" };
+    }
+    return { ok: true, value: { ...toSnapshot(pr, pr.state),
       ...(includeCodeRabbitComments ? { issueComments: issueCommentPage(pr.comments) } : {}),
       responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
@@ -529,7 +535,11 @@ function toChecks(state: unknown): ChecksState {
   }
 }
 
-function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
+function isPrState(value: unknown): value is PrSnapshot["state"] {
+  return value === "OPEN" || value === "CLOSED" || value === "MERGED";
+}
+
+function toSnapshot(pr: Record<string, unknown>, state: PrSnapshot["state"]): PrSnapshot {
   const reviewPage = toReviewPage(pr.reviews);
   const firstThreads = threadPage(pr.reviewThreads);
   const headCommit = (
@@ -539,7 +549,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
   )[0]?.commit;
   const createdAt = Date.parse(String(pr.createdAt ?? ""));
   return {
-    state: (pr.state as PrSnapshot["state"]) ?? "CLOSED",
+    state,
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
     headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
     ...refFields(pr),
@@ -562,7 +572,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
     checks: toChecks(headCommit?.statusCheckRollup?.state),
     threads: firstThreads.threads,
     threadError: firstThreads.error
-      ?? (typeof pr.isDraft !== "boolean" || !["OPEN", "CLOSED", "MERGED"].includes(String(pr.state))
+      ?? (typeof pr.isDraft !== "boolean"
         || typeof pr.headRefOid !== "string" || !pr.headRefOid ? "Missing PR identity or state" : null),
     threadsPageInfo: threadPageInfo(pr.reviewThreads),
     reviews: reviewPage.reviews,

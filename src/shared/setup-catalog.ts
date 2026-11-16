@@ -636,7 +636,6 @@ export interface SetupBannerView {
   attentionCount: number;
 }
 
-/** Metadata the narrower environment-check contract does not carry itself. */
 /**
  * Reinstall Mission Control's Claude Code hooks, shared by both hook rows because the same
  * installer writes the whole current event list and a path that exists.
@@ -650,6 +649,7 @@ export const HOOK_INSTALL_REMEDY = {
   },
 } as const satisfies SetupRemedy;
 
+/** Metadata the narrower environment-check contract does not carry itself. */
 export const ENVIRONMENT_ROW_METADATA: Record<
   EnvironmentCheckId,
   {

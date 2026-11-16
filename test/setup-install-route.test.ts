@@ -12,7 +12,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { SETUP_DEPENDENCY_INFO } = await import("../src/shared/setup-catalog.ts");
+const { HOOK_INSTALL_REMEDY, SETUP_DEPENDENCY_INFO } = await import("../src/shared/setup-catalog.ts");
 const { setupInstallerShell } = await import("../src/server/setup/install.ts");
 type SetupDependencyId = import("../src/shared/setup-catalog.ts").SetupDependencyId;
 type SetupRemedy = import("../src/shared/setup-catalog.ts").SetupRemedy;
@@ -191,6 +191,19 @@ test("the route refuses inert remedies before launch", async () => {
   const serviceResponse = await post(service, { id: "herdr", backend: "cmux" });
   assert.equal(serviceResponse.status, 409);
   assert.match(await serviceResponse.text(), /starts a background service and opens no terminal/);
+
+  // Mission Control's own integrations are installed in-process by the desktop app. A request
+  // naming one here has nothing to run, and never reaches its copy-only fallback argv either.
+  const integrations = appFor({
+    calls,
+    install: { catalog: catalogWith("codex-cli", HOOK_INSTALL_REMEDY) },
+  });
+  const integrationsResponse = await post(integrations, { id: "codex-cli", backend: "cmux" });
+  assert.equal(integrationsResponse.status, 409);
+  const integrationsBody = await integrationsResponse.json() as { ok: boolean; outcome: string; detail: string };
+  assert.equal(integrationsBody.ok, false);
+  assert.equal(integrationsBody.outcome, "refused");
+  assert.equal(integrationsBody.detail, "This setup remedy is installed by the Mission Control desktop app and opens no terminal.");
   assert.deepEqual(calls, []);
 });
 

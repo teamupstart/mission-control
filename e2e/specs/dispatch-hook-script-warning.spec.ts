@@ -144,7 +144,7 @@ test("a hook path that no longer resolves is named at dispatch time, and clears 
   await expect(note).toContainText("MODULE_NOT_FOUND");
   // And the repair, in both the forms an operator may have installed from.
   await expect(note).toContainText("npm run install-hooks");
-  await expect(note).toContainText("Install Claude integrations");
+  await expect(note).toContainText("press Install in the Mission Control desktop app's Settings > Setup");
   // The evidence names the file holding the dead path, which is the file they must edit or
   // re-run the installer against.
   await expect(note).toContainText(settingsPath(daemon));

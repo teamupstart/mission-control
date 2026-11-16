@@ -101,10 +101,14 @@ test("hooks installed before SubagentStart get a Setup row with the reinstall co
   await expect(row).toContainText("background sub-agents");
   // The evidence names the settings file the installer wrote.
   await expect(row).toContainText("settings.json");
-  // The reinstall action: the installer command, copyable, and the desktop app's button named.
+  // Outside the desktop app there is no installer to press, so the row says where the button
+  // is and keeps the checkout command copyable.
+  await expect(row.getByRole("button", { name: "Install", exact: true })).toHaveCount(0);
+  await expect(row).toContainText("Open Settings > Setup in the Mission Control desktop app and press Install");
   await expect(row.locator(".setup-command code")).toHaveText("npm run install-hooks");
   await expect(row.getByRole("button", { name: "Copy" })).toBeVisible();
-  await expect(row).toContainText("Install Claude integrations");
+  // The finding itself no longer tells an app user to clone anything first.
+  await expect(row).not.toContainText("re-run");
   // A bridge that works is not a dead path: the louder, required row stays away.
   await expect(setupRow(dashboard, "environment-check-mission-hook-script")).toHaveCount(0);
   await shoot(dashboard, "missing-subagent-start-row", row);
@@ -113,6 +117,82 @@ test("hooks installed before SubagentStart get a Setup row with the reinstall co
   installHooks(daemon, script, EVENTS);
   await recheck(dashboard);
   await expect(row).toHaveCount(0);
+});
+
+test("in the desktop app the row installs the hooks with one press, then leaves", async ({ page, daemon }) => {
+  const script = liveScript(daemon);
+  installHooks(daemon, script, BEFORE_SUBAGENT_START);
+  let presses = 0;
+  // The desktop bridge stands in for the shell's installer, which writes today's whole list.
+  await page.exposeFunction("installHooksFixture", () => {
+    presses += 1;
+    if (presses === 1) return { ok: false, message: "Claude Code: hook installation needs attention." };
+    installHooks(daemon, script, EVENTS);
+    return { ok: true, message: "Claude integrations installed via this app's bundled Node." };
+  });
+  await page.addInitScript(() => Object.defineProperty(window, "missionDesktop", { value: {
+    isDesktop: true,
+    onOpenSettings: () => () => {},
+    installIntegrations: () => (window as unknown as { installHooksFixture(): Promise<unknown> }).installHooksFixture(),
+  } }));
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await recheck(page);
+  await openSetupFamily(page, "extensions");
+
+  const row = setupRow(page, ROW);
+  await expectRowStatus(page, ROW, "Needs setup");
+  const install = row.getByRole("button", { name: "Install", exact: true });
+  await expect(install).toBeVisible();
+  // No command to copy and no checkout to find: the button is the whole remedy.
+  await expect(row.locator(".setup-command")).toHaveCount(0);
+  await install.hover();
+  await expect(page.locator(".tooltip")).toContainText("Install Mission Control's Claude Code hooks");
+  await shoot(page, "missing-subagent-start-install-button", row);
+
+  // A refused install says why, and the button stays to retry.
+  await install.click();
+  await expect(row.getByRole("status")).toHaveText("Claude Code: hook installation needs attention.");
+  await expect(install).toBeEnabled();
+  await shoot(page, "missing-subagent-start-install-refused", row);
+
+  // The successful press re-reads the machine, so the row leaves without a Re-check.
+  await install.click();
+  await expect(row).toHaveCount(0);
+  expect(presses).toBe(2);
+});
+
+test("a desktop installer that throws shows a retry error and keeps Install enabled", async ({ page, daemon }) => {
+  const script = liveScript(daemon);
+  installHooks(daemon, script, BEFORE_SUBAGENT_START);
+  // The first call rejects through the bridge itself, which is distinct from a returned refusal:
+  // the shell never produced a message, so the row has to supply one.
+  await page.addInitScript(() => {
+    let attempts = 0;
+    Object.defineProperty(window, "missionDesktop", { value: {
+      isDesktop: true,
+      onOpenSettings: () => () => {},
+      installIntegrations: async () => {
+        if (++attempts === 1) throw new Error("Synthetic desktop bridge rejection");
+        return { ok: false, message: "Second attempt reached the installer." };
+      },
+    } });
+  });
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await recheck(page);
+  await openSetupFamily(page, "extensions");
+
+  const row = setupRow(page, ROW);
+  const install = row.getByRole("button", { name: "Install", exact: true });
+  await install.click();
+  await expect(row.getByRole("status")).toHaveText("The install could not finish. Check the app log and retry.");
+  await expect(install).toBeEnabled();
+  await expect(install).toHaveText("Install");
+  await shoot(page, "missing-subagent-start-install-threw", row);
+
+  // The retry really runs again, and its own outcome replaces the earlier error.
+  await install.click();
+  await expect(row.getByRole("status")).toHaveText("Second attempt reached the installer.");
+  await expect(install).toBeEnabled();
 });
 
 test("the dispatch form carries the same notice, and drops it once the hooks are reinstalled", async ({

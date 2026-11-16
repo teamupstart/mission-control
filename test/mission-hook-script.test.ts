@@ -159,14 +159,13 @@ test("every declared script is recognised by BOTH predicates, in either spelling
 });
 
 // The Setup row is required and raises the setup banner, so its remedy has to be actionable
-// for BOTH populations the check fires for. A packaged-app user may have no checkout at all.
-test("the Setup row's remedy names the desktop button as well as the npm script", () => {
+// for BOTH populations the check fires for. A packaged-app user may have no checkout at all, so
+// the remedy is the desktop app's one-press install, with the npm script as the copy fallback.
+test("the Setup row's remedy is the desktop install, with the npm script as its fallback", () => {
   const remedy = ENVIRONMENT_ROW_METADATA["mission-hook-script"].remedy;
-  assert.equal(remedy.kind, "command");
-  if (remedy.kind !== "command") return;
-  assert.deepEqual([...remedy.argv], ["npm", "run", "install-hooks"]);
-  assert.match(remedy.note, /Install Claude integrations/);
-  assert.match(remedy.note, /durable clone/);
+  assert.equal(remedy.kind, "integrations");
+  if (remedy.kind !== "integrations") return;
+  assert.deepEqual([...remedy.fallback.argv], ["npm", "run", "install-hooks"]);
 });
 
 // --- the check ---------------------------------------------------------------------------
@@ -199,7 +198,7 @@ test("a renamed checkout is named, counted, and given the command that repairs i
   assert.match(view.warning, /MODULE_NOT_FOUND/);
   // And both repairs, because the operator may have installed from either.
   assert.match(view.warning, /npm run install-hooks/);
-  assert.match(view.warning, /Install Claude integrations/);
+  assert.match(view.warning, /press Install in the Mission Control desktop app's Settings > Setup/);
   // The evidence names the file that holds the dead path.
   assert.ok(view.detail?.includes(SETTINGS), view.detail ?? "");
   assert.ok(view.detail?.includes(STALE), view.detail ?? "");
@@ -358,7 +357,7 @@ test("hooks installed before SubagentStart are told to reinstall", async () => {
   assert.match(view.warning, /background sub-agents/);
   // Both repairs, because the operator may have installed from either.
   assert.match(view.warning, /npm run install-hooks/);
-  assert.match(view.warning, /Install Claude integrations/);
+  assert.match(view.warning, /press Install in the Mission Control desktop app's Settings > Setup/);
   // The evidence: which file, which script, and what is missing.
   assert.ok(view.detail?.includes(SETTINGS), view.detail ?? "");
   assert.ok(view.detail?.includes(LIVE), view.detail ?? "");
@@ -404,6 +403,6 @@ test("the Setup row for a missing event is optional, with the installer as its r
   const row = ENVIRONMENT_ROW_METADATA["mission-hook-events"];
   assert.equal(row.requirement, "optional");
   assert.equal(row.family, "extensions");
-  assert.equal(row.remedy.kind, "command");
-  if (row.remedy.kind === "command") assert.deepEqual(row.remedy.argv, ["npm", "run", "install-hooks"]);
+  assert.equal(row.remedy.kind, "integrations");
+  if (row.remedy.kind === "integrations") assert.deepEqual(row.remedy.fallback.argv, ["npm", "run", "install-hooks"]);
 });

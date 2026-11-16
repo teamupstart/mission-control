@@ -249,9 +249,10 @@ The installer writes the events it knows at the time and never runs again on its
 later build listens for an event your installed hooks do not cover, such as `SubagentStart`
 for a terminal session's background sub-agents, Settings -> Setup shows an optional
 **Claude Code hook events** row, and the dispatch form a note, naming the missing events.
-Nothing fails in the meantime; those sessions report less. Re-run `npm run install-hooks`
-from a durable clone, or press **Install Claude integrations** in the desktop app, to install
-the current list.
+Nothing fails in the meantime; those sessions report less. In the desktop app, press the
+row's **Install** button to install the current list; no checkout is needed. A dashboard
+opened in a browser has no installer to press, so the row offers `npm run install-hooks` to
+run from a durable clone instead.
 
 ## Verify the checkout
 

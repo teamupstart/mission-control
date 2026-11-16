@@ -110,6 +110,12 @@ than merely describing it. A post-merge follow-up also requires the **Pull Reque
 approved changes can open their own review. Switch both on for that path. The procedure lives in
 [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
 
+The **HTML Plans** row applies when explicitly invoked or required by the active Mission
+Control planning workflow. Installing it does not override a selected repository-native
+workflow's artifact or approval contracts, and missing Mission Control tools do not block
+that workflow. Selected Mission Control planning still requires the
+[managed-plan tools and policy](managed-plans.md).
+
 The **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
 phase. It estimates total non-test implementation effort and complexity before choosing the fewest

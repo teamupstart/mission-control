@@ -220,6 +220,9 @@ publish after applicable validation without a PR; repository and code dependenci
 wait for their normal merge condition. See
 [managed plans](docs/managed-plans.md).
 
+HTML Plans applies to explicitly selected Mission Control planning. Other repository-native
+planning workflows keep their artifact and approval contracts without requiring Mission Control tools.
+
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 

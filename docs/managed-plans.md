@@ -1,5 +1,13 @@
 # Managed plans
 
+These requirements apply when `html-plans` is explicitly invoked or the active workflow
+requires Mission Control-managed planning, including Mission Control plan tasks and
+`phased-plan`. Installing the skill or running a session in Mission Control does not make
+unrelated planning workflows managed. An explicitly selected repository-native workflow
+keeps its artifact locations, Git-tracked files, and approval and publication contracts
+unless it explicitly opts into managed plans. Missing Mission Control tools do not block
+that workflow; they still block managed planning, with no unmanaged Git fallback.
+
 Mission Control's daemon saves complete plan revisions. Settings > Skills > **Plan storage**
 defaults to repository mode, where Markdown in `docs/plans/<slug>/` is the source of truth.
 Local mode keeps the entire bundle beneath the repository-scoped Mission state store and

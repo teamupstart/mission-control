@@ -10,7 +10,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-work-cycle-"));
 process.env.MISSION_HOME = home;
 
-const { hooksEverSeen, openDb, workCycleFor } = await import("../src/server/db.ts");
+const { completeWorkCycle, hooksEverSeen, markWorkCycleActive, openDb, workCycleFor } = await import("../src/server/db.ts");
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -233,6 +233,73 @@ test("Claude and Codex SDK events use the same transition and do not count as ho
     assert.equal(registry.getSession(id)?.workCycle?.generation, 1);
     assert.equal(hooksEverSeen(id), false, "SDK lifecycle state stays out of session_events");
   }
+});
+
+test("a hook stamped before an SDK turn's completion cannot re-arm it when it lands late", () => {
+  // The incident: a resident's Bash call was refused, the driver read the `result` and
+  // completed the cycle, and that call's PreToolUse hook - fired 0.8s before the result -
+  // landed 2s after it. It re-armed the cycle and flipped the idle card to working, so the
+  // resident loop read a human turn, dropped its scheduled wake, and held every Run now.
+  const id = `${SDK_SESSION_ID_PREFIX}66666666-6666-4666-8666-666666666666`;
+  const logicalKey = "sdk-late-hook-cycle";
+  const registry = new Registry();
+  registry.registerSdkSession({ id, agent: "claude", name: "sdk late hook", cwd: "/repo", agentSessionId: logicalKey });
+  const preToolUse = (ts: number) => registry.applyHook({
+    agent: "claude", event: "PreToolUse", sessionId: logicalKey, cwd: "/repo", transcriptPath: null,
+    env: {}, ts, toolName: "Bash",
+  });
+
+  registry.applyDriverEvent(id, { kind: "state", state: "working", activity: null });
+  const firedAt = Date.now() - 2_000;
+  registry.applyDriverEvent(id, { kind: "turn_done", usage: null });
+  const completed = registry.getSession(id)!.workCycle!;
+  assert.equal(completed.active, false);
+  assert.ok(firedAt < completed.completedAt!, "the hook fired before the completion it now follows");
+
+  preToolUse(firedAt);
+  assert.deepEqual(registry.getSession(id)?.workCycle, completed, "the late hook leaves the completed cycle alone");
+  assert.deepEqual(workCycleFor(logicalKey), completed, "and so does the durable row a restart reads back");
+  assert.equal(registry.getSession(id)?.state, "idle", "the card stays idle for whatever waits on it");
+
+  preToolUse(completed.completedAt!);
+  assert.equal(registry.getSession(id)?.workCycle?.active, true, "work at or after the completion still arms the next cycle");
+  assert.equal(registry.getSession(id)?.state, "working");
+});
+
+test("the durable guard refuses work that occurred before the completion, whenever it arrives", () => {
+  // Direct, so the row's own rule is pinned even where no registry projection screens first.
+  const key = "db-late-arming";
+  markWorkCycleActive(key, 1_000);
+  const completed = completeWorkCycle(key, 2_000, 2_000)!;
+  assert.deepEqual(completed, { logicalKey: key, generation: 1, active: false, completedAt: 2_000, updatedAt: 2_000 });
+
+  // Arrives after the completion, happened before it: the completed row is returned unchanged.
+  assert.deepEqual(markWorkCycleActive(key, 2_500, 1_999), completed);
+  assert.deepEqual(workCycleFor(key), completed, "nothing was written");
+
+  // The boundary is strict: work observed at the completion instant is not provably earlier.
+  const armed = markWorkCycleActive(key, 2_600, 2_000);
+  assert.deepEqual(armed, { logicalKey: key, generation: 1, active: true, completedAt: 2_000, updatedAt: 2_600 });
+
+  // Once armed, an older observation is harmless: it neither disarms nor invents a completion.
+  assert.deepEqual(markWorkCycleActive(key, 2_700, 1_500), { ...armed, updatedAt: 2_700 });
+});
+
+test("a terminal hook that predates the last Stop does not re-arm the cycle", () => {
+  const registry = new Registry();
+  const syntheticId = "terminal-late-hook";
+  const logicalKey = "claude-late-hook";
+  const paneId = "%41";
+  registry.applyDiscovery([discovered("claude", syntheticId, paneId)]);
+  const hook = (event: string, ts: number) =>
+    applyTerminalHook({ registry, agent: "claude", event, logicalKey, paneId, ts, toolName: "Bash" });
+
+  hook("UserPromptSubmit", 5_000);
+  hook("Stop", 5_200);
+  hook("PostToolUse", 5_150);
+  assert.equal(registry.getSession(syntheticId)?.workCycle?.active, false);
+  assert.equal(registry.getSession(syntheticId)?.workCycle?.generation, 1);
+  assert.equal(registry.getSession(syntheticId)?.state, "idle");
 });
 
 test("restart preserves armed work and the latest completed generation", () => {

@@ -52,31 +52,21 @@ change is well within what a single agent can implement and verify.
 
 | Phase | File | Depends on | Delivers |
 |---|---|---|---|
-| 1 | [`phase-1-launch-ownership-admission-and-setting.md`](phase-1-launch-ownership-admission-and-setting.md) | plan files on `origin/main` | Predicate, admission, setting, UI, tests, docs |
+| 1 | [`phase-1-launch-ownership-admission-and-setting.md`](phase-1-launch-ownership-admission-and-setting.md) | plan files (land in the same PR) | Predicate, admission, setting, UI, tests, docs |
 
 ## Dependency graph and merge order
 
 ```mermaid
 flowchart LR
-  plan[plan files published on origin/main] --> p1[Phase 1]
+  plan[plan files] --> p1[Phase 1]
 ```
 
 No concurrency: there is one phase.
 
-**Release condition.** The human made their fork (`dweebo/mission-control`) the repository's
-`origin`, and the plan is published by a fast-forward push of the planning branch to
-`origin/main`, not by a planning PR merge. Phase 1 may start once
-`docs/plans/hide-outside-sessions/{plan,phased-plan,phase-1-launch-ownership-admission-and-setting}.md`
-resolve on `origin/main` at their latest approved revision. Its task therefore has no dependency
-on the planning session, and its autopilot is off: the human starts it manually after plan
-validation passes. Implementation still happens on its own phase branch and pull request, as
-the human chose.
-
-**Upstream publication.** Pushing to `teamupstart/mission-control` is refused by SAML SSO from
-this machine (attempted and refused). By the human's decision, the fork is the home repository,
-and upstream publication is a pull request the human opens from their SSO-authorized work laptop
-with `dweebo:plan/hide-outside-sessions` (and later the Phase 1 branch) as the head. It is not a
-Phase 1 precondition. See the root plan's publication model.
+**Release condition.** Phase 1 has no dependency on another task. The plan files and the
+Phase 1 implementation land together in one pull request into `teamupstart/mission-control`
+`main`. The work was first drafted on a fork; that arrangement is retired (see the root plan's
+publication model).
 
 ## Cross-phase contracts
 

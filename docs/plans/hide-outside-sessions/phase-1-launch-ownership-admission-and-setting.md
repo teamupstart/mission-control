@@ -11,13 +11,8 @@ default and carries a warning. Hidden sessions cost no pane capture, `gitInfo`, 
 
 ## Entry criteria
 
-- The three plan files under `docs/plans/hide-outside-sessions/` resolve on `origin/main` (the
-  human's fork, `dweebo/mission-control`), published by a direct fast-forward push rather than
-  a planning PR merge.
-- The human starts this task manually (its autopilot is off) after plan validation passes.
-- Upstream publication into `teamupstart/mission-control` is not an entry criterion. The human
-  opens upstream PRs from fork branches on an SSO-authorized machine (see the root plan's
-  publication model).
+- The three plan files under `docs/plans/hide-outside-sessions/` land in the same pull request
+  into `teamupstart/mission-control` `main` as this phase.
 - No other phase.
 
 ## Scope
@@ -190,3 +185,5 @@ predicate together with its launch-path test.
   actually published.
 - Revision 6: entry criteria now state the manual start and that upstream publication is a
   human-opened PR from the fork, not a precondition.
+- Revision 7: entry criteria now state that the plan files and this phase land upstream in one
+  pull request. The fork-as-`origin` arrangement is retired.

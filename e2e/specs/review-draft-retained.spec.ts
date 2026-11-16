@@ -124,7 +124,7 @@ test("a review answer survives closing the modal and reloading the page", async 
   let modal = await openReview(dashboard);
   await expectContentClearsBorder(modal);
   await modal.getByRole("radio", { name: /On disk beside the transcript/ }).check();
-  await modal.getByPlaceholder("Other…").fill("or a sidecar sqlite file");
+  await modal.getByPlaceholder("Other answer, or add context…").fill("or a sidecar sqlite file");
   await modal
     .getByRole("textbox", { name: "Note to the agent: Where should the cache live?" })
     .fill("cap it at 200 turns");
@@ -136,7 +136,7 @@ test("a review answer survives closing the modal and reloading the page", async 
 
   modal = await openReview(dashboard);
   await expect(modal.getByRole("radio", { name: /On disk beside the transcript/ })).toBeChecked();
-  await expect(modal.getByPlaceholder("Other…")).toHaveValue("or a sidecar sqlite file");
+  await expect(modal.getByPlaceholder("Other answer, or add context…")).toHaveValue("or a sidecar sqlite file");
   await expect(
     modal.getByRole("textbox", { name: "Note to the agent: Where should the cache live?" }),
   ).toHaveValue("cap it at 200 turns");
@@ -149,7 +149,7 @@ test("a review answer survives closing the modal and reloading the page", async 
 
   modal = await openReview(dashboard);
   await expect(modal.getByRole("radio", { name: /On disk beside the transcript/ })).toBeChecked();
-  await expect(modal.getByPlaceholder("Other…")).toHaveValue("or a sidecar sqlite file");
+  await expect(modal.getByPlaceholder("Other answer, or add context…")).toHaveValue("or a sidecar sqlite file");
   await expect(
     modal.getByRole("textbox", { name: "Note to the agent: Where should the cache live?" }),
   ).toHaveValue("cap it at 200 turns");

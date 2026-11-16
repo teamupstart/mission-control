@@ -156,6 +156,48 @@ test("a moved question is drawn checked and Submit names the chat", () => {
   assert.match(html, /<button class="btn btn-approve"[^>]*>Submit &amp; chat \(1\)<\/button>/);
 });
 
+test("Chat about it sits with the options, above the Other box rather than below it", () => {
+  const withOther: PlanDecision = { ...decisions[0]!, allowOther: true };
+  const html = renderForm({ allowChat: true, decisions: [withOther] });
+  const lastOption = html.lastIndexOf("Server-side table");
+  const chat = html.indexOf("Chat about it");
+  const other = html.indexOf('class="decision-other"');
+  assert.ok(lastOption > 0 && chat > lastOption, "Chat about it follows the agent's options");
+  assert.ok(other > chat, "the text box comes after every choice in the group");
+  assert.match(html, /placeholder="Other answer, or add context…"/);
+});
+
+test("text typed beside Chat about it reaches the agent as context, under the move", () => {
+  const withOther: PlanDecision = { ...decisions[1]!, allowOther: true };
+  const answers: PlanDecisionAnswer[] = [
+    { decisionId: "migrate", selected: [], other: "the rollback window matters most", chat: true },
+  ];
+  const text = formatResponse([withOther], answers, "Answered:");
+  assert.match(
+    text,
+    /^• Should the migration ship in this PR\?\n {2}→ Chat about it\n {2}Context: the rollback window matters most$/m,
+  );
+  assert.equal(isAnswered(withOther, answers[0]), true);
+});
+
+test("the conversation labels text beside a pick or a move as context, and alone as Other", () => {
+  const withOther: PlanDecision = { ...decisions[0]!, allowOther: true };
+  const card = (answer: PlanDecisionAnswer): string =>
+    replay(answered({ decisions: [withOther], selections: [answer], response: "x" }));
+  assert.match(
+    card({ decisionId: "store", selected: ["local"], other: "keep it per profile" }),
+    /review-answer-other-tag">Context<\/span>keep it per profile/,
+  );
+  assert.match(
+    card({ decisionId: "store", selected: [], other: "why not IndexedDB?", chat: true }),
+    /review-answer-other-tag">Context<\/span>why not IndexedDB\?/,
+  );
+  assert.match(
+    card({ decisionId: "store", selected: [], other: "IndexedDB" }),
+    /review-answer-other-tag">Other<\/span>IndexedDB/,
+  );
+});
+
 function answered(over: Partial<ReviewItem> = {}): ReviewItem {
   return {
     id: "r1",

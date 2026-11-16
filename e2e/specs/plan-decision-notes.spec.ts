@@ -137,7 +137,7 @@ test("a note typed beside a plan decision reaches the agent and stays in the con
   const evictNote = form.getByRole("textbox", { name: "Note to the agent: How should entries be evicted?" });
   await expect(storeNote).toBeVisible();
   await expect(evictNote).toBeVisible();
-  await expect(form.getByPlaceholder("Other…")).toHaveCount(0);
+  await expect(form.getByPlaceholder("Other answer, or add context…")).toHaveCount(0);
 
   // A note alone does not answer a decision: Submit waits for a selection on each.
   await storeNote.fill("cap it at 200 turns\nand drop it when the session exits");

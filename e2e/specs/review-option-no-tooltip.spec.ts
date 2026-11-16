@@ -215,7 +215,7 @@ test("a request_input question's options leave no tooltip over the question eith
   await expect(eslint).toBeFocused();
   expect(await bubble.count(), "arrowing onto an option paints no bubble").toBe(0);
 
-  await group.getByPlaceholder("Other…").fill("oxlint");
+  await group.getByPlaceholder("Other answer, or add context…").fill("oxlint");
   expect(await bubble.count(), "the Other field paints no bubble").toBe(0);
   await expect(modal.getByRole("button", { name: /^Submit/ })).toBeEnabled();
 });

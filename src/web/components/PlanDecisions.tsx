@@ -26,12 +26,13 @@ export function decisionChoiceKey(decisionId: string, optionId: string): string 
 function toDecisionAnswers(decisions: PlanDecision[], answers: Answers): PlanDecisionAnswer[] {
   return decisions.map((d) => {
     const a = answers[d.id];
-    // Moved to chat: nothing picked before the move is an answer, only the note travels.
+    // Moved to chat: nothing picked before the move is an answer. The note and anything typed
+    // in the text box travel, because beside a moved question they say what is unclear.
     if (a?.chat) {
       return {
         decisionId: d.id,
         selected: [],
-        other: null,
+        other: a.other.trim() ? a.other.trim() : null,
         chat: true,
         ...(a.note.trim() ? { note: a.note.trim() } : {}),
       };
@@ -153,10 +154,10 @@ export function DecisionForm({
     setAnswers((prev) => {
       const cur = prev[d.id] ?? EMPTY;
       let selected: string[];
-      if (d.multiSelect) {
-        selected = checked
-          ? [...cur.selected, optionId]
-          : cur.selected.filter((x) => x !== optionId);
+      if (!checked) {
+        selected = cur.selected.filter((x) => x !== optionId);
+      } else if (d.multiSelect) {
+        selected = [...cur.selected, optionId];
       } else {
         selected = [optionId]; // radio: single choice replaces
       }
@@ -164,21 +165,31 @@ export function DecisionForm({
     });
   }
 
+  /**
+   * A click on a radio that was ALREADY checked clears it.
+   *
+   * A browser never fires `change` for that click, so a radio group on its own can only move a
+   * pick, never take it back - the human who picked by mistake had to pick something else or
+   * dismiss the whole ask. `wasChecked` is this render's state, read before the click lands.
+   * Checkboxes toggle natively and need nothing here.
+   */
+  function clearOnReclick(d: PlanDecision, wasChecked: boolean, clear: () => void): void {
+    if (!d.multiSelect && wasChecked) clear();
+  }
+
   function moveToChat(id: string, chat: boolean): void {
     setAnswers((prev) => {
       const cur = prev[id] ?? EMPTY;
-      return { ...prev, [id]: chat ? { ...cur, selected: [], other: "", chat: true } : { ...cur, chat: false } };
+      // Moving replaces the picks, as any other row in the group would, but keeps the typed
+      // text: it is context for the conversation, not a competing answer.
+      return { ...prev, [id]: chat ? { ...cur, selected: [], chat: true } : { ...cur, chat: false } };
     });
   }
 
   function setText(id: string, field: "other" | "note", text: string): void {
-    setAnswers((prev) => {
-      const cur = prev[id] ?? EMPTY;
-      // Typing an answer outside the options is answering, so it leaves chat. A note does
-      // not: beside a moved question it says what is unclear.
-      const chat = field === "other" && text.trim() ? false : cur.chat;
-      return { ...prev, [id]: { ...cur, [field]: text, chat } };
-    });
+    // Typing never changes the pick. The box is an answer of its own only when nothing is
+    // picked; beside a pick, or beside "Chat about it", it is context for that choice.
+    setAnswers((prev) => ({ ...prev, [id]: { ...(prev[id] ?? EMPTY), [field]: text } }));
   }
 
   // Built once per render and used for both the completeness test and the submit, so the
@@ -221,6 +232,9 @@ export function DecisionForm({
                 name={`${namePrefix}-${d.id}`}
                 checked={get(d.id).selected.includes(o.id)}
                 onChange={(e) => choose(d, o.id, e.target.checked)}
+                onClick={() =>
+                  clearOnReclick(d, get(d.id).selected.includes(o.id), () => choose(d, o.id, false))
+                }
                 disabled={busy}
               />
               <span className="decision-option-body">
@@ -234,15 +248,6 @@ export function DecisionForm({
             </label>
             );
           })}
-          {d.allowOther && (
-            <input
-              className="decision-other"
-              placeholder="Other…"
-              value={get(d.id).other}
-              onChange={(e) => setText(d.id, "other", e.target.value)}
-              disabled={busy}
-            />
-          )}
           {allowChat && (
             <label className={`decision-option decision-chat${get(d.id).chat ? " is-chat" : ""}`}>
               <Tooltip label="Skip choosing for now: the agent explains this question in the conversation and waits for you">
@@ -251,6 +256,7 @@ export function DecisionForm({
                   name={`${namePrefix}-${d.id}`}
                   checked={get(d.id).chat === true}
                   onChange={(e) => moveToChat(d.id, e.target.checked)}
+                  onClick={() => clearOnReclick(d, get(d.id).chat === true, () => moveToChat(d.id, false))}
                   disabled={busy}
                 />
               </Tooltip>
@@ -261,6 +267,20 @@ export function DecisionForm({
                 </span>
               </span>
             </label>
+          )}
+          {/*
+            After "Chat about it", not before it: that row is one of the group's choices and
+            belongs with the others, and the text box below qualifies whichever is picked.
+          */}
+          {d.allowOther && (
+            <input
+              className="decision-other"
+              aria-label={`Other answer or context: ${d.question}`}
+              placeholder="Other answer, or add context…"
+              value={get(d.id).other}
+              onChange={(e) => setText(d.id, "other", e.target.value)}
+              disabled={busy}
+            />
           )}
           {allowNote && (
             <textarea

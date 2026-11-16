@@ -107,8 +107,9 @@ export async function hydrateUiConfig(): Promise<void> {
     const legacy = readLegacySettings();
     if (legacy) {
       // Retain the old one-time flag's upgrade behavior for compatible clients.
-      // The independent startup-picker preference keeps its default-on value.
-      if (!await updateUiConfig({ ...legacy, guidedTour: false })) {
+      // The independent startup-picker preference keeps its default-on value, and an
+      // adopted profile predates every announced tour, so it is owed each of them once.
+      if (!await updateUiConfig({ ...legacy, guidedTour: false, announcedTours: [] })) {
         retryHydration();
         return;
       }
@@ -151,6 +152,26 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     }
     commit(rollback);
     return false;
+  }
+  return true;
+}
+
+/**
+ * Re-read `announcedTours` from the daemon and adopt it, for the one automatic decision that
+ * must not act on a stale copy: opening the startup picker on account of a new-tour
+ * announcement. Preferences do not live-sync between windows, so a window that waited behind a
+ * dialog can still hold a record another window has since announced the tour into.
+ *
+ * Only this field is adopted, and not when a write of it from this window began meanwhile -
+ * that write is newer than the read. Resolves to whether the daemon answered.
+ */
+export async function refreshAnnouncedTours(): Promise<boolean> {
+  const generation = writeGeneration.get("announcedTours") ?? 0;
+  const view = await fetchUiConfig();
+  if (!view) return false;
+  if ((writeGeneration.get("announcedTours") ?? 0) !== generation) return true;
+  if (!Object.is(current.announcedTours, view.config.announcedTours)) {
+    commit({ ...current, announcedTours: view.config.announcedTours });
   }
   return true;
 }

@@ -12996,6 +12996,20 @@ select:not([multiple]) option:focus-visible {
 .tour-picker-row strong { display: block; font-size: 14px; }
 .tour-picker-row small { display: block; margin-top: 6px; color: var(--muted); }
 .tour-picker-recommended { display: block; margin-top: 10px; color: var(--select); font-size: 11px; }
+/* A tour this opening announces. A filled tag rather than the recommendation's plain text, so
+   the two read as different statements when they sit on neighbouring rows. */
+.tour-picker-new {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--select);
+  color: var(--panel);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .tour-picker-preview { min-width: 0; padding: 22px; }
 .tour-picker-preview h3 { margin: 18px 0 10px; font-size: 22px; }
 .tour-picker-preview p { color: var(--muted); line-height: 1.6; margin: 0; }
@@ -13021,6 +13035,7 @@ select:not([multiple]) option:focus-visible {
   .tour-picker-row { padding-block: 10px; margin-bottom: 4px; }
   .tour-picker-row small { display: inline; margin-right: 10px; }
   .tour-picker-recommended { display: inline-block; margin-top: 5px; }
+  .tour-picker-new { margin: 5px 6px 0 0; }
   .tour-picker-preview { padding: 18px; }
 }
 

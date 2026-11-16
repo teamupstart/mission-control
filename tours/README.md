@@ -5,7 +5,9 @@ the tour name, a stage title, or a stage description:
 
 - `see-work.md`
 - `library.md`
+- `workflows.md`
 - `setup.md`
+- `residents.md`
 
 The H1 is the tour name. Each H2 is a stage title, and the prose below it is that stage's
 description. The `stage` comment under an H2 is a stable code identifier; do not change or

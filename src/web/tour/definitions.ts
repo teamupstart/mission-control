@@ -1,5 +1,6 @@
 import type { TourDefinition, TourId } from "./contracts.ts";
 import { LIBRARY_TOUR } from "./tours/library.ts";
+import { RESIDENTS_TOUR } from "./tours/residents.ts";
 import { SEE_WORK_TOUR } from "./tours/see-work.ts";
 import { SETUP_TOUR } from "./tours/setup.ts";
 import { WORKFLOWS_TOUR } from "./tours/workflows.ts";
@@ -17,6 +18,7 @@ export const TOUR_DEFINITIONS = {
   "library": LIBRARY_TOUR,
   "workflows": WORKFLOWS_TOUR,
   "setup": SETUP_TOUR,
+  "residents": RESIDENTS_TOUR,
 } as const satisfies Record<TourId, TourDefinition<never, never>>;
 
 export type TourDefinitions = typeof TOUR_DEFINITIONS;

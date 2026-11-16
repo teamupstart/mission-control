@@ -1,5 +1,5 @@
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import type { Session } from "@shared/types.ts";
 import { stateDisplay } from "../lib/format.ts";
@@ -43,6 +43,11 @@ export interface ResidentsDockProps {
   onOpenLaunch: (profileId: string) => void;
   /** Open `#/residents`. */
   onManage: () => void;
+  /**
+   * The residents tour's handle on the button, from App. Only the real top bar passes one: the
+   * Settings > Display preview draws this dock too, and must not take the registration over.
+   */
+  buttonTourRef?: (element: HTMLButtonElement | null) => void;
 }
 
 /**
@@ -67,6 +72,11 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
   const ownLauncher = useResidentLaunches();
   const { launches, launch: launchProfile } = props.launcher ?? ownLauncher;
   const drawer = props.onToggleDrawer !== undefined;
+  const { buttonTourRef } = props;
+  const setButton = useCallback((element: HTMLButtonElement | null): void => {
+    buttonRef.current = element;
+    buttonTourRef?.(element);
+  }, [buttonTourRef]);
 
   /** Set by a keyboard or palette open, and consumed once the panel has rendered. */
   const focusOnOpen = useRef(false);
@@ -132,7 +142,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
     <div className="residents-dock" ref={ref}>
       <Tooltip label="Residents - long-running agents: open a live one, or launch one from its profile">
         <button
-          ref={buttonRef}
+          ref={setButton}
           className={`ghost-btn residents-btn${live > 0 ? " on" : ""}${compact ? " tb-compact" : ""}`}
           onClick={() => (props.onToggleDrawer ? props.onToggleDrawer() : setOpen((o) => !o))}
           // Named explicitly because the word is a `.tb-label` the narrow ladder takes away;

@@ -38,6 +38,17 @@ test("startup preference defaults on for old caches and legacy imports, preservi
   assert.equal(readCache().showToursOnStartup, true);
 });
 
+test("a cache without announced tours reads every one as seen, and keeps a stored list", () => {
+  // Only the daemon's record can say a profile predates a tour, and the startup picker waits
+  // for it, so a cold paint must never invent an announcement the daemon would not make.
+  store.set("mission-control.ui", JSON.stringify({ showToursOnStartup: false }));
+  assert.deepEqual(readCache().announcedTours, [...UI_CONFIG_DEFAULTS.announcedTours]);
+  store.set("mission-control.ui", JSON.stringify({ announcedTours: [] }));
+  assert.deepEqual(readCache().announcedTours, []);
+  store.set("mission-control.ui", JSON.stringify({ announcedTours: ["residents", 7, "from-a-newer-build"] }));
+  assert.deepEqual(readCache().announcedTours, ["residents", "from-a-newer-build"]);
+});
+
 test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
   // Board. Retiring Cards moved this to Console by accident; see `UI_CONFIG_DEFAULTS`.
@@ -106,6 +117,8 @@ test("a written cache round-trips", () => {
     guidedDispatch: false,
     guidedTour: false,
     showToursOnStartup: false,
+    // Empty, off the all-seen default, so only a copied field round-trips it.
+    announcedTours: [],
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
     // Head-seeded, which is what any record this build writes looks like. That is what makes
@@ -152,6 +165,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.guidedDispatch, false);
   assert.equal(config.guidedTour, false);
   assert.equal(config.showToursOnStartup, false);
+  assert.deepEqual(config.announcedTours, []);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);

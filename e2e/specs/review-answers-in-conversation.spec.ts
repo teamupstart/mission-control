@@ -140,7 +140,7 @@ test("answering a three-option question puts the choice in the conversation", as
   // would look correct for any answer, so the spec picks the one nothing would default to.
   const form = dashboard.locator(".review-modal");
   await form.getByRole("radio", { name: /Single shared ring buffer/ }).check();
-  await form.getByPlaceholder("Other…").fill("cap it at 200 turns per session");
+  await form.getByPlaceholder("Other answer, or add context…").fill("cap it at 200 turns per session");
   await form.getByRole("button", { name: "Submit" }).click();
   await expect(form).toBeHidden();
 

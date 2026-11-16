@@ -148,7 +148,9 @@ Mission Control reports this itself rather than leaving you to read the stack. T
 it, the setup banner raises it as a required gap, and the Dispatch form repeats the note
 before an agent goes out on the machine.
 
-The fix is to re-run the installer from a checkout that still exists:
+In the desktop app, the fix is the row's **Install** button, which rewrites the hooks to the
+app's own satellite and re-checks the row. From a checkout, re-run the installer from one that
+still exists:
 
 ```sh
 cd <your durable clone> && npm run install-hooks
@@ -156,9 +158,8 @@ cd <your durable clone> && npm run install-hooks
 
 Run it from a durable clone rather than a pooled worktree. An install from a pool slot
 bakes a path the pool will reclaim, which is this same outage with a shorter fuse, and the
-installer refuses one outright for that reason. Packaged-app users press **Install Claude
-integrations** instead; either installer now replaces the other's entries rather than
-stacking a second bridge beside them.
+installer refuses one outright for that reason. Either installer replaces the other's
+entries rather than stacking a second bridge beside them.
 
 ## An MCP server I added is missing from a dispatched Claude session
 

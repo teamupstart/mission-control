@@ -2076,8 +2076,10 @@ because they answer a bug report rather than a reader.
 run might accept: a single primary, in the language of the person reading the page rather than
 of the route behind it. A parked run offers **Start repair round N**, naming the round it
 opens; a GitHub Inspector gate waiting on a pull request offers **Ask the session to open a
-PR**, or **Check again** when its immutable policy declines the handoff; a run blocked on an
-exhausted provider call offers **Retry the failed call**.
+PR**, or **Check again** when its immutable policy declines the handoff; a run blocked as
+**PR closed** offers **Check again**, which reads the pull request from GitHub again and lifts
+the block only if it is open; a run blocked on an exhausted provider call offers **Retry the
+failed call**.
 
 The daemon reports allowed run recovery operations with every summary and run response. The
 header, GitHub Inspector controls, and Review drawer use that projection. Renaming a phase does
@@ -2755,6 +2757,20 @@ evaluator can process. It reevaluates the current durable observation and remain
 GitHub Inspector's normal sweep has seen a new head. A spent blocked run has no working recheck,
 so the dashboard omits it and the daemon refuses a direct request without writing a recheck
 audit event.
+
+A run blocks as **PR closed** (`inspector_pr_closed`) only on a GitHub read that said the
+pull request is closed or merged. A signal that read nothing from GitHub - a failed or
+rate-limited poll, a GitHub Inspector settings save, an adoption - leaves the gate where it was,
+and a run waiting on the session's repair push keeps waiting for it across a daemon restart.
+A GitHub answer that does not say which state the pull request is in counts as a failed read,
+never as a closed one. A run already blocked as **PR closed** recovers when its pull request is
+seen open again. While GitHub Inspector still polls the pull request, its next poll lifts the
+block. GitHub Inspector stops polling a pull request once it reads it closed, so **Check again**
+on the run page reads the pull request from GitHub itself: an open answer resumes polling and
+lifts the block, a closed or merged answer leaves it, and a failed read leaves it and is recorded
+on the run's timeline. If GitHub cannot be reached, a pull request whose last read was open
+still recovers. Recovery restores the wait the block interrupted, including the repair-push
+wait, without a full restart or another Persona round.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the

@@ -62,7 +62,7 @@ import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
 import { WorkflowCommandArtifactService } from "./workflows/command-artifacts.ts";
 import { startPrPoller } from "./pr.ts";
-import { startInspector } from "./inspector/worker.ts";
+import { reobserveInspectorPr, startInspector } from "./inspector/worker.ts";
 import { refreshRuntimeMeta, startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
 import { startUsagePoller } from "./usage.ts";
@@ -422,6 +422,9 @@ const workflows = new WorkflowManager(registry, personas.store, {
   unresolvedCheckLease: (submissionId, nodeId) =>
     checkRuntime.unresolvedLeaseForNode(submissionId, nodeId),
   inject: runtimePromptInjector(sdkSessions),
+  // A recheck of a closed-PR block asks GitHub again, because the Inspector sweep never reads
+  // a row it retired as closed.
+  reobservePullRequest: (prKey) => reobserveInspectorPr(registry, prKey),
   // How often the resumption observer and the session action sweep look, in ms.
   //
   // Overridable for the reason `INSPECTOR_POLL_MS` and `MISSION_POLL_MS` are: both loops ask

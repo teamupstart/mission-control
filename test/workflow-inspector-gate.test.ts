@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -16,6 +16,7 @@ import type {
   WorkflowInspectorGateState,
 } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import type { InspectorReobservation } from "../src/server/inspector/worker.ts";
 import {
   WORKFLOW_RUN_TERMINAL_STATUSES,
   workflowRunIsOpen,
@@ -29,8 +30,22 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-gate-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
+// Every `gh` call reaches a fake that answers the pull request read from a scripted snapshot,
+// and fails like an outage while none is scripted. Only a recheck of a closed-PR block reads
+// GitHub here; nothing in this file starts the Inspector sweep.
+const ghSnapshot = join(home, "gh-pull-request.json");
+const fakeGh = join(home, "gh");
+writeFileSync(fakeGh, `#!${process.execPath}
+const fs = require("node:fs");
+try { process.stdout.write(fs.readFileSync(${JSON.stringify(ghSnapshot)}, "utf8")); }
+catch { process.stderr.write("gh: scripted outage\\n"); process.exit(1); }
+`);
+chmodSync(fakeGh, 0o755);
+process.env.MISSION_GH_BIN = fakeGh;
+
 const {
   adoptInspectorPr,
+  getInspectorPr,
   openDb,
   updateInspectorPr,
   upsertInspectorComment,
@@ -39,6 +54,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { reobserveInspectorPr } = await import("../src/server/inspector/worker.ts");
 const { renderInspectorFeedback } = await import("../src/server/workflows/feedback.ts");
 const {
   WorkflowStore,
@@ -130,6 +146,8 @@ interface SeedOptions {
   resolveCommit?: (root: string, head: string) => Promise<string>;
   bindingRepoRoot?: string | null;
   inspectorRepoRoot?: string | null;
+  /** Replaces the real GitHub re-read a closed-PR recheck makes. */
+  reobservePullRequest?: (prKey: string) => Promise<InspectorReobservation>;
 }
 
 async function seed(over: SeedOptions = {}) {
@@ -283,6 +301,8 @@ async function seed(over: SeedOptions = {}) {
   const manager = new WorkflowManager(registry, store, {
     resolveCommit: over.resolveCommit ?? (async (_root, head) => head),
     resolveCommitTree: over.resolveCommitTree,
+    reobservePullRequest: over.reobservePullRequest
+      ?? ((prKey) => reobserveInspectorPr(registry, prKey)),
     inject: async (_session, payload) => {
       injected.push(payload);
       return { ok: true, pasted: true, submitVerified: true };
@@ -1982,5 +2002,378 @@ test("Inspector completes with retained local artifacts but refuses missing or e
     } finally {
       await seeded.manager.stop();
     }
+  }
+});
+
+// ---- An open pull request is never blocked as closed on a signal that observed nothing ----
+//
+// Reported three times in one day: a run waiting on the session's repair push flipped to
+// `blocked`/`inspector_pr_closed` while the pull request stayed open with an unchanged head.
+// Every Inspector signal that reads nothing from GitHub - a failed or rate-limited poll, a
+// settings save, an adoption - carries a null state, and the gate read `null !== "OPEN"` as
+// closed. The block then offered only cancel and a full restart, and refused a recheck.
+
+type Seeded = Awaited<ReturnType<typeof seed>>;
+
+/** Wait until every gate evaluation the manager has scheduled has finished. */
+async function settleGate(seeded: Seeded): Promise<void> {
+  const tasks = (seeded.manager as unknown as { backgroundTasks: Set<Promise<void>> }).backgroundTasks;
+  while (tasks.size > 0) await Promise.allSettled(tasks);
+}
+
+/** Drive an Inspector-only run to where the reports found it: waiting on a repair push. */
+async function awaitRepairPush(seeded: Seeded): Promise<void> {
+  const now = Date.now();
+  updateInspectorPr(seeded.key, { headSha: seeded.head, lastAttemptSha: seeded.head,
+    reviewPosture: "live", reviewComplete: true, round: 1 }, now);
+  upsertInspectorComment({
+    id: `repair-finding-${serial}`, prKey: seeded.key, fingerprint: `repair-${serial}`,
+    path: "src/file.ts", line: 1, title: "Repair the edge", body: "The edge drops durable state.",
+    severity: "major", round: 1, status: "open", replies: 0, answeredCommentId: null,
+    createdAt: now, updatedAt: now,
+  });
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "waiting_for_new_head",
+    "the findings did not leave the run waiting on a repair push");
+}
+
+/** Put the run exactly where the earlier build stranded it. */
+function strandAsClosed(seeded: Seeded): void {
+  const run = seeded.store.getRun(seeded.ids.run)!;
+  const gate = run.gateState as unknown as WorkflowInspectorGateState;
+  const blocked = seeded.store.updateInspectorGate({
+    runId: run.id,
+    expectedState: gate,
+    state: { ...gate, waitReason: "pr_closed" },
+    status: "blocked",
+    phase: "inspector_pr_closed",
+    now: Date.now(),
+  });
+  assert.ok(blocked, "the fixture could not strand the run");
+}
+
+const phaseOf = (seeded: Seeded) => {
+  const run = seeded.store.getRun(seeded.ids.run)!;
+  return `${run.status}/${run.currentPhase}`;
+};
+const eventCount = (seeded: Seeded, kind: string) =>
+  seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === kind).length;
+const inspectorOnlyRounds = (seeded: Seeded) =>
+  seeded.store.listSubmissions(seeded.ids.run).filter((item) => item.mode === "inspector_only").length;
+
+test("a signal that observed nothing never blocks an open pull request as closed", async () => {
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  try {
+    await awaitRepairPush(seeded);
+    // What the poller sends after a GitHub read that failed or was rate limited...
+    seeded.registry.inspectionUpdated(seeded.key, null, null);
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings", "a failed read");
+    // ...and what an Inspector settings save sends to every adopted pull request.
+    seeded.registry.inspectorConfigChanged();
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings", "a settings save");
+    assert.equal(eventCount(seeded, "inspector_pr_closed"), 0);
+
+    // The repair push the run was waiting for is still seen and still costs no full round.
+    signal(seeded, "repair-head");
+    await waitFor(() => inspectorOnlyRounds(seeded) === 1, "the repair push was not seen");
+
+    // A read that DID say closed still blocks.
+    seeded.registry.inspectionUpdated(seeded.key, "repair-head", "CLOSED");
+    await waitFor(() => phaseOf(seeded) === "blocked/inspector_pr_closed",
+      "a pull request GitHub reported closed did not block the gate");
+  } finally {
+    await seeded.manager.stop();
+  }
+});
+
+test("after a restart, a repair wait stays a repair wait until GitHub is actually read", async () => {
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  try {
+    await awaitRepairPush(seeded);
+    // Restart recovery clears the observation and deliberately keeps the repair wait.
+    (seeded.manager as unknown as { resetRecoveredGateObservations(): void })
+      .resetRecoveredGateObservations();
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings");
+    // A failed first read used to demote the run to `waiting_for_inspector`, from which the
+    // session's repair push was refused as a head mismatch instead of reviewed.
+    seeded.registry.inspectionUpdated(seeded.key, null, null);
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings");
+
+    signal(seeded, "repair-head");
+    await waitFor(() => inspectorOnlyRounds(seeded) === 1, "the repair push was not seen after restart");
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+  } finally {
+    await seeded.manager.stop();
+  }
+});
+
+/** Script what GitHub answers for the pull request read. `null` scripts an outage. */
+function scriptGitHub(state: "OPEN" | "CLOSED" | "MERGED" | null, headRefOid = "head"): void {
+  if (state === null) {
+    rmSync(ghSnapshot, { force: true });
+    return;
+  }
+  writeFileSync(ghSnapshot, JSON.stringify({ data: { repository: { pullRequest: {
+    state, headRefOid, headRefName: "feature", isDraft: false, title: "Gate fixture",
+    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+  } } } }));
+}
+
+/** The ledger row as the sweep leaves it once it read the pull request closed. */
+function retireAsClosed(seeded: Seeded): void {
+  updateInspectorPr(seeded.key, {
+    state: "closed", observedState: "CLOSED", observedHeadSha: seeded.head, observedAt: Date.now(),
+  }, Date.now());
+}
+
+function recheck(seeded: Seeded, requestId: string): void {
+  const result = seeded.manager.recheckInspector(seeded.ids.run, `${requestId}-${serial}`);
+  assert.equal(result.ok, true, result.ok ? "" : result.message);
+}
+
+// The sweep stops reading a row the moment it reads it closed, so a recheck that consulted only
+// the stored row could never lift a block whose row was retired - whatever GitHub says now.
+test("a recheck reads GitHub again, so a block on a retired row lifts once the pull request is open", async () => {
+  scriptGitHub(null);
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  try {
+    await awaitRepairPush(seeded);
+    strandAsClosed(seeded);
+    retireAsClosed(seeded);
+    const recovery = seeded.store.runSummary(seeded.ids.run)?.recovery;
+    assert.ok(recovery?.operations.includes("recheck-inspector"), "recheck was not offered");
+    assert.equal(recovery?.primary, "recheck-inspector");
+
+    // GitHub unreachable: the block stays, and the run says why.
+    recheck(seeded, "outage");
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "blocked/inspector_pr_closed");
+    assert.equal(eventCount(seeded, "inspector_pr_reobserve_failed"), 1);
+
+    // GitHub says closed: still blocked, the row stays retired, and a stray signal claiming
+    // OPEN cannot reopen a row GitHub's own answer retired.
+    scriptGitHub("CLOSED", seeded.head);
+    recheck(seeded, "closed");
+    await settleGate(seeded);
+    signal(seeded, seeded.head);
+    seeded.registry.inspectionUpdated(seeded.key, null, null);
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "blocked/inspector_pr_closed");
+    assert.equal(getInspectorPr(seeded.key)?.state, "closed");
+    assert.equal(eventCount(seeded, "inspector_pr_seen_open"), 0);
+
+    // GitHub says open: the row is the sweep's again, and the repair wait the block
+    // interrupted comes back without a restart.
+    scriptGitHub("OPEN", seeded.head);
+    recheck(seeded, "open");
+    await waitFor(() => phaseOf(seeded) === "waiting_for_new_head/inspector_findings",
+      "an open pull request on GitHub did not lift the closed block");
+    const row = getInspectorPr(seeded.key);
+    assert.equal(row?.state, "open");
+    assert.equal(row?.observedState, "OPEN");
+    assert.equal(
+      (seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState).waitReason,
+      "findings",
+    );
+    assert.equal(eventCount(seeded, "inspector_pr_seen_open"), 1);
+
+    // And the repair push it was waiting for goes through as an Inspector-only round.
+    signal(seeded, "repair-head");
+    await waitFor(() => inspectorOnlyRounds(seeded) === 1, "the repair push was not seen after recovery");
+  } finally {
+    scriptGitHub(null);
+    await seeded.manager.stop();
+  }
+});
+
+test("with GitHub unreachable, a recheck still lifts a block whose row last read the pull request open", async () => {
+  scriptGitHub(null);
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  try {
+    await awaitRepairPush(seeded);
+    strandAsClosed(seeded);
+    // Nothing that observed nothing lifts it, and a recheck with no recorded read changes nothing.
+    seeded.registry.inspectionUpdated(seeded.key, null, null);
+    recheck(seeded, "unread");
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "blocked/inspector_pr_closed");
+
+    // The sweep's last read said OPEN - the false close this issue reported. The stored read
+    // is enough, even while GitHub cannot be reached for a fresh one.
+    updateInspectorPr(seeded.key, {
+      observedState: "OPEN", observedHeadSha: seeded.head, observedAt: Date.now(),
+    }, Date.now());
+    recheck(seeded, "ledger-open");
+    await waitFor(() => phaseOf(seeded) === "waiting_for_new_head/inspector_findings",
+      "an open ledger read did not lift the closed block");
+    await settleGate(seeded);
+    assert.equal(eventCount(seeded, "inspector_pr_reobserve_failed"), 2);
+  } finally {
+    await seeded.manager.stop();
+  }
+});
+
+test("the poller's next open read lifts a stranded block without anyone pressing recheck", async () => {
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  try {
+    await awaitRepairPush(seeded);
+    strandAsClosed(seeded);
+    updateInspectorPr(seeded.key, {
+      observedState: "OPEN", observedHeadSha: seeded.head, observedAt: Date.now(),
+    }, Date.now());
+    signal(seeded, seeded.head);
+    await waitFor(() => phaseOf(seeded) === "waiting_for_new_head/inspector_findings",
+      "the poller's open read did not lift the closed block");
+  } finally {
+    await seeded.manager.stop();
+  }
+});
+
+// The reported correlation: the bound sessions had been frozen by the operator about thirty
+// minutes before their runs flipped, and Mission Control had restarted around the pause. A
+// freeze and a restart each wake the gate without reading GitHub, and so does a poll that fails
+// afterwards - none of them is evidence the pull request closed.
+test("a frozen bound session, across a Mission Control restart, never gets its open pull request reported closed", async () => {
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  const frozen = (at: number) => ({
+    reason: "operator" as const, phase: "frozen" as const, mode: "now" as const,
+    since: at, frozenAt: at, interrupted: null, stopped: true,
+  });
+  try {
+    await awaitRepairPush(seeded);
+    // The operator freezes the bound session: its upsert re-evaluates the gate.
+    assert.equal(seeded.registry.setSessionPause(seeded.ids.session, frozen(Date.now())), true);
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings", "the freeze");
+
+    // Mission Control restarts with the session still frozen: a fresh manager over the same
+    // store runs restart recovery, and the pause is adopted again.
+    await seeded.manager.stop();
+    seeded.manager = new WorkflowManager(seeded.registry, seeded.store, {
+      resolveCommit: async (_root, head) => head,
+      reobservePullRequest: (prKey) => reobserveInspectorPr(seeded.registry, prKey),
+      inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+      recordInjection: () => {},
+      requireSkill: (session, id) => ({ ok: true, command: skillCommand(session.agent, id)! }),
+      readEvidenceProbe: async () => ({
+        headSha: seeded.head, workingTreeStatus: [], diffFingerprint: `diff-${seeded.head}`,
+      }),
+      resumptionSettleMs: 0,
+    });
+    seeded.manager.start();
+    assert.equal(seeded.registry.setSessionPause(seeded.ids.session, frozen(Date.now())), true);
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings", "the restart");
+
+    // The first poll after the restart reads the open pull request at its unchanged head...
+    signal(seeded, seeded.head);
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings", "an open read");
+    // ...and a later poll fails, while the session is still frozen.
+    seeded.registry.inspectionUpdated(seeded.key, null, null);
+    seeded.registry.inspectorConfigChanged();
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings", "a failed read");
+    assert.equal(eventCount(seeded, "inspector_pr_closed"), 0);
+
+    // Unfrozen, the session's repair push is still seen as an Inspector-only round.
+    assert.equal(seeded.registry.setSessionPause(seeded.ids.session, null), true);
+    signal(seeded, "repair-head");
+    await waitFor(() => inspectorOnlyRounds(seeded) === 1, "the repair push was not seen after the freeze");
+  } finally {
+    await seeded.manager.stop();
+  }
+});
+
+// The closed predicate takes both of GitHub's finished states as evidence. A merged pull request
+// is as gone as a closed one, and a predicate that knew only CLOSED would leave a merged run
+// waiting for a push that can never land.
+test("a read that says CLOSED or MERGED still blocks the gate as closed", async () => {
+  for (const state of ["CLOSED", "MERGED"] as const) {
+    const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+    try {
+      await awaitRepairPush(seeded);
+      seeded.registry.inspectionUpdated(seeded.key, seeded.head, state);
+      await waitFor(() => phaseOf(seeded) === "blocked/inspector_pr_closed",
+        `a ${state} read did not block the gate`);
+      assert.equal(eventCount(seeded, "inspector_pr_closed"), 1, state);
+      assert.equal(
+        (seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState).waitReason,
+        "pr_closed",
+        state,
+      );
+    } finally {
+      await seeded.manager.stop();
+    }
+  }
+});
+
+// A re-read that throws rather than answering - a broken `gh` spawn, a ledger write that fails -
+// takes its own path through the recheck. It must end where a failed answer ends: blocked, with
+// the reason on the run, and never as an unhandled rejection that leaves no trace.
+test("a GitHub re-read that rejects leaves the closed block in place and records why", async () => {
+  const seeded = await seed({
+    policy: "inspector_only",
+    deliveryMode: "live",
+    reobservePullRequest: async () => {
+      throw new Error("gh could not be started");
+    },
+  });
+  try {
+    await awaitRepairPush(seeded);
+    strandAsClosed(seeded);
+    retireAsClosed(seeded);
+    recheck(seeded, "rejected");
+    await settleGate(seeded);
+    assert.equal(phaseOf(seeded), "blocked/inspector_pr_closed");
+    const failures = seeded.store.listEvents(seeded.ids.run)
+      .filter((event) => event.kind === "inspector_pr_reobserve_failed");
+    assert.equal(failures.length, 1);
+    assert.deepEqual(failures[0]!.payload, { prKey: seeded.key, error: "gh could not be started" });
+    assert.equal(eventCount(seeded, "inspector_pr_seen_open"), 0);
+  } finally {
+    await seeded.manager.stop();
+  }
+});
+
+// Recovery rebuilds the wait the block overwrote, and the repair-push wait is only one of them.
+// A run blocked while its head was still waiting for Inspector's review has no failed head, and
+// must come back to that review - not to waiting for a push nobody owes it.
+test("a recovered closed block that was not waiting on a repair push resumes the Inspector wait", async () => {
+  scriptGitHub(null);
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  try {
+    // Pinned and under review: no findings yet, so no failed head.
+    signal(seeded, seeded.head);
+    await waitFor(() => phaseOf(seeded) === "waiting_for_inspector/inspector_review",
+      "the head was not pinned for review");
+    const pinned = seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState;
+    assert.equal(pinned.failedHeadSha, null);
+    assert.equal(pinned.targetHeadSha, seeded.head);
+
+    strandAsClosed(seeded);
+    retireAsClosed(seeded);
+    scriptGitHub("OPEN", seeded.head);
+    recheck(seeded, "review-wait");
+    await waitFor(() => phaseOf(seeded) === "waiting_for_inspector/inspector_review",
+      "the review wait was not restored");
+    await settleGate(seeded);
+
+    const reopened = seeded.store.listEvents(seeded.ids.run)
+      .filter((event) => event.kind === "inspector_pr_seen_open");
+    assert.equal(reopened.length, 1);
+    assert.deepEqual(reopened[0]!.payload, { prKey: seeded.key, status: "waiting_for_inspector" });
+    const gate = seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState;
+    assert.equal(gate.failedHeadSha, null);
+    assert.equal(gate.targetHeadSha, seeded.head);
+    assert.equal(gate.waitReason, "review_pending");
+    assert.equal(phaseOf(seeded), "waiting_for_inspector/inspector_review");
+  } finally {
+    scriptGitHub(null);
+    await seeded.manager.stop();
   }
 });

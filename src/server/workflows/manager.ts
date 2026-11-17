@@ -121,7 +121,7 @@ import {
   WorkflowCaptureExpectationSchema,
   WorkflowContextSnapshotSchema,
 } from "@shared/protocol.ts";
-import type { InspectionUpdated, InspectorComment } from "@shared/types.ts";
+import type { InspectionUpdated, InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import { injectPrompt, type InjectResult } from "../actions.ts";
@@ -373,6 +373,17 @@ export interface WorkflowManagerOptions {
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   resolveCommitTree?: (repoRoot: string, commitOid: string) => Promise<string>;
+  /**
+   * Read one adopted pull request from GitHub now and signal what it said, the way a sweep
+   * observation is signalled. The daemon wires `reobserveInspectorPr`; a seam rather than an
+   * import because it shells out to `gh` and lives with the Inspector worker.
+   *
+   * A recheck of a closed-PR block calls it, because the sweep never reads a row it retired as
+   * closed. Without it a recheck can only consult the stored ledger.
+   */
+  reobservePullRequest?: (
+    prKey: string,
+  ) => Promise<{ ok: true; state: "OPEN" | "CLOSED" | "MERGED" } | { ok: false; error: string }>;
   reconcileContext?: WorkflowCompactionDeps["reconcile"];
   compactContext?: typeof compactWorkflowContext;
   queueManager?: QueueManager;
@@ -492,6 +503,32 @@ const UNCHANGED_EVIDENCE_NUDGE_LIMIT = 2;
 
 function runIsTerminal(run: WorkflowRun): boolean {
   return ["completed", "cancelled", "failed"].includes(run.status);
+}
+
+/**
+ * Whether a GitHub Inspector signal's PR state is positive evidence the pull request closed.
+ *
+ * Null is NOT that evidence. It is what every signal that observed nothing carries: a GitHub
+ * read that failed or was rate limited, an Inspector settings save, and an adoption, which
+ * all wake the gate without having read GitHub.
+ */
+function inspectorStateSaysClosed(observedState: InspectionUpdated["observedState"]): boolean {
+  return observedState === "CLOSED" || observedState === "MERGED";
+}
+
+/**
+ * Whether the pull request is positively seen open: a signal that read GitHub decides, and a
+ * signal that read nothing falls back to the ledger's last recorded read.
+ *
+ * The ledger must also still be open. The Inspector retires a row the moment it reads the
+ * pull request closed or merged, and stops polling it, so an open row means the last read
+ * GitHub actually answered did not say closed.
+ */
+function inspectorPrSeenOpen(
+  ledger: Pick<InspectorPr, "state" | "observedState">,
+  signalState: InspectionUpdated["observedState"],
+): boolean {
+  return ledger.state === "open" && (signalState ?? ledger.observedState) === "OPEN";
 }
 
 /**
@@ -3364,7 +3401,38 @@ export class WorkflowManager {
     }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
     this.scheduleGateEvaluation(run.id, null);
+    const prKey = this.gateState(run)?.prKey ?? null;
+    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
+      this.reobserveClosedPullRequest(run.id, prKey);
+    }
     return { ok: true, value: run };
+  }
+
+  /**
+   * Ask GitHub again about the pull request a closed-PR block is pinned to.
+   *
+   * The ledger alone cannot lift such a block once its row is retired: the sweep stops reading
+   * a row the moment it reads it closed, so a pull request open on GitHub - never closed, or
+   * reopened since - would stay blocked for good. The read signals what GitHub said, and the
+   * gate evaluation that signal starts lifts the block if it said open. A read that failed is
+   * recorded on the run, so a block that stayed put says why.
+   */
+  private reobserveClosedPullRequest(runId: string, prKey: string): void {
+    const reobserve = this.options.reobservePullRequest;
+    if (!reobserve) return;
+    const task = reobserve(prKey)
+      .catch((error: unknown) => ({
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+      .then((result) => {
+        if (result.ok) return;
+        const run = this.store.getRun(runId);
+        if (!run || runIsTerminal(run)) return;
+        this.store.appendEvent(runId, "inspector_pr_reobserve_failed", { prKey, error: result.error });
+        this.publishRun(runId);
+      });
+    this.trackBackgroundTask(task);
   }
 
   async restartFull(
@@ -4339,6 +4407,55 @@ export class WorkflowManager {
     return updated;
   }
 
+  /**
+   * Lift an `inspector_pr_closed` block once the pinned pull request is positively seen open.
+   *
+   * The block used to be a dead end: nothing re-evaluated it and Recheck refused it. That was
+   * survivable only while the block was always true, and it was not - a signal that observed
+   * nothing read as closed, which blocked open pull requests in the middle of a repair, with
+   * cancel and a full restart as the only ways out. Runs already blocked that way recover here
+   * on the next Inspector poll, or at once on a recheck, without spending a review round. A
+   * recheck also reads GitHub again (`reobserveClosedPullRequest`), which is the only way a row
+   * the sweep retired as closed can be seen open.
+   *
+   * The block overwrote the wait it interrupted, so the wait is rebuilt from the gate. A run
+   * waiting on the session's repair push is the one the gate cannot re-derive by evaluating
+   * again, and it is exactly the one whose findings left `failedHeadSha` equal to the target
+   * head: the Inspector-only round that would follow moves the target. Every other wait
+   * resumes from a fresh observation, and the evaluation that follows re-derives its phase.
+   */
+  private reopenClosedInspectorGate(
+    run: WorkflowRun,
+    state: WorkflowInspectorGateState,
+    observation: InspectionUpdated | null,
+    now: number,
+  ): { run: WorkflowRun; state: WorkflowInspectorGateState } | null {
+    if (!state.prKey) return null;
+    const signalled = observation?.prKey === state.prKey;
+    const ledger = signalled ? observation.ledger : getInspectorPr(state.prKey);
+    if (!ledger || !inspectorPrSeenOpen(ledger, signalled ? observation.observedState : null)) {
+      return null;
+    }
+    const awaitingRepairPush = state.failedHeadSha !== null
+      && state.failedHeadSha === state.targetHeadSha;
+    const reopened: WorkflowInspectorGateState = {
+      ...state,
+      waitReason: awaitingRepairPush ? "findings" : "awaiting_fresh_observation",
+    };
+    const status = awaitingRepairPush ? "waiting_for_new_head" : "waiting_for_inspector";
+    const updated = this.transitionInspectorGate(
+      run,
+      state,
+      reopened,
+      status,
+      awaitingRepairPush ? "inspector_findings" : "inspector_awaiting_fresh_observation",
+      "inspector_pr_seen_open",
+      { prKey: state.prKey, status },
+      now,
+    );
+    return updated ? { run: updated, state: reopened } : null;
+  }
+
   private async evaluateInspectorGate(
     runId: string,
     observation: InspectionUpdated | null,
@@ -4355,7 +4472,12 @@ export class WorkflowManager {
       || runIsTerminal(run)
       || (run.status === "waiting_for_session" && !waitingForPrHandoff && !waitingForMatchingHead)
     ) return;
-    if (run.status === "blocked" && run.currentPhase !== "inspector_disabled") return;
+    // The gate re-evaluates exactly the blocks a recheck is offered for, from one predicate, so
+    // the dashboard cannot offer Recheck on a block this method would refuse to look at.
+    if (
+      run.status === "blocked"
+      && !inspectorRecoveryCanRecheck({ status: run.status, phase: run.currentPhase })
+    ) return;
     // A legacy record decodes as non-executable, and the gate is an execution path, so it
     // stops here rather than at each transition inside. Guarding once at the entry is the
     // point: this method advances the run through a dozen branches, and a per-branch fallback
@@ -4367,6 +4489,13 @@ export class WorkflowManager {
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     if (!binding || transferForNote(binding.noteKey) || version?.completionPolicy.kind !== "inspector") return;
     const now = Date.now();
+    // A closed-PR block moves on one thing only: the pull request seen open again. Until then
+    // nothing else may rewrite it, so this runs before every other branch below.
+    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed") {
+      const reopened = this.reopenClosedInspectorGate(run, state, observation, now);
+      if (!reopened) return;
+      ({ run, state } = reopened);
+    }
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     const durableCandidate = observation
       && this.matchesUnpinnedGate(binding, state, observation.ledger)
@@ -4507,6 +4636,11 @@ export class WorkflowManager {
       state = observed;
     }
     if (state.lastObservedAt === null || state.lastObservedAt < state.enteredAt || !state.observedHeadSha) {
+      // A run waiting on the session's repair push keeps waiting for it in its own status.
+      // Restart recovery deliberately leaves it in `waiting_for_new_head` with no observation;
+      // demoting it here on a signal that observed nothing would route the repair push it is
+      // waiting for through the full-workflow head check, which refuses it as a mismatch.
+      if (run.status === "waiting_for_new_head") return;
       this.transitionInspectorGate(
         run,
         state,
@@ -4519,9 +4653,13 @@ export class WorkflowManager {
       );
       return;
     }
+    // Closed means GitHub SAID closed or merged: the ledger retired the row on such a read, or
+    // this signal carries one. A null state is a signal that observed nothing - a failed or
+    // rate-limited read, a settings save, an adoption - and it used to land here as closed,
+    // because `null !== "OPEN"`. That blocked open pull requests with no way back.
     if (
       ledger.state === "closed"
-      || (observation?.prKey === state.prKey && observation.observedState !== "OPEN")
+      || (observation?.prKey === state.prKey && inspectorStateSaysClosed(observation.observedState))
     ) {
       this.transitionInspectorGate(
         run,

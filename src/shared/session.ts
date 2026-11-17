@@ -100,6 +100,34 @@ export function provisioningTasks(tasks: Task[]): Task[] {
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
+/** Running task records not represented by a session, including provisional startup/transfer gaps. */
+export function sessionlessRunningTasks(tasks: Task[], sessions: Session[]): Task[] {
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  return tasks.filter((task) => task.status === "running" &&
+    (task.sessionId === null || !sessionIds.has(task.sessionId)))
+    .sort((a, b) => (a.dispatchedAt ?? a.createdAt) - (b.dispatchedAt ?? b.createdAt));
+}
+
+/**
+ * Whether a Pipeline provider, not an agent session, owns this task's lifecycle.
+ *
+ * Such a task runs without a session by design - conductor may launch several sequential
+ * agents and none of them owns the task - and the daemon settles it from the provider
+ * projection. It is not lost, so it must not raise the fleet pulse's alarm.
+ */
+export function isProviderOwnedTask(task: Pick<Task, "pipelineRun" | "pipelineCommissionId">): boolean {
+  return task.pipelineRun !== null || Boolean(task.pipelineCommissionId);
+}
+
+/**
+ * Running tasks nothing will finish: no session is attached and no Pipeline provider owns
+ * them. The one definition behind the fleet pulse's `lost` segment and Sitrep's Lost tasks
+ * section, so the count you click and the list you land on cannot disagree.
+ */
+export function lostTasks(tasks: Task[], sessions: Session[]): Task[] {
+  return sessionlessRunningTasks(tasks, sessions).filter((task) => !isProviderOwnedTask(task));
+}
+
 /**
  * How far a provisioning task has got, read off the fields it already carries.
  *

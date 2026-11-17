@@ -107,7 +107,7 @@ after(async () => {
 test("the Mission Control MCP server states the rule in its instructions and every task tool", async () => {
   assert.equal(client.getInstructions(), TASK_REFERENCE_RULE);
   const { tools } = await client.listTools();
-  for (const name of ["create_task", "list_tasks", "get_task", "update_task", "delete_task"]) {
+  for (const name of ["create_task", "list_tasks", "get_task", "update_task", "cancel_task", "delete_task"]) {
     const tool = tools.find((candidate) => candidate.name === name);
     assert.ok(tool, `${name} is registered`);
     assert.ok(tool.description?.endsWith(TASK_REFERENCE_RULE), `${name} carries the rule`);

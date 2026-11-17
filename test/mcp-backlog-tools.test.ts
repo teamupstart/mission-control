@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { after, afterEach, test, type TestContext } from "node:test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +49,7 @@ afterEach(() => openDb().exec("DELETE FROM app_config"));
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /** Real stdio MCP -> authenticated HTTP -> route validation -> TaskManager -> SQLite. */
-async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchiveGate) {
+async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchiveGate, mcpPreload?: string) {
   const registry = new Registry();
   const tasks = new TaskManager(registry, undefined, undefined, undefined, archives);
   const queues = new QueueManager(registry);
@@ -63,7 +63,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     fetch: (req) => {
       const path = new URL(req.url).pathname;
       paths.push(path);
-      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete")) {
+      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete" || path === "/mcp/tasks/cancel")) {
         return new Response("Not Found", { status: 404 });
       }
       return app.fetch(req);
@@ -80,7 +80,8 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
   assert.ok(address && typeof address !== "string");
   await client.connect(new StdioClientTransport({
     command: process.execPath,
-    args: ["--import", "tsx", fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
+    args: ["--import", "tsx", ...(mcpPreload ? ["--import", mcpPreload] : []),
+      fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
     env: {
       ...process.env,
       MISSION_HOME: home,
@@ -600,9 +601,141 @@ test("new task configuration never falls back to an older daemon that would drop
   await f.call("update_task", { taskId: "old-task", model: null }, /Could not update task \(404\)/);
   assert.equal(f.paths.at(-1), "/mcp/tasks/old-task/update");
   const retained = await f.create();
+  await f.call("cancel_task", { taskId: retained.id }, /Could not cancel task \(404\)/);
+  assert.equal(f.paths.at(-1), "/mcp/tasks/cancel");
+  assert.equal(getTask(retained.id)!.status, "backlog", "unsupported cancellation does not fall back to deletion");
   await f.call("delete_task", { taskId: retained.id }, /Could not delete task \(404\)/);
   assert.equal(f.paths.at(-1), "/mcp/tasks/delete");
   assert.ok(getTask(retained.id), "an unsupported delete route never falls back to another operation");
+});
+
+test("MCP cancels sessionless running ship and scout tasks, then permits deletion", async (t) => {
+  const f = await fixture(t);
+  const seen: string[] = [];
+  f.registry.on("event", (event) => {
+    if (event.type === "task_upsert" && event.task.status === "cancelled") seen.push(event.task.id);
+  });
+  for (const kind of ["ship", "scout"] as const) {
+    const task = await f.create({ kind, agent: "codex", workflowId: kind === "ship" ? NO_MISTAKES_REVIEW_WORKFLOW_ID : null });
+    f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null, dispatchedAt: Date.now() - 13 * 86400_000 });
+    await f.call("update_task", { taskId: task.id, title: "Cannot edit running work" }, /not in the backlog/);
+    await f.call("delete_task", { taskId: task.id }, /cancel the task before removing it/);
+    assert.deepEqual(await f.call("cancel_task", { taskId: task.id }), { taskId: task.id, cancelled: true });
+    const saved = getTask(task.id)!;
+    assert.equal(saved.status, "cancelled");
+    assert.equal(saved.sessionId, null);
+    assert.ok(saved.completedAt);
+    assert.equal(seen.at(-1), task.id);
+    const listed = await f.call<{ tasks: Task[] }>("list_tasks", { status: "running" });
+    assert.ok(!listed!.tasks.some((entry) => entry.id === task.id));
+    await f.call("delete_task", { taskId: task.id });
+    assert.equal(getTask(task.id), undefined);
+  }
+});
+
+test("MCP cancellation validates input and authenticates before mutating tasks", async (t) => {
+  const f = await fixture(t);
+  const task = await f.create();
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  const before = getTask(task.id);
+  await f.call("cancel_task", { taskId: "missing" }, /Could not cancel task \(404\).*no such task/);
+  await f.call("cancel_task", { taskId: " " }, /validation/i);
+  await f.call("cancel_task", { taskId: task.id, force: true }, /validation/i);
+  const unauthenticated = await f.app.request("/mcp/tasks/cancel", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.id }),
+  });
+  assert.equal(unauthenticated.status, 401);
+  for (const body of [{}, { taskId: " " }, { taskId: 123 }, { taskId: task.id, force: true }]) {
+    const response = await f.app.request("/mcp/tasks/cancel", {
+      method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 400, await response.text());
+  }
+  assert.deepEqual(getTask(task.id), before);
+});
+
+test("MCP cancellation timeout reports an unknown outcome while daemon cancellation can still finish", { timeout: 20_000 }, async (t) => {
+  let releaseArchive!: (result: { ok: true }) => void;
+  const archive = new Promise<{ ok: true }>((resolve) => { releaseArchive = resolve; });
+  let entered = false;
+  // Accelerate the child's real abort timer without changing production configuration.
+  const preload = "data:text/javascript," + encodeURIComponent(
+    "const timeout = AbortSignal.timeout; AbortSignal.timeout = ms => timeout(Math.min(ms, 1_000));",
+  );
+  const f = await fixture(t, false, {
+    ensureReady: async () => ({ ok: true }),
+    settleBeforeCleanup: () => { entered = true; return archive; },
+  }, preload);
+  const task = await f.create({ kind: "scout", workflowId: null });
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  const cancelled = new Promise<void>((resolve) => {
+    f.registry.on("event", (event) => {
+      if (event.type === "task_upsert" && event.task.id === task.id && event.task.status === "cancelled") {
+        resolve();
+      }
+    });
+  });
+  try {
+    const result = await f.client.callTool({ name: "cancel_task", arguments: { taskId: task.id } }, undefined, { timeout: 10_000 });
+    assert.ok(entered, "the daemon received the request before the client timed out");
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /timed out.*outcome is unknown.*get_task/);
+    assert.equal(getTask(task.id)!.status, "running", "the daemon is still waiting on archive capture");
+    assert.equal(f.paths.filter((path) => path === "/mcp/tasks/cancel").length, 1, "an uncertain request is never retried automatically");
+  } finally {
+    releaseArchive({ ok: true });
+  }
+  await cancelled;
+  assert.equal(getTask(task.id)!.status, "cancelled", "the client timeout did not roll back daemon cancellation");
+});
+
+test("MCP cancellation reports transport failure without claiming a known outcome", async (t) => {
+  const f = await fixture(t);
+  f.disconnectHttp();
+  await f.call("cancel_task", { taskId: "unreachable-task" }, /Could not reach Mission Control.*outcome is unknown.*get_task/);
+  assert.deepEqual(f.paths, [], "the connection failed before an HTTP handler answered");
+});
+
+test("MCP cancellation reports archive refusal without deleting the task and permits retry", async (t) => {
+  let ready = false;
+  const f = await fixture(t, false, {
+    ensureReady: async () => ({ ok: true }),
+    settleBeforeCleanup: async () => ready ? { ok: true } : { ok: false, error: "archive unavailable" },
+  });
+  const task = await f.create({ kind: "scout", workflowId: null });
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  await f.call("cancel_task", { taskId: task.id }, /Could not cancel task \(409\).*task cancelled, but.*archive unavailable/);
+  assert.equal(getTask(task.id)!.status, "cancelled");
+  assert.ok(getTask(task.id)!.completedAt);
+  // A refused archive must also leave a retained report and its checkout ownership intact.
+  const repo = gitRepo("retained-cancellation");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--allow-empty", "-qm", "Fixture base"]);
+  const retained = await f.create({ kind: "scout", workflowId: null, repository: repo });
+  const worktreePath = join(home, "retained-scout-worktree");
+  const branch = "harness/retained-cancellation";
+  execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", branch, worktreePath]);
+  const baseSha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(worktreePath, "report.md"), "Unpublished findings");
+  f.registry.upsertTask({ ...getTask(retained.id)!, status: "running", sessionId: null, worktreePath, branch, baseSha, provider: "git" });
+  await f.call("cancel_task", { taskId: retained.id }, /409.*resources remain tracked.*archive unavailable/);
+  assert.equal(getTask(retained.id)!.worktreePath, worktreePath);
+  assert.equal(readFileSync(join(worktreePath, "report.md"), "utf8"), "Unpublished findings");
+  ready = true;
+  assert.deepEqual(await f.call("cancel_task", { taskId: task.id }), { taskId: task.id, cancelled: true });
+  assert.deepEqual(await f.call("cancel_task", { taskId: retained.id }), { taskId: retained.id, cancelled: true });
+  const saved = getTask(retained.id)!;
+  assert.equal(saved.status, "cancelled");
+  assert.ok(saved.completedAt);
+  assert.equal(saved.worktreePath, null);
+  assert.equal(saved.branch, null);
+  assert.equal(saved.provider, null);
+  assert.equal(saved.worktreeLeaseId, null);
+  assert.equal(saved.baseSha, null);
+  assert.equal(f.registry.getTask(retained.id)?.id, retained.id, "cancellation preserves the task record");
+  assert.equal(existsSync(worktreePath), false, "the retained worktree was removed on retry");
+  assert.ok(!execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" }).includes(worktreePath));
 });
 
 test("MCP deletes backlog and finished tasks durably and publishes each removal", async (t) => {

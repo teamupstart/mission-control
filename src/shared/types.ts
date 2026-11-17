@@ -3029,6 +3029,7 @@ export interface MissionReport {
   working: ReportItem[];
   idle: ReportItem[];
   backlog: Task[];
+  sessionless: Task[];
   recent: Task[];
   /** True when `recent` was capped, so the digest can say so instead of lying by omission. */
   recentTruncated: boolean;

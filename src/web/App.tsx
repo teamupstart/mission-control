@@ -16,6 +16,7 @@ import {
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
@@ -2744,6 +2745,12 @@ export function App(): React.JSX.Element {
   // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
   // and session-card notices, and the top bar's `did not start` count all read these groups.
   const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Held at zero until the first snapshot: before it, every running task would look
+  // sessionless only because no session has arrived yet.
+  const lostTaskCount = useMemo(
+    () => (hasSnapshot ? lostTasks(tasks, sessions).length : 0),
+    [hasSnapshot, tasks, sessions],
+  );
   // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
   // and on the Board a returned one whose Backlog card is hidden becomes a tile.
   const failedLaunchTiles = launchFailureGroups.length;
@@ -4507,6 +4514,12 @@ export function App(): React.JSX.Element {
           onShowDidNotStart={() => {
             const first = launchFailureGroups[0];
             if (first) showLaunchFailure(first.tasks[0]!.id);
+          }}
+          lostTasks={lostTaskCount}
+          onOpenLostTasks={() => {
+            // Sitrep is a modal over the fleet, so it opens from any page without leaving it.
+            closeLineDrawer();
+            setReportOpen(true);
           }}
           launcherFocusError={launcherFocusError}
           fleetCost={fleetCost}

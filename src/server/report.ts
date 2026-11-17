@@ -3,6 +3,8 @@ import {
   RECENT_TASKS_CAP,
   backlogTasks,
   finishedTasks,
+  isProviderOwnedTask,
+  sessionlessRunningTasks,
   needsYouReason,
   reportBucket,
 } from "@shared/session.ts";
@@ -106,6 +108,7 @@ export function buildReport(
     working,
     idle,
     backlog,
+    sessionless: sessionlessRunningTasks(snap.tasks, snap.sessions),
     recent,
     recentTruncated: finished.length > recent.length,
   };
@@ -135,6 +138,18 @@ export function renderReportMarkdown(r: MissionReport): string {
   // Priority leads the line because the list is already sorted by it - the digest reads
   // top-down as a triage order, and a reader who pastes it elsewhere keeps that order.
   // Both marks are omitted entirely when unset, so an untriaged backlog reads as before.
+  // The same split Sitrep draws: lost tasks wait on the operator, provider-owned ones do not.
+  const lost = r.sessionless.filter((t) => !isProviderOwnedTask(t));
+  const providerOwned = r.sessionless.filter(isProviderOwnedTask);
+  if (lost.length > 0) {
+    lines.push("", `Lost tasks (${lost.length})`);
+    for (const t of lost) lines.push(`- "${t.title}" (${t.kind}) - running; no session is attached, so nothing will finish it`);
+  }
+  if (providerOwned.length > 0) {
+    lines.push("", `Pipeline runs without sessions (${providerOwned.length})`);
+    for (const t of providerOwned) lines.push(`- "${t.title}" (${t.kind}) - running; its Pipeline run still owns it`);
+  }
+
   lines.push("", `Backlog (${r.backlog.length})`);
   for (const t of r.backlog) {
     const prio = t.priority ? `[${t.priority}] ` : "";

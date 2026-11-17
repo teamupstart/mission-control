@@ -127,6 +127,15 @@ change permission posture, interrupt a turn, and drop images directly into the c
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
 
+Mission MCP's `cancel_task` cancels saved tasks by task id, including running tasks whose
+session is missing. It uses the dashboard's cancellation and cleanup rules and keeps the task
+record available for inspection or deletion. A red **lost** segment in the topbar's fleet pulse
+counts running tasks that no session or Pipeline run owns; clicking it explains them and opens
+Sitrep, which lists them first with Cancel and Cancel all. After startup observation, eligible running tasks inherited without a
+session binding and unchanged during restore can settle as failed with a session-ended reason,
+retaining their worktrees. [Task recovery](docs/tasks-and-scheduling.md) preserves SDK, Pipeline,
+terminal-handoff and local-plan recovery ownership.
+
 Chat tasks can delegate separate work with Mission MCP's `create_task` and `dispatch_task`,
 using the same backlog and launch checks as the dashboard while the conversation stays open.
 

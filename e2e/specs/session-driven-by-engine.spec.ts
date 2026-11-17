@@ -56,6 +56,10 @@ import { selectConductorRepo, toggleConductorObservation } from "../fixtures/con
  * Discovery on and brisk, and the engine's files read at the fastest cadence the daemon
  * allows. This file's daemon only - see the header for why that is safe, and
  * `settings-conductor.spec.ts` for why a shared override would be a cost fifty specs pay.
+ *
+ * `outsideSessions` is on because the control agent in the repository root is started by hand,
+ * so it is an outside session and has no card with the setting off. The pipeline worker would
+ * be shown either way; `test/discovery-admission.test.ts` covers that it is with the setting off.
  */
 test.use({ daemonEnv: { MISSION_POLL_MS: "400", MISSION_PIPELINE_TICK_MS: "1000" }, outsideSessions: true });
 

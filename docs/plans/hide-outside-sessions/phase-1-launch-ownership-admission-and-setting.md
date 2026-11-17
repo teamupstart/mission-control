@@ -7,7 +7,9 @@ Source plan: [`plan.md`](plan.md). Index: [`phased-plan.md`](phased-plan.md).
 By default, the dashboard shows only Claude, Codex, and Pi sessions Mission Control launched,
 plus pipeline workers in observed run worktrees. A new checkbox, **Show sessions started outside
 Mission Control** under Settings > Setup > Terminals, restores today's behavior. It is off by
-default and carries a warning. Hidden sessions cost no pane capture, `gitInfo`, or `lsof`.
+default and carries a warning. Hidden sessions cost no pane capture, `gitInfo`, or Codex
+rollout `lsof`. One batched `lsof` still reads every agent's working directory, because the
+pipeline-worktree rule needs it.
 
 ## Entry criteria
 

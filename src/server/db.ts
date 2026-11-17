@@ -4690,6 +4690,9 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archives", "source_session_json", "TEXT");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+  // `sessionsBoundToAgents` reads bindings by agent session id, once per discovery sweep
+  // while a dispatch invite has no live card.
+  d.exec("CREATE INDEX IF NOT EXISTS idx_agent_bindings_agent ON session_agent_bindings(agent_session_id)");
 
   // Attention-inbox items the operator dismissed without resolving them (schema 24). One row per
   // dismissal key (`attentionDismissalKeys`): an inbox row's item id, or for a row of questions
@@ -5960,6 +5963,25 @@ export function lastAgentBinding(sessionId: string): string | null {
     .prepare(`SELECT agent_session_id AS id FROM session_agent_bindings WHERE session_id = ?`)
     .get(sessionId) as { id: string } | undefined;
   return row?.id ?? null;
+}
+
+/**
+ * The synthetic ids whose last binding is one of these agent session ids: `lastAgentBinding`
+ * read backwards, for a whole set of keys in one query. Discovery admission asks it once per
+ * sweep for the dispatch invites no live card accounts for, rather than asking
+ * `lastAgentBinding` once per refused candidate. `idx_agent_bindings_agent` keeps it off a
+ * table scan, because bindings are never pruned.
+ */
+export function sessionsBoundToAgents(agentSessionIds: Iterable<string>): Set<string> {
+  const keys = [...agentSessionIds];
+  if (keys.length === 0) return new Set();
+  const rows = openDb()
+    .prepare(
+      `SELECT session_id AS id FROM session_agent_bindings
+        WHERE agent_session_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(keys)) as { id: string }[];
+  return new Set(rows.map((row) => row.id));
 }
 
 // ---- tasks ----

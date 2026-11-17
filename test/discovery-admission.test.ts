@@ -15,7 +15,9 @@ const home = mkdtempSync(join(tmpdir(), "mission-discovery-admission-"));
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { openDb, recordAgentBinding, setAppConfig, upsertForemanInvite } = await import("../src/server/db.ts");
+const { openDb, recordAgentBinding, sessionsBoundToAgents, setAppConfig, upsertForemanInvite } = await import(
+  "../src/server/db.ts"
+);
 const { Registry } = await import("../src/server/registry.ts");
 const { pollOnce } = await import("../src/server/discovery/poller.ts");
 const { discover } = await import("../src/server/discovery/correlate.ts");
@@ -289,6 +291,28 @@ test("off, after a restart: a binding recorded after the first sweep still admit
   assert.deepEqual(shown(registry), [idOf(LATE_BOUND)]);
   await pollOnce(registry, find);
   assert.deepEqual(shown(registry), [idOf(LATE_BOUND)], "and keeps it");
+});
+
+test("the invite binding lookup reads a whole set of keys backwards, through its index", () => {
+  recordAgentBinding("synthetic-bound-a", "agent-bound-a", 3000);
+  recordAgentBinding("synthetic-bound-b", "agent-bound-b", 3000);
+  recordAgentBinding("synthetic-unrelated", "agent-unrelated", 3000);
+  assert.deepEqual(
+    [...sessionsBoundToAgents(["agent-bound-a", "agent-bound-b", "agent-never-bound"])].sort(),
+    ["synthetic-bound-a", "synthetic-bound-b"],
+  );
+  assert.equal(sessionsBoundToAgents([]).size, 0);
+  // Bindings are never pruned, so admission's once-per-sweep read must not scan the table.
+  const plan = openDb()
+    .prepare(
+      `EXPLAIN QUERY PLAN SELECT session_id AS id FROM session_agent_bindings
+        WHERE agent_session_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(["agent-bound-a"])) as { detail: string }[];
+  assert.ok(
+    plan.some((row) => row.detail.includes("idx_agent_bindings_agent")),
+    plan.map((row) => row.detail).join("\n"),
+  );
 });
 
 test("turning the setting off evicts an outside card through the one eviction path", async (t) => {

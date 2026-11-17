@@ -11,6 +11,8 @@ import {
   RECENT_TASKS_CAP,
   backlogTasks,
   finishedTasks,
+  isProviderOwnedTask,
+  lostTasks,
   sessionlessRunningTasks,
   needsYouReason,
   reportBucket,
@@ -29,7 +31,7 @@ import {
   type BacklogTrustView,
 } from "../lib/backlog-copy.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { repoLeaf } from "../lib/format.ts";
+import { relativeTime, repoLeaf } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import {
   AgentDot,
@@ -288,7 +290,13 @@ export function ReportPanel({
   }, [sessions]);
 
   const backlog = useMemo(() => backlogTasks(tasks), [tasks]);
-  const sessionless = useMemo(() => sessionlessRunningTasks(tasks, sessions), [tasks, sessions]);
+  // Split by who will finish the task. A lost one has no session and no provider, so only the
+  // operator can close it; a provider-owned one is still settled by its Pipeline run.
+  const lost = useMemo(() => lostTasks(tasks, sessions), [tasks, sessions]);
+  const providerSessionless = useMemo(
+    () => sessionlessRunningTasks(tasks, sessions).filter(isProviderOwnedTask),
+    [tasks, sessions],
+  );
   const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
   // Built once for the whole Backlog section rather than per row, the way the board
@@ -342,6 +350,21 @@ export function ReportPanel({
     if (!result.ok) setCancelError(`${taskById.get(taskId)?.title ?? "Task"}: ${result.error ?? "could not cancel"}`);
   }
 
+  // One at a time through the same endpoint as a row's Cancel, so each task keeps its own
+  // refusal: a cleanup still running on one must not hide that the others were cancelled.
+  async function cancelAllLost(): Promise<void> {
+    setCancelError(null);
+    setCancelling(CANCEL_ALL_LOST);
+    const failures: string[] = [];
+    for (const task of lost) {
+      const result = await api.cancelTask(task.id);
+      if (!result.ok) failures.push(`${task.title}: ${result.error ?? "could not cancel"}`);
+    }
+    setCancelling(null);
+    setConfirmCancel(null);
+    if (failures.length > 0) setCancelError(failures.join("; "));
+  }
+
   async function reclaim(taskId: string): Promise<void> {
     await api.reclaimTask(taskId);
     setConfirmCancel(null);
@@ -388,6 +411,36 @@ export function ReportPanel({
     );
   }
 
+  function cancelAllControl(): React.JSX.Element {
+    if (confirmCancel !== CANCEL_ALL_LOST) {
+      return (
+        <Tooltip label="Cancel every lost task and reclaim their worktrees - asks for a confirming click first">
+          <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(CANCEL_ALL_LOST)}>
+            Cancel all {lost.length}
+          </button>
+        </Tooltip>
+      );
+    }
+    return (
+      <span className="report-cancel">
+        <Tooltip label="Cancel every lost task now and reclaim their worktrees">
+          <button
+            className="btn btn-danger"
+            disabled={cancelling === CANCEL_ALL_LOST}
+            onClick={() => void cancelAllLost()}
+          >
+            Confirm cancel all {lost.length}
+          </button>
+        </Tooltip>
+        <Tooltip label="Leave the lost tasks as they are">
+          <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
+            ✕
+          </button>
+        </Tooltip>
+      </span>
+    );
+  }
+
   return (
     <Overlay
       id={OVERLAY_IDS.sitrep}
@@ -425,6 +478,40 @@ export function ReportPanel({
 
       <div className="report-body">
         <SessionTransfers page={sessionTransfers} />
+        {/* First, because the topbar's `lost` segment opens Sitrep to act on exactly these,
+            and they are the one thing here nothing else will ever resolve. */}
+        {lost.length > 0 && (
+          <Section
+            title="Lost tasks"
+            tone="danger"
+            count={lost.length}
+            empty=""
+            className="report-section-lost"
+            action={lost.length > 1 ? cancelAllControl() : null}
+          >
+            <p className="report-section-note">
+              Marked running, but no agent session is attached, so nothing will finish them. Cancel ends
+              the task and reclaims its worktree.
+            </p>
+            {lost.map((task) => (
+              <div className="report-row" key={task.id}>
+                <div className="report-row-main report-row-stack">
+                  <span className="report-line">
+                    <AgentDot agent={task.agent} />
+                    <Tooltip label={task.title}>
+                      <span className="report-name">{task.title}</span>
+                    </Tooltip>
+                    <span className="report-status status-running">running</span>
+                  </span>
+                  <span className="report-line report-line-sub">
+                    <span className="report-sub">{lostTaskDetail(task)}</span>
+                  </span>
+                </div>
+                <div className="report-row-actions">{cancelControl(task)}</div>
+              </div>
+            ))}
+          </Section>
+        )}
         <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">
           {needsYou.map((s) => (
             <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s, sessions) ?? "needs you"}>
@@ -500,9 +587,9 @@ export function ReportPanel({
           ))}
         </Section>
 
-        {sessionless.length > 0 && (
-          <Section title="Tasks without sessions" tone="attention" count={sessionless.length} empty="">
-            {sessionless.map((task) => (
+        {providerSessionless.length > 0 && (
+          <Section title="Pipeline runs without sessions" tone="neutral" count={providerSessionless.length} empty="">
+            {providerSessionless.map((task) => (
               <div className="report-row" key={task.id}>
                 <div className="report-row-main report-row-stack">
                   <span className="report-line">
@@ -513,7 +600,7 @@ export function ReportPanel({
                     <span className="report-status status-running">running</span>
                   </span>
                   <span className="report-line report-line-sub">
-                    <span className="report-sub">No session is currently attached</span>
+                    <span className="report-sub">No session attached; its Pipeline run still owns it</span>
                   </span>
                 </div>
                 <div className="report-row-actions">{cancelControl(task)}</div>
@@ -678,24 +765,46 @@ export function ReportPanel({
   );
 }
 
+/** `confirmCancel`'s arm for the Lost tasks section's bulk action. Never a task id. */
+const CANCEL_ALL_LOST = "lost:all";
+
+/** What a lost row says under its title: why it is lost, how long ago, and what it holds. */
+export function lostTaskDetail(task: Task, now = Date.now()): string {
+  const parts = ["No session attached"];
+  const since = relativeTime(task.dispatchedAt ?? task.createdAt, now);
+  if (since) parts.push(`dispatched ${since}`);
+  if (taskHoldsCleanupResources(task)) parts.push("holds a worktree");
+  return parts.join(" · ");
+}
+
 function Section({
   title,
   tone,
   count,
   empty,
+  className,
+  action,
   children,
 }: {
   title: string;
   tone: string;
   count: number;
   empty: string;
+  className?: string;
+  /** A control for the whole section, pinned to the heading's trailing edge. */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
-    <section className="report-section">
-      <h3 className={`report-section-title tone-${tone}`}>
-        {title} <span className="report-count">{count}</span>
-      </h3>
+    <section className={`report-section${className ? ` ${className}` : ""}`}>
+      {/* The action sits beside the heading, never inside it, so it does not become part of
+          the heading's accessible name. */}
+      <div className="report-section-head">
+        <h3 className={`report-section-title tone-${tone}`}>
+          {title} <span className="report-count">{count}</span>
+        </h3>
+        {action}
+      </div>
       {count === 0 ? <p className="report-empty">{empty}</p> : children}
     </section>
   );

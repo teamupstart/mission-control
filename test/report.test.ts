@@ -298,7 +298,21 @@ test("report and copied digest expose running tasks with missing session binding
   const report = buildReport({ tasks, sessions: [mkSession({ id: "live" }), mkSession({ id: "linger", state: "exited" })] });
   assert.deepEqual(report.sessionless.map((task) => task.id), ["null", "absent"]);
   const text = renderReportMarkdown(report);
-  assert.match(text, /Tasks without sessions \(2\)/);
-  assert.match(text, /"Lost binding".*no session is currently attached/);
-  assert.match(text, /"Missing session".*no session is currently attached/);
+  assert.match(text, /Lost tasks \(2\)/);
+  assert.match(text, /"Lost binding".*no session is attached, so nothing will finish it/);
+  assert.match(text, /"Missing session".*no session is attached, so nothing will finish it/);
+  assert.doesNotMatch(text, /Pipeline runs without sessions/);
+});
+
+test("report: a sessionless task its Pipeline run owns is listed apart from the lost ones", () => {
+  const tasks = [
+    baseTask({ id: "lost", title: "Lost binding", status: "running", sessionId: null, dispatchedAt: 1 }),
+    baseTask({
+      id: "owned", title: "Provider run", kind: "pipeline", status: "running", sessionId: null, dispatchedAt: 2,
+      pipelineRun: { provider: "ai-conductor", repoRoot: "/repo", slug: "run-1" },
+    }),
+  ];
+  const text = renderReportMarkdown(buildReport({ tasks, sessions: [] }));
+  assert.match(text, /Lost tasks \(1\)\n- "Lost binding"/);
+  assert.match(text, /Pipeline runs without sessions \(1\)\n- "Provider run" \(pipeline\) - running; its Pipeline run still owns it/);
 });

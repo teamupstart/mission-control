@@ -59,10 +59,22 @@ live agent before that check. SDK-owned work, provider-owned Pipeline runs, dura
 handoffs, and pending local-plan recovery retain their existing ownership. Settlement keeps
 worktrees and their resource records for the existing cleanup and retention policy.
 
-Sitrep lists running tasks with no attached session under **Tasks without sessions**, including
-provisional gaps that cannot yet be settled. Each row offers a confirmed Cancel action using
-the same task owner as `cancel_task`. Cancellation errors remain visible in the panel; the
-copied Markdown report includes the same task list.
+A running task with no attached session and no Pipeline run or commission owning it is a
+**lost task**: nothing will finish it, so only the operator can close it. While any exist, the
+fleet pulse in the topbar shows a red **lost** segment with their count on every page.
+Clicking it opens a card that explains the state and offers **Open Sitrep**; Sitrep's
+keyboard shortcut works too. The segment disappears when the last lost task is cancelled or
+settled.
+
+Sitrep lists lost tasks first, under **Lost tasks**, including provisional gaps that cannot
+yet be settled. Each row shows how long ago the task was dispatched and whether it still holds
+a worktree, and offers a confirmed Cancel action using the same task owner as `cancel_task`.
+With more than one lost task, **Cancel all** cancels each in turn after one confirming click
+and reports any refusal by task. Sessionless tasks a Pipeline run still owns are listed apart,
+under **Pipeline runs without sessions**, and do not raise the topbar segment. Cancellation
+errors remain visible in the panel; the copied Markdown report includes both lists. The
+[lost-task predicate](../src/shared/session.ts) is shared by the topbar, Sitrep and the
+report, so the count and the lists cannot disagree.
 
 The [shared task-status policy](../src/shared/task-status.ts) defines whether each
 `TaskStatus` is active. Provisioning (`dispatching`) and execution (`running`) are active;

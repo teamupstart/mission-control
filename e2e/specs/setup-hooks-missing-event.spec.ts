@@ -225,3 +225,42 @@ test("the dispatch form carries the same notice, and drops it once the hooks are
   await expect(dialog.locator(".dispatch-env-note").filter({ hasText: "Claude Code hook events" })).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeVisible();
 });
+
+/**
+ * The dispatch note is a door, not a sentence naming a settings path.
+ *
+ * The operator reading it is standing in a modal, and the remedy (the Install button, or the
+ * command to copy) lives on a Setup row three navigations away. The note's "Fix in Setup"
+ * control closes the form and lands on that exact row. The dashboard here loaded before the
+ * settings file was written, so the panel's startup snapshot has no such row: the door has to
+ * re-read the machine and still select the right family, or it drops the operator on
+ * whichever family the rail happens to open on.
+ */
+test("the dispatch notice links straight to its Setup row", async ({ dashboard, daemon }) => {
+  const script = liveScript(daemon);
+  installHooks(daemon, script, BEFORE_SUBAGENT_START);
+
+  const settled = dashboard.waitForResponse((res) => res.url().includes("/api/environment/checks"));
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await settled;
+
+  const note = dialog.locator(".dispatch-env-note").filter({ hasText: "Claude Code hook events" });
+  const fix = note.getByRole("button", { name: "Fix Claude Code hook events in Setup" });
+  await expect(fix).toBeVisible();
+  await expect(fix).toHaveText("Fix in Setup");
+  await shoot(dashboard, "missing-subagent-start-dispatch-fix", note);
+
+  await fix.click();
+  await expect(dialog).toBeHidden();
+  await expect(dashboard).toHaveURL(/#\/settings\/setup/);
+  await expect(dashboard.locator("#setup-family-extensions")).toHaveAttribute("aria-current", "true");
+  const row = setupRow(dashboard, ROW);
+  await expect(row).toBeVisible();
+  await expectRowStatus(dashboard, ROW, "Needs setup");
+  await expect(row.locator(".setup-command code")).toHaveText("npm run install-hooks");
+  // Landed on, not merely present: the page flashes the control a deep link names.
+  await expect(row).toHaveClass(/settings-flash/);
+  await shoot(dashboard, "missing-subagent-start-setup-landing", row);
+});

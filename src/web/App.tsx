@@ -62,6 +62,8 @@ import {
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
+import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
+import { setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
@@ -681,6 +683,22 @@ export function App(): React.JSX.Element {
       openSettingsAnchor(door.category, door.anchor);
     },
     [openSettingsAnchor],
+  );
+  /**
+   * The door an environment warning in the dispatch form offers, opened: that check's own
+   * Setup row, which carries the remedy (the Install button, or the command to run).
+   *
+   * Re-reads the setup snapshot too. The dispatch form asked the machine a moment ago, but
+   * the Setup panel shows what was read at startup, and a row the operator was just sent to
+   * must not be missing because the warning is newer than the snapshot.
+   */
+  const refreshSetup = setup.refresh;
+  const openEnvironmentFix = useCallback(
+    (check: EnvironmentCheckId): void => {
+      void refreshSetup();
+      openSettingsAnchor("setup", setupRowAnchor({ source: "environment-check", id: check }));
+    },
+    [openSettingsAnchor, refreshSetup],
   );
   const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
@@ -5171,6 +5189,7 @@ export function App(): React.JSX.Element {
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
+                onOpenEnvironmentFix={openEnvironmentFix}
                 onEnsembleLaunched={openEnsembleRun}
                 residentProfiles={residentProfiles}
                 onEditResidentProfile={(profileId) =>

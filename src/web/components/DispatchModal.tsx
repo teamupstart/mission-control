@@ -43,7 +43,7 @@ import {
   taskKindAllowsBacklog,
   type GrillFirstTaskKind,
 } from "@shared/task.ts";
-import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
+import type { EnvironmentCheckId, EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
   TASK_SOURCE_KIND_INFO,
   type TaskSourceInstance,
@@ -643,6 +643,7 @@ export function DispatchLayer({
   onClose,
   onOpenSchedule,
   onOpenLaunchFix,
+  onOpenEnvironmentFix,
   onEnsembleLaunched,
   residentProfiles = [],
   onEditResidentProfile,
@@ -693,6 +694,11 @@ export function DispatchLayer({
    * form left standing over the screen the operator was just sent to is not an offer.
    */
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
+  /**
+   * Open the Setup row that repairs what an environment warning reports. Closes the form
+   * first, for `onOpenLaunchFix`'s reason.
+   */
+  onOpenEnvironmentFix?: (check: EnvironmentCheckId) => void;
   /** Navigate to a freshly launched Ensemble run's detail. */
   onEnsembleLaunched?: (runId: string) => void;
   /** Live resident profiles, for the Resident mode's profile cards. */
@@ -1124,6 +1130,7 @@ export function DispatchLayer({
         onClose={onClose}
         onSubmitted={onEditSubmitted}
         onOpenLaunchFix={onOpenLaunchFix}
+        onOpenEnvironmentFix={onOpenEnvironmentFix}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
@@ -1157,6 +1164,7 @@ export function DispatchLayer({
         onClose={onClose}
         onSubmitted={onTourSubmitted}
         onOpenLaunchFix={onOpenLaunchFix}
+        onOpenEnvironmentFix={onOpenEnvironmentFix}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
@@ -1179,6 +1187,7 @@ export function DispatchLayer({
       onClose={onClose}
       onSubmitted={onSubmitted}
       onOpenLaunchFix={onOpenLaunchFix}
+      onOpenEnvironmentFix={onOpenEnvironmentFix}
       workflowSummaries={workflowSummaries}
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
@@ -1216,6 +1225,7 @@ function DispatchModal({
   onClose,
   onSubmitted,
   onOpenLaunchFix,
+  onOpenEnvironmentFix,
   workflowSummaries = [],
   foremanEnabled = false,
   harnessesRevision = 0,
@@ -1246,6 +1256,8 @@ function DispatchModal({
   onSubmitted: (submitted: DispatchDraft) => void;
   /** Open the settings screen that grants what a refused launch named as missing. */
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
+  /** Open the Setup row that repairs what an environment warning reports. */
+  onOpenEnvironmentFix?: (check: EnvironmentCheckId) => void;
   workflowSummaries?: WorkflowSummary[];
   foremanEnabled?: boolean;
   /**
@@ -3769,13 +3781,34 @@ function DispatchModal({
             Last in the body, so it is the final thing read before the buttons - and a note,
             never a gate: the footer below is untouched by it, because a stalled agent is a
             cost the operator may knowingly accept while a blocked Workflow is a task the
-            daemon would have to refuse. Absent entirely on a machine no check recognises. */}
+            daemon would have to refuse. Absent entirely on a machine no check recognises.
+            Every check that warns has a Setup row carrying its remedy, so the note ends in a
+            door to that row rather than a sentence naming a settings path the operator then
+            has to find; it closes the form first, and the draft survives the close. */}
         {envWarnings.map((check) => (
           <p className="dispatch-wait-note dispatch-env-note" key={check.id}>
             <span aria-hidden>⚠</span>
             <span>
               <strong>{check.label}:</strong> {check.warning}
               {check.detail && <span className="dispatch-env-detail">{check.detail}</span>}
+              {onOpenEnvironmentFix && (
+                <>
+                {" "}
+                <Tooltip label={`Open Settings, Setup, at the ${check.label} row`}>
+                  <button
+                    type="button"
+                    className="settings-link dispatch-env-fix"
+                    aria-label={`Fix ${check.label} in Setup`}
+                    onClick={() => {
+                      onClose();
+                      onOpenEnvironmentFix(check.id);
+                    }}
+                  >
+                    Fix in Setup
+                  </button>
+                </Tooltip>
+                </>
+              )}
             </span>
           </p>
         ))}

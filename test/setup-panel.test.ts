@@ -133,6 +133,15 @@ test("familyForAnchor resolves both anchor shapes and refuses anything else", ()
   assert.equal(familyForAnchor("setup/family-nonsense", rows), null);
 });
 
+test("familyForAnchor resolves an environment-check row the snapshot does not carry yet", () => {
+  // The dispatch form's "Fix in Setup" door links to a warning it read moments ago, while the
+  // panel may still hold the startup snapshot without that row. The family comes from the
+  // catalog so the rail moves and the flash waits for the row to mount.
+  assert.equal(familyForAnchor("setup/environment-check-mission-hook-events", []), "extensions");
+  assert.equal(familyForAnchor("setup/environment-check-mission-hook-script", [CLAUDE]), "extensions");
+  assert.equal(familyForAnchor("setup/environment-check-nonsense", []), null);
+});
+
 const NO_REPOSITORIES: SetupRowView = {
   ...INDEXED_REPOSITORIES_INFO,
   status: {

@@ -12656,6 +12656,13 @@ button.dispatch-guided-rung .dispatch-guided-num {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+/* The door to the Setup row that repairs the warning, on its own line after the evidence so
+   it is the last thing read and never wraps into the middle of a path. */
+.dispatch-env-fix {
+  display: inline-block;
+  margin-top: 6px;
+  font-weight: 600;
+}
 /* The doubled class outranks .btn-primary's hover !important by specificity, whatever
    the source order. */
 .btn-primary.btn-wait {

@@ -182,9 +182,10 @@ predicate together with its launch-path test.
 
 ## Cross-phase audit record
 
-- Single-phase plan. Every source-plan requirement and both adopted decisions (off for all
-  installs; pipeline workers visible) are owned here. No other phase consumes or changes these
-  contracts.
+- Single-phase plan. This phase implements every source-plan requirement and both adopted
+  decisions (off for all installs; pipeline workers visible), and no other phase consumes or
+  changes these contracts. The admission rule itself is defined once, in `plan.md` ("Design,
+  step 2"); this brief points to it rather than restating it.
 - Revision 4: dropped the work-episode admission signal, switched the resume-guard match to a
   full-string comparison, and unified the helper name `hasMissionLaunchAncestor` with the
   root plan.

@@ -39,12 +39,39 @@ export interface MissionLaunchMarkers {
   resumeLeaseRoot: string | null;
 }
 
-/** Read without side effects: discovery runs this every sweep and must never create state. */
-export function missionLaunchMarkers(): MissionLaunchMarkers {
+/** The last unexpected lease-root failure reported, so a sweep every ~1.5s logs it once. */
+let reportedLeaseRootFailure: string | null = null;
+
+/**
+ * Read without side effects: discovery runs this every sweep and must never create state.
+ *
+ * A missing state directory (`ENOENT`) is the expected first-run state and stays quiet. Any
+ * other failure (a permission error, a symlink loop, a path through a file) also leaves the
+ * resume markers null, because failing the whole sweep would hide every session instead of
+ * only managed resumes. It is logged once, though, because it hides every managed-resume and
+ * Continue-in-terminal session on this machine, and nothing else would say why.
+ */
+export function missionLaunchMarkers(
+  leaseRoot: () => string = () => resumeLeaseRootPath(stateDir()),
+  warn: (message: string) => void = console.warn,
+): MissionLaunchMarkers {
   let resumeLeaseRoot: string | null = null;
   try {
-    resumeLeaseRoot = resumeLeaseRootPath(stateDir());
-  } catch { /* No state directory yet, so no lease can exist under it. */ }
+    resumeLeaseRoot = leaseRoot();
+    reportedLeaseRootFailure = null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code !== "ENOENT") {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== reportedLeaseRootFailure) {
+        reportedLeaseRootFailure = message;
+        warn(
+          `[discovery] cannot resolve the resume lease root (${message}); managed resumes and ` +
+            "Continue in terminal sessions will be treated as started outside Mission Control",
+        );
+      }
+    }
+  }
   return {
     disposableRoot: DISPOSABLE_STATE_ROOT,
     resumeGuard: resumeLeaseRoot ? resumeGuardPath() : null,

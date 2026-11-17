@@ -164,3 +164,31 @@ test("a ppid cycle ends the walk instead of hanging it", () => {
   assert.equal(hasMissionLaunchAncestor(22, procs), false);
   assert.equal(hasMissionLaunchAncestor(999, procs), false, "an unknown pid has no ancestry");
 });
+
+test("a missing state directory leaves resume markers null quietly; any other failure says so once", () => {
+  const failing = (code: string, message: string) => () => {
+    throw Object.assign(new Error(message), { code });
+  };
+  const warnings: string[] = [];
+  const warn = (message: string) => warnings.push(message);
+
+  const fresh = missionLaunchMarkers(failing("ENOENT", "ENOENT: no such file or directory"), warn);
+  assert.equal(fresh.resumeGuard, null);
+  assert.equal(fresh.resumeLeaseRoot, null);
+  assert.equal(fresh.disposableRoot, DISPOSABLE_STATE_ROOT, "dispatch wrappers are still recognized");
+  assert.deepEqual(warnings, [], "the first-run state is expected, not a fault");
+
+  const denied = failing("EACCES", "EACCES: permission denied, realpath '/state'");
+  for (let sweep = 0; sweep < 3; sweep++) {
+    const markers = missionLaunchMarkers(denied, warn);
+    assert.equal(markers.resumeLeaseRoot, null, "a sweep still runs; it just cannot match a resume");
+  }
+  assert.equal(warnings.length, 1, "logged once, not on every sweep");
+  assert.match(warnings[0]!, /permission denied/);
+  assert.match(warnings[0]!, /treated as started outside Mission Control/);
+
+  // A recovery clears the report, so the same fault returning later is said again.
+  assert.equal(missionLaunchMarkers(() => "/tmp/lease-root", warn).resumeLeaseRoot, "/tmp/lease-root");
+  missionLaunchMarkers(denied, warn);
+  assert.equal(warnings.length, 2);
+});

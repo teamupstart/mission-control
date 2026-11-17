@@ -5452,12 +5452,29 @@ export function workCycleFor(logicalKey: string): WorkCycleSummary | null {
 }
 
 /**
+ * True when work observed at `occurredAt` happened before `cycle`'s last recorded completion.
+ *
+ * Signals reach the daemon on more than one path - an SDK driver's stream and a hook process
+ * that has to start and POST - so a hook stamped before a turn's end can land after it. Such a
+ * signal describes the turn that already completed, never a new one: arming on it leaves a
+ * cycle active that no later completion will close, and everything that waits for an idle
+ * conversation (a resident's next wake, a queued Run now) then waits forever.
+ */
+export function workStartPredatesCompletion(cycle: WorkCycleSummary | null | undefined, occurredAt: number): boolean {
+  return !!cycle && !cycle.active && cycle.completedAt !== null && occurredAt < cycle.completedAt;
+}
+
+/**
  * Arm a logical conversation after normalized work activity.
  *
  * Repeated activity keeps the same generation. The write time still moves because it is
- * the current-state projection's latest observation, not a completion identity.
+ * the current-state projection's latest observation, not a completion identity. Activity
+ * that happened before the last completion is a late delivery and leaves the row unchanged;
+ * `occurredAt` defaults to the write time for a signal observed as it happened.
  */
-export function markWorkCycleActive(logicalKey: string, updatedAt: number): WorkCycleSummary {
+export function markWorkCycleActive(logicalKey: string, updatedAt: number, occurredAt = updatedAt): WorkCycleSummary {
+  const current = workCycleFor(logicalKey);
+  if (current && workStartPredatesCompletion(current, occurredAt)) return current;
   openDb()
     .prepare(
       `INSERT INTO session_work_cycles

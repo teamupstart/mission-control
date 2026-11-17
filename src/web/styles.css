@@ -39941,6 +39941,15 @@ body.foreman-sidecar-open .modal-backdrop {
   }
 }
 
+/* Sits inside the already-inset remedy block, so it carries no inset of its own. */
+.setup-remedy-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin: 0 0 6px;
+  max-width: 760px;
+}
+
 .setup-provider-checkout {
   color: var(--dim);
   font-size: 10px;

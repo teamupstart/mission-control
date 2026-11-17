@@ -220,6 +220,7 @@ import {
   logEvent,
   markWorkCycleActive,
   completeWorkCycle,
+  workStartPredatesCompletion,
   bootstrapPromptedConsumedGeneration,
   consumePromptedGeneration as dbConsumePromptedGeneration,
   claimPromptedRecovery as dbClaimPromptedRecovery,
@@ -3158,7 +3159,7 @@ export class Registry extends EventEmitter {
   ): Session {
     const logicalKey = noteKeyFor(s);
     const workCycle = signal === "work_started"
-      ? markWorkCycleActive(logicalKey, updatedAt)
+      ? markWorkCycleActive(logicalKey, updatedAt, occurredAt)
       : completeWorkCycle(logicalKey, occurredAt, updatedAt);
     // A completed turn ends the wait for every human follow-up that belonged to it, and starts
     // the clock on the one queued behind it. Idempotent, so a completion that changed nothing
@@ -3565,7 +3566,7 @@ export class Registry extends EventEmitter {
     // state, its activity line, nor its work cycle - otherwise a background agent's tool call
     // flips an idle parent back to working with no turn left to close it.
     const fromSubagent = evt.agentId !== undefined;
-    const workCycleSignal = fromSubagent ? null : spec.workCycleSignal(evt);
+    const signal = fromSubagent ? null : spec.workCycleSignal(evt);
     // A keyless emulator hook can arrive before OS discovery. Retain its exact native
     // identity across restart, but let only the coordinator's launch proof attach it.
     const transfer = evt.sessionId ? transferForNote(evt.sessionId) : null;
@@ -3577,6 +3578,15 @@ export class Registry extends EventEmitter {
     }
     const target = this.findSessionForHook(evt, key);
     if (target && taskSessionClosureForSession(target.id)?.retiredAt != null) return;
+    // A hook process starts and POSTs on its own schedule, so one stamped before its
+    // conversation's last completion can land after it - an SDK driver's `turn_done` most
+    // often, since it travels a different path. That hook describes the turn that already
+    // ended. Like a sub-agent's hook it moves neither the card's state nor its work cycle:
+    // reading it as new work leaves an idle card working, with no turn left to close it.
+    const cycleKey = evt.sessionId ?? (target ? noteKeyFor(target) : null);
+    const late = signal === "work_started" && cycleKey !== null && workStartPredatesCompletion(dbWorkCycleFor(cycleKey), ts);
+    const workCycleSignal = late ? null : signal;
+    const describesParent = !fromSubagent && !late;
 
     // SDK identity belongs to the owned driver, including initial binding and clears.
     // An auxiliary CLI can inherit this cwd or pane without MISSION_HEADLESS, so those
@@ -3632,7 +3642,7 @@ export class Registry extends EventEmitter {
     };
     // The overlay is the parent's lifecycle reading that later sweeps replay, so a sub-agent's
     // hook leaves it as it was.
-    if (retainedKey && !fromSubagent) this.overlays.set(retainedKey, overlay);
+    if (retainedKey && describesParent) this.overlays.set(retainedKey, overlay);
 
     // Apply immediately to a matching live session for instant feedback.
     if (target) {
@@ -3691,10 +3701,10 @@ export class Registry extends EventEmitter {
         instrumented: true,
         stateConfirmed: true,
         hooksSeen: true,
-        state: fromSubagent ? target.state : state,
-        activity: fromSubagent ? target.activity : activity,
+        state: describesParent ? state : target.state,
+        activity: describesParent ? activity : target.activity,
         permissionMode,
-        lastActivity: fromSubagent ? target.lastActivity : ts,
+        lastActivity: describesParent ? ts : target.lastActivity,
         agentSessionId,
         transcriptPath,
         gitBranch,
@@ -3791,7 +3801,7 @@ export class Registry extends EventEmitter {
       // the logical key, so persist the lifecycle edge now and let the first discovery
       // projection read it back. Without this branch the first prompt of a new session can
       // be the one cycle whose active bit disappears on a daemon restart.
-      if (workCycleSignal === "work_started") markWorkCycleActive(evt.sessionId, now);
+      if (workCycleSignal === "work_started") markWorkCycleActive(evt.sessionId, now, ts);
       else completeWorkCycle(evt.sessionId, ts, now);
     }
     this.pruneOverlays(now);

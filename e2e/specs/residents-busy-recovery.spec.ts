@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
@@ -89,6 +89,55 @@ test("Run now on a busy resident queues the iteration instead of refusing, and C
   await expect(host.getByRole("button", { name: "Run now", exact: true })).toBeVisible();
   expect(live(daemon)?.run_requested_at).toBeNull();
   await capture(page, "run-now-ran");
+});
+
+/** The resident conversation's native id and its durable work cycle, as the daemon recorded them. */
+function cycle(daemon: DaemonHandle, run: Run): { key: string; active: number; completedAt: number | null; generation: number } {
+  return withDaemonDb(daemon, db => {
+    const { agent_session_id: key } = db.prepare("SELECT agent_session_id FROM sdk_sessions WHERE task_id = ?").get(run.task_id) as { agent_session_id: string };
+    const row = db.prepare("SELECT active, completed_at, generation FROM session_work_cycles WHERE logical_key = ?").get(key) as
+      { active: number; completed_at: number | null; generation: number };
+    return { key, active: row.active, completedAt: row.completed_at, generation: row.generation };
+  });
+}
+
+test("a PreToolUse hook that lands after its turn completed leaves the resident free to run its queued iteration", async ({ dashboard: page, daemon }) => {
+  // The AP API - Contract Owner incident, in its own order: a turn ends, the driver completes the
+  // cycle, and a hook process stamped before that end posts after it. The old daemon re-armed
+  // the cycle from it, flipped the idle card to working, and every Run now after that queued
+  // behind a turn that no longer existed.
+  const profile = await launch(daemon, "Late hook", { delaySeconds: 3600, minDelaySeconds: 1, maxDelaySeconds: 3600 });
+  await expect.poll(() => live(daemon)?.loop_state, { timeout: 60_000 }).toBe("waiting");
+  const run = live(daemon)!;
+  expect(run.iteration).toBe(1);
+  const completed = cycle(daemon, run);
+  expect(completed.active).toBe(0);
+  expect(completed.completedAt).not.toBeNull();
+
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const late = await fetch(`${daemon.baseURL}/hooks/PreToolUse`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ agent: "claude", sessionId: completed.key, cwd: daemon.repo, transcriptPath: null, env: {},
+      toolName: "Bash", ts: completed.completedAt! - 800 }),
+  });
+  expect(late.status, "the daemon accepted the late hook").toBe(204);
+
+  const host = await band(page, daemon, profile);
+  const status = host.getByLabel("Resident loop status");
+  expect(cycle(daemon, run), "the late hook left the completed cycle as it was").toEqual(completed);
+  expect(live(daemon)?.loop_state, "the loop kept its scheduled wake instead of reading a human turn").toBe("waiting");
+  await expect(status).not.toContainText("working");
+
+  // The operator's Run now, the press that queued forever in the incident.
+  await host.getByRole("button", { name: "Run now", exact: true }).click();
+  await expect.poll(() => live(daemon)?.iteration, { timeout: 30_000 }).toBe(2);
+  await expect.poll(() => live(daemon)?.loop_state, { timeout: 30_000 }).toBe("waiting");
+  expect(live(daemon)?.run_requested_at, "nothing is left queued").toBeNull();
+  await expect(status).not.toContainText("run queued");
+  await expect(host.getByRole("button", { name: "Run now", exact: true })).toBeVisible();
+  await expect(host.getByRole("button", { name: "Cancel queued run", exact: true })).toHaveCount(0);
+  await capture(page, "late-hook-run-now-ran");
 });
 
 test("a stalled compaction is interrupted and retried on a backoff instead of leaving the resident stuck", async ({ dashboard: page, daemon }) => {

@@ -52,10 +52,15 @@ import type {
 /** Claude Code's user settings, relative to the operator's home. */
 const SETTINGS_FILE = [".claude", "settings.json"] as const;
 
-/** The installer command that repairs every warning below, from a durable checkout. */
-const REPAIR_COMMAND = "npm run install-hooks";
-/** What does the same thing for someone running the packaged app. */
-const REPAIR_BUTTON = "Install Claude integrations";
+/**
+ * How to repair every warning below, for both populations they fire for.
+ *
+ * The desktop app's Install button comes first because that operator usually has no checkout;
+ * the npm script is for someone running Mission Control from one. Read in the dispatch form as
+ * well as on its Setup row, so it names where the button is rather than pointing "below".
+ */
+const REPAIR =
+  "press Install in the Mission Control desktop app's Settings > Setup, or run `npm run install-hooks` from a Mission Control checkout";
 
 /**
  * A ceiling on hook commands inspected, so no settings file can turn this into a stall.
@@ -209,7 +214,7 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
     return {
       warning:
         `${sentences.join(" ")} Every one of those events fails with MODULE_NOT_FOUND, prints its stack into the session transcript, and reports nothing back, so terminal sessions on this machine show no state. ` +
-        `The path was baked in by an installer and does not follow a checkout that moved: re-run \`${REPAIR_COMMAND}\` from a Mission Control checkout that still exists, or press ${REPAIR_BUTTON} in the desktop app.`,
+        `The path was baked in by an installer and does not follow a checkout or app that moved. To point the hooks at a script that exists, ${REPAIR}.`,
       detail: `${settingsPath} names ${missing.map(({ script }) => shortPath(script)).join(", ")}`,
     };
   },
@@ -259,7 +264,7 @@ export const claudeHookEventsCheck: EnvironmentCheckImpl = {
       warning:
         `The Claude Code hooks Mission Control installed on this machine do not run for ${names}, which this build listens for, so terminal Claude sessions never report ${them}` +
         `${missing.includes("SubagentStart") ? ", and their background sub-agents show less than they could" : ""}. ` +
-        `The installer wrote the events it knew at the time: re-run \`${REPAIR_COMMAND}\` from a Mission Control checkout, or press ${REPAIR_BUTTON} in the desktop app, to install the current list.`,
+        `The installer wrote the events it knew at the time. To install the current list, ${REPAIR}.`,
       detail: `${settingsPath} wires ${plural(wired.size, "event")} to ${live.map(shortPath).join(", ")}; missing ${names}`,
     };
   },

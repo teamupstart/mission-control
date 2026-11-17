@@ -139,13 +139,17 @@ function AnsweredDecision({
           );
         })}
       </ul>
+      {movedToChat && <MovedToChat />}
       {other && (
         <p className="review-answer-other">
-          <span className="review-answer-other-tag">Other</span>
+          {/* Named as the agent read it (`formatResponse`): beside a pick or a move to chat
+              the text was context for it, and only on its own was it an Other answer. */}
+          <span className="review-answer-other-tag">
+            {chosen.size > 0 || movedToChat ? "Context" : "Other"}
+          </span>
           {other}
         </p>
       )}
-      {movedToChat && <MovedToChat />}
       {nothingPicked && <p className="review-answer-none">No option chosen.</p>}
       {note && (
         <p className="review-answer-other review-answer-note">

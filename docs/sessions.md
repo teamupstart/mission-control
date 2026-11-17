@@ -1302,7 +1302,7 @@ What a session shows as a result:
 
 Claude hooks installed before `SubagentStart` was added do not run for it until they are
 installed again. Settings > Setup shows a **Claude Code hook events** row naming the missing
-event and the installer command; see [setup.md](setup.md#run-mission-control).
+event, with an **Install** button in the desktop app; see [setup.md](setup.md#run-mission-control).
 
 A Claude sub-agent's own activity cannot restart its parent. The two channels it arrives on are
 handled separately:

@@ -343,6 +343,10 @@ pseudonym. See [Observability and telemetry](observability.md).
 **Setup** checks external tools and configures this installation. It groups agent CLIs,
 terminal backends, GitHub CLI and authentication, agent extensions, pipelines, and the runtime.
 Re-check runs a fresh probe sweep; missing or incomplete rows offer the supported remedy.
+Its **Terminals** family also holds **Show sessions started outside Mission Control**, off by
+default, which decides whether discovery cards sessions Mission Control did not start. Some
+sessions are carded either way; [sessions started outside Mission
+Control](sessions.md#sessions-started-outside-mission-control) lists which.
 In the desktop app, **Application updates** also offers **Check for updates** and the
 default-off **Alpha updates** preference, which follows the latest `main` commit while
 including stable release news. Its badge says `This installation` because this page combines

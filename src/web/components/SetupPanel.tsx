@@ -723,6 +723,48 @@ function MultiplexerTerminal({
   );
 }
 
+/** Where the outside-sessions switch is, for a deep link or the settings palette. */
+export const SETUP_EXTERNAL_SESSIONS_ANCHOR = "setup/external-sessions";
+
+/** The warning shown under the outside-sessions setting, always, whether it is on or off. */
+export const EXTERNAL_SESSIONS_WARNING =
+  "Off by default. When on, Mission Control also shows Claude, Codex, and Pi sessions you " +
+  "started yourself in a terminal. This works poorly on some setups: cards can show the wrong " +
+  "state, name, or pane, and sending to them can fail. Sessions Mission Control starts are " +
+  "always shown.";
+
+/**
+ * The Terminals family's one switch that is not about a multiplexer: whether passive discovery
+ * shows sessions Mission Control did not start (`TerminalsConfig.externalSessions`). Workers in
+ * an observed pipeline worktree are shown either way.
+ *
+ * The warning is outside the label and always rendered, so it is read before anyone turns
+ * this on rather than discovered after. Disabled until the config has been read, like the
+ * multiplexer choosers beside it, so the box never shows a guess as the stored value.
+ */
+export function ExternalSessionsSetting({ terminals }: { terminals: TerminalsConfigState }): React.JSX.Element {
+  const on = terminals.config?.externalSessions === true;
+  return (
+    <div className="setup-external-sessions" data-anchor={SETUP_EXTERNAL_SESSIONS_ANCHOR}>
+      <label className={`settings-toggle${on ? " is-on" : ""}`}>
+        <Tooltip label="Also show Claude, Codex, and Pi sessions you started yourself in a terminal">
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={terminals.config === null}
+            aria-describedby="setup-external-sessions-warning"
+            onChange={(e) => { void terminals.update({ externalSessions: e.target.checked }); }}
+          />
+        </Tooltip>
+        <span className="settings-toggle-text">
+          <span className="settings-toggle-label">Show sessions started outside Mission Control</span>
+        </span>
+      </label>
+      <p className="settings-warn" id="setup-external-sessions-warning">{EXTERNAL_SESSIONS_WARNING}</p>
+    </div>
+  );
+}
+
 function SetupRow({
   row,
   home,
@@ -858,6 +900,8 @@ export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): 
   // The Repositories family's directory editor is not a row, but it is only mounted while
   // that family is selected, so its controls resolve the same way a row anchor does.
   if ((Object.values(SETUP_REPOSITORY_ANCHORS) as string[]).includes(anchor)) return "repositories";
+  // Likewise the Terminals family's outside-sessions switch, which is not a row either.
+  if (anchor === SETUP_EXTERNAL_SESSIONS_ANCHOR) return "terminals";
   return rows.find((row) => setupRowAnchor(row.rowId) === anchor)?.family ?? null;
 }
 
@@ -1188,6 +1232,9 @@ export function SetupPanel({
                 </div>
               )
             : <p className="setup-loading">{state.error ? "No result" : "Checking this machine..."}</p>}
+          {/* Outside the row list, so it is there before the machine check answers: it is a
+              setting about what the dashboard shows, not a dependency of this machine. */}
+          {active === "terminals" && <ExternalSessionsSetting terminals={terminals} />}
           {/* Below the row that requires a detected repository, so the check and the list it
               reads are one screen: an edit here re-reads the machine and the row follows. */}
           {active === "repositories" && <RepositoriesPanel state={repoIndex} onChanged={onRepaired} />}

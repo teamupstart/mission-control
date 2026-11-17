@@ -125,7 +125,8 @@ import {
   modelLabel,
   parseContextWindowSize,
 } from "@shared/model.ts";
-import type { DiscoveredSession } from "./discovery/correlate.ts";
+import type { DiscoveredSession, DiscoveryAdmission, DiscoveryAdmit } from "./discovery/correlate.ts";
+import { getTerminalsConfig } from "./terminals-config.ts";
 import type { TerminalEnumeration } from "./terminal/enumerate.ts";
 import type { SpawnedHome } from "./terminal/home.ts";
 import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
@@ -215,6 +216,7 @@ import {
   pruneForemanInvites as pruneForemanInvitesDb,
   hooksEverSeen,
   lastAgentBinding,
+  sessionsBoundToAgents,
   logEvent,
   markWorkCycleActive,
   completeWorkCycle,
@@ -268,6 +270,7 @@ import {
   taskResidentRestartSummaries,
   taskSessionClosureForSession,
   getTaskSessionClosure,
+  listTaskSessionClosures,
   retireTaskSessionClosure,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
@@ -1000,6 +1003,13 @@ export class Registry extends EventEmitter {
    * tombstones included - resolution, not storage, is where the tombstone becomes null.
    */
   private invites = new Map<string, ForemanInviteRow>();
+  /**
+   * The cwd of every session the last completed sweep refused (`discoveryAdmission`). A
+   * hidden session has no card, but it still runs hooks, so `findSessionByEnv`'s unique-cwd
+   * fallback counts it: otherwise it would bind that hook to the one visible card beside it.
+   * The sweep hands its own set to `applyDiscovery`, which commits it.
+   */
+  private hiddenCwds: ReadonlySet<string> = new Set<string>();
   /**
    * Launch presentation markers, keyed by the SAME note key. In memory like notes, goals
    * and invites because `launchTurnFor` is consulted once per transcript frame - every SSE
@@ -2552,7 +2562,94 @@ export class Registry extends EventEmitter {
 
   // ---- passive discovery ----
 
-  applyDiscovery(discovered: DiscoveredSession[], terminals: readonly TerminalEnumeration[] = []): void {
+  /**
+   * Which discovered sessions this sweep may show (`admit`, undefined to show every one), and
+   * the cwds of the ones it refused (`hiddenCwds`, filled in as the sweep calls `admit`). The
+   * caller passes that set to this same sweep's `applyDiscovery`, so a hidden set can only
+   * ever be committed by the sweep that produced it.
+   *
+   * Read once per tick by the poller, before the sweep, so the setting, the task bindings,
+   * the invites, the observed pipeline runs and the closure ledger are one snapshot. With
+   * **Show sessions started outside Mission Control** on (`TerminalsConfig.externalSessions`)
+   * everything is admitted, which is the old behavior. Off, a session is admitted when:
+   *
+   * 1. it runs beneath one of Mission Control's own launch wrappers (`missionLaunched`);
+   * 2. it is a live task's `sessionId`, or holds a `"dispatch"` Foreman invite - a fallback,
+   *    so a wrapper the predicate fails to recognize degrades to a card shown rather than a
+   *    task's session evicted. Not a work episode: `mergeDiscovered` opens one for every
+   *    session it merges, so an episode says nothing about who launched it; or
+   * 3. its cwd is inside an observed pipeline run's worktree (`pipelineLinkFor`). Pipeline
+   *    workers are spawned by an external engine, and pipelines are already opt-in; or
+   * 4. it is owed a task session closure (`listTaskSessionClosures`), retired or not. Its
+   *    task is done, so rule 2 no longer holds, and refusing it would drop the teardown
+   *    target while the process still runs.
+   *
+   * There is no eviction here. A refused session is absent from the sweep, and the unseen
+   * loop in `applyDiscovery` hands any card it had to `beginEviction`, like any other exit.
+   */
+  discoveryAdmission(): DiscoveryAdmission {
+    const hidden = new Set<string>();
+    if (getTerminalsConfig().externalSessions) return { admit: undefined, hiddenCwds: hidden };
+    const bound = new Set<string>();
+    for (const task of this.tasks.values()) {
+      if (task.sessionId && isActiveTask(task.status)) bound.add(task.sessionId);
+    }
+    const dispatchKeys = new Set<string>();
+    for (const [key, row] of this.invites) if (row.source === "dispatch") dispatchKeys.add(key);
+    // Invite keys no live card accounts for. Only these can need the stored binding, so a
+    // steady fleet asks the database nothing.
+    const unresolved = new Set(dispatchKeys);
+    for (const live of this.sessions.values()) unresolved.delete(noteKeyFor(live));
+    // After a restart the map is empty, and a pane's invite sits under its agent's session id,
+    // so the stored binding is the only way back to it. Read backwards, once per sweep: which
+    // synthetic ids are bound to an unresolved invite. Never per candidate, because an outside
+    // session is refused every sweep and would ask again on every one. Not cached across
+    // sweeps either, because the binding can be recorded after the first sweep, and a cached
+    // miss would hide that invited session for good. Lazy, so a sweep in which no card-less
+    // candidate needs it asks the database nothing.
+    let boundToUnresolved: Set<string> | undefined;
+    const invited = (id: string): boolean => {
+      if (dispatchKeys.has(id)) return true;
+      const live = this.sessions.get(id);
+      if (live) return dispatchKeys.has(noteKeyFor(live));
+      if (unresolved.size === 0) return false;
+      boundToUnresolved ??= sessionsBoundToAgents(unresolved);
+      return boundToUnresolved.has(id);
+    };
+    // A session owed a task closure is ours to close, whether or not it is retired yet. Its
+    // task is done, so it is not in `bound`, and after a restart `retiredMissionTargets` is
+    // empty: only the durable ledger still says so. Refusing it would drop its teardown
+    // target while the process runs, and `tasks.ts` would then drop the closure itself. The
+    // ledger holds a row only until the session is seen to leave, so this one read is small.
+    let owedClosures: Set<string> | undefined;
+    const owed = (id: string): boolean => {
+      owedClosures ??= new Set(listTaskSessionClosures().map((row) => row.sessionId));
+      return owedClosures.has(id);
+    };
+    const admit: DiscoveryAdmit = (candidate) => {
+      const admitted =
+        candidate.missionLaunched ||
+        bound.has(candidate.syntheticId) ||
+        invited(candidate.syntheticId) ||
+        this.pipelineLinkFor(candidate.cwd) !== null ||
+        owed(candidate.syntheticId);
+      if (!admitted && candidate.cwd) hidden.add(candidate.cwd);
+      return admitted;
+    };
+    return { admit, hiddenCwds: hidden };
+  }
+
+  /**
+   * `hiddenCwds` is the set this same sweep's `discoveryAdmission` produced. Only a completed
+   * sweep reaches here, so only a completed sweep commits what it hid; a sweep that ran without
+   * admission hid nothing.
+   */
+  applyDiscovery(
+    discovered: DiscoveredSession[],
+    terminals: readonly TerminalEnumeration[] = [],
+    hiddenCwds: ReadonlySet<string> = new Set<string>(),
+  ): void {
+    this.hiddenCwds = hiddenCwds;
     this.terminalInventory = terminals;
     this.verifiedLaunchesSinceDiscovery.clear();
     const now = Date.now();
@@ -4226,6 +4323,11 @@ export class Registry extends EventEmitter {
       // agent doesn't make the match safer, it makes it wrong in the one case that
       // matters, a Claude and a Codex session sharing a worktree: the filter hides the
       // ambiguity and binds the caller to the Claude card with full confidence.
+      //
+      // A session discovery hid (outside sessions off) counts toward that uniqueness too.
+      // It has no card but still runs hooks, and it would otherwise be bound to the one
+      // visible card that shares its directory. With the setting on, nothing is hidden.
+      if (this.hiddenCwds.has(cwd)) return undefined;
       const matches = [...candidates.values()].filter((s) => s.cwd === cwd && !transferHold(s));
       if (matches.length === 1) return matches[0];
     }

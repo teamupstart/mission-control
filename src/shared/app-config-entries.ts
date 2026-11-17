@@ -153,6 +153,7 @@ const harnessesFields = {
 
 const terminalsFields = {
   multiplexerTerminal: "setting",
+  externalSessions: "setting",
 } satisfies Record<keyof TerminalsConfig, AppConfigValueClass>;
 
 const worktreesFields = {

@@ -60,6 +60,17 @@ export function resumeConversation(session: Pick<Session, "agent" | "agentSessio
  */
 export const RESUME_GUARD_CHECK_TIMEOUT_MS = 15_000;
 
+/**
+ * The command a managed resume wrapper `exec`s: the guard, which claims the lease and then
+ * spawns the agent as its own child, so it stays that agent's ancestor for as long as the
+ * agent runs. One owner for this shape, because discovery recognizes Mission Control's own
+ * resumes by it (`isMissionLaunchProcess`), and a launch path that built it a second way
+ * would be hidden whenever outside sessions are.
+ */
+export function resumeGuardArgv(runtimeCommand: string, guard: string, lease: Pick<ResumeLease, "root" | "id">): string[] {
+  return [runtimeCommand, guard, lease.root, lease.id];
+}
+
 /** All fallible provisioning, including the final wrapper, precedes SDK stop. */
 export async function prepareTerminalResume(session: Session, context: ResumeContext): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
@@ -115,7 +126,7 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
     writeResumeRecord(join(lease.home, "launch.json"), { argv, env, cwd: session.cwd });
     const wrapper = join(lease.home, LAUNCH_SCRIPT_FILE);
     // This tiny shell holds no config or credential. The guard claims before reading either.
-    const command = [runtime.command, guard, lease.root, lease.id];
+    const command = resumeGuardArgv(runtime.command, guard, lease);
     writeFileSync(wrapper, `#!/bin/sh\n${runtime.env.ELECTRON_RUN_AS_NODE ? "export ELECTRON_RUN_AS_NODE=1\n" : ""}exec ${shellCommand(command)}\n`, { mode: 0o700 });
     return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper], stateHome: lease.home,
       lease, descriptor, requiredTools, instrumented, dispose,

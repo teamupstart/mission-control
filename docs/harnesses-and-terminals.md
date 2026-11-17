@@ -236,6 +236,16 @@ its own window declares no attach argv, and its row reads **Needs no terminal** 
 the shipped example. A multiplexer that is not installed keeps the control, disabled, since
 there is nothing to set a preference for yet.
 
+## Sessions started outside Mission Control
+
+**Settings > Setup > Terminals** also holds **Show sessions started outside Mission Control**,
+below the multiplexer rows. It is off by default for every install, including upgrades. On, it
+also shows Claude, Codex, and Pi sessions started by hand in any terminal. The warning under the
+switch is always shown, because those cards rely on the least reliable reads discovery makes.
+It is stored in the `terminals` blob (`externalSessions`) and recorded in settings backups under
+the `terminals` domain. Which sessions are shown while it is off is defined in
+[sessions started outside Mission Control](sessions.md#sessions-started-outside-mission-control).
+
 ## Herdr
 
 Mission Control supports stable Herdr 0.8.2 or newer on protocol 20 or newer. A newer protocol

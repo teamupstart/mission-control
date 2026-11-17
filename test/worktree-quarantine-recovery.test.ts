@@ -736,3 +736,48 @@ test("operator execution refuses occupancy arriving after token revalidation at 
   assert.match(failure?.error ?? "", /^Process occupancy: one or more processes still occupy the worktree/);
   assert.deepEqual(checking.store.slot(slot.id), quarantined, "failed execution preserves quarantine, version and release history");
 });
+
+for (const recovery of ["operator", "automatic"] as const) {
+  for (const lateOccupancy of ["occupied", "unknown"] as const) {
+    test(`${recovery} recovery refuses ${lateOccupancy} occupancy arising during final Git inspection`, async () => {
+      const { manager, slot } = await releasedSlot("mission-recovery-inspection-occupancy-");
+      const quarantined = manager.store.quarantine(slot.id, recovery === "operator" ? "state" : "observation",
+        "original reason", null, 4_000, slot.version)!;
+      const git = new NativeWorktreeGit();
+      const inspect = git.inspect.bind(git);
+      let inspections = 0;
+      let changed = false;
+      let lateObservations = 0;
+      git.inspect = async (path) => {
+        const result = await inspect(path);
+        if (path === slot.path && ++inspections === 2) changed = true;
+        return result;
+      };
+      const checking = new WorktreeManager(db, {
+        git,
+        ownerReferenced: async () => false,
+        occupancy: async (paths) => new Map(paths.map((path): [string, WorktreeOccupancy] => {
+          if (changed) lateObservations++;
+          return [path, changed && lateOccupancy === "unknown"
+            ? { status: "unknown", reason: "late occupancy unavailable" }
+            : { status: "known", occupants: changed ? [{
+              pid: 4242, ppid: 1, startRaw: "now", startMs: 1, knownOwner: null, command: "busy", cwd: path,
+            }] : [] }];
+        })),
+      });
+      if (recovery === "operator") {
+        await assert.rejects(checking.recoverQuarantineForOperator(slot.id, quarantined.version),
+          lateOccupancy === "occupied"
+            ? /^Error: Process occupancy: one or more processes still occupy the worktree/
+            : /^Error: Process occupancy: late occupancy unavailable/);
+      } else {
+        await checking.reconcile();
+        assert.match(checking.store.pool(slot.poolId)?.reconciliationError ?? "",
+          lateOccupancy === "occupied" ? /one or more processes still occupy/ : /late occupancy unavailable/);
+      }
+      assert.equal(inspections, 2, "the process state changed during the final Git inspection");
+      assert.ok(lateObservations > 0, "occupancy was observed again after the final inspection");
+      assert.deepEqual(checking.store.slot(slot.id), quarantined, "recovery preserves the quarantined row and version");
+    });
+  }
+}

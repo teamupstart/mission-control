@@ -2187,7 +2187,6 @@ export class WorktreeManager {
     }
     check("Released owner", referenced === null ? null : !referenced, referenced === false ? "No domain owner references the released lease" : referenced ? "domain owner still references this lease" : "last-released domain ownership is unknown");
     const occupancy = registered ? await this.occupancyBlocker(slot.path) : "slot occupancy was not observed";
-    check("Process occupancy", registered ? !occupancy : null, occupancy ?? "Process occupancy is known and empty");
     // External Git writes do not advance the durable version. Inspect again at the boundary.
     let final: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
     if (matching) {
@@ -2195,6 +2194,11 @@ export class WorktreeManager {
     }
     const unchanged = final?.ok ? final.value.path === slot.path && final.value.commonDirectory === pool.gitCommonDirectory &&
       final.value.head === git!.head && !final.value.dirty && final.value.detached : null;
+    // The final Git read can outlive the earlier empty process observation. Require an
+    // empty observation after it too, while retaining any failure from the earlier check.
+    const finalOccupancy = registered ? await this.occupancyBlocker(slot.path) : "slot occupancy was not observed";
+    const occupancyFailure = occupancy ?? finalOccupancy;
+    check("Process occupancy", registered ? !occupancyFailure : null, occupancyFailure ?? "Process occupancy is known and empty");
     check("Final Git recheck", unchanged, unchanged ? "Git state still matches the proof" : "slot Git state changed after the merge proof or is unknown at recovery");
     return { checks };
   }

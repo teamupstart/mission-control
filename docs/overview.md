@@ -11,10 +11,11 @@ and get your decision back.
 
 - **Discovers** the terminal-backed `claude` / `codex` / `pi` sessions it started by walking
   process → controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
-  Agents an external engine starts in an observed pipeline run's worktree are always shown.
-  Other sessions you started yourself in a terminal appear too once
-  [**Show sessions started outside Mission Control**](sessions.md#sessions-started-outside-mission-control)
-  is on. No per-session setup is required for terminal discovery. First-class emulator support
+  A few other sessions are always shown, such as agents an external engine starts in an
+  observed pipeline run's worktree; [sessions started outside Mission
+  Control](sessions.md#sessions-started-outside-mission-control) lists every case. Sessions you
+  started yourself in a terminal appear too once **Show sessions started outside Mission
+  Control** is on. No per-session setup is required for terminal discovery. First-class emulator support
   includes WezTerm, Ghostty, and iTerm2, with tmux and cmux composition.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
   session detail's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it. Where that name lands depends

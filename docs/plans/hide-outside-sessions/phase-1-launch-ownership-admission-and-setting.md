@@ -5,7 +5,8 @@ Source plan: [`plan.md`](plan.md). Index: [`phased-plan.md`](phased-plan.md).
 ## Outcome
 
 By default, the dashboard shows only Claude, Codex, and Pi sessions Mission Control launched,
-plus pipeline workers in observed run worktrees. A new checkbox, **Show sessions started outside
+plus the other terminal sessions the plan's admission rule keeps (`plan.md`, "Design, step 2"),
+such as pipeline workers in observed run worktrees. A new checkbox, **Show sessions started outside
 Mission Control** under Settings > Setup > Terminals, restores today's behavior. It is off by
 default and carries a warning. Hidden sessions cost no pane capture, `gitInfo`, or Codex
 rollout `lsof`. One batched `lsof` still reads every agent's working directory, because the
@@ -78,17 +79,16 @@ pipeline-worktree rule needs it.
      `admit && !admit({ syntheticId, cwd, missionLaunched, agent })`.
    - `discover(admit?)` forwards `admit` to `correlate`, so annotation only sees admitted
      sessions.
-   - `pollOnce` calls `find(registry.discoveryAdmission())`. Keep the `find` injection for
-     tests.
+   - `pollOnce` takes `{ admit, hiddenCwds }` from `registry.discoveryAdmission()`, calls
+     `find(admit)`, and hands `hiddenCwds` to that same sweep's `applyDiscovery`. Keep the
+     `find` injection for tests.
 3. **Registry** (`src/server/registry.ts`)
-   - Add `discoveryAdmission(): DiscoveryAdmit | undefined`. It returns `undefined` (admit all)
-     when `getTerminalsConfig().externalSessions` is true. Otherwise it returns a predicate that
-     is true when any of these holds:
-     - `missionLaunched`
-     - the synthetic id is a live task's `sessionId` or holds a `"dispatch"` Foreman invite
-       (not a work episode: `mergeDiscovered` calls `ensureWorkEpisode` for every discovered
-       session, so an episode is not launch evidence)
-     - `this.pipelineLinkFor(cwd)` is non-null
+   - Add `discoveryAdmission(): DiscoveryAdmission`. Its `admit` is `undefined` (admit all)
+     when `getTerminalsConfig().externalSessions` is true. Otherwise `admit` implements the
+     four-case admission rule in `plan.md` ("Design, step 2"), which owns it:
+     Mission-launched, task-bound or dispatch-invited, in a pipeline worktree, or owed a task
+     session closure. The closure case is a safety requirement: without it a finished task's
+     teardown target is dropped while its process runs.
    - Read config once per call. Do not add an eviction path. The unseen loop already evicts
      what was not admitted.
 4. **Setting** (`src/shared/protocol.ts`, `src/shared/app-config-entries.ts`,
@@ -195,3 +195,6 @@ predicate together with its launch-path test.
   human-opened PR from the fork, not a precondition.
 - Revision 7: entry criteria now state that the plan files and this phase land upstream in one
   pull request. The fork-as-`origin` arrangement is retired.
+- Revision 8: the Registry step points to the plan's admission rule, which now has a fourth
+  case (owed task session closure), instead of restating three cases. The `pollOnce` and
+  `discoveryAdmission` shapes match the code after upstream review.

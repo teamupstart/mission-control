@@ -11,8 +11,9 @@ first screen then fills with half-working cards for sessions they never asked us
 ## Goal
 
 - By default, the dashboard shows only sessions Mission Control launched: dispatched tasks,
-  managed resumes, Continue in terminal, and Agent SDK sessions. Workers an external engine
-  starts in an observed pipeline run's worktree are shown too.
+  managed resumes, Continue in terminal, and Agent SDK sessions. A few other terminal sessions
+  stay shown too, such as workers an external engine starts in an observed pipeline run's
+  worktree. The admission rule under "Design, step 2" lists every case.
 - A setting turns the old behavior back on. It is off by default and carries a warning that
   it does not work well for some setups.
 - Mission Control's own terminal sessions keep working exactly as they do today, including
@@ -88,10 +89,17 @@ Admission rule when the setting is **off**:
 3. its cwd is inside an observed pipeline run's worktree, using the same deepest-containment
    rule `Session.pipeline` correlation already uses (docs/pipelines.md). Pipeline workers are
    spawned by an external engine, so they fail the ancestry check, but pipelines are already
-   an opt-in integration and their workers stay visible.
+   an opt-in integration and their workers stay visible, or
+4. it is owed a task session closure (a row in the closure ledger, `listTaskSessionClosures`),
+   retired or not. This is a safety requirement, not a convenience. The session's task is
+   done, so rule 2 no longer holds, and after a daemon restart the in-memory retired targets
+   are empty. Refusing it would drop its teardown target while the process still runs, and
+   the task manager would then drop the owed closure.
 
-`Registry.discoveryAdmission()` snapshots the setting, the task-bound and invited ids, and the observed run
-worktrees once per tick and returns the predicate.
+`Registry.discoveryAdmission()` snapshots the setting, the task-bound and invited ids, the
+observed run worktrees, and the closure ledger once per tick. It returns the predicate and the
+set of hidden cwds that sweep fills in, which the poller hands to that same sweep's
+`applyDiscovery`.
 
 When the setting is **on**, every candidate is admitted, which is today's behavior.
 
@@ -109,7 +117,7 @@ tasks, workflows, and drafts as usual. Turning it on brings them back on the nex
 flowchart LR
   ps[ps + terminal enumeration] --> group[group agents by tty]
   group --> mark[mark missionLaunched from wrapper ancestry]
-  mark --> admit{admit? setting on, or missionLaunched, or bound to a task, or in a pipeline worktree}
+  mark --> admit{admit? setting on, or missionLaunched, or bound to a task or dispatch invite, or in a pipeline worktree, or owed a task closure}
   admit -- yes --> annotate[pane capture, git, rollouts] --> reg[Registry.applyDiscovery]
   admit -- no --> drop[not in sweep: unseen loop evicts any existing card]
 ```
@@ -244,3 +252,11 @@ sessions leave through the normal eviction lifecycle.
 - The publication model now names `teamupstart/mission-control` as the home repository. The
   fork-as-`origin` arrangement in revisions 5 and 6 is retired, and the plan and Phase 1 land
   upstream in one pull request.
+
+## Repairs in revision 8 (upstream review)
+
+- Added admission rule 4, a session owed a task session closure. Upstream review found that
+  without it, a finished task's session whose wrapper went unrecognized was refused, its
+  teardown target was dropped, and its owed closure was lost while the process still ran.
+- The Goal no longer lists the shown sessions as if the list were complete. It points to the
+  admission rule.

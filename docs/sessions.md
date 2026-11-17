@@ -4,7 +4,7 @@ Three layers, most-to-least automatic:
 
 | Layer | Setup | Gives you |
 |-------|-------|-----------|
-| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on - for the sessions Mission Control started and the workers in an observed [pipeline run's](pipelines.md) worktree, and for every session once [outside sessions](#sessions-started-outside-mission-control) are shown |
+| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on - for the terminal sessions [discovery admits](#sessions-started-outside-mission-control) by default, and for every session once outside sessions are shown |
 | **Claude hooks** | `npm run install-hooks` | precise state (working / idle / needs-input) + activity |
 | **MCP review channel** | `claude mcp add …` (see below) | agents push diffs / plans / questions for you to decide |
 

@@ -101,7 +101,7 @@ test("Reset retains its checkout and a later safe Kill returns it automatically"
   await dashboard.locator(".console-detail").getByRole("button", { name: /kill$/i }).click();
   const kill = dashboard.getByRole("dialog", { name: "Kill session" });
   await expect(kill).toContainText("all are clean, published to origin, and unused");
-  await expect(kill).toContainText("automatically after 30 days");
+  await expect(kill).toContainText("automatically after the configured retention window");
   await expectContentClearsBorder(kill);
   await capture(dashboard, "safe-kill-confirmation");
   await kill.getByRole("button", { name: "Kill", exact: true }).click();

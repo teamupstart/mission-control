@@ -8,7 +8,7 @@ import type {
   MultiplexerId,
   MuxPane,
 } from "../terminal/types.ts";
-import { gitInfo } from "../util/git.ts";
+import { gitInfo, type GitInfo } from "../util/git.ts";
 import { readProcCwds } from "./proc-cwd.ts";
 import { annotatePaneState } from "./pane-mode.ts";
 import { annotateCodexRollouts } from "./codex-rollouts.ts";
@@ -367,12 +367,16 @@ export function representativeAgentPids(procs: Proc[]): number[] {
  * `readProcCwds`); it takes precedence over the pane's reported path, which only
  * tracks where the pane's launcher was invoked. Absent an entry we fall back to
  * the pane path, preserving the old behavior.
+ *
+ * `readGit` is the per-session Git read, injectable so a test can observe which sessions
+ * reach it; admission must keep a hidden session from ever getting there.
  */
 export function correlate(
   input: DiscoveryInput,
   procCwds: Map<number, string> = new Map(),
   admit?: DiscoveryAdmit,
   markers: MissionLaunchMarkers = missionLaunchMarkers(),
+  readGit: (cwd: string | null) => GitInfo = gitInfo,
 ): DiscoveredSession[] {
   const byPid = new Map(input.procs.map((proc) => [proc.pid, proc]));
   // Build representative processes before the exact multiplexer ancestry join.
@@ -426,7 +430,7 @@ export function correlate(
       .filter((c) => c !== undefined)
       .map(handleOf);
 
-    const git = gitInfo(cwd);
+    const git = readGit(cwd);
     sessions.push({
       syntheticId,
       agent,
@@ -455,6 +459,7 @@ export interface DiscoverDeps {
   annotateRollouts: (sessions: DiscoveredSession[]) => Promise<void>;
   annotatePanes: (sessions: DiscoveredSession[]) => Promise<void>;
   markers: () => MissionLaunchMarkers;
+  gitInfo: (cwd: string | null) => GitInfo;
 }
 
 export const defaultDiscoverDeps: DiscoverDeps = {
@@ -463,6 +468,7 @@ export const defaultDiscoverDeps: DiscoverDeps = {
   annotateRollouts: annotateCodexRollouts,
   annotatePanes: annotatePaneState,
   markers: missionLaunchMarkers,
+  gitInfo,
 };
 
 /**
@@ -481,7 +487,7 @@ export async function discover(
 }> {
   const input = await deps.gather();
   const procCwds = await deps.readCwds(representativeAgentPids(input.procs));
-  const sessions = correlate(input, procCwds, admit, deps.markers());
+  const sessions = correlate(input, procCwds, admit, deps.markers(), deps.gitInfo);
   await Promise.all([
     deps.annotateRollouts(sessions),
     deps.annotatePanes(sessions),

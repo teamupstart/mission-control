@@ -122,7 +122,8 @@ const EVERY = [MISSION, OUTSIDE, TASK_BOUND, PIPELINE, REPO_ROOT, INVITED];
 /** A machine with every kind of session on it, and seams recording what each read touched. */
 function machine(present: number[] = EVERY) {
   const procs = present.flatMap((n) => sessionProcs(n, { wrapper: WRAPPED.has(n), agent: AGENT_OF[n] }));
-  const annotated = { rollouts: new Set<string>(), panes: new Set<string>() };
+  // `git` records the cwd of every per-session Git read, in call order.
+  const annotated = { rollouts: new Set<string>(), panes: new Set<string>(), git: [] as Array<string | null> };
   const deps: DiscoverDeps = {
     gather: async () => ({ procs, terminals: [] }),
     readCwds: async (pids) =>
@@ -134,6 +135,11 @@ function machine(present: number[] = EVERY) {
       for (const s of sessions) annotated.panes.add(s.syntheticId);
     },
     markers: () => ({ disposableRoot: DISPOSABLE_STATE_ROOT, resumeGuard: null, resumeLeaseRoot: null }),
+    // What the real `gitInfo` returns for these made-up paths, so only the recording differs.
+    gitInfo: (cwd) => {
+      annotated.git.push(cwd);
+      return { branch: null, root: null, repoRoot: null };
+    },
   };
   const find = (admit?: DiscoveryAdmit) => discover(admit, deps);
   return { find, annotated };
@@ -212,6 +218,13 @@ test("off: Mission-launched, task-bound, and pipeline-worktree sessions are show
   for (const seen of [annotated.rollouts, annotated.panes]) {
     assert.deepEqual([...seen].sort(), [idOf(MISSION), idOf(TASK_BOUND), idOf(PIPELINE)].sort());
   }
+  // Nor a Git read: one per admitted session, and none for the outside or repo-root session.
+  assert.deepEqual(
+    [...annotated.git].sort(),
+    [CWDS[MISSION], CWDS[TASK_BOUND], CWDS[PIPELINE]].sort(),
+  );
+  assert.ok(!annotated.git.includes(CWDS[OUTSIDE]!), "an outside session reached gitInfo");
+  assert.ok(!annotated.git.includes(CWDS[REPO_ROOT]!), "a repo-root session reached gitInfo");
   assert.equal(registry.getSession(idOf(MISSION))?.cwd, "/work/mission");
 });
 
@@ -259,6 +272,8 @@ test("on: every session is shown, as before", async () => {
   await pollOnce(registry, find);
   assert.deepEqual(shown(registry), EVERY.map(idOf).sort());
   assert.equal(annotated.panes.size, EVERY.length);
+  // The Git seam is the one discovery uses: with nothing hidden, every session reaches it.
+  assert.deepEqual([...annotated.git].sort(), EVERY.map((n) => CWDS[n]).sort());
   setTerminalsConfig({ externalSessions: false });
 });
 

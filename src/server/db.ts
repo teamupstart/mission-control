@@ -5402,6 +5402,8 @@ export function createReviewContinuationPendingTurn(input: {
  * The id keeps the `review-continuation:` prefix on purpose: it is daemon-written news about a
  * review, which every reader of that prefix (a resident's pacing) already treats correctly.
  */
+export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
+
 export function createSnoozeInstructionPendingTurn(input: {
   reviewId: string;
   noteKey: string;
@@ -5409,7 +5411,7 @@ export function createSnoozeInstructionPendingTurn(input: {
   now: number;
 }): PendingTurn | null {
   return queueReviewPendingTurn(input, {
-    turnId: `review-continuation:snooze:${input.reviewId}`,
+    turnId: `${SNOOZE_INSTRUCTION_TURN_PREFIX}${input.reviewId}`,
     eligible: `snooze_instruction_owed_at IS NOT NULL
             AND snooze_instruction_queued_at IS NULL
             AND continuation_queued_at IS NULL

@@ -31,7 +31,9 @@ const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
-const { claimHumanEcho, HUMAN_ECHO_TTL_MS } = await import("../src/server/injections.ts");
+const { claimHumanEcho, HUMAN_ECHO_TTL_MS, observeInjections, originOf } = await import("../src/server/injections.ts");
+const { journalScoutPrompt } = await import("../src/server/scouts/prompt-journal.ts");
+const { SNOOZE_INSTRUCTION_TURN_PREFIX } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -2804,4 +2806,27 @@ test("a daemon restart just after a resume keeps the held message's deadlines co
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(f.sends, ["queued before the pause, delivered after a restart"], "steered one minute after the resume");
   restarted.stop();
+});
+
+test("a snoozed question's carry-on instruction is delivered as the daemon's words, not the operator's", async (t) => {
+  const f = sdkFixture("snooze-instruction", async () => "started");
+  const episode = scoutEpisode(f.registry, f.id);
+  // Production wiring: daemon-typed text reaches the scout journal through this observer.
+  observeInjections((sessionId, text, origin) => journalScoutPrompt(f.registry, sessionId, text, origin));
+  t.after(() => observeInjections(null));
+  const text = 'Your earlier request_input question "Which linter?" ended before the operator chose.';
+  createPendingTurn({ id: `${SNOOZE_INSTRUCTION_TURN_PREFIX}review-1`, noteKey: f.key, text, now: 1 });
+  f.registry.refreshPendingTurns(f.key);
+
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+
+  assert.deepEqual(f.calls, [text], "delivered once");
+  assert.equal(f.registry.getGoal(f.id), null, "never captured as the operator's Goal");
+  assert.equal(originOf(f.id, text), "harness", "attributed to the daemon in the conversation");
+  const journaled = scoutPromptTurns(episode.taskId, episode.episodeId);
+  assert.deepEqual(journaled.map((turn) => turn.origin), ["harness"], "journaled once, never as human");
+  f.manager.stop();
+  clearPendingTurns(f.key);
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
 });

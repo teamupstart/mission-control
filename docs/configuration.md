@@ -17,7 +17,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_REPOS_SCAN_TIMEOUT_MS` | `60000` | how long one repository-index walk may run. Walks of the same directories never overlap, so past this bound a stuck walk (a stalled network mount, a wedged FUSE directory under an indexed root) is abandoned and logged, and the queue moves on; every read then answers from the last completed scan of those directories, and only when there is none is it told the scan is unavailable - **Settings → Setup → Repositories** still opens, with the count marked unknown, so the stalled directory can be removed. Its blocked read cannot be cancelled, so no new walk of the same directories starts until it returns - a stalled mount pins one pool thread, not one per Dispatch open - and removing the stalled directory from the index recovers at once. A value that is not a number, or is negative or zero, falls back to the default |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
-| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the 30-day rule runs on its own fixed internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
+| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the configurable retention window runs on its own fixed six-hour internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | terminal-runtime dispatch: how long to wait for the exact discovered session's first hook when that launch can produce one. Hook silence falls back to the settle above if the session is still live; an observed exit ends the wait immediately. The wait is skipped for hookless harnesses such as Pi and when a particular Codex launch could not install its [hook bridge](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch) |
@@ -463,3 +463,13 @@ manually in the server table.
 
 The settings follow the upstream [Claude MCP permission syntax](https://code.claude.com/docs/en/permissions#mcp)
 and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+### Task worktree retention
+
+**Settings > Worktrees > Task worktree retention** stores `worktrees.taskRetentionDays` in the
+daemon-owned configuration. It defaults to **30 days** and accepts whole days from **7 to 90**,
+with no off switch. Invalid writes are rejected; out-of-range numeric stored values are clamped,
+and missing or nonnumeric stored values use 30. It is independent of `MISSION_WORKTREE_SWEEP_MS`.
+
+See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
+recomputation, grace periods, and the destructive cleanup boundary.

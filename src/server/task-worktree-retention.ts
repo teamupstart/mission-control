@@ -1,3 +1,5 @@
+import { getWorktreesConfig } from "./worktrees/config.ts";
+import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
 import {
   claimTaskWorktreeCleanup,
   completeTaskWorktreeCleanup,
@@ -34,7 +36,7 @@ import type { Task } from "@shared/types.ts";
 // The daemon's durable, task-level worktree activity clock, and the sweep that acts on it.
 //
 // It answers one question on a slow loop - "when did anything Git-visible last change in this
-// terminal task's checkouts?" - writes the answer and the 30-day deadline it implies to the
+// terminal task's checkouts?" - writes the answer and the configured deadline it implies to the
 // `task_worktree_retention` ledger, and once that deadline passes without a change, hands the
 // task to `TaskManager` to be reclaimed.
 //
@@ -59,12 +61,12 @@ import type { Task } from "@shared/types.ts";
 //  - A stale pass cannot write onto resources that were replaced while it was running.
 //  - Anything uncertain - an unknown probe, a refusing provider, an unpublishable archive, a
 //    partial release - keeps every durable resource fact and retries with backoff. The tree
-//    stays past due; a failure to clean it is never converted into another 30 days of life.
+//    stays past due; a failure to clean it is never converted into another full window of life.
 
 export { isRetentionCandidate, taskResourceGeneration };
 
-/** How long a terminal task's checkouts survive without a Git-visible change. */
-export const RETENTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** Default window, retained for callers that need the shipped policy rather than current config. */
+export const RETENTION_WINDOW_MS = TASK_RETENTION_DEFAULT_DAYS * RETENTION_DAY_MS;
 
 /**
  * How often the observer looks.
@@ -75,7 +77,7 @@ export const RETENTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
  * approved policy has no off switch. A retention clock that stopped whenever an operator
  * quietened pool reconciliation would freeze every deadline in place without saying so.
  */
-export const RETENTION_OBSERVE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export { RETENTION_OBSERVE_INTERVAL_MS };
 
 /** How many checkouts are probed at once. Bounded so a large stale fleet stays background work. */
 export const RETENTION_PROBE_CONCURRENCY = 4;
@@ -191,7 +193,8 @@ export interface RetentionObserverDeps {
   deleteRow: (taskId: string) => void;
   now: () => number;
   intervalMs: number;
-  retentionMs: number;
+  /** Read after the async probe so a setting changed during a pass wins before claim. */
+  retentionMs: () => number;
   concurrency: number;
   /** Timer seam. Returns a canceller, so a test drives passes without real time. */
   schedule: (fn: () => void, ms: number) => () => void;
@@ -210,7 +213,7 @@ export const defaultRetentionObserverDeps: Omit<RetentionObserverDeps, "listTask
   deleteRow: deleteTaskWorktreeRetention,
   now: Date.now,
   intervalMs: RETENTION_OBSERVE_INTERVAL_MS,
-  retentionMs: RETENTION_WINDOW_MS,
+  retentionMs: () => getWorktreesConfig().taskRetentionDays * RETENTION_DAY_MS,
   concurrency: RETENTION_PROBE_CONCURRENCY,
   schedule: (fn, ms) => {
     const timer = unref(setTimeout(fn, ms));
@@ -390,7 +393,7 @@ export class TaskWorktreeRetentionObserver {
       fingerprint: fingerprint.kind === "known" ? fingerprint.digest : null,
       reason: fingerprint.kind === "unknown" ? fingerprint.reason : null,
       now,
-      retentionMs: this.deps.retentionMs,
+      retentionMs: this.deps.retentionMs(),
     });
 
     // Is this task now due, and did THIS observation establish the fact a claim needs?

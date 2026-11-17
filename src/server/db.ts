@@ -1,3 +1,4 @@
+import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
 import type { SdkUsage } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
@@ -3224,6 +3225,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- boundary a restart resumes from is the one that was actually granted, even if the
       -- window's value ever changes.
       cleanup_due_at  INTEGER NOT NULL,
+      retention_ms    INTEGER NOT NULL DEFAULT 2592000000,
       -- Everything from here down is Phase 2's claim/retry state, declared now so activating
       -- automatic reclamation needs no second migration. Phase 1 writes 'observing' and NULL
       -- to all of it and never transitions a claim; task-worktree-retention.ts has no
@@ -3479,6 +3481,7 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
@@ -7998,6 +8001,7 @@ interface TaskWorktreeRetentionDbRow {
   last_changed_at: number;
   observed_at: number;
   cleanup_due_at: number;
+  retention_ms: number;
   cleanup_state: string;
   claim_token: string | null;
   claimed_at: number | null;
@@ -8258,6 +8262,23 @@ export function recordTaskWorktreeObservation(
             updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 'observing', NULL, NULL, NULL, NULL, NULL, ?)`,
       ).run(taskId, generation, fingerprint, now, now, now + retentionMs, now);
+    }
+    // Rebase only after a successful probe, and never change a claimed deadline. Store the
+    // applied window separately: a grace-clamped deadline cannot tell us which policy made it.
+    // Starting the shortening grace at observation is conservative (at least six hours after
+    // saving), survives restart, and cannot slide forward again on each unchanged pass.
+    if (!existing || existing.cleanup_state !== "claimed" || outcome === "changed" || outcome === "replaced") {
+      const fresh = outcome === "seeded" || outcome === "changed" || outcome === "replaced";
+      const windowChanged = existing && existing.retention_ms !== retentionMs;
+      if (fresh || windowChanged) {
+        const lastChanged = fresh ? now : existing!.last_changed_at;
+        const due = fresh ? lastChanged + retentionMs
+          : retentionMs < existing!.retention_ms
+            ? Math.max(lastChanged + retentionMs, now + RETENTION_OBSERVE_INTERVAL_MS)
+            : Math.max(lastChanged + retentionMs, existing!.cleanup_due_at);
+        d.prepare(`UPDATE task_worktree_retention SET cleanup_due_at = ?, retention_ms = ? WHERE task_id = ?`)
+          .run(due, retentionMs, taskId);
+      }
     }
     const row = d
       .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)

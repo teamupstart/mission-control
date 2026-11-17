@@ -3,7 +3,6 @@ import type { SessionTransferPage } from "@shared/session-transfer.ts";
 import { featureAction } from "../lib/experience.ts";
 import { useMemo, useState } from "react";
 import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
-import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
 import { taskHoldsCleanupResources } from "@shared/task-repos.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { taskRequeueRefusal } from "@shared/task.ts";
@@ -460,7 +459,7 @@ export function ReportPanel({
                   </span>
                 ) : (
                   <Tooltip
-                    label={`Record an outcome. The worktree + agent stay until you Clean up, or until ${TASK_WORKTREE_RETENTION_DAYS} days pass without a change.`}
+                    label={`Record an outcome. The worktree + agent stay until you Clean up, or until the configured retention window passes without a change.`}
                   >
                     <button className="btn" onClick={() => setMarking(s.task!.id)}>
                       Mark done…
@@ -629,7 +628,7 @@ export function ReportPanel({
                     </span>
                   ) : (
                     <Tooltip
-                      label={`Reclaim this task's worktree - asks for a confirming click first. Left alone, it is removed automatically after ${TASK_WORKTREE_RETENTION_DAYS} days without a change.`}
+                      label={`Reclaim this task's worktree - asks for a confirming click first. Left alone, it is removed automatically after the configured retention window without a change (Settings > Worktrees).`}
                     >
                       <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(t.id)}>
                         Clean up

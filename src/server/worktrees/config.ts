@@ -1,3 +1,4 @@
+import { normalizeTaskRetentionDays } from "@shared/worktree-retention.ts";
 import {
   WorktreesConfigSchema,
   type WorktreeClaim,
@@ -23,7 +24,11 @@ export interface WorktreePolicy {
 
 /** The current policy, with default-on and max-16 defaults applied on every read. */
 export function getWorktreesConfig(): WorktreesConfig {
-  return WorktreesConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
+  const stored = getAppConfig(CONFIG_ENTRY);
+  return WorktreesConfigSchema.parse({
+    ...stored,
+    taskRetentionDays: normalizeTaskRetentionDays(stored?.taskRetentionDays),
+  });
 }
 
 /**

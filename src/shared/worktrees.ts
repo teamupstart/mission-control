@@ -41,6 +41,8 @@ export function isWorktreeOwnerKind(value: unknown): value is WorktreeOwnerKind 
 }
 
 export interface WorktreeOwnerView {
+  /** Persisted task retention deadline, when a matching activity clock exists. */
+  cleanupDueAt?: number;
   kind: WorktreeOwnerKind;
   key: string;
   label: string;

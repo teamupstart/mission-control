@@ -178,7 +178,7 @@ test("kill explains conditional safe return and retained local work", () => {
   );
   assert.match(html, /worktrees return automatically/);
   assert.match(html, /all are clean, published to origin, and unused/);
-  assert.match(html, /automatically after 30 days/);
+  assert.match(html, /automatically after the configured retention window/);
 });
 
 test("Enter submits the Kill confirmation", () => {

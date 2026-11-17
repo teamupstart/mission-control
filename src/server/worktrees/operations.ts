@@ -1,3 +1,5 @@
+import { getTask, getTaskWorktreeRetention } from "../db.ts";
+import { isRetentionCandidate, taskResourceGeneration } from "../task-resource-generation.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { WorktreesConfig, WorktreesConfigPatch } from "@shared/protocol.ts";
@@ -186,7 +188,13 @@ function ownerView(
   if (kind === "task") {
     const parsed = taskIdentity(key);
     const row = parsed ? task.get(parsed.id) : null;
-    return { kind, key, label: row?.title ?? `Task ${parsed?.id ?? key}` };
+    const retainedTask = parsed ? getTask(parsed.id) : null;
+    const retention = retainedTask && isRetentionCandidate(retainedTask) ? getTaskWorktreeRetention(retainedTask.id) : null;
+    return {
+      kind, key, label: row?.title ?? `Task ${parsed?.id ?? key}`,
+      ...(retainedTask && retention?.generation === taskResourceGeneration(retainedTask)
+        ? { cleanupDueAt: retention.cleanupDueAt } : {}),
+    };
   }
   return {
     kind,

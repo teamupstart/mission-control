@@ -74,6 +74,7 @@ export const MISSION_MCP_TOOLS = [
   "list_tasks",
   "get_task",
   "update_task",
+  "cancel_task",
   "delete_task",
   PLAN_PUBLICATION_TOOL,
   PLAN_CONTEXT_TOOL,

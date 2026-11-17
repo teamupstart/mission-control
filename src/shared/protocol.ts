@@ -1767,6 +1767,11 @@ export const McpGetTaskSchema = z.object({
   taskId: z.string().trim().min(1).describe("Id of a task in any status"),
 }).strict();
 
+/** MCP cancels one task through the existing lifecycle and cleanup owner. */
+export const McpCancelTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of the task to cancel, even when it has no session"),
+}).strict();
+
 /** MCP deletes one task through the existing lifecycle and cleanup owner. */
 export const McpDeleteTaskSchema = z.object({
   taskId: z.string().trim().min(1).describe("Id of the task to delete"),

@@ -148,6 +148,7 @@ import {
   type McpCreateTaskV3,
   McpUpdateTaskSchema,
   McpDeleteTaskSchema,
+  McpCancelTaskSchema,
   McpListTasksSchema,
   McpGetTaskSchema,
   type UpdateTask,
@@ -5343,6 +5344,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const validated = UpdateTaskSchema.safeParse(update);
     if (!validated.success) return c.json({ error: validated.error.message }, 400);
     return updateTask(c, id, validated.data, true);
+  });
+
+  app.post("/mcp/tasks/cancel", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCancelTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.cancel(parsed.data.taskId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/mcp/tasks/delete", async (c) => {

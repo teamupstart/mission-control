@@ -145,6 +145,10 @@ boundary as task creation and editing. They read saved task configuration and du
 request references, including completed tasks. They do not expose session transcripts or
 private session state and do not require the session-control grant below.
 
+Task cancellation (`cancel_task`, `POST /mcp/tasks/cancel`) uses the same daemon-token boundary
+as task creation, dispatch and deletion, without a **Control other sessions** grant. See
+[task cancellation](tasks-and-scheduling.md) for cleanup and assigned-session behavior.
+
 ## Delegated session control
 
 The per-session **Control other sessions** grant is opt-in and held by the Registry for the

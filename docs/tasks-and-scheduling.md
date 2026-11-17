@@ -12,6 +12,15 @@ field schemas and update handler reuse dashboard validation, repository canonica
 workflow selection checks, and `TaskManager.update`. MCP updates additionally require the
 task to remain in the backlog through the final write. These tools create and edit ordinary
 backlog tasks; they do not create recurring-mission schedules or launch agents.
+The MCP `cancel_task` tool posts a validated task id to the token-guarded `/mcp/tasks/cancel`
+route and delegates to `TaskManager.cancel`, the dashboard's cancellation owner. It works
+without a session id, including for stranded `running` rows. It stops task-launched agents,
+preserves archives, and cleans up owned resources; assigned tasks do not kill an existing
+operator session. A cleanup refusal returns an error and keeps remaining resources tracked.
+Cancellation retains the task record, which can then be removed with `delete_task`.
+The MCP request has a 30-second deadline. A timeout or lost connection reports an unknown
+outcome because daemon cancellation may still finish; use `get_task` before retrying.
+
 The MCP `delete_task` tool posts a validated task id to the token-guarded `/mcp/tasks/delete`
 route and delegates to `TaskManager.remove`, the same owner used by dashboard deletion. Active
 tasks are refused, and archive preservation and resource cleanup precede durable removal and
@@ -43,6 +52,17 @@ like another client. This keeps task and queue persistence within the daemon bou
 Read [Dispatch, backlog, and task sources](dispatch-and-backlog.md), [Recurring missions](recurring-missions.md),
 and [Work queues and backlog autopilot](work-queues.md) for user-facing behavior. The
 binding and cleanup rules remain in the [tasks and worktrees contract](agent-guides/architecture.md#tasks-and-worktrees).
+
+After SDK restoration and the first completed session observation, unchanged running tasks
+that were inherited with a missing session binding settle as failed with a session-ended reason. Discovery can rebind a
+live agent before that check. SDK-owned work, provider-owned Pipeline runs, durable terminal
+handoffs, and pending local-plan recovery retain their existing ownership. Settlement keeps
+worktrees and their resource records for the existing cleanup and retention policy.
+
+Sitrep lists running tasks with no attached session under **Tasks without sessions**, including
+provisional gaps that cannot yet be settled. Each row offers a confirmed Cancel action using
+the same task owner as `cancel_task`. Cancellation errors remain visible in the panel; the
+copied Markdown report includes the same task list.
 
 The [shared task-status policy](../src/shared/task-status.ts) defines whether each
 `TaskStatus` is active. Provisioning (`dispatching`) and execution (`running`) are active;

@@ -2470,7 +2470,7 @@ review request.
 
 Task ids are tool arguments, not names. The dashboard shows tasks only by title, so the server's
 MCP instructions and the description of every task tool (`create_task`, `list_tasks`, `get_task`,
-`update_task`, `delete_task`) tell the agent to name another task by its title, never its id,
+`update_task`, `cancel_task`, `delete_task`) tell the agent to name another task by its title, never its id,
 whenever it mentions one to the human. An agent can still ignore that, so the daemon enforces it
 on everything it sends the dashboard: every task id in an agent's conversation turns, its status
 line, its blocker and its review or question cards arrives as the task's quoted title, including a
@@ -2548,8 +2548,12 @@ The MCP tools are:
   to edit prerequisites. An empty title derives a new one from the intent. Invalid edits,
   dependency cycles, and edits to tasks that have left the backlog are refused. The tool returns
   the saved configuration and never launches the task.
+- `cancel_task(taskId)` - cancel a saved task, including running work with no session id.
+  Returns `{taskId, cancelled: true}` on success. See [task cancellation](tasks-and-scheduling.md)
+  for lifecycle and cleanup behavior, and [MCP task access](security.md#mcp-task-reads) for
+  authorization rules.
 - `delete_task(taskId)` - delete one backlog or finished task using the dashboard's deletion
-  rules. Running and dispatching tasks must be cancelled first. Archive preservation and resource
+  rules. Running and dispatching tasks must be cancelled with `cancel_task` first. Archive preservation and resource
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
 - `request_input(question, context?, options?)` - ask a question and **block** for an answer or

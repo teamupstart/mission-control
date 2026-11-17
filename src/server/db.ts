@@ -243,7 +243,9 @@ let db: DatabaseSync | undefined;
 // 32: resident compaction epochs (`resident_runs.compaction_epoch`, `reanchored_epoch`) and a
 //     restating wake's exact text (`resident_iterations.wake_text`, `reanchor_epoch`). Zero and
 //     NULL with no backfill: no run owes a restatement until its conversation next compacts.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 32;
+// 33: the applied task retention window (`task_worktree_retention.retention_ms`). Existing
+//     rows keep their deadlines and gain the original 30-day window (2592000000 ms).
+export const CURRENT_DATABASE_SCHEMA_VERSION = 33;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

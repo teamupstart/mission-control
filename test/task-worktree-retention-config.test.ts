@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -17,7 +17,8 @@ execFileSync(process.execPath, ["--import", "tsx", "-e", "await import(process.e
 const old = new DatabaseSync(join(home, "harness.db"));
 old.exec(`ALTER TABLE task_worktree_retention DROP COLUMN retention_ms;
   INSERT INTO task_worktree_retention (task_id, generation, fingerprint, last_changed_at, observed_at, cleanup_due_at, updated_at)
-  VALUES ('old-clock', 'g', 'f', 100, 200, 2592000100, 200)`);
+  VALUES ('old-clock', 'g', 'f', 100, 200, 2592000100, 200);
+  PRAGMA user_version = 32`);
 old.close();
 const db = await import("../src/server/db.ts");
 const { getWorktreesConfig, setWorktreesConfig } = await import("../src/server/worktrees/config.ts");
@@ -26,10 +27,24 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const DAY = 86400000;
 const START = 1800000000000;
 
-test("upgrade preserves old deadlines and records their original 30-day policy", () => {
+test("version 32 upgrade captures recovery before adding the policy and preserves old deadlines", () => {
   const row = db.openDb().prepare("SELECT retention_ms, cleanup_due_at FROM task_worktree_retention WHERE task_id = 'old-clock'").get();
   assert.equal(row?.retention_ms, 30 * DAY);
   assert.equal(row?.cleanup_due_at, 2592000100);
+  const backupRoot = join(home, "backups", "database");
+  const backups = existsSync(backupRoot) ? readdirSync(backupRoot).filter(name => name.startsWith("pre-migration-")) : [];
+  assert.equal(backups.length, 1, "the version-32 database needs a recovery point before migration");
+  const recovery = new DatabaseSync(join(backupRoot, backups[0]!), { readOnly: true });
+  try {
+    assert.equal(recovery.prepare("PRAGMA user_version").get()!.user_version, 32);
+    assert.ok(!recovery.prepare("PRAGMA table_info(task_worktree_retention)").all().some(column => column.name === "retention_ms"));
+    assert.equal(recovery.prepare("SELECT cleanup_due_at FROM task_worktree_retention WHERE task_id = 'old-clock'").get()!.cleanup_due_at, 2592000100);
+  } finally { recovery.close(); }
+  assert.equal(db.openDb().prepare("PRAGMA user_version").get()!.user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
+  db.closeDb();
+  const reopened = db.openDb();
+  assert.deepEqual(reopened.prepare("SELECT retention_ms, cleanup_due_at FROM task_worktree_retention WHERE task_id = 'old-clock'").get(), row);
+  assert.deepEqual(readdirSync(backupRoot).filter(name => name.startsWith("pre-migration-")), backups, "reopening at the current version must not capture again");
 });
 
 test("config defaults, validates writes, clamps damaged stored values, and preserves unrelated patches", () => {

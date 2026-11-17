@@ -193,7 +193,9 @@ export function useForeman(): ForemanState {
       // Code" for up to `POLL_MS` after the operator moved the group to Codex - the same
       // failure `useLlm` re-reads its own status to avoid. It also retires every poll already
       // in flight, one of which was issued before this write. See `readSeq`.
-      await reread();
+      // Acceptance belongs to the PUT. A stalled status read must not keep callers such
+      // as Trust's add form waiting after the grant has already been saved.
+      void reread();
       return true;
     },
     [reread, setConfig],

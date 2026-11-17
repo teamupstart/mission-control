@@ -161,7 +161,9 @@ export function useInspector(): InspectorState {
       // default" for up to `POLL_MS` after you typed an override into it. A newer write that
       // supersedes the refetch drops it; the write itself still committed on the server, so
       // it succeeded from this caller's point of view.
-      await reread();
+      // Acceptance belongs to the PUT. A stalled status read must not keep callers such
+      // as Trust's add form waiting after the grant has already been saved.
+      void reread();
       return true;
     },
     [reread, setConfig],

@@ -27,7 +27,8 @@ test.use({ daemonEnv: { MC_E2E_TWIN_REPOS: "1" } });
 async function shoot(page: Page, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
-  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/trust-batch-add/${name}.png`);
 }
@@ -39,6 +40,53 @@ async function allowlist(baseURL: string, route: string): Promise<string[]> {
 }
 
 const GRANTED = ["Foreman sends live", "Workflows act", "GitHub Inspector posts reviews"];
+
+for (const subsystem of ["foreman", "inspector"] as const) {
+  test(`adding finishes while the ${subsystem} status refresh is stalled`, async ({ dashboard, daemon }) => {
+    await dashboard.setViewportSize({ width: 1440, height: 900 });
+    await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
+    const addPane = dashboard.getByRole("group", { name: "Add repositories" });
+    const path = addPane.getByRole("textbox", { name: "Repository path" });
+    const button = addPane.getByRole("button", { name: /^Add/ });
+    await path.fill(daemon.repo);
+    await expect(button).toBeEnabled();
+
+    // Only the post-save read is stalled. All grant writes reach the real daemon.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let reads = 0;
+    await dashboard.route(`**/api/${subsystem}/status`, async (route) => {
+      reads += 1;
+      await held;
+      await route.continue();
+    });
+    try {
+      await button.click();
+      await expect.poll(() => reads).toBeGreaterThan(0);
+      for (const owner of ["foreman", "workflows", "inspector"]) {
+        await expect.poll(() => allowlist(daemon.baseURL, owner)).toEqual([daemon.repo]);
+      }
+      // A saved batch must release the form even if optional status never answers.
+      await expect(button).toHaveText("Add repositories", { timeout: 5000 });
+      await expect(path).toHaveValue("");
+      await addPane.getByRole("checkbox", { name: `Select ${daemon.secondRepo}` }).check();
+      await expect(button).toBeEnabled();
+      await shoot(dashboard, `${subsystem}-status-stalled-ready`);
+      await button.click();
+      await expect(button).toHaveText("Add repositories", { timeout: 5000 });
+      const table = dashboard.getByRole("table", { name: "Repository trust grants" });
+      await expect(table.locator(".trust-repo-path")).toHaveCount(2);
+      for (const grant of GRANTED) {
+        await expect(table.getByRole("button", { name: new RegExp(`^Revoke: ${grant} for `) }))
+          .toHaveCount(2);
+      }
+      await shoot(dashboard, `${subsystem}-status-stalled-added`);
+    } finally {
+      release();
+      await dashboard.unrouteAll({ behavior: "wait" });
+    }
+  });
+}
 
 test("several picked repositories are added in one batch with every grant but YOLO", async ({
   dashboard,

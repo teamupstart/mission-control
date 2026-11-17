@@ -39,9 +39,11 @@ export const test = base.extend<{
   /**
    * Turn on **Show sessions started outside Mission Control** before the test runs. A spec that
    * starts an agent by hand in a terminal (a fake binary in a tmux or Herdr pane) is starting an
-   * outside session, which discovery hides by default. One that dispatches, resumes, or works
-   * in an observed pipeline worktree must NOT set this: those sessions are shown with it off,
-   * and that is what such a spec should keep proving.
+   * outside session, which discovery hides by default. One whose sessions all come from a
+   * dispatch, a resume, or an observed pipeline worktree must NOT set this: those sessions are
+   * shown with it off, and that is what such a spec should keep proving. One that pairs those
+   * with a hand-started control session sets it, because the control is an outside session
+   * (`session-driven-by-engine.spec.ts`); see "outsideSessions" in `e2e/README.md`.
    */
   outsideSessions: boolean;
   daemon: DaemonHandle;

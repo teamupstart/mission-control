@@ -84,6 +84,6 @@ None, because there is only one phase. The durable contracts it creates are:
 - Focused unit tests named in the phase file, run with the single-file command from `AGENTS.md`.
 - `npm run typecheck`, `npm run lint`, `npm test`.
 - `npm run build`, `npm run smoke`, and `npm run test:e2e` including the new
-  `e2e/external-sessions-setting.spec.ts`.
+  `e2e/specs/external-sessions-setting.spec.ts`.
 - Manual check on a real machine: with the setting off, a hand-started `claude` in tmux does not
   appear, while a dispatched terminal task does. With the setting on, both appear.

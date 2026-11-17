@@ -4,7 +4,7 @@ Three layers, most-to-least automatic:
 
 | Layer | Setup | Gives you |
 |-------|-------|-----------|
-| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on - for the sessions Mission Control started, and for every session once [outside sessions](#sessions-started-outside-mission-control) are shown |
+| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on - for the sessions Mission Control started and the workers in an observed [pipeline run's](pipelines.md) worktree, and for every session once [outside sessions](#sessions-started-outside-mission-control) are shown |
 | **Claude hooks** | `npm run install-hooks` | precise state (working / idle / needs-input) + activity |
 | **MCP review channel** | `claude mcp add …` (see below) | agents push diffs / plans / questions for you to decide |
 
@@ -30,8 +30,9 @@ all, and the PR poller finds a session's pull request by asking
 
 ### Sessions started outside Mission Control
 
-By default the sweep admits only the terminal sessions Mission Control started: dispatched
-tasks, the agent button and terminal chooser, managed resume, and **Continue in terminal**.
+By default the sweep admits the terminal sessions Mission Control started (dispatched tasks, the
+agent button and terminal chooser, managed resume, and **Continue in terminal**), plus the
+fallbacks described below, which include pipeline workers.
 Agent SDK sessions never pass through the sweep: the daemon registers them itself when it starts
 them, so they are shown whichever way the setting below is set. The sweep recognizes its own
 terminal launches by the private wrapper each one runs beneath, read from the same process table

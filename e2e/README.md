@@ -2146,8 +2146,8 @@ which CI installs for exactly this reason, and which both specs skip themselves 
 absent.
 
 **A spec that turns discovery on and starts its agent by hand must also set
-`outsideSessions: true`** in `test.use`. Discovery shows only sessions Mission Control started
-unless **Show sessions started outside Mission Control** is on, and a fake binary started in a
+`outsideSessions: true`** in `test.use`. Discovery shows only sessions Mission Control started,
+and workers in an observed pipeline worktree, unless **Show sessions started outside Mission Control** is on, and a fake binary started in a
 tmux pane, a scripted terminal-boundary session, or the fake Herdr server's own agent is an
 outside session. The option turns the setting on for that test's daemon before the test body
 runs. A spec whose sessions all come from a dispatch, a managed resume, Continue in terminal, or

@@ -3786,7 +3786,8 @@ export const DEFAULT_MULTIPLEXER_TERMINALS = {
 
 /**
  * The "Terminals" settings blob: terminal settings. What a multiplexer's sessions open in,
- * and whether discovery shows sessions Mission Control did not start.
+ * and whether discovery shows sessions Mission Control did not start (workers in an observed
+ * pipeline worktree are shown either way).
  *
  * Deliberately NOT part of `HarnessesConfig`, which answers a different question with a
  * different key. That object says which backend hosts a DISPATCHED session, keyed per agent

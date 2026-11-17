@@ -11,7 +11,8 @@ first screen then fills with half-working cards for sessions they never asked us
 ## Goal
 
 - By default, the dashboard shows only sessions Mission Control launched: dispatched tasks,
-  managed resumes, Continue in terminal, and Agent SDK sessions.
+  managed resumes, Continue in terminal, and Agent SDK sessions. Workers an external engine
+  starts in an observed pipeline run's worktree are shown too.
 - A setting turns the old behavior back on. It is off by default and carries a warning that
   it does not work well for some setups.
 - Mission Control's own terminal sessions keep working exactly as they do today, including

@@ -735,7 +735,8 @@ export const EXTERNAL_SESSIONS_WARNING =
 
 /**
  * The Terminals family's one switch that is not about a multiplexer: whether passive discovery
- * shows sessions Mission Control did not start (`TerminalsConfig.externalSessions`).
+ * shows sessions Mission Control did not start (`TerminalsConfig.externalSessions`). Workers in
+ * an observed pipeline worktree are shown either way.
  *
  * The warning is outside the label and always rendered, so it is read before anyone turns
  * this on rather than discovered after. Disabled until the config has been read, like the

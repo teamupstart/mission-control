@@ -37,8 +37,9 @@ pipeline-worktree rule needs it.
   `spawnUniquely` (`dispatcher.ts`) and `launchAgentTerminal` (`terminal/targets.ts`). It writes
   `<DISPOSABLE_STATE_ROOT>/session-*/launch-and-cleanup.sh` and returns
   `["/bin/sh", wrapper]`. The wrapper does not `exec`, so it remains the agent's ancestor.
-- `prepareResume` (`src/server/harness/resume.ts`) writes a wrapper that
-  `exec`s `[runtime.command, resumeGuardPath(), lease.root, lease.id]`, where `lease.root` is
+- `prepareTerminalResume` (`src/server/harness/resume.ts`) writes a wrapper that
+  `exec`s `[runtime.command, resumeGuardPath(), lease.root, lease.id]`, built by
+  `resumeGuardArgv` in the same file, the one owner of that shape. `lease.root` is
   `resumeLeaseRoot(STATE_DIR)`. `src/server/terminal/resume-guard.ts` then `spawn`s the agent as
   a child, so the guard process is the ancestor. `spawnManagedResume` and
   `launchManagedAgentTerminal` both go through `launchPreparedResume` with that argv.
@@ -57,7 +58,8 @@ pipeline-worktree rule needs it.
 ## Implementation steps
 
 1. **Predicate** (`src/server/terminal/launch-process.ts`)
-   - Export `DISPOSABLE_STATE_ROOT` from `agent-subprocess-env.ts`. Do not re-derive it.
+   - Export `DISPOSABLE_STATE_ROOT` from this file, and have `agent-subprocess-env.ts` import it
+     from here to write the wrapper. Do not re-derive it.
    - Add `isMissionLaunchProcess(proc: Proc): boolean`. It accepts exactly:
      - `/bin/sh <DISPOSABLE_STATE_ROOT>/session-<one segment>/launch-and-cleanup.sh`, with
        an optional leading `-` on argv0.
@@ -127,7 +129,7 @@ pipeline-worktree rule needs it.
 Add focused tests in `test/`, run with
 `node --test --import ./test/setup-state.mjs --import tsx <file>`:
 
-- Launch-path coverage: build argv through `isolatedAgentArgv` and `prepareResume` (or the
+- Launch-path coverage: build argv through `isolatedAgentArgv` and `prepareTerminalResume` (or the
   smallest real builder seam that produces the guard argv), synthesize the process chain, and
   assert recognition, including the `-/bin/sh` form and a resume whose runtime and guard paths
   contain spaces.
@@ -175,7 +177,7 @@ Later work may rely on these:
 - `DiscoveredSession.missionLaunched`.
 - `TerminalsConfig.externalSessions`.
 
-A new terminal launch path must go through `isolatedAgentArgv` or `prepareResume`, or extend the
+A new terminal launch path must go through `isolatedAgentArgv` or `prepareTerminalResume`, or extend the
 predicate together with its launch-path test.
 
 ## Cross-phase audit record

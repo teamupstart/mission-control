@@ -37,7 +37,7 @@ wrapper is visible in the process table the discovery sweep already reads:
 |---|---|---|
 | Dispatched task (`spawnUniquely`) | `isolatedAgentArgv` | `/bin/sh $TMPDIR/mission-control-agent-state/session-*/launch-and-cleanup.sh` |
 | Agent button / terminal chooser (`launchAgentTerminal`, `terminal/targets.ts`) | `isolatedAgentArgv` | same wrapper |
-| Managed resume, exited-session resume, Continue in terminal (`spawnManagedResume`, `launchManagedAgentTerminal`) | `prepareResume` in `harness/resume.ts` | wrapper `exec`s `node <resume-guard.mjs> <STATE_DIR resume-lease root> <lease id>`, and the guard spawns the agent as its child, so the guard stays the ancestor |
+| Managed resume, exited-session resume, Continue in terminal (`spawnManagedResume`, `launchManagedAgentTerminal`) | `prepareTerminalResume` in `harness/resume.ts` | wrapper `exec`s `node <resume-guard.mjs> <STATE_DIR resume-lease root> <lease id>`, and the guard spawns the agent as its child, so the guard stays the ancestor |
 
 Ghostty starts the wrapper with `exec -l`, so its argv0 carries a leading `-`. The existing
 `readLaunchProcess` already accounts for that.
@@ -58,8 +58,8 @@ the wrapper is the one source of truth for recognizing it. It accepts exactly:
   the guard path contain spaces. This is the same string comparison `readLaunchProcess` already
   uses for the wrapper.
 
-`DISPOSABLE_STATE_ROOT` is exported from `agent-subprocess-env.ts` for this, and not
-re-derived.
+`DISPOSABLE_STATE_ROOT` is exported from `src/server/terminal/launch-process.ts` for this, and
+`agent-subprocess-env.ts` imports it from there to write the wrapper, so it is never re-derived.
 
 ### 2. Discovery marks each session, then admits it before the expensive reads
 
@@ -151,7 +151,7 @@ Before this change, every grouped agent went straight to annotation and the regi
 Unit tests in `test/`, using injected process snapshots:
 
 - **Launch-path coverage.** For each launch path in the table, build the real argv through the
-  real builder (`isolatedAgentArgv`, `prepareResume`), synthesize the process chain it
+  real builder (`isolatedAgentArgv`, `prepareTerminalResume`), synthesize the process chain it
   produces, and assert that `isMissionLaunchProcess` recognizes it. This includes the Ghostty
   `-/bin/sh` form and a packaged-app resume whose runtime and guard paths contain spaces. If a new launch path does not go through these builders, this test is where
   it fails.

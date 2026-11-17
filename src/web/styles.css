@@ -39748,6 +39748,11 @@ body.foreman-sidecar-open .modal-backdrop {
   padding-left: 16px;
 }
 
+/* The Terminals family's outside-sessions switch, below the multiplexer rows. */
+.setup-external-sessions {
+  margin-top: 14px;
+}
+
 .setup-rows .setup-row:first-child {
   border-top: 0;
 }

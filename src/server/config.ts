@@ -184,10 +184,7 @@ export function codexHookPath(): string {
   return envVar("CODEX_HOOK") ?? fileURLToPath(new URL("../../dist/satellites/codex-hook.mjs", import.meta.url));
 }
 
-/** Packaged claim-before-exec guard for managed terminal resumes. */
-export function resumeGuardPath(): string {
-  return envVar("RESUME_GUARD") ?? fileURLToPath(new URL("../../dist/satellites/resume-guard.mjs", import.meta.url));
-}
+export { resumeGuardPath } from "./resume-guard-path.ts";
 
 /**
  * The resident MCP scoped launcher (`dist/satellites/resident-mcp-launcher.mjs`): the one process

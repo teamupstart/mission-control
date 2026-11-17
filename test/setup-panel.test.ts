@@ -131,6 +131,8 @@ test("familyForAnchor resolves both anchor shapes and refuses anything else", ()
   assert.equal(familyForAnchor("setup/dependency-ghostty", rows), null, "a row this snapshot does not carry");
   assert.equal(familyForAnchor("setup/recheck", rows), null);
   assert.equal(familyForAnchor("setup/family-nonsense", rows), null);
+  // Not a row, but it lives in the Terminals family, so the settings palette lands there.
+  assert.equal(familyForAnchor("setup/external-sessions", rows), "terminals");
 });
 
 test("familyForAnchor resolves an environment-check row the snapshot does not carry yet", () => {

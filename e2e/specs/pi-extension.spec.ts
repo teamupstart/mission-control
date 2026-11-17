@@ -22,6 +22,7 @@ test.use({ daemonEnv: async ({}, use) => {
     rmSync(dir, { recursive: true, force: true });
   }
 } });
+test.use({ outsideSessions: true });
 const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 

@@ -2145,6 +2145,21 @@ Kill on "the only card", is the failure mode this note exists to prevent. Both a
 which CI installs for exactly this reason, and which both specs skip themselves over when
 absent.
 
+**A spec that turns discovery on and starts its agent by hand must also set
+`outsideSessions: true`** in `test.use`. While **Show sessions started outside Mission Control**
+is off, discovery shows only the sessions its admission rule keeps (see [sessions started outside
+Mission Control](../docs/sessions.md#sessions-started-outside-mission-control)), and a fake binary started in a
+tmux pane, a scripted terminal-boundary session, or the fake Herdr server's own agent is an
+outside session. The option turns the setting on for that test's daemon before the test body
+runs. A spec whose sessions all come from a dispatch, a managed resume, Continue in terminal, or
+an observed pipeline worktree leaves it off, because proving those stay visible with the default
+is part of what it covers. A spec that pairs one of those with a hand-started control session
+sets it, because the control is an outside session: `session-driven-by-engine.spec.ts` starts a
+pipeline worker and an ordinary agent in the repository root beside it. Its pipeline worker is
+then visible either way, so the default-off admission of pipeline workers is covered by
+`test/discovery-admission.test.ts` rather than by that spec. `external-sessions-setting.spec.ts`
+covers the setting itself.
+
 `startDaemon()` then verifies two things before any test runs, because the whole isolation
 story is worthless if the daemon under test is not the one it thinks it is:
 

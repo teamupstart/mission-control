@@ -540,7 +540,7 @@ test("dropping a card where it already is sends nothing", async ({ dashboard, da
  */
 test.describe("dropped on an idle agent", () => {
   /** Discovery, on and brisk - this block's daemon only. See the header for why that is safe. */
-  test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+  test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
 
   /**
    * Skipped rather than failed when tmux is absent, so a contributor without it is not

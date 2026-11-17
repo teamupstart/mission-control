@@ -268,7 +268,7 @@ const RESERVED = [
  * `harnessOf` detects - running a script that only stays alive.
  */
 test.describe("an agent with no lifecycle reading", () => {
-  test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+  test.use({ daemonEnv: { MISSION_POLL_MS: "400" }, outsideSessions: true });
   test.skip(
     spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0,
     "tmux is not installed on this machine",

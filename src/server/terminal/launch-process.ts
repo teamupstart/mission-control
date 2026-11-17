@@ -1,14 +1,145 @@
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Proc } from "../discovery/processes.ts";
 import type { Session } from "@shared/types.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
+// Not `../config.ts`: its module scope freezes the state directory, and this module is
+// imported by files that set their own state home only after their static imports.
+import { stateDir } from "../../shared/harness-runtime.mjs";
+import { resumeGuardPath } from "../resume-guard-path.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import type { SpawnedHome } from "./home.ts";
+import { isResumeLeaseId, resumeLeaseRootPath } from "./resume-lease.ts";
 
 export const LAUNCH_SCRIPT_FILE = "launch-and-cleanup.sh";
 export const LAUNCH_PID_FILE = "terminal-launch.pid";
 export type LaunchProcess = Pick<Proc, "pid" | "startMs">;
+
+/**
+ * Where every agent-controlled launch gets its private state home, one `session-*` directory
+ * per launch. Defined here, beside the wrapper's file name, because this module is also what
+ * recognizes that wrapper in the process table; `agent-subprocess-env.ts` creates the homes
+ * from the same constant. (It lives here rather than there because that module already imports
+ * this one, and the reverse import would close a cycle.)
+ */
+export const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
+
+/**
+ * What a Mission Control launch looks like in `ps`, resolved once per discovery sweep.
+ *
+ * `resumeGuard`/`resumeLeaseRoot` are null when they cannot be resolved (a state directory
+ * that does not exist yet), which only means no resume guard can match: a daemon with no
+ * state has launched no managed resume.
+ */
+export interface MissionLaunchMarkers {
+  disposableRoot: string;
+  resumeGuard: string | null;
+  resumeLeaseRoot: string | null;
+}
+
+/** The last unexpected lease-root failure reported, so a sweep every ~1.5s logs it once. */
+let reportedLeaseRootFailure: string | null = null;
+
+/**
+ * Read without side effects: discovery runs this every sweep and must never create state.
+ *
+ * A missing state directory (`ENOENT`) is the expected first-run state and stays quiet. Any
+ * other failure (a permission error, a symlink loop, a path through a file) also leaves the
+ * resume markers null, because failing the whole sweep would hide every session instead of
+ * only managed resumes. It is logged once, though, because it hides every managed-resume and
+ * Continue-in-terminal session on this machine, and nothing else would say why.
+ */
+export function missionLaunchMarkers(
+  leaseRoot: () => string = () => resumeLeaseRootPath(stateDir()),
+  warn: (message: string) => void = console.warn,
+): MissionLaunchMarkers {
+  let resumeLeaseRoot: string | null = null;
+  try {
+    resumeLeaseRoot = leaseRoot();
+    reportedLeaseRootFailure = null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code !== "ENOENT") {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== reportedLeaseRootFailure) {
+        reportedLeaseRootFailure = message;
+        warn(
+          `[discovery] cannot resolve the resume lease root (${message}); managed resumes and ` +
+            "Continue in terminal sessions will be treated as started outside Mission Control",
+        );
+      }
+    }
+  }
+  return {
+    disposableRoot: DISPOSABLE_STATE_ROOT,
+    resumeGuard: resumeLeaseRoot ? resumeGuardPath() : null,
+    resumeLeaseRoot,
+  };
+}
+
+/**
+ * Whether this process is one of Mission Control's own launch wrappers. Exactly two shapes,
+ * one per launch builder:
+ *
+ * - `isolatedAgentArgv` (dispatch, the agent button, the terminal chooser) runs
+ *   `/bin/sh <DISPOSABLE_STATE_ROOT>/session-<id>/launch-and-cleanup.sh`, which does not
+ *   `exec`, so the shell stays the agent's ancestor. Ghostty's `exec -l` prefixes argv0 with
+ *   a dash, as `readLaunchProcess` already allows.
+ * - `prepareTerminalResume` (managed resume, Continue in terminal) writes its wrapper at
+ *   `<lease root>/homes/<lease id>/launch-and-cleanup.sh`, which `exec`s
+ *   `<runtime> <resume guard> <lease root> <lease id>` (`resumeGuardArgv`); the guard then
+ *   spawns the agent as its child. Both forms are accepted, the wrapper before its `exec` as
+ *   well as the guard after it, and both only under this daemon's own lease root.
+ *
+ * Compared as whole strings and never split on whitespace: a packaged app lives in
+ * `Agent Mission Control.app`, so the runtime and guard paths both contain spaces.
+ */
+export function isMissionLaunchProcess(
+  proc: Pick<Proc, "command">,
+  markers: MissionLaunchMarkers = missionLaunchMarkers(),
+): boolean {
+  const command = proc.command.replace(/^-/, "");
+  const prefix = `${FIXED_OS_EXECUTABLES.sh} ${markers.disposableRoot}/session-`;
+  const suffix = `/${LAUNCH_SCRIPT_FILE}`;
+  if (command.startsWith(prefix) && command.endsWith(suffix)) {
+    const segment = command.slice(prefix.length, command.length - suffix.length);
+    if (segment.length > 0 && !segment.includes("/")) return true;
+  }
+  if (!markers.resumeGuard || !markers.resumeLeaseRoot) return false;
+  const resumePrefix = `${FIXED_OS_EXECUTABLES.sh} ${markers.resumeLeaseRoot}/homes/`;
+  if (command.startsWith(resumePrefix) && command.endsWith(suffix)
+    && isResumeLeaseId(command.slice(resumePrefix.length, command.length - suffix.length))) return true;
+  const lastSpace = proc.command.lastIndexOf(" ");
+  if (lastSpace < 0 || !isResumeLeaseId(proc.command.slice(lastSpace + 1))) return false;
+  const head = proc.command.slice(0, lastSpace);
+  const guardTail = ` ${markers.resumeGuard} ${markers.resumeLeaseRoot}`;
+  // Something must precede the guard: the runtime that runs it.
+  return head.endsWith(guardTail) && head.length > guardTail.length;
+}
+
+/**
+ * Whether a Mission Control launch wrapper is this process or one of its ancestors in the
+ * same snapshot. Walks `ppid` with cycle protection, as `belongsToLaunch` does. Read from the
+ * live process table, so a Mission terminal session that outlived a daemon restart is still
+ * recognized as one.
+ */
+export function hasMissionLaunchAncestor(
+  pid: number,
+  procs: readonly Proc[] | ReadonlyMap<number, Proc>,
+  markers: MissionLaunchMarkers = missionLaunchMarkers(),
+): boolean {
+  const byPid = procs instanceof Map ? procs : new Map((procs as readonly Proc[]).map((p) => [p.pid, p]));
+  let current = byPid.get(pid);
+  const seen = new Set<number>();
+  while (current && !seen.has(current.pid)) {
+    if (isMissionLaunchProcess(current, markers)) return true;
+    seen.add(current.pid);
+    current = byPid.get(current.ppid);
+  }
+  return false;
+}
 
 /** The private wrapper records its own PID before starting the requested command. */
 export async function readLaunchProcess(stateHome: string): Promise<LaunchProcess | null> {

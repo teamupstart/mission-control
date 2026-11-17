@@ -122,7 +122,10 @@ async function shoot(page: Page, name: string): Promise<void> {
 }
 
 test.describe("compatible stable Herdr", () => {
-  test.use({ daemonEnv: { MC_E2E_HERDR: "1", MISSION_POLL_MS: "100" } });
+  // The fake Herdr server starts its own agent under `script` when the pane is created and
+  // never runs the wrapper command Mission Control types in, so that agent is an outside
+  // session here. A real Herdr pane runs the typed wrapper, which discovery recognizes.
+  test.use({ daemonEnv: { MC_E2E_HERDR: "1", MISSION_POLL_MS: "100" }, outsideSessions: true });
 
   test("launches, discovers, and focuses a default-server Herdr session including after shell exec", async ({
     dashboard,
@@ -381,6 +384,8 @@ test.describe("a Herdr launch the shell never runs", () => {
 test.describe("stable Herdr on a newer protocol generation", () => {
   test.use({
     daemonEnv: { MC_E2E_HERDR: "1", MC_E2E_HERDR_MODE: "newer", MISSION_POLL_MS: "100" },
+    // As in "compatible stable Herdr": the fake server's agent never runs Mission's wrapper.
+    outsideSessions: true,
   });
 
   test("opens a workspace and adopts the discovered pane", async ({ dashboard, daemon }) => {

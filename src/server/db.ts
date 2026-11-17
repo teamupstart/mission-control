@@ -247,7 +247,11 @@ let db: DatabaseSync | undefined;
 //     NULL with no backfill: no run owes a restatement until its conversation next compacts.
 // 33: the applied task retention window (`task_worktree_retention.retention_ms`). Existing
 //     rows keep their deadlines and gain the original 30-day window (2592000000 ms).
-export const CURRENT_DATABASE_SCHEMA_VERSION = 33;
+// 34: "Remind me later" on request_input questions (`reviews.snoozable`, `snoozed_at`,
+//     `snoozed_until`, `snooze_mode`, `snooze_option_id`, `snooze_reminded_at`,
+//     `snooze_instruction_owed_at`, `snooze_instruction_queued_at`), nullable with no backfill:
+//     no question offered or used a snooze before these existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 34;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

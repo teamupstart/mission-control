@@ -99,7 +99,10 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
     || run.status === "waiting_for_new_head"
     || (run.status === "waiting_for_session"
       && (run.phase === "pr_handoff" || run.phase === "inspector_head_mismatch"))
-    || (run.status === "blocked" && run.phase === "inspector_disabled");
+    || (run.status === "blocked" && run.phase === "inspector_disabled")
+    // Reopens only on a GitHub read that saw the pull request open, so a recheck of one that
+    // really closed changes nothing. See `reopenClosedInspectorGate`.
+    || (run.status === "blocked" && run.phase === "inspector_pr_closed");
 }
 
 export function infrastructureRecoveryAvailable(
@@ -149,6 +152,12 @@ export function projectWorkflowRecovery(c: WorkflowRecoveryContext): WorkflowRun
       recovery.primary = recovery.operations.includes("prepare-pr") ? "prepare-pr"
         : recovery.operations.includes("recheck-inspector") ? "recheck-inspector" : null;
       return recovery;
+    }
+    // The one non-destructive move a closed-PR block has. Without it the run page offered
+    // only cancel and a full restart, which re-spends every review on an unchanged head - and
+    // the block was not always true. It stays a decision: no resubmission is offered.
+    if (c.phase === "inspector_pr_closed" && recovery.operations.includes("recheck-inspector")) {
+      recovery.primary = "recheck-inspector";
     }
   }
   if (c.status !== "blocked" && c.status !== "waiting_for_session") return recovery;

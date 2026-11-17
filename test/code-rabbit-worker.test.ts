@@ -68,6 +68,7 @@ test("GitHub review pages refuse oversized lists through snapshot and history re
   const review = { body: "ordinary review", author: { login: "reviewer" }, commit: { oid: "sha" } };
   const nodes = Array.from({ length: GITHUB_PAGE_SIZE }, () => review);
   const respond = (items: unknown[]) => writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: {
+    state: "OPEN",
     reviews: { nodes: items, pageInfo: { hasPreviousPage: false, startCursor: null } },
   } } } }));
   const input = { cwd: dir, owner: "a", repo: "b", number: 1, login: "reviewer", headSha: "sha",
@@ -144,6 +145,25 @@ test("CodeRabbit-only sweeps use one shared snapshot, never call a model or writ
     const before = readFileSync(calls, "utf8"); await new Promise((r) => setTimeout(r, 150));
     assert.equal(readFileSync(calls, "utf8"), before);
   } finally { stop(); }
+});
+
+// A read that cannot say which state the pull request is in observed nothing. It used to
+// default to CLOSED, which retired an open pull request's ledger row for good and blocked the
+// workflow gate pinned to it as closed.
+test("a pull request read with no recognised state is a failed read, never a closed one", async () => {
+  const pr = { headRefOid: "sha", isDraft: false,
+    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+  for (const state of [undefined, null, "", "DRAFT"]) {
+    writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: { ...pr, state } } } }));
+    const read = await fetchPr(dir, "a", "b", 1);
+    assert.equal(read.ok, false, `state ${String(state)}`);
+    assert.equal(read.value, undefined, `state ${String(state)}`);
+    assert.match(read.error ?? "", /did not say whether the pull request is open/);
+  }
+  for (const state of ["OPEN", "CLOSED", "MERGED"] as const) {
+    writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: { ...pr, state } } } }));
+    assert.equal((await fetchPr(dir, "a", "b", 1)).value?.state, state);
+  }
 });
 
 test("provider requests issue comments only when enabled and validates paginated comment metadata", async () => {

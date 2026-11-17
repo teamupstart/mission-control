@@ -1,0 +1,313 @@
+import { mkdirSync } from "node:fs";
+import type { Locator, Page } from "@playwright/test";
+
+import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
+
+const EVIDENCE = artifactsDir("workflow-closed-pr-recheck");
+
+/**
+ * The dead end an open pull request reported as closed used to be, and the move that ends it.
+ *
+ * Reported three times in one working day (issue #1494): a No-Mistakes run waiting on its
+ * session's repair push flipped to `blocked`/`inspector_pr_closed` while the pull request stayed
+ * open on GitHub with an unchanged head. The cause was a GitHub Inspector signal that observed
+ * nothing - a failed poll, a settings save - carrying a null state the gate read as closed. The
+ * run page then offered only `Cancel run` and a full restart, and a recheck was refused.
+ *
+ * The daemon no longer reads a null state as closed (`test/workflow-inspector-gate.test.ts`), so
+ * this spec covers the recovery for a run already stranded that way: the header now leads with
+ * `Check again`, which asks GitHub about the pull request again. It starts from the hardest
+ * case - the Inspector already retired the row as closed, and its sweep never reads a retired
+ * row again - and lifts the block only when GitHub answers OPEN. A pull request GitHub still
+ * reports closed stays exactly where it was.
+ *
+ * The poller is slowed to a crawl so nothing but the operator's click re-evaluates the gate.
+ * GitHub's answers come from the fixture's fake `gh`, scripted through `writeGhPullRequests`.
+ * The stranded gate, the adopted pull request and its finding are written behind the daemon - a
+ * real adoption needs a live pull request, which this offline suite has by design not got.
+ * Everything from the click on is production: the route, the GitHub read, the ledger write, the
+ * gate evaluation, the server event and the repaint.
+ */
+test.use({ daemonEnv: { MISSION_INSPECTOR_POLL_MS: "3600000" } });
+
+const PR_NUMBER = 1494;
+const PR_KEY = `owner/repo#${PR_NUMBER}`;
+const PR_URL = `https://github.example/owner/repo/pull/${PR_NUMBER}`;
+const FAILED_HEAD = "f".repeat(40);
+const FINDING = "Repair the edge before the gate can pass";
+
+async function shoot(page: Page, target: Page | Locator, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: a focused button keeps its tooltip bubble open over the header.
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/workflow-closed-pr-recheck/${name}.png`);
+}
+
+async function api<T>(
+  daemon: DaemonHandle,
+  path: string,
+  body?: unknown,
+  method?: string,
+): Promise<T> {
+  const response = await fetch(`${daemon.baseURL}${path}`, {
+    method: method ?? (body === undefined ? "GET" : "POST"),
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  if (!response.ok) {
+    throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
+  }
+  return (await response.json()) as T;
+}
+
+interface RunProbe {
+  run: { status: string; currentPhase: string };
+  summary: { recovery?: { operations: string[]; primary: string | null } };
+  events: Array<{ kind: string }>;
+}
+
+const probe = (daemon: DaemonHandle, runId: string): Promise<RunProbe> =>
+  api<RunProbe>(daemon, `/api/workflow-runs/${runId}`);
+
+const eventCount = async (daemon: DaemonHandle, runId: string, kind: string): Promise<number> =>
+  (await probe(daemon, runId)).events.filter((event) => event.kind === kind).length;
+
+/** Dispatch one agent from the modal - the sanctioned way to get a live, bindable session. */
+async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?")
+    .fill("hold a session for the closed pull request spec");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" })
+    .selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  let sessionId = "";
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
+    const live = sessions.find((session) => session.state !== "exited");
+    sessionId = live?.id ?? "";
+    return live?.state ?? "";
+  }, { message: "the dispatched session should settle before the workflow is bound" }).toBe("idle");
+  return sessionId;
+}
+
+/** One single-reviewer run that passes, built through the routes the dashboard itself uses. */
+async function seedRun(page: Page, daemon: DaemonHandle): Promise<string> {
+  const sessionId = await dispatch(page, daemon);
+  const persona = await api<{ id: string }>(daemon, "/api/personas", {
+    name: "Closed PR reviewer",
+    guidanceMarkdown: "# Closed PR reviewer\n\nE2E_PASS_VERDICT",
+  });
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E closed pull request",
+    draft: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "reviewer", kind: "persona", personaId: persona.id, position: { x: 220, y: 0 } },
+        { id: "end", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
+      ],
+      edges: [
+        { id: "submit", source: "session", sourcePort: "submitted", target: "reviewer", targetPort: "activate" },
+        { id: "pass", source: "reviewer", sourcePort: "pass", target: "end", targetPort: "terminal" },
+        { id: "fail", source: "reviewer", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+      ],
+    },
+  });
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: published.version.id,
+    sessionId,
+    deliveryMode: "preview",
+  });
+  const submitted = await api<{ run: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: "e2e-closed-pr-recheck" },
+  );
+  try {
+    await expect.poll(async () => (await probe(daemon, submitted.run.id)).run.status, {
+      message: "the seeded round should settle completed",
+      timeout: 40_000,
+    }).toBe("completed");
+  } catch (caught) {
+    // eslint-disable-next-line no-console
+    console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
+    throw caught;
+  }
+  return submitted.run.id;
+}
+
+/**
+ * Leave the run where the earlier build stranded the reported ones: an Inspector-only gate that
+ * was waiting on the session's repair push for an open finding, blocked as closed.
+ */
+function strandAsClosed(daemon: DaemonHandle, runId: string): void {
+  const now = Date.now();
+  withDaemonDb(daemon, (db) => {
+    const run = db.prepare("SELECT workflow_version_id FROM workflow_runs WHERE id = ?")
+      .get(runId) as { workflow_version_id: string } | undefined;
+    if (!run) throw new Error(`missing run ${runId}`);
+    db.prepare("UPDATE workflow_versions SET completion_policy_json = ? WHERE id = ?").run(
+      JSON.stringify({ kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" }),
+      run.workflow_version_id,
+    );
+    db.prepare(
+      `UPDATE workflow_runs
+          SET status = 'blocked', current_phase = 'inspector_pr_closed', inspector_pr_key = ?,
+              inspector_head_sha = ?, gate_state_json = ?, completed_at = NULL, updated_at = ?
+        WHERE id = ?`,
+    ).run(
+      PR_KEY,
+      FAILED_HEAD,
+      JSON.stringify({
+        prKey: PR_KEY,
+        prUrl: PR_URL,
+        targetHeadSha: FAILED_HEAD,
+        failedHeadSha: FAILED_HEAD,
+        enteredAt: now - 60_000,
+        lastObservedAt: now - 5_000,
+        observedHeadSha: FAILED_HEAD,
+        reviewPosture: "live",
+        waitReason: "pr_closed",
+        findingFingerprints: ["closed-pr-finding"],
+      }),
+      now,
+      runId,
+    );
+    // The poller's last read of this pull request said CLOSED, and it retired the row.
+    db.prepare(
+      `INSERT INTO inspector_prs
+         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+          head_sha, review_posture, review_complete, round, last_reviewed_at, last_error,
+          fail_count, last_fail_kind, next_attempt_at, last_attempt_sha, merged_at, merge_block,
+          observed_head_sha, observed_state, observed_at, head_ref_name, title,
+          adopted_at, updated_at)
+       VALUES (?, ?, 'owner', 'repo', ?, ?, ?, NULL, 'hook', 'closed',
+               ?, 'live', 1, 1, ?, NULL, 0, NULL, NULL, ?, NULL, NULL,
+               ?, 'CLOSED', ?, 'feat/closed-pr', 'Closed pull request', ?, ?)`,
+    ).run(
+      PR_KEY, PR_URL, PR_NUMBER, daemon.repo, daemon.repo,
+      FAILED_HEAD, now - 20_000, FAILED_HEAD,
+      FAILED_HEAD, now - 5_000, now - 60_000, now,
+    );
+    db.prepare(
+      `INSERT INTO inspector_comments
+         (id, pr_key, fingerprint, path, line, title, body, severity, round, status,
+          replies, answered_comment_id, created_at, updated_at)
+       VALUES ('closed-pr-finding', ?, 'closed-pr-finding', 'src/edge.ts', 12, ?,
+               'The edge drops durable state.', 'major', 1, 'open', 0, NULL, ?, ?)`,
+    ).run(PR_KEY, FINDING, now - 20_000, now);
+  });
+}
+
+/** Script what GitHub answers when the daemon reads this pull request. */
+function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED"): void {
+  writeGhPullRequests(daemon.home, [{
+    cwd: daemon.repo,
+    url: PR_URL,
+    number: PR_NUMBER,
+    state,
+    headRefName: "feat/closed-pr",
+    headRefOid: FAILED_HEAD,
+    createdAt: new Date(Date.now() - 60_000).toISOString(),
+    mergedAt: null,
+  }]);
+}
+
+interface LedgerRow {
+  state: string;
+  observed_state: string | null;
+  observed_at: number | null;
+}
+
+/** The adopted pull request's Inspector row, read straight from the daemon's database. */
+const ledgerRow = (daemon: DaemonHandle): LedgerRow =>
+  withDaemonDb(daemon, (db) => db.prepare(
+    "SELECT state, observed_state, observed_at FROM inspector_prs WHERE key = ?",
+  ).get(PR_KEY) as unknown as LedgerRow);
+
+test("a run blocked as closed offers Check again, which lifts the block only for an open pull request", async ({
+  dashboard,
+  daemon,
+}) => {
+  const runId = await seedRun(dashboard, daemon);
+  await api(
+    daemon,
+    "/api/inspector/config",
+    { enabled: true, mode: "live", repoAllowlist: [daemon.repo] },
+    "PUT",
+  );
+  strandAsClosed(daemon, runId);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  const checkAgain = header.getByRole("button", { name: "Check again" });
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  // The block's one non-destructive move, beside the destructive one it used to stand alone with.
+  await expect(checkAgain).toBeVisible();
+  await expect(header.getByRole("button", { name: "Cancel run" })).toBeVisible();
+  await dashboard.getByRole("tab", { name: /^Completion/ }).click();
+  const pane = dashboard.getByRole("tabpanel", { name: /^Completion/ });
+  await expect(pane).toContainText("The adopted pull request was closed or switched.");
+  await shoot(dashboard, header, "01-closed-block-offers-check-again");
+
+  // GitHub still says closed: the click reads it again, and changes nothing.
+  scriptGitHub(daemon, "CLOSED");
+  const before = ledgerRow(daemon).observed_at;
+  await checkAgain.click();
+  await expect.poll(() => eventCount(daemon, runId, "inspector_recheck_requested"), {
+    message: "the click should reach the recheck route",
+  }).toBe(1);
+  await expect.poll(() => ledgerRow(daemon).observed_at, {
+    message: "the recheck should read the pull request from GitHub again",
+  }).not.toBe(before);
+  // A negative needs a window: the gate evaluates that read after the ledger records it.
+  await dashboard.waitForTimeout(500);
+  expect(ledgerRow(daemon)).toMatchObject({ state: "closed", observed_state: "CLOSED" });
+  expect((await probe(daemon, runId)).run.status).toBe("blocked");
+  expect(await eventCount(daemon, runId, "inspector_pr_seen_open")).toBe(0);
+  expect(await eventCount(daemon, runId, "inspector_pr_reobserve_failed")).toBe(0);
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  await expect(pane).toContainText("The adopted pull request was closed or switched.");
+
+  // GitHub says open, as it did in every reported case. The row was retired, so no sweep would
+  // ever have seen that; the same button reads it, un-retires the row and restores the repair
+  // wait the false close interrupted - with no restart and no review re-spent.
+  scriptGitHub(daemon, "OPEN");
+  await checkAgain.click();
+  await expect(header.getByText("Waiting for a new pushed head", { exact: true })).toBeVisible();
+  expect(ledgerRow(daemon)).toMatchObject({ state: "open", observed_state: "OPEN" });
+  await expect(pane).toContainText("GitHub Inspector left findings that have to be resolved.");
+  await expect(pane).toContainText(FINDING);
+  const recovered = await probe(daemon, runId);
+  expect(recovered.run).toMatchObject({
+    status: "waiting_for_new_head",
+    currentPhase: "inspector_findings",
+  });
+  expect(recovered.events.filter((event) => event.kind === "inspector_pr_seen_open")).toHaveLength(1);
+  if (process.env.MC_E2E_EVIDENCE) {
+    // The clicked button repaints into its ghost twin under the pointer, which strands the bubble
+    // the click opened. Hover the new one and leave it so the capture shows the header.
+    await checkAgain.hover();
+    await dashboard.mouse.move(0, 0);
+    await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+  }
+  await shoot(dashboard, header, "02-open-pull-request-restores-the-repair-wait");
+});

@@ -3799,11 +3799,11 @@ function DispatchModal({
                     type="button"
                     className="settings-link dispatch-env-fix"
                     aria-label={`Fix ${check.label} in Setup`}
-                    // A dismiss route like the others `closable={!busy}` seals: leaving
-                    // mid-dispatch would unmount the form before it can report the outcome.
-                    disabled={busy}
+                    // Leaving mid-dispatch or mid-Ensemble-launch would unmount the form
+                    // before it can report the outcome, so the link waits for either.
+                    disabled={busy || ensembleLaunch.launching}
                     onClick={() => {
-                      if (busy) return;
+                      if (busy || ensembleLaunch.launching) return;
                       onClose();
                       onOpenEnvironmentFix(check.id);
                     }}

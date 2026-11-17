@@ -88,6 +88,73 @@ for (const subsystem of ["foreman", "inspector"] as const) {
   });
 }
 
+test("an earlier Foreman refresh cannot revoke a grant during successive adds", async ({ dashboard, daemon }) => {
+  // Freeze polling so the ordering is controlled by response barriers, not host speed.
+  const now = Date.now();
+  await dashboard.clock.install({ time: now });
+  await dashboard.clock.pauseAt(now + 1000);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
+  const addPane = dashboard.getByRole("group", { name: "Add repositories" });
+  const path = addPane.getByRole("textbox", { name: "Repository path" });
+  const button = addPane.getByRole("button", { name: /^Add/ });
+  await path.fill(daemon.repo);
+  await expect(button).toBeEnabled();
+
+  let releaseFirst!: () => void;
+  let releaseLater!: () => void;
+  let releaseWrite!: () => void;
+  const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const later = new Promise<void>((resolve) => { releaseLater = resolve; });
+  const write = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  let reads = 0;
+  let writes = 0;
+  await dashboard.route("**/api/foreman/config", async (route) => {
+    if (route.request().method() === "PUT") {
+      writes += 1;
+      if (writes === 2) await write;
+      await route.continue();
+    } else {
+      const response = await route.fetch();
+      reads += 1;
+      await (reads === 1 ? first : later);
+      await route.fulfill({ response });
+    }
+  });
+  try {
+    await button.click();
+    await expect(button).toHaveText("Add repositories");
+    await expect.poll(() => reads).toBe(1);
+
+    await path.fill(daemon.secondRepo);
+    await button.click();
+    await expect.poll(() => writes).toBe(2);
+    // A's snapshot arrives after B's optimistic update but before B's PUT can finish.
+    const stale = dashboard.waitForResponse((response) =>
+      response.url().endsWith("/api/foreman/config") && response.request().method() === "GET");
+    releaseFirst();
+    await (await stale).finished();
+    await dashboard.clock.runFor(100);
+    releaseWrite();
+    await expect(button).toHaveText("Add repositories");
+    await expect.poll(() => allowlist(daemon.baseURL, "foreman"))
+      .toEqual([daemon.repo, daemon.secondRepo]);
+
+    const third = daemon.twinRepos![0];
+    await path.fill(third);
+    await button.click();
+    await expect(button).toHaveText("Add repositories");
+    for (const owner of ["foreman", "workflows", "inspector"]) {
+      expect(await allowlist(daemon.baseURL, owner)).toEqual([daemon.repo, daemon.secondRepo, third]);
+    }
+    await shoot(dashboard, "successive-adds-preserved");
+  } finally {
+    releaseFirst();
+    releaseLater();
+    releaseWrite();
+    await dashboard.unrouteAll({ behavior: "wait" });
+  }
+});
+
 test("several picked repositories are added in one batch with every grant but YOLO", async ({
   dashboard,
   daemon,

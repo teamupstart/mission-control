@@ -168,6 +168,9 @@ export function useForeman(): ForemanState {
     async (patch: ForemanConfigPatch): Promise<boolean> => {
       const before = configRef.current;
       if (!before) return false;
+      // Retire earlier refreshes before publishing the optimistic value. A refresh
+      // landing during this PUT must not restore the previous allowlist.
+      readSeq.current.begin();
       // `backlogDefaultModel` is a per-harness map. Preserve the other harness's
       // selection while the server-side merge is in flight, matching setForemanConfig.
       setConfig({

@@ -157,6 +157,7 @@ const terminalsFields = {
 } satisfies Record<keyof TerminalsConfig, AppConfigValueClass>;
 
 const worktreesFields = {
+  taskRetentionDays: "setting",
   enabled: "setting",
   maxSlots: "setting",
   repositories: "setting",

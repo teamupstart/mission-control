@@ -106,7 +106,7 @@ test("maintenance reclaims domain leases even when no native pool exists", async
 });
 
 test("worktree config defaults on, is bounded, and merges repository patches", () => {
-  assert.deepEqual(getWorktreesConfig(), { enabled: true, maxSlots: 16, repositories: {} });
+  assert.deepEqual(getWorktreesConfig(), { enabled: true, maxSlots: 16, repositories: {}, taskRetentionDays: 30 });
   assert.throws(() => WorktreesConfigSchema.parse({ maxSlots: 0 }));
   assert.throws(() => WorktreesConfigSchema.parse({ maxSlots: 129 }));
   assert.throws(() =>

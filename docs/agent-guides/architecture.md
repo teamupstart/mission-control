@@ -225,7 +225,10 @@ successfully released resource facts.
 A terminal task that still holds a worktree also carries a durable activity clock. The daemon
 observes the aggregate Git-visible state of its primary and every attached checkout - HEAD, the
 whole index, tracked worktree changes, and non-ignored untracked files - and records the
-fingerprint plus a 30-day deadline in `task_worktree_retention`. The clock has one boundary per
+fingerprint plus a configurable deadline in `task_worktree_retention`. See the
+[configuration reference](../configuration.md#task-worktree-retention) for the default.
+The daemon reads `worktrees.taskRetentionDays` on each observation. The ledger stores the applied
+window so shortening grants a single six-hour grace period; lengthening preserves existing grace. The clock has one boundary per
 task: the newest change in any of its trees protects the whole set. `tasks.updated_at` is not an
 activity signal and must never be used as one. The observation service reclaims nothing; it is
 structurally incapable of it. The retention cleanup worker consumes the ledger through

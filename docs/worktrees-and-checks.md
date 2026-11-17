@@ -714,24 +714,38 @@ removal or a reset onto a different commit can discard them; this includes ignor
 
 Retained work remains available through **Clean up** and **Settings > Worktrees**. The fallback
 is unchanged: **Mission Control removes a terminal task's retained worktrees automatically after
-30 days without a Git-visible change.** The best-effort safe-Kill intent is in memory; a daemon
+the configured retention window without a Git-visible change.** The best-effort safe-Kill intent
+is in memory; a daemon
 restart before it runs falls back to that retention policy. New final completions record an
 explicit return obligation atomically with completion and any session closure. Those durable
 obligations resume after discovery. Refused completion returns wait 30 seconds after the attempt
 finishes, then double the delay on each refusal up to 30 minutes. Partial progress or changed
 ownership restarts the delay; daemon restart also starts fresh from the durable obligation. Tasks
-completed before this policy keep their existing retained checkouts and 30-day activity window;
+completed before this policy keep their existing retained checkouts and activity window;
 upgrade never infers return permission from an old done status or session-closure record.
 Another live session or process always blocks automatic return. Settings > Worktrees shows up to
 four blocking PIDs and bounded commands in each native slot. Return logs carry the same detail
 and the next retry time; quarantine, recovery and release logs identify the pool and slot ordinal.
 These observations never terminate an operator shell or an orphaned program automatically.
 
-The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
+The policy is destructive at the boundary. Staged changes, unstaged changes,
 untracked files, local commits, and commits that were never pushed are all deleted when the
 window expires. None of them exempts a tree, and push, upstream, pull request, and merge status
 are deliberately not consulted at all. What they do is **reset the clock**: any change to the
-observable Git state grants another full 30 days from the moment it is observed.
+observable Git state grants another full configured window from the moment it is observed.
+
+See the [task worktree retention setting](configuration.md#task-worktree-retention) for its
+location, storage, default, and bounds. The configured window applies to every provider.
+The observer reads the current
+value after each probe. On the next successful observation after a setting change, an unclaimed
+deadline is recomputed from `last_changed_at + window`, subject to the grace rules below.
+Shortening grants at least six hours from that observation,
+so saving never deletes a tree and delayed or unreadable observations only add grace. The
+applied window is persisted beside the deadline so restarts and repeated passes do not renew
+that grace. Lengthening recomputes unclaimed deadlines, including retries, while preserving an
+outstanding six-hour grace period if it ends later than `last_changed_at + window`. A deadline
+already protected by that later grace period therefore stays unchanged. Active claims and retry
+backoff are unchanged. Native task-owned slots show the persisted deadline in Worktrees.
 
 What counts as a change:
 
@@ -750,7 +764,7 @@ protects the whole set, and the task is reclaimed as one operation.
 **How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
 internal cadence, well inside the window, and persists the result - the fingerprint, when it
 last changed, and the resulting deadline - so a restart resumes the boundary that was actually
-granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees for the same 30-day rule. Final
+granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees under the same retention rule. Final
 completed tasks resume explicitly recorded closure and return obligations after session discovery.
 
 **The clock starts when the tree is first observed, not when the task ended.** No timestamp in
@@ -762,7 +776,7 @@ observation and gets one full window from there.
 refuses, a process still occupying a tree, a scout report that cannot be published, or a
 partial multi-repository release all keep every durable resource fact, record a bounded reason,
 and try again with exponential backoff capped at a day. The tree stays past due - a failed
-cleanup never buys it another 30 days - and the ordinary **Clean up** action still reaches it.
+cleanup never buys it another full window - and the ordinary **Clean up** action still reaches it.
 While a due cleanup is retrying, the task's card says so, separately from its outcome or
 failure reason.
 

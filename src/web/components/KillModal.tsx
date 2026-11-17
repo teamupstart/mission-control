@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { Session } from "@shared/types.ts";
-import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
 import { muxHandle } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { AgentDot } from "./session-bits.tsx";
@@ -100,8 +99,8 @@ export function KillModal({
             ) : null}
             . Task-owned worktrees return automatically once the session stops, if all are clean,
             published to origin, and unused. Otherwise they are kept for Clean up or Worktree
-            Settings and removed automatically after {TASK_WORKTREE_RETENTION_DAYS} days
-            without a Git-visible change.
+            Settings and removed automatically after the configured retention window
+            without a Git-visible change. Set the window in Settings &gt; Worktrees.
           </p>
 
           {task && (

@@ -44,6 +44,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/mcp/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome through the shared dashboard dispatch path; add request surface only."],
   ["POST", "/api/tasks/:id/assign", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
+  ["POST", "/mcp/tasks/cancel", "Phase 3 session/dispatch/task owner already records this outcome through the shared dashboard cancellation path; add request surface only."],
   ["POST", "/api/tasks/:id/cancel", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/complete", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
 ] as const;

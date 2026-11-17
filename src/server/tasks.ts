@@ -1175,6 +1175,11 @@ export class TaskManager {
       // Late-bound for the same reason: a task naming a Persona is refused without a reader.
       persona: (id) => this.personaLookup?.(id) ?? null,
     });
+    // Only unchanged inherited rows are evidence of a lost binding. A task created,
+    // assigned, or displaced during restore belongs to this daemon's live lifecycle.
+    const sessionlessAtStartup = new Set(registry.listTasks().filter(
+      (task) => task.status === "running" && task.sessionId === null,
+    ));
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (emulator pane identity or mux name).
@@ -1292,7 +1297,7 @@ export class TaskManager {
     this.subscriptions.push(registry.onSessionsObserved(() => {
       this.completedInitialSessionSweep = true;
       this.reconcileMergedTasks();
-      this.reconcileTasksWithNoLiveSession();
+      this.reconcileTasksWithNoLiveSession(sessionlessAtStartup);
       // And the closures a previous daemon left owed. Nothing before this point may act on
       // one: until the process table has been read, a session missing from the registry has
       // not been observed to be gone. See `sweepMissionSessionClosures`.
@@ -2519,9 +2524,19 @@ export class TaskManager {
   }
 
   /** The same reconciliation for a restart: whatever the first completed sweep did not find. */
-  private reconcileTasksWithNoLiveSession(): void {
+  private reconcileTasksWithNoLiveSession(sessionlessAtStartup: ReadonlySet<Task>): void {
     for (const t of this.registry.listTasks()) {
-      if (!t.sessionId || this.registry.getSession(t.sessionId)) continue;
+      if (!t.sessionId) {
+        // A running row can have lost its binding before the daemon stopped. Discovery
+        // has now had a chance to rebind by cwd. Preserve other positive owners: SDK
+        // restore, provider runs, and (inside agentWentAway) durable terminal transfers.
+        // Dispatching is provisional and remains owned by dispatch/startup recovery.
+        if (!sessionlessAtStartup.has(t) || t.status !== "running" || providerOwnsTaskCompletion(t.kind) ||
+          this.supervisor?.taskLiveness(t.id) === true) continue;
+        this.agentWentAway(t);
+        continue;
+      }
+      if (this.registry.getSession(t.sessionId)) continue;
       // A managed Pipeline reserves its SDK id before the driver starts so its first MCP
       // call can prove which task launched it. A discovery sweep can complete inside that
       // launch window, when the task already names the id but the supervisor has not yet

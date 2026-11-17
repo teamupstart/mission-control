@@ -1,3 +1,4 @@
+import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
@@ -1798,6 +1799,11 @@ export const McpGetTaskSchema = z.object({
   taskId: z.string().trim().min(1).describe("Id of a task in any status"),
 }).strict();
 
+/** MCP cancels one task through the existing lifecycle and cleanup owner. */
+export const McpCancelTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of the task to cancel, even when it has no session"),
+}).strict();
+
 /** MCP deletes one task through the existing lifecycle and cleanup owner. */
 export const McpDeleteTaskSchema = z.object({
   taskId: z.string().trim().min(1).describe("Id of the task to delete"),
@@ -3524,8 +3530,11 @@ const WorktreeRepositoryKeySchema = z
  * The only policy authority for native worktrees. Operational pool/slot rows deliberately
  * do not repeat any of these values.
  */
+const TaskRetentionDaysSchema = z.number().int().min(TASK_RETENTION_MIN_DAYS).max(TASK_RETENTION_MAX_DAYS);
+
 export const WorktreesConfigSchema = z
   .object({
+    taskRetentionDays: TaskRetentionDaysSchema.default(TASK_RETENTION_DEFAULT_DAYS),
     enabled: z.boolean().default(true),
     maxSlots: z
       .number()
@@ -3567,6 +3576,7 @@ const WorktreeRepositoryConfigPatchSchema = z
 /** Partial update. A null repository value removes that repository's whole override. */
 export const WorktreesConfigPatchSchema = z
   .object({
+    taskRetentionDays: TaskRetentionDaysSchema.optional(),
     enabled: z.boolean().optional(),
     maxSlots: z
       .number()
@@ -3614,6 +3624,7 @@ const WorktreeOwnerTargetSchema = z
 
 /** Closed, stable-id-only operation vocabulary for Settings > Worktrees. */
 export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("recover"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("return"), slotId: WorktreeStableIdSchema }).strict(),
   z
     .object({

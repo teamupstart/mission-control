@@ -16,6 +16,7 @@ import {
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
@@ -62,6 +63,8 @@ import {
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
+import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
+import { setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
@@ -682,6 +685,22 @@ export function App(): React.JSX.Element {
       openSettingsAnchor(door.category, door.anchor);
     },
     [openSettingsAnchor],
+  );
+  /**
+   * The door an environment warning in the dispatch form offers, opened: that check's own
+   * Setup row, which carries the remedy (the Install button, or the command to run).
+   *
+   * Re-reads the setup snapshot too. The dispatch form asked the machine a moment ago, but
+   * the Setup panel shows what was read at startup, and a row the operator was just sent to
+   * must not be missing because the warning is newer than the snapshot.
+   */
+  const refreshSetup = setup.refresh;
+  const openEnvironmentFix = useCallback(
+    (check: EnvironmentCheckId): void => {
+      void refreshSetup();
+      openSettingsAnchor("setup", setupRowAnchor({ source: "environment-check", id: check }));
+    },
+    [openSettingsAnchor, refreshSetup],
   );
   const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
@@ -2727,6 +2746,12 @@ export function App(): React.JSX.Element {
   // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
   // and session-card notices, and the top bar's `did not start` count all read these groups.
   const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Held at zero until the first snapshot: before it, every running task would look
+  // sessionless only because no session has arrived yet.
+  const lostTaskCount = useMemo(
+    () => (hasSnapshot ? lostTasks(tasks, sessions).length : 0),
+    [hasSnapshot, tasks, sessions],
+  );
   // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
   // and on the Board a returned one whose Backlog card is hidden becomes a tile.
   const failedLaunchTiles = launchFailureGroups.length;
@@ -4495,6 +4520,12 @@ export function App(): React.JSX.Element {
             const first = launchFailureGroups[0];
             if (first) showLaunchFailure(first.tasks[0]!.id);
           }}
+          lostTasks={lostTaskCount}
+          onOpenLostTasks={() => {
+            // Sitrep is a modal over the fleet, so it opens from any page without leaving it.
+            closeLineDrawer();
+            setReportOpen(true);
+          }}
           launcherFocusError={launcherFocusError}
           fleetCost={fleetCost}
           costView={cost.status?.config.view ?? "usd"}
@@ -5154,6 +5185,9 @@ export function App(): React.JSX.Element {
                     focusSession(sessionId);
                     requestComposerFocus(sessionId);
                   }}
+                  files={files}
+                  // The review stays pending; "to review" brings the operator back to decide.
+                  onOpenPath={openSessionPath}
                 />
               )}
 
@@ -5177,6 +5211,7 @@ export function App(): React.JSX.Element {
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
+                onOpenEnvironmentFix={openEnvironmentFix}
                 onEnsembleLaunched={openEnsembleRun}
                 residentProfiles={residentProfiles}
                 onEditResidentProfile={(profileId) =>

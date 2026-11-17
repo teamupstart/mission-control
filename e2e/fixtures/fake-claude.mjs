@@ -30,12 +30,12 @@ import { tmpdir } from "node:os";
  * So a fake that only wrote to stdout would produce a live, idle, correctly-modelled card
  * with a permanently empty conversation. Writing that file is half of what this does.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 function argvValue(flag) {
   const index = process.argv.indexOf(flag);
@@ -1399,6 +1399,74 @@ function askWithoutBuiltin(prompt) {
   }));
 }
 
+/**
+ * `MOCKUPS_THEN_ASK_TURN`: what the mockups skill asks of an agent, followed by the decision
+ * those mock-ups exist to inform, in the order the real session that motivated it produced:
+ *
+ *  1. a generator script run through `Bash` writes the pages into the git-ignored
+ *     `docs/mockups/` - no `Write` tool call, so nothing names the files before they exist;
+ *  2. ONE assistant record presents them - three `Mockup:` lines, then Markdown links to the
+ *     rest - and in that same record calls `request_input`, which blocks the turn.
+ *
+ * The turn stays open (the card stays `working`) until the human answers, which is exactly
+ * the window in which they need the mock-ups previewed and linked.
+ */
+const MOCKUPS_THEN_ASK_TURN = "present the remind-later mock-ups, then ask which to build";
+const MOCKUP_DIR = "docs/mockups/request-input-remind-later";
+const MOCKUP_PAGES = ["snooze-chip", "deferred-strip", "reminder-toast", "inline-menu", "card-footer"];
+
+/**
+ * The generator a real session wrote into its scratchpad: a standalone Node script that
+ * writes the self-ignoring `docs/mockups/` and every page, relative to the directory it runs
+ * in. It never touches the fake's own state, so the files exist only because the shell ran it.
+ */
+function mockupGeneratorSource() {
+  return `import { mkdirSync, writeFileSync } from "node:fs";
+const names = ${JSON.stringify(MOCKUP_PAGES)};
+mkdirSync(${JSON.stringify(MOCKUP_DIR)}, { recursive: true });
+writeFileSync("docs/mockups/.gitignore", "*\\n");
+names.forEach((name, index) => {
+  writeFileSync(\`${MOCKUP_DIR}/\${name}.html\`, [
+    "<!doctype html>",
+    '<html lang="en"><head><meta charset="utf-8"><title>Remind me later</title>',
+    '<link rel="stylesheet" href="../../../src/web/styles.css"></head>',
+    \`<body><h1>Remind me later, option \${index + 1}</h1><p>\${name}</p></body></html>\`,
+  ].join("\\n"));
+});
+`;
+}
+
+function presentMockupsThenAsk() {
+  const pages = MOCKUP_PAGES.map((name) => `${MOCKUP_DIR}/${name}.html`);
+  // Outside the checkout, like a session scratchpad, so the script itself is never listed.
+  const script = join(mkdtempSync(join(tmpdir(), "e2e-mockup-generator-")), "generate-mockups.mjs");
+  writeFileSync(script, mockupGeneratorSource());
+  const command = `node ${JSON.stringify(script)}`;
+  appendTurn("assistant", [
+    { type: "text", text: "Generating the mock-ups." },
+    { type: "tool_use", id: `mockups-${turn}`, name: "Bash", input: { command } },
+  ]);
+  // What the Bash tool does with that command: a shell in the session's working directory.
+  // Synchronous, as the tool call is, so the pages exist before the turn presents them.
+  execFileSync("bash", ["-c", command], { cwd: process.cwd(), stdio: "ignore" });
+  const presented = pages.slice(0, 3).map((page) => `Mockup: ${page}`).join("\n");
+  const linked = pages.slice(3).map((page, index) => `- [Alternative ${index + 1}](${page})`).join("\n");
+  const args = {
+    question: "Which remind-later treatment should I build?",
+    context: `The three leading options are ${pages.slice(0, 3).join(", ")}.`,
+    options: MOCKUP_PAGES.slice(0, 3).map((label) => ({ label, detail: `Build ${label}` })),
+  };
+  appendTurn("assistant", [
+    { type: "text", text: `Here are the remind-later mock-ups.\n\n${presented}\n\nThe other pages:\n\n${linked}` },
+    { type: "tool_use", id: `ask-${turn}`, name: REQUEST_INPUT_TOOL, input: args },
+  ]);
+  beginHeldTurn(withMissionMcp(async (request) => {
+    const called = await request("tools/call", { name: "request_input", arguments: args });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `request_input answered: ${text}`;
+  }));
+}
+
 function ask(prompt) {
   const requestId = `ask-${++turn}`;
   asked.set(requestId, prompt);
@@ -2220,6 +2288,10 @@ rl.on("line", (line) => {
     // answer comes back down, so the card stays "waiting on you" for the spec to act on.
     if (prompt === PERMISSION_TURN) {
       askPermission(prompt);
+      return;
+    }
+    if (prompt === MOCKUPS_THEN_ASK_TURN) {
+      presentMockupsThenAsk();
       return;
     }
     if (prompt === ASK_TURN) {

@@ -27,8 +27,7 @@ import { expect, test } from "../fixtures/test.ts";
  * browser test cannot wait a month: the ledger's own timestamps are moved backwards, and the
  * daemon is restarted so its observation pass runs now rather than on its six-hour cadence.
  * Moving a stored timestamp is a fixture technique - there is deliberately no production
- * setting for the duration and none for switching retention off, so there is nothing else to
- * turn. The exhaustive staged/unstaged/untracked/ignored fingerprint matrix lives in the
+ * setting to advance time or switch retention off. The exhaustive staged/unstaged/untracked/ignored fingerprint matrix lives in the
  * `node:test` suite, where a case costs milliseconds.
  *
  * Agent binaries are faked by `e2e/fixtures/fake-agents.ts`, as everywhere in this suite.
@@ -170,7 +169,7 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
     .click();
   await dashboard.locator(".console-detail").getByRole("button", { name: /kill$/i }).click();
   const kill = dashboard.getByRole("dialog", { name: "Kill session" });
-  await expect(kill).toContainText("automatically after 30 days");
+  await expect(kill).toContainText("configured retention window");
   await kill.getByRole("button", { name: "Kill" }).click();
   await expect(kill).toBeHidden();
   await expect.poll(() => taskFor(daemon, INTENT), { timeout: 60_000 }).toMatchObject({
@@ -188,6 +187,54 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
     .toBe("observing");
   const seeded = retentionRow(daemon, dispatched.id)!;
   expect((await taskFor(daemon, INTENT))?.worktreePath, "a restart kept the checkout").toBe(worktree);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const retention = dashboard.getByRole("region", { name: "Task worktree retention" });
+  const days = retention.getByRole("spinbutton", { name: "Retention window (days)" });
+  await expect(days).toHaveValue("30");
+  await expect(retention).toContainText("unpushed commits");
+  await expect(retention).toContainText("Lengthening recomputes unclaimed deadlines but keeps a later grace deadline unchanged.");
+  await days.fill("6");
+  await expect(retention.getByRole("button", { name: "Save retention" })).toBeDisabled();
+  await days.fill("91");
+  await expect(retention.getByRole("button", { name: "Save retention" })).toBeDisabled();
+  await days.fill("14");
+  await expect(retention.getByRole("button", { name: "Save retention" })).toBeVisible();
+  await expect(retention.getByRole("button", { name: "Save retention" })).toHaveAccessibleDescription(
+    "Save the retention window; deadlines update on the next successful observation without deleting worktrees immediately",
+  );
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await retention.scrollIntoViewIfNeeded();
+    await retention.screenshot({ path: join(EVIDENCE, "retention-grace-copy.png"), animations: "disabled" });
+    await dashboard.screenshot({ path: join(EVIDENCE, "retention-edit.png"), fullPage: true, animations: "disabled" });
+  }
+  const saved = dashboard.waitForResponse((response) => response.request().method() === "PUT" && response.url().includes("/worktrees/config"));
+  await retention.getByRole("button", { name: "Save retention" }).click();
+  expect((await saved).ok()).toBe(true);
+  expect(retentionRow(daemon, dispatched.id)!.cleanupDueAt).toBe(seeded.cleanupDueAt);
+  expect((await taskFor(daemon, INTENT))?.worktreePath).toBe(worktree);
+  await daemon.crash();
+  await daemon.restart();
+  await expect.poll(() => retentionRow(daemon, dispatched.id)?.cleanupDueAt, { timeout: 60_000 })
+    .toBe(seeded.cleanupDueAt - 16 * DAY_MS);
+  await dashboard.reload();
+  await expect(days).toHaveValue("14");
+  await expect(retention.getByRole("button", { name: "Save retention" })).toBeDisabled();
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  await expect(pool.locator("time")).toHaveAttribute("datetime", new Date(seeded.cleanupDueAt - 16 * DAY_MS).toISOString());
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await retention.scrollIntoViewIfNeeded();
+    await dashboard.screenshot({ path: join(EVIDENCE, "retention-setting.png"), fullPage: true, animations: "disabled" });
+    await pool.scrollIntoViewIfNeeded();
+    await dashboard.screenshot({ path: join(EVIDENCE, "retention-deadline.png"), fullPage: true, animations: "disabled" });
+  }
+  await dashboard.goto(daemon.baseURL);
 
   // --- half one: work you did resets the clock ---
   //
@@ -214,6 +261,7 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
   const row = sitrep.locator(".report-row", { hasText: dispatched.title });
   const cleanup = row.getByRole("button", { name: "Clean up" });
   await expect(cleanup).toBeVisible();
+  await expect(cleanup).toHaveAccessibleDescription(/configured retention window/);
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
@@ -228,7 +276,7 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
   // so this half claims durability, not live delivery.
   await dashboard.keyboard.press("Escape");
   await daemon.crash();
-  ageRetention(daemon, dispatched.id, 31);
+  ageRetention(daemon, dispatched.id, 15);
   await daemon.restart();
 
   await expect.poll(() => taskFor(daemon, INTENT), { timeout: 60_000 }).toMatchObject({

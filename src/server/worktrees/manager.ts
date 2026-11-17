@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeClaim, WorktreeClaimSeed } from "@shared/protocol.ts";
 import type { WorktreeProvider } from "@shared/types.ts";
-import { isWorktreeOwnerKind, type WorktreeOwnerKind } from "@shared/worktrees.ts";
+import { isWorktreeOwnerKind, type WorktreeOwnerKind, type WorktreeRecoveryCheck } from "@shared/worktrees.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
@@ -2101,6 +2101,108 @@ export class WorktreeManager {
     }
   }
 
+  /** Read-only proof for the preview. Execution repeats it under the same slot lock. */
+  async previewQuarantineRecovery(slotId: string) {
+    const release = await this.acquireSlotLock(slotId);
+    try {
+      const slot = this.store.slot(slotId);
+      const pool = slot && this.store.pool(slot.poolId);
+      if (!slot || !pool) return null;
+      return { slot, ...await this.proveQuarantineRecovery(pool, slot) };
+    } finally { release(); }
+  }
+
+  /** Called only after WorktreeOperations has claimed and revalidated an operator token. */
+  async recoverQuarantineForOperator(slotId: string, expectedVersion: number): Promise<void> {
+    const release = await this.acquireSlotLock(slotId);
+    try {
+      const slot = this.store.slot(slotId);
+      const pool = slot && this.store.pool(slot.poolId);
+      if (!slot || !pool || slot.version !== expectedVersion) throw new Error("quarantine recovery raced");
+      const proof = await this.proveQuarantineRecovery(pool, slot);
+      const failed = proof.checks.find((check) => check.status !== "passed");
+      if (failed) throw new Error(`${failed.label}: ${failed.detail}`);
+      if (!this.store.recoverQuarantinedForOperator(slot.id, slot.version, slot.currentHeadSha!, this.deps.now())) {
+        throw new Error("quarantine recovery raced");
+      }
+      this.logSlot(slot, "quarantine_recovered", "operator authorized recovery; all recovery safety checks passed", slot.quarantineReason);
+      this.publish();
+    } finally { release(); }
+  }
+
+  /** One fail-closed proof shared by automatic and operator recovery; never modifies files. */
+  private async proveQuarantineRecovery(pool: WorktreePoolRow, slot: WorktreeSlotRow): Promise<{ checks: WorktreeRecoveryCheck[] }> {
+    const checks: WorktreeRecoveryCheck[] = [];
+    const check = (label: string, passed: boolean | null, detail: string) => {
+      checks.push({ label, status: passed === null ? "unavailable" : passed ? "passed" : "failed", detail });
+    };
+    check("Quarantine state", slot.state === "quarantined", slot.state === "quarantined" ? "Slot is quarantined" : "slot is not quarantined");
+    const identity = this.identity(pool.mainCheckoutRoot);
+    const identityValid = !!identity && identity.gitCommonDirectory === pool.gitCommonDirectory && identity.poolPath === pool.poolPath;
+    check("Pool identity", identityValid, identityValid ? "Pool identity matches" : "pool repository identity no longer matches its durable row");
+    const marker = await this.deps.observeMarker(pool.poolPath);
+    const markerValid = marker.kind === "present" && marker.marker.poolId === pool.id;
+    check("Pool marker", markerValid, markerValid ? "Pool marker matches" : "pool marker is missing, malformed, unreadable, or belongs to another pool");
+    const exact = identityValid && exactSlotPath(pool, identity!, slot);
+    check("Exact path", exact, exact ? "Exact native slot path" : "slot path is not the exact path owned by its native pool");
+    // Never inspect an unproven path. Dependent checks remain explicitly unavailable.
+    let registration: WorktreeRegistration | undefined;
+    if (identityValid && markerValid && exact) {
+      try {
+        const listed = await this.deps.git.list(identity!);
+        if (listed.ok) registration = registrationFor(listed.value, slot.path) ?? undefined;
+      } catch { /* An unanswered read authorizes nothing. */ }
+    }
+    const registered = !!registration && !registration.bare && !registration.locked && !registration.prunable && existsSync(slot.path);
+    check("Git registration", registered, registered ? "Safe Git registration" : "slot path or safe Git registration is missing or unknown");
+    let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
+    if (registered) {
+      try { inspection = await this.deps.git.inspect(slot.path); } catch { /* Unknown. */ }
+    }
+    const git = inspection?.ok ? inspection.value : null;
+    const matching = git ? git.path === slot.path && git.commonDirectory === pool.gitCommonDirectory : null;
+    check("Git common directory", matching, matching ? "Git common directory matches" : "slot belongs to a different Git common directory or Git state is unknown");
+    check("Clean tree", git ? !git.dirty : null, git && !git.dirty ? "Slot is clean" : "quarantined slot is dirty or Git state is unknown");
+    check("Detached HEAD", git ? git.detached : null, git?.detached ? "HEAD is detached" : "quarantined slot HEAD is attached to a branch or unknown");
+    const recorded = git ? !!slot.currentHeadSha && git.head === slot.currentHeadSha : null;
+    check("Recorded HEAD", recorded, recorded ? "HEAD equals the allocator's recorded commit" : "quarantined slot HEAD moved from the commit the allocator last recorded");
+    let merge: boolean | null = null;
+    if (matching && identityValid) {
+      try {
+        const target = await this.deps.git.observedDefaultSha(identity!);
+        if (target.ok) {
+          const merged = await this.deps.git.mergedInto(slot.path, target.value, git!.head);
+          if (merged.ok) merge = merged.value;
+        }
+      } catch { /* Unknown. */ }
+    }
+    check("Merged into remote default", merge, merge ? "HEAD is merged into the observed remote default" : merge === false ? "slot HEAD is not merged into the observed remote default" : "slot merge relationship is unknown");
+    const active = activeReference(slot);
+    check("No active lease", active === null, active === null ? "No active lease identity" : "quarantined slot still carries active lease identity");
+    const prior = lastReference(slot);
+    check("Complete release history", prior !== "invalid", prior !== "invalid" ? "Last-released lease identity is complete or absent" : "last-released lease identity is incomplete");
+    let referenced: boolean | null = null;
+    if (prior !== "invalid") {
+      try { referenced = prior ? await this.ownerReferenced(prior) : false; } catch { /* Unknown. */ }
+    }
+    check("Released owner", referenced === null ? null : !referenced, referenced === false ? "No domain owner references the released lease" : referenced ? "domain owner still references this lease" : "last-released domain ownership is unknown");
+    const occupancy = registered ? await this.occupancyBlocker(slot.path) : "slot occupancy was not observed";
+    // External Git writes do not advance the durable version. Inspect again at the boundary.
+    let final: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
+    if (matching) {
+      try { final = await this.deps.git.inspect(slot.path); } catch { /* Unknown. */ }
+    }
+    const unchanged = final?.ok ? final.value.path === slot.path && final.value.commonDirectory === pool.gitCommonDirectory &&
+      final.value.head === git!.head && !final.value.dirty && final.value.detached : null;
+    // The final Git read can outlive the earlier empty process observation. Require an
+    // empty observation after it too, while retaining any failure from the earlier check.
+    const finalOccupancy = registered ? await this.occupancyBlocker(slot.path) : "slot occupancy was not observed";
+    const occupancyFailure = occupancy ?? finalOccupancy;
+    check("Process occupancy", registered ? !occupancyFailure : null, occupancyFailure ?? "Process occupancy is known and empty");
+    check("Final Git recheck", unchanged, unchanged ? "Git state still matches the proof" : "slot Git state changed after the merge proof or is unknown at recovery");
+    return { checks };
+  }
+
   async reconcilePoolById(poolId: string): Promise<boolean> {
     const pool = this.store.pool(poolId);
     if (!pool) return false;
@@ -2189,6 +2291,27 @@ export class WorktreeManager {
           if (slot.state !== "quarantined") this.quarantine(slot, category, reason, detail);
           errors.push(`slot ${slot.ordinal}: ${reason}`);
         };
+        if (slot.state === "quarantined") {
+          if (!quarantineRecoverable(slot.quarantineCategory)) {
+            errors.push(`slot ${slot.ordinal}: ${slot.quarantineCategory === null
+              ? "an uncategorized legacy quarantine"
+              : `a ${bounded(slot.quarantineCategory)} quarantine`} needs operator action; Reconcile does not recover it`);
+            continue;
+          }
+          const observed = occupancy.get(slot.path);
+          if (!observed || observed.status === "unknown" || observed.occupants.length > 0) {
+            errors.push(`slot ${slot.ordinal}: slot process occupancy is unknown or occupied`);
+            continue;
+          }
+          const proof = await this.proveQuarantineRecovery(pool, slot);
+          const failed = proof.checks.find((check) => check.status !== "passed");
+          if (failed) errors.push(`slot ${slot.ordinal}: ${failed.detail}`);
+          else if (this.store.recoverQuarantined(slot.id, slot.version, slot.currentHeadSha!, now)) {
+            this.logSlot(slot, "quarantine_recovered", "all recovery safety checks passed", slot.quarantineReason);
+            this.publish();
+          } else errors.push(`slot ${slot.ordinal}: quarantine recovery raced`);
+          continue;
+        }
         if (!WORKTREE_SLOT_STATES.includes(slot.state as (typeof WORKTREE_SLOT_STATES)[number])) {
           reject("state", `unknown append-only slot state ${JSON.stringify(slot.state)}`);
           continue;
@@ -2240,116 +2363,6 @@ export class WorktreeManager {
           continue;
         }
 
-        if (slot.state === "quarantined") {
-          // A quarantine records failed proof. Only a failed observation is recoverable: it
-          // never said anything about the slot. A positively bad fact or an unproven mutation
-          // stays quarantined until an operator acts, however healthy the slot now looks.
-          // Recovery re-proves every boundary from scratch and never releases a domain lease,
-          // resets files, or trusts the old reason or the inventory projection. Nothing here
-          // rewrites the row: the slot keeps the reason, category and time it entered with.
-          if (!quarantineRecoverable(slot.quarantineCategory)) {
-            // Left exactly as it is, but named, so a Reconcile that changed nothing says why.
-            errors.push(`slot ${slot.ordinal}: ${slot.quarantineCategory === null
-              ? "an uncategorized legacy quarantine"
-              : `a ${bounded(slot.quarantineCategory)} quarantine`} needs operator action; Reconcile does not recover it`);
-            continue;
-          }
-          // Already quarantined, so a failed proof only reports itself, exactly as `reject`
-          // would for this slot, and changes nothing.
-          const blocked = (reason: string) => {
-            errors.push(`slot ${slot.ordinal}: ${reason}`);
-          };
-          const active = activeReference(slot);
-          if (active !== null) {
-            blocked(active === "invalid"
-              ? "quarantined slot has incomplete active lease identity"
-              : "quarantined slot still carries active lease identity");
-            continue;
-          }
-          const prior = lastReference(slot);
-          if (prior === "invalid") {
-            blocked("last-released lease identity is incomplete");
-            continue;
-          }
-          if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
-            blocked("quarantined slot is occupied or dirty");
-            continue;
-          }
-          if (!inspection.value.detached) {
-            blocked("quarantined slot HEAD is attached to a branch");
-            continue;
-          }
-          // The HEAD the allocator last recorded, at its last release or creation. A slot whose
-          // HEAD moved since, or that never had one recorded, holds commits nobody vouched for.
-          if (!slot.currentHeadSha || inspection.value.head !== slot.currentHeadSha) {
-            blocked("quarantined slot HEAD moved from the commit the allocator last recorded");
-            continue;
-          }
-          try {
-            if (prior && await this.ownerReferenced(prior)) {
-              blocked("domain owner still references this lease");
-              continue;
-            }
-          } catch {
-            blocked("last-released domain ownership is unknown");
-            continue;
-          }
-          try {
-            const target = await this.deps.git.observedDefaultSha(identity);
-            if (!target.ok) {
-              blocked("remote default branch is unknown");
-              continue;
-            }
-            const merged = await this.deps.git.mergedInto(slot.path, target.value, inspection.value.head);
-            if (!merged.ok || !merged.value) {
-              blocked(merged.ok
-                ? "slot HEAD is not merged into the observed remote default"
-                : "slot merge relationship is unknown");
-              continue;
-            }
-          } catch {
-            blocked("slot merge relationship is unknown");
-            continue;
-          }
-          // The pool scan predates the slot lock and Git reads. Check again at the transition,
-          // using the same observation serialization as return and removal.
-          const blocker = await this.occupancyBlocker(slot.path);
-          if (blocker) {
-            blocked(blocker);
-            continue;
-          }
-          // External Git writes do not advance the slot version. Re-read after the merge
-          // and occupancy proofs so a changed HEAD, a newly dirty tree or an attached branch
-          // cannot recover on the earlier inspection. A later pass proves the new state afresh.
-          let finalInspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
-          try {
-            finalInspection = await this.deps.git.inspect(slot.path);
-          } catch {
-            blocked("slot Git state is unknown at recovery");
-            continue;
-          }
-          if (!finalInspection.ok) {
-            blocked("slot Git state is unknown at recovery");
-            continue;
-          }
-          if (
-            finalInspection.value.path !== slot.path ||
-            finalInspection.value.commonDirectory !== pool.gitCommonDirectory ||
-            finalInspection.value.head !== inspection.value.head ||
-            finalInspection.value.dirty ||
-            !finalInspection.value.detached
-          ) {
-            blocked("slot Git state changed after the merge proof");
-            continue;
-          }
-          if (this.store.recoverQuarantined(slot.id, slot.version, inspection.value.head, now)) {
-            this.logSlot(slot, "quarantine_recovered", "all recovery safety checks passed", slot.quarantineReason);
-            this.publish();
-          } else {
-            errors.push(`slot ${slot.ordinal}: quarantine recovery raced`);
-          }
-          continue;
-        }
         if (slot.state === "provisioning") {
           reject("transition", "startup found an interrupted provisioning intent");
           continue;

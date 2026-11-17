@@ -24,6 +24,8 @@ import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 import { canSnoozeReview } from "@shared/review-snooze.ts";
 import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
+import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
+import { CheckoutPathText } from "./CheckoutPathText.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -43,6 +45,8 @@ export function ReviewModal({
   dialog = null,
   onClose,
   onMovedToChat,
+  files,
+  onOpenPath,
 }: {
   session: Session;
   reviews: ReviewItem[];
@@ -54,7 +58,22 @@ export function ReviewModal({
   onClose: () => void;
   /** A question was moved to the conversation; the caller takes the operator there. */
   onMovedToChat?: (sessionId: string) => void;
+  /**
+   * The session files store, for the checkout listing that decides which paths a question's
+   * text names. The question is often a choice between files the agent just wrote - mock-ups
+   * above all - and this card is where the operator makes it.
+   */
+  files?: SessionFilesController;
+  /** Open one checkout file in the session's Files tab. */
+  onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
+  const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
+  const openPath = onOpenPath
+    ? (path: string) => {
+        onClose();
+        onOpenPath(session.id, path);
+      }
+    : undefined;
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
   const pending = reviews.length + (dialog ? 1 : 0);
   // Close automatically once the session has nothing left pending: no review and no menu.
@@ -86,7 +105,14 @@ export function ReviewModal({
       <div className="modal-body">
         {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
         {reviews.map((r) => (
-          <ReviewCard key={r.id} review={r} note={session.note} onMovedToChat={onMovedToChat} />
+          <ReviewCard
+            key={r.id}
+            review={r}
+            note={session.note}
+            onMovedToChat={onMovedToChat}
+            checkoutPaths={checkoutPaths}
+            onOpenPath={openPath}
+          />
         ))}
       </div>
     </Overlay>
@@ -105,9 +131,14 @@ export function ReviewCard({
   review,
   note: sessionNote,
   onMovedToChat,
+  checkoutPaths = null,
+  onOpenPath,
 }: {
   review: ReviewItem;
   note?: SessionNoteSummary | null;
+  /** Paths in the session's checkout; a question naming one links it to Files. */
+  checkoutPaths?: ReadonlySet<string> | null;
+  onOpenPath?: (path: string) => void;
   /**
    * Called once an answer that moved at least one question to chat has been delivered, so the
    * surface can close and focus the session's message box: the conversation is where the
@@ -254,7 +285,11 @@ export function ReviewCard({
           {(review.kind === "plan" || review.kind === "plan-decisions") && (
             <PlanView markdown={review.body} />
           )}
-          {review.kind === "input" && <p className="question">{inputBody(review)}</p>}
+          {review.kind === "input" && (
+            <p className="question">
+              <CheckoutPathText text={inputBody(review)} paths={checkoutPaths} onOpen={onOpenPath} />
+            </p>
+          )}
         </div>
       )}
 

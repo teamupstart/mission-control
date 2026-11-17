@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ENVIRONMENT_CHECK_IDS } from "@shared/environment-checks.ts";
 import {
+  ENVIRONMENT_ROW_METADATA,
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
   SETUP_REPOSITORY_ANCHORS,
@@ -902,7 +904,18 @@ export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): 
   if ((Object.values(SETUP_REPOSITORY_ANCHORS) as string[]).includes(anchor)) return "repositories";
   // Likewise the Terminals family's outside-sessions switch, which is not a row either.
   if (anchor === SETUP_EXTERNAL_SESSIONS_ANCHOR) return "terminals";
-  return rows.find((row) => setupRowAnchor(row.rowId) === anchor)?.family ?? null;
+  const listed = rows.find((row) => setupRowAnchor(row.rowId) === anchor)?.family;
+  if (listed) return listed;
+  // An environment-check row exists only while its check warns, and the snapshot on screen
+  // may predate the warning that sent the operator here (the dispatch form re-reads the
+  // machine on every open; this panel reads it at startup and on Re-check). Its family is
+  // fixed by the catalog, so the rail moves now and the page's flash waits for the row to
+  // mount once the refreshed snapshot lands, rather than the request being consumed
+  // unresolved against rows that do not carry it yet.
+  const check = ENVIRONMENT_CHECK_IDS.find(
+    (id) => anchor === setupRowAnchor({ source: "environment-check", id }),
+  );
+  return check ? ENVIRONMENT_ROW_METADATA[check].family : null;
 }
 
 /** Which family the rail is showing, and which deep-link request settled it. */

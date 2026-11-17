@@ -156,6 +156,13 @@ test("only the Overlay primitive renders a backdrop", () => {
  * backdrop would give a confirm of three fields a modal posture it should not have. Its one
  * action acts on every session at once rather than on the selected one, so a shortcut reaching
  * through hits the same selected session it would have hit with the confirm shut.
+ *
+ * `LostTasksControl.tsx` is the card the pulse's `lost` segment opens - the seventh topbar
+ * popover, and it joins for KeepAwakeControl's reason: anchored to its trigger rather than
+ * owning the screen, its Escape and outside-click dismissal pinned by
+ * `topbar-popover-dismiss.test.ts`, and a backdrop would give a three-line explanation a modal
+ * posture it should not have. Its one action opens Sitrep, which registers itself, so a
+ * shortcut reaching through hits the same selected session it would have hit with it shut.
  */
 const UNREGISTERED_DIALOGS = [
   "components/AlertBar.tsx",
@@ -163,6 +170,7 @@ const UNREGISTERED_DIALOGS = [
   "components/ForemanBar.tsx",
   "components/ForemanRecommendation.tsx",
   "components/KeepAwakeControl.tsx",
+  "components/LostTasksControl.tsx",
   "components/SpendChip.tsx",
   "components/layouts/SubagentChip.tsx",
   "components/line/NextUpPlanner.tsx",

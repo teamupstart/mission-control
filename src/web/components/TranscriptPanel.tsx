@@ -107,6 +107,7 @@ import { ComposerEditorModal } from "./ComposerEditorModal.tsx";
 import {
   conversationArtifacts,
   retainDiscoveredArtifacts,
+  unlistedArtifactTurn,
 } from "../lib/conversationArtifacts.ts";
 
 /**
@@ -445,11 +446,20 @@ export function TranscriptPanel({
   // listing; without both, a path in the prose stays the text the agent typed. Keyed on the
   // newest message once the session is between turns, so a file written while you watch
   // links in the turn that names it - even when the turn was too quick to be seen working.
+  // Mid-turn it is keyed on a turn presenting a page the listing lacks, because a turn that
+  // presents mock-ups and then blocks on `request_input` stays working for as long as the
+  // operator is deciding between them.
+  const working = session.state === "working";
+  const presenting = useMemo(
+    () => (working ? unlistedArtifactTurn(messages, files?.pathIndex?.[sessionId] ?? null) : null),
+    [files?.pathIndex, messages, sessionId, working],
+  );
   const filePaths = useWorkspacePaths(
     files,
     sessionId,
     Boolean(session.cwd && onOpenFile),
-    session.state === "working" ? null : (messages.at(-1)?.id ?? ""),
+    working ? null : (messages.at(-1)?.id ?? ""),
+    presenting,
   );
   const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
   const [loadingOlder, setLoadingOlder] = useState(false);

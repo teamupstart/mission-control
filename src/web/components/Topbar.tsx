@@ -20,6 +20,7 @@ import { AlertBar } from "./AlertBar.tsx";
 import { ForemanBar } from "./ForemanBar.tsx";
 import { ResidentsDock, type ResidentsDockProps } from "../residents/ResidentsDock.tsx";
 import { KeepAwakeControl } from "./KeepAwakeControl.tsx";
+import { LostTasksControl } from "./LostTasksControl.tsx";
 import { Keycap } from "./Keycap.tsx";
 import { SpendChip } from "./SpendChip.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -74,6 +75,12 @@ export interface TopbarProps {
    */
   didNotStart?: number;
   onShowDidNotStart?: () => void;
+  /**
+   * Running tasks with no agent session attached - nothing will finish them, so they wait on
+   * the operator to cancel them from Sitrep. Optional for the same reason as `didNotStart`.
+   */
+  lostTasks?: number;
+  onOpenLostTasks?: () => void;
   launcherFocusError?: string | null;
   fleetCost: FleetCost | null;
   costView: "usd" | "plan";
@@ -207,6 +214,8 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
         onOpenInbox={props.onOpenInbox}
         didNotStart={props.didNotStart ?? 0}
         onShowDidNotStart={props.onShowDidNotStart ?? (() => {})}
+        lostTasks={props.lostTasks ?? 0}
+        onOpenLostTasks={props.onOpenLostTasks ?? (() => {})}
       />
       {props.launcherFocusError && (
         <span className="launch-flash is-error" role="status">
@@ -428,6 +437,8 @@ function FleetPulse({
   onOpenInbox,
   didNotStart,
   onShowDidNotStart,
+  lostTasks,
+  onOpenLostTasks,
 }: {
   connected: boolean;
   /** The daemon's Keep Awake observation; null while unknown (pre-snapshot, or SSE down). */
@@ -464,6 +475,9 @@ function FleetPulse({
    */
   didNotStart: number;
   onShowDidNotStart: () => void;
+  /** See `TopbarProps.lostTasks`. Last, so its card hangs off the pulse's trailing edge. */
+  lostTasks: number;
+  onOpenLostTasks: () => void;
 }): React.JSX.Element {
   return (
     <div className={`pulse${connected ? "" : " is-down"}`}>
@@ -529,6 +543,7 @@ function FleetPulse({
           tip={`${didNotStart} dispatch${didNotStart === 1 ? "" : "es"} did not start. Show the newest`}
         />
       )}
+      {lostTasks > 0 && <LostTasksControl count={lostTasks} onOpenSitrep={onOpenLostTasks} />}
     </div>
   );
 }

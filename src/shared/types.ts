@@ -2273,15 +2273,8 @@ export interface TaskRepoEntry {
   mergedAt: number | null;
 }
 
-/**
- * How long a terminal task's checkouts survive without a Git-visible change.
- *
- * Fixed, and deliberately without a configuration key in this release - see
- * `docs/worktrees-and-checks.md`. Shared rather than server-only because the dashboard states
- * the policy in words next to the manual cleanup control, and a copy that drifted from the
- * server's window would be a promise the product does not keep.
- */
-export const TASK_WORKTREE_RETENTION_DAYS = 30;
+/** Shipped default; the daemon's worktrees.taskRetentionDays setting overrides it. */
+export { TASK_RETENTION_DEFAULT_DAYS as TASK_WORKTREE_RETENTION_DAYS } from "./worktree-retention.ts";
 
 /** Bytes of automatic-cleanup explanation that may reach a browser. One short sentence. */
 export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
@@ -3087,6 +3080,7 @@ export interface MissionReport {
   working: ReportItem[];
   idle: ReportItem[];
   backlog: Task[];
+  sessionless: Task[];
   recent: Task[];
   /** True when `recent` was capped, so the digest can say so instead of lying by omission. */
   recentTruncated: boolean;

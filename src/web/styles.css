@@ -4090,6 +4090,9 @@ body {
    spend popover it opens entirely inside the drag rectangle - and its whole point is a
    switch the OS must not eat. */
 .is-desktop .ka-pop,
+/* The lost-tasks card hangs off the pulse's trailing segment IN the bar; its Open Sitrep
+   button is its whole point. */
+.is-desktop .lost-pop,
 /* The Residents dock hangs off its button IN the bar, and on a narrow window it spans the
    window directly under it; its Launch and Open buttons are its whole point. */
 .is-desktop .residents-pop,
@@ -8496,13 +8499,16 @@ a.btn {
    paragraph naming six files would otherwise become six pieces of link chrome. The colour
    arrives on hover and focus, where it says "this one is clickable" about one path rather
    than all of them. */
-.markdown a.workspace-path {
+.markdown a.workspace-path,
+.question a.workspace-path {
   color: inherit;
   text-decoration: none;
   border-bottom: 1px dotted color-mix(in oklab, var(--working) 55%, transparent);
 }
 .markdown a.workspace-path:hover,
-.markdown a.workspace-path:focus-visible {
+.markdown a.workspace-path:focus-visible,
+.question a.workspace-path:hover,
+.question a.workspace-path:focus-visible {
   color: var(--working);
   border-bottom-color: var(--working);
 }
@@ -12845,6 +12851,13 @@ button.dispatch-guided-rung .dispatch-guided-num {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+/* The door to the Setup row that repairs the warning, on its own line after the evidence so
+   it is the last thing read and never wraps into the middle of a path. */
+.dispatch-env-fix {
+  display: inline-block;
+  margin-top: 6px;
+  font-weight: 600;
+}
 /* The doubled class outranks .btn-primary's hover !important by specificity, whatever
    the source order. */
 .btn-primary.btn-wait {
@@ -14135,6 +14148,36 @@ select:not([multiple]) option:focus-visible {
 }
 .report-section-title.tone-attention {
   color: var(--attention);
+}
+.report-section-title.tone-danger {
+  color: var(--danger-text);
+}
+/* Heading and an optional section-wide action on one row. The heading keeps its own
+   bottom margin when it stands alone, so the row takes it over instead. */
+.report-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.report-section-head > .report-section-title {
+  flex: 1;
+  margin: 0;
+}
+/* The section the topbar's `lost` segment opens Sitrep for: a red band, so the reason the
+   operator came is the first thing their eye lands on. */
+.report-section-lost {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--danger) 35%, var(--border));
+  border-left: 3px solid var(--danger);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.report-section-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
 }
 .report-count {
   font-size: 10.5px;
@@ -27530,6 +27573,68 @@ button.sc-row:focus-visible {
 }
 .pulse-failed .pulse-dot {
   background: var(--danger);
+}
+
+/* The pulse's `lost` segment. Never the leading segment (Keep awake always is), so it
+   restates the hairline `.pulse-seg + .pulse-seg` would have drawn had it not been wrapped. */
+.lost-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-left: 1px solid var(--border-soft);
+}
+.lost-wrap .pulse-btn[aria-expanded="true"] {
+  background: var(--panel-2);
+}
+/* Anchored RIGHT because its trigger trails the pulse, and red-bordered like the failed
+   Keep awake card: the segment opening to explain itself. */
+.lost-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 300px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid color-mix(in oklab, var(--danger) 45%, var(--border));
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+/* Focused programmatically on open so Tab starts inside it; the red border already says
+   where it is, so no second ring. */
+.lost-pop:focus {
+  outline: none;
+}
+.lost-pop-head {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--danger-text);
+}
+.lost-pop-body {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.lost-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.lost-pop-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* The keycap's dim ink and border are tuned for a panel surface and vanish on the filled
+   button, so on this one it takes the button's own ink. */
+.lost-pop-open .kb-hint {
+  color: inherit;
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
 }
 
 /* A dispatch waiting on a pool's dependency claim: the step, its elapsed time, and Stop. It

@@ -273,6 +273,18 @@ test("recent outcomes are capped and the cap is disclosed", () => {
   assert.match(renderReportMarkdown(r), /Recent outcomes \(20\+\)/);
 });
 
+test("sessionless tasks sort by dispatch time with creation time as the fallback", () => {
+  const tasks = [
+    mkTask({ id: "latest-dispatch", status: "running", sessionId: null, dispatchedAt: 30, createdAt: 0 }),
+    mkTask({ id: "creation-fallback", status: "running", sessionId: null, dispatchedAt: null, createdAt: 20 }),
+    mkTask({ id: "earliest-dispatch", status: "running", sessionId: null, dispatchedAt: 10, createdAt: 5 }),
+  ];
+  const report = buildReport({ tasks, sessions: [] });
+  assert.deepEqual(report.sessionless.map((task) => task.id), [
+    "earliest-dispatch", "creation-fallback", "latest-dispatch",
+  ]);
+});
+
 test("report and copied digest expose running tasks with missing session bindings only", () => {
   const tasks = [
     baseTask({ id: "null", title: "Lost binding", status: "running", sessionId: null, dispatchedAt: 1 }),

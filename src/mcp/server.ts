@@ -110,6 +110,8 @@ async function createReview(
   body: string,
   decisions?: unknown,
   managedPlan?: unknown,
+  /** Offer "Remind me later": only `request_input`'s own asks, whose agent knows how to carry on. */
+  snoozable?: boolean,
 ): Promise<string> {
   const res = await http(managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
@@ -120,6 +122,7 @@ async function createReview(
     body,
     decisions,
     managedPlan,
+    ...(snoozable ? { snoozable: true } : {}),
   });
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
   return ((await res.json()) as { id: string }).id;
@@ -803,7 +806,10 @@ server.registerTool(
       "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
       "the tool returns their answer, selections, or an explicit dismissal. They may also " +
       "choose to chat about it instead; the result then says so and how to proceed, and you " +
-      "must not decide or re-ask the question yourself. " +
+      "must not decide or re-ask the question yourself. They may also choose Remind me later: " +
+      "the tool then returns at once WITHOUT an answer, saying how to carry on meanwhile (your " +
+      "best judgment, a provisional option, or holding the dependent work). Follow it, do not " +
+      "ask the question again, and expect the answer later as a message in this conversation. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
       "`options` only for open-ended asks. " +
       DECISION_CONTEXT_RULE,
@@ -860,7 +866,7 @@ server.registerTool(
       // agent - it comes back as LABELS. A resident's proposed instruction changes are asked
       // through the same builder.
       const ask = requestInputReview({ question, context, options, multiSelect, allowOther });
-      const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions);
+      const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions, undefined, true);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);

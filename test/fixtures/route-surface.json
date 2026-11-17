@@ -202,6 +202,8 @@
   "POST /api/residents/profiles/:id/state/reset": "503 {\"error\":\"Resident service unavailable\"}",
   "POST /api/residents/skills/rescan": "403 fields{error}",
   "POST /api/reviews/:id/resolve": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_value\\\",\\n    \\\"values\\\": [\\n      \\\"approve\\\",\\n      \\\"reject\\\",\\n      \\\"answer\\\",\\n      \\\"dismiss\\\"\\n    ],\\n    \\\"path\\\": [\\n      \\\"action\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid option: expected one of \\\\\\\"approve\\\\\\\"|\\\\\\\"reject\\\\\\\"|\\\\\\\"answer\\\\\\\"|\\\\\\\"dismiss\\\\\\\"\\\"\\n  }\\n]\"}",
+  "POST /api/reviews/:id/snooze": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_value\\\",\\n    \\\"values\\\": [\\n      \\\"15m\\\",\\n      \\\"1h\\\",\\n      \\\"2h\\\",\\n      \\\"4h\\\",\\n      \\\"1d\\\"\\n    ],\\n    \\\"path\\\": [\\n      \\\"delay\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid option: expected one of \\\\\\\"15m\\\\\\\"|\\\\\\\"1h\\\\\\\"|\\\\\\\"2h\\\\\\\"|\\\\\\\"4h\\\\\\\"|\\\\\\\"1d\\\\\\\"\\\"\\n  }\\n]\"}",
+  "POST /api/reviews/:id/wake": "404 {\"error\":\"no such review\"}",
   "POST /api/schedules": "503 {\"error\":\"Schedule service unavailable\"}",
   "POST /api/schedules/:id/archive": "503 {\"error\":\"Schedule service unavailable\"}",
   "POST /api/schedules/:id/run-now": "503 {\"error\":\"Schedule service unavailable\"}",

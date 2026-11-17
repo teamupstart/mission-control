@@ -83,6 +83,7 @@ import { CONVERSATION_VIEW_OPTIONS, useSessionConversationView } from "../lib/co
 import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
+import { SnoozedReviewCard } from "./ReviewSnooze.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -1344,7 +1345,11 @@ export function TranscriptPanel({
                   <ForemanEpisodeCard episode={row.episode} absoluteTime />
                 </div>
               ) : row.kind === "review" ? (
-                <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
+                row.review.status === "snoozed" ? (
+                  <SnoozedReviewCard key={`rv-${row.review.id}`} review={row.review} />
+                ) : (
+                  <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
+                )
               ) : row.kind === "tools" ? (
                 terminal ? (
                   <TerminalToolRun

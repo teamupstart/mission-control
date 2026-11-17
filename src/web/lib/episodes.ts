@@ -58,7 +58,9 @@ export function mergeConversation(
     // human spoke, not where the agent asked. A review left open across a long stretch of
     // work would otherwise file your reply above everything the agent did while waiting
     // for it. A resolved review without a stamp cannot be placed at all and goes to the end.
-    const ts = r.resolvedAt ?? 0;
+    // A snoozed question has no answer yet; it sits where the operator chose "Remind me
+    // later", which is the moment the agent stopped waiting and carried on.
+    const ts = (r.status === "snoozed" ? r.snooze?.at : r.resolvedAt) ?? 0;
     (ts > 0 ? dated : undated).push({ kind: "review", ts, review: r });
   }
   // The episodes API hands its rows back newest-first (the drawer's order) and the reviews

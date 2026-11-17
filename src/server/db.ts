@@ -74,6 +74,7 @@ import type {
   ReviewActor,
   ReviewItem,
   ReviewKind,
+  ReviewSnooze,
   ReviewStatus,
   SessionCost,
   CostBasis,
@@ -105,6 +106,7 @@ import type {
 import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
+  REVIEW_SNOOZE_MODES,
   SESSION_BLOCKER_KINDS,
   TASK_KINDS,
 } from "@shared/types.ts";
@@ -4239,6 +4241,18 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "reviews", "mcp_wait_detached_at", "INTEGER");
   addColumn(d, "reviews", "continuation_queued_at", "INTEGER");
 
+  // "Remind me later" on a `request_input` question. `snoozable` marks the questions that
+  // offer it (only the tool's own asks), and the `snooze*` columns carry the operator's choice
+  // through the snoozed stretch and after the question comes back. All nullable with no
+  // default: an existing row reads as a question that was never snoozed and does not offer it,
+  // which is exactly what every row written before this was.
+  addColumn(d, "reviews", "snoozable", "INTEGER");
+  addColumn(d, "reviews", "snoozed_at", "INTEGER");
+  addColumn(d, "reviews", "snoozed_until", "INTEGER");
+  addColumn(d, "reviews", "snooze_mode", "TEXT");
+  addColumn(d, "reviews", "snooze_option_id", "TEXT");
+  addColumn(d, "reviews", "snooze_reminded_at", "INTEGER");
+
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
   // is new enough that the only dbs carrying it are the ones this feature was developed
@@ -5110,9 +5124,16 @@ interface ReviewRow {
   resolved_at: number | null;
   mcp_wait_detached_at: number | null;
   continuation_queued_at: number | null;
+  snoozable?: number | null;
+  snoozed_at?: number | null;
+  snoozed_until?: number | null;
+  snooze_mode?: string | null;
+  snooze_option_id?: string | null;
+  snooze_reminded_at?: number | null;
 }
 
 function rowToReview(r: ReviewRow): ReviewItem {
+  const snooze = rowToSnooze(r);
   return {
     id: r.id,
     sessionId: r.session_id,
@@ -5124,8 +5145,28 @@ function rowToReview(r: ReviewRow): ReviewItem {
     decisions: parseJsonArray<PlanDecision>(r.decisions),
     selections: parseJsonArray<PlanDecisionAnswer>(r.selections),
     resolvedBy: (r.resolved_by as ReviewActor | null) ?? null,
+    // Spread only when set, so a row that never offered or used "Remind me later" decodes to
+    // exactly the item it always did.
+    ...(r.snoozable === 1 ? { snoozable: true } : {}),
+    ...(snooze ? { snooze } : {}),
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
+  };
+}
+
+/**
+ * A row's "Remind me later", or null when it was never snoozed. A mode this build cannot read
+ * decodes as best judgment: the agent was told whatever it was told when the snooze was made,
+ * and the dashboard only needs a reading it can render.
+ */
+function rowToSnooze(r: ReviewRow): ReviewSnooze | null {
+  if (r.snoozed_at == null || r.snoozed_until == null) return null;
+  return {
+    at: r.snoozed_at,
+    until: r.snoozed_until,
+    mode: readPersistedEnum(REVIEW_SNOOZE_MODES, r.snooze_mode) ?? "judgment",
+    optionId: r.snooze_option_id ?? null,
+    remindedAt: r.snooze_reminded_at ?? null,
   };
 }
 
@@ -5149,8 +5190,8 @@ function parseJsonArray<T>(raw: string | null): T[] | null {
 export function insertReview(r: ReviewItem): void {
   openDb()
     .prepare(
-      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       r.id,
@@ -5161,9 +5202,55 @@ export function insertReview(r: ReviewItem): void {
       r.status,
       r.response,
       jsonArrayColumn(r.decisions),
+      r.snoozable === true ? 1 : null,
       r.createdAt,
       r.resolvedAt,
     );
+}
+
+/**
+ * Park a pending question until `until`: the operator chose "Remind me later".
+ *
+ * One statement, conditioned on `status = 'pending'`, so a snooze racing an answer can only
+ * land on a question still open. It also records the MCP wait as detached, because the agent's
+ * blocking call returns with this snooze: whatever the operator says later can only reach the
+ * agent through the continuation outbox (`loadReviewContinuationCandidates`).
+ *
+ * `snooze_mode` and `snooze_option_id` are written only on the FIRST snooze. That is the one
+ * time the agent is told what to do meanwhile; a second snooze of a question that came back
+ * moves `until` and nothing the agent was told.
+ */
+export function snoozeReviewRow(
+  id: string,
+  snooze: { at: number; until: number; mode: ReviewSnooze["mode"]; optionId: string | null },
+): ReviewItem | null {
+  const row = openDb()
+    .prepare(
+      `UPDATE reviews
+          SET status = 'snoozed',
+              snoozed_at = ?,
+              snoozed_until = ?,
+              snooze_option_id = CASE WHEN snooze_mode IS NULL THEN ? ELSE snooze_option_id END,
+              snooze_mode = COALESCE(snooze_mode, ?),
+              mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
+        WHERE id = ? AND status = 'pending'
+        RETURNING *`,
+    )
+    .get(snooze.at, snooze.until, snooze.optionId, snooze.mode, snooze.at, id) as unknown as ReviewRow | undefined;
+  return row ? rowToReview(row) : null;
+}
+
+/** Bring a snoozed question back to the operator: pending again, stamped as a reminder. */
+export function wakeReviewRow(id: string, at: number): ReviewItem | null {
+  const row = openDb()
+    .prepare(
+      `UPDATE reviews
+          SET status = 'pending', snooze_reminded_at = ?
+        WHERE id = ? AND status = 'snoozed'
+        RETURNING *`,
+    )
+    .get(at, id) as unknown as ReviewRow | undefined;
+  return row ? rowToReview(row) : null;
 }
 
 /**
@@ -5300,14 +5387,19 @@ function jsonArrayColumn(rows: unknown[] | null | undefined): string | null {
 export function transferPendingReviews(sourceId: string, successorId: string, now = Date.now()): ReviewItem[] {
   const db = openDb();
   if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
+  // A snoozed question is as unanswered as a pending one, so it moves with the session too.
   const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
-    WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
+    WHERE session_id = ? AND status IN ('pending', 'snoozed') RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
   return withStandingApprovalEligibility(rows.map(rowToReview));
 }
 
+/**
+ * Every review still awaiting a human, reloaded into the registry on start: the pending ones,
+ * and the snoozed ones, which are just as unanswered and must come back on time after a restart.
+ */
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
-    .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
+    .prepare(`SELECT * FROM reviews WHERE status IN ('pending', 'snoozed') ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
   return withStandingApprovalEligibility(rows.map(rowToReview));
 }

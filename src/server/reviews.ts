@@ -9,6 +9,11 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, isConversationResolvedReview, reviewToolResult } from "@shared/review-item.ts";
+import {
+  snoozeMeanwhileProblem,
+  snoozedContinuationLead,
+  type ReviewSnoozeMeanwhile,
+} from "@shared/review-snooze.ts";
 import type { Registry } from "./registry.ts";
 import {
   inTransaction,
@@ -16,9 +21,19 @@ import {
   transferPendingReviews,
   loadReviewContinuationCandidates,
   markReviewWaitDetached,
+  snoozeReviewRow,
   updateReviewStatus,
+  wakeReviewRow,
 } from "./db.ts";
 import { unref } from "./util/timers.ts";
+
+/**
+ * How often the daemon looks for snoozed questions that are due. A sweep rather than one timer
+ * per question, because a timer measures elapsed process time and a laptop that slept through a
+ * reminder would otherwise hold it for as long as it slept. Fifteen seconds is well inside the
+ * shortest delay anyone can pick.
+ */
+export const SNOOZE_SWEEP_MS = 15_000;
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
@@ -26,6 +41,13 @@ type Waiter = (r: ReviewItem) => void;
 type ContinuationDelivery = (review: ReviewItem, text: string) => boolean;
 
 export class ReviewResolutionError extends Error {}
+
+/**
+ * "Remind me later" asked for by anyone but the operator. Parking a question tells its agent to
+ * carry on without a person, which a session driving another through session control, or
+ * Foreman, does not get to decide for them.
+ */
+export class SnoozeActorRefusal extends ReviewResolutionError {}
 
 /**
  * Owns the review lifecycle and the long-poll waiters that let an agent block on
@@ -135,11 +157,13 @@ export class ReviewManager {
         return [];
       }
     });
-    return (
-      `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
-      `Treat this as the result of your earlier review tool call:\n\n${result.text}` +
-      addenda.map((text) => `\n\n${text}`).join("")
-    );
+    // A snoozed question's agent stopped waiting because the operator told it to, so its answer
+    // is news about work already done, not the late result of a call.
+    const lead = review.snooze
+      ? snoozedContinuationLead(review)
+      : `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
+        "Treat this as the result of your earlier review tool call:";
+    return `${lead}\n\n${result.text}` + addenda.map((text) => `\n\n${text}`).join("");
   }
 
   private deliverContinuation(review: ReviewItem): void {
@@ -215,9 +239,13 @@ export class ReviewManager {
     title: string,
     body: string,
     decisions: PlanDecision[] | null = null,
+    options: { snoozable?: boolean } = {},
   ): ReviewItem {
+    // A SNOOZED twin is the same question too. Its agent was told not to ask again, and one that
+    // does anyway is handed the parked row back, whose wait returns at once with the same
+    // "carry on" it already got, rather than putting a second card in front of the operator.
     const existing = this.registry
-      .pendingReviews(sessionId)
+      .outstandingReviews(sessionId)
       .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions));
     if (existing) return existing;
 
@@ -232,12 +260,97 @@ export class ReviewManager {
       decisions,
       selections: null,
       resolvedBy: null,
+      ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
       createdAt: Date.now(),
       resolvedAt: null,
     };
     insertReview(review);
     this.registry.upsertReview(review);
     return review;
+  }
+
+  /**
+   * "Remind me later": park a pending `request_input` question and release the agent.
+   *
+   * Persist, publish, then wake the waiters, the order `settle` keeps and for the same reasons.
+   * Waking them is the point: the MCP call long-polling this review returns with the snoozed
+   * row, and `reviewToolResult` turns that into the instruction to carry on. A wait that had
+   * already detached hears nothing now, and is told the outcome by the continuation once the
+   * operator answers, exactly as an answer after a detach always is.
+   *
+   * `meanwhile` is checked against the question even on a later snooze, where it is not stored,
+   * so a request naming an option the question never offered is refused rather than ignored.
+   */
+  snooze(
+    id: string,
+    delayMs: number,
+    meanwhile: ReviewSnoozeMeanwhile = { mode: "judgment" },
+    now = Date.now(),
+    by: ReviewActor = "human",
+  ): ReviewItem | null {
+    const cur = this.registry.getReview(id);
+    if (!cur) return null;
+    if (by !== "human") throw new SnoozeActorRefusal("Only the operator can choose Remind me later");
+    if (cur.snoozable !== true) {
+      throw new ReviewResolutionError("Only a question asked through request_input can be snoozed");
+    }
+    if (cur.status !== "pending") {
+      throw new ReviewResolutionError(
+        cur.status === "snoozed" ? "This question is already snoozed" : "This question is already settled",
+      );
+    }
+    const problem = snoozeMeanwhileProblem(cur, meanwhile);
+    if (problem) throw new ReviewResolutionError(`Cannot snooze: ${problem}`);
+    const updated = snoozeReviewRow(id, {
+      at: now,
+      until: now + delayMs,
+      mode: meanwhile.mode,
+      optionId: meanwhile.mode === "option" ? meanwhile.optionId : null,
+    });
+    if (!updated) throw new ReviewResolutionError("This question is no longer open");
+    this.registry.upsertReview(updated);
+    this.releaseWaiters(updated);
+    return updated;
+  }
+
+  /**
+   * Bring a snoozed question back to the operator now: its time came, or they chose Answer now.
+   * Null when it is not snoozed (already back, answered, or unknown), which a sweep that raced
+   * an answer reads as nothing to do.
+   */
+  wake(id: string, now = Date.now()): ReviewItem | null {
+    const cur = this.registry.getReview(id);
+    if (!cur || cur.status !== "snoozed") return null;
+    const updated = wakeReviewRow(id, now);
+    if (!updated) return null;
+    this.registry.upsertReview(updated);
+    return updated;
+  }
+
+  /** Wake every snoozed question that is due. Returns the ones it brought back. */
+  sweepSnoozed(now = Date.now()): ReviewItem[] {
+    const woken: ReviewItem[] = [];
+    for (const review of this.registry.snoozedReviews()) {
+      if ((review.snooze?.until ?? 0) > now) continue;
+      try {
+        const updated = this.wake(review.id, now);
+        if (updated) woken.push(updated);
+      } catch (error) {
+        console.error(`Failed to bring back snoozed review ${review.id}:`, error);
+      }
+    }
+    return woken;
+  }
+
+  /**
+   * Start bringing snoozed questions back on time. Sweeps once at once, so a reminder that fell
+   * due while the daemon was down is not held for another interval, then every `intervalMs`.
+   * Returns the stop.
+   */
+  startSnoozeClock(intervalMs = SNOOZE_SWEEP_MS): () => void {
+    this.sweepSnoozed();
+    const timer = unref(setInterval(() => this.sweepSnoozed(), intervalMs));
+    return () => clearInterval(timer);
   }
 
   /**
@@ -435,7 +548,9 @@ export class ReviewManager {
   ): ReviewItem | null {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
-    if (cur.status !== "pending") return cur;
+    // A snoozed question is still unanswered, and answering it before it comes back is allowed:
+    // the answer leaves through the continuation outbox, since the agent's wait already ended.
+    if (cur.status !== "pending" && cur.status !== "snoozed") return cur;
 
     const status: ReviewStatus =
       action === "approve"
@@ -463,7 +578,7 @@ export class ReviewManager {
    */
   private orphanReviewsFor(sessionId: string): void {
     if (transferForSource(sessionId)) return;
-    for (const r of this.registry.pendingReviews(sessionId)) this.settle(r, "orphaned", null);
+    for (const r of this.registry.outstandingReviews(sessionId)) this.settle(r, "orphaned", null);
   }
 
   persistRuntimeTransfer(sourceId: string, successorId: string): ReviewItem[] {
@@ -478,7 +593,7 @@ export class ReviewManager {
 
   /** The restart half: pending reviews bound to a session the first sweep never found. */
   private orphanReviewsWithNoLiveSession(): void {
-    for (const r of this.registry.pendingReviews()) {
+    for (const r of this.registry.outstandingReviews()) {
       if (this.registry.getSession(r.sessionId) || transferForSource(r.sessionId)) continue;
       this.settle(r, "orphaned", null);
     }
@@ -530,11 +645,15 @@ export class ReviewManager {
       if (candidate) this.deliverContinuation(candidate);
     }
 
-    const set = this.waiters.get(cur.id);
-    if (set) {
-      for (const w of [...set]) w(updated);
-      this.waiters.delete(cur.id);
-    }
+    this.releaseWaiters(updated);
     return updated;
+  }
+
+  private releaseWaiters(review: ReviewItem): void {
+    const set = this.waiters.get(review.id);
+    if (set) {
+      for (const w of [...set]) w(review);
+      this.waiters.delete(review.id);
+    }
   }
 }

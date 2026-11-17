@@ -272,3 +272,21 @@ test("recent outcomes are capped and the cap is disclosed", () => {
   assert.equal(r.recent[0]?.id, "d24");
   assert.match(renderReportMarkdown(r), /Recent outcomes \(20\+\)/);
 });
+
+test("report and copied digest expose running tasks with missing session bindings only", () => {
+  const tasks = [
+    baseTask({ id: "null", title: "Lost binding", status: "running", sessionId: null, dispatchedAt: 1 }),
+    baseTask({ id: "absent", title: "Missing session", status: "running", sessionId: "missing", dispatchedAt: 2 }),
+    baseTask({ id: "live", status: "running", sessionId: "live" }),
+    baseTask({ id: "linger", status: "running", sessionId: "linger" }),
+    baseTask({ id: "launch", status: "dispatching", sessionId: null }),
+    baseTask({ id: "backlog", status: "backlog", sessionId: null }),
+    baseTask({ id: "done", status: "done", sessionId: null }),
+  ];
+  const report = buildReport({ tasks, sessions: [mkSession({ id: "live" }), mkSession({ id: "linger", state: "exited" })] });
+  assert.deepEqual(report.sessionless.map((task) => task.id), ["null", "absent"]);
+  const text = renderReportMarkdown(report);
+  assert.match(text, /Tasks without sessions \(2\)/);
+  assert.match(text, /"Lost binding".*no session is currently attached/);
+  assert.match(text, /"Missing session".*no session is currently attached/);
+});

@@ -11,6 +11,7 @@ import {
   RECENT_TASKS_CAP,
   backlogTasks,
   finishedTasks,
+  sessionlessRunningTasks,
   needsYouReason,
   reportBucket,
 } from "@shared/session.ts";
@@ -261,6 +262,8 @@ export function ReportPanel({
   const { bindings } = useKeybindings();
   const [marking, setMarking] = useState<string | null>(null);
   const [outcome, setOutcome] = useState("");
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
   // Its own arm rather than a second use of `confirmCancel`: a stopped row can offer Clean up
   // and Reschedule side by side, and arming one must not arm the other.
@@ -285,6 +288,7 @@ export function ReportPanel({
   }, [sessions]);
 
   const backlog = useMemo(() => backlogTasks(tasks), [tasks]);
+  const sessionless = useMemo(() => sessionlessRunningTasks(tasks, sessions), [tasks, sessions]);
   const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
   // Built once for the whole Backlog section rather than per row, the way the board
@@ -330,8 +334,12 @@ export function ReportPanel({
   }
 
   async function cancel(taskId: string): Promise<void> {
-    await api.cancelTask(taskId);
+    setCancelError(null);
+    setCancelling(taskId);
+    const result = await api.cancelTask(taskId);
+    setCancelling(null);
     setConfirmCancel(null);
+    if (!result.ok) setCancelError(`${taskById.get(taskId)?.title ?? "Task"}: ${result.error ?? "could not cancel"}`);
   }
 
   async function reclaim(taskId: string): Promise<void> {
@@ -351,7 +359,7 @@ export function ReportPanel({
   // Abort an active agent and reclaim its worktree. Two-click confirm so a stray
   // click can't take one down. Terminal tasks that still hold a tree are reclaimed
   // from Recent outcomes instead (single surface), so this is active tasks only.
-  function cancelControl(task: TaskSummary): React.JSX.Element | null {
+  function cancelControl(task: Pick<TaskSummary, "id" | "status">): React.JSX.Element | null {
     if (!isActiveTask(task.status)) {
       return null;
     }
@@ -367,7 +375,7 @@ export function ReportPanel({
     return (
       <span className="report-cancel">
         <Tooltip label="Abort this agent now and reclaim its worktree">
-          <button className="btn btn-danger" onClick={() => void cancel(task.id)}>
+          <button className="btn btn-danger" disabled={cancelling === task.id} onClick={() => void cancel(task.id)}>
             Confirm cancel
           </button>
         </Tooltip>
@@ -412,6 +420,8 @@ export function ReportPanel({
           the copy button or wrap the row. `role="alert"` because the reader has just pressed a
           button and nothing else on screen changed. */}
       {copy.error && <p className="report-copy-error" role="alert">{copy.error}</p>}
+
+      {cancelError && <p className="report-copy-error" role="alert">{cancelError}</p>}
 
       <div className="report-body">
         <SessionTransfers page={sessionTransfers} />
@@ -489,6 +499,28 @@ export function ReportPanel({
             </SessionRow>
           ))}
         </Section>
+
+        {sessionless.length > 0 && (
+          <Section title="Tasks without sessions" tone="attention" count={sessionless.length} empty="">
+            {sessionless.map((task) => (
+              <div className="report-row" key={task.id}>
+                <div className="report-row-main report-row-stack">
+                  <span className="report-line">
+                    <AgentDot agent={task.agent} />
+                    <Tooltip label={task.title}>
+                      <span className="report-name">{task.title}</span>
+                    </Tooltip>
+                    <span className="report-status status-running">running</span>
+                  </span>
+                  <span className="report-line report-line-sub">
+                    <span className="report-sub">No session is currently attached</span>
+                  </span>
+                </div>
+                <div className="report-row-actions">{cancelControl(task)}</div>
+              </div>
+            ))}
+          </Section>
+        )}
 
         <Section title="Backlog" tone="neutral" count={backlog.length} empty="Backlog is empty.">
           {backlog.map((task) => (

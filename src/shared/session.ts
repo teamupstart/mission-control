@@ -100,6 +100,14 @@ export function provisioningTasks(tasks: Task[]): Task[] {
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
+/** Running task records not represented by a session, including provisional startup/transfer gaps. */
+export function sessionlessRunningTasks(tasks: Task[], sessions: Session[]): Task[] {
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  return tasks.filter((task) => task.status === "running" &&
+    (task.sessionId === null || !sessionIds.has(task.sessionId)))
+    .sort((a, b) => (a.dispatchedAt ?? a.createdAt) - (b.dispatchedAt ?? b.createdAt));
+}
+
 /**
  * How far a provisioning task has got, read off the fields it already carries.
  *

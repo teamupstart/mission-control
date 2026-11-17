@@ -47,7 +47,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpCancelTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
@@ -752,12 +752,40 @@ server.registerTool(
 );
 
 server.registerTool(
+  "cancel_task",
+  {
+    title: "Cancel a task",
+    description:
+      "Cancel a Mission Control task by taskId, including a running task with no sessionId. " +
+      "Uses the dashboard's cancellation rules: stops agents launched for the task, preserves " +
+      "archives, and cleans up owned resources. Assigned tasks stop being tracked without " +
+      "killing the operator's existing session. Cleanup failures are returned and resources " +
+      "remain tracked for retry; use get_task to inspect the resulting status. " +
+      "Keeps the task record; use delete_task afterward to remove it. Uses the same daemon-token " +
+      "access as create_task and delete_task; no Control other sessions opt-in is required. " +
+      TASK_REFERENCE_RULE,
+    inputSchema: McpCancelTaskSchema,
+  },
+  async ({ taskId }) => {
+    try {
+      const res = await http("/mcp/tasks/cancel", "POST", { taskId });
+      if (!res.ok) {
+        return textResult(`Could not cancel task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify({ taskId, cancelled: true }));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
   "delete_task",
   {
     title: "Delete a task",
     description:
       "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
-      "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
+      "running or dispatching tasks must be cancelled with cancel_task first. Uses the dashboard's deletion " +
       "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
       "the task record remains and the error is returned. Returns the deleted task id. " +
       TASK_REFERENCE_RULE,

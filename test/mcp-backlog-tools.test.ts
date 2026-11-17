@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { after, afterEach, test, type TestContext } from "node:test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,7 +63,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     fetch: (req) => {
       const path = new URL(req.url).pathname;
       paths.push(path);
-      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete")) {
+      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete" || path === "/mcp/tasks/cancel")) {
         return new Response("Not Found", { status: 404 });
       }
       return app.fetch(req);
@@ -600,9 +600,81 @@ test("new task configuration never falls back to an older daemon that would drop
   await f.call("update_task", { taskId: "old-task", model: null }, /Could not update task \(404\)/);
   assert.equal(f.paths.at(-1), "/mcp/tasks/old-task/update");
   const retained = await f.create();
+  await f.call("cancel_task", { taskId: retained.id }, /Could not cancel task \(404\)/);
+  assert.equal(f.paths.at(-1), "/mcp/tasks/cancel");
+  assert.equal(getTask(retained.id)!.status, "backlog", "unsupported cancellation does not fall back to deletion");
   await f.call("delete_task", { taskId: retained.id }, /Could not delete task \(404\)/);
   assert.equal(f.paths.at(-1), "/mcp/tasks/delete");
   assert.ok(getTask(retained.id), "an unsupported delete route never falls back to another operation");
+});
+
+test("MCP cancels sessionless running ship and scout tasks, then permits deletion", async (t) => {
+  const f = await fixture(t);
+  const seen: string[] = [];
+  f.registry.on("event", (event) => {
+    if (event.type === "task_upsert" && event.task.status === "cancelled") seen.push(event.task.id);
+  });
+  for (const kind of ["ship", "scout"] as const) {
+    const task = await f.create({ kind, agent: "codex", workflowId: kind === "ship" ? NO_MISTAKES_REVIEW_WORKFLOW_ID : null });
+    f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null, dispatchedAt: Date.now() - 13 * 86400_000 });
+    await f.call("update_task", { taskId: task.id, title: "Cannot edit running work" }, /not in the backlog/);
+    await f.call("delete_task", { taskId: task.id }, /cancel the task before removing it/);
+    assert.deepEqual(await f.call("cancel_task", { taskId: task.id }), { taskId: task.id, cancelled: true });
+    const saved = getTask(task.id)!;
+    assert.equal(saved.status, "cancelled");
+    assert.equal(saved.sessionId, null);
+    assert.ok(saved.completedAt);
+    assert.equal(seen.at(-1), task.id);
+    const listed = await f.call<{ tasks: Task[] }>("list_tasks", { status: "running" });
+    assert.ok(!listed!.tasks.some((entry) => entry.id === task.id));
+    await f.call("delete_task", { taskId: task.id });
+    assert.equal(getTask(task.id), undefined);
+  }
+});
+
+test("MCP cancellation validates input and authenticates before mutating tasks", async (t) => {
+  const f = await fixture(t);
+  const task = await f.create();
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  const before = getTask(task.id);
+  await f.call("cancel_task", { taskId: "missing" }, /Could not cancel task \(404\).*no such task/);
+  await f.call("cancel_task", { taskId: " " }, /validation/i);
+  await f.call("cancel_task", { taskId: task.id, force: true }, /validation/i);
+  const unauthenticated = await f.app.request("/mcp/tasks/cancel", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.id }),
+  });
+  assert.equal(unauthenticated.status, 401);
+  for (const body of [{}, { taskId: " " }, { taskId: 123 }, { taskId: task.id, force: true }]) {
+    const response = await f.app.request("/mcp/tasks/cancel", {
+      method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 400, await response.text());
+  }
+  assert.deepEqual(getTask(task.id), before);
+});
+
+test("MCP cancellation reports archive refusal without deleting the task and permits retry", async (t) => {
+  let ready = false;
+  const f = await fixture(t, false, {
+    ensureReady: async () => ({ ok: true }),
+    settleBeforeCleanup: async () => ready ? { ok: true } : { ok: false, error: "archive unavailable" },
+  });
+  const task = await f.create({ kind: "scout", workflowId: null });
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "running", sessionId: null });
+  await f.call("cancel_task", { taskId: task.id }, /Could not cancel task \(409\).*task cancelled, but.*archive unavailable/);
+  assert.equal(getTask(task.id)!.status, "cancelled");
+  assert.ok(getTask(task.id)!.completedAt);
+  // A refused archive must also leave a retained report and its checkout ownership intact.
+  const retained = await f.create({ kind: "scout", workflowId: null });
+  const worktreePath = mkdtempSync(join(home, "retained-scout-"));
+  writeFileSync(join(worktreePath, "report.md"), "Unpublished findings");
+  f.registry.upsertTask({ ...getTask(retained.id)!, status: "running", sessionId: null, worktreePath, provider: "git" });
+  await f.call("cancel_task", { taskId: retained.id }, /409.*resources remain tracked.*archive unavailable/);
+  assert.equal(getTask(retained.id)!.worktreePath, worktreePath);
+  assert.equal(readFileSync(join(worktreePath, "report.md"), "utf8"), "Unpublished findings");
+  ready = true;
+  assert.deepEqual(await f.call("cancel_task", { taskId: task.id }), { taskId: task.id, cancelled: true });
 });
 
 test("MCP deletes backlog and finished tasks durably and publishes each removal", async (t) => {

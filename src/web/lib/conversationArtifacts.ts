@@ -2,8 +2,8 @@ import {
   BROWSER_IMAGE_MEDIA_TYPES,
   browserImageMediaTypeForPath,
 } from "@shared/browser-images.ts";
-import type { SessionFileDocument } from "@shared/types.ts";
-import { matchCheckoutPaths, splitPathLocation } from "./workspaceLinks.ts";
+import type { SessionFileDocument, TranscriptMessage } from "@shared/types.ts";
+import { detectPathTokens, matchCheckoutPaths, splitPathLocation } from "./workspaceLinks.ts";
 
 export interface ConversationArtifact {
   /** Checkout-relative path, exactly as the session file API takes it. */
@@ -31,6 +31,7 @@ export type ArtifactPreviewResult =
 const MAX_ARTIFACTS_PER_TURN = 3;
 const SHORT_LABEL = /^[A-Za-z][A-Za-z ]{0,31}:\s*$/;
 const HTML_EXTENSION = /\.html?$/i;
+const MARKDOWN_LINK = /\[[^\]\n]*\]\((?:<([^>\n]+)>|([^\s)\n]+))\)/g;
 /** A cheap pre-filter: a turn naming no previewable extension cannot present an artifact. */
 const ARTIFACT_EXTENSION_HINT = new RegExp(
   `\\.(?:html?|${Object.keys(BROWSER_IMAGE_MEDIA_TYPES).join("|")})\\b`,
@@ -65,8 +66,7 @@ interface ArtifactCandidate {
 
 function markdownDestinations(text: string, paths: ReadonlySet<string>): ArtifactCandidate[] {
   const candidates: ArtifactCandidate[] = [];
-  const links = /\[[^\]\n]*\]\((?:<([^>\n]+)>|([^\s)\n]+))\)/g;
-  for (const match of text.matchAll(links)) {
+  for (const match of text.matchAll(MARKDOWN_LINK)) {
     if (match.index == null) continue;
     const raw = match[1] ?? match[2];
     if (!raw) continue;
@@ -123,6 +123,52 @@ export function conversationArtifacts(
   }
   return artifacts;
 }
+
+/**
+ * Whether one turn names a previewable path the checkout listing does not hold yet.
+ *
+ * Shape, not membership, because membership is the question: `conversationArtifacts` can
+ * only find a path the listing already has, so a mock-up written after the listing was taken
+ * is invisible to it however it is presented. This asks the cheaper question of whether the
+ * listing is worth taking again for this turn. A Markdown link is read by its destination,
+ * which is the path; its label is prose.
+ */
+export function namesUnlistedArtifact(text: string, paths: ReadonlySet<string>): boolean {
+  if (!ARTIFACT_EXTENSION_HINT.test(text)) return false;
+  const prose = text.replace(MARKDOWN_LINK, (_link, angled: string | undefined, bare: string | undefined) => (
+    ` ${angled ?? bare ?? ""} `
+  ));
+  return detectPathTokens(prose).some(({ path }) => {
+    const relative = path.startsWith("./") ? path.slice(2) : path;
+    return artifactKind(relative) !== null && !paths.has(relative);
+  });
+}
+
+/** How far back from the newest message a presentation is looked for mid-turn. */
+const PRESENTATION_LOOKBACK = 4;
+
+/**
+ * The newest recent assistant turn that names a previewable path the listing lacks, or null.
+ *
+ * A few messages rather than only the newest, because the turn that presents mock-ups is
+ * often not the transcript's last record: the same assistant message can carry the blocking
+ * `request_input` call, which the transcript may record beside it, and a tool result can
+ * land after it. Bounded, so a long-running turn's every frame stays a constant-cost scan.
+ */
+export function unlistedArtifactTurn(
+  messages: readonly Pick<TranscriptMessage, "id" | "role" | "text">[],
+  paths: ReadonlySet<string> | null,
+): string | null {
+  const listed = paths ?? EMPTY_PATHS;
+  const floor = Math.max(0, messages.length - PRESENTATION_LOOKBACK);
+  for (let index = messages.length - 1; index >= floor; index -= 1) {
+    const message = messages[index]!;
+    if (message.role === "assistant" && namesUnlistedArtifact(message.text, listed)) return message.id;
+  }
+  return null;
+}
+
+const EMPTY_PATHS: ReadonlySet<string> = new Set();
 
 /** Translate the contained file API's response into the card's reader-facing states. */
 export function classifyArtifactPreview(

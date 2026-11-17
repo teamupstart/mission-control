@@ -5179,6 +5179,9 @@ export function App(): React.JSX.Element {
                     focusSession(sessionId);
                     requestComposerFocus(sessionId);
                   }}
+                  files={files}
+                  // The review stays pending; "to review" brings the operator back to decide.
+                  onOpenPath={openSessionPath}
                 />
               )}
 

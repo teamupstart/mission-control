@@ -87,6 +87,11 @@ const SHARED_MISSION = 13;
 const SHARED_OUTSIDE = 14;
 // Not Mission-launched and not task-bound, but owed a task closure.
 const OWED = 15;
+// Outside sessions that hold a Foreman invite of a source other than "dispatch".
+const OPERATOR_INVITED = 16;
+const WITHDRAWN_INVITED = 17;
+// An outside session whose task is finished and owes it no closure.
+const DONE_TASK = 18;
 // The same rule for every harness: one Mission-launched and one hand-started session each.
 const CODEX_MISSION = 8;
 const CODEX_OUTSIDE = 9;
@@ -115,6 +120,9 @@ const CWDS: Record<number, string> = {
   [SHARED_MISSION]: "/work/shared",
   [SHARED_OUTSIDE]: "/work/shared",
   [OWED]: "/work/owed",
+  [OPERATOR_INVITED]: "/work/operator-invited",
+  [WITHDRAWN_INVITED]: "/work/withdrawn-invited",
+  [DONE_TASK]: "/work/done-task",
 };
 /** Every kind but RESTARTED, which only the restart case puts on the machine. */
 const EVERY = [MISSION, OUTSIDE, TASK_BOUND, PIPELINE, REPO_ROOT, INVITED];
@@ -292,6 +300,35 @@ test("off: a dispatch Foreman invite alone admits a session; the same session wi
   await pollOnce(registry, find);
   assert.equal(registry.getSession(idOf(INVITED))?.state !== "exited", true, "the invited session stays");
   assert.equal(registry.getSession(idOf(OUTSIDE))?.state, "exited", "the other one leaves");
+});
+
+test("off: only a dispatch invite admits; an operator or withdrawn invite leaves an outside session hidden", async () => {
+  setTerminalsConfig({ externalSessions: false });
+  // Keyed by synthetic id, and by agent session id through a binding, so both lookups the
+  // dispatch rule uses (the invite key itself and the restart reverse read) are exercised.
+  upsertForemanInvite(idOf(OPERATOR_INVITED), "operator", 1000);
+  recordAgentBinding(idOf(WITHDRAWN_INVITED), "agent-withdrawn-invite-1", 1000);
+  upsertForemanInvite("agent-withdrawn-invite-1", "withdrawn", 1000);
+  const registry = new Registry();
+  const { find } = machine([OPERATOR_INVITED, WITHDRAWN_INVITED]);
+  await pollOnce(registry, find);
+  assert.deepEqual(shown(registry), [], "neither source is launch evidence");
+
+  // Control: the same sweep admits the moment one of them holds a dispatch invite.
+  upsertForemanInvite(idOf(OPERATOR_INVITED), "dispatch", 2000);
+  const restarted = new Registry();
+  await pollOnce(restarted, find);
+  assert.deepEqual(shown(restarted), [idOf(OPERATOR_INVITED)]);
+});
+
+test("off: a finished task alone does not admit its session", async () => {
+  setTerminalsConfig({ externalSessions: false });
+  const registry = fleet();
+  // Bound to DONE_TASK, finished, and owing it no closure: nothing else says it is ours.
+  registry.upsertTask(mkTask({ id: `admission-done-task-${++taskSeq}`, status: "done", sessionId: idOf(DONE_TASK) }));
+  const { find } = machine([TASK_BOUND, DONE_TASK]);
+  await pollOnce(registry, find);
+  assert.deepEqual(shown(registry), [idOf(TASK_BOUND)], "the running task's session stays; the finished one's does not");
 });
 
 test("off, after a restart: a dispatch invite stored under the agent's session id still admits", async () => {

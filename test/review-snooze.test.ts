@@ -68,12 +68,13 @@ function fixture(prefix: string) {
   );
   pendingTurns.start();
   const reviews = new ReviewManager(registry);
-  reviews.startContinuationRecovery(
-    (review, text) => pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
-  );
+  const deliver = (review: { id: string; sessionId: string }, text: string, kind: "answer" | "snooze-instruction") =>
+    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text, kind).ok;
+  reviews.startContinuationRecovery(deliver);
   const ask = (decisions: PlanDecision[] | null = linter, snoozable = true) =>
     reviews.create(id, "input", "Which linter should this repo use?", "Which linter should this repo use?", decisions, { snoozable });
-  return { id, registry, reviews, ask };
+  const turns = () => registry.getSession(id)?.pendingTurns ?? [];
+  return { id, registry, reviews, ask, turns, deliver };
 }
 
 test("an existing reviews table gains the snooze columns", () => {
@@ -292,4 +293,60 @@ test("a snoozed question moves to the successor session with its reminder and in
   assert.equal(back?.sessionId, successor);
   assert.equal(back?.status, "pending");
   assert.equal(f.registry.getSession(successor)?.pendingReviews, 1);
+});
+
+test("a snooze made after the agent's wait ended sends its instruction as a message, and the answer still follows", () => {
+  const f = fixture("owed-instruction");
+  const review = f.ask();
+  // The MCP host gave up on the call before the operator chose: nothing is listening now.
+  f.reviews.detachWait(review.id, f.id);
+  f.reviews.snooze(review.id, HOUR, { mode: "hold" });
+
+  assert.deepEqual(f.turns().map((t) => t.id), [`review-continuation:snooze:${review.id}`]);
+  const instruction = f.turns()[0]!.text;
+  assert.match(instruction, /^Your earlier request_input question "Which linter should this repo use\?"/);
+  assert.match(instruction, /ended before the operator chose/);
+  assert.match(instruction, /Do not do any work that depends on this answer/);
+  assert.match(instruction, /Do not ask this question again yourself/);
+
+  // Its own marker: the answer's continuation is not suppressed by the instruction having gone.
+  f.reviews.resolve(review.id, "answer", "→ eslint", "human");
+  assert.deepEqual(f.turns().map((t) => t.id), [
+    `review-continuation:snooze:${review.id}`,
+    `review-continuation:${review.id}`,
+  ]);
+  assert.match(f.turns()[1]!.text, /now answered the question you were told to carry on without/);
+});
+
+test("a snooze the agent hears as its tool result sends no second copy, and a later snooze sends none", async () => {
+  const f = fixture("heard-instruction");
+  const review = f.ask();
+  const waiting = f.reviews.wait(review.id, 60_000);
+  f.reviews.snooze(review.id, HOUR, { mode: "judgment" });
+  assert.equal((await waiting)?.status, "snoozed");
+  assert.deepEqual(f.turns(), [], "the tool result carried it");
+
+  // Detached by now (the call returned); a reminder and a second snooze tell the agent nothing new.
+  f.reviews.detachWait(review.id, f.id);
+  f.reviews.wake(review.id);
+  f.reviews.snooze(review.id, HOUR);
+  assert.deepEqual(f.turns(), []);
+});
+
+test("an owed instruction that could not be handed over yet is delivered when recovery starts", () => {
+  const f = fixture("owed-later");
+  const review = f.ask();
+  f.reviews.detachWait(review.id, f.id);
+  // A manager that has no outbox yet, as in the moments before startup recovery.
+  const early = new ReviewManager(f.registry);
+  early.snooze(review.id, HOUR, { mode: "option", optionId: "o0" });
+  assert.deepEqual(f.turns(), []);
+
+  early.startContinuationRecovery(f.deliver);
+  assert.deepEqual(f.turns().map((t) => t.id), [`review-continuation:snooze:${review.id}`]);
+  assert.match(f.turns()[0]!.text, /chose "biome" as a provisional answer/);
+
+  // Delivered once: recovery running again finds nothing owed.
+  new ReviewManager(f.registry).startContinuationRecovery(f.deliver);
+  assert.equal(f.turns().length, 1);
 });

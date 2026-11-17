@@ -910,8 +910,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // own - are sent too, once the first completed sweep has put every live session back in the
   // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
   adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
-  reviews.startContinuationRecovery((review, text) =>
-    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
+  reviews.startContinuationRecovery((review, text, kind) =>
+    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text, kind).ok,
   );
   // Snoozed questions come back on time from here, including any that fell due while the
   // daemon was down. After the port, like every other writer, and after continuation recovery,

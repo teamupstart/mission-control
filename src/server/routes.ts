@@ -6007,6 +6007,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
+  // Who is asking to snooze or wake a question: the operator, a session acting through session
+  // control, or null for a caller that is neither. "Human" is never the default. It is granted
+  // only when the request carries none of the marks of an agent - the machine token, a signed
+  // agent credential, an agent-labelled operation, a page from another origin - which is the
+  // same test that guards the operator's session-control grant (`sessionControlCallerRefusal`).
+  const reviewOperatorActor = (c: Context): ReviewActor | null =>
+    sessionControlActor(c.req.raw) ?? (sessionControlCallerRefusal(c) === null ? "human" : null);
+  const ONLY_THE_OPERATOR = "Only the operator can choose Remind me later";
+
   // "Remind me later" on a request_input question. The operator's alone: a session driving
   // another through session control may answer its questions, but parking one tells its agent
   // to carry on without a person, which is not a call one agent makes for another. Session
@@ -6014,13 +6023,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/reviews/:id/snooze", async (c) => {
     const parsed = await parseBody(c, SnoozeReviewSchema);
     if (!parsed.ok) return parsed.res;
+    const by = reviewOperatorActor(c);
+    if (!by) return c.json({ error: ONLY_THE_OPERATOR }, 403);
     try {
       const updated = reviews.snooze(
         c.req.param("id"),
         reviewSnoozeDelay(parsed.data.delay).ms,
         parsed.data.meanwhile,
         Date.now(),
-        sessionControlActor(c.req.raw) ?? "human",
+        by,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
       return c.json(updated);
@@ -6031,8 +6042,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
-  // Answer now: bring a snoozed question back to the operator before its time.
+  // Answer now: bring a snoozed question back to the operator before its time. The operator's
+  // too, by the same test: it reopens a question the operator chose to set aside.
   app.post("/api/reviews/:id/wake", (c) => {
+    if (reviewOperatorActor(c) !== "human") return c.json({ error: "Only the operator can bring back a snoozed question" }, 403);
     const current = registry.getReview(c.req.param("id"));
     if (!current) return c.json({ error: "no such review" }, 404);
     if (current.status !== "snoozed") return c.json({ error: "This question is not snoozed" }, 409);

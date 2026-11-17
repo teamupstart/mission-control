@@ -2772,6 +2772,8 @@ the answer form with two choices:
 **Remind me at …** parks the question with the status `snoozed`, and the agent's blocking call
 returns at once. The tool result says the question is not answered, gives the instruction you
 picked, tells the agent not to ask again, and says the answer will arrive later as a message.
+If that call had already ended before you chose, because the agent's MCP client stopped waiting,
+the same instruction reaches the agent as a message instead, so it is never left without it.
 Anything you had typed or picked on the card stays in its draft for when the question returns.
 
 While a question is snoozed it does not count as waiting on you, so its session is not amber.
@@ -2794,8 +2796,10 @@ session goes away is settled as `orphaned`, like a pending one.
 Only `request_input`'s own questions offer this. Other cards drawn the same way act on what
 you select and have no agent told how to carry on: a public product issue confirmation, a
 workflow Command override and a resident's proposed instruction changes. The operator alone can
-snooze: session control has no snooze command, and the daemon refuses a snooze from any other
-actor, such as a controlling session or Foreman, leaving the question open.
+snooze or bring a question back early. Session control has no snooze command. The daemon refuses
+both from any other actor, such as a controlling session or Foreman, and from any request that
+carries an agent's marks: the machine token, a signed agent credential, an agent-labelled
+operation or a page from another origin. The question stays open.
 
 ### The ask channel
 

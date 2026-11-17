@@ -139,6 +139,20 @@ export function snoozedToolResultText(review: ReviewItem, now = Date.now()): str
 }
 
 /**
+ * The message that carries a snooze's "carry on" instruction when the agent's `request_input`
+ * call had already ended before the operator chose, so there was no tool result to put it in.
+ * It names the question, says the call it answers is over, and then says exactly what the tool
+ * result would have said.
+ */
+export function snoozedInstructionText(review: ReviewItem, now = Date.now()): string {
+  return (
+    `Your earlier request_input question "${review.title}" (Mission Control review ${review.id}) ` +
+    "ended before the operator chose, and they have now chosen \"Remind me later\". " +
+    `Treat this as that call's result:\n\n${snoozedToolResultText(review, now)}`
+  );
+}
+
+/**
  * The lead line of the message that carries a snoozed question's eventual answer, in place of
  * the generic "answered after its MCP wait ended" - which would read as the result of a call the
  * agent is no longer making, when what it needs to hear is that this settles work it already did.

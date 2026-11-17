@@ -104,6 +104,18 @@ test("a reminder reads as a clock time, and says tomorrow when it is", () => {
   assert.equal(reminderClock(NOW + 24 * HOUR, NOW, "en-US", "UTC"), "tomorrow 2:30 PM");
 });
 
+test("tomorrow is the next calendar date in the display zone, across a daylight-saving change", () => {
+  // 11:30 PM on March 7, 2026 in New York; clocks spring forward at 2 AM on March 8.
+  const lateNight = Date.UTC(2026, 2, 8, 4, 30);
+  assert.equal(reminderClock(lateNight + HOUR, lateNight, "en-US", "America/New_York"), "tomorrow 12:30 AM");
+  // A day-long snooze from there is 24 hours later, which is two dates ahead: named by weekday.
+  assert.equal(reminderClock(lateNight + 24 * HOUR, lateNight, "en-US", "America/New_York"), "Mon 12:30 AM");
+  // And the fall change: 11:30 PM on October 31, 2026 (EDT), clocks fall back at 2 AM.
+  const fallNight = Date.UTC(2026, 10, 1, 3, 30);
+  assert.equal(reminderClock(fallNight + HOUR, fallNight, "en-US", "America/New_York"), "tomorrow 12:30 AM");
+  assert.equal(reminderClock(fallNight + 24 * HOUR, fallNight, "en-US", "America/New_York"), "tomorrow 10:30 PM");
+});
+
 test("the inbox lists snoozed questions of live sessions, soonest back first", () => {
   const live = mkSession({ id: "s1", state: "working" });
   const gone = mkSession({ id: "s2", state: "exited" });

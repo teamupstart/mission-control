@@ -4,10 +4,14 @@ import { formatConversationTimestamp } from "./format.ts";
 /**
  * When a reminder comes back, as the operator reads it: the clock time, prefixed with
  * "tomorrow" when it falls on the next calendar day. "Remind me later" offers at most a day, so
- * a later date never needs more than that one word, and a time on the same day needs none.
+ * that one word nearly always suffices and a time on the same day needs none. The exception is
+ * a day-long snooze taken just before midnight on the night clocks spring forward, which lands
+ * two dates ahead; anything past tomorrow is named by its weekday instead.
  *
  * Calendar days are compared in the zone the time is printed in, so the word and the clock can
- * never disagree about which day it is. Locale and zone are injectable for tests.
+ * never disagree about which day it is. "Tomorrow" is the next calendar DATE, never now plus
+ * 24 hours: across a daylight-saving change a day is 23 or 25 hours long, and the shortcut
+ * named the wrong day for reminders near midnight. Locale and zone are injectable for tests.
  */
 export function reminderClock(
   at: number,
@@ -16,15 +20,22 @@ export function reminderClock(
   timeZone?: string,
 ): string {
   const clock = formatConversationTimestamp(at, locales, timeZone);
+  // `en-CA` prints the date as YYYY-MM-DD, which both compares and parses as a plain date.
   const day = new Intl.DateTimeFormat("en-CA", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     ...(timeZone ? { timeZone } : {}),
   });
-  if (day.format(at) === day.format(now)) return clock;
-  const tomorrow = day.format(now + 24 * 60 * 60_000);
-  return day.format(at) === tomorrow ? `tomorrow ${clock}` : clock;
+  const today = day.format(now);
+  const target = day.format(at);
+  if (target === today) return clock;
+  const [year, month, date] = today.split("-").map(Number);
+  // Date arithmetic on a zone-free UTC date, so no offset can move it off the calendar day.
+  const tomorrow = new Date(Date.UTC(year!, month! - 1, date! + 1)).toISOString().slice(0, 10);
+  if (target === tomorrow) return `tomorrow ${clock}`;
+  const weekday = new Intl.DateTimeFormat(locales, { weekday: "short", ...(timeZone ? { timeZone } : {}) });
+  return `${weekday.format(at)} ${clock}`;
 }
 
 /** One parked question and the live session it belongs to, as the inbox lists it. */

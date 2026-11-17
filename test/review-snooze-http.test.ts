@@ -124,3 +124,30 @@ test("only an input question may ask to offer Remind me later", async () => {
   });
   assert.equal(res.status, 400);
 });
+
+test("only the operator's dashboard may snooze or wake: agent-marked and foreign requests are refused", async () => {
+  const id = await ask({ snoozable: true });
+  const pending = async () => ((await (await app.request("/api/reviews", { headers: LOOPBACK })).json()) as ReviewItem[])
+    .find((r) => r.id === id)?.status;
+
+  for (const headers of [
+    authed, // the machine token every MCP child and agent tool carries
+    { ...json, "x-mission-operation-actor": "agent" },
+    { ...json, origin: "http://evil.example" },
+  ]) {
+    const res = await app.request(`/api/reviews/${id}/snooze`, { method: "POST", headers, body: JSON.stringify({ delay: "1h" }) });
+    assert.equal(res.status, 403, JSON.stringify(headers));
+    assert.match(((await res.json()) as { error: string }).error, /Only the operator/);
+    assert.equal(await pending(), "pending", "nothing was parked");
+  }
+
+  // The dashboard's own request names a human actor and carries no token.
+  const dashboard = { ...json, "x-mission-operation-actor": "human", origin: "http://127.0.0.1:7317" };
+  const parked = await app.request(`/api/reviews/${id}/snooze`, { method: "POST", headers: dashboard, body: JSON.stringify({ delay: "1h" }) });
+  assert.equal(parked.status, 200);
+
+  const agentWake = await app.request(`/api/reviews/${id}/wake`, { method: "POST", headers: authed });
+  assert.equal(agentWake.status, 403);
+  assert.equal(await pending(), "snoozed");
+  assert.equal((await app.request(`/api/reviews/${id}/wake`, { method: "POST", headers: dashboard })).status, 200);
+});

@@ -8,12 +8,14 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
+import type { ReviewContinuationKind } from "./reviews.ts";
 import {
   claimNextPendingTurn,
   createPendingTurn,
   expeditePendingTurn,
   recordPendingTurnInterrupt,
   createReviewContinuationPendingTurn,
+  createSnoozeInstructionPendingTurn,
   deleteClaimedPendingTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -319,11 +321,16 @@ export class PendingTurnManager {
    * Unlike an ordinary composer submit, the idempotency key is the review itself. The DB
    * inserts the pending turn and stamps the review in one transaction, so startup recovery
    * can call this again without duplicating the human's answer.
+   *
+   * `snooze-instruction` is the other review message this outbox carries: the "carry on"
+   * instruction of a question snoozed after its wait had already ended. It has its own turn id
+   * and its own stamp on the review, so it can never take the answer's place.
    */
   submitReviewContinuation(
     reviewId: string,
     sessionId: string,
     text: string,
+    kind: ReviewContinuationKind = "answer",
   ): PendingTurnSubmitResult {
     if (!this.started) {
       return {
@@ -345,7 +352,10 @@ export class PendingTurnManager {
         error: "this session cannot receive messages",
       };
     }
-    const pendingTurn = createReviewContinuationPendingTurn({
+    const queue = kind === "snooze-instruction"
+      ? createSnoozeInstructionPendingTurn
+      : createReviewContinuationPendingTurn;
+    const pendingTurn = queue({
       reviewId,
       noteKey: noteKeyFor(session),
       text,

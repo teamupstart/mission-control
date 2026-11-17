@@ -166,7 +166,8 @@ export function SnoozeSheet({
         <Tooltip label="Park this question; the agent stops waiting now">
           <button type="button" className="btn btn-snooze" data-dialog-default disabled={busy} onClick={() => void submit()}>
             <ClockGlyph />
-            Remind me {back.startsWith("tomorrow") ? back : `at ${back}`}
+            {/* "at 3:30 PM" for today; "tomorrow 2:30 PM" or "Mon 12:30 AM" stand on their own. */}
+            Remind me {/^\d/.test(back) ? `at ${back}` : back}
           </button>
         </Tooltip>
       </div>

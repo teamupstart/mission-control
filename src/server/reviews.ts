@@ -12,6 +12,7 @@ import { isHumanResolvedReview, isConversationResolvedReview, reviewToolResult }
 import {
   snoozeMeanwhileProblem,
   snoozedContinuationLead,
+  snoozedInstructionText,
   type ReviewSnoozeMeanwhile,
 } from "@shared/review-snooze.ts";
 import type { Registry } from "./registry.ts";
@@ -20,6 +21,7 @@ import {
   insertReview,
   transferPendingReviews,
   loadReviewContinuationCandidates,
+  loadSnoozeInstructionCandidates,
   markReviewWaitDetached,
   snoozeReviewRow,
   updateReviewStatus,
@@ -38,7 +40,13 @@ export const SNOOZE_SWEEP_MS = 15_000;
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
 type Waiter = (r: ReviewItem) => void;
-type ContinuationDelivery = (review: ReviewItem, text: string) => boolean;
+/**
+ * Which review message is being handed to the outbox: a human resolution that arrived after the
+ * agent's wait ended, or a snoozed question's "carry on" instruction that the agent never got
+ * as a tool result.
+ */
+export type ReviewContinuationKind = "answer" | "snooze-instruction";
+type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
 export class ReviewResolutionError extends Error {}
 
@@ -122,6 +130,7 @@ export class ReviewManager {
     this.continuationDelivery = deliver;
     const now = Date.now();
     for (const review of this.registry.pendingReviews()) markReviewWaitDetached(review.id, now);
+    for (const review of loadSnoozeInstructionCandidates()) this.deliverSnoozeInstruction(review);
     for (const review of loadReviewContinuationCandidates()) this.deliverContinuation(review);
   }
 
@@ -167,6 +176,19 @@ export class ReviewManager {
   }
 
   private deliverContinuation(review: ReviewItem): void {
+    this.deliverToOutbox(review, this.continuationText(review), "answer");
+  }
+
+  /**
+   * A snoozed question's "carry on" instruction, for an agent whose wait had already ended when
+   * the operator snoozed it. Without this the agent is told nothing until the answer, and goes
+   * on without the operator's choice - including "hold the work that depends on this".
+   */
+  private deliverSnoozeInstruction(review: ReviewItem): void {
+    this.deliverToOutbox(review, snoozedInstructionText(review), "snooze-instruction");
+  }
+
+  private deliverToOutbox(review: ReviewItem, text: string, kind: ReviewContinuationKind): void {
     if (transferForSource(review.sessionId)) { this.owedContinuationSessions.add(review.sessionId); return; }
     if (!this.continuationDelivery) {
       this.owedContinuationSessions.add(review.sessionId);
@@ -175,31 +197,38 @@ export class ReviewManager {
 
     let delivered = false;
     try {
-      delivered = this.continuationDelivery({ ...review, sessionId: runtimeTransferSuccessor(review.sessionId) }, this.continuationText(review));
+      delivered = this.continuationDelivery({ ...review, sessionId: runtimeTransferSuccessor(review.sessionId) }, text, kind);
     } catch (error) {
-      console.error(`Failed to queue review continuation ${review.id}:`, error);
+      console.error(`Failed to queue review ${kind === "answer" ? "continuation" : "snooze instruction"} ${review.id}:`, error);
     }
     if (!delivered) {
       this.owedContinuationSessions.add(review.sessionId);
       return;
     }
 
-    const stillOwed = loadReviewContinuationCandidates().some(
-      (candidate) => candidate.sessionId === review.sessionId,
-    );
-    if (stillOwed) this.owedContinuationSessions.add(review.sessionId);
+    if (this.owedFor(review.sessionId).length > 0) this.owedContinuationSessions.add(review.sessionId);
     else this.owedContinuationSessions.delete(review.sessionId);
   }
 
+  /** Everything still owed to one session's agent, instructions before answers. */
+  private owedFor(sessionId: string): Array<{ review: ReviewItem; kind: ReviewContinuationKind }> {
+    const mine = (review: ReviewItem) => review.sessionId === sessionId;
+    return [
+      ...loadSnoozeInstructionCandidates().filter(mine).map((review) => ({ review, kind: "snooze-instruction" as const })),
+      ...loadReviewContinuationCandidates().filter(mine).map((review) => ({ review, kind: "answer" as const })),
+    ];
+  }
+
   private retryContinuations(sessionId: string): void {
-    const candidates = loadReviewContinuationCandidates().filter(
-      (review) => review.sessionId === sessionId,
-    );
-    if (candidates.length === 0) {
+    const owed = this.owedFor(sessionId);
+    if (owed.length === 0) {
       this.owedContinuationSessions.delete(sessionId);
       return;
     }
-    for (const review of candidates) this.deliverContinuation(review);
+    for (const { review, kind } of owed) {
+      if (kind === "snooze-instruction") this.deliverSnoozeInstruction(review);
+      else this.deliverContinuation(review);
+    }
   }
 
   /**
@@ -275,8 +304,14 @@ export class ReviewManager {
    * Persist, publish, then wake the waiters, the order `settle` keeps and for the same reasons.
    * Waking them is the point: the MCP call long-polling this review returns with the snoozed
    * row, and `reviewToolResult` turns that into the instruction to carry on. A wait that had
-   * already detached hears nothing now, and is told the outcome by the continuation once the
-   * operator answers, exactly as an answer after a detach always is.
+   * already detached has no waiter to wake, so on the first snooze the same instruction is
+   * queued through the continuation outbox as a message (`deliverSnoozeInstruction`); the later
+   * answer then follows by the ordinary continuation, under its own marker.
+   *
+   * "Nobody is listening" is read at this instant. An MCP child between two long polls of a
+   * wait that is recorded as detached (every pending wait is, after a daemon restart) can be
+   * told twice - once as the result of its next poll, once as a message. That duplicate is the
+   * accepted cost: the alternative failure is an agent never told at all.
    *
    * `meanwhile` is checked against the question even on a later snooze, where it is not stored,
    * so a request naming an option the question never offered is refused rather than ignored.
@@ -301,15 +336,19 @@ export class ReviewManager {
     }
     const problem = snoozeMeanwhileProblem(cur, meanwhile);
     if (problem) throw new ReviewResolutionError(`Cannot snooze: ${problem}`);
-    const updated = snoozeReviewRow(id, {
+    const snoozed = snoozeReviewRow(id, {
       at: now,
       until: now + delayMs,
       mode: meanwhile.mode,
       optionId: meanwhile.mode === "option" ? meanwhile.optionId : null,
+      listening: (this.waiters.get(id)?.size ?? 0) > 0,
     });
-    if (!updated) throw new ReviewResolutionError("This question is no longer open");
+    if (!snoozed) throw new ReviewResolutionError("This question is no longer open");
+    const updated = snoozed.review;
     this.registry.upsertReview(updated);
     this.releaseWaiters(updated);
+    // Nobody was listening and the wait had ended: the instruction goes as a message instead.
+    if (snoozed.instructionOwed) this.deliverSnoozeInstruction(updated);
     return updated;
   }
 

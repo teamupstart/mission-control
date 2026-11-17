@@ -39,6 +39,7 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   return: "Return",
   prune: "Prune",
   reconcile: "Reconcile",
+  recover: "Recover",
   destroy: "Destroy",
   legacyReturn: "Legacy return",
   trimIdle: "Remove idle",
@@ -340,6 +341,11 @@ function SlotCard({
             </button>
           </Tooltip>
         )}
+        {!pending && slot.actions.includes("recover") && (
+          <Tooltip label="Preview all safety checks before returning this quarantined slot to warm capacity">
+            <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "recover", slotId: slot.id }, event.currentTarget)}>Recover</button>
+          </Tooltip>
+        )}
         {!pending && slot.actions.includes("destroy") && (
           <Tooltip label="Preview permanently removing this manager-owned slot">
             <button className="btn btn-danger" type="button" onClick={(event) => onAction({ action: "destroy", target: { kind: "slot", slotId: slot.id } }, event.currentTarget)}>
@@ -607,6 +613,13 @@ export function ActionDialog({
           {changed && <div className="wt-changed"><strong>State changed after this preview.</strong><p>{error}</p><Tooltip label="Discard the stale token and build a new safety preview"><button className="btn btn-secondary" type="button" onClick={onRefresh}>Refresh preview</button></Tooltip></div>}
           {!changed && error && <p className="settings-error">{error}</p>}
           {preview.affected.length > 0 && <section><h4>Affected paths</h4><ul className="wt-affected">{preview.affected.map((item) => <li key={`${item.provider}:${item.id}`}><code>{item.path}</code><span>{item.owner?.label ?? item.provider} · {bytes(item.diskBytes)}</span></li>)}</ul></section>}
+          {preview.recovery && <section>
+            <h4>Original quarantine</h4>
+            <p>{preview.recovery.reason ?? "Reason not recorded"}</p>
+            <p>Category: {preview.recovery.category ?? "legacy (uncategorized)"} · Quarantined: {preview.recovery.quarantinedAt === null ? "Time not recorded" : new Date(preview.recovery.quarantinedAt).toLocaleString()}</p>
+            <h4>Recovery checks</h4>
+            <ul>{preview.recovery.checks.map((check) => <li key={check.label}><strong>{check.label}: {check.status}</strong><span> · {check.detail}</span></li>)}</ul>
+          </section>}
           {preview.blockers.length > 0 && <section className="wt-blockers"><h4>Cannot execute</h4><ul>{preview.blockers.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.consequences.length > 0 && <section><h4>What happens</h4><ul>{preview.consequences.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.requiredAcknowledgements.length > 0 && <fieldset className="wt-acknowledgements"><legend>Required acknowledgements</legend>{preview.risks.filter((item) => item.acknowledgeable).map((item) => <Tooltip key={item.key} label={`Acknowledge this previewed risk: ${item.label}`}><label><input type="checkbox" checked={acks.has(item.key)} onChange={(event) => setAcks((current) => { const next = new Set(current); if (event.target.checked) next.add(item.key); else next.delete(item.key); return next; })} />I understand: {item.label}</label></Tooltip>)}</fieldset>}

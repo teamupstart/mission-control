@@ -477,15 +477,25 @@ export class WorktreeStore {
    * kept, so a late return of the last lease still answers `alreadyReleased`.
    */
   recoverQuarantined(slotId: string, version: number, head: string, now: number): WorktreeSlotRow | null {
+    return this.completeQuarantineRecovery(slotId, version, head, now, false);
+  }
+
+  /** Only the token-authorized operator path may lift the category restriction. */
+  recoverQuarantinedForOperator(slotId: string, version: number, head: string, now: number): WorktreeSlotRow | null {
+    return this.completeQuarantineRecovery(slotId, version, head, now, true);
+  }
+
+  private completeQuarantineRecovery(slotId: string, version: number, head: string, now: number, operator: boolean): WorktreeSlotRow | null {
+    const categories = operator ? [] : RECOVERABLE_QUARANTINE_CATEGORIES;
     const changed = this.db.prepare(
       `UPDATE worktree_slots SET state = 'available', version = version + 1,
          quarantine_reason = NULL, quarantine_category = NULL, quarantined_at = NULL,
          last_error = NULL, updated_at = ?
        WHERE id = ? AND state = 'quarantined' AND version = ?
-         AND quarantine_category IN (${RECOVERABLE_QUARANTINE_CATEGORIES.map(() => "?").join(", ")})
+         ${operator ? "" : `AND quarantine_category IN (${categories.map(() => "?").join(", ")})`}
          AND current_head_sha = ?
          AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
-    ).run(now, slotId, version, ...RECOVERABLE_QUARANTINE_CATEGORIES, head);
+    ).run(now, slotId, version, ...categories, head);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 

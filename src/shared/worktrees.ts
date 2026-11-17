@@ -172,7 +172,7 @@ export interface NativeWorktreeSlotView {
    */
   quarantineRecoverable: boolean | null;
   diagnostic: string | null;
-  actions: Array<"return" | "destroy">;
+  actions: Array<"return" | "destroy" | "recover">;
   /** Null when the pool has no dependency claim configured. */
   dependencies: WorktreeSlotDependenciesView | null;
 }
@@ -250,6 +250,7 @@ export interface WorktreeInventory {
 }
 
 export type WorktreeActionRequest =
+  | { action: "recover"; slotId: string }
   | { action: "return"; slotId: string }
   | { action: "prune"; poolId: string; mode: "safe" | "rightSize" }
   | { action: "reconcile"; poolId: string }
@@ -288,7 +289,19 @@ export interface WorktreeActionAffected {
   diskBytes: number | null;
 }
 
+export interface WorktreeRecoveryCheck {
+  label: string;
+  status: "passed" | "failed" | "unavailable";
+  detail: string;
+}
+
 export interface WorktreeActionPreview {
+  recovery?: {
+    reason: string | null;
+    category: string | null;
+    quarantinedAt: number | null;
+    checks: WorktreeRecoveryCheck[];
+  };
   token: string;
   request: WorktreeActionRequest;
   inventoryRevision: string;

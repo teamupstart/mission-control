@@ -624,7 +624,7 @@ The operations have deliberately narrow meanings:
   recovery or return, and acquisition, return and removal each refuse a pool whose marker they
   cannot verify. A marker that is positively absent, malformed, or names another pool is a
   **state** fact instead, and quarantines every slot in the pool. Acquisition also defers without fallback when idle-slot
-  occupancy cannot be observed. Only an **observation** quarantine is recoverable. Such a slot
+  occupancy cannot be observed. Only an **observation** quarantine is automatically recoverable. Such a slot
   returns to available only when its pool identity, marker, exact path, safe Git registration,
   common directory, cleanliness, detached HEAD at exactly the commit the allocator last recorded
   for it, merge into the observed remote default, and empty process occupancy are proven again.
@@ -634,11 +634,19 @@ The operations have deliberately narrow meanings:
   use the same recovery. Recovery clears the old quarantine diagnostic and its time without
   resetting or deleting files, preserves release history, and leaves active, dirty, moved,
   attached, unmerged, missing, or unverifiable slots protected. A **state** or **transition**
-  quarantine, and an uncategorized legacy one, is never recovered: Destroy it, or Return it
-  through its owner. After **Reconcile**, use **Preview safe prune** to review recovered slots;
+  quarantine, and an uncategorized legacy one, is never automatically recovered: use Recover
+  when unleased, or Return it through its owner. After **Reconcile**, use **Preview safe prune** to review recovered slots;
   removal still checks safety again at execution. A new blocker appears in the pool's
   reconciliation diagnostic while the slot retains its original quarantine reason, category and
   time until recovery succeeds.
+- **Recover** is offered on a quarantined slot with no active lease identity. Its preview shows
+  the original reason, category and time and every recovery check, naming any failed or
+  unavailable check. No acknowledgement overrides a failure. Execute uses the background queue,
+  rejects stale previews, and repeats the same safety proof as automatic recovery before a
+  version compare-and-swap. The operator may recover any category, including legacy quarantines.
+  Success clears the diagnostic, preserves release history and warm dependencies without changing
+  files, and logs `quarantine_recovered` with the operator authorization. Automatic recovery
+  remains limited to observation quarantines. Recover shares the 64-operation queue limit.
 - **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
   a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
   every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly

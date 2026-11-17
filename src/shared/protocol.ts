@@ -3588,6 +3588,7 @@ const WorktreeOwnerTargetSchema = z
 
 /** Closed, stable-id-only operation vocabulary for Settings > Worktrees. */
 export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("recover"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("return"), slotId: WorktreeStableIdSchema }).strict(),
   z
     .object({

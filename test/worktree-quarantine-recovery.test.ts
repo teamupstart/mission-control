@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -572,3 +572,212 @@ test("a partial lease identity is enough to withhold the recovery promise", () =
     assert.equal(quarantineAutoRecoverable({ ...base, quarantineCategory: category }), false, String(category));
   }
 });
+
+function recoveryOperations(manager: WorktreeManager) {
+  return new WorktreeOperationsService(manager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(db, { manager, legacy: new LegacyTreehouseService(db) }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {}, diskBytes: async () => null, claimVariablePresence: async () => [],
+  });
+}
+
+for (const category of ["state", "transition", null] as const) {
+  test(`operator recovers ${category ?? "legacy"} quarantine through the queue and reuses warm capacity`, async () => {
+    const { manager, slot, lease, repository } = await releasedSlot("mission-operator-recover-");
+    writeFileSync(join(repository.clone, ".git/info/exclude"), "node_modules/\n");
+    mkdirSync(join(slot.path, "node_modules"), { recursive: true });
+    writeFileSync(join(slot.path, "node_modules/warm"), "keep me");
+    const quarantined = manager.store.quarantine(slot.id, "state", "original reason", "original error", 4_000, slot.version)!;
+    db.prepare("UPDATE worktree_slots SET quarantine_category = ? WHERE id = ?").run(category, slot.id);
+    await manager.reconcile();
+    assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
+    const operations = recoveryOperations(manager);
+    const preview = await operations.preview({ action: "recover", slotId: slot.id });
+    assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+    assert.deepEqual(preview.requiredAcknowledgements, []);
+    assert.equal(preview.recovery?.reason, "original reason");
+    assert.equal(preview.recovery?.category, category);
+    assert.equal(preview.recovery?.quarantinedAt, 4_000);
+    assert.deepEqual(preview.recovery?.checks.map(({ label, status }) => ({ label, status })), [
+      "Quarantine state",
+      "Pool identity",
+      "Pool marker",
+      "Exact path",
+      "Git registration",
+      "Git common directory",
+      "Clean tree",
+      "Detached HEAD",
+      "Recorded HEAD",
+      "Merged into remote default",
+      "No active lease",
+      "Complete release history",
+      "Released owner",
+      "Process occupancy",
+      "Final Git recheck",
+    ].map((label) => ({ label, status: "passed" })));
+    operations.submit(preview.token, []);
+    await operations.idle();
+    const recovered = manager.store.slot(slot.id)!;
+    assert.equal(recovered.state, "available");
+    assert.equal(recovered.version, quarantined.version + 1);
+    assert.equal(recovered.quarantineReason, null);
+    assert.equal(recovered.quarantinedAt, null);
+    assert.equal(recovered.lastError, null);
+    assert.equal(recovered.lastReleasedLeaseId, lease.leaseId);
+    const next = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+      owner: { kind: "task", key: "reuse" } }));
+    assert.equal(next.slotId, slot.id);
+    assert.equal(readFileSync(join(slot.path, "node_modules/warm"), "utf8"), "keep me");
+  });
+}
+
+for (const [change, firstCheck] of [
+  ["moved HEAD", "Recorded HEAD"],
+  ["dirty", "Clean tree"],
+  ["occupied", "Process occupancy"],
+  ["unknown occupancy", "Process occupancy"],
+  ["leased", "No active lease"],
+  ["partial lease", "No active lease"],
+  ["referenced owner", "Released owner"],
+  ["incomplete release", "Complete release history"],
+] as const) {
+  test(`operator recovery refuses ${change} without an override`, async () => {
+    const { manager, slot, repository } = await releasedSlot("mission-operator-refuse-");
+    manager.store.quarantine(slot.id, "state", "original reason", null, 4_000, slot.version);
+    if (change === "moved HEAD") {
+      gitIn(repository.origin, "commit", "--allow-empty", "-qm", "landed");
+      gitIn(repository.clone, "fetch", "-q", "origin");
+      gitIn(slot.path, "checkout", "-q", "--detach", gitIn(repository.clone, "rev-parse", "origin/main"));
+    }
+    if (change === "dirty") writeFileSync(join(slot.path, "unfinished.txt"), "keep");
+    if (change === "leased" || change === "partial lease") db.prepare(`UPDATE worktree_slots
+      SET active_lease_id = 'held', active_owner_kind = ?, active_owner_key = ? WHERE id = ?`)
+      .run(change === "leased" ? "task" : null, change === "leased" ? "held" : null, slot.id);
+    if (change === "incomplete release") db.prepare("UPDATE worktree_slots SET last_released_owner_key = NULL WHERE id = ?").run(slot.id);
+    const checking = new WorktreeManager(db, {
+      ownerReferenced: async () => change === "referenced owner",
+      occupancy: async (paths) => new Map(paths.map((path) => [path,
+        change === "unknown occupancy" ? { status: "unknown" as const, reason: "observer unavailable" } :
+          { status: "known" as const, occupants: change === "occupied" ? [{ pid: 123, ppid: 1, startRaw: "now", startMs: 1, knownOwner: null, command: "busy", cwd: path }] : [] }])),
+    });
+    const operations = recoveryOperations(checking);
+    const before = manager.store.slot(slot.id);
+    const preview = await operations.preview({ action: "recover", slotId: slot.id });
+    assert.equal(preview.allowed, false);
+    assert.equal(preview.blockers[0]?.split(": ")[0], firstCheck, "first blocker names the failed safety check");
+    assert.deepEqual(preview.requiredAcknowledgements, []);
+    assert.throws(() => operations.submit(preview.token, []), /./);
+    assert.deepEqual(manager.store.slot(slot.id), before);
+    if (change === "leased" || change === "partial lease") {
+      const view = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((item) => item.id === slot.id)!;
+      assert.ok(!view.actions.includes("recover"));
+    }
+  });
+}
+
+test("operator recovery rejects stale previews and a version race during the final proof", async () => {
+  const { manager, slot } = await releasedSlot("mission-operator-race-");
+  manager.store.quarantine(slot.id, "state", "original reason", null, 4_000, slot.version);
+  const operations = recoveryOperations(manager);
+  const preview = await operations.preview({ action: "recover", slotId: slot.id });
+  writeFileSync(join(slot.path, "unfinished.txt"), "keep");
+  await assert.rejects(operations.execute(preview.token, []), /state changed after preview/);
+  rmSync(join(slot.path, "unfinished.txt"));
+  const version = manager.store.slot(slot.id)!.version;
+  const git = new NativeWorktreeGit();
+  const inspect = git.inspect.bind(git);
+  let reads = 0;
+  git.inspect = async (path) => {
+    const result = await inspect(path);
+    if (++reads === 2) db.prepare("UPDATE worktree_slots SET version = version + 1 WHERE id = ?").run(slot.id);
+    return result;
+  };
+  const racing = new WorktreeManager(db, { git, ownerReferenced: async () => false,
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])) });
+  await assert.rejects(racing.recoverQuarantineForOperator(slot.id, version), /recovery raced/);
+  assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
+});
+
+
+test("operator execution refuses occupancy arriving after token revalidation at the final recovery proof", async (t) => {
+  const { manager, slot } = await releasedSlot("mission-operator-late-occupancy-");
+  const quarantined = manager.store.quarantine(slot.id, "state", "original reason", null, 4_000, slot.version)!;
+  let occupied = false;
+  const checking = new WorktreeManager(db, {
+    ownerReferenced: async () => false,
+    occupancy: async (paths) => new Map(paths.map((path) => [path, {
+      status: "known" as const,
+      occupants: occupied ? [{
+        pid: 4242, ppid: 1, startRaw: "now", startMs: 1, knownOwner: null, command: "busy", cwd: path,
+      }] : [],
+    }])),
+  });
+  const operations = recoveryOperations(checking);
+  const preview = await operations.preview({ action: "recover", slotId: slot.id });
+  assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+  const recover = checking.recoverQuarantineForOperator.bind(checking);
+  // This boundary is reached only after the token is claimed and the rebuilt preview
+  // matches. Change the external safety fact here, leaving the durable version untouched,
+  // then run the real manager proof and compare-and-swap path.
+  const finalExecution = t.mock.method(checking, "recoverQuarantineForOperator", async (slotId: string, version: number) => {
+    assert.equal(version, quarantined.version);
+    assert.deepEqual(checking.store.slot(slotId), quarantined);
+    occupied = true;
+    return recover(slotId, version);
+  });
+  const accepted = operations.submit(preview.token, []);
+  assert.equal(accepted.ok, true);
+  await operations.idle();
+  assert.equal(finalExecution.mock.callCount(), 1, "execution reached the manager after preview revalidation");
+  const failure = (await operations.inventory()).operations.find((operation) => operation.id === accepted.operation.id);
+  assert.equal(failure?.state, "failed");
+  assert.match(failure?.error ?? "", /^Process occupancy: one or more processes still occupy the worktree/);
+  assert.deepEqual(checking.store.slot(slot.id), quarantined, "failed execution preserves quarantine, version and release history");
+});
+
+for (const recovery of ["operator", "automatic"] as const) {
+  for (const lateOccupancy of ["occupied", "unknown"] as const) {
+    test(`${recovery} recovery refuses ${lateOccupancy} occupancy arising during final Git inspection`, async () => {
+      const { manager, slot } = await releasedSlot("mission-recovery-inspection-occupancy-");
+      const quarantined = manager.store.quarantine(slot.id, recovery === "operator" ? "state" : "observation",
+        "original reason", null, 4_000, slot.version)!;
+      const git = new NativeWorktreeGit();
+      const inspect = git.inspect.bind(git);
+      let inspections = 0;
+      let changed = false;
+      let lateObservations = 0;
+      git.inspect = async (path) => {
+        const result = await inspect(path);
+        if (path === slot.path && ++inspections === 2) changed = true;
+        return result;
+      };
+      const checking = new WorktreeManager(db, {
+        git,
+        ownerReferenced: async () => false,
+        occupancy: async (paths) => new Map(paths.map((path): [string, WorktreeOccupancy] => {
+          if (changed) lateObservations++;
+          return [path, changed && lateOccupancy === "unknown"
+            ? { status: "unknown", reason: "late occupancy unavailable" }
+            : { status: "known", occupants: changed ? [{
+              pid: 4242, ppid: 1, startRaw: "now", startMs: 1, knownOwner: null, command: "busy", cwd: path,
+            }] : [] }];
+        })),
+      });
+      if (recovery === "operator") {
+        await assert.rejects(checking.recoverQuarantineForOperator(slot.id, quarantined.version),
+          lateOccupancy === "occupied"
+            ? /^Error: Process occupancy: one or more processes still occupy the worktree/
+            : /^Error: Process occupancy: late occupancy unavailable/);
+      } else {
+        await checking.reconcile();
+        assert.match(checking.store.pool(slot.poolId)?.reconciliationError ?? "",
+          lateOccupancy === "occupied" ? /one or more processes still occupy/ : /late occupancy unavailable/);
+      }
+      assert.equal(inspections, 2, "the process state changed during the final Git inspection");
+      assert.ok(lateObservations > 0, "occupancy was observed again after the final inspection");
+      assert.deepEqual(checking.store.slot(slot.id), quarantined, "recovery preserves the quarantined row and version");
+    });
+  }
+}

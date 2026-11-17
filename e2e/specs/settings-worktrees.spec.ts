@@ -1268,3 +1268,64 @@ test("Settings shows when each slot was quarantined and which ones Reconcile can
     data: { leaseId: fresh.leaseId },
   })).ok()).toBe(true);
 });
+
+test("Recover previews state quarantine checks, preserves warm files and blocks dirty slots", async ({ dashboard, daemon }) => {
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["safe operator recovery", "dirty operator recovery"]) {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    leases.push(await response.json());
+  }
+  for (const lease of leases) {
+    expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    })).ok()).toBe(true);
+    withDaemonDb(daemon, (db) => {
+      expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
+        quarantine_reason = 'allocator HEAD false positive', quarantine_category = 'state', quarantined_at = ?
+        WHERE last_released_lease_id = ? AND state = 'available'`).run(1_000, lease.leaseId).changes)).toBe(1);
+    });
+  }
+  const [safe, dirty] = leases as [typeof leases[number], typeof leases[number]];
+  writeFileSync(join(daemon.repo, ".git/info/exclude"), "node_modules/\n");
+  mkdirSync(join(safe.path, "node_modules"), { recursive: true });
+  writeFileSync(join(safe.path, "node_modules/warm"), "warm install");
+  writeFileSync(join(dirty.path, "unfinished.txt"), "keep this work");
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const safeRow = pool.locator(".wt-slot", { hasText: safe.path });
+  const dirtyRow = pool.locator(".wt-slot", { hasText: dirty.path });
+  await safeRow.getByRole("button", { name: "Recover", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "recover worktree preview" });
+  await expect(preview.getByText("allocator HEAD false positive", { exact: true })).toBeVisible();
+  await expect(preview.getByText(/Category: state/)).toBeVisible();
+  await expect(preview.getByText("Recorded HEAD: passed", { exact: true })).toBeVisible();
+  await expect(preview.getByRole("checkbox")).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "26-recover-safe-preview", true);
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(safeRow.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(safeRow.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  expect(readFileSync(join(safe.path, "node_modules/warm"), "utf8")).toBe("warm install");
+  await shoot(dashboard, "27-recover-warm-capacity", true);
+  await dirtyRow.getByRole("button", { name: "Recover", exact: true }).click();
+  await expect(preview.getByText("Clean tree: failed", { exact: true })).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await expect(preview.getByRole("checkbox")).toHaveCount(0);
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "28-recover-dirty-blocked", true);
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  expect(readFileSync(join(dirty.path, "unfinished.txt"), "utf8")).toBe("keep this work");
+  const reuse = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "reuse recovered slot" },
+  });
+  expect(reuse.status()).toBe(201);
+  expect((await reuse.json()).path).toBe(safe.path);
+  expect(readFileSync(join(safe.path, "node_modules/warm"), "utf8")).toBe("warm install");
+});

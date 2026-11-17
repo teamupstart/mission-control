@@ -425,7 +425,7 @@ export class WorktreeOperationsService {
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
-          const actions: Array<"return" | "destroy"> = [];
+          const actions: Array<"return" | "destroy" | "recover"> = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
           if (entry.slot.state === "leased") {
@@ -434,6 +434,8 @@ export class WorktreeOperationsService {
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
             actions.push("destroy");
           }
+          if (entry.slot.state === "quarantined" && entry.slot.activeLeaseId === null &&
+            entry.slot.activeOwnerKind === null && entry.slot.activeOwnerKey === null) actions.push("recover");
           return {
             id: entry.slot.id,
             poolId: pool.pool.id,
@@ -887,6 +889,22 @@ export class WorktreeOperationsService {
     const blockers: string[] = [];
     const consequences: string[] = [];
 
+    if (request.action === "recover") {
+      const proof = await this.manager.previewQuarantineRecovery(request.slotId);
+      if (!proof) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+      const { slot, checks } = proof;
+      if (observed.pending.has(slot.path)) blockers.push("A cleanup for this slot is already queued.");
+      for (const check of checks) {
+        if (check.status !== "passed") blockers.push(`${check.label}: ${check.detail}`);
+      }
+      affected.push({ provider: "mission", id: slot.id, path: slot.path, owner: null,
+        version: slot.version, safetyRevision: digest({ slot, checks }), diskBytes: null });
+      consequences.push("Returns this slot to warm capacity without resetting or removing files. Release history and installed dependencies are retained.");
+      return { ...this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences),
+        recovery: { reason: slot.quarantineReason, category: slot.quarantineCategory,
+          quarantinedAt: slot.quarantinedAt, checks } };
+    }
+
     if (request.action === "legacyReturn") {
       const ref: LegacyOwnerRef = request.owner;
       const item = observed.legacy.find((candidate) => candidate.owners.some((owner) =>
@@ -1319,6 +1337,15 @@ export class WorktreeOperationsService {
     removed: (target: WorktreeActionAffected) => void,
   ): Promise<void> {
     const request = preview.request;
+    if (request.action === "recover") {
+      const target = preview.affected[0]!;
+      try {
+        await this.manager.recoverQuarantineForOperator(target.id, target.version!);
+      } catch (error) {
+        throw new WorktreeOperationError(409, error instanceof Error ? error.message : String(error), "changed");
+      }
+      return;
+    }
     if (request.action === "reconcile") {
       if (!(await this.manager.reconcilePoolById(request.poolId))) {
         throw new WorktreeOperationError(409, "native pool disappeared before reconciliation", "changed");
@@ -1448,6 +1475,7 @@ export class WorktreeOperationsService {
 
   private successMessage(action: WorktreeActionRequest["action"]): string {
     switch (action) {
+      case "recover": return "Quarantined worktree recovered to warm capacity.";
       case "return": return "Worktree returned to warm capacity.";
       case "prune": return "Safe candidate set pruned.";
       case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";

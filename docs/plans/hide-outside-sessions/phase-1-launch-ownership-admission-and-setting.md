@@ -146,11 +146,15 @@ Add focused tests in `test/`, run with
   without the key restores as off.
 - Dispatch: `waitForSessionAtCwd` resolves for a Mission-launched session when the setting is off.
 
-Add `e2e/external-sessions-setting.spec.ts`. The e2e daemon runs with discovery off, so this
-spec covers the toggle only:
+Add `e2e/specs/external-sessions-setting.spec.ts`. It covers the toggle and its effect on the
+Board:
 
-- The checkbox is unchecked on a fresh home, and the warning is visible.
-- Checking and unchecking each persist across a reload.
+- With discovery off, as every spec runs by default: the checkbox is unchecked on a fresh home,
+  the warning is visible, and checking and unchecking each persist across a reload.
+- With discovery on for that test's daemon (`MISSION_POLL_MS=400`): two real tmux panes run a
+  fake `claude`, one beneath a Mission launch wrapper and one started directly. With the
+  setting off only the Mission launch has a Board card; with it on, both do. The test skips
+  itself where tmux is not installed.
 
 Then run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`, and
 `npm run test:e2e`.

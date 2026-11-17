@@ -70,7 +70,9 @@ In `src/server/discovery/correlate.ts`:
 - `discover()` takes an `admit(candidate)` predicate. It runs inside `correlate()` as soon as
   the synthetic id and cwd are known, and before `gitInfo`, `annotatePaneState` (pane capture, mode line,
   option menus), and `annotateCodexRollouts` (`lsof`). A hidden session therefore costs no pane
-  capture and no `lsof`, and that is where most of the reported bugginess lives.
+  capture and no Codex rollout `lsof`, and that is where most of the reported bugginess lives.
+  One batched `lsof` still reads every agent's working directory, because the pipeline-worktree
+  rule needs the cwd to decide admission.
 - The poller builds `admit` once per tick from a single config read
   (`Registry.discoveryAdmission()`), so the policy has one reader.
 
@@ -170,13 +172,17 @@ Unit tests in `test/`, using injected process snapshots:
 - **Dispatch.** `waitForSessionAtCwd` still resolves for a dispatched terminal session when the
   setting is off.
 
-The e2e spec, `e2e/external-sessions-setting.spec.ts`, covers the toggle. The e2e daemon runs
-with discovery off (`MISSION_POLL_MS=0`) and fakes every agent, so it cannot spawn a real
-outside session. Admission behavior is therefore covered by the unit tests above, and the
-browser spec covers what a person sees:
+The e2e spec, `e2e/specs/external-sessions-setting.spec.ts`, covers the toggle and its effect
+on the Board. The admission rules in full are covered by the unit tests above. The browser spec
+covers what a person sees:
 
-- The checkbox is unchecked on a fresh state home, and the warning text is visible.
-- Checking it persists across a reload, and unchecking it does too.
+- With discovery off, as every spec runs by default: the checkbox is unchecked on a fresh state
+  home, the warning text is visible, and checking and unchecking it each persist across a
+  reload.
+- With discovery on for that test's daemon (`MISSION_POLL_MS=400`): two real tmux panes run a
+  fake `claude`, one beneath a Mission launch wrapper and one started directly. With the
+  setting off only the Mission launch has a Board card; with it on, both do. The test skips
+  itself where tmux is not installed.
 
 ## Documentation
 

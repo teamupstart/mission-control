@@ -15,7 +15,9 @@ Source plan: [`docs/plans/hide-outside-sessions/plan.md`](plan.md)
   (`proc:<tty>:<pid>:<startMs>`) and the cwd before it calls `gitInfo`, and `discover()` runs
   `annotateCodexRollouts` and `annotatePaneState` after `correlate()` returns. An `admit`
   predicate applied inside the `correlate()` loop, right after cwd resolution, therefore skips
-  `gitInfo`, pane capture, and `lsof` for hidden sessions. This is consistent with the source plan.
+  `gitInfo`, pane capture, and the Codex rollout `lsof` for hidden sessions. The batched cwd
+  `lsof` that precedes `correlate()` still reads every agent, because admission needs the cwd
+  for the pipeline-worktree rule. This is consistent with the source plan.
 - `Registry.pipelineLinkFor(cwd)` (`src/server/registry.ts`) already answers "is this cwd inside
   an observed run's worktree" with the deepest-containment rule. Admission reuses it rather than
   adding a second matcher.

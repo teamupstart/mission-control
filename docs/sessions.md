@@ -36,15 +36,18 @@ Agent SDK sessions never pass through the sweep: the daemon registers them itsel
 them, so they are shown whichever way the setting below is set. The sweep recognizes its own
 terminal launches by the private wrapper each one runs beneath, read from the same process table
 (`isMissionLaunchProcess` in `src/server/terminal/launch-process.ts`), so they stay on the
-dashboard across a daemon restart. Two fallbacks also admit a terminal session: being a running
-task's session or holding a dispatch Foreman invite, and working inside an observed
-[pipeline run's](pipelines.md) worktree, since an external engine starts those workers.
+dashboard across a daemon restart. Fallbacks also admit a terminal session: being a running
+task's session or holding a dispatch Foreman invite, working inside an observed
+[pipeline run's](pipelines.md) worktree, since an external engine starts those workers, and
+being owed a close by a finished task, so its teardown is never dropped while it still runs.
 
 Any other `claude`, `codex`, or `pi` process is skipped before its pane is captured, its Git
 facts are read, or its Codex rollout is looked up with `lsof`. One batched `lsof` still reads
 every agent's working directory, because the pipeline rule needs it. A skipped session is
 simply absent from the sweep, so a card it already had leaves through the ordinary exit and
-eviction lifecycle, and a hook from it finds no card, as any unmatched hook does.
+eviction lifecycle, and a hook from it finds no card, as any unmatched hook does. It still counts
+toward the hook's unique-directory fallback, so its hook is never bound to the one visible card
+that shares its working directory.
 
 **Settings > Setup > Terminals > Show sessions started outside Mission Control** turns the old
 behavior back on, and the next sweep cards them again. It is off for every install, including

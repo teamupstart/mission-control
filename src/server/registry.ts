@@ -269,6 +269,7 @@ import {
   taskResidentRestartSummaries,
   taskSessionClosureForSession,
   getTaskSessionClosure,
+  listTaskSessionClosures,
   retireTaskSessionClosure,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
@@ -1001,6 +1002,14 @@ export class Registry extends EventEmitter {
    * tombstones included - resolution, not storage, is where the tombstone becomes null.
    */
   private invites = new Map<string, ForemanInviteRow>();
+  /**
+   * The cwd of every session the last completed sweep refused (`discoveryAdmission`). A
+   * hidden session has no card, but it still runs hooks, so `findSessionByEnv`'s unique-cwd
+   * fallback counts it: otherwise it would bind that hook to the one visible card beside it.
+   * `pendingHiddenCwds` is the sweep in flight; `applyDiscovery` commits it.
+   */
+  private hiddenCwds = new Set<string>();
+  private pendingHiddenCwds: Set<string> | null = null;
   /**
    * Launch presentation markers, keyed by the SAME note key. In memory like notes, goals
    * and invites because `launchTurnFor` is consulted once per transcript frame - every SSE
@@ -2573,6 +2582,8 @@ export class Registry extends EventEmitter {
    * loop in `applyDiscovery` hands any card it had to `beginEviction`, like any other exit.
    */
   discoveryAdmission(): DiscoveryAdmit | undefined {
+    const hidden = new Set<string>();
+    this.pendingHiddenCwds = hidden;
     if (getTerminalsConfig().externalSessions) return undefined;
     const bound = new Set<string>();
     for (const task of this.tasks.values()) {
@@ -2600,14 +2611,33 @@ export class Registry extends EventEmitter {
       boundToUnresolved ??= sessionsBoundToAgents(unresolved);
       return boundToUnresolved.has(id);
     };
-    return (candidate) =>
-      candidate.missionLaunched ||
-      bound.has(candidate.syntheticId) ||
-      invited(candidate.syntheticId) ||
-      this.pipelineLinkFor(candidate.cwd) !== null;
+    // A session owed a task closure is ours to close, whether or not it is retired yet. Its
+    // task is done, so it is not in `bound`, and after a restart `retiredMissionTargets` is
+    // empty: only the durable ledger still says so. Refusing it would drop its teardown
+    // target while the process runs, and `tasks.ts` would then drop the closure itself. The
+    // ledger holds a row only until the session is seen to leave, so this one read is small.
+    let owedClosures: Set<string> | undefined;
+    const owed = (id: string): boolean => {
+      owedClosures ??= new Set(listTaskSessionClosures().map((row) => row.sessionId));
+      return owedClosures.has(id);
+    };
+    return (candidate) => {
+      const admitted =
+        candidate.missionLaunched ||
+        bound.has(candidate.syntheticId) ||
+        invited(candidate.syntheticId) ||
+        this.pipelineLinkFor(candidate.cwd) !== null ||
+        owed(candidate.syntheticId);
+      if (!admitted && candidate.cwd) hidden.add(candidate.cwd);
+      return admitted;
+    };
   }
 
   applyDiscovery(discovered: DiscoveredSession[], terminals: readonly TerminalEnumeration[] = []): void {
+    // Only a completed sweep commits what it hid. A sweep that ran without admission hid
+    // nothing.
+    this.hiddenCwds = this.pendingHiddenCwds ?? new Set();
+    this.pendingHiddenCwds = null;
     this.terminalInventory = terminals;
     this.verifiedLaunchesSinceDiscovery.clear();
     const now = Date.now();
@@ -4272,6 +4302,11 @@ export class Registry extends EventEmitter {
       // agent doesn't make the match safer, it makes it wrong in the one case that
       // matters, a Claude and a Codex session sharing a worktree: the filter hides the
       // ambiguity and binds the caller to the Claude card with full confidence.
+      //
+      // A session discovery hid (outside sessions off) counts toward that uniqueness too.
+      // It has no card but still runs hooks, and it would otherwise be bound to the one
+      // visible card that shares its directory. With the setting on, nothing is hidden.
+      if (this.hiddenCwds.has(cwd)) return undefined;
       const matches = [...candidates.values()].filter((s) => s.cwd === cwd && !transferHold(s));
       if (matches.length === 1) return matches[0];
     }

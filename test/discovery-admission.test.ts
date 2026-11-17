@@ -15,9 +15,16 @@ const home = mkdtempSync(join(tmpdir(), "mission-discovery-admission-"));
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { openDb, recordAgentBinding, sessionsBoundToAgents, setAppConfig, upsertForemanInvite } = await import(
-  "../src/server/db.ts"
-);
+const {
+  clearTaskSessionClosure,
+  openDb,
+  openTaskSessionClosure,
+  recordAgentBinding,
+  retireTaskSessionClosure,
+  sessionsBoundToAgents,
+  setAppConfig,
+  upsertForemanInvite,
+} = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { pollOnce } = await import("../src/server/discovery/poller.ts");
 const { discover } = await import("../src/server/discovery/correlate.ts");
@@ -75,6 +82,11 @@ const REPO_ROOT = 5;
 const INVITED = 6;
 const RESTARTED = 7;
 const LATE_BOUND = 12;
+// A Mission launch and a hand-started session in ONE directory, for the hook cwd fallback.
+const SHARED_MISSION = 13;
+const SHARED_OUTSIDE = 14;
+// Not Mission-launched and not task-bound, but owed a task closure.
+const OWED = 15;
 // The same rule for every harness: one Mission-launched and one hand-started session each.
 const CODEX_MISSION = 8;
 const CODEX_OUTSIDE = 9;
@@ -86,7 +98,7 @@ const AGENT_OF: Record<number, AgentType> = {
   [PI_MISSION]: "pi",
   [PI_OUTSIDE]: "pi",
 };
-const WRAPPED = new Set([MISSION, CODEX_MISSION, PI_MISSION]);
+const WRAPPED = new Set([MISSION, CODEX_MISSION, PI_MISSION, SHARED_MISSION]);
 const CWDS: Record<number, string> = {
   [MISSION]: "/work/mission",
   [OUTSIDE]: "/work/outside",
@@ -100,6 +112,9 @@ const CWDS: Record<number, string> = {
   [CODEX_OUTSIDE]: "/work/codex-outside",
   [PI_MISSION]: "/work/pi-mission",
   [PI_OUTSIDE]: "/work/pi-outside",
+  [SHARED_MISSION]: "/work/shared",
+  [SHARED_OUTSIDE]: "/work/shared",
+  [OWED]: "/work/owed",
 };
 /** Every kind but RESTARTED, which only the restart case puts on the machine. */
 const EVERY = [MISSION, OUTSIDE, TASK_BOUND, PIPELINE, REPO_ROOT, INVITED];
@@ -313,6 +328,46 @@ test("the invite binding lookup reads a whole set of keys backwards, through its
     plan.some((row) => row.detail.includes("idx_agent_bindings_agent")),
     plan.map((row) => row.detail).join("\n"),
   );
+});
+
+test("off: a session owed a task closure stays admitted on a fresh registry, before and after retirement", async () => {
+  setTerminalsConfig({ externalSessions: false });
+  // Its task is done, so it is not task-bound, and a fresh registry has no retired target.
+  openTaskSessionClosure("admission-owed-task", idOf(OWED), 1000, 60_000);
+  const { find } = machine([OWED, OUTSIDE]);
+  const registry = new Registry();
+  await pollOnce(registry, find);
+  assert.deepEqual(shown(registry), [idOf(OWED)], "owed but not yet retired: still a card to close");
+
+  retireTaskSessionClosure("admission-owed-task", idOf(OWED), 2000);
+  const restarted = new Registry();
+  await pollOnce(restarted, find);
+  assert.deepEqual(shown(restarted), [], "a retired session is never published again");
+  assert.equal(restarted.missionSessionClosureTarget(idOf(OWED))?.id, idOf(OWED), "but its teardown target is kept");
+  await pollOnce(restarted, find);
+  assert.equal(restarted.missionSessionClosureTarget(idOf(OWED))?.id, idOf(OWED), "on every sweep that sees it");
+  clearTaskSessionClosure("admission-owed-task");
+});
+
+test("off: a hidden session in a visible card's directory keeps the hook cwd fallback ambiguous", async () => {
+  setTerminalsConfig({ externalSessions: false });
+  const registry = new Registry();
+  const together = machine([SHARED_MISSION, SHARED_OUTSIDE]);
+  await pollOnce(registry, together.find);
+  assert.deepEqual(shown(registry), [idOf(SHARED_MISSION)]);
+  // A paneless hook from the hidden session must not be bound to the one card beside it.
+  assert.equal(registry.findSessionByEnv({}, "agent-of-the-hidden-session", "/work/shared"), undefined);
+
+  // Alone in that directory, the Mission session's first paneless hook still finds its card.
+  const alone = machine([SHARED_MISSION]);
+  await pollOnce(registry, alone.find);
+  assert.equal(registry.findSessionByEnv({}, "agent-of-the-mission-session", "/work/shared")?.id, idOf(SHARED_MISSION));
+
+  // On, both have cards, so the directory is ambiguous exactly as it was before this setting.
+  setTerminalsConfig({ externalSessions: true });
+  await pollOnce(registry, together.find);
+  assert.equal(registry.findSessionByEnv({}, "agent-of-either-session", "/work/shared"), undefined);
+  setTerminalsConfig({ externalSessions: false });
 });
 
 test("turning the setting off evicts an outside card through the one eviction path", async (t) => {

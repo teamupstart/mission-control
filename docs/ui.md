@@ -1491,7 +1491,12 @@ nothing.
 
 The checkout listing behind these links and previews is read when the conversation opens and
 again whenever a new message lands while the session is between turns, so a file the agent writes
-while you watch is linked and previewed in the turn that names it. The listing holds the
+while you watch is linked and previewed in the turn that names it. A turn that is still running
+reads it once more when one of its recent messages names an HTML page or image the listing does
+not hold yet. That covers an agent that presents mock-ups and then waits on a `request_input`
+question about them: the previews appear while the question is open, not after it is answered.
+The same listing links checkout paths named in a `request_input` question's text, so the review
+card opens each option in Files and leaves the question pending. The listing holds the
 checkout's tracked and untracked files, leaving out what git ignores, with one exception. HTML
 pages and browser images that git ignores under `docs/mockups/` are listed anyway, because that
 is where the [Mockups skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)

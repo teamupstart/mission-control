@@ -12,7 +12,9 @@ import {
   dropSessionArtifactState,
   readArtifactExpanded,
   retainDiscoveredArtifacts,
+  namesUnlistedArtifact,
   resetArtifactState,
+  unlistedArtifactTurn,
   writeArtifactExpanded,
 } from "../src/web/lib/conversationArtifacts.ts";
 import { ConversationArtifacts } from "../src/web/components/ConversationArtifacts.tsx";
@@ -178,6 +180,44 @@ function document(over: Partial<SessionFileDocument> = {}): SessionFileDocument 
     ...over,
   };
 }
+
+test("a turn naming a page or image the listing lacks asks for a fresh listing", () => {
+  const fresh = "docs/mockups/remind/snooze.html";
+  // The presentation the mockups skill asks for, and the Markdown links to the rest.
+  assert.equal(namesUnlistedArtifact(`Mockup: ${fresh}`, paths), true);
+  assert.equal(namesUnlistedArtifact(`- [Snooze chip](${fresh})`, paths), true);
+  assert.equal(namesUnlistedArtifact(`- [Snooze chip](<./${fresh}>)`, paths), true);
+  assert.equal(namesUnlistedArtifact("Screenshot: docs/mockups/remind/after.png", paths), true);
+  // Already listed, whether bare or behind a link label: nothing new to ask for.
+  assert.equal(namesUnlistedArtifact(`Report: ${REPORT}\n- [The plan](${PLAN})`, paths), false);
+  // Paths that could never preview, and prose with no path at all, cost nothing.
+  assert.equal(namesUnlistedArtifact("Notes: docs/mockups/remind/notes.md", paths), false);
+  assert.equal(namesUnlistedArtifact("I wrote the HTML page and a PNG.", paths), false);
+  assert.equal(namesUnlistedArtifact(`Absolute: /Users/me/checkout/${fresh}`, paths), false);
+});
+
+test("the presenting turn is found among the newest few, beside the call that blocks it", () => {
+  const fresh = "docs/mockups/remind/snooze.html";
+  const messages = [
+    { id: "old", role: "assistant" as const, text: `Mockup: ${fresh}` },
+    { id: "u1", role: "user" as const, text: "draw them" },
+    { id: "a1", role: "assistant" as const, text: `Mockup: ${fresh}` },
+    // The same assistant message's blocking request_input, recorded as its own row.
+    { id: "a2", role: "assistant" as const, text: "" },
+  ];
+  assert.equal(unlistedArtifactTurn(messages, new Set()), "a1");
+  assert.equal(unlistedArtifactTurn(messages, null), "a1", "no listing yet lists nothing");
+  assert.equal(unlistedArtifactTurn(messages, new Set([fresh])), null, "listed already");
+  // An operator who pastes a path does not present an artifact.
+  assert.equal(unlistedArtifactTurn([{ id: "u", role: "user", text: `Mockup: ${fresh}` }], new Set()), null);
+  // Bounded: a presentation scrolled out of the newest few is the settled listing's job.
+  const filler = Array.from({ length: 4 }, (_, index) => ({
+    id: `f${index}`,
+    role: "assistant" as const,
+    text: "working",
+  }));
+  assert.equal(unlistedArtifactTurn([messages[0]!, ...filler], new Set()), null);
+});
 
 test("classifies every required preview refusal without browser-sized fixtures", () => {
   assert.equal(classifyArtifactPreview({ ok: true, file: document() }).kind, "ready");

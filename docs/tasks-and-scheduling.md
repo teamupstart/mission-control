@@ -18,6 +18,8 @@ without a session id, including for stranded `running` rows. It stops task-launc
 preserves archives, and cleans up owned resources; assigned tasks do not kill an existing
 operator session. A cleanup refusal returns an error and keeps remaining resources tracked.
 Cancellation retains the task record, which can then be removed with `delete_task`.
+The MCP request has a 30-second deadline. A timeout or lost connection reports an unknown
+outcome because daemon cancellation may still finish; use `get_task` before retrying.
 
 The MCP `delete_task` tool posts a validated task id to the token-guarded `/mcp/tasks/delete`
 route and delegates to `TaskManager.remove`, the same owner used by dashboard deletion. Active

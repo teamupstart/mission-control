@@ -767,14 +767,16 @@ server.registerTool(
     inputSchema: McpCancelTaskSchema,
   },
   async ({ taskId }) => {
+    const signal = AbortSignal.timeout(30_000);
     try {
-      const res = await http("/mcp/tasks/cancel", "POST", { taskId });
+      const res = await http("/mcp/tasks/cancel", "POST", { taskId }, false, signal);
       if (!res.ok) {
         return textResult(`Could not cancel task (${res.status}): ${await res.text()}`, true);
       }
       return textResult(JSON.stringify({ taskId, cancelled: true }));
     } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+      const reason = signal.aborted ? "The cancellation request timed out." : `Could not reach Mission Control: ${String(err)}.`;
+      return textResult(`${reason} Cancellation outcome is unknown; the task may already have changed. Use get_task to inspect its status before retrying.`, true);
     }
   },
 );

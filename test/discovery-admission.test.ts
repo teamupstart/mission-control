@@ -236,8 +236,9 @@ test("off: a work episode is not launch evidence", async () => {
   await pollOnce(registry, find);
   assert.ok(registry.getSession(idOf(OUTSIDE)));
   setTerminalsConfig({ externalSessions: false });
-  const admit = registry.discoveryAdmission()!;
-  assert.equal(admit({ syntheticId: idOf(OUTSIDE), agent: "claude", cwd: CWDS[OUTSIDE]!, missionLaunched: false }), false);
+  const { admit, hiddenCwds } = registry.discoveryAdmission();
+  assert.equal(admit!({ syntheticId: idOf(OUTSIDE), agent: "claude", cwd: CWDS[OUTSIDE]!, missionLaunched: false }), false);
+  assert.deepEqual([...hiddenCwds], [CWDS[OUTSIDE]], "the refusal is recorded on this sweep's own set");
 });
 
 test("off hides outside Codex and Pi sessions too, and on shows them", async () => {
@@ -267,7 +268,9 @@ test("off hides outside Codex and Pi sessions too, and on shows them", async () 
 test("on: every session is shown, as before", async () => {
   setTerminalsConfig({ externalSessions: true });
   const registry = fleet();
-  assert.equal(registry.discoveryAdmission(), undefined, "on admits everything without a predicate");
+  const on = registry.discoveryAdmission();
+  assert.equal(on.admit, undefined, "on admits everything without a predicate");
+  assert.equal(on.hiddenCwds.size, 0, "and hides nothing");
   const { find, annotated } = machine();
   await pollOnce(registry, find);
   assert.deepEqual(shown(registry), EVERY.map(idOf).sort());
@@ -383,6 +386,29 @@ test("off: a hidden session in a visible card's directory keeps the hook cwd fal
   await pollOnce(registry, together.find);
   assert.equal(registry.findSessionByEnv({}, "agent-of-either-session", "/work/shared"), undefined);
   setTerminalsConfig({ externalSessions: false });
+});
+
+test("each sweep's hidden set is its own, so an overlapping admission cannot change what another commits", async () => {
+  setTerminalsConfig({ externalSessions: false });
+  const registry = new Registry();
+  const together = machine([SHARED_MISSION, SHARED_OUTSIDE]);
+  const alone = machine([SHARED_MISSION]);
+  // Two admissions in flight at once: the later one must not replace the earlier one's set.
+  const first = registry.discoveryAdmission();
+  const second = registry.discoveryAdmission();
+  const firstSweep = await together.find(first.admit);
+  const secondSweep = await alone.find(second.admit);
+  assert.deepEqual([...first.hiddenCwds], ["/work/shared"]);
+  assert.deepEqual([...second.hiddenCwds], [], "the second sweep refused nothing");
+
+  registry.applyDiscovery(firstSweep.sessions, firstSweep.terminals, first.hiddenCwds);
+  assert.equal(registry.findSessionByEnv({}, "agent-of-the-hidden-session", "/work/shared"), undefined);
+  registry.applyDiscovery(secondSweep.sessions, secondSweep.terminals, second.hiddenCwds);
+  assert.equal(
+    registry.findSessionByEnv({}, "agent-of-the-mission-session", "/work/shared")?.id,
+    idOf(SHARED_MISSION),
+    "each commit is exactly what its own sweep hid",
+  );
 });
 
 test("turning the setting off evicts an outside card through the one eviction path", async (t) => {

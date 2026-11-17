@@ -93,6 +93,16 @@ export interface DiscoveryCandidate {
  */
 export type DiscoveryAdmit = (candidate: DiscoveryCandidate) => boolean;
 
+/**
+ * One sweep's admission: the predicate, and the cwds of the candidates it refused, filled in
+ * as the sweep calls it. The poller hands `hiddenCwds` to that same sweep's
+ * `Registry.applyDiscovery`, so a set is never committed by a different sweep.
+ */
+export interface DiscoveryAdmission {
+  admit: DiscoveryAdmit | undefined;
+  hiddenCwds: ReadonlySet<string>;
+}
+
 export interface DiscoveryInput {
   procs: Proc[];
   /**

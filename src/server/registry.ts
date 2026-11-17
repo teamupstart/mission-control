@@ -2568,8 +2568,11 @@ export class Registry extends EventEmitter {
    * caller passes that set to this same sweep's `applyDiscovery`, so a hidden set can only
    * ever be committed by the sweep that produced it.
    *
-   * Read once per tick by the poller, before the sweep, so the setting, the task bindings,
-   * the invites, the observed pipeline runs and the closure ledger are one snapshot. With
+   * Built once per tick by the poller, before the sweep. The setting, the task bindings, the
+   * invites and the observed run worktrees are captured here, so every candidate in the sweep
+   * is judged against the same values. The two database reads (the stored invite bindings and
+   * the closure ledger) are lazy: each is taken at the first candidate that needs it and then
+   * reused for the rest of the sweep, so a steady fleet asks the database nothing. With
    * **Show sessions started outside Mission Control** on (`TerminalsConfig.externalSessions`)
    * everything is admitted, which is the old behavior. Off, a session is admitted when:
    *
@@ -2578,8 +2581,9 @@ export class Registry extends EventEmitter {
    *    so a wrapper the predicate fails to recognize degrades to a card shown rather than a
    *    task's session evicted. Not a work episode: `mergeDiscovered` opens one for every
    *    session it merges, so an episode says nothing about who launched it; or
-   * 3. its cwd is inside an observed pipeline run's worktree (`pipelineLinkFor`). Pipeline
-   *    workers are spawned by an external engine, and pipelines are already opt-in; or
+   * 3. its cwd is inside an observed pipeline run's worktree (the same segment-safe
+   *    containment `pipelineLinkFor` uses). Pipeline workers are spawned by an external
+   *    engine, and pipelines are already opt-in; or
    * 4. it is owed a task session closure (`listTaskSessionClosures`), retired or not. Its
    *    task is done, so rule 2 no longer holds, and refusing it would drop the teardown
    *    target while the process still runs.
@@ -2596,6 +2600,14 @@ export class Registry extends EventEmitter {
     }
     const dispatchKeys = new Set<string>();
     for (const [key, row] of this.invites) if (row.source === "dispatch") dispatchKeys.add(key);
+    // The observed run worktrees, captured here with the rest rather than read through
+    // `pipelineLinkFor` when `admit` runs, which is after `discover`'s awaited process and cwd
+    // reads. Only "inside some run's worktree" matters for admission, so the deepest-run choice
+    // `pipelineLinkFor` makes for correlation is not needed.
+    const runWorktrees: string[] = [];
+    for (const run of this.pipelineRuns.values()) if (run.worktree) runWorktrees.push(run.worktree);
+    const inRunWorktree = (cwd: string | null): boolean =>
+      cwd !== null && runWorktrees.some((worktree) => withinRoot(worktree, cwd));
     // Invite keys no live card accounts for. Only these can need the stored binding, so a
     // steady fleet asks the database nothing.
     const unresolved = new Set(dispatchKeys);
@@ -2631,7 +2643,7 @@ export class Registry extends EventEmitter {
         candidate.missionLaunched ||
         bound.has(candidate.syntheticId) ||
         invited(candidate.syntheticId) ||
-        this.pipelineLinkFor(candidate.cwd) !== null ||
+        inRunWorktree(candidate.cwd) ||
         owed(candidate.syntheticId);
       if (!admitted && candidate.cwd) hidden.add(candidate.cwd);
       return admitted;

@@ -347,6 +347,29 @@ test("off, after a restart: a dispatch invite on a session's earlier binding doe
   assert.deepEqual(shown(restarted), [idOf(REBOUND)]);
 });
 
+test("off: the observed run worktrees are captured when admission is built, not when a candidate is judged", () => {
+  setTerminalsConfig({ externalSessions: false });
+  const registry = fleet();
+  const worker = { syntheticId: "proc:ttys-worker:1:1", agent: "claude" as const, missionLaunched: false };
+  const inRun = { ...worker, cwd: `${WORKTREE}/src` };
+  const lookalike = { ...worker, cwd: `${WORKTREE}-other` };
+
+  const before = registry.discoveryAdmission();
+  // The run leaves while this sweep is still gathering processes.
+  const run = mkRun();
+  registry.removePipelineRun(run.provider, run.repoRoot, run.slug);
+  assert.equal(before.admit!(inRun), true, "this sweep still judges against the runs it captured");
+  assert.equal(before.admit!(lookalike), false, "containment is segment-safe, not a string prefix");
+
+  const after = registry.discoveryAdmission();
+  assert.equal(after.admit!(inRun), false, "the next sweep sees the run gone");
+
+  // And the other way: a run that appears mid-sweep is picked up by the next sweep only.
+  registry.upsertPipelineRun(run);
+  assert.equal(after.admit!(inRun), false);
+  assert.equal(registry.discoveryAdmission().admit!(inRun), true);
+});
+
 test("off: a finished task alone does not admit its session", async () => {
   setTerminalsConfig({ externalSessions: false });
   const registry = fleet();

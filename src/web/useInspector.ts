@@ -82,6 +82,8 @@ export function useInspector(): InspectorState {
    * then "revert" to a config that was never in force.
    */
   const writes = useRef(0);
+  // A poll started during a PUT has the current generation but pre-save config.
+  const writesInFlight = useRef(0);
 
   const setConfig = useCallback((c: InspectorConfig | null): void => {
     configRef.current = c;
@@ -104,11 +106,12 @@ export function useInspector(): InspectorState {
       // The resolved model IS raced by a write - it is derived from the config a `PUT`
       // may have just changed - so it takes the same guard, or committing a model would
       // flash the old id back for a poll interval.
-      if (status && writes.current === at) {
+      if (writes.current !== at || writesInFlight.current > 0) return;
+      if (status) {
         setModel(status.model);
         setRunner(status.runner);
       }
-      if (c && writes.current === at) setConfig(c);
+      if (c) setConfig(c);
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
@@ -127,7 +130,7 @@ export function useInspector(): InspectorState {
   const reread = useCallback(async (): Promise<void> => {
     const at = (writes.current += 1);
     const [c, status] = await Promise.all([fetchInspectorConfig(), fetchInspectorStatus()]);
-    if (writes.current !== at) return;
+    if (writes.current !== at || writesInFlight.current > 0) return;
     if (status) {
       setModel(status.model);
       setRunner(status.runner);
@@ -148,23 +151,28 @@ export function useInspector(): InspectorState {
       const before = configRef.current;
       if (!before) return false;
       writes.current += 1;
-      setConfig({ ...before, ...patch });
-      const res = await api.setInspectorConfig(patch);
-      if (!res.ok) {
-        setConfig(before);
-        setError(whyItFailed(res.error));
-        return false;
+      writesInFlight.current += 1;
+      try {
+        setConfig({ ...before, ...patch });
+        const res = await api.setInspectorConfig(patch);
+        if (!res.ok) {
+          setConfig(before);
+          setError(whyItFailed(res.error));
+          return false;
+        }
+        setError(null);
+        // The status comes back with the config, not on the next poll: a committed model
+        // has to re-resolve NOW, or the source line under the box goes on saying "Shipped
+        // default" for up to `POLL_MS` after you typed an override into it. A newer write that
+        // supersedes the refetch drops it; the write itself still committed on the server, so
+        // it succeeded from this caller's point of view.
+        // Acceptance belongs to the PUT. A stalled status read must not keep callers such
+        // as Trust's add form waiting after the grant has already been saved.
+        void reread();
+        return true;
+      } finally {
+        writesInFlight.current -= 1;
       }
-      setError(null);
-      // The status comes back with the config, not on the next poll: a committed model
-      // has to re-resolve NOW, or the source line under the box goes on saying "Shipped
-      // default" for up to `POLL_MS` after you typed an override into it. A newer write that
-      // supersedes the refetch drops it; the write itself still committed on the server, so
-      // it succeeded from this caller's point of view.
-      // Acceptance belongs to the PUT. A stalled status read must not keep callers such
-      // as Trust's add form waiting after the grant has already been saved.
-      void reread();
-      return true;
     },
     [reread, setConfig],
   );

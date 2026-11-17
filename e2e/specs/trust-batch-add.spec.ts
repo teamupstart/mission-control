@@ -88,72 +88,88 @@ for (const subsystem of ["foreman", "inspector"] as const) {
   });
 }
 
-test("an earlier Foreman refresh cannot revoke a grant during successive adds", async ({ dashboard, daemon }) => {
-  // Freeze polling so the ordering is controlled by response barriers, not host speed.
-  const now = Date.now();
-  await dashboard.clock.install({ time: now });
-  await dashboard.clock.pauseAt(now + 1000);
-  await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
-  const addPane = dashboard.getByRole("group", { name: "Add repositories" });
-  const path = addPane.getByRole("textbox", { name: "Repository path" });
-  const button = addPane.getByRole("button", { name: /^Add/ });
-  await path.fill(daemon.repo);
-  await expect(button).toBeEnabled();
+for (const { subsystem, duringWrite } of [
+  { subsystem: "foreman", duringWrite: false },
+  { subsystem: "foreman", duringWrite: true },
+  { subsystem: "inspector", duringWrite: true },
+]) {
+  test(`${subsystem} ${duringWrite ? "poll during a save" : "earlier refresh"} cannot revoke a grant during successive adds`, async ({ dashboard, daemon }) => {
+    // Control polling with the page clock so host speed cannot mask the ordering.
+    const now = Date.now();
+    await dashboard.clock.install({ time: now });
+    await dashboard.clock.pauseAt(now + 1000);
+    await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
+    const addPane = dashboard.getByRole("group", { name: "Add repositories" });
+    const path = addPane.getByRole("textbox", { name: "Repository path" });
+    const button = addPane.getByRole("button", { name: /^Add/ });
+    await path.fill(daemon.repo);
+    await expect(button).toBeEnabled();
 
-  let releaseFirst!: () => void;
-  let releaseLater!: () => void;
-  let releaseWrite!: () => void;
-  const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
-  const later = new Promise<void>((resolve) => { releaseLater = resolve; });
-  const write = new Promise<void>((resolve) => { releaseWrite = resolve; });
-  let reads = 0;
-  let writes = 0;
-  await dashboard.route("**/api/foreman/config", async (route) => {
-    if (route.request().method() === "PUT") {
-      writes += 1;
-      if (writes === 2) await write;
-      await route.continue();
-    } else {
-      const response = await route.fetch();
-      reads += 1;
-      await (reads === 1 ? first : later);
-      await route.fulfill({ response });
+    let releaseFirst!: () => void;
+    let releaseLater!: () => void;
+    let releaseWrite!: () => void;
+    let releasePoll!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const later = new Promise<void>((resolve) => { releaseLater = resolve; });
+    const write = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const poll = new Promise<void>((resolve) => { releasePoll = resolve; });
+    let reads = 0;
+    let writes = 0;
+    await dashboard.route(`**/api/${subsystem}/config`, async (route) => {
+      if (route.request().method() === "PUT") {
+        writes += 1;
+        if (writes === 2) await write;
+        await route.continue();
+      } else {
+        const response = await route.fetch();
+        reads += 1;
+        await (reads === 1 ? first : reads === 2 && duringWrite ? poll : later);
+        await route.fulfill({ response });
+      }
+    });
+    try {
+      await button.click();
+      await expect(button).toHaveText("Add repositories");
+      await expect.poll(() => reads).toBe(1);
+
+      await path.fill(daemon.secondRepo);
+      await button.click();
+      await expect.poll(() => writes).toBe(2);
+      if (duringWrite) {
+        // Start an actual interval poll while B's PUT is pending. A's earlier refresh
+        // remains held, so only this newer poll can publish the stale [A] snapshot.
+        await dashboard.clock.runFor(4000);
+        await expect.poll(() => reads).toBe(2);
+      }
+      // A's snapshot arrives after B's optimistic update but before B's PUT can finish.
+      const stale = dashboard.waitForResponse((response) =>
+        response.url().endsWith(`/api/${subsystem}/config`) && response.request().method() === "GET");
+      if (duringWrite) releasePoll();
+      else releaseFirst();
+      await (await stale).finished();
+      await dashboard.clock.runFor(100);
+      releaseWrite();
+      await expect(button).toHaveText("Add repositories");
+      await expect.poll(() => allowlist(daemon.baseURL, subsystem))
+        .toEqual([daemon.repo, daemon.secondRepo]);
+
+      const third = daemon.twinRepos![0];
+      await path.fill(third);
+      await button.click();
+      await expect(button).toHaveText("Add repositories");
+      for (const owner of ["foreman", "workflows", "inspector"]) {
+        expect(await allowlist(daemon.baseURL, owner)).toEqual([daemon.repo, daemon.secondRepo, third]);
+      }
+      await shoot(dashboard, `${subsystem}-${duringWrite ? "poll" : "refresh"}-successive-adds-preserved`);
+    } finally {
+      releaseFirst();
+      releaseLater();
+      releaseWrite();
+      releasePoll();
+      await dashboard.unrouteAll({ behavior: "wait" });
     }
   });
-  try {
-    await button.click();
-    await expect(button).toHaveText("Add repositories");
-    await expect.poll(() => reads).toBe(1);
-
-    await path.fill(daemon.secondRepo);
-    await button.click();
-    await expect.poll(() => writes).toBe(2);
-    // A's snapshot arrives after B's optimistic update but before B's PUT can finish.
-    const stale = dashboard.waitForResponse((response) =>
-      response.url().endsWith("/api/foreman/config") && response.request().method() === "GET");
-    releaseFirst();
-    await (await stale).finished();
-    await dashboard.clock.runFor(100);
-    releaseWrite();
-    await expect(button).toHaveText("Add repositories");
-    await expect.poll(() => allowlist(daemon.baseURL, "foreman"))
-      .toEqual([daemon.repo, daemon.secondRepo]);
-
-    const third = daemon.twinRepos![0];
-    await path.fill(third);
-    await button.click();
-    await expect(button).toHaveText("Add repositories");
-    for (const owner of ["foreman", "workflows", "inspector"]) {
-      expect(await allowlist(daemon.baseURL, owner)).toEqual([daemon.repo, daemon.secondRepo, third]);
-    }
-    await shoot(dashboard, "successive-adds-preserved");
-  } finally {
-    releaseFirst();
-    releaseLater();
-    releaseWrite();
-    await dashboard.unrouteAll({ behavior: "wait" });
-  }
-});
+}
 
 test("several picked repositories are added in one batch with every grant but YOLO", async ({
   dashboard,

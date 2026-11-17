@@ -5984,7 +5984,10 @@ export function lastAgentBinding(sessionId: string): string | null {
 
 /**
  * The synthetic ids whose last binding is one of these agent session ids: `lastAgentBinding`
- * read backwards, for a whole set of keys in one query. Discovery admission asks it once per
+ * read backwards, for a whole set of keys in one query. "Last" needs no ordering here:
+ * `session_id` is the table's primary key and `recordAgentBinding` upserts it, so a rebind
+ * (a `/clear`) replaces the earlier row, and an invite left on an earlier binding can never
+ * lead back to the session. Discovery admission asks it once per
  * sweep for the dispatch invites no live card accounts for, rather than asking
  * `lastAgentBinding` once per refused candidate. `idx_agent_bindings_agent` keeps it off a
  * table scan, because bindings are never pruned.

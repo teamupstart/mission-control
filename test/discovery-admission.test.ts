@@ -92,6 +92,9 @@ const OPERATOR_INVITED = 16;
 const WITHDRAWN_INVITED = 17;
 // An outside session whose task is finished and owes it no closure.
 const DONE_TASK = 18;
+// Bound to one agent session, then rebound to another (a `/clear`), with a dispatch invite
+// left on the first.
+const REBOUND = 19;
 // The same rule for every harness: one Mission-launched and one hand-started session each.
 const CODEX_MISSION = 8;
 const CODEX_OUTSIDE = 9;
@@ -123,6 +126,7 @@ const CWDS: Record<number, string> = {
   [OPERATOR_INVITED]: "/work/operator-invited",
   [WITHDRAWN_INVITED]: "/work/withdrawn-invited",
   [DONE_TASK]: "/work/done-task",
+  [REBOUND]: "/work/rebound",
 };
 /** Every kind but RESTARTED, which only the restart case puts on the machine. */
 const EVERY = [MISSION, OUTSIDE, TASK_BOUND, PIPELINE, REPO_ROOT, INVITED];
@@ -319,6 +323,28 @@ test("off: only a dispatch invite admits; an operator or withdrawn invite leaves
   const restarted = new Registry();
   await pollOnce(restarted, find);
   assert.deepEqual(shown(restarted), [idOf(OPERATOR_INVITED)]);
+});
+
+test("off, after a restart: a dispatch invite on a session's earlier binding does not admit it", async () => {
+  setTerminalsConfig({ externalSessions: false });
+  // Bound to A, which holds a dispatch invite, then rebound to B, which holds none.
+  recordAgentBinding(idOf(REBOUND), "agent-rebound-old", 1000);
+  upsertForemanInvite("agent-rebound-old", "dispatch", 1000);
+  recordAgentBinding(idOf(REBOUND), "agent-rebound-new", 2000);
+  // The reverse read follows only the latest binding, as `lastAgentBinding` does.
+  assert.equal(sessionsBoundToAgents(["agent-rebound-old"]).has(idOf(REBOUND)), false);
+  assert.equal(sessionsBoundToAgents(["agent-rebound-new"]).has(idOf(REBOUND)), true);
+
+  const registry = new Registry();
+  const { find } = machine([REBOUND]);
+  await pollOnce(registry, find);
+  assert.deepEqual(shown(registry), [], "the stale invite is not launch evidence for the new conversation");
+
+  // Control: the invite on the CURRENT binding admits it.
+  upsertForemanInvite("agent-rebound-new", "dispatch", 3000);
+  const restarted = new Registry();
+  await pollOnce(restarted, find);
+  assert.deepEqual(shown(restarted), [idOf(REBOUND)]);
 });
 
 test("off: a finished task alone does not admit its session", async () => {

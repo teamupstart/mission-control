@@ -119,8 +119,9 @@ pipeline-worktree rule needs it.
 
 - There is no persisted schema change outside the `terminals` JSON blob. Old blobs and old
   settings snapshots parse with `externalSessions: false`.
-- Upgrading hides outside sessions on the first sweep through the normal eviction lifecycle.
-  This is the adopted decision.
+- Upgrading hides, on the first sweep and through the normal eviction lifecycle, every session
+  the admission rule in `plan.md` ("Design, step 2") does not keep. This is the adopted
+  decision.
 - Mission terminal sessions that survive a daemon restart are still admitted, because ancestry
   is read from the live process table.
 

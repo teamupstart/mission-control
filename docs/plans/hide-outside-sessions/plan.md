@@ -196,7 +196,9 @@ covers what a person sees:
 ## Documentation
 
 - `docs/sessions.md` "How it works": the passive discovery row and the sweep paragraph say
-  outside sessions are hidden unless the setting is on.
+  that, while the setting is off, discovery hides every candidate that meets none of the
+  admission cases under "Design, step 2". Externally started pipeline workers, task-bound,
+  dispatch-invited, and closure-owed sessions stay shown.
 - `docs/overview.md`: the "Discovers every terminal-backed session" bullet.
 - `docs/harnesses-and-terminals.md` and `docs/skills-and-settings.md`: document the setting
   under Setup > Terminals.

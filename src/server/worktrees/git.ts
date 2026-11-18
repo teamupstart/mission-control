@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha } from "../git/remote-default.ts";
+import { isolatedGitEnvironment } from "../git/worktree-tree.ts";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
 import { describeCommandFailure, run, type RunResult } from "../util/exec.ts";
 import {
@@ -129,8 +130,8 @@ export class NativeWorktreeGit implements WorktreeGit {
   /**
    * One observation read, retried once (see `observation-retry.ts`). `interpret` turns a
    * command result into the read's answer. Only a failure whose outcome is unknown - a child
-   * killed at its timeout or by a signal - is retried; a Git that exited with its own error
-   * ("not a git repository", a corrupt index) would say the same again, so it is answered at
+   * killed at its timeout or by a signal, or a malformed HEAD - is retried. A Git that
+   * exited with its own error ("not a git repository", a corrupt index) is answered at
    * once rather than adding 2 s to every status read of a broken slot. One that fails twice
    * names both attempts. Mutations never come through here.
    */
@@ -139,11 +140,14 @@ export class NativeWorktreeGit implements WorktreeGit {
     timeoutMs: number,
     interpret: (result: RunResult) => GitResult<T> | Promise<GitResult<T>>,
   ): Promise<GitResult<T>> {
-    const first = await interpret(await this.execute("git", args, { timeoutMs }));
+    // -C does not override inherited repository selectors. Every observation must read
+    // the checkout named by the allocator, including both attempts of a retry.
+    const env = isolatedGitEnvironment();
+    const first = await interpret(await this.execute("git", args, { timeoutMs, env }));
     if (first.ok || !first.outcomeUnknown) return first;
     await this.pause(OBSERVATION_RETRY_DELAY_MS);
     const second = await interpret(
-      await this.execute("git", args, { timeoutMs: timeoutMs * OBSERVATION_RETRY_TIMEOUT_SCALE }),
+      await this.execute("git", args, { timeoutMs: timeoutMs * OBSERVATION_RETRY_TIMEOUT_SCALE, env }),
     );
     if (second.ok) return second;
     return {
@@ -234,10 +238,14 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
     const [head, status, detached] = await Promise.all([
-      this.observe(["-C", path, "rev-parse", "HEAD"], 15_000, (result): GitResult<string> =>
-        commandFailed(result)
-          ? failure("git rev-parse HEAD", result)
-          : { ok: true, value: result.stdout.trim() }),
+      this.observe(["-C", path, "rev-parse", "HEAD"], 15_000, (result): GitResult<string> => {
+        if (commandFailed(result)) return failure("git rev-parse HEAD", result);
+        const sha = result.stdout.trim();
+        if (!/^[0-9a-f]{40}$/.test(sha)) {
+          return { ok: false, reason: "git rev-parse HEAD did not resolve to a full commit id", outcomeUnknown: true };
+        }
+        return { ok: true, value: sha };
+      }),
       this.status(path),
       this.detachedAt(path),
     ]);

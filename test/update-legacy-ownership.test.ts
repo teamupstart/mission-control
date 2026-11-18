@@ -49,11 +49,16 @@ test('legacy snapshot handoff captures and cleans up an orphaned SDK driver and 
   const utilityReady = join(root, 'utility.json');
   writeFileSync(join(resources, 'fixture-main.cjs'), `
     const {app, utilityProcess} = require('electron');
-    const {writeFileSync} = require('node:fs');
+    const {writeFileSync, renameSync} = require('node:fs');
     app.setPath('userData', ${JSON.stringify(userDataDirectory)});
     app.whenReady().then(() => {
       const child = utilityProcess.fork(${JSON.stringify(join(root, 'worker.cjs'))});
-      child.once('message', () => writeFileSync(${JSON.stringify(utilityReady)}, JSON.stringify({pid: child.pid})));
+      child.once('message', () => {
+        // The parent polls existence: publish only after the PID JSON is complete.
+        const ready = ${JSON.stringify(utilityReady)};
+        writeFileSync(ready + '.tmp', JSON.stringify({pid: child.pid}));
+        renameSync(ready + '.tmp', ready);
+      });
     });
   `);
   const sdkExecutable = join(bundle, 'Contents/MacOS/sdk-driver');

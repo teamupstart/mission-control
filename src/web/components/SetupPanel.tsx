@@ -18,6 +18,7 @@ import type {
   PipelineInstallerCandidatesResult,
   PipelineProviderId,
 } from "@shared/pipeline.ts";
+import { visibleSetupFamilyIds } from "@shared/conductor-integration.ts";
 import {
   MULTIPLEXER_IDS,
   resolveEmulatorBackend,
@@ -876,7 +877,7 @@ function tally(rows: readonly SetupRowView[]): FamilyTally {
  * required is unsatisfied.
  */
 function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
-  const byFamily = SETUP_FAMILY_IDS.map((family) => ({
+  const byFamily = visibleSetupFamilyIds(rows).map((family) => ({
     family,
     tally: tally(rows.filter((row) => row.family === family)),
   }));
@@ -897,7 +898,8 @@ function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
  * an element that will never mount and silently lights nothing.
  */
 export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): SetupFamilyId | null {
-  const named = SETUP_FAMILY_IDS.find((family) => anchor === `setup/family-${family}`);
+  // Only a family the rail draws: a link to one hidden with its integration names nothing.
+  const named = visibleSetupFamilyIds(rows).find((family) => anchor === `setup/family-${family}`);
   if (named) return named;
   // The Repositories family's directory editor is not a row, but it is only mounted while
   // that family is selected, so its controls resolve the same way a row anchor does.
@@ -1136,7 +1138,9 @@ export function SetupPanel({
       {state.error && <p className="settings-error">{state.error}</p>}
       <div className="setup-split" ref={dependenciesTourRef}>
         <nav className="setup-rail" aria-label="Setup families">
-          {SETUP_FAMILY_IDS.map((family) => {
+          {/* A family emptied by a hidden integration (Pipelines, while ai-conductor is
+              hidden) is not drawn at all, rather than drawn as a family with nothing in it. */}
+          {visibleSetupFamilyIds(rows).map((family) => {
             const familyRows = rows.filter((row) => row.family === family);
             const counts = tally(familyRows);
             const label = SETUP_FAMILY_INFO[family].label;

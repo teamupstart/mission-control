@@ -381,6 +381,9 @@ Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
 ## AI Conductor
 
+> Temporarily unavailable: the ai-conductor integration is hidden from Setup, Settings and
+> Dispatch while it is rebuilt. See [Pipelines](docs/pipelines.md).
+
 Some work is driven by a complete SDLC engine rather than one long-running agent. Mission Control
 can observe ai-conductor's gated pipeline, show its agents on the same fleet, surface halts in the
 attention inbox, and invoke the engine's own control commands without becoming a second writer of
@@ -569,6 +572,8 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Conversation-use telemetry](docs/observability-actions.md#measuring-conversation-use) - confirmed
+  dashboard sends, automation and unknown attribution, with direct terminal input left unmeasured.
 - [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
   gaps and the OTLP query contract.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and

@@ -1,5 +1,17 @@
 # Pipelines
 
+> **Temporarily unavailable.** The ai-conductor integration is hidden while it is rebuilt.
+> Setup no longer lists ai-conductor or a Pipelines family, Settings has no Conductor category,
+> Dispatch does not offer the Pipeline kind, and the daemon neither probes, commissions, nor
+> tails the engine. Its `/api/pipelines/*`, `/ingest/conductor` and `/mcp/pipelines/*` routes
+> answer 404, with two exceptions for surfaces that poll: `GET /api/pipelines/repos` answers 200
+> with no repositories, and `GET /api/pipelines/foreman` answers 200 with triage disabled and no
+> items. Stored pipeline runs, commissions, consent and schema are kept and keep loading.
+> The switch is `CONDUCTOR_INTEGRATION_ENABLED` in
+> [`src/shared/conductor-integration.ts`](../src/shared/conductor-integration.ts). Do not install
+> Conductor for Mission Control in the meantime: the setup flow below describes the integration
+> as it will return, not as this build offers it.
+
 Some work is not driven by a single agent taking a task from start to finish. A **pipeline
 engine** walks a feature through a fixed, gated sequence of steps in its own worktree, runs
 its own agents, keeps its own state on disk, and stops for a human when a gate refuses.

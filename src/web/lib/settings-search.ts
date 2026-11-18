@@ -16,7 +16,8 @@
 // rule - deterministic substring, registry order, no fuzzy ranking - and this file kept the
 // list and the toggle bindings, so there is still exactly one of each.
 
-import type { SettingsCategoryId } from "./settings-registry.ts";
+import { settingsCategoryAvailable, type SettingsCategoryId } from "./settings-registry.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { ACTIONS } from "./keybindings.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -97,7 +98,12 @@ const KEYBOARD_CONTROLS: SettingsControl[] = ACTIONS.map((a) => ({
  * and Foreman's four models and the daemon's background jobs are each one entry over a
  * cluster of `ModelField`s.
  */
-export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
+/**
+ * Every control this registry knows, including those on a category the build withholds.
+ * Registry-level checks (backup ownership) read this; search and the palette read
+ * `SETTINGS_CONTROLS`.
+ */
+export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "layout",
     label: "Layout",
@@ -436,7 +442,9 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "setup-checks",
     label: "Machine setup checks",
-    description: "Inspect agent CLIs, terminals, GitHub access, Claude extensions, and ai-conductor.",
+    description: CONDUCTOR_INTEGRATION_ENABLED
+      ? "Inspect agent CLIs, terminals, GitHub access, Claude extensions, and ai-conductor."
+      : "Inspect agent CLIs, terminals, GitHub access, and Claude extensions.",
     category: "setup",
     anchor: "setup/recheck",
     keywords: [
@@ -448,7 +456,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "github",
       "plugins",
       "skills",
-      "ai-conductor",
+      ...(CONDUCTOR_INTEGRATION_ENABLED ? ["ai-conductor"] : []),
       "dependencies",
     ],
     kind: "jump",
@@ -1205,6 +1213,15 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui", "foreman", "workflow-policy", "inspector", "shipping"),
   },
 ];
+
+/**
+ * The indexed controls this build offers. A control on a category the build does not draw -
+ * Conductor's, while the ai-conductor integration is hidden - would be a search hit that
+ * leads nowhere, so it is not indexed at all.
+ */
+export const SETTINGS_CONTROLS: readonly SettingsControl[] = ALL_SETTINGS_CONTROLS.filter(
+  (control) => settingsCategoryAvailable(control.category),
+);
 
 /**
  * The control ids the page is expected to wire a boolean binding for: every `"toggle"`

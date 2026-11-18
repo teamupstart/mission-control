@@ -54,6 +54,10 @@ const { adoptPipelineSuccessor, pipelineRecoveryGuard, preparePipelineRetry } = 
 );
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+// This file exercises the hidden ai-conductor integration itself, so it runs with the
+// switch on. `test/conductor-integration-switch.test.ts` pins the shipped, hidden state.
+const { overrideConductorIntegrationForTests } = await import("../src/server/pipelines/availability.ts");
+overrideConductorIntegrationForTests(true);
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));

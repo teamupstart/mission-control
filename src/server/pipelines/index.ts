@@ -27,7 +27,10 @@ import {
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
 
+import { CONDUCTOR_UNAVAILABLE_DETAIL } from "@shared/conductor-integration.ts";
+
 import { envVar } from "../config.ts";
+import { conductorIntegrationEnabled } from "./availability.ts";
 import { locateCommandSync } from "../executables/locator.ts";
 import {
   appendPipelineEvents,
@@ -249,6 +252,9 @@ export async function pipelineTaskLaunch(
     }
   | { ok: false; error: string }
 > {
+  // The integration is hidden: refuse before any provider subprocess, so a stored Pipeline
+  // task re-dispatched from the backlog fails with a reason rather than commissioning a run.
+  if (!conductorIntegrationEnabled()) return { ok: false, error: CONDUCTOR_UNAVAILABLE_DETAIL };
   // One config read owns both consent and runtime. A concurrent Settings write applies to
   // the next dispatch instead of changing the host after this launch has been composed.
   const config = getPipelinesConfig();
@@ -1430,6 +1436,10 @@ export async function refreshPipelineCommission(
  * without a restart - the same discipline the sweeper holds.
  */
 export function startPipelineWatcher(sink: PipelineProjectionSink): () => void {
+  // Hidden integration: no tick at all, so nothing probes, tails, or replays commissions in
+  // the background. `restorePipelineProjection` has already loaded the stored rows, and they
+  // stay exactly as they were - this loop is the only thing that would retire them.
+  if (!conductorIntegrationEnabled()) return () => {};
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 

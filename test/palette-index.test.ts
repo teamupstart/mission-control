@@ -21,7 +21,7 @@ import {
   type PaletteStores,
 } from "../src/web/lib/palette-index.ts";
 import { SETTINGS_CONTROLS } from "../src/web/lib/settings-search.ts";
-import { SETTINGS_CATEGORIES } from "../src/web/lib/settings-registry.ts";
+import { VISIBLE_SETTINGS_CATEGORIES } from "../src/web/lib/settings-registry.ts";
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import { TOUR_ENTRIES } from "../src/web/tour/entries.ts";
 
@@ -623,8 +623,9 @@ test("searching a specific shortcut's name lands on that action's own binding", 
 
 test("a settings panel is reachable by name and by its registry keywords", () => {
   const rows = paletteRows(stores()).filter((row) => row.kind === "panel");
-  assert.equal(rows.length, SETTINGS_CATEGORIES.length);
-  for (const category of SETTINGS_CATEGORIES) {
+  // Every category this build draws; a hidden one (Conductor) is not offered as a jump.
+  assert.equal(rows.length, VISIBLE_SETTINGS_CATEGORIES.length);
+  for (const category of VISIBLE_SETTINGS_CATEGORIES) {
     const row = find(rows, `panel:${category.id}`);
     assert.deepEqual(row.target, {
       kind: "route",

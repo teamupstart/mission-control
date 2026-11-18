@@ -5,6 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { ATTENTION_DISMISSAL_LIMITS } from "../../src/shared/protocol.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
 import { writeConductorProjects } from "../fixtures/conductor.ts";
 import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
@@ -299,6 +300,7 @@ async function parkASession(
 }
 
 test.describe("a Pipeline lifecycle row", () => {
+  test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
   test.use({ daemonEnv: BLOCKED_PIPELINE_ENV });
 
   test("is dismissed without being resolved, and stays dismissed across a reload", async ({
@@ -772,6 +774,9 @@ test.describe("one row dismissed from two windows", () => {
 });
 
 test.describe("two rows dismissed back to back", () => {
+  // One of the two rows is a Pipeline lifecycle row, which needs the hidden ai-conductor
+  // integration to commission.
+  test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
   test.use({ daemonEnv: { ...BLOCKED_PIPELINE_ENV, MC_E2E_HOLD_FIRST_TURN: "1" } });
 
   test("both stay dismissed when the first dismissal's answer arrives last", async ({

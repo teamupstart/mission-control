@@ -100,6 +100,8 @@ export function useForeman(): ForemanState {
    * hook's optimistic revert exists to prevent.
    */
   const readSeq = useRef(createSequencer());
+  // A poll may start after write invalidation and still read pre-save config.
+  const writesInFlight = useRef(0);
 
   const setConfig = useCallback((c: ForemanConfig | null): void => {
     configRef.current = c;
@@ -122,7 +124,7 @@ export function useForeman(): ForemanState {
       // is deliberate: these four are one consistent reading of the same instant, and
       // letting half of an old snapshot through is how a strip comes to disagree with the
       // rows beneath it.
-      if (!readSeq.current.isCurrent(token)) return;
+      if (!readSeq.current.isCurrent(token) || writesInFlight.current > 0) return;
       if (c) setConfig(c);
       if (s) setStatus(s);
       // Held on a failed read, like the config and status above and unlike the plan
@@ -150,7 +152,7 @@ export function useForeman(): ForemanState {
     // Same sequencer discipline as the poll: a read issued earlier must not land on top.
     const token = readSeq.current.begin();
     const [c, s] = await Promise.all([fetchForemanConfig(), fetchForemanStatus()]);
-    if (!readSeq.current.isCurrent(token)) return;
+    if (!readSeq.current.isCurrent(token) || writesInFlight.current > 0) return;
     if (s) setStatus(s);
     if (c) setConfig(c);
   }, [setConfig]);
@@ -168,33 +170,43 @@ export function useForeman(): ForemanState {
     async (patch: ForemanConfigPatch): Promise<boolean> => {
       const before = configRef.current;
       if (!before) return false;
-      // `backlogDefaultModel` is a per-harness map. Preserve the other harness's
-      // selection while the server-side merge is in flight, matching setForemanConfig.
-      setConfig({
-        ...before,
-        ...patch,
-        backlogDefaultModel: {
-          ...before.backlogDefaultModel,
-          ...(patch.backlogDefaultModel ?? {}),
-        },
-      });
-      const res = await api.setForemanConfig(patch);
-      if (!res.ok) {
-        setConfig(before);
-        setError(whyItFailed(res.error));
-        return false;
+      // Retire earlier refreshes before publishing the optimistic value. A refresh
+      // landing during this PUT must not restore the previous allowlist.
+      readSeq.current.begin();
+      writesInFlight.current += 1;
+      try {
+        // `backlogDefaultModel` is a per-harness map. Preserve the other harness's
+        // selection while the server-side merge is in flight, matching setForemanConfig.
+        setConfig({
+          ...before,
+          ...patch,
+          backlogDefaultModel: {
+            ...before.backlogDefaultModel,
+            ...(patch.backlogDefaultModel ?? {}),
+          },
+        });
+        const res = await api.setForemanConfig(patch);
+        if (!res.ok) {
+          setConfig(before);
+          setError(whyItFailed(res.error));
+          return false;
+        }
+        setError(null);
+        // Re-reads the STATUS as well as the config, and that is load-bearing rather than
+        // tidy: Settings > Models renders Foreman's four roles from `status` - what each one
+        // resolved to, what its Inherit option is labelled with, and which model id was dropped
+        // when a pair could not be honoured. All three are DERIVED from the value this write
+        // just changed, so re-reading only the config leaves a row saying "Inherit - Claude
+        // Code" for up to `POLL_MS` after the operator moved the group to Codex - the same
+        // failure `useLlm` re-reads its own status to avoid. It also retires every poll already
+        // in flight, one of which was issued before this write. See `readSeq`.
+        // Acceptance belongs to the PUT. A stalled status read must not keep callers such
+        // as Trust's add form waiting after the grant has already been saved.
+        void reread();
+        return true;
+      } finally {
+        writesInFlight.current -= 1;
       }
-      setError(null);
-      // Re-reads the STATUS as well as the config, and that is load-bearing rather than
-      // tidy: Settings > Models renders Foreman's four roles from `status` - what each one
-      // resolved to, what its Inherit option is labelled with, and which model id was dropped
-      // when a pair could not be honoured. All three are DERIVED from the value this write
-      // just changed, so re-reading only the config leaves a row saying "Inherit - Claude
-      // Code" for up to `POLL_MS` after the operator moved the group to Codex - the same
-      // failure `useLlm` re-reads its own status to avoid. It also retires every poll already
-      // in flight, one of which was issued before this write. See `readSeq`.
-      await reread();
-      return true;
     },
     [reread, setConfig],
   );

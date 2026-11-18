@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsPage } from "../src/web/components/SettingsPage.tsx";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../src/shared/conductor-integration.ts";
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_GROUPS,
+  VISIBLE_SETTINGS_CATEGORIES,
   SETTINGS_SCOPES,
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
@@ -134,29 +136,43 @@ const STANDING_INSTRUCTIONS_ONLY = /Repository instructions are appended after t
 test("the rail lists every category exactly once", () => {
   const html = render("display", { settingsStatus: status() });
   const items = html.match(/class="settings-nav-item/g) ?? [];
-  assert.equal(items.length, SETTINGS_CATEGORIES.length);
-  for (const c of SETTINGS_CATEGORIES) assert.ok(html.includes(c.label), `nav missing ${c.label}`);
+  assert.equal(items.length, VISIBLE_SETTINGS_CATEGORIES.length);
+  for (const c of VISIBLE_SETTINGS_CATEGORIES) assert.ok(html.includes(c.label), `nav missing ${c.label}`);
 });
 
-test("without an engine installed, Conductor remains a permanent destination", () => {
+// The ai-conductor integration is hidden behind one build-time switch. While it is, Conductor
+// is neither drawn nor mountable by name, and naming it renders the default panel instead.
+test("while the integration is hidden, Conductor is not drawn and its category renders Display", { skip: CONDUCTOR_INTEGRATION_ENABLED && "the ai-conductor integration is offered" }, () => {
+  const html = render("conductor", { settingsStatus: status() });
+  assert.doesNotMatch(html, />Conductor</, "no rail row");
+  assert.doesNotMatch(html, CONDUCTOR_ONLY, "no panel");
+  assert.match(html, LAYOUT_ONLY, "the default panel instead");
+  assert.equal((html.match(/settings-nav-item is-active/g) ?? []).length, 1);
+  assert.equal(
+    (html.match(/class="settings-nav-item/g) ?? []).length,
+    SETTINGS_CATEGORIES.length - 1,
+  );
+});
+
+test("without an engine installed, Conductor remains a permanent destination", { skip: !CONDUCTOR_INTEGRATION_ENABLED && "the ai-conductor integration is temporarily hidden" }, () => {
   const html = render("display", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
   assert.equal(
     (html.match(/class="settings-nav-item/g) ?? []).length,
-    SETTINGS_CATEGORIES.length,
+    VISIBLE_SETTINGS_CATEGORIES.length,
     "engine state must not alter navigation",
   );
   assert.match(html, />Conductor</, "the rail row is permanent");
   assert.doesNotMatch(html, CONDUCTOR_ONLY, "no panel");
 });
 
-test("routing to Conductor without an engine renders its setup destination", () => {
+test("routing to Conductor without an engine renders its setup destination", { skip: !CONDUCTOR_INTEGRATION_ENABLED && "the ai-conductor integration is temporarily hidden" }, () => {
   const html = render("conductor", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
   assert.match(html, CONDUCTOR_ONLY);
   assert.doesNotMatch(html, LAYOUT_ONLY);
   assert.equal((html.match(/settings-nav-item is-active/g) ?? []).length, 1);
 });
 
-test("before the daemon answers, the permanent Conductor category is already drawn", () => {
+test("before the daemon answers, the permanent Conductor category is already drawn", { skip: !CONDUCTOR_INTEGRATION_ENABLED && "the ai-conductor integration is temporarily hidden" }, () => {
   const html = render();
   assert.match(html, />Conductor</);
 });
@@ -215,7 +231,7 @@ test("every rail item sits under its group's scope badge", () => {
     const next = SETTINGS_GROUPS[i + 1];
     const to = next ? (headOf(next).exec(html)?.index ?? html.length) : html.length;
     const section = html.slice(head.index, to);
-    for (const c of SETTINGS_CATEGORIES.filter((x) => x.group === group.id)) {
+    for (const c of VISIBLE_SETTINGS_CATEGORIES.filter((x) => x.group === group.id)) {
       assert.ok(section.includes(`>${c.label}</button>`), `${c.id} is not under ${group.id}`);
     }
   }
@@ -225,7 +241,7 @@ test("every rail item sits under its group's scope badge", () => {
 // under "This machine" and symlinks into `~/`. The panel header is where the precise claim
 // gets made, so it has to be there for every category, not just the ones that differ.
 test("each panel header carries its own category's scope badge", () => {
-  for (const c of SETTINGS_CATEGORIES) {
+  for (const c of VISIBLE_SETTINGS_CATEGORIES) {
     const html = render(c.id, { settingsStatus: status() });
     assert.match(
       html,
@@ -241,9 +257,9 @@ test("each panel header carries its own category's scope badge", () => {
 // two controls sharing one - or an anchor naming a category that does not exist - is a
 // jump that lands on the wrong row, or on nothing.
 test("every control anchor is unique and names a real category", () => {
-  const ids = new Set<string>(SETTINGS_CATEGORIES.map((c) => c.id));
+  const ids = new Set<string>(VISIBLE_SETTINGS_CATEGORIES.map((c) => c.id));
   const seen = new Map<string, SettingsCategoryId>();
-  for (const c of SETTINGS_CATEGORIES) {
+  for (const c of VISIBLE_SETTINGS_CATEGORIES) {
     const html = render(c.id, { settingsStatus: status() });
     for (const match of html.matchAll(/data-anchor="([^"]+)"/g)) {
       const anchor = match[1]!;
@@ -256,7 +272,7 @@ test("every control anchor is unique and names a real category", () => {
   }
   // Every category contributes at least one anchor, or its controls are unreachable from
   // search however good the index is.
-  for (const c of SETTINGS_CATEGORIES) {
+  for (const c of VISIBLE_SETTINGS_CATEGORIES) {
     assert.ok([...seen.values()].includes(c.id), `${c.id} has no anchored control`);
   }
 });
@@ -318,7 +334,7 @@ test("every glyph in Settings declares its own size", () => {
   // reads as an ordinary icon. CSS carries the same sizes (`.layout-glyph`, `.view-thumb`),
   // so a glyph that forgets them still lays out - this is the assertion that stops the
   // stylesheet from being the only thing standing between a picture and the whole pane.
-  for (const category of SETTINGS_CATEGORIES) {
+  for (const category of VISIBLE_SETTINGS_CATEGORIES) {
     const svgs = render(category.id, { settingsStatus: status() }).match(/<svg[^>]*>/g) ?? [];
     for (const svg of svgs) {
       assert.match(svg, /\swidth="/, `unsized glyph in ${category.id}: ${svg}`);
@@ -417,7 +433,7 @@ test("with no answer from the daemon, the Standing instructions panel says so ra
   assert.doesNotMatch(html, /No repository has a rule of its own/);
 });
 
-test("Conductor is a category of its own: its panel shows, the others don't", () => {
+test("Conductor is a category of its own: its panel shows, the others don't", { skip: !CONDUCTOR_INTEGRATION_ENABLED && "the ai-conductor integration is temporarily hidden" }, () => {
   const html = render("conductor", { settingsStatus: status() });
   assert.match(html, CONDUCTOR_ONLY);
   assert.doesNotMatch(html, TASK_SOURCES_ONLY);
@@ -428,7 +444,7 @@ test("Conductor is a category of its own: its panel shows, the others don't", ()
 // A static render runs no effects, so this is the pre-poll state - the state a first-run
 // user sees. It must not draw an empty repository list, which asserts that the engine
 // manages nothing on a machine where it may manage six.
-test("with no answer from the daemon, the Conductor panel says so rather than showing an empty list", () => {
+test("with no answer from the daemon, the Conductor panel says so rather than showing an empty list", { skip: !CONDUCTOR_INTEGRATION_ENABLED && "the ai-conductor integration is temporarily hidden" }, () => {
   // Engine present so the category exists, and the daemon has not answered the PANEL yet -
   // which is a different unknown from "is it installed", and the one the panel speaks to.
   const html = render("conductor", { settingsStatus: status() });
@@ -515,16 +531,16 @@ test("exactly one category is active at a time", () => {
 test("the rail is a vertical tablist of tabs", () => {
   const html = railMarkup(render("display", { settingsStatus: status() }));
   assert.match(html, /role="tablist"[^>]*aria-orientation="vertical"/);
-  assert.equal((html.match(/role="tab"/g) ?? []).length, SETTINGS_CATEGORIES.length);
+  assert.equal((html.match(/role="tab"/g) ?? []).length, VISIBLE_SETTINGS_CATEGORIES.length);
 });
 
 test("aria-selected tracks the active category, and only it", () => {
-  for (const active of SETTINGS_CATEGORIES) {
+  for (const active of VISIBLE_SETTINGS_CATEGORIES) {
     const html = railMarkup(render(active.id, { settingsStatus: status() }));
     assert.equal((html.match(/aria-selected="true"/g) ?? []).length, 1);
     assert.equal(
       (html.match(/aria-selected="false"/g) ?? []).length,
-      SETTINGS_CATEGORIES.length - 1,
+      VISIBLE_SETTINGS_CATEGORIES.length - 1,
     );
     // The selected tab is the active one - same button that carries `is-active`.
     assert.match(
@@ -536,16 +552,16 @@ test("aria-selected tracks the active category, and only it", () => {
 
 // Roving tabindex: the rail is one Tab stop, and arrows (not Tab) move within it.
 test("only the active tab is in the tab order", () => {
-  for (const active of SETTINGS_CATEGORIES) {
+  for (const active of VISIBLE_SETTINGS_CATEGORIES) {
     const html = railMarkup(render(active.id, { settingsStatus: status() }));
     assert.equal((html.match(/tabindex="0"/g) ?? []).length, 1);
-    assert.equal((html.match(/tabindex="-1"/g) ?? []).length, SETTINGS_CATEGORIES.length - 1);
+    assert.equal((html.match(/tabindex="-1"/g) ?? []).length, VISIBLE_SETTINGS_CATEGORIES.length - 1);
     assert.match(html, /class="settings-nav-item is-active"[^>]*tabindex="0"/);
   }
 });
 
 test("the pane is a tabpanel labelled by the active tab", () => {
-  for (const active of SETTINGS_CATEGORIES) {
+  for (const active of VISIBLE_SETTINGS_CATEGORIES) {
     const html = render(active.id, { settingsStatus: status() });
     assert.match(
       html,

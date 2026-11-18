@@ -14,6 +14,10 @@ import {
 } from "../fixtures/conductor.ts";
 import { observeConductorRepo, selectConductorRepo } from "../fixtures/conductor-panel.ts";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+
+test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+
 /**
  * Pushed pipeline events, end to end: a batch over HTTP, a daemon that folds it, and a panel
  * that says observation changed hands.

@@ -1237,7 +1237,13 @@ Extend existing registries instead of adding parallel lists:
   its panel; engine presence may remain in `SettingsStatus` for wire compatibility, but it
   does not add or remove navigation. A local visibility check is how a panel becomes
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
-  falls back to Display
+  falls back to Display. The one exception is a build-time switch, never a runtime probe:
+  `settingsCategoryAvailable` in `src/web/lib/settings-registry.ts` withholds Conductor while
+  `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off, and every
+  reader (rail, walk, router, palette, settings search, `SettingsPage`) goes through it or
+  `VISIBLE_SETTINGS_CATEGORIES`, so none of them can disagree. Setup applies the same switch to
+  its catalog through `availableSetupDependencyIds` and `visibleSetupFamilyIds`; the hidden ids
+  stay in the append-only tuples
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
   searchable kind is a provider over an existing client SSE store, never a second index, a
   server-side search endpoint, or a fetch. Its rows may target only routes the router already

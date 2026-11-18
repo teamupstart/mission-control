@@ -685,8 +685,11 @@ below apply to them and to Mission Control's server:
   Codex's configuration layers are read again to verify the run before any server starts, but a
   native definition reaches a resident only as its snapshot copy. On Claude Code a repository's
   `.mcp.json`, local-scope servers, plugin servers and claude.ai connectors do not load. On Codex,
-  a server that only a trusted project's `.codex/config.toml` (or a system or managed
-  configuration) defines is switched off for the run.
+  project discovery stops at the resident's working directory, so an ancestor's `~/.codex`
+  cannot reintroduce the global configuration that the run's overlay replaced. This applies
+  with and without a repository, at launch and on resume. A server that only the workspace's
+  trusted `.codex/config.toml` (or a system or managed configuration) defines is switched off
+  for the run.
 - A launch is refused, with the reason, when the set cannot be pinned: an inherited or selected
   global server residents cannot use, a custom server named like a global server of that harness,
   a selected server that no longer exists, a custom secret that is not set, or, on Codex, another
@@ -711,13 +714,24 @@ restarted by the harness; it starts again with the session's next start, such as
 A global server residents cannot use is shown as unavailable, with the reason, in the catalog and
 the picker. That happens when it uses a field residents cannot carry (anything beyond the command,
 arguments, environment, URL, headers, and the timeouts and tool filters each harness maps one to
-one), reads a value from the agent's environment (`env_vars`, `bearer_token_env_var`,
+one), reads an HTTP credential from the agent's environment (`bearer_token_env_var`,
 `env_http_headers`), relies on an OAuth login Codex holds, would send its headers or query
 values over plain `http` to another host, has a credential in an argument,
 or uses a Claude Code `${VAR}` reference. A reference to a variable that is set reads a value the
 resident's agent inherits too, so it would not be private to the server; define that server as a
 custom server with a secret instead. A reference to an unset variable is refused unless it has a
 `:-default`, which is used as written.
+
+Codex stdio servers may use `env_vars` as a list of local environment variable names. At launch,
+Mission Control copies the set values into the run's private secret snapshot, omits unset names,
+and gives explicit `env` values precedence. Inherited and selected servers use the same path.
+An `env_vars` reference to `MISSION_HOME` or `CODEX_HOME` requires an explicit `env` override:
+Mission Control gives each process its own state home and each resident a private Codex overlay,
+so neither the catalog probe's temporary state home nor its operator Codex home can be pinned.
+Resume uses the saved values, even if the daemon's environment changes. Values are never added
+to catalog responses, generated MCP configuration or launcher arguments. Ambient variables may
+already be visible to the agent through its inherited environment; snapshotting does not make
+those existing values exclusive to the server. Remote environment references remain unsupported.
 
 A Claude Code remote (`http` or `sse`) server with no headers, and no query, user name, password,
 fragment or key-shaped path segment in its URL, reached over `https` or over plain `http` to this

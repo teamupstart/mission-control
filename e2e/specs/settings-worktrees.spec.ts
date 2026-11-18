@@ -1329,3 +1329,39 @@ test("Recover previews state quarantine checks, preserves warm files and blocks 
   expect((await reuse.json()).path).toBe(safe.path);
   expect(readFileSync(join(safe.path, "node_modules/warm"), "utf8")).toBe("warm install");
 });
+
+
+test("Destroy removes a stale task lease from a quarantined slot", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "stale reservation" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  // Model a legacy failed reservation whose task no longer exists. The lease remains on
+  // the slot but the durable domain lookup positively proves that nobody refers to it.
+  withDaemonDb(daemon, (db) => {
+    expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined',
+      version = version + 1, active_owner_kind = 'task', active_owner_key = 'deleted-task:0',
+      quarantine_reason = 'worktree reset failed', quarantine_category = NULL, quarantined_at = ?
+      WHERE active_lease_id = ?`).run(Date.now(), lease.leaseId).changes)).toBe(1);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = pool.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  await slot.getByRole("button", { name: "Destroy", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByText(/Clears the stale lease/)).toBeVisible();
+  await expect(preview.getByText(/Stops the task agent/)).toHaveCount(0);
+  await expectContentClearsBorder(preview);
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await shoot(dashboard, "29-stale-lease-destroy-preview", true);
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
+  await expect(pool.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await disclosure.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "30-stale-lease-destroy-complete", true);
+});

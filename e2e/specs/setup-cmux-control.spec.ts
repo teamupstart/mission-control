@@ -26,28 +26,36 @@ const ROW = "dependency-cmux";
 const configPath = (daemon: { home: string }): string =>
   join(daemon.home, "cmux-config", "cmux.json");
 
-test.describe("a cmux that is installed and not running", () => {
-  test.use({ daemonEnv: { MC_E2E_CMUX_CONTROL: "stopped" } });
+for (const control of ["stopped", "stale"]) {
+  test.describe(`a cmux that is installed and not running (${control})`, () => {
+    test.use({ daemonEnv: { MC_E2E_CMUX_CONTROL: control } });
 
-  test("Setup says the app is closed and offers to open it, not to install again", async ({
-    page,
-    daemon,
-  }) => {
-    await page.goto(`${daemon.baseURL}/#/settings/setup`);
-    await openSetupFamily(page, "terminals");
-    const cmux = setupRow(page, ROW);
+    test("Setup says the app is closed and offers to open it, not to install again", async ({
+      page,
+      daemon,
+    }) => {
+      await page.goto(`${daemon.baseURL}/#/settings/setup`);
+      await openSetupFamily(page, "terminals");
+      const cmux = setupRow(page, ROW);
 
-    await expectRowStatus(page, ROW, "Needs setup");
-    await expect(cmux).toContainText("cmux is installed but not running.");
-    // Not the install guide: cmux IS installed, and installing it again repairs nothing.
-    await expect(cmux.getByRole("link", { name: "Open cmux installation guide" })).toHaveCount(0);
-    await expect(cmux.getByRole("button", { name: "Open cmux" })).toBeEnabled();
-    // And not the config repair, which fixes a fault this machine does not have.
-    await expect(
-      cmux.getByRole("button", { name: "Allow Mission Control to drive cmux" }),
-    ).toHaveCount(0);
+      await expectRowStatus(page, ROW, "Needs setup");
+      await expect(cmux).toContainText("cmux is installed but not running.");
+      // Not the install guide: cmux IS installed, and installing it again repairs nothing.
+      await expect(cmux.getByRole("link", { name: "Open cmux installation guide" })).toHaveCount(0);
+      await expect(cmux.getByRole("button", { name: "Open cmux" })).toBeEnabled();
+      // And not the config repair, which fixes a fault this machine does not have.
+      await expect(
+        cmux.getByRole("button", { name: "Allow Mission Control to drive cmux" }),
+      ).toHaveCount(0);
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        const evidence = artifactsDir("cmux-first-launch");
+        mkdirSync(evidence, { recursive: true });
+        await cmux.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: join(evidence, `cmux-row-${control}.png`) });
+      }
+    });
   });
-});
+}
 
 test.describe("a cmux that is running and refusing", () => {
   test.use({ daemonEnv: { MC_E2E_CMUX_CONTROL: "refused" } });

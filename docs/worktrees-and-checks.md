@@ -108,6 +108,15 @@ leaves occupancy unknown. A read that fails twice records both attempts, for exa
 timed out after 15 s, and after 30 s on retry". A command killed at its timeout is named as a
 timeout, and one killed by another signal names that signal, so neither reads as "exit 1".
 
+Git registration and slot-inspection reads discard inherited repository selectors so each read
+targets the named checkout. A successful HEAD read must contain a full 40-character commit ID; malformed
+output is an unknown observation and receives the same bounded retry. If an available slot's
+HEAD differs from the recorded commit, reconciliation inspects it again under the slot lock.
+Only the same mismatching HEAD from the same checkout and repository on both reads establishes
+a moved-HEAD state quarantine. Disagreeing or failed reads produce a recoverable observation
+quarantine without changing the recorded commit. The quarantine diagnostic includes the recorded,
+observed and, when available, confirmation SHAs.
+
 **Quarantine** takes a slot out of rotation, and records why, as which kind of fact, and when.
 The kind is a persisted, append-only category that decides whether the slot can come back on its
 own; the reason text is only for people and is never read to decide anything:
@@ -147,6 +156,15 @@ an observation, and every other one has no category and is never recovered autom
 kind has a recorded time. A legacy observation that still holds a lease - most often "slot
 occupancy became unknown before reset", whose reservation an older build never undid - is shown
 as **Needs operator action**: Destroy it, since recovery never releases a lease.
+
+If acquisition fails while a slot is still reserved, quarantine drops that exact never-granted
+lease in the same version-checked write and preserves the failure reason. For older quarantines,
+**Destroy** previews a stale lease when the domain lookup positively proves it is no longer
+referenced, including a deleted task. It removes only the selected slot and does not reclaim
+that task's other worktrees. After the final process scan, Execute rechecks durable ownership
+and clears the stale identity with its prune intent in one synchronous database transaction.
+Referenced leases still use their owner's cleanup; unknown ownership or
+process occupancy blocks removal. Dirty and unlanded work still require acknowledgement.
 
 `make session` is a loopback client for that daemon-owned inventory:
 

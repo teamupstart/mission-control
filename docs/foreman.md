@@ -693,6 +693,10 @@ panel is the durable posture.
 
 ### Mechanical pipeline triage
 
+Temporarily unavailable with the rest of the ai-conductor integration (see
+[Pipelines](pipelines.md)): the daemon reports pipeline triage as disabled and the worker does
+nothing for it, whatever the stored permission says.
+
 **Settings → Conductor → Foreman triage** is a separate, default-off permission for external
 pipeline halts. Both it and Foreman's master switch must be on when the halt is read, when its
 episode is reserved, and when the provider action is sent. The worker may call the existing

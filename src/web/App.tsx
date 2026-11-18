@@ -67,7 +67,7 @@ import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
 import { setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
-import { LineStrip } from "./components/LineStrip.tsx";
+import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
@@ -157,6 +157,7 @@ import type { LibrarySurface, MissionRoute } from "./workflows/useWorkflowRoute.
 import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
 import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
@@ -2000,7 +2001,9 @@ export function App(): React.JSX.Element {
    * than to an empty page, which is the rule every unresolvable deep link in this router
    * already takes.
    */
-  const pipelinesObserving = settingsStatus?.pipelines.observing ?? 0;
+  // Zero while the ai-conductor integration is hidden, so the Pipelines tab cannot appear
+  // even against a daemon that still reports observed repositories.
+  const pipelinesObserving = CONDUCTOR_INTEGRATION_ENABLED ? settingsStatus?.pipelines.observing ?? 0 : 0;
   const runsKind: RunsKind =
     route.page === "runs" && route.kind === "pipelines" && pipelinesObserving > 0
       ? "pipelines"
@@ -3361,6 +3364,18 @@ export function App(): React.JSX.Element {
         ? "session"
         : "sessions";
 
+  /**
+   * The Line's drawer stages for a Console whose Line is switched off, or undefined.
+   *
+   * Exactly while the strip is not drawn, so the fleet never has two doors to one drawer: the
+   * See work tour borrows the strip while the Line is off, and for that stretch the strip is
+   * the door. The same handler and the same button registry as the strip, which is what makes
+   * `closeLineDrawer` hand the keyboard back to whichever one opened the drawer.
+   */
+  const lineDock: LineDockProps | undefined = layout === "console" && lineHidden && !seeWorkRun
+    ? { summary: lineSummary, openStage: lineDrawer, stageRef: registerLineStage, onStage: onLineStage }
+    : undefined;
+
   const viewProps: SessionViewProps = {
     sessions: visible,
     restoringSessions: visibleRestoringSessions,
@@ -3825,7 +3840,7 @@ export function App(): React.JSX.Element {
       }
 
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
-      // strip that opened it.
+      // strip (or, with the Line off, the Console's stage dock) that opened it.
       //
       // Scoped by focus rather than taken unconditionally, because Escape on this page is
       // already a ladder that peels one layer at a time - session detail, then reader, then
@@ -3839,7 +3854,7 @@ export function App(): React.JSX.Element {
       if (
         chord === "Escape" &&
         lineDrawerRef.current &&
-        (target?.closest(".line-drawer") || target?.closest(".line"))
+        (target?.closest(".line-drawer") || target?.closest(".line") || target?.closest(".line-dock"))
       ) {
         e.preventDefault();
         closeLineDrawer();
@@ -3861,6 +3876,12 @@ export function App(): React.JSX.Element {
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
+      // The Console's stage dock is a row of ordinary buttons, so Tab and Shift+Tab move along
+      // it natively. Without this they would act as they do on a rail row: Tab dives into the
+      // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
+      // never get from Intake to Backlog.
+      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
         if (chord === "Tab") {
@@ -4852,6 +4873,15 @@ export function App(): React.JSX.Element {
           onDensity={lineHidden ? undefined : setLineDensity}
         />
 
+        {/* A Console with nothing to arrange has no rail, so the stages the rail would carry
+            sit where the strip would have been. An empty fleet still has a backlog, and a
+            filter that matches no session still leaves the queue worth opening. */}
+        {lineDock && !layoutHasContent && (
+          <div className="line-dock-loose">
+            <LineStageDock {...lineDock} />
+          </div>
+        )}
+
         {/* A dispatched task with no session now renders inside the fleet, at the top of the
             Working group where its real row will land. Both layouts own that placement through
             `PendingDispatch`, and `layoutHasContent` keeps the fleet mounted for a first
@@ -4950,7 +4980,9 @@ export function App(): React.JSX.Element {
             emulator adapter" the moment you typed "ghostty". */}
         {(() => {
           const layoutView = layoutHasContent
-            ? layout === "console" ? <ConsoleView {...viewProps} /> : <BoardView {...viewProps} />
+            ? layout === "console"
+              ? <ConsoleView {...viewProps} lineDock={lineDock} />
+              : <BoardView {...viewProps} />
             : null;
           // Open, the drawer is a column beside the layout, so the Board or Console narrows
           // instead of being covered. Otherwise the layout is exactly as it always was.

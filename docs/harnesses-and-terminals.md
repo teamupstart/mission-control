@@ -72,8 +72,10 @@ inner tmux pane as the most specific identity, then prefers a persistent Herdr w
 outer self-hosting cmux surface when more than one backend can describe a process.
 
 cmux needs two things from the machine beyond its CLI, both checked and repairable in
-**Settings > Setup**: its app has to be running, since the control socket exists only while it
-is, and `automation.socketControlMode` has to be `allowAll` rather than the shipped `cmuxOnly`,
+**Settings > Setup**: its app has to be running and listening on its control socket. Choose
+**Open cmux** after installing or quitting it, including when an exit left a stale socket
+reporting “Connection refused”. Separately, `automation.socketControlMode` has to be `allowAll`
+rather than the shipped `cmuxOnly`,
 which admits only processes cmux started itself. It is also the one backend whose paste submits.
 cmux's typing method writes a leading ESC in a terminal write of its own, so bracketed-paste
 markers written by hand reach the agent as an Escape keypress and the literal text `[200~`; its
@@ -602,8 +604,32 @@ repository.
 An overlay alone is not an exact set. Measured on Codex 0.160.0, a trusted project's
 `.codex/config.toml` both adds servers and merges fields into a server of the same name, and
 thread-level `config` overrides split keys on every dot, so they cannot address a server named
-`foo.bar`. The Codex check therefore:
+`foo.bar`.
 
+Resident launches and resumes pass `project_root_markers=[]` to the app-server,
+making the resident's working directory (its worktree root or private workspace) the project
+discovery boundary. This is the resident launch contract: an ancestor's `~/.codex` must not
+reenter as a project layer, even when trusted and containing Setup's registration. The overlay still
+carries the operator's non-MCP configuration and linked user instructions. Workspace-local
+`.codex` settings and instructions remain available; ancestor project settings and instructions
+are outside this resident boundary. Ordinary sessions keep native project discovery.
+
+This ancestor exclusion was verified separately on **2026-11-17 (America/New_York)** with
+**Codex 0.166.0**. The configuration-only native probe captured the production SDK's launch and
+resume arguments and read `config/read` in disposable repository-free and worktree directories,
+including a symlinked `CODEX_HOME`. The trusted home layer was absent with the boundary; user and
+workspace settings survived, and workspace-local MCP conflicts still refused the start. The probe
+started no threads, model calls or MCP servers. This measurement covers that Codex version.
+The exact command was
+`node --import tsx --input-type=module < e2e/.artifacts/codex-active-home-round-1/native-probe.txt`.
+The source and output are retained as workflow evidence `codex-active-home-native-source-round-1`
+and `codex-active-home-native-round-1` in run `6c8ae404-82a5-4870-8478-be9dff7649cd`;
+the probe file is gitignored evidence, not a checked-in script.
+
+The Codex check then:
+
+- ignores layers with a nonempty `disabledReason`, which Codex reports for diagnostics but
+  excludes from the effective configuration;
 - switches off, from the overlay, a server that only another layer defines (written as
   `[mcp_servers."name"] enabled = false`), then reads the layers again;
 - refuses the start when another layer adds a field to one of the run's servers, or sets

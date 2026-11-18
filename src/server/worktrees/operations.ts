@@ -425,16 +425,20 @@ export class WorktreeOperationsService {
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
+          // Git cannot speak for an orphaned slot, so `exact` never holds for one. Destroy is
+          // the one way out, and the preview names exactly what it cannot verify.
+          const orphaned = pool.identityValid && pool.markerValid && entry.nativePath && entry.orphaned !== null;
           const actions: Array<"return" | "destroy" | "recover"> = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
           if (entry.slot.state === "leased") {
             if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
           }
-          else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
+          else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && (exact || orphaned)) {
             actions.push("destroy");
           }
-          if (entry.slot.state === "quarantined" && entry.slot.activeLeaseId === null &&
+          // Recovery re-proves the slot through Git, which an orphaned slot can never pass.
+          if (entry.slot.state === "quarantined" && !orphaned && entry.slot.activeLeaseId === null &&
             entry.slot.activeOwnerKind === null && entry.slot.activeOwnerKey === null) actions.push("recover");
           return {
             id: entry.slot.id,
@@ -462,9 +466,10 @@ export class WorktreeOperationsService {
             quarantineReason: compact(entry.slot.quarantineReason),
             quarantinedAt: entry.slot.quarantinedAt,
             quarantineRecoverable: entry.slot.state === "quarantined"
-              ? quarantineAutoRecoverable(entry.slot)
+              ? !orphaned && quarantineAutoRecoverable(entry.slot)
               : null,
             diagnostic: compact(entry.slot.lastError),
+            orphaned,
             actions,
             dependencies: slotDependencies({
               hasClaim: Boolean(pool.policy.claim),
@@ -814,17 +819,38 @@ export class WorktreeOperationsService {
         dirty: slot.dirty,
         mergedIntoDefault: slot.mergedIntoDefault,
         occupancy: slot.occupancy,
+        orphaned: slot.orphaned,
       }),
       diskBytes: null,
     });
-    if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
-    else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
-    if (slot.mergedIntoDefault === false) {
-      risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
-    } else if (slot.mergedIntoDefault === null) {
-      blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
+    // Only the pool's own proven path can be orphaned: anything else stays exactly as blocked.
+    const orphaned = pool.identityValid && pool.markerValid && slot.nativePath ? slot.orphaned : null;
+    if (orphaned === "unregistered") {
+      // Cleanliness and the default-branch relationship are Git's answers, and Git has none
+      // here. Waiting for them would block this slot forever, so the operator is told what
+      // cannot be checked and decides.
+      risks.push(risk(
+        "unverifiable",
+        "Git no longer recognizes a target slot, so any uncommitted or unpushed work in it cannot be checked and will be deleted",
+        true,
+      ));
+      consequences.push(action === "destroy"
+        ? `Slot ${slot.slot.ordinal} is deleted from disk directly, because Git no longer recognizes it as a worktree.`
+        : `Slot ${slot.slot.ordinal} cannot be reset because Git no longer recognizes it; its lease is released and it stays quarantined with its files.`);
+    } else if (orphaned === "absent") {
+      consequences.push(`Slot ${slot.slot.ordinal} has nothing left on disk; only its record is removed.`);
+    } else {
+      if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
+      else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
+      if (slot.mergedIntoDefault === false) {
+        risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
+      } else if (slot.mergedIntoDefault === null) {
+        blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
+      }
     }
-    if (slot.occupancy.status === "unknown") {
+    if (orphaned === "absent") {
+      // Nothing is on disk, so there is nothing a process could be using.
+    } else if (slot.occupancy.status === "unknown") {
       risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
       blockers.push(slot.occupancy.reason);
     } else if (slot.occupancy.occupants.length > 0) {
@@ -838,7 +864,7 @@ export class WorktreeOperationsService {
       }
     }
     if (!pool.identityValid || !pool.markerValid || !slot.nativePath ||
-      slot.registered !== true || slot.repositoryMatches !== true) {
+      (!orphaned && (slot.registered !== true || slot.repositoryMatches !== true))) {
       blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
     }
     if (observed.pending.has(slot.slot.path)) {
@@ -1412,6 +1438,7 @@ export class WorktreeOperationsService {
           slotId: target.id,
           allowDirty: acknowledgements.has("dirty"),
           allowUnmerged: acknowledgements.has("unlanded"),
+          allowUnverifiable: acknowledgements.has("unverifiable"),
         });
         this.assertRemoved(result);
         removed(target);

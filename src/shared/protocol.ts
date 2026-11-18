@@ -3677,6 +3677,7 @@ export const WorktreeActionExecuteSchema = z
           "over-capacity",
           "legacy-unverifiable",
           "foreign",
+          "unverifiable",
         ]),
       )
       .max(16),

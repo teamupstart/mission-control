@@ -26,7 +26,9 @@ export type WorktreeRiskKey =
   | "quarantined"
   | "over-capacity"
   | "legacy-unverifiable"
-  | "foreign";
+  | "foreign"
+  /** Git no longer recognizes the slot, so nothing in it can be checked before deletion. */
+  | "unverifiable";
 
 /**
  * Who may hold a native slot's lease: the one list the allocator validates against, the slot
@@ -174,6 +176,14 @@ export interface NativeWorktreeSlotView {
    */
   quarantineRecoverable: boolean | null;
   diagnostic: string | null;
+  /**
+   * Git no longer recognizes this slot: the repository's worktree list does not name it, and
+   * what is on disk is provably not a worktree (or nothing is). A re-cloned or moved main
+   * checkout leaves every slot like this. Recovery can never prove such a slot through Git,
+   * so Destroy is its only way out, and its preview asks the operator to accept that the
+   * files cannot be checked first.
+   */
+  orphaned: boolean;
   actions: Array<"return" | "destroy" | "recover">;
   /** Null when the pool has no dependency claim configured. */
   dependencies: WorktreeSlotDependenciesView | null;

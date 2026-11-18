@@ -8,6 +8,7 @@ import { APP_BUNDLE_NAME } from '../src/shared/app-naming.mjs';
 import { dmgRootProblem } from '../src/shared/binary-distribution.mjs';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
 import { verifyDistributionArchives, verifyDistributionDmgRoot } from '../scripts/verify-distribution.mjs';
+import { native, releaseFixtureImage } from './helpers/native-dmg.ts';
 
 const macOnly = {skip: process.platform !== 'darwin' ? 'Requires real macOS disk image tools' : false};
 // The root of alpha-80b1258e's published DMG, which every installer before this contract refused.
@@ -68,20 +69,29 @@ for (const [name, entries, accepted] of [
   });
 }
 
-function image(t: test.TestContext, entries: readonly string[]): {work: string; dmg: string} {
+function image(t: test.TestContext, entries: readonly string[], retainWriter = false): {work: string; dmg: string} {
   const source = layout(t, entries);
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'dmg-root-image-')));
-  t.after(() => rmSync(work, {recursive: true, force: true}));
   const dmg = join(work, 'fixture.dmg');
+  t.after(() => { releaseFixtureImage(dmg); rmSync(work, {recursive: true, force: true}); });
   // Building the image is fixture setup, not the contract under test, and `hdiutil create`
   // fails transiently on a loaded host (a full `make test` beside other worktrees' suites):
   // exit 1 with nothing printed, because `-quiet` silences its errors too. So keep its output
   // and give it a bounded retry; a persistent failure still fails with every attempt's text.
   const failures: string[] = [];
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    // A failed create may still own a helper device. Release it before unlinking.
+    releaseFixtureImage(dmg);
     rmSync(dmg, {force: true});
-    const created = spawnSync('/usr/bin/hdiutil', ['create', '-srcfolder', source, '-format', 'UDZO', '-volname', 'Agent Mission Control', dmg], {encoding: 'utf8', timeout: 60_000});
-    if (created.status === 0) return {work, dmg};
+    const created = spawnSync('/usr/bin/hdiutil', ['create', '-srcfolder', source, '-format', retainWriter ? 'UDRW' : 'UDZO', '-volname', 'Agent Mission Control', dmg], {encoding: 'utf8', timeout: 60_000});
+    if (created.status === 0) {
+      // Deterministically reproduce a writable helper retained by fixture creation.
+      if (retainWriter) native('/usr/bin/hdiutil', ['attach', dmg, '-readwrite', '-nomount']);
+      // Even a successful create can retain its writer, blocking the real verifier's
+      // read-only attach. Finish fixture preparation before testing qualification.
+      releaseFixtureImage(dmg);
+      return {work, dmg};
+    }
     failures.push(`attempt ${attempt}: status ${created.status} signal ${created.signal} ${created.error?.message ?? ''}\n${created.stdout}${created.stderr}`.trim());
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500 * attempt);
   }
@@ -100,9 +110,16 @@ test('archive qualification refuses a DMG whose root the installer refuses, befo
   const published = image(t, publishedRoot);
   await assert.rejects(qualify(published.dmg), (error: Error) => {
     t.diagnostic(`published root proceeds past the root check to: ${error.message.split('\n')[0]}`);
-    assert.doesNotMatch(error.message, /DMG root/);
+    assert.match(error.message, /DMG must contain the exact signed app/);
     return true;
   });
+});
+
+test('archive root qualification reaches the root check after fixture creation retains a writable attachment', macOnly, async t => {
+  const {dmg} = image(t, [...publishedRoot, 'payload.command'], true);
+  await assert.rejects(verifyDistributionArchives({appDigest: 'a'.repeat(64),
+    files: {dmg, 'app-zip': join(dmg, '..', 'unused.zip')}, metadata: {appBundleName: APP_BUNDLE_NAME} as never, policy: {} as never}),
+  /Unexpected DMG root entries: "payload\.command"/);
 });
 
 test('producer qualification refuses a real mounted DMG whose root the installer refuses', macOnly, t => {

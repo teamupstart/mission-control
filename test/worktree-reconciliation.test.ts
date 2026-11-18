@@ -797,3 +797,136 @@ test("quarantine, recovery and release log bounded detail for the exact pool and
     assert.equal(typeof record.reason, "string");
   }
 });
+
+for (const confirmation of ["original", "same mismatch", "different mismatch", "failed", "thrown", "wrong path", "wrong repository"] as const) {
+  test(`available HEAD mismatch requires confirmation: ${confirmation}`, async (t) => {
+    const repository = repo("mission-reconcile-head-confirm-");
+    const git = new NativeWorktreeGit();
+    const manager = harness({ git });
+    const lease = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+      owner: { kind: "task", key: "head-confirm" } }));
+    assert.equal((await manager.release(lease)).outcome, "released");
+    const before = manager.store.slot(lease.slotId)!;
+    // A real moved HEAD proves the persistent case; the other cases inject a bad read only.
+    if (confirmation === "same mismatch") gitIn(lease.path, "commit", "--allow-empty", "-qm", "outside allocator");
+    const moved = confirmation === "same mismatch" ? gitIn(lease.path, "rev-parse", "HEAD") : "a".repeat(40);
+    const inspect = git.inspect.bind(git);
+    let reads = 0;
+    t.mock.method(git, "inspect", async (path: string) => {
+      assert.equal(path, lease.path);
+      reads++;
+      const actual = await inspect(path);
+      assert.ok(actual.ok);
+      if (reads === 1) return { ok: true as const, value: { ...actual.value, head: moved } };
+      switch (confirmation) {
+        case "failed": return { ok: false as const, reason: "confirmation timed out", outcomeUnknown: true };
+        case "thrown": throw new Error("confirmation threw");
+        case "different mismatch": return { ok: true as const, value: { ...actual.value, head: "b".repeat(40) } };
+        case "wrong path": return { ok: true as const, value: { ...actual.value, head: moved, path: repository.clone } };
+        case "wrong repository": return { ok: true as const, value: { ...actual.value, head: moved, commonDirectory: "/other/repository" } };
+        default: return actual;
+      }
+    });
+    const records: Array<Record<string, unknown>> = [];
+    t.mock.method(console, "info", (line: unknown) => {
+      if (typeof line === "string" && line.startsWith("[worktrees] ")) records.push(JSON.parse(line.slice("[worktrees] ".length)));
+    });
+    await manager.reconcile();
+    assert.equal(reads, 2);
+    const after = manager.store.slot(lease.slotId)!;
+    assert.equal(after.state, "quarantined");
+    assert.equal(after.quarantineCategory, confirmation === "same mismatch" ? "state" : "observation");
+    assert.equal(after.currentHeadSha, before.currentHeadSha, "an uncertain read must not replace the recorded HEAD");
+    assert.ok(after.lastError?.includes(repository.sha));
+    assert.ok(after.lastError?.includes(moved));
+    const quarantine = records.find((record) => record.event === "quarantined");
+    assert.equal(quarantine?.detail, after.lastError);
+    if (confirmation === "original") assert.ok(after.lastError?.includes(`confirmed=${repository.sha}`));
+    if (confirmation === "failed") assert.match(after.lastError!, /confirmation timed out/);
+    if (confirmation === "thrown") assert.match(after.lastError!, /confirmation threw/);
+    t.mock.restoreAll();
+    await manager.reconcile();
+    assert.equal(manager.store.slot(lease.slotId)?.state, confirmation === "same mismatch" ? "quarantined" : "available");
+  });
+}
+
+for (const stdout of ["", " \n", "HEAD\n", "abc123\n", `${"a".repeat(40)}\n${"b".repeat(40)}\n`]) {
+  test(`inspection rejects malformed successful HEAD output ${JSON.stringify(stdout)}`, async () => {
+    const repository = repo("mission-reconcile-head-invalid-");
+    let headReads = 0;
+    const git = new NativeWorktreeGit(async (bin, args, opts) => {
+      if (args.includes("rev-parse") && args.includes("HEAD")) {
+        headReads++;
+        return { stdout, stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+      }
+      return run(bin, args, opts);
+    }, async () => {});
+    const inspected = await git.inspect(repository.clone);
+    assert.equal(inspected.ok, false);
+    if (!inspected.ok) {
+      assert.equal(inspected.outcomeUnknown, true);
+      assert.match(inspected.reason, /HEAD.*full commit id/);
+    }
+    assert.equal(headReads, 2, "malformed observations receive the bounded read retry");
+  });
+}
+
+test("inspection is scoped to its checkout despite inherited Git repository selectors", async () => {
+  const repository = repo("mission-inspect-env-");
+  const other = repo("mission-inspect-env-other-");
+  gitIn(other.clone, "commit", "--allow-empty", "-qm", "different HEAD");
+  const otherSha = gitIn(other.clone, "rev-parse", "HEAD");
+  const inherited = { GIT_DIR: `${other.clone}/.git`, GIT_WORK_TREE: other.clone };
+  const previous = Object.fromEntries(Object.keys(inherited).map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, inherited);
+    // Demonstrate that -C alone can return a different repository's valid SHA.
+    const redirected = await run("git", ["-C", repository.clone, "rev-parse", "HEAD"], { env: { ...process.env } });
+    assert.equal(redirected.stdout.trim(), otherSha);
+    const inspected = await new NativeWorktreeGit().inspect(repository.clone);
+    assert.ok(inspected.ok);
+    assert.equal(inspected.value.head, repository.sha);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("malformed HEAD reads quarantine as observation and a later valid read recovers without reset", async () => {
+  const repository = repo("mission-reconcile-malformed-head-");
+  let malformedReads = 0;
+  let headReads = 0;
+  const git = new NativeWorktreeGit(async (bin, args, opts) => {
+    if (args.includes("rev-parse") && args.includes("HEAD")) {
+      headReads++;
+      if (malformedReads-- > 0) return { stdout: "", stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+    }
+    return run(bin, args, opts);
+  }, async () => {});
+  const manager = harness({ git });
+  const lease = acquired(await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha,
+    owner: { kind: "task", key: "malformed-head" } }));
+  assert.equal((await manager.release(lease)).outcome, "released");
+  headReads = 0;
+  await manager.reconcile();
+  assert.equal(headReads, 1, "a matching HEAD needs no confirmation read");
+  assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+  malformedReads = 1;
+  headReads = 0;
+  await manager.reconcile();
+  assert.equal(headReads, 2, "a valid retry is accepted");
+  assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+  malformedReads = 2;
+  await manager.reconcile();
+  const slot = manager.store.slot(lease.slotId)!;
+  assert.equal(slot.state, "quarantined");
+  assert.equal(slot.quarantineCategory, "observation");
+  assert.equal(slot.currentHeadSha, repository.sha);
+  assert.match(slot.lastError!, /HEAD.*full commit id.*again on retry/);
+  const reflog = gitIn(lease.path, "reflog", "HEAD");
+  await manager.reconcile();
+  assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+  assert.equal(gitIn(lease.path, "reflog", "HEAD"), reflog, "recovery does not reset the checkout");
+});

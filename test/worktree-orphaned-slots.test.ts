@@ -142,7 +142,8 @@ test("Destroy removes an orphaned task slot after one acknowledgement, through i
 
   const card = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((entry) => entry.id === slot.id)!;
   assert.equal(card.orphaned, true);
-  assert.deepEqual(card.actions, ["destroy"], "the card offers the one way out, and never Recover");
+  assert.deepEqual(card.actions, ["return", "destroy"],
+    "the owner still holds it: Return lets go and keeps the files, Destroy removes it, and never Recover");
   assert.equal(card.quarantineRecoverable, false, "Reconcile cannot promise to recover it");
 
   const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: slot.id } });
@@ -402,4 +403,40 @@ test("an orphaned sibling released through its task is described as released, no
   const after = manager.store.slot(sibling.slotId)!;
   assert.deepEqual([after.state, after.activeLeaseId], ["quarantined", null]);
   assert.equal(readFileSync(join(sibling.path, "kept.md"), "utf8"), "kept\n");
+});
+
+test("a quarantined orphan still held by its owner can be returned, keeping its files", async () => {
+  // The field state: a failed Git read quarantined the slot while its task's lease was live.
+  const task = { view: null as WorktreeTaskView | null, reclaimed: 0 };
+  const { manager, lease, clone, slot } = await orphanedTaskSlot("mission-orphan-quarantined-return-", {
+    ownerReferenced: async (reference) =>
+      task.view?.resources.some((resource) => resource.leaseId === reference.leaseId) ?? false,
+  });
+  task.view = taskOwning(lease, clone, slot.path);
+  const operations = operationsFor(manager, task);
+
+  const preview = await operations.preview({ action: "return", slotId: slot.id });
+  assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+  assert.deepEqual(preview.requiredAcknowledgements, [], "Return deletes nothing");
+  assert.ok(preview.consequences.some((line) => /stays quarantined with its files/.test(line)),
+    JSON.stringify(preview.consequences));
+
+  await operations.execute(preview.token, []);
+  assert.equal(task.reclaimed, 1, "the owner's own cleanup released the lease");
+  const after = manager.store.slot(slot.id)!;
+  assert.deepEqual([after.state, after.activeLeaseId], ["quarantined", null]);
+  assert.equal(readFileSync(join(slot.path, "docs/reports/crash/report.md"), "utf8"), "never committed\n");
+  const card = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((entry) => entry.id === slot.id)!;
+  assert.deepEqual(card.actions, ["destroy"], "with the lease gone, only Destroy remains");
+});
+
+test("a quarantined orphan whose lease no owner references offers only Destroy", async () => {
+  // The default harness answers every domain lookup with "not referenced": the lease is stale.
+  const { manager, lease, clone, slot } = await orphanedTaskSlot("mission-orphan-stale-return-");
+  const operations = operationsFor(manager, { view: taskOwning(lease, clone, slot.path), reclaimed: 0 });
+  const card = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((entry) => entry.id === slot.id)!;
+  assert.deepEqual(card.actions, ["destroy"]);
+  const preview = await operations.preview({ action: "return", slotId: slot.id });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.some((blocker) => /quarantined, not leased/.test(blocker)), JSON.stringify(preview.blockers));
 });

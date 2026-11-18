@@ -247,8 +247,8 @@ or any read that fails is never orphaned, and whatever blocked it still does.
 No Git proof can pass for an orphaned slot, so none is waited for:
 
 - Settings marks it **not a Git worktree**, explains why, offers **Destroy** (and **Return**
-  while it is leased), and never offers **Recover**. Reconcile does not promise to bring it
-  back.
+  while its owner still references its lease, including a slot a failed Git read quarantined
+  mid-lease), and never offers **Recover**. Reconcile does not promise to bring it back.
 - An owner-authorized release (a task's cleanup, a check's recovery, or a manual return) cannot
   reset it. It hands the exact lease back without touching the files and leaves the slot in a
   **state** quarantine for the operator, so the owner is never pinned to a slot that can never be
@@ -610,8 +610,9 @@ this order:
   quarantine that still holds one. The time is the moment of the transition, so a slot
   observed many times since still shows when it was quarantined. An
   [orphaned slot](#orphaned-slots) is marked **not a Git worktree** and never offers **Recover**.
-  Quarantined or available, it offers **Destroy**; leased, it also offers **Return**, which
-  releases the lease and keeps the slot quarantined with its files.
+  It offers **Destroy**, and also **Return** while it holds a lease its owner still
+  references, whether leased or quarantined. Return releases the lease and keeps the slot
+  quarantined with its files.
   **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.

@@ -185,6 +185,23 @@ function taskIdentity(key: string): { id: string; position: number } | null {
   return { id: key.slice(0, split), position };
 }
 
+/** Only the pool's own proven path can be orphaned: anything else stays exactly as blocked. */
+function provenOrphan(pool: NativePoolStatus, slot: NativeSlotStatus): boolean {
+  return pool.identityValid && pool.markerValid && slot.nativePath && slot.orphaned !== null;
+}
+
+/**
+ * A quarantined orphan whose owner still holds it. A failed Git read can quarantine a slot
+ * while its lease is live, and Return is how that owner lets go while the files are kept. A
+ * lease no domain owner references is stale, and only Destroy clears it; a `warm` lease ends
+ * with its seed.
+ */
+function orphanReturnable(pool: NativePoolStatus, slot: NativeSlotStatus): boolean {
+  return provenOrphan(pool, slot) && slot.slot.state === "quarantined" &&
+    slot.slot.activeLeaseId !== null && slot.slot.activeOwnerKind !== null && slot.slot.activeOwnerKey !== null &&
+    slot.slot.activeOwnerKind !== "warm" && slot.ownerReferenced === true;
+}
+
 /** Only a positive domain lookup can detach an orphan from task/check cleanup. */
 function staleQuarantineLease(status: NativeSlotStatus): boolean {
   return status.slot.state === "quarantined" && status.slot.activeLeaseId !== null &&
@@ -440,7 +457,7 @@ export class WorktreeOperationsService {
             entry.registered === true && entry.repositoryMatches === true;
           // Git cannot speak for an orphaned slot, so `exact` never holds for one. Destroy is
           // the one way out, and the preview names exactly what it cannot verify.
-          const orphaned = pool.identityValid && pool.markerValid && entry.nativePath && entry.orphaned !== null;
+          const orphaned = provenOrphan(pool, entry);
           const actions: Array<"return" | "destroy" | "recover"> = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
@@ -448,6 +465,7 @@ export class WorktreeOperationsService {
             if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
           }
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && (exact || orphaned)) {
+            if (orphanReturnable(pool, entry)) actions.push("return");
             actions.push("destroy");
           }
           // Recovery re-proves the slot through Git, which an orphaned slot can never pass.
@@ -902,7 +920,7 @@ export class WorktreeOperationsService {
       blockers.push(`Slot ${slot.slot.ordinal} already has a cleanup queued; wait for it to finish or leave it out of this action.`);
     }
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
-    if (action === "return" && slot.slot.state !== "leased") {
+    if (action === "return" && slot.slot.state !== "leased" && !orphanReturnable(pool, slot)) {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
     }
     if (action === "destroy" && !["leased", "available", "quarantined"].includes(slot.slot.state)) {
@@ -1146,7 +1164,7 @@ export class WorktreeOperationsService {
 
   /** Mirrors `appendNativeTarget`: only the pool's own proven path can be orphaned. */
   private orphanedTarget({ pool, slot }: NativeTarget): boolean {
-    return pool.identityValid && pool.markerValid && slot.nativePath && slot.orphaned !== null;
+    return provenOrphan(pool, slot);
   }
 
   /** Return or destroy a fixed set of native slots, widened to every resource their tasks own. */

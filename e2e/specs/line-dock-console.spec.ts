@@ -149,6 +149,17 @@ test("with the Line off, the Console reaches the Backlog drawer from the fleet",
   await expect(anyDrawer(dashboard)).toHaveCount(0);
   await expect(backlog).toBeFocused();
 
+  // ---- with a session selected, Tab and Shift+Tab walk the dock ----
+  // A rail row hands Tab to the reader and Shift+Tab to the permission mode. The dock's
+  // buttons are ordinary controls, so the keyboard has to be able to move along them.
+  await rail(dashboard).getByRole("button", { name: /give the console a rail/i }).click();
+  await expect(dashboard.getByRole("tablist", { name: "Session detail" })).toBeVisible();
+  await dockStage(dashboard, "Intake").focus();
+  await dashboard.keyboard.press("Tab");
+  await expect(backlog).toBeFocused();
+  await dashboard.keyboard.press("Shift+Tab");
+  await expect(dockStage(dashboard, "Intake")).toBeFocused();
+
   // ---- the folded rail keeps the stages at the foot of its strip ----
   await rail(dashboard).getByRole("button", { name: "Fold the session rail" }).click();
   await expect(rail(dashboard).getByRole("button", { name: /^Unfold All sessions/ })).toBeVisible();
@@ -160,7 +171,23 @@ test("with the Line off, the Console reaches the Backlog drawer from the fleet",
   await dashboard.keyboard.press("Escape");
   await expect(anyDrawer(dashboard)).toHaveCount(0);
   await expect(folded).toBeFocused();
+
+  // ---- a narrow window hides the rail's rows, but never the dock, folded or not ----
+  const wide = dashboard.viewportSize()!;
+  const narrowOpensBacklog = async (shot: string): Promise<void> => {
+    await dashboard.setViewportSize({ width: 700, height: 800 });
+    await expect(rail(dashboard).getByRole("button", { name: /give the console a rail/i })).toBeHidden();
+    await expect(dockStage(dashboard, "Backlog")).toBeVisible();
+    await dockStage(dashboard, "Backlog").click();
+    await expect(drawer(dashboard, "Backlog")).toContainText(title);
+    await shoot(dashboard, shot);
+    await dashboard.keyboard.press("Escape");
+    await expect(anyDrawer(dashboard)).toHaveCount(0);
+    await dashboard.setViewportSize(wide);
+  };
+  await narrowOpensBacklog("narrow-folded-backlog-open");
   await rail(dashboard).getByRole("button", { name: /^Unfold All sessions/ }).click();
+  await narrowOpensBacklog("narrow-backlog-open");
 
   // ---- switching the Line back on removes the dock: the strip is the door again ----
   await setLineHidden(dashboard, daemon, false);

@@ -3873,6 +3873,12 @@ export function App(): React.JSX.Element {
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
+      // The Console's stage dock is a row of ordinary buttons, so Tab and Shift+Tab move along
+      // it natively. Without this they would act as they do on a rail row: Tab dives into the
+      // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
+      // never get from Intake to Backlog.
+      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
         if (chord === "Tab") {

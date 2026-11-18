@@ -110,11 +110,14 @@ stage.
   and accessible name, and opens the same drawer, where a strip-less fleet puts it: under the
   top bar (and under the dock, when the dock sits there), above the console. A second press closes it, a different stage swaps it, <kbd>esc</kbd> closes it
   while the keyboard is in the drawer or on the dock, and every close hands the keyboard back
-  to the button that opened it.
+  to the button that opened it. <kbd>Tab</kbd> and <kbd>⇧</kbd><kbd>Tab</kbd> move along the
+  row like any other buttons, rather than stepping into the reader or cycling the selected
+  session's permission mode as they do on a rail row.
 - **They follow the rail.** The row sits under the head, outside the scrolling rows, so it is
   never scrolled away. [Folded](#folding-the-session-rail), the rail stacks the five buttons
   at the foot of its 40px strip, glyph over count. A rail dragged near its narrowest width
-  drops the stage names and keeps every glyph and count.
+  drops the stage names and keeps every glyph and count. Below 760px, where the Console hides
+  its rail, the rail stays as a band holding only the stage buttons, above the session.
 - **A Console with no rail still has them.** When the fleet is empty, or the filter matches no
   session, there is no rail to carry the row, so it sits where the strip would have been.
 - **Only while the strip is not drawn.** Switch the Line back on and the dock goes; the strip

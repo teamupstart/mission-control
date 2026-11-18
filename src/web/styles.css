@@ -35680,6 +35680,28 @@ span.line-run-prov {
   .console-rail {
     display: none;
   }
+  /* Except with the Line off: the rail is then the only door to the stage drawers, so it
+     stays as a band holding just its stage dock, above the session. The folded rail's column
+     dock lies down into the same row. */
+  .console:has(> .console-rail > .line-dock) {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .console-rail:has(> .line-dock) {
+    display: flex;
+    border-right: 0;
+  }
+  .console-rail:has(> .line-dock) > :not(.line-dock) {
+    display: none;
+  }
+  .console-rail > .line-dock.is-column {
+    flex-direction: row;
+    padding: 7px 10px;
+    border-top: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .console-rail > .line-dock.is-column .line-dock-stage {
+    flex: 1 1 0;
+  }
   .board {
     grid-auto-flow: row;
     grid-auto-columns: auto;

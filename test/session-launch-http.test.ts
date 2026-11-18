@@ -377,6 +377,48 @@ test("the terminal catalog answers without spawning anything", async () => {
   }
 });
 
+test("the terminal catalog marks the operator's macOS default terminal, and only that row", async () => {
+  const local = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    systemDefaultTerminal: async () => "iterm",
+  });
+  const res = await local.request("/api/terminal-targets", { headers: { host: "127.0.0.1:7317" } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { targets: { id: string; systemDefault?: boolean }[] };
+  assert.deepEqual(body.targets.filter((target) => target.systemDefault).map((target) => target.id), ["iterm"]);
+
+  // A reader that fails is "no preference", never a failed catalog.
+  const broken = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    systemDefaultTerminal: async () => { throw new Error("plutil exploded"); },
+  });
+  const fallback = await broken.request("/api/terminal-targets", { headers: { host: "127.0.0.1:7317" } });
+  assert.equal(fallback.status, 200);
+  const rows = (await fallback.json()) as { targets: { systemDefault?: boolean }[] };
+  assert.ok(rows.targets.length > 0);
+  assert.ok(rows.targets.every((target) => target.systemDefault === undefined));
+
+  // A reader that throws before it returns a promise is the same "no preference".
+  const throwsAtOnce = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    systemDefaultTerminal: () => { throw new Error("no LaunchServices here"); },
+  });
+  const immediate = await throwsAtOnce.request("/api/terminal-targets", { headers: { host: "127.0.0.1:7317" } });
+  assert.equal(immediate.status, 200);
+  const unmarked = (await immediate.json()) as { targets: { systemDefault?: boolean }[] };
+  assert.ok(unmarked.targets.length > 0);
+  assert.ok(unmarked.targets.every((target) => target.systemDefault === undefined));
+});
+
 // ---- Inspector follow-ups on PR #269 ----
 
 test("the Terminal button opens a LOGIN shell, because that is what it promises", async () => {

@@ -488,6 +488,14 @@ export interface TerminalEmulator {
   /** Leading glyph for the terminal menu. Required - see `Multiplexer.glyph`. */
   glyph: string;
   bin: BinSpec;
+  /**
+   * The macOS application bundle id, when this emulator is a macOS app.
+   *
+   * How the daemon recognises the operator's default terminal: LaunchServices records the
+   * chosen shell handler by bundle id, never by a name this registry knows. Absent on a
+   * backend with no macOS bundle, which therefore can never be reported as the default.
+   */
+  macBundleId?: string;
   list: (() => Promise<TerminalInventory<EmulatorPane>>) | null;
   /**
    * How to identify a GUI that must already be running before enumeration.

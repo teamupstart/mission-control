@@ -37,6 +37,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "codex-mcp-trust",
   "acli-cli",
   "acli-auth",
+  "coderabbit-auth",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -257,6 +258,22 @@ export const CMUX_APP_REMEDY: SetupRemedy = {
 };
 
 /**
+ * Check the CodeRabbit CLI Mission Control selected, offered when a CodeRabbit reading was
+ * inconclusive (`--version` or `auth status` failed, timed out or answered unreadably), the
+ * selected binary is older than 0.9.1, or - on the sign-in row - no CLI is installed yet.
+ *
+ * Stands in for both catalog remedies on those readings. Installing would add a second copy
+ * without changing the binary the locator selects - a per-user install wins over Homebrew - and
+ * signing in is advice about a state nobody read. The row's text names the binary and what to
+ * do; this links the CLI's own guide.
+ */
+export const CODERABBIT_CHECK_REMEDY: SetupRemedy = {
+  kind: "link",
+  url: "https://docs.coderabbit.ai/cli",
+  label: "Open the CodeRabbit CLI guide",
+};
+
+/**
  * Let Mission Control's daemon drive cmux, offered while the socket is answering and
  * refusing.
  *
@@ -284,6 +301,14 @@ export interface SetupDependencyInfo {
   /** What is unavailable while this row is not satisfied. */
   enables: string;
   remedy: SetupRemedy;
+  /**
+   * The row this one is a next step of, rendered directly beneath it.
+   *
+   * Exists because `SETUP_DEPENDENCY_IDS` is append-only: a sign-in added long after its
+   * install would otherwise render wherever the end of its family happens to be, several rows
+   * away from the install it follows. Must name a row in the same family.
+   */
+  after?: SetupDependencyId;
 }
 
 /** Every dependency's pure metadata, exhaustively keyed by its append-only id. */
@@ -454,9 +479,10 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     requirement: "optional",
     enables: "Adds durable default-server workspaces, pane control, and full-client reattachment on macOS and Linux.",
     remedy: {
-      kind: "link",
-      url: "https://herdr.dev/docs/install/",
-      label: "Open Herdr installation guide",
+      kind: "command",
+      purpose: "install",
+      argv: ["brew", "install", "herdr"],
+      note: "Install Herdr with Homebrew.",
     },
   },
   "node-runtime": {
@@ -473,9 +499,17 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     },
   },
   "coderabbit-cli": {
-    id: "coderabbit-cli", label: "CodeRabbit CLI", family: "extensions", requirement: "optional",
-    enables: "Local committed workflow reviews require CLI >=0.9.1 and stored authentication in the daemon effective HOME. Only root YAML boolean true enables review. Run coderabbit auth login there, then Re-check. No review or sign-in starts during detection.",
-    remedy: { kind: "link", url: "https://docs.coderabbit.ai/cli", label: "Install and authenticate CodeRabbit" },
+    id: "coderabbit-cli",
+    label: "CodeRabbit CLI",
+    family: "extensions",
+    requirement: "optional",
+    enables: "Local committed workflow reviews require CLI >=0.9.1. Only root YAML boolean true enables review. No review starts during detection.",
+    remedy: {
+      kind: "command",
+      purpose: "install",
+      argv: ["brew", "install", "--cask", "coderabbit"],
+      note: "Install the CodeRabbit CLI with Homebrew, then press Re-check and sign in below.",
+    },
   },
   "claude-mcp-trust": {
     id: "claude-mcp-trust",
@@ -530,7 +564,40 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       note: "Sign acli in to Jira through your browser. Choose the site your Jira sources use, then press Re-check.",
     },
   },
+  // The CodeRabbit CLI's sign-in, split from its install the way acli's is, so a row that
+  // needs a sign-in offers the sign-in rather than an installer the operator already ran.
+  "coderabbit-auth": {
+    id: "coderabbit-auth",
+    label: "CodeRabbit CLI sign-in",
+    family: "extensions",
+    requirement: "optional",
+    after: "coderabbit-cli",
+    enables: "Local committed workflow reviews need stored CodeRabbit authentication in the daemon's effective HOME. No sign-in starts during detection.",
+    remedy: {
+      kind: "command",
+      purpose: "sign-in",
+      argv: ["coderabbit", "auth", "login"],
+      note: "Sign the CodeRabbit CLI in through your browser, then press Re-check.",
+    },
+  },
 };
+
+/**
+ * The order rows render in: id order, except that a row naming `after` moves to directly
+ * beneath that row. Persisted ids stay where they are; only the panel's reading order moves.
+ */
+export const SETUP_DEPENDENCY_DISPLAY_ORDER: readonly SetupDependencyId[] = (() => {
+  const order: SetupDependencyId[] = SETUP_DEPENDENCY_IDS.filter((id) => !SETUP_DEPENDENCY_INFO[id].after);
+  for (const id of SETUP_DEPENDENCY_IDS) {
+    const anchor = SETUP_DEPENDENCY_INFO[id].after;
+    if (!anchor) continue;
+    let at = order.indexOf(anchor);
+    // Keep followers of one anchor in id order.
+    while (at + 1 < order.length && SETUP_DEPENDENCY_INFO[order[at + 1]!].after === anchor) at += 1;
+    order.splice(at + 1, 0, id);
+  }
+  return order;
+})();
 
 export interface SetupRuntimeView {
   origin: "bundled" | "electron-development" | "standalone";

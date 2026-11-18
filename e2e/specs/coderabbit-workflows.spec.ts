@@ -242,11 +242,12 @@ test("an existing binding stays on No-Mistakes version 21 and never gains CodeRa
 
 test("Setup reports an old CLI and a corrected stored-auth state without starting a review",async({dashboard,daemon})=>{
  writeFileSync(join(daemon.home,"coderabbit-script.json"),JSON.stringify({old:true}));
- await dashboard.goto(`${daemon.baseURL}/#/settings/setup`);await dashboard.getByRole("button",{name:/Agent extensions:/}).click();await expect(dashboard.getByRole("main")).toContainText("CodeRabbit CLI >=0.9.1 is required");
+ await dashboard.goto(`${daemon.baseURL}/#/settings/setup`);await dashboard.getByRole("button",{name:/Agent extensions:/}).click();await expect(dashboard.getByRole("main")).toContainText("is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI");
+ const cliRow=dashboard.locator('[data-anchor="setup/dependency-coderabbit-cli"]');await expect(cliRow.getByRole("link",{name:"Open the CodeRabbit CLI guide"})).toBeVisible();await expect(cliRow).not.toContainText("brew install --cask coderabbit");
  writeFileSync(join(daemon.home,"coderabbit-script.json"),JSON.stringify({unauthenticated:true}));
- await dashboard.getByRole("button",{name:/Re-check/}).click();await expect(dashboard.getByRole("main")).toContainText("stored authentication could not be confirmed");
+ await dashboard.getByRole("button",{name:/Re-check/}).click();await expect(dashboard.getByRole("main")).toContainText("The CodeRabbit CLI is installed but not signed in.");
  writeFileSync(join(daemon.home,"coderabbit-script.json"),JSON.stringify({}));await dashboard.getByRole("button",{name:/Re-check/}).click();
- await expect(dashboard.getByRole("main")).not.toContainText("stored authentication could not be confirmed");await expect(dashboard.getByRole("main")).toContainText("CodeRabbit 0.9.1; stored authentication ready");await shot(dashboard,"setup-ready");
+ await expect(dashboard.getByRole("main")).not.toContainText("The CodeRabbit CLI is installed but not signed in.");await expect(dashboard.getByRole("main")).toContainText("CodeRabbit 0.9.1");await expect(dashboard.getByRole("main")).toContainText("Stored CodeRabbit authentication is ready");await shot(dashboard,"setup-ready");
  expect(readFileSync(join(daemon.recordDir,"coderabbit.jsonl"),"utf8")).not.toContain('"review"');
 });
 

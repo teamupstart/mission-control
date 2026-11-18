@@ -42,7 +42,10 @@ project-local node_modules.
 Paths are written relative to your home directory, with the absolute path on hover. Missing rows explain what capability is
 unavailable and provide a documentation link or copyable command. A runnable package-manager remedy also offers **Run in a terminal**:
 choose an available backend and Mission Control opens a visible terminal running the catalog's
-fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
+fixed command. The terminal picker starts on your macOS default terminal - the app LaunchServices
+opens shell scripts with, such as iTerm2 after "Make iTerm2 Default Term" - when Mission Control
+can drive it, labels that row "(system default)", and otherwise starts on the first available
+backend. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
@@ -130,8 +133,10 @@ manual reconciliation guidance. The tray menu offers the same action. See the
 
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
-offers **Start the Herdr server** instead of the installation guide. That button opens no
-terminal: the daemon starts the server the same way a dispatch to Herdr would, waits for it to
+offers **Start the Herdr server** instead of the install command. With Herdr not installed, the
+row instead offers `brew install herdr` through **Run in a terminal**, which opens the installer in
+the selected visible terminal. **Start the Herdr server** opens no terminal: the daemon starts the
+server the same way a dispatch to Herdr would, waits for it to
 answer, and the panel re-reads the machine on its own, so a repaired row reports Ready without a
 manual **Re-check**. A Herdr older than the supported release is reported with its compatibility
 reason and is not offered a start, because starting it repairs nothing. While the server is down,
@@ -298,10 +303,21 @@ the new layout. See [migration and compatibility](app-name-migration.md).
 
 ## Optional CodeRabbit workflow reviews
 
-Settings > Setup reports the optional CodeRabbit CLI path/source, minimum version 0.9.1 and
-stored authentication readiness without installing, signing in or reviewing. Follow the
-[official installation guide](https://docs.coderabbit.ai/cli), then run `coderabbit auth login`
-under the same effective HOME as the daemon and press Re-check. Managed invocations disable
+Settings > Setup reports the optional CodeRabbit CLI in two rows, the way it reports the
+Atlassian CLI, without installing, signing in or reviewing on its own. **CodeRabbit CLI** reports
+the path/source and minimum version 0.9.1 and offers `brew install --cask coderabbit` through
+**Run in a terminal**. **CodeRabbit CLI sign-in** reads the same `coderabbit auth status --agent`
+a workflow review reads, and while the CLI is not signed in its **Run in a terminal** opens
+`coderabbit auth login` for the same coderabbit binary the daemon runs, offered only once the CLI
+is installed and at least 0.9.1 (before that the row says which step comes first and links the
+CodeRabbit CLI guide), with `HOME` set to the
+daemon's effective home so the credentials land where the daemon reads them. After signing in,
+press Re-check. If `coderabbit --version` or `coderabbit auth status` itself fails or answers
+unreadably, the row reports **Unknown** with what failed and links the CodeRabbit CLI guide
+instead of offering an install or a sign-in, because neither repairs a CLI that did not answer.
+A version that was read and is older than 0.9.1 names the selected binary, since the locator
+prefers a per-user install over Homebrew; upgrade it or point `MISSION_CODERABBIT_BIN` at a
+newer CLI. Managed invocations disable
 auto-update and never authorize usage credits. YAML must explicitly enable each repository;
 installation and login alone do not enable review. YAML-enabled blocks link directly back to
 Setup. See [workflow configuration and findings](workflows.md#local-coderabbit-command).

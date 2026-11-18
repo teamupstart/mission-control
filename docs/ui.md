@@ -23,7 +23,7 @@ It draws at one of two **densities**, or not at all, and the shipped default is 
 |---------|------|---------------|
 | **Condensed** (default) | ~38px | One row of six segments: glyph, name, count. No sentences, no wires. Whatever is amber has its sentence promoted to the right of the row, beside that stage's glyph. |
 | **Expanded** | ~86px | Two rows: the same six stages as cards, each with its sentence underneath, wired left to right. |
-| **Disabled** | none | No strip. The fleet starts directly under the top bar, and the stage drawers are not reachable from the fleet. |
+| **Disabled** | none | No strip. The fleet starts directly under the top bar, except in a **Console** with no session rail to show (an empty fleet, or a filter that matches no session), where the stage dock sits there first. The **Board** keeps its Backlog column, and the **Console** carries the stage drawers in its rail instead (see [With the Line off](#with-the-line-off)). |
 
 The strip is `flex: none` inside a shell that does not scroll, so the **~47px** between the
 two is handed straight to the conversation pane below - about 11% more of the window on a
@@ -96,11 +96,39 @@ a workflow name getting longer or a stage going quiet. The flowing dots on the w
 `prefers-reduced-motion`: with it set, the wires stay and the dots go - condensed draws no
 wires at all, so the setting does not arise there.
 
+### With the Line off
+
+Disabling the Line removes the strip, and the strip is the door to the stage drawers. The
+**Board** still draws a Backlog column. The **Console** has no column for the queue, so while
+the Line is Disabled its session rail carries the drawer stages instead: a row of five buttons
+under the rail's **All sessions** head - ⇊ **Intake**, ☰ **Backlog**, ⌁ **Review**, ⧉ **Decide**
+and ⚑ **Shipped**, each with its count. Working is left out, because the rail is the Working
+stage.
+
+- **They are the strip's buttons, not a copy of them.** Each reads the same `line_summary`
+  fold, keeps the stage's colour (amber when it is waiting on you), carries the same tooltip
+  and accessible name, and opens the same drawer, where a strip-less fleet puts it: under the
+  top bar (and under the dock, when the dock sits there), above the console. A second press closes it, a different stage swaps it, <kbd>esc</kbd> closes it
+  while the keyboard is in the drawer or on the dock, and every close hands the keyboard back
+  to the button that opened it.
+- **They follow the rail.** The row sits under the head, outside the scrolling rows, so it is
+  never scrolled away. [Folded](#folding-the-session-rail), the rail stacks the five buttons
+  at the foot of its 40px strip, glyph over count. A rail dragged near its narrowest width
+  drops the stage names and keeps every glyph and count.
+- **A Console with no rail still has them.** When the fleet is empty, or the filter matches no
+  session, there is no rail to carry the row, so it sits where the strip would have been.
+- **Only while the strip is not drawn.** Switch the Line back on and the dock goes; the strip
+  is the door again. The See work tour borrows the strip while the Line is off, and the dock
+  stands down for that stretch, so there is never a second button for one drawer.
+
 ### The stage drawers
 
 A drawer opens **between the strip and the board**, pushing the board down; closing it hands
-the space straight back. It is not an overlay and it is not inside a layout. The supported
-session layouts keep their geometry in every drawer state, which the geometry tests measure.
+the space straight back. With the Line Disabled there is no strip, so a drawer opened from the
+Console's [stage dock](#with-the-line-off) opens directly under the top bar, above the
+console (below the dock, when the dock sits there). It is not an overlay and it is not inside
+a layout. The supported session layouts keep their geometry in every drawer state, which the
+geometry tests measure.
 
 - **Toggle.** A second click on the same stage closes it. So does <kbd>esc</kbd>, and so does
   the **✕** in its header. Clicking a *different* stage swaps the content in place rather than
@@ -377,8 +405,9 @@ The `page` kind has exactly one member, and that is a statement about the app ra
 unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only full page with no door in the
 permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
 Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
-<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app, and
-the only way at all while the Line is Disabled.
+<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app. While
+the Line is Disabled, the Console's [stage dock](#with-the-line-off) keeps the ⚑ Shipped drawer
+one click away; on the Board, the palette is the only way.
 Fleet, the Library, Runs and Scouts are one press of the segmented control away, and a
 palette row beside a visible door would only be a second door. Scouts has one anyway,
 because the words an operator reaches for - investigation, findings, evidence, research -

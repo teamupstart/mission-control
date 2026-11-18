@@ -29178,6 +29178,117 @@ span.line-run-prov {
      scrollbar beside the session detail (#1393). */
   position: relative;
 }
+/* The Line's drawer stages, carried by the Console rail while the Line is switched off.
+   The strip's stage buttons in the rail's register: the same tones with the same small colour
+   budget (blue for machines moving, amber for you), and the same ring for the stage whose
+   drawer is open. Every button draws a glyph, a count and a name whatever it is saying, so the
+   band never changes height when a stage goes quiet. Under the head and outside the scroller,
+   so it is never scrolled out of reach. */
+.line-dock {
+  container: line-dock / inline-size;
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.line-dock-stage {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 2px 4px;
+  font: inherit;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.line-dock-stage:hover {
+  border-color: var(--dim);
+  background: var(--panel-2);
+}
+.line-dock-stage:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.ld-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+.ld-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--dim);
+}
+.ld-name {
+  max-width: 100%;
+  overflow: hidden;
+  font-family: var(--font-label);
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--dim);
+}
+.line-dock-stage.tone-working .ld-count {
+  color: var(--working);
+}
+.line-dock-stage.tone-idle .ld-count {
+  color: var(--fg);
+}
+.line-dock-stage.tone-attention {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.line-dock-stage.tone-attention .ld-glyph,
+.line-dock-stage.tone-attention .ld-count,
+.line-dock-stage.tone-attention .ld-name {
+  color: var(--attention);
+}
+/* A ring, not a tone, for the strip's reason: repainting an amber stage blue to say "open"
+   would throw away the one signal it exists to give. */
+.line-dock-stage.is-open {
+  border-color: var(--working);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 30%, transparent);
+}
+/* A rail dragged near its 260px floor keeps every glyph and count; the names go first, and
+   stay in each button's accessible name and tooltip. */
+@container line-dock (max-width: 250px) {
+  .ld-name {
+    display: none;
+  }
+}
+/* The folded rail's 40px strip: the same buttons stacked at its foot, glyph over count. */
+.line-dock.is-column {
+  flex-direction: column;
+  padding: 6px 4px 8px;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 0;
+}
+.line-dock.is-column .line-dock-stage {
+  flex: none;
+  padding: 5px 0;
+}
+/* A Console with nothing to arrange draws no rail, so the dock sits where the strip would. */
+.line-dock-loose {
+  flex: none;
+  width: min(340px, calc(100% - 44px));
+  margin: 12px 22px 0;
+}
+.line-dock-loose .line-dock {
+  padding: 0;
+  border-bottom: 0;
+}
 /* The fold control, at the right of whichever head the rail has. Drawn like the head's back
    button so the two read as one pair of controls. */
 .session-rail-fold {

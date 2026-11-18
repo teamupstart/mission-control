@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
 import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -20,12 +21,6 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
 }) => {
   await page.setViewportSize({ width: 1440, height: 1200 });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
-
-  await openSetupFamily(page, "pipelines");
-  const conductor = setupRow(page, "dependency-ai-conductor");
-  await expect(conductor).toContainText("No verified local installer checkout was found");
-  await expect(conductor.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
-  await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
 
   await openSetupFamily(page, "terminals");
   const wezterm = setupRow(page, "dependency-wezterm");
@@ -83,6 +78,22 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-provider-no-candidate.png");
   }
+});
+
+test("Setup links a provider with no verified checkout to its settings instead of a button", async ({
+  page,
+  daemon,
+}) => {
+  // The ai-conductor row is the only provider installer, and it is hidden with its integration.
+  test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+  await page.setViewportSize({ width: 1440, height: 1200 });
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+  await openSetupFamily(page, "pipelines");
+  const conductor = setupRow(page, "dependency-ai-conductor");
+  await expect(conductor).toContainText("No verified local installer checkout was found");
+  await expect(conductor.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+  await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
 });
 
 test("Setup renders the terminal launcher's refusal sentence", async ({ page, daemon }) => {
@@ -152,6 +163,8 @@ test.describe("with iTerm2 installed", () => {
 });
 
 test.describe("with one verified local provider checkout", () => {
+  // The only provider checkout is ai-conductor's, hidden with its integration.
+  test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
   test.use({
     daemonEnv: {
       MC_E2E_CONDUCTOR_STARTS_MISSING: "1",

@@ -487,6 +487,8 @@ import {
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
+import { CONDUCTOR_UNAVAILABLE_DETAIL } from "@shared/conductor-integration.ts";
 import {
   pipelineEpisodeKey,
   pipelineEpisodeWrite,
@@ -1864,6 +1866,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   app.use("/api/*", primaryActionTelemetry());
   app.use("/mcp/*", primaryActionTelemetry());
+
+  // The ai-conductor integration is hidden (`shared/conductor-integration.ts`). While it is,
+  // nothing here may reach the engine: no probe, registration, installer, control verb,
+  // console, run-detail read, plugin push, or Engineer host callback. The two reads a live
+  // surface polls answer "nothing is observed" instead of an error - the Dispatch form and the
+  // Runs page ask for the observed repositories, and the Foreman worker asks for halts - so
+  // neither logs a failure every cycle for a feature nobody can see.
+  const conductorHidden: MiddlewareHandler = async (c, next) => {
+    if (conductorIntegrationEnabled()) return next();
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/repos") {
+      return c.json({ repos: [], launchRuntime: getPipelinesConfig().launchRuntime });
+    }
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/foreman") {
+      return c.json({ enabled: false, items: [] } satisfies PipelineForemanView);
+    }
+    return c.json({ error: CONDUCTOR_UNAVAILABLE_DETAIL }, 404);
+  };
+  app.use("/api/pipelines/*", conductorHidden);
+  app.use("/ingest/conductor", conductorHidden);
+  app.use("/mcp/pipelines/*", conductorHidden);
 
   app.get("/api/health", (c) =>
     c.json({
@@ -8920,6 +8942,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
         resolveExecutable:
           setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
+        ...(setupInstallDeps?.conductorIntegration
+          ? { conductorIntegration: setupInstallDeps.conductorIntegration }
+          : {}),
         launchTerminal: terminalLauncher,
       });
     } catch (error) {

@@ -18,6 +18,7 @@ import {
   settingPayloadForEntry,
 } from "../src/server/settings-backups/config-registry.ts";
 import {
+  ALL_SETTINGS_CONTROLS,
   SETTINGS_CONTROLS,
   type SettingsControl,
 } from "../src/web/lib/settings-search.ts";
@@ -38,7 +39,9 @@ test("every Settings control declares backup coverage or an explicit reason", ()
 });
 
 test("Settings, runtime config, and Library domains have exactly one registered owner", () => {
-  const settingsReferences = SETTINGS_CONTROLS.flatMap((control) =>
+  // The whole registry: a domain owned by a withheld category (Conductor's `pipelines`, while
+  // the ai-conductor integration is hidden) is still backed up and still has its owner.
+  const settingsReferences = ALL_SETTINGS_CONTROLS.flatMap((control) =>
     control.backup.kind === "domain" ? control.backup.domains : []);
   const settingsDomains = SETTINGS_BACKUP_DOMAINS
     .filter((domain) => domain.surface === "settings")

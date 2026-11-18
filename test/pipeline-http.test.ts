@@ -72,6 +72,10 @@ const { refreshPipelineRepo, restorePipelineProjection } = await import(
   "../src/server/pipelines/index.ts"
 );
 const { PIPELINE_PROVIDERS } = await import("../src/server/pipelines/providers.ts");
+// This file exercises the hidden ai-conductor integration itself, so it runs with the
+// switch on. `test/conductor-integration-switch.test.ts` pins the shipped, hidden state.
+const { overrideConductorIntegrationForTests } = await import("../src/server/pipelines/availability.ts");
+overrideConductorIntegrationForTests(true);
 const {
   readConductorInvocations,
   seedConductorDaemon,

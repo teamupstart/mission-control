@@ -4,6 +4,7 @@ import { missionRouteHash, parseMissionRoute } from "../src/web/workflows/useWor
 import {
   DEFAULT_SETTINGS_CATEGORY,
   SETTINGS_CATEGORIES,
+  VISIBLE_SETTINGS_CATEGORIES,
 } from "../src/web/lib/settings-registry.ts";
 
 // What is at stake: Settings is a page reached by hash now, so `#/settings/shipping` is a
@@ -38,10 +39,20 @@ test("settings hashes parse and serialize without drifting", () => {
 });
 
 test("every category round-trips through its own hash", () => {
-  for (const c of SETTINGS_CATEGORIES) {
+  for (const c of VISIBLE_SETTINGS_CATEGORIES) {
     const hash = missionRouteHash({ page: "settings", category: c.id });
     assert.equal(hash, `#/settings/${c.id}`);
     assert.deepEqual(parseMissionRoute(hash), { page: "settings", category: c.id });
+  }
+});
+
+test("a category this build withholds is not a route, and lands on the default panel", () => {
+  // Conductor, while the ai-conductor integration is hidden. Kept in the registry, not routed.
+  for (const c of SETTINGS_CATEGORIES.filter((entry) => !VISIBLE_SETTINGS_CATEGORIES.includes(entry))) {
+    assert.deepEqual(
+      parseMissionRoute(`#/settings/${c.id}`),
+      { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
+    );
   }
 });
 

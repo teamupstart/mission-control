@@ -381,6 +381,9 @@ Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
 ## AI Conductor
 
+> Temporarily unavailable: the ai-conductor integration is hidden from Setup, Settings and
+> Dispatch while it is rebuilt. See [Pipelines](docs/pipelines.md).
+
 Some work is driven by a complete SDLC engine rather than one long-running agent. Mission Control
 can observe ai-conductor's gated pipeline, show its agents on the same fleet, surface halts in the
 attention inbox, and invoke the engine's own control commands without becoming a second writer of

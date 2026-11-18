@@ -156,6 +156,7 @@ import type { LibrarySurface, MissionRoute } from "./workflows/useWorkflowRoute.
 import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
 import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
@@ -1999,7 +2000,9 @@ export function App(): React.JSX.Element {
    * than to an empty page, which is the rule every unresolvable deep link in this router
    * already takes.
    */
-  const pipelinesObserving = settingsStatus?.pipelines.observing ?? 0;
+  // Zero while the ai-conductor integration is hidden, so the Pipelines tab cannot appear
+  // even against a daemon that still reports observed repositories.
+  const pipelinesObserving = CONDUCTOR_INTEGRATION_ENABLED ? settingsStatus?.pipelines.observing ?? 0 : 0;
   const runsKind: RunsKind =
     route.page === "runs" && route.kind === "pipelines" && pipelinesObserving > 0
       ? "pipelines"

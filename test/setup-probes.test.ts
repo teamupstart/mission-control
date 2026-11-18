@@ -525,14 +525,19 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
     status: { state: "unknown", why, evidence: "/tools/coderabbit" },
     remedy: CODERABBIT_CHECK_REMEDY,
   });
-  const UNAVAILABLE = "CodeRabbit authentication is unavailable. Press Re-check; if it persists, run `/tools/coderabbit auth status` to see why.";
-  const UNCONFIRMED = "CodeRabbit stored authentication could not be confirmed. Press Re-check; if it persists, run `/tools/coderabbit auth status` to see why.";
+  // The path is shell-quoted, so the suggested command still runs from a path with spaces.
+  const UNAVAILABLE = "CodeRabbit authentication is unavailable. Press Re-check; if it persists, run `'/tools/coderabbit' 'auth' 'status'` to see why.";
+  const UNCONFIRMED = "CodeRabbit stored authentication could not be confirmed. Press Re-check; if it persists, run `'/tools/coderabbit' 'auth' 'status'` to see why.";
   const answering = (auth: { stdout: string; code: number }) => async (_bin: string, argv: readonly string[]) =>
     argv[0] === "--version" ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 }) : stubRun({ ...auth, stderr: "boom" });
   for (const [label, auth, why] of [
     ["a failing command", { stdout: "", code: 1 }, UNAVAILABLE],
     ["an unparseable answer", { stdout: "not json", code: 0 }, UNCONFIRMED],
-    ["an error event", { stdout: JSON.stringify({ type: "error", message: "rate limited" }), code: 0 }, UNCONFIRMED],
+    // Beside a signed-in status, so the case fails if the error guard is removed.
+    ["an error event", {
+      stdout: [JSON.stringify({ type: "status", authenticated: true }), JSON.stringify({ type: "error", message: "rate limited" })].join("\n"),
+      code: 0,
+    }, UNCONFIRMED],
   ] as const) {
     const reading = await probed("coderabbit-auth", { runCommand: answering(auth) });
     assert.deepEqual(reading, inconclusive(why), label);
@@ -559,7 +564,7 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   assert.deepEqual(await probed("coderabbit-cli", { runCommand: versionTimesOut }), {
     status: {
       state: "unknown",
-      why: "The CodeRabbit CLI at /tools/coderabbit did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run `/tools/coderabbit --version` to see why.",
+      why: "The CodeRabbit CLI at /tools/coderabbit did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run `'/tools/coderabbit' '--version'` to see why.",
       evidence: "/tools/coderabbit",
     },
     remedy: CODERABBIT_CHECK_REMEDY,
@@ -590,6 +595,29 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   const old = await probed("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
   assert.match("why" in old.status ? old.status.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);
   assert.deepEqual(old.remedy, CODERABBIT_CHECK_REMEDY);
+});
+
+test("one Setup check reads the CodeRabbit version once, so its two rows cannot disagree", async () => {
+  // The first --version answers 0.9.1 and any later one would time out. Both rows must come
+  // from the first: a ready CLI row beside a sign-in row withheld for an unreadable version
+  // is the disagreement this guards.
+  let versionReads = 0;
+  const view = await setupChecksView(deps({
+    runCommand: async (bin, argv) => {
+      if (bin === "/tools/coderabbit" && argv[0] === "--version") {
+        versionReads += 1;
+        return versionReads === 1
+          ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 })
+          : { ...stubRun({ stdout: "", stderr: "", code: 1 }), outcomeUnknown: true };
+      }
+      if (bin === "/tools/coderabbit") return stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 });
+      return stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : bin === "/tools/acli" ? ACLI_SIGNED_IN : "Logged in to github.com account operator", stderr: "", code: 0 });
+    },
+  }));
+  const row = (id: string) => view.rows.find((r) => r.rowId.source === "dependency" && r.rowId.id === id)!;
+  assert.equal(versionReads, 1);
+  assert.equal(row("coderabbit-cli").status.state, "satisfied");
+  assert.equal(row("coderabbit-auth").status.state, "satisfied");
 });
 
 test("the acli sign-in row names the missing install, the missing login, and the wrong site", async () => {

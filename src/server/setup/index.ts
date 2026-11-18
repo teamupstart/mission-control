@@ -1,5 +1,6 @@
 import { mcpTrustStatus } from "./mcp-trust.ts";
-import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
+import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV, type CodeRabbitVersionReading } from "../workflows/coderabbit.ts";
+import { shellCommand } from "../terminal/shell.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
@@ -375,11 +376,39 @@ function configuredAcliSites(): string[] {
   return [...sites].sort();
 }
 
+interface CodeRabbitSelection {
+  installed: SetupStatus;
+  /** Null when no CLI was found, so no version was asked for. */
+  version: CodeRabbitVersionReading | null;
+}
+
+/**
+ * One executable lookup and one `--version` per Setup check, shared by both CodeRabbit rows.
+ *
+ * Keyed on the deps object `setupChecksView` scopes to a single check, so the two rows can
+ * never disagree within one response - a CLI row reading 0.9.1 beside a sign-in row whose own
+ * `--version` timed out - and a later check reads the machine again.
+ */
+const codeRabbitSelections = new WeakMap<SetupDeps, Promise<CodeRabbitSelection>>();
+
+function codeRabbitSelection(deps: SetupDeps): Promise<CodeRabbitSelection> {
+  let selection = codeRabbitSelections.get(deps);
+  if (!selection) {
+    selection = (async () => {
+      const installed = await present("coderabbit", deps, "coderabbit");
+      if (installed.state !== "satisfied") return { installed, version: null };
+      const version = await codeRabbitVersionReading((args) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV));
+      return { installed, version };
+    })();
+    codeRabbitSelections.set(deps, selection);
+  }
+  return selection;
+}
+
 /** Installed and new enough. Sign-in is `coderabbit-auth`'s question, the way acli splits it. */
 async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
-  const status = await present("coderabbit", deps, "coderabbit");
-  if (status.state !== "satisfied") return status;
-  const reading = await codeRabbitVersionReading((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV));
+  const { installed: status, version: reading } = await codeRabbitSelection(deps);
+  if (status.state !== "satisfied" || !reading) return status;
   switch (reading.state) {
     case "compatible":
       return { ...status, evidence: `${status.evidence} (CodeRabbit ${reading.version})` };
@@ -399,7 +428,7 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupPro
       return {
         status: {
           state: "unknown",
-          why: `The CodeRabbit CLI at ${status.evidence} did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run \`${status.evidence} --version\` to see why.`,
+          why: `The CodeRabbit CLI at ${status.evidence} did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run \`${shellCommand([status.evidence, "--version"])}\` to see why.`,
           evidence: status.evidence,
         },
         // Not the cask: a second install would leave this binary selected and still silent.
@@ -413,18 +442,17 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupPro
  * so this row and a review can never disagree about whether the CLI is signed in.
  */
 async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
-  const installed = await present("coderabbit", deps, "coderabbit");
+  const { installed, version } = await codeRabbitSelection(deps);
   // Sign-in is offered only once the CLI passes the version check. Before that the row says
   // which prerequisite is missing and carries no command, rather than a sign-in the route
   // would refuse (missing) or that would run an unsupported CLI (obsolete).
-  if (installed.state !== "satisfied") {
+  if (installed.state !== "satisfied" || !version) {
     return {
       status: { state: "needs-setup", why: "Install the CodeRabbit CLI first (the row above), press Re-check, then sign in.", evidence: null },
       remedy: CODERABBIT_CHECK_REMEDY,
     };
   }
   const execute = (args: string[]) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV);
-  const version = await codeRabbitVersionReading(execute);
   if (version.state === "obsolete") {
     return {
       status: { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence },
@@ -449,7 +477,7 @@ async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | Setu
       return {
         status: {
           state: "unknown",
-          why: `${reading.diagnostic}. Press Re-check; if it persists, run \`${installed.evidence} auth status\` to see why.`,
+          why: `${reading.diagnostic}. Press Re-check; if it persists, run \`${shellCommand([installed.evidence, "auth", "status"])}\` to see why.`,
           evidence: installed.evidence,
         },
         remedy: CODERABBIT_CHECK_REMEDY,
@@ -640,12 +668,14 @@ export function defaultSetupDeps(): SetupDeps {
 
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
+  const scoped: SetupDeps = { ...deps };
   await deps.refreshPath?.();
   // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
   // count toward any family. See `shared/conductor-integration.ts`.
   const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled());
   const [probed, targets, environment, repositories] = await Promise.all([
-    Promise.all(dependencyIds.map((id) => runProbe(id, deps))),
+    // A fresh object per check: per-check readings shared between rows key on it.
+    Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
     indexedRepositoriesRow(deps),

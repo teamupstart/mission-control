@@ -241,7 +241,7 @@ test("a broken CodeRabbit sign-in check reads Unknown with its reason, not signe
   await expectRowStatus(page, "dependency-coderabbit-cli", "Ready");
   await expectRowStatus(page, "dependency-coderabbit-auth", "Unknown");
   await expect(auth).toContainText("CodeRabbit authentication is unavailable. Press Re-check; if it persists, run");
-  await expect(auth).toContainText("auth status` to see why.");
+  await expect(auth).toContainText("' 'auth' 'status'` to see why.");
   // Not claimed as a sign-out, no login advised or offered for a state nobody read, and the
   // probe's stderr never reaches the page.
   await expect(auth).not.toContainText("installed but not signed in");

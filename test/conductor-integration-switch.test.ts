@@ -386,3 +386,88 @@ test("every operator action on a stored Pipeline task refuses before reaching th
   assert.deepEqual(registry.listPipelineCommissions(), []);
   assert.deepEqual(registry.getTask(task.id), before);
 });
+
+test("with consent and an active commission already stored, the hidden watcher never probes, tails or replays", async (t) => {
+  // The state an upgraded installation boots into: a consented repository and an Engineer
+  // commission mid-run, both stored before the watcher starts.
+  setPipelinesConfig({
+    enabled: true,
+    foremanMechanicalTriage: true,
+    repos: [{ provider: "ai-conductor", repoRoot: home, enabled: true }],
+  });
+  const commission = {
+    id: "hidden-active-commission",
+    provider: "ai-conductor",
+    repoRoot: home,
+    activeAttempt: 1,
+    attempts: [{ attempt: 1, engineerRunId: "engineer-run-1", state: "running", providerRevision: 0 }],
+    // Ends the switch-on pass right after the capability read, so the control below writes
+    // nothing: a retiring commission is not replayed.
+    retirement: { requestedAt: 1 },
+    successorCandidate: null,
+    recovery: null,
+  } as never;
+
+  // Every provider door the watcher could reach, counted. Each stub answers inertly so the
+  // switch-on control below can run a real tick without touching a filesystem or a CLI.
+  const provider = PIPELINE_PROVIDERS["ai-conductor"];
+  const original = {
+    probe: provider.probe,
+    readRepo: provider.readRepo,
+    knownRunSlugs: provider.knownRunSlugs,
+    engineerLifecycle: provider.engineerLifecycle,
+  };
+  t.after(() => Object.assign(provider, original));
+  const calls = { probe: 0, readRepo: 0, knownRunSlugs: 0, lifecycle: 0 };
+  provider.probe = async () => {
+    calls.probe += 1;
+    return original.probe();
+  };
+  provider.readRepo = async (_repoRoot, cursors) => {
+    calls.readRepo += 1;
+    return {
+      runs: [],
+      cursors,
+      usage: new Map(),
+      restarted: new Set(),
+      events: new Map(),
+      daemon: "stopped",
+      error: null,
+    };
+  };
+  provider.knownRunSlugs = () => {
+    calls.knownRunSlugs += 1;
+    return new Set();
+  };
+  const lifecycleCall = async () => {
+    calls.lifecycle += 1;
+    return { ok: true, value: { supported: true } };
+  };
+  provider.engineerLifecycle = new Proxy({}, { get: () => lifecycleCall }) as never;
+
+  const runWatcher = async (until: () => boolean, forMs: number): Promise<void> => {
+    const registry = new Registry();
+    registry.initializePipelineCommissions([commission]);
+    const stop = startPipelineWatcher(registry);
+    const deadline = Date.now() + forMs;
+    while (!until() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    stop();
+  };
+
+  // Shipped state. A live watcher ticks the moment it starts, so this window is several times
+  // what the control below needs to reach both doors.
+  await runWatcher(() => false, 300);
+  assert.deepEqual(calls, { probe: 0, readRepo: 0, knownRunSlugs: 0, lifecycle: 0 });
+
+  // Control: the same stored state with the switch on does reach the tail and the Engineer
+  // lifecycle, so the zeroes above are the switch and not an unobservable setup.
+  overrideConductorIntegrationForTests(true);
+  try {
+    await runWatcher(() => calls.readRepo > 0 && calls.lifecycle > 0, 2_000);
+  } finally {
+    overrideConductorIntegrationForTests(null);
+  }
+  assert.ok(calls.readRepo > 0, "a live watcher tails the consented repository");
+  assert.ok(calls.lifecycle > 0, "a live watcher reads the active commission's Engineer lifecycle");
+  setPipelinesConfig({ enabled: false, foremanMechanicalTriage: false, repos: [] });
+});

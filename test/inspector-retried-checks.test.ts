@@ -133,6 +133,11 @@ test("GitHub's failing verdict stands whenever the checks cannot prove it stale"
       noRun("SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z"),
     ]), "failing");
   });
+  await t.test("a failed commit status followed by a later status for its context", async () => {
+    // A status names no app, workflow or event: under the Actions-only rule it clears nothing.
+    const status = (state: string, createdAt: string) => ({ __typename: "StatusContext", context: "ci/legacy", state, createdAt });
+    assert.equal(await checksFor("FAILURE", [status("FAILURE", "2026-10-07T20:00:00Z"), status("SUCCESS", "2026-10-07T20:01:00Z")]), "failing");
+  });
   await t.test("another app's failed check followed by its own later pass of that name", async () => {
     const appRun = (conclusion: string, startedAt: string, completedAt: string) => ({
       ...run("build", conclusion, startedAt, completedAt),

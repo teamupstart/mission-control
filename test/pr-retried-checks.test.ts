@@ -152,6 +152,12 @@ test("nothing that looks re-checked costs no extra read", async () => {
   writeFileSync(calls, "");
   const failing = [ghRun("unit", "CI", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z")];
   const passing = [ghRun("unit", "CI", "SUCCESS", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z")];
+  // Commit statuses never clear a failure, so a later status for the context is no re-run to confirm.
+  const statuses = [
+    { __typename: "StatusContext", context: "ci/legacy", state: "FAILURE", targetUrl: "", startedAt: "2026-10-07T20:00:00Z" },
+    { __typename: "StatusContext", context: "ci/legacy", state: "SUCCESS", targetUrl: "", startedAt: "2026-10-07T20:01:00Z" },
+  ];
+  assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: statuses }), "failing");
   assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: failing }), "failing");
   assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: passing }), "passing");
   assert.equal(await confirmRetriedChecks(dir, nextPr(), {}), null);

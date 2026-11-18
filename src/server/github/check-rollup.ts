@@ -17,9 +17,9 @@ import type { PrChecks } from "@shared/types.ts";
 // and a pass in one says nothing about a failure in the other. Two runs of one check that
 // overlapped are independent verdicts too, and so are two jobs of one workflow run that share a
 // display name: a re-run is always a different check suite. Only Actions runs say all of that
-// (see `runKey`), so another app's failed check is never retired here. Leaving a stale failure
-// up is a false alarm; letting an unrelated pass hide a real failure would be a merge the gate
-// should have refused.
+// (see `runKey`), so another app's failed check, and a failed commit status, is never retired
+// here. Leaving a stale failure up is a false alarm; letting an unrelated pass hide a real
+// failure would be a merge the gate should have refused.
 //
 // `gh pr list --json statusCheckRollup`, which the branch poller reads, does not carry the app or
 // the event, so its runs never have a full identity and never retire one another here. What it
@@ -185,15 +185,15 @@ function readEntry(e: unknown): CheckEntry | null {
   }
   if (typeof o.state === "string") {
     const s = o.state.toUpperCase();
-    const context = text(o.context);
-    // A commit status is a report posted at one instant, not a run with a span, and its context
-    // is its whole identity: a later status for the same context replaces it, which is how GitHub
-    // itself reads statuses. `gh` exports the instant as `startedAt`; GraphQL calls it `createdAt`.
+    // A commit status names no app, workflow or event - anything that can post to the API can
+    // post one under any context - so, like another app's check, it never retires another and is
+    // never retired: a failed status stands until the next push. GitHub's rollup already keeps
+    // only the latest status per context, so the failure it reports is the current one.
+    // `gh` exports the instant as `startedAt`; GraphQL calls it `createdAt`.
     const at = instant(o.startedAt) ?? instant(o.createdAt);
-    const key = context ? `status\0${context}` : null;
     return {
-      key,
-      looseKey: key,
+      key: null,
+      looseKey: null,
       suite: null,
       state: FAIL_STATES.has(s) ? "fail" : PENDING_STATES.has(s) ? "pending" : s === "SUCCESS" ? "pass" : "unknown",
       startedAt: at,

@@ -76,10 +76,11 @@ the later one has started, so a failure a later run re-checked does not hold the
 check means a GitHub Actions run of the same workflow file, triggering event and check name: the
 `push` and `pull_request` runs of one job are two checks, whatever their timing, and a failure in
 either still counts. So do two runs of one check that overlapped. Only GitHub Actions reports all
-of that, so a failed check from any other app stays failing until the next push, as GitHub's own
-rollup reads it. `gh pr list` does not report the app or the event, so before a failure is
-cleared the poller reads that commit's checks once more through GitHub's GraphQL API, and keeps
-the failure unless that answer is complete and confirms the later run was the same check.
+of that, so a failed check from any other app, or a failed commit status, stays failing until the
+next push, as GitHub's own rollup reads it. `gh pr list` does not report the app or the event, so
+before a failure is cleared the poller reads that commit's checks once more through GitHub's
+GraphQL API, and keeps the failure unless that answer is complete and confirms the later run was
+the same check.
 
 ### The title bar stays compact at half-screen
 

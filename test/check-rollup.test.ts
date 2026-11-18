@@ -293,13 +293,25 @@ test("gh pr list's export never retires a run, but flags a failure that looks re
   assert.equal(rollUpChecks([ghRun("unit", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z"), pending]).unconfirmedRetry, false);
 });
 
-test("a later commit status for the same context replaces an earlier one", () => {
+test("a failed commit status is never retired, even by a later status for its context", () => {
+  // A status names no app, workflow or event, so under the Actions-only rule nothing it says
+  // clears a failure - in either shape GitHub reports it, and without a suspected re-run that
+  // would send the poller to GraphQL for an answer that could not clear it anyway.
   const status = (state: string, at: string) => ({ __typename: "StatusContext", context: "ci/legacy", state, createdAt: at });
-  assert.equal(rollUpChecks([status("FAILURE", "2026-10-07T20:00:00Z"), status("SUCCESS", "2026-10-07T20:01:00Z")]).checks, "passing");
+  const graphql = rollUpChecks([status("FAILURE", "2026-10-07T20:00:00Z"), status("SUCCESS", "2026-10-07T20:01:00Z")]);
+  assert.equal(graphql.checks, "failing");
+  assert.equal(graphql.retriedFailure, false);
   assert.equal(rollUpChecks([status("SUCCESS", "2026-10-07T20:00:00Z"), status("ERROR", "2026-10-07T20:01:00Z")]).checks, "failing");
   // `gh` exports the same instant as `startedAt`.
   const exported = (state: string, at: string) => ({ __typename: "StatusContext", context: "ci/legacy", state, targetUrl: "", startedAt: at });
-  assert.equal(rollUpChecks([exported("FAILURE", "2026-10-07T20:00:00Z"), exported("SUCCESS", "2026-10-07T20:01:00Z")]).checks, "passing");
+  const fromGh = rollUpChecks([exported("FAILURE", "2026-10-07T20:00:00Z"), exported("SUCCESS", "2026-10-07T20:01:00Z")]);
+  assert.equal(fromGh.checks, "failing");
+  assert.equal(fromGh.unconfirmedRetry, false);
+  // Nor does an Actions run clear a status that happens to share its name.
+  assert.equal(rollUpChecks([
+    { __typename: "StatusContext", context: "build", state: "FAILURE", createdAt: "2026-10-07T20:00:00Z" },
+    run("build", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z"),
+  ]).checks, "failing");
 });
 
 test("an unrecognised result reads as passing but is reported as unrecognised", () => {

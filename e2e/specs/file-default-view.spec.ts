@@ -171,6 +171,11 @@ test("Preview focus returns to the file list with Shift+Tab or Escape", async ({
     name: /Keep the Session Rail Out of File Preview Navigation/i,
   });
   await expect(neighbour).toBeVisible();
+  // Settled before focus is placed. The neighbour arrives Working and turns Idle a moment
+  // later, and joining the report session's Idle group regroups the rail, which remounts the
+  // focused row and drops the keyboard to <body>. On a loaded runner that landed just after
+  // the click below, and the focus assertion then waited on a row nobody had focused.
+  await expect(neighbour).toHaveAccessibleName(/\bidle\b/);
 
   // Put real DOM focus back on the session rail while leaving its Files tab open. This is
   // the reported boundary: before the fix, the next arrow selected the neighbouring session.

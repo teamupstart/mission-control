@@ -71,7 +71,8 @@ function parseStageBody(
       readingDetails = true;
       const required = REQUIRES.exec(match[2]!);
       if (required) {
-        const offered = requirements[required[1]!];
+        // Own keys only: an inherited name such as `constructor` is not a requirement.
+        const offered = Object.hasOwn(requirements, required[1]!) ? requirements[required[1]!] : undefined;
         if (offered === undefined) {
           throw new TourContentError(
             `tour ${slug} stage ${stageId} requires unknown integration ${required[1]}`,

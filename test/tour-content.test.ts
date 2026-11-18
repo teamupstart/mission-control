@@ -116,6 +116,13 @@ test("an entry that requires an integration is shown only while that integration
     () => parseTourContent("broken", markdown.replace("ai-conductor", "no-such-thing"), { "ai-conductor": true }),
     /requires unknown integration no-such-thing/,
   );
+  // Including a name every object inherits: it is not a requirement this build defines.
+  for (const inherited of ["constructor", "to-string"]) {
+    assert.throws(
+      () => parseTourContent("broken", markdown.replace("ai-conductor", inherited), { "ai-conductor": true }),
+      new RegExp(`requires unknown integration ${inherited}`),
+    );
+  }
 });
 
 test("the shipped tour follows the Conductor switch: the Pipeline kind is authored but not shown", () => {

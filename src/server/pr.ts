@@ -254,6 +254,12 @@ function checksOf(p: unknown): PrChecks | null {
  */
 const confirmedChecks = new Map<string, { fingerprint: string; checks: PrChecks | null }>();
 const CONFIRMED_CHECKS_LIMIT = 256;
+/**
+ * The most checks `gh pr list --json statusCheckRollup` reports for one commit. A rollup that
+ * long may be cut short, so it cannot key a remembered verdict: a check added past the cut
+ * leaves it unchanged.
+ */
+const GH_ROLLUP_PAGE = 100;
 
 /**
  * The chip state, with a failure that LOOKS re-checked confirmed before it is cleared.
@@ -273,12 +279,18 @@ export async function confirmRetriedChecks(
 ): Promise<PrChecks | null> {
   const rollup = rollUpChecks(rollupOf(raw));
   if (rollup.checks !== "failing" || !rollup.unconfirmedRetry || !candidate.headSha) return rollup.checks;
+  // A full page may be missing checks, so its fingerprint cannot stand for the head's checks.
+  const cacheable = rollupOf(raw).length < GH_ROLLUP_PAGE;
   const fingerprint = `${candidate.headSha}\0${JSON.stringify(rollupOf(raw))}`;
-  const known = confirmedChecks.get(candidate.url);
+  const known = cacheable ? confirmedChecks.get(candidate.url) : undefined;
   if (known?.fingerprint === fingerprint) return known.checks;
   const contexts = await queryHeadChecks(cwd, candidate.url, candidate.headSha);
   if (!contexts) return rollup.checks;
-  const checks = rollUpChecks(contexts).checks ?? rollup.checks;
+  // The merge gate's bar, so the chip never clears what the gate would still hold: an answer
+  // with an unreadable entry or an unrecognised result keeps the failure.
+  const confirmed = rollUpChecks(contexts);
+  const checks = confirmed.recognized && confirmed.checks !== null ? confirmed.checks : rollup.checks;
+  if (!cacheable) return checks;
   confirmedChecks.delete(candidate.url);
   confirmedChecks.set(candidate.url, { fingerprint, checks });
   if (confirmedChecks.size > CONFIRMED_CHECKS_LIMIT) {

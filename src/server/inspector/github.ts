@@ -545,7 +545,7 @@ function toChecks(state: unknown): ChecksState {
  * request on "CI is failing" while GitHub's checks list was green. The override is narrow on
  * purpose, because this verdict lets a pull request merge itself: it only ever clears a failure,
  * only when the page of checks is complete, only when a failing run was re-checked by a later run
- * of the same check - a GitHub Actions run of the same workflow, triggering event and name, so a
+ * of the same check - a GitHub Actions run of the same workflow file, triggering event and name, so a
  * passing `pull_request` run never clears a failed `push` run and another app's failed check is
  * never cleared at all - and only when every run still counting has a result
  * `rollUpChecks` recognises: a conclusion GitHub calls a failure and this code does not know

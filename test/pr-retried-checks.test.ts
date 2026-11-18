@@ -44,7 +44,7 @@ function ghRun(name: string, workflowName: string, conclusion: string, startedAt
 
 function node(name: string, workflow: string, event: string, conclusion: string, startedAt: string, completedAt: string) {
   return { __typename: "CheckRun", name, status: "COMPLETED", conclusion, startedAt, completedAt,
-    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { name: workflow } } } };
+    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: `W_${workflow}`, name: workflow } } } };
 }
 
 function reply(nodes: unknown[], { oid = HEAD, hasNextPage = false } = {}): void {
@@ -75,7 +75,7 @@ test("a re-run GitHub confirms is the same check clears the alert, and is read o
   const [args] = ghCalls();
   assert.deepEqual(args?.slice(0, 2), ["api", "graphql"]);
   assert.ok(args?.includes("owner=acme") && args.includes("name=demo") && args.includes(`number=${prNumber}`));
-  assert.match(args?.find((arg) => arg.startsWith("query=")) ?? "", /workflowRun\{ event workflow\{ name \} \}/);
+  assert.match(args?.find((arg) => arg.startsWith("query=")) ?? "", /workflowRun\{ event workflow\{ id name \} \}/);
   // The next tick sees the same rollup: the confirmed answer stands without another read.
   assert.equal(await confirmRetriedChecks(dir, pr, { statusCheckRollup: TITLE_RUNS }), "passing");
   assert.equal(ghCalls().length, 1);
@@ -111,6 +111,15 @@ test("the failure stands whenever GitHub's answer is not a complete one about th
     reply(TITLE_NODES, { hasNextPage: true });
     assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: TITLE_RUNS }), "failing");
   });
+  await t.test("the re-run's result is one this code does not recognise", async () => {
+    // The merge gate keeps GitHub's failure on such an answer; the chip must not clear it either.
+    reply([TITLE_NODES[0], { ...TITLE_NODES[1], conclusion: "SOMETHING_NEW" }]);
+    assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: TITLE_RUNS }), "failing");
+  });
+  await t.test("the answer carries an unreadable node", async () => {
+    reply([TITLE_NODES[0], null, TITLE_NODES[1]]);
+    assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: TITLE_RUNS }), "failing");
+  });
   await t.test("an unreadable answer is retried on the next tick rather than remembered", async () => {
     const pr = nextPr();
     writeFileSync(answer, JSON.stringify({ exit: 1 }));
@@ -128,6 +137,23 @@ test("nothing that looks re-checked costs no extra read", async () => {
   assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: passing }), "passing");
   assert.equal(await confirmRetriedChecks(dir, nextPr(), {}), null);
   assert.equal(ghCalls().length, 0);
+});
+
+test("a rollup gh pr list may have cut short is confirmed afresh on every tick", async () => {
+  // At 100 checks the export can be missing some, so a check added past the cut would leave the
+  // remembered verdict's key unchanged.
+  const filler = Array.from({ length: 98 }, (_, i) =>
+    ghRun(`shard ${i}`, "CI", "SUCCESS", "2026-10-07T19:50:00Z", "2026-10-07T19:55:00Z"));
+  const full = [...filler, ...TITLE_RUNS];
+  assert.equal(full.length, 100);
+  const pr = nextPr();
+  reply(TITLE_NODES);
+  writeFileSync(calls, "");
+  assert.equal(await confirmRetriedChecks(dir, pr, { statusCheckRollup: full }), "passing");
+  // The head gained a failing check past the cut: the next read sees more than one page.
+  reply(TITLE_NODES, { hasNextPage: true });
+  assert.equal(await confirmRetriedChecks(dir, pr, { statusCheckRollup: full }), "failing");
+  assert.equal(ghCalls().length, 2);
 });
 
 test("a new run on the pull request is confirmed afresh", async () => {

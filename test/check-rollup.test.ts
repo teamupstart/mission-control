@@ -11,13 +11,13 @@ import { rollUpChecks } from "../src/server/github/check-rollup.ts";
 
 const ZERO = "0001-01-01T00:00:00Z"; // `gh`'s export of a timestamp GitHub has not set yet
 
-/** A GraphQL check run from GitHub Actions. */
+/** A GraphQL check run from GitHub Actions. The workflow file's id defaults to one per name. */
 function run(
   name: string,
   conclusion: string | null,
   startedAt: string | null,
   completedAt: string | null,
-  { workflow = "CI", event = "pull_request" }: { workflow?: string; event?: string } = {},
+  { workflow = "CI", event = "pull_request", workflowId = `W_${workflow}` }: { workflow?: string; event?: string; workflowId?: string } = {},
 ): Record<string, unknown> {
   return {
     __typename: "CheckRun",
@@ -26,7 +26,7 @@ function run(
     conclusion,
     startedAt,
     completedAt,
-    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { name: workflow } } },
+    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: workflowId, name: workflow } } },
   };
 }
 
@@ -129,6 +129,23 @@ test("two runs reported in the same second never retire each other", () => {
   assert.equal(rollUpChecks([run("lint", "FAILURE", at, at), run("lint", "SUCCESS", at, at)]).checks, "failing");
 });
 
+test("a re-run must start in a later second than the failure finished in", () => {
+  // GitHub reports whole seconds: a start in the finishing second may still have overlapped it.
+  const failed = run("unit", "FAILURE", "2026-10-07T10:00:00Z", "2026-10-07T10:01:00Z");
+  assert.equal(rollUpChecks([failed, run("unit", "SUCCESS", "2026-10-07T10:01:00Z", "2026-10-07T10:03:00Z")]).checks, "failing");
+  assert.equal(rollUpChecks([failed, run("unit", "SUCCESS", "2026-10-07T10:01:01Z", "2026-10-07T10:03:00Z")]).checks, "passing");
+});
+
+test("two workflow files that share a display name are different workflows", () => {
+  // Both called `CI`, both running `build` on `pull_request`: only the workflow's id tells them apart.
+  const rollup = rollUpChecks([
+    run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { workflow: "CI", workflowId: "W_ci_yml" }),
+    run("build", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z", { workflow: "CI", workflowId: "W_ci_nightly_yml" }),
+  ]);
+  assert.equal(rollup.checks, "failing");
+  assert.equal(rollup.retriedFailure, false);
+});
+
 test("a check with the same name in another workflow is a different check", () => {
   const rollup = rollUpChecks([
     run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { workflow: "Release" }),
@@ -167,7 +184,7 @@ test("an Actions run whose suite does not name its app, workflow run, workflow o
   assert.equal(rollUpChecks([
     run("unit", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z"),
     { ...run("unit", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z"),
-      checkSuite: { app: { slug: "github-actions" }, workflowRun: { event: null, workflow: { name: "CI" } } } },
+      checkSuite: { app: { slug: "github-actions" }, workflowRun: { event: null, workflow: { id: "W_CI", name: "CI" } } } },
   ]).checks, "failing");
   // No workflow run at all, on a suite GitHub Actions reported: two workflows' `build` jobs would
   // otherwise share one key.
@@ -181,7 +198,7 @@ test("an Actions run whose suite does not name its app, workflow run, workflow o
   ]).checks, "failing");
   // No workflow name: a later pass from another workflow's `build` would otherwise share the key
   // of this one's failure and clear it, and the Inspector would release the merge gate on it.
-  for (const workflow of [null, { name: null }, { name: "" }]) {
+  for (const workflow of [null, { id: null, name: "CI" }, { id: "", name: "CI" }, { name: "CI" }]) {
     const unnamed = (conclusion: string, startedAt: string, completedAt: string) => ({
       __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion, startedAt, completedAt,
       checkSuite: { app: { slug: "github-actions" }, workflowRun: { event: "pull_request", workflow } },
@@ -227,4 +244,17 @@ test("an unrecognised result reads as passing but is reported as unrecognised", 
 test("no checks, or none in a shape we know, roll up to null", () => {
   assert.equal(rollUpChecks([]).checks, null);
   assert.equal(rollUpChecks([null, 7, { __typename: "Mystery" }]).checks, null);
+});
+
+test("an unreadable entry makes the whole answer unrecognised", () => {
+  // GraphQL allows a null node, and the one it hides could be the failure that still counts.
+  const rollup = rollUpChecks([
+    run("unit", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z"),
+    null,
+    run("unit", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z"),
+  ]);
+  assert.equal(rollup.checks, "passing");
+  assert.equal(rollup.retriedFailure, true);
+  assert.equal(rollup.recognized, false);
+  assert.equal(rollUpChecks([]).recognized, true);
 });

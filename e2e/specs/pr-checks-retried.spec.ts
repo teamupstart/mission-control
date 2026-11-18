@@ -131,7 +131,8 @@ function withChecks<T extends object>(pr: T, runs: CheckRun[]) {
     })),
     checkContexts: runs.map((run) => ({
       __typename: "CheckRun", name: run.name, status: "COMPLETED", conclusion: run.conclusion, ...times(run),
-      checkSuite: { app: { slug: "github-actions" }, workflowRun: { event: run.event, workflow: { name: run.workflow } } },
+      checkSuite: { app: { slug: "github-actions" },
+        workflowRun: { event: run.event, workflow: { id: `W_${run.workflow}`, name: run.workflow } } },
     })),
   };
 }

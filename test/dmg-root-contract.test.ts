@@ -81,7 +81,8 @@ function hdiutil(args: readonly string[], beforeAttempt: (attempt: number) => vo
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     beforeAttempt(attempt);
     const ran = spawnSync('/usr/bin/hdiutil', args, {encoding: 'utf8', timeout: 60_000});
-    if (ran.status === 0) return;
+    // A timed-out child that still exits 0 reports both, and is not a success.
+    if (!ran.error && ran.status === 0) return;
     failures.push(`attempt ${attempt}: status ${ran.status} signal ${ran.signal} ${ran.error?.message ?? ''}\n${ran.stdout}${ran.stderr}`.trim());
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500 * attempt);
   }
@@ -120,10 +121,18 @@ test('producer qualification refuses a real mounted DMG whose root the installer
     const {work, dmg} = image(t, entries);
     const mount = join(work, 'image');
     mkdirSync(mount);
-    // A refused attach that still mounted would hold the mount point against the next one.
-    hdiutil(['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount], (attempt) => {
-      if (attempt > 1) spawnSync('/usr/bin/hdiutil', ['detach', mount, '-force'], {timeout: 60_000, stdio: 'ignore'});
-    });
+    // A refused attach can still leave the image mounted. Before a retry that blocks the next
+    // attempt; after the last refusal nothing else would ever detach it, because the work
+    // directory's cleanup only deletes files.
+    const forceDetach = () => spawnSync('/usr/bin/hdiutil', ['detach', mount, '-force'], {timeout: 60_000, stdio: 'ignore'});
+    try {
+      hdiutil(['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount], (attempt) => {
+        if (attempt > 1) forceDetach();
+      });
+    } catch (error) {
+      forceDetach();
+      throw error;
+    }
     try {
       const installer = installerAcceptsRoot(mount);
       t.diagnostic(JSON.stringify({entries, installer: installer.accepted, producer: producerAccepts(mount)}));

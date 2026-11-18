@@ -12,7 +12,7 @@ import type { PrChecks } from "@shared/types.ts";
 // GitHub's checks list show the latest run of each check, and that is the reading here.
 //
 // A run stops counting only when a later run of the SAME check started after it had finished.
-// The same check means a GitHub Actions run of the same workflow, triggering event and check
+// The same check means a GitHub Actions run of the same workflow file, triggering event and check
 // name: a `push` run and a `pull_request` run of one job are two checks, whatever their timing,
 // and a pass in one says nothing about a failure in the other. Two runs of one check that
 // overlapped are independent verdicts too. Only Actions runs say all of that (see `runKey`), so
@@ -30,7 +30,7 @@ export const CHECK_CONTEXTS = `contexts(first:100){
         nodes{
           __typename
           ... on CheckRun{ name status conclusion startedAt completedAt
-            checkSuite{ app{ slug } workflowRun{ event workflow{ name } } } }
+            checkSuite{ app{ slug } workflowRun{ event workflow{ id name } } } }
           ... on StatusContext{ context state createdAt }
         }
       }`;
@@ -77,7 +77,11 @@ export interface CheckRollup {
    * commit's checks with `CHECK_CONTEXTS` to find out.
    */
   unconfirmedRetry: boolean;
-  /** Every run that still counts had a result this file recognises. */
+  /**
+   * Every entry could be read, and every run that still counts had a result this file
+   * recognises. An entry dropped as unreadable - GraphQL allows a null node - could have been
+   * the failure that keeps a check failing, so it makes the whole answer unrecognised.
+   */
   recognized: boolean;
 }
 
@@ -98,7 +102,7 @@ function text(value: unknown): string {
 
 type CheckSuite = {
   app?: { slug?: unknown } | null;
-  workflowRun?: { event?: unknown; workflow?: { name?: unknown } | null } | null;
+  workflowRun?: { event?: unknown; workflow?: { id?: unknown; name?: unknown } | null } | null;
 } | null;
 
 /** The app GitHub Actions reports its check runs as. */
@@ -111,7 +115,8 @@ const ACTIONS_APP = "github-actions";
  * Only a GitHub Actions run has one. Its suite names the workflow it belongs to and the event that
  * triggered it, and both must be there: a blank is not a value two runs can share, or two jobs
  * named `build` in different workflows would become one check and a pass in one would clear the
- * other. Every other app's check carries only the app and the name, and an app can report two
+ * other. The workflow is its node id, not its display name: two workflow files can both be called
+ * `CI`, and a name they share is the same blank by another spelling. Every other app's check carries only the app and the name, and an app can report two
  * independent checks under one name - a CI service's `build` job in two of its own workflows -
  * that nothing in GitHub's answer tells apart from a re-run. So another app's failure stands until
  * the next push, exactly as GitHub's own aggregate reads it. Null too for `gh`'s JSON export,
@@ -121,7 +126,7 @@ function runKey(o: Record<string, unknown>, name: string): string | null {
   if (!o.checkSuite || typeof o.checkSuite !== "object") return null;
   const suite = o.checkSuite as CheckSuite;
   if (text(suite?.app?.slug) !== ACTIONS_APP) return null;
-  const workflow = text(suite?.workflowRun?.workflow?.name);
+  const workflow = text(suite?.workflowRun?.workflow?.id);
   const event = text(suite?.workflowRun?.event);
   return workflow && event ? `run\0${workflow}\0${event}\0${name}` : null;
 }
@@ -178,29 +183,31 @@ function readEntry(e: unknown): CheckEntry | null {
 }
 
 /**
- * True when `later` started once `earlier` had finished, and strictly after `earlier` started.
- * The strict start is what keeps two runs reported in the same second from each retiring the
- * other and leaving neither.
+ * True when `later` started in a second after the one `earlier` finished in, and after `earlier`
+ * started. GitHub reports whole seconds, so a start in the same second as the finish may still
+ * have overlapped it, and overlapping runs are independent verdicts. Strictly later on both
+ * counts is also what keeps two runs reported in the same second from each retiring the other.
  */
 function startedAfter(later: CheckEntry, earlier: CheckEntry): boolean {
   return (
     earlier.finishedAt !== null &&
     earlier.startedAt !== null &&
     later.startedAt !== null &&
-    later.startedAt >= earlier.finishedAt &&
+    later.startedAt > earlier.finishedAt &&
     later.startedAt > earlier.startedAt
   );
 }
 
 /** Roll a commit's `statusCheckRollup` entries up to one state. See the header for which count. */
 export function rollUpChecks(entries: readonly unknown[]): CheckRollup {
-  const read = entries.map(readEntry).filter((e): e is CheckEntry => e !== null);
+  const parsed = entries.map(readEntry);
+  const read = parsed.filter((e): e is CheckEntry => e !== null);
   const rerun = (entry: CheckEntry, key: "key" | "looseKey"): boolean =>
     entry[key] !== null &&
     read.some((other) => other !== entry && other[key] === entry[key] && startedAfter(other, entry));
   let retriedFailure = false;
   let unconfirmedRetry = false;
-  let recognized = true;
+  let recognized = read.length === parsed.length;
   let sawFail = false;
   let sawPending = false;
   let sawPass = false;

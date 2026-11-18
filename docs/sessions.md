@@ -73,7 +73,7 @@ pull request's head commit is failing. It follows the latest run of each check, 
 checks list and `gh pr checks` do. When a check runs again on the same commit - the title check
 after the title is edited, a run cancelled and started over - the earlier run stops counting once
 the later one has started, so a failure a later run re-checked does not hold the alert. The same
-check means a GitHub Actions run of the same workflow, triggering event and check name: the
+check means a GitHub Actions run of the same workflow file, triggering event and check name: the
 `push` and `pull_request` runs of one job are two checks, whatever their timing, and a failure in
 either still counts. So do two runs of one check that overlapped. Only GitHub Actions reports all
 of that, so a failed check from any other app stays failing until the next push, as GitHub's own

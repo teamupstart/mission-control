@@ -32,12 +32,13 @@ function run(
   conclusion: string | null,
   startedAt: string,
   completedAt: string | null,
-  { workflow = "Pull request title", event = "pull_request_target" } = {},
+  { workflow = "Pull request title", event = "pull_request_target", workflowId = `W_${workflow}` }:
+    { workflow?: string; event?: string; workflowId?: string } = {},
 ) {
   return {
     __typename: "CheckRun", name, status: conclusion === null ? "IN_PROGRESS" : "COMPLETED",
     conclusion, startedAt, completedAt,
-    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { name: workflow } } },
+    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: workflowId, name: workflow } } },
   };
 }
 
@@ -62,7 +63,7 @@ test("the query reads the head commit's individual checks beside GitHub's aggreg
   const args = JSON.parse(readFileSync(calls, "utf8").trim()) as string[];
   const query = args.find((arg) => arg.startsWith("query="))!;
   assert.match(query, /statusCheckRollup\{\s*state\s+contexts\(first:100\)/);
-  assert.match(query, /\.\.\. on CheckRun\{ name status conclusion startedAt completedAt\s+checkSuite\{ app\{ slug \} workflowRun\{ event workflow\{ name \} \} \} \}/);
+  assert.match(query, /\.\.\. on CheckRun\{ name status conclusion startedAt completedAt\s+checkSuite\{ app\{ slug \} workflowRun\{ event workflow\{ id name \} \} \} \}/);
   assert.match(query, /\.\.\. on StatusContext\{ context state createdAt \}/);
 });
 
@@ -90,6 +91,16 @@ test("GitHub's failing verdict stands whenever the checks cannot prove it stale"
       ci("push", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:03:00Z"),
       ci("pull_request", "SUCCESS", "2026-10-07T20:10:00Z", "2026-10-07T20:14:00Z"),
     ]), "failing");
+  });
+  await t.test("two workflow files that share a display name", async () => {
+    // Both called `CI`: a pass in one must not release the gate on the other's failure.
+    assert.equal(await checksFor("FAILURE", [
+      run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { workflow: "CI", event: "pull_request", workflowId: "W_ci_yml" }),
+      run("build", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z", { workflow: "CI", event: "pull_request", workflowId: "W_nightly_yml" }),
+    ]), "failing");
+  });
+  await t.test("an unreadable node beside a re-checked failure", async () => {
+    assert.equal(await checksFor("FAILURE", [TITLE_FAILED, null, TITLE_PASSED]), "failing");
   });
   await t.test("two runs whose suites do not name their workflow", async () => {
     // Same app, event and check name, and no workflow: they may be two workflows' `build` jobs,

@@ -141,8 +141,9 @@ test("prune CAS refuses a stale version or different lease identity", async () =
   const f = await fixture();
   const slot = f.manager.store.slot(f.lease.slotId)!;
   const stale = { leaseId: f.lease.leaseId, ownerKind: "task", ownerKey: "orphan-task:0" };
-  assert.equal(f.manager.store.markPruning(slot.id, slot.version - 1, Date.now(), stale), null);
-  assert.equal(f.manager.store.markPruning(slot.id, slot.version, Date.now(), { ...stale, leaseId: "other" }), null);
+  const references = [{ slotId: slot.id, leaseId: f.lease.leaseId, owner: f.lease.owner }];
+  assert.equal(f.manager.store.markPruning(slot.id, slot.version - 1, Date.now(), references, stale), null);
+  assert.equal(f.manager.store.markPruning(slot.id, slot.version, Date.now(), references, { ...stale, leaseId: "other" }), null);
   assert.equal(f.manager.store.slot(slot.id)?.activeLeaseId, stale.leaseId);
 });
 
@@ -303,5 +304,74 @@ test("stale lease removal refuses a process that enters during the final ownersh
   assert.match(outcome.reason, /processes still occupy the worktree/);
   assert.equal(remove.mock.callCount(), 0, "Git removal must not begin after a process entered");
   assert.deepEqual(f.manager.store.slot(f.lease.slotId), before, "no prune intent or lease clearing is allowed");
+  assert.equal(existsSync(f.lease.path), true);
+});
+
+for (const referenceState of ["active", "last-released"] as const) {
+  test(`removal preserves ${referenceState} ownership recorded during the final occupancy scan`, async (t) => {
+    const git = new NativeWorktreeGit();
+    let removalStarted = false;
+    let scans = 0;
+    let scanStarted!: () => void;
+    let finishScan!: () => void;
+    const scanPending = new Promise<void>((resolve) => { scanStarted = resolve; });
+    const scanGate = new Promise<void>((resolve) => { finishScan = resolve; });
+    const f = await fixture({ git, occupancy: async (paths) => {
+      if (removalStarted && ++scans === 2) {
+        scanStarted();
+        await scanGate;
+      }
+      return occupancy(paths);
+    } });
+    if (referenceState === "last-released") {
+      assert.equal((await f.manager.release({ ...f.lease,
+        slotVersion: f.manager.store.slot(f.lease.slotId)!.version })).outcome, "released");
+    }
+    const before = f.manager.store.slot(f.lease.slotId)!;
+    const remove = t.mock.method(git, "remove");
+    removalStarted = true;
+    const pending = f.manager.removeSlot({ slotId: f.lease.slotId, expectedVersion: before.version,
+      allowStaleLease: true, allowDirty: false, allowUnmerged: false });
+    try {
+      await Promise.race([scanPending, pending.then(() => {
+        throw new Error("removal finished before the final occupancy scan");
+      })]);
+      upsertTask(mkTask({ id: "orphan-task", provider: "mission",
+        worktreeLeaseId: f.lease.leaseId, worktreePath: f.lease.path }));
+      assert.deepEqual(f.manager.store.slot(f.lease.slotId), before, "domain ownership does not change the slot version");
+    } finally {
+      finishScan();
+    }
+    const outcome = await pending;
+    assert.equal(outcome.outcome, "conflict");
+    assert.equal(remove.mock.callCount(), 0, "Git removal must not begin after a task records the lease");
+    assert.deepEqual(f.manager.store.slot(f.lease.slotId), before, "ownership must block the prune intent and lease clearing");
+    assert.equal(existsSync(f.lease.path), true);
+    assert.equal(nativeWorktreeOwnerReferenced({ slotId: f.lease.slotId, leaseId: f.lease.leaseId, owner: f.lease.owner }, db), true);
+  });
+}
+
+test("an unknown ownership read in the prune transaction rolls back without removing the slot", async (t) => {
+  const git = new NativeWorktreeGit();
+  const f = await fixture({ git });
+  const before = f.manager.store.slot(f.lease.slotId)!;
+  const remove = t.mock.method(git, "remove");
+  const prepare = db.prepare.bind(db);
+  let atomicReads = 0;
+  t.mock.method(db, "prepare", (sql: string) => {
+    if (db.isTransaction && sql.includes("SELECT 1 FROM tasks")) {
+      atomicReads++;
+      throw new Error("domain read failed inside prune transaction");
+    }
+    return prepare(sql);
+  });
+  const outcome = await f.manager.removeSlot({ slotId: f.lease.slotId, expectedVersion: before.version,
+    allowStaleLease: true, allowDirty: false, allowUnmerged: false });
+  assert.deepEqual(outcome, { outcome: "outcomeUnknown",
+    reason: "prune ownership transaction failed: Error: domain read failed inside prune transaction" });
+  assert.equal(atomicReads, 1);
+  assert.equal(db.isTransaction, false, "the failed read must not leave a transaction open");
+  assert.equal(remove.mock.callCount(), 0);
+  assert.deepEqual(f.manager.store.slot(f.lease.slotId), before);
   assert.equal(existsSync(f.lease.path), true);
 });

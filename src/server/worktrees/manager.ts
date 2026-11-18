@@ -2734,14 +2734,21 @@ export class WorktreeManager {
       const finalOwnershipBlocker = await ownershipBlocker();
       if (finalOwnershipBlocker) return finalOwnershipBlocker;
       // A process can enter while the domain lookup awaits its answer. Occupancy must be
-      // the last awaited safety check before the synchronous, versioned prune intent.
+      // the last awaited safety check. The store rechecks durable ownership atomically
+      // with the versioned prune intent, without yielding after the process scan.
       const finalBlocker = await this.occupancyBlocker(slot.path);
       if (finalBlocker) return { outcome: "refused", reason: finalBlocker };
-      const pruning = this.store.markPruning(slot.id, slot.version, this.deps.now(),
-        active
-          ? { leaseId: active.leaseId, ownerKind: active.owner.kind, ownerKey: active.owner.key }
-          : undefined);
-      if (!pruning) return { outcome: "conflict", reason: "prune intent lost its slot compare-and-swap" };
+      let pruning: WorktreeSlotRow | null;
+      try {
+        pruning = this.store.markPruning(slot.id, slot.version, this.deps.now(),
+          [active, prior].filter((reference) => reference !== null),
+          active
+            ? { leaseId: active.leaseId, ownerKind: active.owner.kind, ownerKey: active.owner.key }
+            : undefined);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: `prune ownership transaction failed: ${bounded(String(error))}` };
+      }
+      if (!pruning) return { outcome: "conflict", reason: "slot or domain ownership changed before prune intent" };
       this.publish();
       let removed: Awaited<ReturnType<WorktreeGit["remove"]>>;
       try {

@@ -1,4 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { WorktreeOwnerReference } from "./manager.ts";
+import { nativeWorktreeOwnerReferenced } from "./owners.ts";
 
 export const WORKTREE_SLOT_STATES = [
   "provisioning",
@@ -516,22 +518,38 @@ export class WorktreeStore {
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
-  /** A stale lease may be dropped only with the exact quarantine identity and prune intent. */
+  /**
+   * Check the version's active and last-released domain references in the same synchronous
+   * write transaction as the prune intent. No owner can record a lease between this read and
+   * the intent. The manager has already checked pending grants and live warm owners.
+   */
   markPruning(slotId: string, version: number, now: number,
+    unreferenced: readonly WorktreeOwnerReference[],
     staleLease?: { leaseId: string; ownerKind: string; ownerKey: string },
   ): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
-           last_error = NULL, updated_at = ?,
-           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL
-         WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
-           AND ${staleLease
-             ? "state = 'quarantined' AND active_lease_id = ? AND active_owner_kind = ? AND active_owner_key = ?"
-             : "active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL"}`,
-      )
-      .run(now, slotId, version, ...(staleLease ? [staleLease.leaseId, staleLease.ownerKind, staleLease.ownerKey] : []));
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      let pruning: WorktreeSlotRow | null = null;
+      if (unreferenced.every((reference) => !nativeWorktreeOwnerReferenced(reference, this.db))) {
+        const changed = this.db
+          .prepare(
+            `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
+               last_error = NULL, updated_at = ?,
+               active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL
+             WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
+               AND ${staleLease
+                 ? "state = 'quarantined' AND active_lease_id = ? AND active_owner_kind = ? AND active_owner_key = ?"
+                 : "active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL"}`,
+          )
+          .run(now, slotId, version, ...(staleLease ? [staleLease.leaseId, staleLease.ownerKind, staleLease.ownerKey] : []));
+        if (Number(changed.changes) === 1) pruning = this.slot(slotId);
+      }
+      this.db.exec("COMMIT;");
+      return pruning;
+    } catch (error) {
+      try { this.db.exec("ROLLBACK;"); } catch { /* Preserve the original failure. */ }
+      throw error;
+    }
   }
 
   /**

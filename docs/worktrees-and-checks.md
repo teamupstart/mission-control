@@ -152,8 +152,9 @@ If acquisition fails while a slot is still reserved, quarantine drops that exact
 lease in the same version-checked write and preserves the failure reason. For older quarantines,
 **Destroy** previews a stale lease when the domain lookup positively proves it is no longer
 referenced, including a deleted task. It removes only the selected slot and does not reclaim
-that task's other worktrees. Execute rechecks ownership and clears the stale identity atomically
-with its prune intent. Referenced leases still use their owner's cleanup; unknown ownership or
+that task's other worktrees. After the final process scan, Execute rechecks durable ownership
+and clears the stale identity with its prune intent in one synchronous database transaction.
+Referenced leases still use their owner's cleanup; unknown ownership or
 process occupancy blocks removal. Dirty and unlanded work still require acknowledgement.
 
 `make session` is a loopback client for that daemon-owned inventory:

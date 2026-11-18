@@ -47,6 +47,21 @@ function fixtureDiagnostic(state: string): string {
     `update.log: ${read('update.log')}`].join('\n');
 }
 
+/**
+ * The journal, read while a helper may be swapping the app. Validating it resolves the app
+ * bundle, and the helper renames that bundle away and back as it works, so a bundle that is
+ * there for `existsSync` can be gone by `realpathSync`. That ENOENT means "not yet": the next
+ * poll reads it again. Any other failure is still a failure.
+ */
+function journalWhileSwapping(state: string): ReturnType<typeof readMigrationJournal> {
+  try {
+    return readMigrationJournal(state);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 async function waitWithDiagnostic(state: string, ...args: Parameters<typeof boundedMigrationWait>): Promise<void> {
   try {
     await boundedMigrationWait(...args);
@@ -165,8 +180,16 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
           const {readMigrationJournal} = await import('./scripts/install-migration.mjs');
           // Exercise exit after launch identification, rather than racing the
           // helper's first poll and falling into its missing-launch deadline.
-          await boundedMigrationWait(() => readMigrationJournal(process.env.MISSION_HOME)?.targetProcess?.pid === process.pid,
-            'Fixture failed target was not identified', {timeout: 5000});
+          // The helper may be mid-swap: a bundle gone between its exists and realpath checks is
+          // "not yet", the same as in the test's own journal polls.
+          await boundedMigrationWait(() => {
+            try {
+              return readMigrationJournal(process.env.MISSION_HOME)?.targetProcess?.pid === process.pid;
+            } catch (error) {
+              if (error.code === 'ENOENT') return false;
+              throw error;
+            }
+          }, 'Fixture failed target was not identified', {timeout: 5000});
         }
         app.exit(1);
       }
@@ -301,7 +324,7 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   }
   if (mode === 'interrupted-after-swap') {
     await waitWithDiagnostic(state, () => {
-      const journal = readMigrationJournal(state);
+      const journal = journalWhileSwapping(state);
       return journal?.stage === 'target-staged' && journal.targetProcess !== null && existsSync(join(state, 'fixture-target-waiting'));
     }, 'fixture never reached the post-swap interruption boundary', {timeout: 120_000});
     const journal = readMigrationJournal(state)!;

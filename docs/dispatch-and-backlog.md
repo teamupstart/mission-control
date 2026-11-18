@@ -39,6 +39,10 @@ request as that first turn and leaves the platform-owned context out. See
 [the first turn of a dispatched session](sessions.md#the-first-turn-of-a-dispatched-session-shows-your-request-not-the-whole-launch-prompt)
 for what is and is not covered by that, and for why no evidence path is affected.
 
+The **pipeline** kind is temporarily unavailable while the ai-conductor integration is rebuilt:
+Dispatch does not offer it, and a stored Pipeline task refuses to dispatch with that reason. The
+rest of this section describes it as it returns.
+
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
 the ordinary durable task row plus one durable commission. Before the configured Engineer host
 starts, Mission Control reserves the provider Engineer run with the commission correlation and

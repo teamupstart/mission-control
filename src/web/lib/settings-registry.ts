@@ -12,6 +12,8 @@
 // Keeping it out of the page module is what lets the router import it without pulling a
 // component (and the five hooks behind it) into the router's module graph.
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
+
 /**
  * The groups, in rail order, and the order the whole registry is read in.
  *
@@ -149,7 +151,11 @@ export const SETTINGS_CATEGORIES = [
     blurb: "Application updates, external tools, and what is still missing",
     group: "sessions",
     scope: "installation",
-    keywords: ["install", "alpha", "updates", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins", "conductor"],
+    keywords: [
+      "install", "alpha", "updates", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins",
+      // Setup lists ai-conductor only while the integration is offered.
+      ...(CONDUCTOR_INTEGRATION_ENABLED ? ["conductor"] : []),
+    ],
   },
   {
     id: "harnesses",
@@ -471,11 +477,29 @@ export function isSettingsCategory(id: string): id is SettingsCategoryId {
   return SETTINGS_CATEGORIES.some((c) => c.id === id);
 }
 
+/**
+ * Whether this build offers a category at all.
+ *
+ * Conductor stays in the registry while the ai-conductor integration is hidden - its id is a
+ * type other modules name, and the panel is kept for when the integration returns - but it is
+ * not drawn, searched, walked, or routed to. See `shared/conductor-integration.ts`.
+ */
+export function settingsCategoryAvailable(
+  id: SettingsCategoryId,
+  conductorEnabled: boolean = CONDUCTOR_INTEGRATION_ENABLED,
+): boolean {
+  return id !== "conductor" || conductorEnabled;
+}
+
+/** The categories this build draws, in registry order. Every rail, walk and index reads this. */
+export const VISIBLE_SETTINGS_CATEGORIES: readonly (typeof SETTINGS_CATEGORIES)[number][] =
+  SETTINGS_CATEGORIES.filter((c) => settingsCategoryAvailable(c.id));
+
 /** The categories in one group, in registry order. The rail's only way to draw a group. */
 export function settingsCategoriesIn(
   group: SettingsGroupId,
 ): readonly (typeof SETTINGS_CATEGORIES)[number][] {
-  return SETTINGS_CATEGORIES.filter((c) => c.group === group);
+  return VISIBLE_SETTINGS_CATEGORIES.filter((c) => c.group === group);
 }
 
 /** One category's entry, by id. */

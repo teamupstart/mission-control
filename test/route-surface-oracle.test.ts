@@ -48,6 +48,11 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+// The oracle records the route surface as built, the hidden ai-conductor routes included, so
+// its fixture does not churn with the switch. `conductor-integration-switch.test.ts` pins what
+// those routes answer while the integration is hidden.
+const { overrideConductorIntegrationForTests } = await import("../src/server/pipelines/availability.ts");
+overrideConductorIntegrationForTests(true);
 const { openDb } = await import("../src/server/db.ts");
 const { reconcileSkills } = await import("../src/server/skills/config.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");

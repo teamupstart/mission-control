@@ -1,6 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+import type { SetupChecksSnapshot } from "../../src/shared/setup-catalog.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeGhProductScript } from "../fixtures/fake-agents.ts";
@@ -96,17 +98,35 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
     console.log("CAPTURED e2e/.artifacts/iterm-support/setup-row.png");
   }
 
-  await openSetupFamily(page, "pipelines");
-  const conductor = setupRow(page, "dependency-ai-conductor");
-  await expect(conductor).toContainText("Missing");
-  await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
+  // The ai-conductor row is the one a fake can install between two readings, and it is hidden
+  // with its integration (`conductor-hidden.spec.ts`). Re-check still has to run without
+  // executing any remedy, so it is exercised either way.
+  if (CONDUCTOR_INTEGRATION_ENABLED) {
+    await openSetupFamily(page, "pipelines");
+    const conductor = setupRow(page, "dependency-ai-conductor");
+    await expect(conductor).toContainText("Missing");
+    await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
 
-  daemon.installFakeConductor();
-  await page.getByRole("button", { name: "Re-check" }).click();
-  // Still on Pipelines: a Re-check reports into the family being read rather than moving the
-  // rail to wherever the gaps now are.
-  await expectRowStatus(page, "dependency-ai-conductor", "Ready");
-  await expect(conductor).toContainText("installed-conductor/bin/conduct-ts");
+    daemon.installFakeConductor();
+    await page.getByRole("button", { name: "Re-check" }).click();
+    // Still on Pipelines: a Re-check reports into the family being read rather than moving the
+    // rail to wherever the gaps now are.
+    await expectRowStatus(page, "dependency-ai-conductor", "Ready");
+    await expect(conductor).toContainText("installed-conductor/bin/conduct-ts");
+  } else {
+    // Observe the re-check itself: every assertion below is already true before the click.
+    const rechecked = page.waitForResponse((response) =>
+      response.url().endsWith("/api/setup/checks") && response.request().method() === "GET");
+    await page.getByRole("button", { name: "Re-check" }).click();
+    const snapshot = (await (await rechecked).json()) as SetupChecksSnapshot;
+    expect(snapshot.rows.length).toBeGreaterThan(0);
+    expect(snapshot.rows.some((row) => row.rowId.source === "dependency" && row.rowId.id === "ai-conductor"))
+      .toBe(false);
+    // Still on Terminals: a Re-check reports into the family being read.
+    await expect(page.locator("#setup-family-terminals")).toHaveAttribute("aria-current", "true");
+    await expect(wezterm).toContainText("Missing");
+    await expect(setupRow(page, "dependency-ai-conductor")).toHaveCount(0);
+  }
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("guided-setup");

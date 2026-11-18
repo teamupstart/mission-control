@@ -16,6 +16,10 @@ import {
 } from "../fixtures/conductor.ts";
 import { selectConductorRepo, toggleConductorObservation } from "../fixtures/conductor-panel.ts";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+
+test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+
 /**
  * A conductor-driven agent, carded - and told apart from an ordinary one.
  *

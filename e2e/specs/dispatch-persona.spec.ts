@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
 import { writeConductorProjects } from "../fixtures/conductor.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -284,6 +285,7 @@ test("a shelved task whose Persona was archived or deleted keeps it visible, ref
 });
 
 test.describe("a Pipeline task", () => {
+  test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
   test.use({ daemonEnv: { MC_E2E_CONDUCTOR_ENGINEER_MODE: "supported" } });
 
   test("carries its Persona to the managed Engineer host", async ({ dashboard: page, daemon }) => {

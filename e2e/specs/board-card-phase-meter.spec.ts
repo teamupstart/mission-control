@@ -8,6 +8,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
 import {
   conductorWorktree,
   seedConductorDaemon,
@@ -214,6 +215,7 @@ function tileFor(page: Page, session: string): Locator {
 }
 
 test.describe("the phase meter on a board card", () => {
+  test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
   test.skip(tmuxMissing, "tmux is not installed on this machine");
 
   const panes: Pane[] = [];

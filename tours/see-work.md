@@ -29,7 +29,7 @@ Kind sets the outcome you expect from the agent. The tour’s fixed demo uses Sh
 - **Scout:** Investigate and report findings without producing a diff.
 - **Plan:** Produce a reviewed plan and optionally schedule the work.
 - **Ship:** Deliver a reviewable change with a completion path.
-- **Pipeline:** Start an ai-conductor engineering workflow (requires ai-conductor installed)
+- **Pipeline:** Start an ai-conductor engineering workflow (requires ai-conductor installed) <!-- requires: ai-conductor -->
 
 ## Brief ready
 <!-- stage: dispatch-input -->

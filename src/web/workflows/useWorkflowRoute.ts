@@ -3,6 +3,7 @@ import {
   DEFAULT_SETTINGS_CATEGORY,
   RETIRED_SETTINGS_CATEGORIES,
   isSettingsCategory,
+  settingsCategoryAvailable,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
 import {
@@ -501,7 +502,7 @@ export function parseMissionRoute(hash: string): MissionRoute {
       page: "settings",
       category: id === null
         ? DEFAULT_SETTINGS_CATEGORY
-        : isSettingsCategory(id)
+        : isSettingsCategory(id) && settingsCategoryAvailable(id)
           ? id
           : Object.hasOwn(RETIRED_SETTINGS_CATEGORIES, id)
             ? RETIRED_SETTINGS_CATEGORIES[id]!

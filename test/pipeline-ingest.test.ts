@@ -72,6 +72,10 @@ const { isPipelineIngestLive, pipelineIngestState, resetPipelineIngest } = await
 const { conductorWorktree, seedConductorDaemon, seedConductorRun } = await import(
   "../e2e/fixtures/conductor.ts"
 );
+// This file exercises the hidden ai-conductor integration itself, so it runs with the
+// switch on. `test/conductor-integration-switch.test.ts` pins the shipped, hidden state.
+const { overrideConductorIntegrationForTests } = await import("../src/server/pipelines/availability.ts");
+overrideConductorIntegrationForTests(true);
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));

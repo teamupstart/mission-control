@@ -11,6 +11,10 @@ import {
 } from "../fixtures/conductor.ts";
 import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+
+test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+
 /**
  * The Runs page's Pipelines tab: what an external SDLC engine is driving, read in Mission
  * Control.

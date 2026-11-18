@@ -215,6 +215,28 @@ test("CodeRabbit's sign-in follows its install as its own step, and opens codera
   await expect(auth).toContainText("Stored CodeRabbit authentication is ready");
 });
 
+test("a broken CodeRabbit sign-in check reads Unknown with its reason, not signed out", async ({ page, daemon }) => {
+  const script = join(daemon.home, "coderabbit-script.json");
+  // `auth status --agent` exits non-zero: the CLI's sign-in state was never read.
+  writeFileSync(script, JSON.stringify({ authFails: true }));
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "extensions");
+  await page.getByRole("button", { name: "Re-check" }).click();
+
+  const auth = setupRow(page, "dependency-coderabbit-auth");
+  await expectRowStatus(page, "dependency-coderabbit-cli", "Ready");
+  await expectRowStatus(page, "dependency-coderabbit-auth", "Unknown");
+  await expect(auth).toContainText(
+    "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME.",
+  );
+  // Not claimed as a sign-out, and the probe's stderr never reaches the page.
+  await expect(auth).not.toContainText("installed but not signed in");
+  await expect(auth).not.toContainText("auth status crashed");
+  await auth.scrollIntoViewIfNeeded();
+  await shoot(page, "coderabbit-auth-probe-unknown");
+});
+
 test.describe("with the CodeRabbit CLI not installed", () => {
   test.use({ daemonEnv: { MISSION_CODERABBIT_BIN: "/nonexistent/coderabbit" } });
 

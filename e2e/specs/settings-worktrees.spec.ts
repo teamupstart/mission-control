@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
@@ -476,6 +476,68 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
   await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
   await shoot(dashboard, "09-quarantined-destroy-complete");
+});
+
+test("Destroy empties a slot Git no longer recognizes after the main checkout was re-cloned", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "orphaned destroy" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  // The field failure from 2026-11-17: a failed pool-wide Git read quarantined the slot while
+  // it still held its lease, then the main checkout was moved aside and re-cloned, so the
+  // slot's `.git` link names an administrative directory the repository no longer has.
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1,
+              quarantine_reason = 'Git worktree registrations are unknown: git worktree list failed',
+              quarantine_category = 'observation', quarantined_at = ?
+        WHERE active_lease_id = ? AND state = 'leased'`,
+    ).run(Date.now(), lease.leaseId);
+    expect(Number(changed.changes)).toBe(1);
+  });
+  const admin = readFileSync(join(lease.path, ".git"), "utf8").trim().replace(/^gitdir: /, "");
+  rmSync(admin, { recursive: true, force: true });
+  mkdirSync(join(lease.path, "docs/reports"), { recursive: true });
+  writeFileSync(join(lease.path, "docs/reports/never-committed.md"), "uncommitted report\n");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("not a Git worktree", { exact: true })).toBeVisible();
+  await expect(slot.getByText(/Git no longer recognizes this slot/)).toBeVisible();
+  await expect(slot.getByText("Needs operator action", { exact: true })).toBeVisible();
+  // Recovery re-proves a slot through Git, which this one can never pass, so it is not offered.
+  await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  // Its manual lease is still live, so its owner can also let go while the files are kept.
+  await expect(slot.getByRole("button", { name: "Return", exact: true })).toBeVisible();
+  await slot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "09-orphaned-slot-card");
+  await slot.getByRole("button", { name: "Destroy", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByText(lease.path)).toBeVisible();
+  await expect(preview.getByText(/deleted from disk directly, because Git no longer recognizes it/)).toBeVisible();
+  const acknowledgement = preview.getByRole("checkbox", { name: /Git no longer recognizes a target slot/ });
+  await expect(acknowledgement).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await acknowledgement.check();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await shoot(dashboard, "09a-orphaned-destroy-preview");
+  await preview.getByRole("button", { name: "Execute" }).click();
+
+  await expect(preview).toHaveCount(0);
+  await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
+  await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await shoot(dashboard, "09b-orphaned-destroy-complete");
 });
 
 /**

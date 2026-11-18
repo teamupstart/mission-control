@@ -38,6 +38,7 @@ function slot(
     occupancy: { status: "known", occupants: [] },
     ownerReferenced: false,
     mergedIntoDefault: true,
+    orphaned: null,
   };
 }
 

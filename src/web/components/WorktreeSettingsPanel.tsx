@@ -298,6 +298,7 @@ function SlotCard({
         <StateChip label={slot.state} tone={tone} />
         {pending && <StateChip label={`${ACTION_VERBS[pending.request.action].toLowerCase()} ${pending.state === "running" ? "in progress" : "queued"}`} tone="working" />}
         {slot.dirty === true && <StateChip label="dirty" tone="danger" />}
+        {slot.orphaned && <StateChip label="not a Git worktree" tone="danger" />}
         {slot.defaultRelation === "unmerged" && <StateChip label="unlanded" tone="attention" />}
         {slot.processes.state === "unknown" && <StateChip label="processes unknown" tone="danger" />}
       </div>
@@ -316,6 +317,12 @@ function SlotCard({
       {slot.quarantineReason
         ? <QuarantineDetail slot={slot} reason={slot.quarantineReason} />
         : slot.diagnostic && <p className="wt-diagnostic">{slot.diagnostic}</p>}
+      {slot.orphaned && (
+        <p className="wt-diagnostic">
+          Git no longer recognizes this slot, usually because the main checkout was re-cloned or
+          moved. It cannot be recovered. Destroy removes it, and its files cannot be checked first.
+        </p>
+      )}
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact worktree path"}>
           <button className="btn btn-ghost" type="button" onClick={() => void copy.copy(slot.path)}>

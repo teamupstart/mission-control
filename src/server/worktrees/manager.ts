@@ -58,6 +58,7 @@ import {
   type WorktreePoolMarkerReading,
 } from "./marker.ts";
 import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observation-retry.ts";
+import { observeSlotOrphan, type SlotOrphanEvidence } from "./orphan.ts";
 import { taskOwner } from "./owners.ts";
 import {
   inspectWorktreeOccupancy,
@@ -151,6 +152,12 @@ export interface NativeSlotStatus {
   occupancy: WorktreeOccupancy;
   ownerReferenced: boolean | null;
   mergedIntoDefault: boolean | null;
+  /**
+   * Proven only for an exact native path in a pool whose identity and marker hold, when a
+   * `git worktree list` that answered does not name it. See `observeSlotOrphan`. Null is
+   * "not proven", never "fine".
+   */
+  orphaned: SlotOrphanEvidence | null;
 }
 
 export interface NativePoolStatus {
@@ -420,6 +427,39 @@ function validOwner(owner: WorktreeOwner): boolean {
     owner.key.length > 0 &&
     Buffer.byteLength(owner.key, "utf8") <= MAX_OWNER_BYTES
   );
+}
+
+/**
+ * Why a slot whose lease was handed back without a reset is held in quarantine. Shown on its
+ * card, so it says what happened and what the operator can do about it.
+ */
+export const ORPHANED_SLOT_REASON =
+  "Git no longer recognizes this slot: its worktree registration is gone, as happens when the main checkout is re-cloned or moved. Destroy removes it.";
+
+const ORPHAN_NOT_PHYSICAL = "orphaned slot path is not its exact physical directory";
+
+async function pathAbsent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+  }
+}
+
+/**
+ * `exactSlotPath` compares strings, and every filesystem call resolves each component of the
+ * path it is given. A symbolic link anywhere along it would aim a recursive delete outside the
+ * pool, so the path must be a real directory that resolves to exactly itself (the same bar
+ * `validateResetTarget` holds a reset to).
+ */
+async function physicalDirectory(path: string): Promise<boolean> {
+  try {
+    const [stat, physical] = await Promise.all([lstat(path), realpath(path)]);
+    return stat.isDirectory() && !stat.isSymbolicLink() && physical === resolve(path);
+  } catch {
+    return false;
+  }
 }
 
 function registrationFor(
@@ -1974,6 +2014,12 @@ export class WorktreeManager {
     if (marker?.poolId !== pool.id) {
       return { outcome: "refused", reason: "native pool marker is missing or does not match" };
     }
+    if (options.ownerAuthorized) {
+      // A slot Git no longer recognizes can never be reset, so the reset below would refuse
+      // forever and pin its owner's lease with it. Release the owner and keep the files.
+      const orphaned = await this.orphanEvidence(identity, slot);
+      if (orphaned) return this.releaseOrphanedLocked(slot, lease, orphaned, options);
+    }
     let target: Awaited<ReturnType<WorktreeGit["fetchDefaultSha"]>>;
     try {
       target = await this.deps.git.fetchDefaultSha(identity);
@@ -2102,6 +2148,136 @@ export class WorktreeManager {
     } catch (error) {
       console.warn(`[worktrees] leftover seed staging in ${pool.poolPath} could not be removed: ${bounded(String(error))}`);
     }
+  }
+
+  /**
+   * Positive evidence, under the caller's slot lock, that the slot is no Git worktree any more:
+   * a registration list that answered does not name it, and what is on disk proves it is not
+   * one. Any failure is null, which authorizes nothing.
+   */
+  private async orphanEvidence(
+    identity: WorktreeRepositoryIdentity,
+    slot: WorktreeSlotRow,
+  ): Promise<SlotOrphanEvidence | null> {
+    try {
+      const listed = await this.deps.git.list(identity);
+      if (!listed.ok || registrationFor(listed.value, slot.path)) return null;
+    } catch {
+      return null;
+    }
+    return observeSlotOrphan(slot.path);
+  }
+
+  private async releaseOrphanedLocked(
+    slot: WorktreeSlotRow,
+    lease: NativeWorktreeLease,
+    orphaned: SlotOrphanEvidence,
+    options: Parameters<WorktreeManager["release"]>[1] = {},
+  ): Promise<WorktreeReleaseResult> {
+    if (orphaned === "unregistered") {
+      const blocker = await this.occupancyBlocker(slot.path);
+      if (blocker) return { outcome: "refused", reason: blocker };
+    }
+    const policyBlocker = await options.beforeReset?.();
+    if (policyBlocker) return { outcome: "refused", reason: policyBlocker };
+    let released: WorktreeSlotRow | null;
+    try {
+      released = this.store.releaseOrphaned(
+        slot.id,
+        slot.version,
+        { leaseId: lease.leaseId, ownerKind: lease.owner.kind, ownerKey: lease.owner.key },
+        ORPHANED_SLOT_REASON,
+        this.deps.now(),
+      );
+    } catch (error) {
+      // The write's outcome is unknown after a throw, exactly as on the reset path.
+      return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+    }
+    if (!released) return { outcome: "outcomeUnknown", reason: "orphaned slot release lost its compare-and-swap" };
+    this.logSlot(slot, "orphan_released", "lease released without a reset; the slot's files are kept in quarantine", orphaned);
+    this.publish();
+    return { outcome: "released" };
+  }
+
+  /**
+   * `removeSlot` for a slot the registration list positively does not name. Git cannot remove
+   * what it does not know, so an `unregistered` directory is deleted here, and only once the
+   * operator has acknowledged that nothing in it can be verified. An `absent` slot has nothing
+   * on disk and only its row goes.
+   */
+  private async removeOrphanLocked(
+    slot: WorktreeSlotRow,
+    allowUnverifiable: boolean,
+    [active, prior]: [WorktreeOwnerReference | null, WorktreeOwnerReference | null],
+    ownershipBlocker: () => Promise<WorktreeRemoveResult | null>,
+  ): Promise<WorktreeRemoveResult> {
+    const orphaned = await observeSlotOrphan(slot.path);
+    if (!orphaned) return { outcome: "refused", reason: "slot has no safe Git worktree registration" };
+    if (orphaned === "unregistered") {
+      if (!allowUnverifiable) {
+        return { outcome: "refused", reason: "Git no longer recognizes this slot, so its files cannot be verified before deletion" };
+      }
+      if (!(await physicalDirectory(slot.path))) {
+        return { outcome: "refused", reason: ORPHAN_NOT_PHYSICAL };
+      }
+    }
+    // Same order as a registered removal: ownership, then occupancy as the last awaited check,
+    // then the store re-proves ownership atomically with the prune intent.
+    const finalOwnershipBlocker = await ownershipBlocker();
+    if (finalOwnershipBlocker) return finalOwnershipBlocker;
+    if (orphaned === "unregistered") {
+      const blocker = await this.occupancyBlocker(slot.path);
+      if (blocker) return { outcome: "refused", reason: blocker };
+    }
+    let pruning: WorktreeSlotRow | null;
+    try {
+      pruning = this.store.markPruning(slot.id, slot.version, this.deps.now(),
+        [active, prior].filter((reference) => reference !== null),
+        active
+          ? { leaseId: active.leaseId, ownerKind: active.owner.kind, ownerKey: active.owner.key }
+          : undefined);
+    } catch (error) {
+      return { outcome: "outcomeUnknown", reason: `prune ownership transaction failed: ${bounded(String(error))}` };
+    }
+    if (!pruning) return { outcome: "conflict", reason: "slot or domain ownership changed before prune intent" };
+    this.publish();
+    if (orphaned === "unregistered") {
+      // The occupancy read and the intent write both took time. Prove it once more at the
+      // boundary: a `.git` link that reappeared means somebody made it a worktree again.
+      if ((await observeSlotOrphan(slot.path)) !== "unregistered") {
+        this.quarantine(pruning, "transition", "orphaned slot changed before its removal");
+        return { outcome: "outcomeUnknown", reason: "orphaned slot changed before its removal" };
+      }
+      if (!(await physicalDirectory(slot.path))) {
+        this.quarantine(pruning, "transition", ORPHAN_NOT_PHYSICAL);
+        return { outcome: "outcomeUnknown", reason: ORPHAN_NOT_PHYSICAL };
+      }
+      // A process may have entered while those reads awaited. Occupancy is the last awaited
+      // check before the delete, as it is everywhere else.
+      const occupied = await this.occupancyBlocker(slot.path);
+      if (occupied) {
+        this.quarantine(pruning, "transition", "orphaned slot was occupied before its removal", occupied);
+        return { outcome: "outcomeUnknown", reason: occupied };
+      }
+      try {
+        await rm(slot.path, { recursive: true, maxRetries: 2 });
+      } catch (error) {
+        this.quarantine(pruning, "transition", "orphaned slot removal failed", bounded(String(error)));
+        return { outcome: "outcomeUnknown", reason: `orphaned slot removal failed: ${bounded(String(error))}` };
+      }
+    }
+    // `existsSync` follows links, so a dangling one would read as gone. Only `lstat` answering
+    // ENOENT proves nothing is left at the path.
+    if (!(await pathAbsent(slot.path))) {
+      this.quarantine(pruning, "transition", "orphaned slot removal could not be verified");
+      return { outcome: "outcomeUnknown", reason: "orphaned slot removal could not be verified" };
+    }
+    if (!this.store.removePruned(pruning.id, pruning.version)) {
+      return { outcome: "outcomeUnknown", reason: "removed slot row could not be settled" };
+    }
+    this.logSlot(slot, "orphan_removed", "operator destroyed a slot Git no longer recognizes", orphaned);
+    this.publish();
+    return { outcome: "removed" };
   }
 
   /** Read-only proof for the preview. Execution repeats it under the same slot lock. */
@@ -2582,6 +2758,9 @@ export class WorktreeManager {
         const registration = listed?.ok === true
           ? registrationFor(listed.value, slot.path)
           : null;
+        const orphaned = identityValid && markerValid && nativePath && listed?.ok === true && !registration
+          ? await observeSlotOrphan(slot.path)
+          : null;
         let mergedIntoDefault: boolean | null = null;
         if (inspection?.ok === true && observedDefaultSha) {
           try {
@@ -2605,6 +2784,7 @@ export class WorktreeManager {
           occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
           mergedIntoDefault,
+          orphaned,
         };
       });
       const policy = this.deps.resolvePolicy(pool.gitCommonDirectory);
@@ -2662,6 +2842,8 @@ export class WorktreeManager {
     expectedVersion?: number;
     allowDirty: boolean;
     allowUnmerged: boolean;
+    /** Delete a slot Git no longer recognizes, whose files nothing can verify. */
+    allowUnverifiable?: boolean;
     /** Preview-first Destroy alone may discard a positively unreferenced quarantine lease. */
     allowStaleLease?: boolean;
   }): Promise<WorktreeRemoveResult> {
@@ -2713,24 +2895,31 @@ export class WorktreeManager {
       if (marker?.poolId !== pool.id) {
         return { outcome: "refused", reason: "native pool marker is missing or does not match" };
       }
+      let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
+      try {
+        listed = await this.deps.git.list(identity);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!listed.ok) return { outcome: listed.outcomeUnknown ? "outcomeUnknown" : "refused", reason: listed.reason };
+      const registration = registrationFor(listed.value, slot.path);
+      if (!registration) {
+        return this.removeOrphanLocked(slot, input.allowUnverifiable === true, [active, prior], ownershipBlocker);
+      }
       let observed: [
-        Awaited<ReturnType<WorktreeGit["list"]>>,
         Awaited<ReturnType<WorktreeGit["inspect"]>>,
         Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>>,
       ];
       try {
         observed = await Promise.all([
-          this.deps.git.list(identity),
           this.deps.git.inspect(slot.path),
           this.deps.git.observedDefaultSha(identity),
         ]);
       } catch (error) {
         return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
       }
-      const [listed, inspection, target] = observed;
-      if (!listed.ok) return { outcome: listed.outcomeUnknown ? "outcomeUnknown" : "refused", reason: listed.reason };
-      const registration = registrationFor(listed.value, slot.path);
-      if (!registration || registration.bare || registration.locked || registration.prunable) {
+      const [inspection, target] = observed;
+      if (registration.bare || registration.locked || registration.prunable) {
         return { outcome: "refused", reason: "slot has no safe Git worktree registration" };
       }
       if (!inspection.ok) {

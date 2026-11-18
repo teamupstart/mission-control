@@ -519,6 +519,36 @@ export class WorktreeStore {
   }
 
   /**
+   * Hand an exact lease back from a slot Git no longer recognizes, without touching its files.
+   * Nothing can reset such a slot, so its owner is released and the slot is held in a `state`
+   * quarantine for the operator to Destroy. That category is the point: the slot is positively
+   * unusable, and Reconcile must not promise to recover it. The time it first entered
+   * quarantine stands. One compare-and-swap names the slot version and the whole lease.
+   */
+  releaseOrphaned(
+    slotId: string,
+    version: number,
+    lease: { leaseId: string; ownerKind: string; ownerKey: string },
+    reason: string,
+    now: number,
+  ): WorktreeSlotRow | null {
+    const changed = this.db.prepare(
+      `UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
+         last_released_lease_id = active_lease_id,
+         last_released_owner_kind = active_owner_kind,
+         last_released_owner_key = active_owner_key,
+         active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
+         leased_at = NULL, last_used_at = ?,
+         quarantine_reason = ?, quarantine_category = 'state',
+         quarantined_at = CASE WHEN state = 'quarantined' AND quarantined_at IS NOT NULL THEN quarantined_at ELSE ? END,
+         updated_at = ?
+       WHERE id = ? AND version = ? AND state IN ('leased', 'quarantined')
+         AND active_lease_id = ? AND active_owner_kind = ? AND active_owner_key = ?`,
+    ).run(now, reason, now, now, slotId, version, lease.leaseId, lease.ownerKind, lease.ownerKey);
+    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  }
+
+  /**
    * Check the version's active and last-released domain references in the same synchronous
    * write transaction as the prune intent. No owner can record a lease between this read and
    * the intent. The manager has already checked pending grants and live warm owners.

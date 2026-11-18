@@ -89,12 +89,16 @@ function hdiutil(args: readonly string[], beforeAttempt: (attempt: number) => vo
   throw new Error(`hdiutil ${args[0]} failed 3 times:\n${failures.join('\n')}`);
 }
 
-/** True while a volume is mounted at `path`: it then lives on another device than its parent. */
-function isMounted(path: string): boolean {
+/**
+ * True only when nothing is confirmed mounted at `path`: it sits on its parent's device, or it no
+ * longer exists. Any other failure to look - `EIO`, `EACCES` - proves nothing either way, so it
+ * reads as possibly still mounted.
+ */
+function mountGone(path: string, stat: (path: string) => {dev: number} = statSync): boolean {
   try {
-    return statSync(path).dev !== statSync(dirname(path)).dev;
-  } catch {
-    return false;
+    return stat(path).dev === stat(dirname(path)).dev;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
   }
 }
 
@@ -102,19 +106,19 @@ function isMounted(path: string): boolean {
  * Run `attach`; when it gives up, release whatever it may have left mounted before passing its
  * error on. A refused attach can still mount the image, and after the last refusal nothing else
  * would ever detach it, because the work directory's cleanup only deletes files. A release that
- * itself fails while the mount is still there is reported beside the attach error, never in
- * place of it; a mount that is gone is a clean release whatever the release reported.
+ * itself fails is reported beside the attach error, never in place of it, unless the mount is
+ * confirmed gone - an unreadable mount state is not that confirmation.
  */
 function attachOrRelease(
   attach: () => void,
   release: () => Pick<SpawnSyncReturns<unknown>, 'status' | 'signal' | 'error'>,
-  mounted: () => boolean,
+  gone: () => boolean,
 ): void {
   try {
     attach();
   } catch (error) {
     const released = release();
-    if ((released.error || released.status !== 0) && mounted()) {
+    if ((released.error || released.status !== 0) && !gone()) {
       const why = `status ${released.status} signal ${released.signal} ${released.error?.message ?? ''}`.trim();
       throw new Error(`${(error as Error).message}\nForce-detach also failed, so the image may still be mounted: ${why}`, {cause: error});
     }
@@ -127,18 +131,31 @@ test('a refused attach releases the mount, and says so when it cannot', () => {
   const failed = () => ({status: 1, signal: null, error: undefined});
   const ok = () => ({status: 0, signal: null, error: undefined});
   let released = 0;
-  attachOrRelease(() => {}, () => { released += 1; return ok(); }, () => true);
+  attachOrRelease(() => {}, () => { released += 1; return ok(); }, () => false);
   assert.equal(released, 0, 'a successful attach releases nothing');
-  assert.throws(() => attachOrRelease(refused, () => { released += 1; return ok(); }, () => true),
+  assert.throws(() => attachOrRelease(refused, () => { released += 1; return ok(); }, () => false),
     (error: Error) => error.message === 'hdiutil attach failed 3 times');
   assert.equal(released, 1, 'a refused attach is released before its error is passed on');
-  assert.throws(() => attachOrRelease(refused, failed, () => true), (error: Error) =>
+  assert.throws(() => attachOrRelease(refused, failed, () => false), (error: Error) =>
     error.message.startsWith('hdiutil attach failed 3 times\nForce-detach also failed, so the image may still be mounted: status 1')
     && (error.cause as Error).message === 'hdiutil attach failed 3 times');
-  assert.throws(() => attachOrRelease(refused, () => ({status: null, signal: null, error: new Error('spawnSync hdiutil ETIMEDOUT')}), () => true),
+  assert.throws(() => attachOrRelease(refused, () => ({status: null, signal: null, error: new Error('spawnSync hdiutil ETIMEDOUT')}), () => false),
     /Force-detach also failed, so the image may still be mounted: status null signal null spawnSync hdiutil ETIMEDOUT/);
-  assert.throws(() => attachOrRelease(refused, failed, () => false),
+  assert.throws(() => attachOrRelease(refused, failed, () => true),
     (error: Error) => error.message === 'hdiutil attach failed 3 times', 'a mount that is gone needs no report');
+  // A probe that cannot read the mount state is not proof it is gone: the failed release is reported.
+  const unreadable = () => mountGone('/fixture/image', () => { throw Object.assign(new Error('EIO: i/o error'), {code: 'EIO'}); });
+  assert.throws(() => attachOrRelease(refused, failed, unreadable), /Force-detach also failed/);
+});
+
+test('a mount is gone only when the probe confirms it', () => {
+  const devices = (mount: number, parent: number) => (path: string) => ({dev: path === '/fixture/image' ? mount : parent});
+  assert.equal(mountGone('/fixture/image', devices(7, 7)), true, 'same device as its parent: nothing mounted');
+  assert.equal(mountGone('/fixture/image', devices(9, 7)), false, 'another device: still mounted');
+  const failing = (code: string) => () => { throw Object.assign(new Error(code), {code}); };
+  assert.equal(mountGone('/fixture/image', failing('ENOENT')), true, 'a mount point that no longer exists holds nothing');
+  assert.equal(mountGone('/fixture/image', failing('EIO')), false);
+  assert.equal(mountGone('/fixture/image', failing('EACCES')), false);
 });
 
 function image(t: test.TestContext, entries: readonly string[]): {work: string; dmg: string} {
@@ -181,7 +198,7 @@ test('producer qualification refuses a real mounted DMG whose root the installer
         if (attempt > 1) forceDetach();
       }),
       forceDetach,
-      () => isMounted(mount),
+      () => mountGone(mount),
     );
     try {
       const installer = installerAcceptsRoot(mount);

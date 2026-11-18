@@ -517,6 +517,8 @@ test("Destroy empties a slot Git no longer recognizes after the main checkout wa
   await expect(slot.getByText("Needs operator action", { exact: true })).toBeVisible();
   // Recovery re-proves a slot through Git, which this one can never pass, so it is not offered.
   await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  await slot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "09-orphaned-slot-card");
   await slot.getByRole("button", { name: "Destroy", exact: true }).click();
 
   const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });

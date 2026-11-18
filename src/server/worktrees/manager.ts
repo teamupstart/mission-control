@@ -643,6 +643,9 @@ export class WorktreeManager {
         error ? bounded(error) : null,
         this.deps.now(),
         slot.version,
+        // A provisioning reservation was never granted. Drop only that exact reservation
+        // in the quarantine CAS; a granted or returning lease still belongs to its owner.
+        slot.state === "provisioning" ? slot.activeLeaseId ?? undefined : undefined,
       );
       if (quarantined) {
         this.logSlot(slot, "quarantined", reason, error);
@@ -2633,6 +2636,8 @@ export class WorktreeManager {
     expectedVersion?: number;
     allowDirty: boolean;
     allowUnmerged: boolean;
+    /** Preview-first Destroy alone may discard a positively unreferenced quarantine lease. */
+    allowStaleLease?: boolean;
   }): Promise<WorktreeRemoveResult> {
     // Its occupancy checks take the observation lock for the process read alone (see
     // `occupancyBlocker`). The Git removal itself is not under it: a slow `git worktree
@@ -2648,22 +2653,28 @@ export class WorktreeManager {
         return { outcome: "refused", reason: `slot is ${slot.state}, not removable` };
       }
       const active = activeReference(slot);
-      if (active !== null) {
+      if (active !== null && (active === "invalid" || !input.allowStaleLease || slot.state !== "quarantined")) {
         return { outcome: "refused", reason: "slot still carries active lease identity" };
       }
       const prior = lastReference(slot);
       if (prior === "invalid") {
         return { outcome: "refused", reason: "last-released lease identity is incomplete" };
       }
-      if (prior) {
-        try {
-          if (await this.ownerReferenced(prior)) {
-            return { outcome: "refused", reason: "domain owner still references this lease" };
+      const ownershipBlocker = async (): Promise<WorktreeRemoveResult | null> => {
+        for (const reference of [active, prior]) {
+          if (!reference) continue;
+          try {
+            if (await this.ownerReferenced(reference) !== false) {
+              return { outcome: "refused", reason: "domain owner still references this lease" };
+            }
+          } catch (error) {
+            return { outcome: "outcomeUnknown", reason: `domain ownership is unknown: ${bounded(String(error))}` };
           }
-        } catch (error) {
-          return { outcome: "outcomeUnknown", reason: `domain ownership is unknown: ${bounded(String(error))}` };
         }
-      }
+        return null;
+      };
+      const initialOwnershipBlocker = await ownershipBlocker();
+      if (initialOwnershipBlocker) return initialOwnershipBlocker;
       const blocker = await this.occupancyBlocker(slot.path);
       if (blocker) return { outcome: "refused", reason: blocker };
       const pool = this.store.poolForSlot(slot.id);
@@ -2720,10 +2731,24 @@ export class WorktreeManager {
       if (!merged.value && !input.allowUnmerged) {
         return { outcome: "refused", reason: "slot HEAD is not merged into the observed remote default" };
       }
+      const finalOwnershipBlocker = await ownershipBlocker();
+      if (finalOwnershipBlocker) return finalOwnershipBlocker;
+      // A process can enter while the domain lookup awaits its answer. Occupancy must be
+      // the last awaited safety check. The store rechecks durable ownership atomically
+      // with the versioned prune intent, without yielding after the process scan.
       const finalBlocker = await this.occupancyBlocker(slot.path);
       if (finalBlocker) return { outcome: "refused", reason: finalBlocker };
-      const pruning = this.store.markPruning(slot.id, slot.version, this.deps.now());
-      if (!pruning) return { outcome: "conflict", reason: "prune intent lost its slot compare-and-swap" };
+      let pruning: WorktreeSlotRow | null;
+      try {
+        pruning = this.store.markPruning(slot.id, slot.version, this.deps.now(),
+          [active, prior].filter((reference) => reference !== null),
+          active
+            ? { leaseId: active.leaseId, ownerKind: active.owner.kind, ownerKey: active.owner.key }
+            : undefined);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: `prune ownership transaction failed: ${bounded(String(error))}` };
+      }
+      if (!pruning) return { outcome: "conflict", reason: "slot or domain ownership changed before prune intent" };
       this.publish();
       let removed: Awaited<ReturnType<WorktreeGit["remove"]>>;
       try {

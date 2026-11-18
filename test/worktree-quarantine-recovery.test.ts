@@ -503,6 +503,7 @@ test("acquire: a reservation whose cancellation loses its lease guard is quarant
   assert.equal(slot.state, "quarantined");
   assert.equal(slot.quarantineCategory, "transition", "an undo that could not be proven is not a missed read");
   assert.equal(slot.quarantineReason, "slot occupancy became unknown before reset");
+  assert.equal(slot.activeLeaseId, "someone-elses-lease", "quarantine must not clear a different reservation identity");
   assert.equal(slot.lastError, KILLED);
   assert.ok(slot.quarantinedAt !== null && slot.quarantinedAt >= now);
   assert.equal(quarantineRecoverable(slot.quarantineCategory), false);

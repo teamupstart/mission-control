@@ -269,8 +269,11 @@ test("the registry answers for every declared runner", () => {
 });
 
 test("a run carries no way to see a previous one", async () => {
+  // This first real subprocess can wait behind the full suite's process startup load.
+  // Context isolation is the assertion, not five-second throughput; keep a bounded
+  // startup allowance without changing the separate shutdown timing assertions below.
   await withPrintTransport(() =>
-    claudeRunner.run("summarise this session", { model: "claude-haiku-4-5", timeoutMs: 5000 })
+    claudeRunner.run("summarise this session", { model: "claude-haiku-4-5", timeoutMs: 30_000 })
   );
   const args = argv();
   // Absence is the guarantee, so absence is what is asserted. Without one of these three

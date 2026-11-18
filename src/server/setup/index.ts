@@ -1,5 +1,5 @@
 import { mcpTrustStatus } from "./mcp-trust.ts";
-import { codeRabbitAuthProblem, codeRabbitVersionProblem, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
+import { codeRabbitAuthReading, codeRabbitVersionProblem, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
@@ -397,10 +397,16 @@ async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
   if (outdated) {
     return { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence };
   }
-  const problem = await codeRabbitAuthProblem(execute);
-  return problem
-    ? { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: installed.evidence }
-    : { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" };
+  const reading = await codeRabbitAuthReading(execute);
+  switch (reading.state) {
+    case "ready":
+      return { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" };
+    case "signed-out":
+      return { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: installed.evidence };
+    case "unverified":
+      // The probe could not tell. Say so in its own words rather than claiming a sign-out.
+      return { state: "unknown", why: `${reading.problem}.`, evidence: installed.evidence };
+  }
 }
 
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {

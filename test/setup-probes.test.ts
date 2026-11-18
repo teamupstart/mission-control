@@ -511,6 +511,25 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   const loggedOut = await probe("coderabbit-auth", { runCommand: async (_bin, argv) => signedOut(argv) });
   assert.deepEqual(loggedOut, { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: "/tools/coderabbit" });
 
+  // A probe that cannot tell is not a sign-out: it keeps its own message and never says
+  // "not signed in", which would send the operator through a login that repairs nothing.
+  const answering = (auth: { stdout: string; code: number }) => async (_bin: string, argv: readonly string[]) =>
+    argv[0] === "--version" ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 }) : stubRun({ ...auth, stderr: "boom" });
+  for (const [label, auth, why] of [
+    ["a failing command", { stdout: "", code: 1 }, "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME."],
+    ["an unparseable answer", { stdout: "not json", code: 0 }, "CodeRabbit stored authentication could not be confirmed. Run coderabbit auth login using the daemon's effective HOME."],
+    ["an error event", { stdout: JSON.stringify({ type: "error", message: "rate limited" }), code: 0 }, "CodeRabbit stored authentication could not be confirmed. Run coderabbit auth login using the daemon's effective HOME."],
+  ] as const) {
+    assert.deepEqual(await probe("coderabbit-auth", { runCommand: answering(auth) }), { state: "unknown", why, evidence: "/tools/coderabbit" }, label);
+  }
+  const timedOut = await probe("coderabbit-auth", { runCommand: async (_bin, argv) => argv[0] === "--version"
+    ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 })
+    : { ...stubRun({ stdout: "", stderr: "", code: 1 }), outcomeUnknown: true } });
+  assert.equal(timedOut.state, "unknown");
+  // An explicit action_required is the CLI saying it needs a login.
+  const actionRequired = await probe("coderabbit-auth", { runCommand: answering({ stdout: JSON.stringify({ type: "action_required" }), code: 0 }) });
+  assert.equal(actionRequired.state, "needs-setup");
+
   const old = await probe("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
   assert.match("why" in old ? old.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);
 });

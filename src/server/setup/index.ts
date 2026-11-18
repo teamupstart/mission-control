@@ -1,5 +1,5 @@
 import { mcpTrustStatus } from "./mcp-trust.ts";
-import { codeRabbitReadiness, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
+import { codeRabbitAuthProblem, codeRabbitVersionProblem, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
@@ -16,6 +16,7 @@ import {
   ENVIRONMENT_ROW_METADATA,
   HERDR_SERVER_REMEDY,
   INDEXED_REPOSITORIES_INFO,
+  SETUP_DEPENDENCY_DISPLAY_ORDER,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
@@ -372,13 +373,34 @@ function configuredAcliSites(): string[] {
   return [...sites].sort();
 }
 
+/** Installed and new enough. Sign-in is `coderabbit-auth`'s question, the way acli splits it. */
 async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
   const status = await present("coderabbit", deps, "coderabbit");
   if (status.state !== "satisfied") return status;
   let version = "";
-  const problem = await codeRabbitReadiness((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV), (value) => { version = value; });
+  const problem = await codeRabbitVersionProblem((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV), (value) => { version = value; });
   return problem ? { state: "needs-setup", why: problem, evidence: status.evidence }
-    : { ...status, evidence: `${status.evidence} (CodeRabbit ${version}; stored authentication ready)` };
+    : { ...status, evidence: `${status.evidence} (CodeRabbit ${version})` };
+}
+
+/**
+ * The same `coderabbit auth status --agent` reading a workflow review makes before it runs,
+ * so this row and a review can never disagree about whether the CLI is signed in.
+ */
+async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const installed = await present("coderabbit", deps, "coderabbit");
+  if (installed.state !== "satisfied") {
+    return { state: "needs-setup", why: "Install the CodeRabbit CLI first, press Re-check, then sign in.", evidence: null };
+  }
+  const execute = (args: string[]) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV);
+  const outdated = await codeRabbitVersionProblem(execute);
+  if (outdated) {
+    return { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence };
+  }
+  const problem = await codeRabbitAuthProblem(execute);
+  return problem
+    ? { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: installed.evidence }
+    : { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" };
 }
 
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
@@ -405,6 +427,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   // row already runs the one command whose answer matters.
   "acli-cli": (deps) => present(acliBin(), deps, "acli"),
   "acli-auth": acliAuthStatus,
+  "coderabbit-auth": codeRabbitAuthStatus,
 };
 
 function reasonOf(error: unknown): string {
@@ -581,7 +604,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   const environmentRows = environment.map(environmentRow).filter((row): row is SetupRowView => row !== null);
   const rows: SetupRowView[] = [];
   for (const family of SETUP_FAMILY_IDS) {
-    for (const id of SETUP_DEPENDENCY_IDS) {
+    for (const id of SETUP_DEPENDENCY_DISPLAY_ORDER) {
       const info = SETUP_DEPENDENCY_INFO[id];
       if (info.family === family) {
         const probe = probeById.get(id)!;

@@ -461,6 +461,49 @@ test("the acli sign-in opens the binary the daemon resolves, labelled as a sign-
   assert.match(calls[0]!.argv[2]!, /\[sign-in exited %s\]/);
 });
 
+test("the CodeRabbit sign-in opens the coderabbit the daemon resolves", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({
+    calls,
+    install: { resolveExecutable: async (id) => id === "coderabbit" ? "/opt/homebrew/bin/coderabbit" : null },
+  }), { id: "coderabbit-auth", backend: "cmux" });
+  assert.equal(response.status, 200);
+  assert.match((await response.json() as { detail: string }).detail, /opened the sign-in/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.name, "Sign in: CodeRabbit CLI sign-in");
+  assert.deepEqual(calls[0]!.argv, [
+    "/bin/sh",
+    "-c",
+    setupInstallerShell(["/opt/homebrew/bin/coderabbit", "auth", "login"], "sign-in"),
+  ]);
+});
+
+test("the CodeRabbit sign-in is refused before any terminal opens when coderabbit cannot be found", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({
+    calls,
+    install: { resolveExecutable: async () => null },
+  }), { id: "coderabbit-auth", backend: "cmux" });
+  assert.equal(response.status, 409);
+  const body = await response.json() as { ok: boolean; outcome: string; detail: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.outcome, "refused");
+  assert.match(body.detail, /coderabbit is not installed.*Install it first/);
+  assert.deepEqual(calls, []);
+});
+
+test("the Herdr and CodeRabbit installs are Homebrew commands inside the install grammar", async () => {
+  for (const [id, argv] of [
+    ["herdr", ["brew", "install", "herdr"]],
+    ["coderabbit-cli", ["brew", "install", "--cask", "coderabbit"]],
+  ] as const) {
+    const calls: LaunchCall[] = [];
+    const response = await post(appFor({ calls }), { id, backend: "cmux" });
+    assert.equal(response.status, 200, id);
+    assert.deepEqual(calls[0]!.argv, ["/bin/sh", "-c", setupInstallerShell(argv)], id);
+  }
+});
+
 test("the acli sign-in is refused before any terminal opens when acli cannot be found", async () => {
   const calls: LaunchCall[] = [];
   const response = await post(appFor({

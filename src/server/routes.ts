@@ -673,6 +673,8 @@ import {
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
 import { terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { systemDefaultEmulator } from "./terminal/system-default.ts";
+import type { EmulatorId } from "@shared/terminal.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -1411,6 +1413,11 @@ export interface RouteDeps {
    * preference is read through the real composition.
    */
   focusTerminals?: TerminalDeps;
+  /**
+   * The emulator macOS hands a shell to, which terminal pickers start on. Injected so a route
+   * test does not read the machine's own LaunchServices preferences.
+   */
+  systemDefaultTerminal?: () => Promise<EmulatorId | null>;
 }
 
 /**
@@ -1459,6 +1466,7 @@ export const ROUTE_DEP_NAMES = [
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
+  "systemDefaultTerminal",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1794,6 +1802,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     setupDeps,
     setupInstallDeps,
     focusTerminals,
+    systemDefaultTerminal,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -4124,8 +4133,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // it is a question about the daemon's machine, not about the one the dashboard is being
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
-  app.get("/api/terminal-targets", (c) =>
-    c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
+  const readSystemDefaultTerminal = systemDefaultTerminal ?? (() => systemDefaultEmulator({
+    platform: process.platform,
+    home: process.env.HOME || homedir(),
+    run: (bin, args, opts) => runCommand(bin, args, opts),
+    emulators: configuredTerminalTargetDeps.emulators,
+  }));
+  app.get("/api/terminal-targets", async (c) => {
+    const systemDefault = await readSystemDefaultTerminal().catch(() => null);
+    const targets = terminalTargetViews(configuredTerminalTargetDeps).map((view) =>
+      view.id === systemDefault ? { ...view, systemDefault: true } : view);
+    return c.json({ targets });
+  });
   // Non-spawning recheck. Resource ownership is independent of task/workflow continuity.
   app.get("/api/sessions/:id/launch", (c) => {
     const session = registry.getSession(c.req.param("id"));

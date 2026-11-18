@@ -493,6 +493,28 @@ test("the Atlassian CLI rows report its path, its site, and never the account ad
   assert.deepEqual(remedy.kind === "command" && remedy.argv, ["acli", "jira", "auth", "login", "--web"]);
 });
 
+test("the CodeRabbit rows split install from sign-in, the way acli's do", async () => {
+  // Installed and new enough reads as installed; the sign-in row answers authentication.
+  assert.deepEqual(await probe("coderabbit-cli"), { state: "satisfied", evidence: "/tools/coderabbit (CodeRabbit 0.9.1)" });
+  assert.deepEqual(await probe("coderabbit-auth"), { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" });
+
+  const absent = await probe("coderabbit-auth", { resolveBinPath: async () => null, executableDiagnostic: async () => null });
+  assert.equal(absent.state, "needs-setup");
+  assert.match("why" in absent ? absent.why : "", /Install the CodeRabbit CLI first/);
+
+  const signedOut = (argv: readonly string[]) => stubRun({
+    stdout: argv[0] === "--version" ? "0.9.1" : JSON.stringify({ type: "status", authenticated: false }),
+    stderr: "", code: 0,
+  });
+  // A signed-out CLI is still installed: the install row stays ready, the sign-in row asks.
+  assert.equal((await probe("coderabbit-cli", { runCommand: async (_bin, argv) => signedOut(argv) })).state, "satisfied");
+  const loggedOut = await probe("coderabbit-auth", { runCommand: async (_bin, argv) => signedOut(argv) });
+  assert.deepEqual(loggedOut, { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: "/tools/coderabbit" });
+
+  const old = await probe("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
+  assert.match("why" in old ? old.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);
+});
+
 test("the acli sign-in row names the missing install, the missing login, and the wrong site", async () => {
   const absent = await probe("acli-auth", { resolveBinPath: async () => null, executableDiagnostic: async () => null });
   assert.equal(absent.state, "needs-setup");

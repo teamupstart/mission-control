@@ -97,6 +97,7 @@ export function isSetupInstallArgv(argv: readonly unknown[]): argv is readonly s
  */
 const SETUP_SIGN_IN_COMMANDS: readonly { executable: ExecutableId; argv: readonly string[] }[] = [
   { executable: "acli", argv: ["acli", "jira", "auth", "login", "--web"] },
+  { executable: "coderabbit", argv: ["coderabbit", "auth", "login"] },
 ];
 
 /** The sign-in entry this argv names exactly, or null. */

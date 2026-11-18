@@ -7,6 +7,7 @@ import { listProcessesSnapshot as actualProcessSnapshot } from "../../src/server
 import type { TerminalDeps } from "../../src/server/terminal/registry.ts";
 import type { TerminalExec } from "../../src/server/terminal/exec.ts";
 import { ghosttyEmulator as nativeGhosttyEmulator } from "../../src/server/terminal/ghostty.ts";
+import { itermBoundaryEmulator } from "./iterm-boundary.ts";
 
 export { daemonOwnedPids } from "../../src/server/discovery/processes.ts";
 
@@ -70,6 +71,8 @@ export function installTerminalBoundary(deps: TerminalDeps): void {
   if (process.env.MC_E2E_WEZTERM_BOUNDARY === "1") {
     deps.emulators.wezterm.bin = { env: null, candidates: [process.execPath], dropEnv: [] };
   } else deps.emulators.ghostty = ghosttyEmulator();
+  // Opt-in, so every existing boundary spec keeps iTerm2 absent exactly as before.
+  if (process.env.MC_E2E_ITERM_BOUNDARY === "1") deps.emulators.iterm = itermBoundaryEmulator();
 }
 
 /** Pane writes build fresh adapters too, so every Ghostty factory call uses this boundary. */

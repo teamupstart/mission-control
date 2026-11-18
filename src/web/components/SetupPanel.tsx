@@ -34,7 +34,7 @@ import {
   type SetupInstallerLaunchResult,
   type SetupServiceStartResult,
 } from "../lib/api.ts";
-import { useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
+import { initialTerminalTarget, useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
 import { useTerminalsConfig, type TerminalsConfigState } from "../useTerminalsConfig.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useRepoIndex } from "../useRepoIndex.ts";
@@ -94,7 +94,7 @@ function useTerminalChoice(): TerminalChoice {
   const terminals = useTerminalTargets();
   const [selectedId, setSelectedId] = useState<TerminalBackendId | null>(null);
   const available = terminals.targets?.filter((target) => target.unavailable === null) ?? [];
-  const selected = available.find((target) => target.id === selectedId) ?? available[0] ?? null;
+  const selected = available.find((target) => target.id === selectedId) ?? initialTerminalTarget(available);
 
   useEffect(() => {
     if (selected && selected.id !== selectedId) setSelectedId(selected.id);
@@ -127,7 +127,7 @@ function TerminalPicker({
             {!choice.targets && <option value="">Checking terminals...</option>}
             {choice.targets?.map((target) => (
               <option key={target.id} value={target.id} disabled={target.unavailable !== null}>
-                {target.label}{target.unavailable ? `: ${target.unavailable}` : ""}
+                {target.label}{target.systemDefault ? " (system default)" : ""}{target.unavailable ? `: ${target.unavailable}` : ""}
               </option>
             ))}
           </select>

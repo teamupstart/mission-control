@@ -18,11 +18,21 @@ export function codeRabbitVersionCompatible(output: string): boolean {
   return !!m && (Number(m[1]) > 0 || Number(m[2]) > 9 || Number(m[2]) === 9 && Number(m[3]) >= 1);
 }
 
-/** Never returns account identifiers, credentials or arbitrary stderr in fleet diagnostics. */
-export async function codeRabbitReadiness(execute: (argv: string[]) => Promise<RunResult>, onVersion?: (version: string) => void): Promise<string | null> {
+/** The CLI version gate alone. Null when compatible; never echoes stderr. */
+export async function codeRabbitVersionProblem(execute: (argv: string[]) => Promise<RunResult>, onVersion?: (version: string) => void): Promise<string | null> {
   const version = await execute(["--version"]);
   if (version.code !== 0 || version.outcomeUnknown || version.overflowed || !codeRabbitVersionCompatible(version.stdout)) return "CodeRabbit CLI >=0.9.1 is required. Install or upgrade the CLI";
   onVersion?.(/(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)/.exec(version.stdout.trim())![1]!);
+  return null;
+}
+
+/** Never returns account identifiers, credentials or arbitrary stderr in fleet diagnostics. */
+export async function codeRabbitReadiness(execute: (argv: string[]) => Promise<RunResult>, onVersion?: (version: string) => void): Promise<string | null> {
+  return await codeRabbitVersionProblem(execute, onVersion) ?? await codeRabbitAuthProblem(execute);
+}
+
+/** The stored-authentication gate alone, for a CLI already known to be compatible. */
+export async function codeRabbitAuthProblem(execute: (argv: string[]) => Promise<RunResult>): Promise<string | null> {
   const auth = await execute(["auth", "status", "--agent"]);
   if (auth.code !== 0 || auth.outcomeUnknown || auth.overflowed) return "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME";
   try {

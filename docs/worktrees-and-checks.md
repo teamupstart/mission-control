@@ -238,15 +238,17 @@ A slot is **orphaned** when Git no longer recognizes it. That is a narrow, posit
 pool's identity and marker hold, the slot path is the pool's exact path, a `git worktree list`
 that answered does not name it, and what is on disk proves it is no worktree. Either nothing is
 there at all, or the directory has no `.git` link, or its `.git` file names an administrative
-directory that does not exist. Re-cloning the main checkout in place, or moving it aside and
+directory that does not exist. The path must also resolve to exactly itself, with no symbolic
+link at the slot or in any parent component. Re-cloning the main checkout in place, or moving it aside and
 cloning again, leaves every slot like this: each link now resolves into a repository that never
 registered it. A slot whose link still resolves somewhere, a `.git` directory, a symbolic link,
 or any read that fails is never orphaned, and whatever blocked it still does.
 
 No Git proof can pass for an orphaned slot, so none is waited for:
 
-- Settings marks it **not a Git worktree**, explains why, offers **Destroy**, and never offers
-  **Recover**. Reconcile does not promise to bring it back.
+- Settings marks it **not a Git worktree**, explains why, offers **Destroy** (and **Return**
+  while it is leased), and never offers **Recover**. Reconcile does not promise to bring it
+  back.
 - An owner-authorized release (a task's cleanup, a check's recovery, or a manual return) cannot
   reset it. It hands the exact lease back without touching the files and leaves the slot in a
   **state** quarantine for the operator, so the owner is never pinned to a slot that can never be
@@ -256,8 +258,11 @@ No Git proof can pass for an orphaned slot, so none is waited for:
   releases the owner through its usual cleanup, rechecks every fact under the slot lock, and
   deletes the exact slot directory itself, because `git worktree remove` cannot remove what Git
   does not know. A slot with nothing left on disk needs no acknowledgement; only its row goes.
-  Process occupancy still blocks, and the pool-wide **Destroy fixed pool set** uses the same
-  path for every orphaned slot in it.
+  Process occupancy still blocks, and is checked again immediately before the delete. The
+  acknowledgement covers only the slots that were unregistered when the preview was shown: a
+  slot that loses its registration afterwards is refused and needs a fresh preview. A sibling
+  slot reached through its task's cleanup is released, never deleted, and the preview says so.
+  The pool-wide **Destroy fixed pool set** uses the same path for every orphaned slot in it.
 
 Copy anything worth keeping out of an orphaned slot before destroying it: Git can no longer show
 what in it was never committed or pushed.
@@ -604,7 +609,9 @@ this order:
   holds no lease or **Needs operator action** for any other, including an observation
   quarantine that still holds one. The time is the moment of the transition, so a slot
   observed many times since still shows when it was quarantined. An
-  [orphaned slot](#orphaned-slots) is marked **not a Git worktree** and offers only **Destroy**.
+  [orphaned slot](#orphaned-slots) is marked **not a Git worktree** and never offers **Recover**.
+  Quarantined or available, it offers **Destroy**; leased, it also offers **Return**, which
+  releases the lease and keeps the slot quarantined with its files.
   **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.

@@ -135,6 +135,13 @@ interface Observation {
 interface HeldPreview {
   preview: WorktreeActionPreview;
   fingerprint: string;
+  /**
+   * The removal targets Git did not recognize when the operator was shown this preview. Only
+   * these may be deleted unverified: a target that was registered then, and loses its
+   * registration before its turn, is refused instead of riding on someone else's
+   * acknowledgement.
+   */
+  unverifiable: ReadonlySet<string>;
 }
 
 interface HeldOperation {
@@ -590,7 +597,13 @@ export class WorktreeOperationsService {
     const token = this.deps.randomId();
     const preview = { ...built, token, expiresAt: this.deps.now() + TOKEN_TTL_MS };
     const fingerprint = previewFingerprint(built);
-    this.tokens.set(token, { preview, fingerprint });
+    const unregistered = new Set(this.nativeTargets(observed)
+      .filter((target) => this.orphanedTarget(target) && target.slot.orphaned === "unregistered")
+      .map((target) => target.slot.slot.id));
+    const unverifiable = new Set(this.removalTargets(preview)
+      .map((target) => target.id)
+      .filter((id) => unregistered.has(id)));
+    this.tokens.set(token, { preview, fingerprint, unverifiable });
     while (this.tokens.size > WORKTREE_INVENTORY_LIMITS.previewTokens) {
       this.tokens.delete(this.tokens.keys().next().value!);
     }
@@ -801,6 +814,8 @@ export class WorktreeOperationsService {
   private async appendNativeTarget(
     target: NativeTarget,
     action: "return" | "destroy",
+    /** This slot is in the fixed set Destroy removes, not only released through its owner. */
+    removes: boolean,
     observed: Observation,
     affected: WorktreeActionAffected[],
     risks: WorktreeActionRisk[],
@@ -836,10 +851,10 @@ export class WorktreeOperationsService {
     const orphaned = this.orphanedTarget(target) ? slot.orphaned : null;
     if (orphaned) {
       // Cleanliness and the default-branch relationship are Git's answers, and Git has none
-      // here. Waiting for them would block this slot forever. Only Destroy deletes anything,
-      // so only Destroy asks the operator to accept what cannot be checked; Return releases
-      // the lease and keeps both the files and the row.
-      if (action === "destroy") {
+      // here. Waiting for them would block this slot forever. Only a slot Destroy removes is
+      // deleted, so only that one asks the operator to accept what cannot be checked; Return,
+      // and a sibling released through its task, keep both the files and the row.
+      if (removes) {
         if (orphaned === "unregistered") {
           risks.push(risk(
             "unverifiable",
@@ -966,7 +981,7 @@ export class WorktreeOperationsService {
           }
           const native = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
           for (const target of native) {
-            await this.appendNativeTarget(target, "return", observed, affected, risks, blockers, consequences);
+            await this.appendNativeTarget(target, "return", false, observed, affected, risks, blockers, consequences);
           }
           risks.push(risk("domain-owned", `${task.title} owns every affected task resource`, false));
           consequences.push("Stops the task agent, captures required archives and snapshots, and clears every task repository through TaskManager.");
@@ -1173,10 +1188,14 @@ export class WorktreeOperationsService {
         }
       }
     }
+    // Only the requested set is removed. A sibling reached through its task is released, so
+    // it must never be described as deleted or ask for acknowledgement of a deletion.
+    const removing = new Set(initialTargets.map((target) => target.slot.slot.id));
     for (const target of targets.values()) {
       await this.appendNativeTarget(
         target,
         request.action,
+        request.action === "destroy" && removing.has(target.slot.slot.id),
         observed,
         affected,
         risks,
@@ -1371,7 +1390,7 @@ export class WorktreeOperationsService {
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
     await this.manager.runChangeBatch(
-      () => this.dispatch(held.preview, acknowledgementSet, removed),
+      () => this.dispatch(held.preview, acknowledgementSet, held.unverifiable, removed),
       true,
       this.deps.notifyChanged,
     );
@@ -1383,6 +1402,7 @@ export class WorktreeOperationsService {
   private async dispatch(
     preview: WorktreeActionPreview,
     acknowledgements: Set<WorktreeRiskKey>,
+    unverifiable: ReadonlySet<string>,
     removed: (target: WorktreeActionAffected) => void,
   ): Promise<void> {
     const request = preview.request;
@@ -1463,7 +1483,7 @@ export class WorktreeOperationsService {
           allowStaleLease: target.owner === null,
           allowDirty: acknowledgements.has("dirty"),
           allowUnmerged: acknowledgements.has("unlanded"),
-          allowUnverifiable: acknowledgements.has("unverifiable"),
+          allowUnverifiable: acknowledgements.has("unverifiable") && unverifiable.has(target.id),
         });
         this.assertRemoved(result);
         removed(target);

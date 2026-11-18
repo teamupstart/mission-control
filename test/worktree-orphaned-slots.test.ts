@@ -293,17 +293,113 @@ test("an orphaned slot reached through a symbolic link is never deleted, whereve
   const { manager, lease, slot } = await orphanedTaskSlot("mission-orphan-symlink-");
   assert.equal((await manager.release(current(manager, lease), { ownerAuthorized: true })).outcome, "released");
   // The slot's parent `pool/N` now leads outside the pool to a directory with no `.git`: by its
-  // string path this is still the exact slot, and by every filesystem read it is an orphan.
+  // string path this is still the exact slot, and without a physical-path proof every
+  // filesystem read would call it an orphan.
   const { root } = mkOriginAndClone("mission-orphan-symlink-outside-");
   const outside = join(root, "outside");
   mkdirSync(join(outside, basename(slot.path)), { recursive: true });
   writeFileSync(join(outside, basename(slot.path), "precious.md"), "not the pool's\n");
   rmSync(dirname(slot.path), { recursive: true, force: true });
   symlinkSync(outside, dirname(slot.path));
-  assert.equal(await observeSlotOrphan(slot.path), "unregistered");
+  assert.equal(await observeSlotOrphan(slot.path), null, "a link in a parent component proves nothing");
+  const entry = (await manager.status()).flatMap((pool) => pool.slots).find((candidate) => candidate.slot.id === slot.id)!;
+  assert.equal(entry.orphaned, null, "so Settings never advertises a Destroy that removal would refuse");
 
   const removed = await manager.removeSlot({ slotId: slot.id, allowDirty: true, allowUnmerged: true, allowUnverifiable: true });
   assert.equal(removed.outcome, "refused");
   assert.equal(readFileSync(join(outside, basename(slot.path), "precious.md"), "utf8"), "not the pool's\n");
   assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
+});
+
+test("the last awaited check before deleting an orphan is process occupancy", async () => {
+  let armed = false;
+  let calls = 0;
+  const { manager, lease, slot } = await orphanedTaskSlot("mission-orphan-late-occupant-", {
+    occupancy: async (paths) => {
+      if (armed) calls++;
+      // Removal reads occupancy three times; a process arrives just before the third.
+      const occupied = armed && calls >= 3;
+      return new Map(paths.map((path): [string, WorktreeOccupancy] => [path, occupied
+        ? { status: "known", occupants: [{ pid: 4242, ppid: 1, startRaw: "", startMs: 0, command: "vim", cwd: path, knownOwner: null }] }
+        : { status: "known", occupants: [] }]));
+    },
+  });
+  assert.equal((await manager.release(current(manager, lease), { ownerAuthorized: true })).outcome, "released");
+  armed = true;
+  const removed = await manager.removeSlot({ slotId: slot.id, allowDirty: true, allowUnmerged: true, allowUnverifiable: true });
+  assert.equal(removed.outcome, "outcomeUnknown", JSON.stringify(removed));
+  assert.equal(calls, 3);
+  assert.ok(existsSync(join(slot.path, "docs/reports/crash/report.md")), "nothing was deleted under the late occupant");
+  assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
+});
+
+test("the unverifiable acknowledgement reaches only the targets Git did not recognize at preview", async () => {
+  const { clone } = mkOriginAndClone("mission-orphan-per-target-");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const manager = harness();
+  const leases = [
+    acquired(await manager.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key: "a:0" } })),
+    acquired(await manager.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key: "b:0" } })),
+  ];
+  for (const lease of leases) assert.equal((await manager.release(current(manager, lease))).outcome, "released");
+  const [orphan, healthy] = leases as [NativeWorktreeLease, NativeWorktreeLease];
+  rmSync(adminDirectory(orphan.path), { recursive: true, force: true });
+
+  const seen: Array<{ slotId: string; allowUnverifiable?: boolean }> = [];
+  const removeSlot = manager.removeSlot.bind(manager);
+  manager.removeSlot = async (input) => {
+    seen.push({ slotId: input.slotId, allowUnverifiable: input.allowUnverifiable });
+    return removeSlot(input);
+  };
+  const operations = operationsFor(manager, { view: null, reclaimed: 0 });
+  const preview = await operations.preview({ action: "destroy", target: { kind: "pool", poolId: orphan.poolId } });
+  assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+  assert.deepEqual(preview.requiredAcknowledgements, ["unverifiable"]);
+  await operations.execute(preview.token, ["unverifiable"]);
+  assert.deepEqual(
+    seen.map(({ slotId, allowUnverifiable }) => [slotId === orphan.slotId ? "orphan" : "healthy", allowUnverifiable]).sort(),
+    [["healthy", false], ["orphan", true]],
+    "a registered target never inherits another target's acknowledgement",
+  );
+  assert.deepEqual(manager.store.slots(orphan.poolId), []);
+  assert.equal(healthy.poolId, orphan.poolId);
+});
+
+test("an orphaned sibling released through its task is described as released, not deleted", async () => {
+  const task = { view: null as WorktreeTaskView | null, reclaimed: 0 };
+  const { clone } = mkOriginAndClone("mission-orphan-sibling-");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const manager = harness({
+    ownerReferenced: async (reference) =>
+      task.view?.resources.some((resource) => resource.leaseId === reference.leaseId) ?? false,
+  });
+  const leases = [0, 1].map(async (position) => acquired(await manager.acquire({ repositoryPath: clone, baseSha: sha,
+    owner: { kind: "task", key: `task-1:${position}` } })));
+  const [target, sibling] = [await leases[0]!, await leases[1]!];
+  for (const lease of [target, sibling]) rmSync(adminDirectory(lease.path), { recursive: true, force: true });
+  writeFileSync(join(sibling.path, "kept.md"), "kept\n");
+  task.view = {
+    id: "task-1",
+    title: "Two repositories",
+    resources: [target, sibling].map((lease, position) => ({ position, repoRoot: clone, path: lease.path,
+      provider: "mission" as const, leaseId: lease.leaseId, branch: null })),
+  };
+  const operations = operationsFor(manager, task);
+  const targetOrdinal = manager.store.slot(target.slotId)!.ordinal;
+  const siblingOrdinal = manager.store.slot(sibling.slotId)!.ordinal;
+
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: target.slotId } });
+  assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+  assert.ok(preview.consequences.some((line) => line.startsWith(`Slot ${targetOrdinal} is deleted from disk`)),
+    JSON.stringify(preview.consequences));
+  assert.ok(!preview.consequences.some((line) => line.startsWith(`Slot ${siblingOrdinal} is deleted`)),
+    JSON.stringify(preview.consequences));
+  assert.ok(preview.consequences.some((line) => line.startsWith(`Slot ${siblingOrdinal} cannot be reset`)),
+    JSON.stringify(preview.consequences));
+
+  await operations.execute(preview.token, preview.requiredAcknowledgements);
+  assert.equal(manager.store.slot(target.slotId), null);
+  const after = manager.store.slot(sibling.slotId)!;
+  assert.deepEqual([after.state, after.activeLeaseId], ["quarantined", null]);
+  assert.equal(readFileSync(join(sibling.path, "kept.md"), "utf8"), "kept\n");
 });

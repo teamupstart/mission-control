@@ -1,4 +1,4 @@
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 
 /**
@@ -13,8 +13,8 @@ import { isAbsolute, join, resolve } from "node:path";
  *   files are clean, committed or pushed.
  *
  * Neither is ever returned for a slot that Git still links somewhere, an embedded repository
- * of its own, a symbolic link, or a read that failed. Those stay unproven, and whatever they
- * block stays blocked.
+ * of its own, a symbolic link at the slot or in any parent component, or a read that failed.
+ * Those stay unproven, and whatever they block stays blocked.
  */
 export type SlotOrphanEvidence = "absent" | "unregistered";
 
@@ -46,6 +46,9 @@ export async function observeSlotOrphan(slotPath: string): Promise<SlotOrphanEvi
   try {
     const slot = await lstat(slotPath);
     if (slot.isSymbolicLink() || !slot.isDirectory()) return null;
+    // A symbolic link in any parent component would make every read below describe a
+    // directory outside the pool. Only a path that resolves to exactly itself is the slot.
+    if ((await realpath(slotPath)) !== resolve(slotPath)) return null;
   } catch (error) {
     return missing(error) ? "absent" : null;
   }

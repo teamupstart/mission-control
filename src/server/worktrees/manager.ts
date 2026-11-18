@@ -438,6 +438,15 @@ export const ORPHANED_SLOT_REASON =
 
 const ORPHAN_NOT_PHYSICAL = "orphaned slot path is not its exact physical directory";
 
+async function pathAbsent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+  }
+}
+
 /**
  * `exactSlotPath` compares strings, and every filesystem call resolves each component of the
  * path it is given. A symbolic link anywhere along it would aim a recursive delete outside the
@@ -2171,13 +2180,19 @@ export class WorktreeManager {
     }
     const policyBlocker = await options.beforeReset?.();
     if (policyBlocker) return { outcome: "refused", reason: policyBlocker };
-    const released = this.store.releaseOrphaned(
-      slot.id,
-      slot.version,
-      { leaseId: lease.leaseId, ownerKind: lease.owner.kind, ownerKey: lease.owner.key },
-      ORPHANED_SLOT_REASON,
-      this.deps.now(),
-    );
+    let released: WorktreeSlotRow | null;
+    try {
+      released = this.store.releaseOrphaned(
+        slot.id,
+        slot.version,
+        { leaseId: lease.leaseId, ownerKind: lease.owner.kind, ownerKey: lease.owner.key },
+        ORPHANED_SLOT_REASON,
+        this.deps.now(),
+      );
+    } catch (error) {
+      // The write's outcome is unknown after a throw, exactly as on the reset path.
+      return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+    }
     if (!released) return { outcome: "outcomeUnknown", reason: "orphaned slot release lost its compare-and-swap" };
     this.logSlot(slot, "orphan_released", "lease released without a reset; the slot's files are kept in quarantine", orphaned);
     this.publish();
@@ -2237,6 +2252,13 @@ export class WorktreeManager {
         this.quarantine(pruning, "transition", ORPHAN_NOT_PHYSICAL);
         return { outcome: "outcomeUnknown", reason: ORPHAN_NOT_PHYSICAL };
       }
+      // A process may have entered while those reads awaited. Occupancy is the last awaited
+      // check before the delete, as it is everywhere else.
+      const occupied = await this.occupancyBlocker(slot.path);
+      if (occupied) {
+        this.quarantine(pruning, "transition", "orphaned slot was occupied before its removal", occupied);
+        return { outcome: "outcomeUnknown", reason: occupied };
+      }
       try {
         await rm(slot.path, { recursive: true, maxRetries: 2 });
       } catch (error) {
@@ -2244,7 +2266,9 @@ export class WorktreeManager {
         return { outcome: "outcomeUnknown", reason: `orphaned slot removal failed: ${bounded(String(error))}` };
       }
     }
-    if (existsSync(slot.path)) {
+    // `existsSync` follows links, so a dangling one would read as gone. Only `lstat` answering
+    // ENOENT proves nothing is left at the path.
+    if (!(await pathAbsent(slot.path))) {
       this.quarantine(pruning, "transition", "orphaned slot removal could not be verified");
       return { outcome: "outcomeUnknown", reason: "orphaned slot removal could not be verified" };
     }

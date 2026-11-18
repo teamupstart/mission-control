@@ -90,7 +90,28 @@ function hdiutil(args: readonly string[], beforeAttempt: (attempt: number) => vo
 }
 
 /**
- * Every image hdiutil reports attached, by real path, or null when it cannot say. Read the way
+ * The attached images' real paths from `hdiutil info -plist` as JSON, or null when the answer
+ * cannot rule an image out. That includes an entry with no usable `image-path`: it could be the
+ * fixture, and an inventory with a hole in it is no proof that anything is absent.
+ */
+function inventoryFrom(json: string): string[] | null {
+  try {
+    const images = (JSON.parse(json) as {images?: unknown}).images;
+    if (!Array.isArray(images)) return null;
+    const paths: string[] = [];
+    for (const image of images as Array<{'image-path'?: unknown} | null>) {
+      const path = image?.['image-path'];
+      if (typeof path !== 'string' || !path) return null;
+      try { paths.push(realpathSync(path)); } catch { paths.push(path); }
+    }
+    return paths;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every image hdiutil reports attached, or null when it cannot say. Read the way
  * `scripts/binary-install-policy.mjs` reads it: `hdiutil info -plist` through `plutil`.
  */
 function attachedImages(): string[] | null {
@@ -99,17 +120,7 @@ function attachedImages(): string[] | null {
   const json = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'],
     {input: plist.stdout, encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024});
   if (json.error || json.status !== 0) return null;
-  try {
-    const images = (JSON.parse(json.stdout) as {images?: unknown}).images;
-    if (!Array.isArray(images)) return null;
-    return images.flatMap((image: {'image-path'?: unknown}) => {
-      const path = image['image-path'];
-      if (typeof path !== 'string') return [];
-      try { return [realpathSync(path)]; } catch { return [path]; }
-    });
-  } catch {
-    return null;
-  }
+  return inventoryFrom(json.stdout);
 }
 
 /**
@@ -176,6 +187,20 @@ test('an image is detached only when the inventory confirms it', () => {
   assert.equal(imageDetached('/w/fixture.dmg', () => ['/System/other.dmg']), true);
   assert.equal(imageDetached('/w/fixture.dmg', () => []), true);
   assert.equal(imageDetached('/w/fixture.dmg', () => null), false, 'an unreadable inventory is not confirmation');
+});
+
+test('an inventory with an entry it cannot name rules nothing out', () => {
+  const inventory = (images: unknown) => JSON.stringify({images});
+  assert.deepEqual(inventoryFrom(inventory([{'image-path': '/nonexistent/a.dmg'}, {'image-path': '/nonexistent/b.dmg'}])),
+    ['/nonexistent/a.dmg', '/nonexistent/b.dmg']);
+  assert.deepEqual(inventoryFrom(inventory([])), []);
+  // Any of these could be the fixture attached without a path we can match.
+  assert.equal(inventoryFrom(inventory([{'image-path': '/nonexistent/a.dmg'}, {}])), null);
+  assert.equal(inventoryFrom(inventory([{'image-path': 42}])), null);
+  assert.equal(inventoryFrom(inventory([{'image-path': ''}])), null);
+  assert.equal(inventoryFrom(inventory([null])), null);
+  assert.equal(inventoryFrom(JSON.stringify({})), null);
+  assert.equal(inventoryFrom('not json'), null);
 });
 
 function image(t: test.TestContext, entries: readonly string[]): {work: string; dmg: string} {

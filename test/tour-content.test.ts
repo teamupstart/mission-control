@@ -125,18 +125,17 @@ test("an entry that requires an integration is shown only while that integration
   }
 });
 
-test("the shipped tour follows the Conductor switch: the Pipeline kind is authored but not shown", () => {
-  assert.equal(CONDUCTOR_INTEGRATION_ENABLED, false);
+test("the shipped tour follows the Conductor switch: the Pipeline kind is authored, shown only when on", () => {
   const source = TOUR_CONTENT_SOURCES.find((entry) => entry.slug === "see-work")!;
   assert.match(source.markdown, /- \*\*Pipeline:\*\* .*<!-- requires: ai-conductor -->/, "the copy stays authored");
   const labels = (stages: ReturnType<typeof tourContent>["stages"]) =>
     stages["dispatch-kind"]!.details!.map((detail) => detail.label);
-  assert.deepEqual(labels(tourContent("see-work").stages), ["Chat", "Scout", "Plan", "Ship"]);
-  // Flipping the switch is the only edit needed to bring it back.
-  assert.deepEqual(
-    labels(parseTourContent("see-work", source.markdown, { "ai-conductor": true }).stages),
-    ["Chat", "Scout", "Plan", "Ship", "Pipeline"],
-  );
+  const hidden = ["Chat", "Scout", "Plan", "Ship"];
+  const offered = [...hidden, "Pipeline"];
+  assert.deepEqual(labels(parseTourContent("see-work", source.markdown, { "ai-conductor": false }).stages), hidden);
+  assert.deepEqual(labels(parseTourContent("see-work", source.markdown, { "ai-conductor": true }).stages), offered);
+  // The tour the dashboard ships follows the constant, so flipping it is the only edit needed.
+  assert.deepEqual(labels(tourContent("see-work").stages), CONDUCTOR_INTEGRATION_ENABLED ? offered : hidden);
 });
 
 test("malformed authored copy fails before a tour can start", () => {

@@ -54,17 +54,27 @@ const { executeSetupInstall } = await import("../src/server/setup/install.ts");
 type SetupDeps = import("../src/server/setup/types.ts").SetupDeps;
 
 openDb();
+// These tests describe the HIDDEN state, so they must pass whichever way the switch is set:
+// flipping `CONDUCTOR_INTEGRATION_ENABLED` is meant to be the whole of restoring the
+// integration. The daemon reads the switch through an accessor, so it is held off here. The
+// dashboard reads the constant at module load, which a test cannot override, so the few
+// assertions about the SHIPPED dashboard state run only while the constant is off; the
+// helpers behind them are also exercised with an explicit `false` either way.
+overrideConductorIntegrationForTests(false);
+const SHIPPED_HIDDEN = {
+  skip: CONDUCTOR_INTEGRATION_ENABLED && "asserts the shipped dashboard state, and the switch is on",
+};
 after(() => {
   overrideConductorIntegrationForTests(null);
   rmSync(home, { recursive: true, force: true });
 });
 
-test("the integration ships hidden, and the daemon reads the same switch", () => {
-  assert.equal(CONDUCTOR_INTEGRATION_ENABLED, false);
-  assert.equal(conductorIntegrationEnabled(), false);
+test("the daemon reads the shared switch, and only a test can override it", () => {
+  overrideConductorIntegrationForTests(null);
+  assert.equal(conductorIntegrationEnabled(), CONDUCTOR_INTEGRATION_ENABLED);
   overrideConductorIntegrationForTests(true);
   assert.equal(conductorIntegrationEnabled(), true);
-  overrideConductorIntegrationForTests(null);
+  overrideConductorIntegrationForTests(false);
   assert.equal(conductorIntegrationEnabled(), false);
 });
 
@@ -73,36 +83,42 @@ test("Setup hides the ai-conductor row and the Pipelines family it empties, and 
   assert.ok(SETUP_DEPENDENCY_IDS.includes("ai-conductor"));
   assert.equal(SETUP_DEPENDENCY_INFO["ai-conductor"].family, "pipelines");
 
-  assert.equal(setupDependencyAvailable("ai-conductor"), false);
+  assert.equal(setupDependencyAvailable("ai-conductor", false), false);
   assert.deepEqual(
-    availableSetupDependencyIds(),
+    availableSetupDependencyIds(false),
     SETUP_DEPENDENCY_IDS.filter((id) => id !== "ai-conductor"),
   );
-  assert.equal(setupFamilyAvailable("pipelines"), false);
+  assert.equal(setupFamilyAvailable("pipelines", false), false);
   assert.deepEqual(
-    visibleSetupFamilyIds(),
+    visibleSetupFamilyIds([], false),
     SETUP_FAMILY_IDS.filter((family) => family !== "pipelines"),
   );
   // Repositories has no catalog dependency at all; hiding must not take it with it.
-  assert.ok(visibleSetupFamilyIds().includes("repositories"));
+  assert.ok(visibleSetupFamilyIds([], false).includes("repositories"));
   // A family is never withheld while a row names it.
-  assert.ok(visibleSetupFamilyIds([{ family: "pipelines" }]).includes("pipelines"));
+  assert.ok(visibleSetupFamilyIds([{ family: "pipelines" }], false).includes("pipelines"));
+  // The defaults are the shipped switch.
+  assert.deepEqual(availableSetupDependencyIds(), availableSetupDependencyIds(CONDUCTOR_INTEGRATION_ENABLED));
 
   // Flipped back on, everything returns.
   assert.deepEqual(availableSetupDependencyIds(true), [...SETUP_DEPENDENCY_IDS]);
   assert.deepEqual(visibleSetupFamilyIds([], true), [...SETUP_FAMILY_IDS]);
 });
 
-test("the Setup rail cannot be deep-linked into the hidden Pipelines family", () => {
+test("the Setup rail cannot be deep-linked into the hidden Pipelines family", SHIPPED_HIDDEN, () => {
   assert.equal(familyForAnchor("setup/family-pipelines", []), null);
   assert.equal(familyForAnchor("setup/family-agents", []), "agents");
 });
 
-test("Settings draws, routes, walks and searches no Conductor category", () => {
+test("the Settings availability rule withholds only Conductor, and only while hidden", () => {
   assert.ok(SETTINGS_CATEGORIES.some((category) => category.id === "conductor"), "kept in the registry");
-  assert.equal(settingsCategoryAvailable("conductor"), false);
+  assert.equal(settingsCategoryAvailable("conductor", false), false);
   assert.equal(settingsCategoryAvailable("conductor", true), true);
-  assert.equal(settingsCategoryAvailable("setup"), true);
+  assert.equal(settingsCategoryAvailable("setup", false), true);
+  assert.equal(settingsCategoryAvailable("conductor"), CONDUCTOR_INTEGRATION_ENABLED);
+});
+
+test("Settings draws, routes, walks and searches no Conductor category", SHIPPED_HIDDEN, () => {
   assert.ok(!VISIBLE_SETTINGS_CATEGORIES.some((category) => category.id === "conductor"));
   assert.ok(!settingsCategoriesIn("background").some((category) => category.id === "conductor"));
   assert.equal(VISIBLE_SETTINGS_CATEGORIES.length, SETTINGS_CATEGORIES.length - 1);
@@ -465,7 +481,7 @@ test("with consent and an active commission already stored, the hidden watcher n
   try {
     await runWatcher(() => calls.readRepo > 0 && calls.lifecycle > 0, 2_000);
   } finally {
-    overrideConductorIntegrationForTests(null);
+    overrideConductorIntegrationForTests(false);
   }
   assert.ok(calls.readRepo > 0, "a live watcher tails the consented repository");
   assert.ok(calls.lifecycle > 0, "a live watcher reads the active commission's Engineer lifecycle");

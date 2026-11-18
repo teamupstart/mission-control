@@ -80,6 +80,13 @@ export interface CheckRollup {
   /** A failing run was set aside because a later run of the same check re-checked it. */
   retriedFailure: boolean;
   /**
+   * The failing runs set aside, and the failing runs that still count, each as `failureId`: its
+   * workflow name, check name and start - what both of GitHub's answers report about a run, so a
+   * failure `gh pr list` reported can be found again in the GraphQL read that confirms it.
+   */
+  retiredFailures: string[];
+  failures: string[];
+  /**
    * A failing run still counts, but a later run with the same workflow and name started after
    * it finished, and this answer cannot say whether that run was the same check. Read the
    * commit's checks with `CHECK_CONTEXTS` to find out.
@@ -196,6 +203,11 @@ function readEntry(e: unknown): CheckEntry | null {
   return null;
 }
 
+/** A failing run's `failureId`: see `CheckRollup.retiredFailures`. */
+function failureId(entry: CheckEntry): string {
+  return `${entry.looseKey ?? ""}\0${entry.startedAt ?? ""}`;
+}
+
 /**
  * True when `later` started in a second after the one `earlier` finished in, and after `earlier`
  * started. GitHub reports whole seconds, so a start in the same second as the finish may still
@@ -221,6 +233,8 @@ export function rollUpChecks(entries: readonly unknown[]): CheckRollup {
     read.some((other) => other !== entry && other[key] === entry[key] && startedAfter(other, entry) &&
       (entry.suite === null || other.suite !== entry.suite));
   let retriedFailure = false;
+  const retiredFailures: string[] = [];
+  const failures: string[] = [];
   let unconfirmedRetry = false;
   let recognized = read.length === parsed.length;
   let sawFail = false;
@@ -228,11 +242,15 @@ export function rollUpChecks(entries: readonly unknown[]): CheckRollup {
   let sawPass = false;
   for (const entry of read) {
     if (rerun(entry, "key")) {
-      if (entry.state === "fail") retriedFailure = true;
+      if (entry.state === "fail") {
+        retriedFailure = true;
+        retiredFailures.push(failureId(entry));
+      }
       continue;
     }
     if (entry.state === "fail") {
       sawFail = true;
+      failures.push(failureId(entry));
       if (rerun(entry, "looseKey")) unconfirmedRetry = true;
     } else if (entry.state === "pending") sawPending = true;
     else {
@@ -241,5 +259,5 @@ export function rollUpChecks(entries: readonly unknown[]): CheckRollup {
     }
   }
   const checks: PrChecks | null = sawFail ? "failing" : sawPending ? "pending" : sawPass ? "passing" : null;
-  return { checks, retriedFailure, unconfirmedRetry, recognized };
+  return { checks, retriedFailure, retiredFailures, failures, unconfirmedRetry, recognized };
 }

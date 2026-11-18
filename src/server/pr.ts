@@ -288,9 +288,12 @@ export async function confirmRetriedChecks(
   if (!contexts) return rollup.checks;
   // The merge gate's bar, so the chip never clears what the gate would still hold: an answer
   // with an unreadable entry or an unrecognised result keeps the failure.
-  // Not remembered either: GitHub may read cleanly on the next tick.
+  // The answer has to account for every failure gh reported: each must be there, retired by a
+  // later run of the same check. A complete page that simply lacks one proves nothing about it.
+  // Not remembered either way: GitHub may give a whole answer on the next tick.
   const confirmed = rollUpChecks(contexts);
-  if (!confirmed.recognized || confirmed.checks === null) return rollup.checks;
+  const accounted = rollup.failures.every((failure) => confirmed.retiredFailures.includes(failure));
+  if (!confirmed.recognized || confirmed.checks === null || !accounted) return rollup.checks;
   const checks = confirmed.checks;
   if (!cacheable) return checks;
   confirmedChecks.delete(candidate.url);

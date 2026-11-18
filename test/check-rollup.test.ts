@@ -43,6 +43,11 @@ function ghRun(name: string, conclusion: string, startedAt: string, completedAt:
 
 const TITLE = { workflow: "Pull request title", event: "pull_request_target" };
 
+/** The verdict fields, without the failure lists a test asserts on separately when it cares. */
+function verdict({ checks, retriedFailure, unconfirmedRetry, recognized }: ReturnType<typeof rollUpChecks>) {
+  return { checks, retriedFailure, unconfirmedRetry, recognized };
+}
+
 test("a failed check that a later run of the same check passed no longer reads as failing", () => {
   // The shape GitHub returned for teamupstart/mission-control#1170: the title check failed,
   // the title was edited, the check ran again on the same commit and passed. `gh pr checks`
@@ -52,7 +57,30 @@ test("a failed check that a later run of the same check passed no longer reads a
     run("release-compatible title", "FAILURE", "2026-10-07T20:00:22Z", "2026-10-07T20:00:29Z", TITLE),
     run("release-compatible title", "SUCCESS", "2026-10-07T20:01:35Z", "2026-10-07T20:01:42Z", TITLE),
   ]);
-  assert.deepEqual(rollup, { checks: "passing", retriedFailure: true, unconfirmedRetry: false, recognized: true });
+  assert.deepEqual(verdict(rollup), { checks: "passing", retriedFailure: true, unconfirmedRetry: false, recognized: true });
+  assert.equal(rollup.retiredFailures.length, 1);
+  assert.deepEqual(rollup.failures, []);
+});
+
+test("a failure gh pr list reported is found again among the GraphQL read's retired failures", () => {
+  // The poller clears the chip only when its confirming read retires every failure gh reported,
+  // so the two shapes must name the same run the same way.
+  const fromGh = rollUpChecks([
+    ghRun("release-compatible title", "FAILURE", "2026-10-07T20:00:22Z", "2026-10-07T20:00:29Z", "Pull request title"),
+    ghRun("release-compatible title", "SUCCESS", "2026-10-07T20:01:35Z", "2026-10-07T20:01:42Z", "Pull request title"),
+  ]);
+  const fromGraphql = rollUpChecks([
+    run("release-compatible title", "FAILURE", "2026-10-07T20:00:22Z", "2026-10-07T20:00:29Z", TITLE),
+    run("release-compatible title", "SUCCESS", "2026-10-07T20:01:35Z", "2026-10-07T20:01:42Z", TITLE),
+  ]);
+  assert.equal(fromGh.failures.length, 1);
+  assert.deepEqual(fromGraphql.retiredFailures, fromGh.failures);
+  // A different run of that check - another start - is not the one gh reported.
+  const otherStart = rollUpChecks([
+    run("release-compatible title", "FAILURE", "2026-10-07T20:00:23Z", "2026-10-07T20:00:29Z", TITLE),
+    run("release-compatible title", "SUCCESS", "2026-10-07T20:01:35Z", "2026-10-07T20:01:42Z", TITLE),
+  ]);
+  assert.notDeepEqual(otherStart.retiredFailures, fromGh.failures);
 });
 
 test("the latest run failing is still failing, whatever passed before it", () => {
@@ -257,7 +285,7 @@ test("gh pr list's export never retires a run, but flags a failure that looks re
     ghRun("release-compatible title", "FAILURE", "2026-10-07T20:00:22Z", "2026-10-07T20:00:29Z", "Pull request title"),
     ghRun("release-compatible title", "SUCCESS", "2026-10-07T20:01:35Z", "2026-10-07T20:01:42Z", "Pull request title"),
   ]);
-  assert.deepEqual(looksRetried, { checks: "failing", retriedFailure: false, unconfirmedRetry: true, recognized: true });
+  assert.deepEqual(verdict(looksRetried), { checks: "failing", retriedFailure: false, unconfirmedRetry: true, recognized: true });
   const plainFailure = rollUpChecks([ghRun("unit", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z")]);
   assert.equal(plainFailure.unconfirmedRetry, false);
   // A pending re-run keeps its zero completion time from counting as an instant.
@@ -276,7 +304,7 @@ test("a later commit status for the same context replaces an earlier one", () =>
 
 test("an unrecognised result reads as passing but is reported as unrecognised", () => {
   const rollup = rollUpChecks([run("future", "SOMETHING_NEW", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z")]);
-  assert.deepEqual(rollup, { checks: "passing", retriedFailure: false, unconfirmedRetry: false, recognized: false });
+  assert.deepEqual(verdict(rollup), { checks: "passing", retriedFailure: false, unconfirmedRetry: false, recognized: false });
 });
 
 test("no checks, or none in a shape we know, roll up to null", () => {

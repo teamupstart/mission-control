@@ -122,6 +122,15 @@ test("the failure stands whenever GitHub's answer is not a complete one about th
     reply([TITLE_NODES[0], null, TITLE_NODES[1]]);
     assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: TITLE_RUNS }), "failing");
   });
+  await t.test("a complete answer that leaves the reported failure out", async () => {
+    // Only the pass comes back: nothing shows the failure gh reported being retired, so it stands,
+    // and is read again on the next tick rather than remembered.
+    const pr = nextPr();
+    reply([TITLE_NODES[1]]);
+    assert.equal(await confirmRetriedChecks(dir, pr, { statusCheckRollup: TITLE_RUNS }), "failing");
+    reply(TITLE_NODES);
+    assert.equal(await confirmRetriedChecks(dir, pr, { statusCheckRollup: TITLE_RUNS }), "passing");
+  });
   await t.test("an answer with an unreadable node is read again rather than remembered", async () => {
     // Same pull request, head and gh rollup: the next tick must ask again, and can then clear.
     const pr = nextPr();

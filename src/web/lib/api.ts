@@ -6,6 +6,7 @@ import type { KindWorkflowDefaults } from "@shared/task.ts";
 import type { DatabaseBackupsSaveRequest } from "@shared/database-backups.ts";
 import type { IdleCachePlan, StorageView } from "@shared/storage-health.ts";
 import type { StorageLimitsConfigPatch } from "@shared/storage-limits.ts";
+import type { ReviewSnoozeDelayId, ReviewSnoozeMeanwhile } from "@shared/review-snooze.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -2101,6 +2102,14 @@ export const api = {
     approveFutureBundles = false,
   ) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
+  /**
+   * "Remind me later" on a `request_input` question: park it for `delay` and release the agent
+   * with what to do meanwhile. The daemon adds the delay to its own clock.
+   */
+  snoozeReview: (id: string, delay: ReviewSnoozeDelayId, meanwhile: ReviewSnoozeMeanwhile) =>
+    post(`/api/reviews/${encodeURIComponent(id)}/snooze`, { delay, meanwhile }),
+  /** Answer now: bring a snoozed question back before its time. */
+  wakeReview: (id: string) => post(`/api/reviews/${encodeURIComponent(id)}/wake`),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**

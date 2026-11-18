@@ -259,7 +259,7 @@ export interface AttentionInput {
 export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalKey[] {
   switch (item.kind) {
     case "session_reviews":
-      return item.reviews.map((review) => ({ itemId: reviewDismissalId(review.id), occurrence: QUESTION_OCCURRENCE }));
+      return item.reviews.map((review) => ({ itemId: reviewDismissalId(review.id), occurrence: questionOccurrence(review) }));
     case "ensemble_decision":
       return [{ itemId: item.id, occurrence: "" }];
     case "session_dialog": {
@@ -294,6 +294,16 @@ function reviewDismissalId(reviewId: string): string {
 
 /** A question never changes what it asks, so its id alone is the occurrence. */
 const QUESTION_OCCURRENCE = "";
+
+/**
+ * A question's occurrence: its id alone, until a "Remind me later" brings it back. The operator
+ * asked for that reminder, so a question they had hidden from the inbox shows again when it
+ * returns - and again on each later return, which is a new reminder each time.
+ */
+function questionOccurrence(review: ReviewItem): string {
+  const reminded = review.snooze?.remindedAt;
+  return reminded == null ? QUESTION_OCCURRENCE : occurrenceOf("reminder", String(reminded));
+}
 
 /**
  * A short, stable fingerprint of the parts that make a row the row it is.
@@ -381,7 +391,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   for (const review of input.reviews) {
     const session = sessionById.get(review.sessionId);
     if (!session || isSettling(session)) continue;
-    if (dismissed.get(reviewDismissalId(review.id)) === QUESTION_OCCURRENCE) {
+    if (dismissed.get(reviewDismissalId(review.id)) === questionOccurrence(review)) {
       represented.add(session.id);
       continue;
     }

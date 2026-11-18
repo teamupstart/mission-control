@@ -135,6 +135,8 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.submitAnswers`](../src/web/lib/api.ts#L1741) | `/api/sessions/:id/submit-options` |
 | [`api.handoff`](../src/web/lib/api.ts#L1754) | `/api/sessions/:id/handoff` |
 | [`api.resolveReview`](../src/web/lib/api.ts#L1764) | `/api/reviews/:id/resolve` |
+| [`api.snoozeReview`](../src/web/lib/api.ts#L2109) | `/api/reviews/:id/snooze` |
+| [`api.wakeReview`](../src/web/lib/api.ts#L2112) | `/api/reviews/:id/wake` |
 | [`api.dispatch`](../src/web/lib/api.ts#L1772) | `/api/tasks` |
 | [`api.startTourDemo`](../src/web/lib/api.ts#L1780) | `/api/tours/:id/dispatch` |
 | [`api.startTourPreview`](../src/web/lib/api.ts#L1786) | `/api/tours/:id/preview` |

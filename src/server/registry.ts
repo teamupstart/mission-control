@@ -7256,6 +7256,28 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Every review still unanswered, optionally narrowed to one session: the pending ones and the
+   * ones the operator snoozed. What the eviction halves settle, because a session that has gone
+   * can hear neither kind of answer.
+   */
+  outstandingReviews(sessionId?: string): ReviewItem[] {
+    const out: ReviewItem[] = [];
+    for (const r of this.reviews.values()) {
+      if (r.status !== "pending" && r.status !== "snoozed") continue;
+      if (sessionId !== undefined && r.sessionId !== sessionId) continue;
+      out.push(r);
+    }
+    return out;
+  }
+
+  /** Every question the operator chose "Remind me later" on that has not yet come back. */
+  snoozedReviews(): ReviewItem[] {
+    const out: ReviewItem[] = [];
+    for (const r of this.reviews.values()) if (r.status === "snoozed") out.push(r);
+    return out;
+  }
+
+  /**
    * Every review this daemon holds for one session, settled ones included.
    *
    * A read for the one caller that must see an ANSWER rather than an open question: a

@@ -40,6 +40,7 @@ import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
+import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -663,6 +664,15 @@ export const CreateReviewSchema = z
     body: z.string(),
     /** The questions the human answers: many for `plan-decisions`, exactly one for `input`. */
     decisions: z.array(PlanDecisionSchema).max(PLAN_DECISION_LIMITS.decisions).optional(),
+    /**
+     * Offer "Remind me later" on this question. Only the `request_input` tool sends it, because
+     * its agent is the one told how to carry on without an answer (`ReviewItem.snoozable`).
+     */
+    snoozable: z.boolean().optional(),
+  })
+  .refine((r) => r.kind === "input" || r.snoozable !== true, {
+    message: "only kind 'input' can offer Remind me later",
+    path: ["snoozable"],
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
@@ -1028,6 +1038,27 @@ export const ResolveReviewSchema = z.object({
   selections: resolution.action === "dismiss" ? null : resolution.selections,
 }));
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;
+
+/**
+ * "Remind me later" on a `request_input` question, from the dashboard.
+ *
+ * `delay` is an id, never a duration or a timestamp: the daemon owns the clock and adds the
+ * delay to its own time. `meanwhile` is what the agent is told to do until the question comes
+ * back, and defaults to its best judgment. It is honoured only on the first snooze of a
+ * question, because that is the only time the agent hears anything (`ReviewSnooze.mode`).
+ */
+export const SnoozeReviewSchema = z.object({
+  delay: z.enum(REVIEW_SNOOZE_DELAY_IDS),
+  meanwhile: z
+    .discriminatedUnion("mode", [
+      z.object({ mode: z.literal("judgment") }),
+      z.object({ mode: z.literal("hold") }),
+      z.object({ mode: z.literal("option"), optionId: z.string().min(1).max(64) }),
+    ])
+    .optional()
+    .default({ mode: "judgment" }),
+});
+export type SnoozeReview = z.infer<typeof SnoozeReviewSchema>;
 
 /** MCP `report_status`: update the session's activity line. */
 export const StatusSchema = z.object({

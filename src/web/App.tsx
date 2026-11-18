@@ -119,6 +119,7 @@ import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
+import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
   chordFromEvent,
@@ -2778,6 +2779,9 @@ export function App(): React.JSX.Element {
     const live = new Set(sessions.map((s) => s.id));
     return pendingReviews.filter((r) => live.has(r.sessionId));
   }, [pendingReviews, sessions]);
+  // Questions parked with "Remind me later", for the inbox's Snoozed section and the topbar's
+  // `snoozed` segment - one list, so the figure and what opens under it cannot disagree.
+  const snoozed = useMemo(() => snoozedQuestions(reviews, sessions), [reviews, sessions]);
 
   // Live schedule names by id, so a generated task's provenance mark reads "Scheduled by
   // <name>" without every renderer re-deriving it. Archived schedules leave the live
@@ -4511,6 +4515,7 @@ export function App(): React.JSX.Element {
           attention={counts.attention}
           working={counts.working}
           inbox={attention.total}
+          snoozed={snoozed.length}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
           onOpenInbox={() => setInboxOpen(true)}
           didNotStart={launchFailureGroups.length}
@@ -5157,6 +5162,7 @@ export function App(): React.JSX.Element {
               {inboxOpen && (
                 <AttentionInbox
                   fold={attention}
+                  snoozed={snoozed}
                   onDismiss={attentionDismissals.dismiss}
                   onClose={() => setInboxOpen(false)}
                   onOpenEnsemble={openEnsembleRun}

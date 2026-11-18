@@ -179,6 +179,7 @@ import {
   ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
+  SnoozeReviewSchema,
   ArchiveScheduleSchema,
   CreateScheduleSchema,
   CreateResidentProfileSchema,
@@ -319,7 +320,8 @@ import type {
   Task,
   WorkItem,
 } from "@shared/types.ts";
-import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
+import { ReviewResolutionError, SnoozeActorRefusal, type ReviewManager } from "./reviews.ts";
+import { reviewSnoozeDelay } from "@shared/review-snooze.ts";
 import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
@@ -5122,7 +5124,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
-    const { env, sessionId, cwd, kind, title, body, decisions } = parsed.data;
+    const { env, sessionId, cwd, kind, title, body, decisions, snoozable } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
     try {
@@ -5166,7 +5168,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
         return c.json({ id: review.id, sessionId: session.id });
       }
-      const review = reviews.create(session.id, kind, title, body, decisions ?? null);
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null, { snoozable });
       return c.json({ id: review.id, sessionId: session.id });
     } catch (error) { return planFailure(c, error); }
   }
@@ -6025,6 +6027,53 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (error instanceof PlanStoreError) return planFailure(c, error);
       throw error;
     }
+  });
+
+  // Who is asking to snooze or wake a question: the operator, a session acting through session
+  // control, or null for a caller that is neither. "Human" is never the default. It is granted
+  // only when the request carries none of the marks of an agent - the machine token, a signed
+  // agent credential, an agent-labelled operation, a page from another origin - which is the
+  // same test that guards the operator's session-control grant (`sessionControlCallerRefusal`).
+  const reviewOperatorActor = (c: Context): ReviewActor | null =>
+    sessionControlActor(c.req.raw) ?? (sessionControlCallerRefusal(c) === null ? "human" : null);
+  const ONLY_THE_OPERATOR = "Only the operator can choose Remind me later";
+
+  // "Remind me later" on a request_input question. The operator's alone: a session driving
+  // another through session control may answer its questions, but parking one tells its agent
+  // to carry on without a person, which is not a call one agent makes for another. Session
+  // control offers no snooze command today; the manager refuses any other actor regardless.
+  app.post("/api/reviews/:id/snooze", async (c) => {
+    const parsed = await parseBody(c, SnoozeReviewSchema);
+    if (!parsed.ok) return parsed.res;
+    const by = reviewOperatorActor(c);
+    if (!by) return c.json({ error: ONLY_THE_OPERATOR }, 403);
+    try {
+      const updated = reviews.snooze(
+        c.req.param("id"),
+        reviewSnoozeDelay(parsed.data.delay).ms,
+        parsed.data.meanwhile,
+        Date.now(),
+        by,
+      );
+      if (!updated) return c.json({ error: "no such review" }, 404);
+      return c.json(updated);
+    } catch (error) {
+      if (error instanceof SnoozeActorRefusal) return c.json({ error: error.message }, 403);
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+  });
+
+  // Answer now: bring a snoozed question back to the operator before its time. The operator's
+  // too, by the same test: it reopens a question the operator chose to set aside.
+  app.post("/api/reviews/:id/wake", (c) => {
+    if (reviewOperatorActor(c) !== "human") return c.json({ error: "Only the operator can bring back a snoozed question" }, 403);
+    const current = registry.getReview(c.req.param("id"));
+    if (!current) return c.json({ error: "no such review" }, 404);
+    if (current.status !== "snoozed") return c.json({ error: "This question is not snoozed" }, 409);
+    const updated = reviews.wake(current.id);
+    if (!updated) return c.json({ error: "This question is not snoozed" }, 409);
+    return c.json(updated);
   });
 
   // --- session actions (localhost only) ---

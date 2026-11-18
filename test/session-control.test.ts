@@ -1037,3 +1037,25 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
   // The refused stale clear is logged too, like every delegated action.
   assert.deepEqual(actions.slice(-3), ["flag_blocker_reply", "clear_blocker", "clear_blocker"]);
 });
+
+test("a granted controller cannot choose Remind me later for the operator", async () => {
+  const f = fixture(); await f.grant(true);
+  const question = "Which linter should this repo use?";
+  const review = f.reviews.create(f.target.id, "input", question, question, null, { snoozable: true });
+
+  // Session control has no snooze command: the controller's only reach is refused outright.
+  const refused = await f.act({ action: "snooze_review", reviewId: review.id, delay: "1h" } as unknown as SessionControlAction);
+  assert.equal(refused.status, 400);
+  // Nor can a delegated resolution be bent into one: its action is the resolve route's, which
+  // answers, approves, rejects or dismisses and never parks.
+  const bent = await f.act({
+    action: "resolve_review", reviewId: review.id, resolution: { action: "snooze", response: null, selections: null, by: "human" },
+  } as unknown as SessionControlAction);
+  assert.equal(bent.status, 400);
+  assert.equal(f.registry.getReview(review.id)?.status, "pending", "the question stays open for the operator");
+
+  // The operator's own route still parks it.
+  const parked = await f.request(`/api/reviews/${review.id}/snooze`, { delay: "1h" }, f.headers);
+  assert.equal(parked.status, 200);
+  assert.equal(f.registry.getReview(review.id)?.status, "snoozed");
+});

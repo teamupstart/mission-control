@@ -308,7 +308,9 @@ Atlassian CLI, without installing, signing in or reviewing on its own. **CodeRab
 the path/source and minimum version 0.9.1 and offers `brew install --cask coderabbit` through
 **Run in a terminal**. **CodeRabbit CLI sign-in** reads the same `coderabbit auth status --agent`
 a workflow review reads, and while the CLI is not signed in its **Run in a terminal** opens
-`coderabbit auth login` for the same coderabbit binary the daemon runs, with `HOME` set to the
+`coderabbit auth login` for the same coderabbit binary the daemon runs, offered only once the CLI
+is installed and at least 0.9.1 (before that the row says which step comes first and links the
+CodeRabbit CLI guide), with `HOME` set to the
 daemon's effective home so the credentials land where the daemon reads them. After signing in,
 press Re-check. If `coderabbit --version` or `coderabbit auth status` itself fails or answers
 unreadably, the row reports **Unknown** with what failed and links the CodeRabbit CLI guide

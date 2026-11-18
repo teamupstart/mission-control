@@ -502,9 +502,12 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   assert.deepEqual(await probe("coderabbit-cli"), { state: "satisfied", evidence: "/tools/coderabbit (CodeRabbit 0.9.1)" });
   assert.deepEqual(await probe("coderabbit-auth"), { state: "satisfied", evidence: "Stored CodeRabbit authentication is ready" });
 
-  const absent = await probe("coderabbit-auth", { resolveBinPath: async () => null, executableDiagnostic: async () => null });
-  assert.equal(absent.state, "needs-setup");
-  assert.match("why" in absent ? absent.why : "", /Install the CodeRabbit CLI first/);
+  // No sign-in is offered before the CLI is usable: the route would refuse it while the CLI is
+  // missing, and an obsolete CLI is not one to sign in with. The row carries no command.
+  const absent = await probed("coderabbit-auth", { resolveBinPath: async () => null, executableDiagnostic: async () => null });
+  assert.equal(absent.status.state, "needs-setup");
+  assert.match("why" in absent.status ? absent.status.why : "", /Install the CodeRabbit CLI first/);
+  assert.deepEqual(absent.remedy, CODERABBIT_CHECK_REMEDY);
 
   const signedOut = (argv: readonly string[]) => stubRun({
     stdout: argv[0] === "--version" ? "0.9.1" : JSON.stringify({ type: "status", authenticated: false }),
@@ -584,8 +587,9 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   // A missing CLI still gets the Homebrew install.
   assert.equal((await probed("coderabbit-cli", { resolveBinPath: async () => null, executableDiagnostic: async () => null })).remedy, undefined);
 
-  const old = await probe("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
-  assert.match("why" in old ? old.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);
+  const old = await probed("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
+  assert.match("why" in old.status ? old.status.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);
+  assert.deepEqual(old.remedy, CODERABBIT_CHECK_REMEDY);
 });
 
 test("the acli sign-in row names the missing install, the missing login, and the wrong site", async () => {

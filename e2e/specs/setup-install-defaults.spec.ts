@@ -263,9 +263,12 @@ test.describe("with the CodeRabbit CLI not installed", () => {
     await expect(cli.locator(".setup-command code")).toHaveText("brew install --cask coderabbit");
     await expect(cli.getByRole("link", { name: "Install and authenticate CodeRabbit" })).toHaveCount(0);
     await expect(cli.getByRole("button", { name: "Run in a terminal" })).toBeVisible();
-    await expect(setupRow(page, "dependency-coderabbit-auth")).toContainText(
-      "Install the CodeRabbit CLI first, press Re-check, then sign in.",
-    );
+    const auth = setupRow(page, "dependency-coderabbit-auth");
+    await expect(auth).toContainText("Install the CodeRabbit CLI first (the row above), press Re-check, then sign in.");
+    // No sign-in before the CLI exists: no command and no Run button, just the CLI guide.
+    await expect(auth).not.toContainText("coderabbit auth login");
+    await expect(auth.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+    await expect(auth.getByRole("link", { name: "Open the CodeRabbit CLI guide" })).toBeVisible();
     await shoot(page, "coderabbit-install");
   });
 });

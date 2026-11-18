@@ -414,13 +414,22 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupPro
  */
 async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
   const installed = await present("coderabbit", deps, "coderabbit");
+  // Sign-in is offered only once the CLI passes the version check. Before that the row says
+  // which prerequisite is missing and carries no command, rather than a sign-in the route
+  // would refuse (missing) or that would run an unsupported CLI (obsolete).
   if (installed.state !== "satisfied") {
-    return { state: "needs-setup", why: "Install the CodeRabbit CLI first, press Re-check, then sign in.", evidence: null };
+    return {
+      status: { state: "needs-setup", why: "Install the CodeRabbit CLI first (the row above), press Re-check, then sign in.", evidence: null },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
   }
   const execute = (args: string[]) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV);
   const version = await codeRabbitVersionReading(execute);
   if (version.state === "obsolete") {
-    return { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence };
+    return {
+      status: { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
   }
   if (version.state === "unreadable") {
     return {

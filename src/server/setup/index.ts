@@ -14,6 +14,7 @@ import {
   CMUX_APP_REMEDY,
   CMUX_SOCKET_CONTROL_REMEDY,
   ENVIRONMENT_ROW_METADATA,
+  CODERABBIT_CHECK_REMEDY,
   HERDR_SERVER_REMEDY,
   INDEXED_REPOSITORIES_INFO,
   SETUP_DEPENDENCY_DISPLAY_ORDER,
@@ -375,7 +376,7 @@ function configuredAcliSites(): string[] {
 }
 
 /** Installed and new enough. Sign-in is `coderabbit-auth`'s question, the way acli splits it. */
-async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
+async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
   const status = await present("coderabbit", deps, "coderabbit");
   if (status.state !== "satisfied") return status;
   const reading = await codeRabbitVersionReading((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV));
@@ -391,7 +392,15 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
         evidence: status.evidence,
       };
     case "unreadable":
-      return { state: "unknown", why: "The CodeRabbit CLI did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer.", evidence: status.evidence };
+      return {
+        status: {
+          state: "unknown",
+          why: `The CodeRabbit CLI at ${status.evidence} did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run \`${status.evidence} --version\` to see why.`,
+          evidence: status.evidence,
+        },
+        // Not the cask: a second install would leave this binary selected and still silent.
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
   }
 }
 
@@ -399,7 +408,7 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
  * The same `coderabbit auth status --agent` reading a workflow review makes before it runs,
  * so this row and a review can never disagree about whether the CLI is signed in.
  */
-async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
+async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | SetupProbeResult> {
   const installed = await present("coderabbit", deps, "coderabbit");
   if (installed.state !== "satisfied") {
     return { state: "needs-setup", why: "Install the CodeRabbit CLI first, press Re-check, then sign in.", evidence: null };
@@ -410,7 +419,10 @@ async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
     return { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence };
   }
   if (version.state === "unreadable") {
-    return { state: "unknown", why: "The CodeRabbit CLI did not report a readable version. Press Re-check once it answers, then sign in.", evidence: installed.evidence };
+    return {
+      status: { state: "unknown", why: "The CodeRabbit CLI did not report a readable version, so its sign-in was not checked. Press Re-check once it answers.", evidence: installed.evidence },
+      remedy: CODERABBIT_CHECK_REMEDY,
+    };
   }
   const reading = await codeRabbitAuthReading(execute);
   switch (reading.state) {
@@ -419,8 +431,16 @@ async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
     case "signed-out":
       return { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: installed.evidence };
     case "unverified":
-      // The probe could not tell. Say so in its own words rather than claiming a sign-out.
-      return { state: "unknown", why: `${reading.problem}.`, evidence: installed.evidence };
+      // The probe could not tell. Keep its own diagnostic, but neither advise nor offer a
+      // login for a sign-in state that was never read: that is for a confirmed sign-out.
+      return {
+        status: {
+          state: "unknown",
+          why: `${reading.diagnostic}. Press Re-check; if it persists, run \`${installed.evidence} auth status\` to see why.`,
+          evidence: installed.evidence,
+        },
+        remedy: CODERABBIT_CHECK_REMEDY,
+      };
   }
 }
 

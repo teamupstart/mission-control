@@ -258,6 +258,20 @@ export const CMUX_APP_REMEDY: SetupRemedy = {
 };
 
 /**
+ * Check the CodeRabbit CLI Mission Control selected, offered when a CodeRabbit reading was
+ * inconclusive: `--version` or `auth status` failed, timed out or answered unreadably.
+ *
+ * Stands in for both catalog remedies on that reading. Installing would add a second copy
+ * without changing the binary that did not answer, and signing in is advice about a state
+ * nobody read. The row's text says what failed; this links the CLI's own guide.
+ */
+export const CODERABBIT_CHECK_REMEDY: SetupRemedy = {
+  kind: "link",
+  url: "https://docs.coderabbit.ai/cli",
+  label: "Open the CodeRabbit CLI guide",
+};
+
+/**
  * Let Mission Control's daemon drive cmux, offered while the socket is answering and
  * refusing.
  *

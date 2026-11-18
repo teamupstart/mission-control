@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -138,7 +138,9 @@ test.describe("with iTerm2 as the default terminal and its Apple Events recorded
     // One window, in iTerm2 alone. cmux is usable in this fixture, so an empty cmux record is
     // proof the launch never reached it, not a refusal.
     expect(calls().filter((call) => call.script.includes("create window"))).toHaveLength(1);
-    expect(recordsIn(daemon.recordDir, (file) => file.startsWith("cmux-"))).toEqual([]);
+    // Any cmux record file at all fails, readable or not: `recordsIn` skips a record still
+    // being written, and a launch that reached cmux must not pass by being caught mid-write.
+    expect(readdirSync(daemon.recordDir).filter((file) => file.startsWith("cmux-"))).toEqual([]);
   });
 });
 
@@ -238,11 +240,14 @@ test("a broken CodeRabbit sign-in check reads Unknown with its reason, not signe
   const auth = setupRow(page, "dependency-coderabbit-auth");
   await expectRowStatus(page, "dependency-coderabbit-cli", "Ready");
   await expectRowStatus(page, "dependency-coderabbit-auth", "Unknown");
-  await expect(auth).toContainText(
-    "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME.",
-  );
-  // Not claimed as a sign-out, and the probe's stderr never reaches the page.
+  await expect(auth).toContainText("CodeRabbit authentication is unavailable. Press Re-check; if it persists, run");
+  await expect(auth).toContainText("auth status` to see why.");
+  // Not claimed as a sign-out, no login advised or offered for a state nobody read, and the
+  // probe's stderr never reaches the page.
   await expect(auth).not.toContainText("installed but not signed in");
+  await expect(auth).not.toContainText("auth login");
+  await expect(auth.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+  await expect(auth.getByRole("link", { name: "Open the CodeRabbit CLI guide" })).toHaveAttribute("href", "https://docs.coderabbit.ai/cli");
   await expect(auth).not.toContainText("auth status crashed");
   await auth.scrollIntoViewIfNeeded();
   await shoot(page, "coderabbit-auth-probe-unknown");

@@ -309,9 +309,13 @@ the path/source and minimum version 0.9.1 and offers `brew install --cask codera
 **Run in a terminal**. **CodeRabbit CLI sign-in** reads the same `coderabbit auth status --agent`
 a workflow review reads, and while the CLI is not signed in its **Run in a terminal** opens
 `coderabbit auth login` for the same coderabbit binary the daemon runs, with `HOME` set to the
-daemon's effective home so the credentials land where the daemon reads them. If the probe itself
-fails or answers unreadably, the row reports **Unknown** with the probe's reason rather than
-asking you to sign in. After signing in, press Re-check. Managed invocations disable
+daemon's effective home so the credentials land where the daemon reads them. After signing in,
+press Re-check. If `coderabbit --version` or `coderabbit auth status` itself fails or answers
+unreadably, the row reports **Unknown** with what failed and links the CodeRabbit CLI guide
+instead of offering an install or a sign-in, because neither repairs a CLI that did not answer.
+A version that was read and is older than 0.9.1 names the selected binary, since the locator
+prefers a per-user install over Homebrew; upgrade it or point `MISSION_CODERABBIT_BIN` at a
+newer CLI. Managed invocations disable
 auto-update and never authorize usage credits. YAML must explicitly enable each repository;
 installation and login alone do not enable review. YAML-enabled blocks link directly back to
 Setup. See [workflow configuration and findings](workflows.md#local-coderabbit-command).

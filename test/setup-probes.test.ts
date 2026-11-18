@@ -9,6 +9,7 @@ import type { TerminalTargetView } from "../src/shared/terminal.ts";
 import {
   CMUX_APP_REMEDY,
   CMUX_SOCKET_CONTROL_REMEDY,
+  CODERABBIT_CHECK_REMEDY,
   HERDR_SERVER_REMEDY,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
@@ -514,43 +515,60 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   const loggedOut = await probe("coderabbit-auth", { runCommand: async (_bin, argv) => signedOut(argv) });
   assert.deepEqual(loggedOut, { state: "needs-setup", why: "The CodeRabbit CLI is installed but not signed in.", evidence: "/tools/coderabbit" });
 
-  // A probe that cannot tell is not a sign-out: it keeps its own message and never says
-  // "not signed in", which would send the operator through a login that repairs nothing.
+  // A probe that cannot tell is not a sign-out. It keeps its own diagnostic, but neither
+  // advises nor offers a login for a sign-in state nobody read: the remedy becomes the CLI
+  // guide, never the sign-in command or a second install.
+  const inconclusive = (why: string) => ({
+    status: { state: "unknown", why, evidence: "/tools/coderabbit" },
+    remedy: CODERABBIT_CHECK_REMEDY,
+  });
+  const UNAVAILABLE = "CodeRabbit authentication is unavailable. Press Re-check; if it persists, run `/tools/coderabbit auth status` to see why.";
+  const UNCONFIRMED = "CodeRabbit stored authentication could not be confirmed. Press Re-check; if it persists, run `/tools/coderabbit auth status` to see why.";
   const answering = (auth: { stdout: string; code: number }) => async (_bin: string, argv: readonly string[]) =>
     argv[0] === "--version" ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 }) : stubRun({ ...auth, stderr: "boom" });
   for (const [label, auth, why] of [
-    ["a failing command", { stdout: "", code: 1 }, "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME."],
-    ["an unparseable answer", { stdout: "not json", code: 0 }, "CodeRabbit stored authentication could not be confirmed. Run coderabbit auth login using the daemon's effective HOME."],
-    ["an error event", { stdout: JSON.stringify({ type: "error", message: "rate limited" }), code: 0 }, "CodeRabbit stored authentication could not be confirmed. Run coderabbit auth login using the daemon's effective HOME."],
+    ["a failing command", { stdout: "", code: 1 }, UNAVAILABLE],
+    ["an unparseable answer", { stdout: "not json", code: 0 }, UNCONFIRMED],
+    ["an error event", { stdout: JSON.stringify({ type: "error", message: "rate limited" }), code: 0 }, UNCONFIRMED],
   ] as const) {
-    assert.deepEqual(await probe("coderabbit-auth", { runCommand: answering(auth) }), { state: "unknown", why, evidence: "/tools/coderabbit" }, label);
+    const reading = await probed("coderabbit-auth", { runCommand: answering(auth) });
+    assert.deepEqual(reading, inconclusive(why), label);
+    assert.doesNotMatch(why, /auth login/, label);
   }
+  // A confirmed sign-out keeps the catalog's sign-in action.
+  assert.equal((await probed("coderabbit-auth", { runCommand: async (_bin, argv) => signedOut(argv) })).remedy, undefined);
   // Isolates `outcomeUnknown`: the same clean, signed-in answer is Ready without the flag and
   // Unknown with it, so the test fails if the probe stops honouring a timeout.
   const signedInAnswer = (outcomeUnknown: boolean) => async (_bin: string, argv: readonly string[]) => argv[0] === "--version"
     ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 })
     : { ...stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 }), outcomeUnknown };
   assert.equal((await probe("coderabbit-auth", { runCommand: signedInAnswer(false) })).state, "satisfied");
-  const timedOut = await probe("coderabbit-auth", { runCommand: signedInAnswer(true) });
-  assert.deepEqual(timedOut, {
-    state: "unknown",
-    why: "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME.",
-    evidence: "/tools/coderabbit",
-  });
+  assert.deepEqual(await probed("coderabbit-auth", { runCommand: signedInAnswer(true) }), inconclusive(UNAVAILABLE));
   // An explicit action_required is the CLI saying it needs a login.
   const actionRequired = await probe("coderabbit-auth", { runCommand: answering({ stdout: JSON.stringify({ type: "action_required" }), code: 0 }) });
   assert.equal(actionRequired.state, "needs-setup");
 
-  // A version that could not be read is not an old version: neither row recommends an upgrade.
+  // A version that could not be read is not an old version, and not a reason to install a
+  // second copy or to sign in: both rows read Unknown and offer the CLI guide.
   const versionTimesOut = async (_bin: string, argv: readonly string[]) => argv[0] === "--version"
     ? { ...stubRun({ stdout: "0.9.1", stderr: "", code: 0 }), outcomeUnknown: true }
     : stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 });
-  const unreadableCli = await probe("coderabbit-cli", { runCommand: versionTimesOut });
-  assert.equal(unreadableCli.state, "unknown");
-  assert.doesNotMatch("why" in unreadableCli ? unreadableCli.why : "", /older than|[Uu]pgrade/);
-  const unreadableAuth = await probe("coderabbit-auth", { runCommand: versionTimesOut });
-  assert.equal(unreadableAuth.state, "unknown");
-  assert.doesNotMatch("why" in unreadableAuth ? unreadableAuth.why : "", /[Uu]pgrade/);
+  assert.deepEqual(await probed("coderabbit-cli", { runCommand: versionTimesOut }), {
+    status: {
+      state: "unknown",
+      why: "The CodeRabbit CLI at /tools/coderabbit did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer. Press Re-check; if it persists, run `/tools/coderabbit --version` to see why.",
+      evidence: "/tools/coderabbit",
+    },
+    remedy: CODERABBIT_CHECK_REMEDY,
+  });
+  assert.deepEqual(await probed("coderabbit-auth", { runCommand: versionTimesOut }), {
+    status: {
+      state: "unknown",
+      why: "The CodeRabbit CLI did not report a readable version, so its sign-in was not checked. Press Re-check once it answers.",
+      evidence: "/tools/coderabbit",
+    },
+    remedy: CODERABBIT_CHECK_REMEDY,
+  });
   // A confirmed old version names the binary the daemon selected, since installing the cask
   // elsewhere would leave a per-user install selected.
   const oldCli = await probe("coderabbit-cli", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });

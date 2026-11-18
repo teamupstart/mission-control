@@ -49,8 +49,11 @@ export async function codeRabbitReadiness(execute: (argv: string[]) => Promise<R
   return await codeRabbitVersionProblem(execute, onVersion) ?? await codeRabbitAuthProblem(execute);
 }
 
-const AUTH_UNAVAILABLE = "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME";
-const AUTH_UNCONFIRMED = "CodeRabbit stored authentication could not be confirmed. Run coderabbit auth login using the daemon's effective HOME";
+const AUTH_UNAVAILABLE_DIAGNOSTIC = "CodeRabbit authentication is unavailable";
+const AUTH_UNCONFIRMED_DIAGNOSTIC = "CodeRabbit stored authentication could not be confirmed";
+const AUTH_LOGIN_ADVICE = "Run coderabbit auth login using the daemon's effective HOME";
+const AUTH_UNAVAILABLE = `${AUTH_UNAVAILABLE_DIAGNOSTIC}. ${AUTH_LOGIN_ADVICE}`;
+const AUTH_UNCONFIRMED = `${AUTH_UNCONFIRMED_DIAGNOSTIC}. ${AUTH_LOGIN_ADVICE}`;
 
 /**
  * What `coderabbit auth status --agent` says, kept three ways apart.
@@ -61,23 +64,30 @@ const AUTH_UNCONFIRMED = "CodeRabbit stored authentication could not be confirme
  * probe could not tell, and telling the operator they are signed out would send them through
  * a login that repairs nothing. Never carries account identifiers or arbitrary stderr.
  */
+/**
+ * `problem` is the workflow gate's full message, login advice included. `diagnostic` is the
+ * same reading without that advice, for a surface that must not tell an operator to log in
+ * when the sign-in state was never read.
+ */
 export type CodeRabbitAuthReading =
   | { state: "ready" }
-  | { state: "signed-out"; problem: string }
-  | { state: "unverified"; problem: string };
+  | { state: "signed-out"; problem: string; diagnostic: string }
+  | { state: "unverified"; problem: string; diagnostic: string };
 
 export async function codeRabbitAuthReading(execute: (argv: string[]) => Promise<RunResult>): Promise<CodeRabbitAuthReading> {
   const auth = await execute(["auth", "status", "--agent"]);
-  if (auth.code !== 0 || auth.outcomeUnknown || auth.overflowed) return { state: "unverified", problem: AUTH_UNAVAILABLE };
+  const unavailable = { problem: AUTH_UNAVAILABLE, diagnostic: AUTH_UNAVAILABLE_DIAGNOSTIC };
+  const unconfirmed = { problem: AUTH_UNCONFIRMED, diagnostic: AUTH_UNCONFIRMED_DIAGNOSTIC };
+  if (auth.code !== 0 || auth.outcomeUnknown || auth.overflowed) return { state: "unverified", ...unavailable };
   let events: Record<string, unknown>[];
   try {
     events = auth.stdout.trim().split(/\r?\n/).map((s) => JSON.parse(s) as Record<string, unknown>);
-  } catch { return { state: "unverified", problem: AUTH_UNCONFIRMED }; }
-  if (events.some((e) => e?.type === "error")) return { state: "unverified", problem: AUTH_UNCONFIRMED };
+  } catch { return { state: "unverified", ...unconfirmed }; }
+  if (events.some((e) => e?.type === "error")) return { state: "unverified", ...unconfirmed };
   const signedIn = events.some((e) => e?.type === "status" && e.authenticated === true);
   if (signedIn && !events.some((e) => e?.type === "action_required")) return { state: "ready" };
   const signedOut = events.some((e) => e?.type === "action_required" || (e?.type === "status" && e.authenticated === false));
-  return signedOut ? { state: "signed-out", problem: AUTH_UNCONFIRMED } : { state: "unverified", problem: AUTH_UNCONFIRMED };
+  return signedOut ? { state: "signed-out", ...unconfirmed } : { state: "unverified", ...unconfirmed };
 }
 
 /** The stored-authentication gate alone, for a CLI already known to be compatible. */

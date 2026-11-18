@@ -761,6 +761,7 @@ const schedules = new ScheduleManager({
   },
 });
 let stopSchedules = () => {};
+let stopSnoozeClock = () => {};
 
 // The transient Keep Awake owner. Constructed before the app so the routes never see a
 // daemon without it, and SEEDED into the registry before the server accepts traffic so
@@ -909,9 +910,13 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // own - are sent too, once the first completed sweep has put every live session back in the
   // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
   adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
-  reviews.startContinuationRecovery((review, text) =>
-    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
+  reviews.startContinuationRecovery((review, text, kind) =>
+    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text, kind).ok,
   );
+  // Snoozed questions come back on time from here, including any that fell due while the
+  // daemon was down. After the port, like every other writer, and after continuation recovery,
+  // so a question woken now is one whose earlier answers have already been handed on.
+  stopSnoozeClock = reviews.startSnoozeClock();
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
@@ -1102,6 +1107,7 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
+  stopSnoozeClock();
   await stoppingResidentLoop;
   await residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to

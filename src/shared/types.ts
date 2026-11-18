@@ -2872,6 +2872,12 @@ export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
  * operator declining to choose and the agent no longer being there to hear a choice are
  * different facts, and only the first is evidence of intent (see
  * `loadResolvedWorkflowReviews`, which reads none of it).
+ *
+ * `snoozed` is the one status that is NOT terminal. The operator chose "Remind me later" on a
+ * `request_input` question: the agent's blocking call has returned and it is carrying on, and
+ * the question is parked off the queue until `ReviewItem.snooze.until`, when the daemon puts it
+ * back to `pending`. It is outstanding, never settled, so every reader that asks "is this
+ * waiting on a person right now" keeps reading `pending` and leaves it out by construction.
  */
 export type ReviewStatus =
   | "pending"
@@ -2879,7 +2885,42 @@ export type ReviewStatus =
   | "rejected"
   | "answered"
   | "dismissed"
-  | "orphaned";
+  | "orphaned"
+  | "snoozed";
+
+/**
+ * What the operator told the agent to do while a snoozed question is parked. Persisted in
+ * `reviews.snooze_mode`, so append-only.
+ *
+ * - `judgment`: carry on with its best judgment, the recommended option where one was offered.
+ * - `option`: carry on with one offered option as a provisional answer (`ReviewSnooze.optionId`).
+ * - `hold`: do everything else first and leave the work that depends on the answer untouched.
+ */
+export const REVIEW_SNOOZE_MODES = ["judgment", "option", "hold"] as const;
+export type ReviewSnoozeMode = (typeof REVIEW_SNOOZE_MODES)[number];
+
+/**
+ * "Remind me later" on one `request_input` question.
+ *
+ * Kept after the question comes back, so the returned card can say it is a reminder and what
+ * the agent was told meanwhile, and so the answer reaches the agent as the answer to a question
+ * it carried on without.
+ */
+export interface ReviewSnooze {
+  /** When the operator last chose "Remind me later" on it (epoch ms). */
+  at: number;
+  /** When it comes back to the operator (epoch ms). */
+  until: number;
+  /**
+   * What the agent was told to do meanwhile. Fixed at the first snooze: that is the only time
+   * the agent is told anything, so a later snooze only moves `until`.
+   */
+  mode: ReviewSnoozeMode;
+  /** The offered option the agent carries on with, for `mode: "option"`. */
+  optionId: string | null;
+  /** When it last came back to the operator, or null while it has not yet. */
+  remindedAt: number | null;
+}
 
 /**
  * Who settled a review. Persisted as text in `reviews.resolved_by`, so these spellings
@@ -2994,6 +3035,16 @@ export interface ReviewItem {
    * "approve all future bundles for this task". Derived by the daemon, never stored on the row.
    */
   standingApprovalEligible?: boolean;
+  /**
+   * The question offers "Remind me later": it was asked through the `request_input` tool, whose
+   * agent is told how to carry on without the answer. Other `input` reviews act on the
+   * selection itself (a product issue confirmation, a workflow Command, a resident's
+   * instruction change), so parking them would leave something waiting that nobody told to
+   * carry on. Persisted (`reviews.snoozable`); absent means no.
+   */
+  snoozable?: boolean;
+  /** The operator's "Remind me later", while snoozed and after it comes back. Absent if never. */
+  snooze?: ReviewSnooze | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }

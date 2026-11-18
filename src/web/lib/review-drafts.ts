@@ -198,19 +198,28 @@ export function clearReviewDraft(reviewId: string): void {
   notify(reviewId);
 }
 
+/** Still open to the operator: pending now, or snoozed and coming back. */
+function keepsDraft(review: { status: string }): boolean {
+  return review.status === "pending" || review.status === "snoozed";
+}
+
 /**
  * Forget the drafts a server event says have nothing left to come back to: a review the
  * daemon now reports as answered, approved, rejected or dismissed - by Foreman, another tab,
  * or a standing approval - or one it removed outright. The event stream calls this for every
  * event, so the rule lives beside the store it protects rather than spread across its cases.
+ *
+ * A SNOOZED review keeps its draft. It is parked, not settled: it comes back to the operator
+ * later, and whatever they had typed or picked before choosing "Remind me later" should be
+ * there when it does.
  */
 export function settleReviewDrafts(msg: ServerEvent): void {
   switch (msg.type) {
     case "snapshot":
-      for (const r of msg.reviews) if (r.status !== "pending") clearReviewDraft(r.id);
+      for (const r of msg.reviews) if (!keepsDraft(r)) clearReviewDraft(r.id);
       break;
     case "review_upsert":
-      if (msg.review.status !== "pending") clearReviewDraft(msg.review.id);
+      if (!keepsDraft(msg.review)) clearReviewDraft(msg.review.id);
       break;
     case "review_remove":
       clearReviewDraft(msg.id);

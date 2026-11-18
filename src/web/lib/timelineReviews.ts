@@ -91,6 +91,16 @@ export function timelineReviewsFor(
   // Stored first so the live copy overwrites it, not the other way round: a review in both is
   // the same row, and the live one is never older.
   for (const r of stored) if (keep(r)) byId.set(r.id, r);
-  for (const r of live) if (keep(r)) byId.set(r.id, r);
+  for (const r of live) if (keep(r) || isSnoozedHere(r, sessionId)) byId.set(r.id, r);
   return [...byId.values()];
+}
+
+/**
+ * A question this session's operator chose "Remind me later" on. It is not an answer, but it
+ * is where the answer will go, and the agent carried on because of it, so the conversation
+ * shows it as a snoozed card (`SnoozedReviewCard`). Live only: the parked row is always in the
+ * registry, and the durable fetch returns settled answers alone.
+ */
+function isSnoozedHere(review: ReviewItem, sessionId: string): boolean {
+  return review.sessionId === sessionId && review.status === "snoozed";
 }

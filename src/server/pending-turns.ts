@@ -1,6 +1,6 @@
 import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
-import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
+import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition, TurnOrigin } from "@shared/types.ts";
 import {
   MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
   assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
@@ -8,12 +8,15 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
+import type { ReviewContinuationKind } from "./reviews.ts";
 import {
   claimNextPendingTurn,
   createPendingTurn,
   expeditePendingTurn,
   recordPendingTurnInterrupt,
   createReviewContinuationPendingTurn,
+  createSnoozeInstructionPendingTurn,
+  SNOOZE_INSTRUCTION_TURN_PREFIX,
   deleteClaimedPendingTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -33,7 +36,10 @@ import {
   confirmHumanEcho,
   expectHumanEcho,
   markHumanEchoCaptured,
+  recordInjection,
   releaseHumanEcho,
+  releaseInjection,
+  reserveInjection,
   type HumanEchoTicket,
 } from "./injections.ts";
 import { unref } from "./util/timers.ts";
@@ -131,6 +137,17 @@ interface ArmedDrain {
  * editable row on Mission Control's side of the line and makes every ambiguous terminal
  * outcome an explicit human decision instead of an automatic duplicate.
  */
+/**
+ * Who WROTE a queued row, when it was not the operator. Every row is the operator's words
+ * except a snoozed question's "carry on" instruction, which the daemon composed. That one is
+ * reserved and recorded as `harness` authorship like any other daemon-typed text, so the
+ * agent's prompt hook does not take it for the human's Goal and the scout trail does not
+ * archive it as something the operator said.
+ */
+function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
+  return turn.id.startsWith(SNOOZE_INSTRUCTION_TURN_PREFIX) ? "harness" : null;
+}
+
 export class PendingTurnManager {
   private readonly deps: PendingTurnDeps;
   private readonly draining = new Set<string>();
@@ -319,11 +336,16 @@ export class PendingTurnManager {
    * Unlike an ordinary composer submit, the idempotency key is the review itself. The DB
    * inserts the pending turn and stamps the review in one transaction, so startup recovery
    * can call this again without duplicating the human's answer.
+   *
+   * `snooze-instruction` is the other review message this outbox carries: the "carry on"
+   * instruction of a question snoozed after its wait had already ended. It has its own turn id
+   * and its own stamp on the review, so it can never take the answer's place.
    */
   submitReviewContinuation(
     reviewId: string,
     sessionId: string,
     text: string,
+    kind: ReviewContinuationKind = "answer",
   ): PendingTurnSubmitResult {
     if (!this.started) {
       return {
@@ -345,7 +367,10 @@ export class PendingTurnManager {
         error: "this session cannot receive messages",
       };
     }
-    const pendingTurn = createReviewContinuationPendingTurn({
+    const queue = kind === "snooze-instruction"
+      ? createSnoozeInstructionPendingTurn
+      : createReviewContinuationPendingTurn;
+    const pendingTurn = queue({
       reviewId,
       noteKey: noteKeyFor(session),
       text,
@@ -919,6 +944,10 @@ export class PendingTurnManager {
     // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
     // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
     let humanEcho: HumanEchoTicket | null = null;
+    // A daemon-written row is reserved as such BEFORE the send, because the prompt hook can
+    // report it back while the send is still in flight (see `reserveInjection`).
+    const author = daemonAuthorOf(turn);
+    if (author) reserveInjection(session.id, turn.text, author);
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
@@ -929,7 +958,7 @@ export class PendingTurnManager {
           // boundary immediately before the driver is handed the turn. Earlier, the row could
           // wait behind another operation long enough for its turn stamp to be stale, and a
           // guard that refuses leaves nothing to release.
-          humanEcho ??= expectHumanEcho(session.id, turn.text, {
+          if (!author) humanEcho ??= expectHumanEcho(session.id, turn.text, {
             noteKey: turn.noteKey,
             cycle: this.registry.getSession(session.id)?.workCycle,
             now: this.deps.now(),
@@ -949,6 +978,7 @@ export class PendingTurnManager {
         );
       } else if (accepted === null) {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
+        if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
         releasePendingTurn(
           turn.id,
@@ -974,7 +1004,8 @@ export class PendingTurnManager {
           ? confirmHumanEcho(humanEcho, { queued: accepted === "steered", now: this.deps.now() })
           : { captured: false };
         try {
-          if (!echo.captured
+          // A daemon-written row is nobody's ask, so it never becomes a Goal revision.
+          if (!author && !echo.captured
             && this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey)
             && humanEcho) {
             markHumanEchoCaptured(humanEcho, { now: this.deps.now() });
@@ -1027,6 +1058,7 @@ export class PendingTurnManager {
         );
       } else {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
+        if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }
@@ -1044,6 +1076,8 @@ export class PendingTurnManager {
 
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
     const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
+    const author = daemonAuthorOf(turn);
+    if (author) reserveInjection(session.id, turn.text, author);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
@@ -1100,6 +1134,7 @@ export class PendingTurnManager {
           boundaryCrossed || result.pasted || result.ok,
         );
       } else {
+        if (author) releaseInjection(session.id, turn.text);
         withdrawOtherSend(otherSend);
         releasePendingTurn(
           turn.id,
@@ -1165,6 +1200,7 @@ export class PendingTurnManager {
         );
       }
     } else {
+      if (author) releaseInjection(session.id, turn.text);
       withdrawOtherSend(otherSend);
       releasePendingTurn(
         turn.id,
@@ -1363,7 +1399,11 @@ export class PendingTurnManager {
     // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
     // would read as though this site were special, and the two sites that turned out to
     // need one had not copied it.
-    journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
+    // A daemon-written row settles its reservation instead, which journals it under its own
+    // origin through the injection observer; only the operator's words are journaled as human.
+    const author = daemonAuthorOf(turn);
+    if (author) recordInjection(sessionId, turn.text, author);
+    else journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
     this.registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: now });
   }
 

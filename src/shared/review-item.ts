@@ -17,6 +17,7 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "./types.ts";
+import { snoozedToolResultText } from "./review-snooze.ts";
 
 /**
  * The terminal statuses a person can put a review into.
@@ -82,6 +83,12 @@ export function reviewToolResult(review: ReviewItem): { text: string; isError: b
 }
 
 function reviewResolutionResult(review: ReviewItem): { text: string; isError: boolean } {
+  // Not an answer: the operator parked the question, and the call returns so the agent can
+  // carry on. Read before every other branch, because a snoozed row has no response at all and
+  // would otherwise fall through to "(no answer given)", which reads as a decision.
+  if (review.status === "snoozed") {
+    return { text: snoozedToolResultText(review), isError: false };
+  }
   if (review.status === "orphaned") {
     return { text: "Review channel went away before a human answered.", isError: true };
   }

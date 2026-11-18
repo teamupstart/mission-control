@@ -56,6 +56,12 @@ export interface TopbarProps {
   attention: number;
   working: number;
   inbox: number;
+  /**
+   * Questions the operator chose "Remind me later" on that have not come back yet. Counted
+   * apart from `inbox`, which is what is waiting on them NOW, and opening the same inbox, whose
+   * Snoozed section lists them. Optional so a caller without the feature draws no segment.
+   */
+  snoozed?: number;
   onOpenInbox: () => void;
   /**
    * The attention inbox cannot be shown yet: the dashboard's read of the operator's dismissals
@@ -203,6 +209,7 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
         attention={isTopbarItemShown(layout, "needYou") ? props.attention : 0}
         working={isTopbarItemShown(layout, "working") ? props.working : 0}
         inbox={props.inbox}
+        snoozed={props.snoozed ?? 0}
         inboxUnavailable={props.inboxUnavailable ?? false}
         onOpenInbox={props.onOpenInbox}
         didNotStart={props.didNotStart ?? 0}
@@ -425,6 +432,7 @@ function FleetPulse({
   attention,
   working,
   inbox,
+  snoozed,
   inboxUnavailable,
   onOpenInbox,
   didNotStart,
@@ -455,6 +463,8 @@ function FleetPulse({
    * produced no inbox row - which put `1 need you` next to a click that opened an empty list.
    */
   inbox: number;
+  /** See `TopbarProps.snoozed`. */
+  snoozed: number;
   /** See `TopbarProps.inboxUnavailable`. */
   inboxUnavailable: boolean;
   onOpenInbox: () => void;
@@ -513,6 +523,15 @@ function FleetPulse({
           tone="attention"
           onClick={onOpenInbox}
           tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
+        />
+      )}
+      {snoozed > 0 && (
+        <PulseStat
+          n={snoozed}
+          label="snoozed"
+          tone="neutral"
+          onClick={onOpenInbox}
+          tip={`${snoozed} question${snoozed === 1 ? "" : "s"} you chose Remind me later on, coming back on their own. Open the inbox to see when, or answer now`}
         />
       )}
       {didNotStart > 0 && (

@@ -39,6 +39,15 @@ what interrupts you. Escape closes it, like every overlay. Per-session entry poi
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
 
+### Snoozed questions
+
+After the sections above, a **Snoozed** section lists the `request_input` questions you chose
+[Remind me later](sessions.md#remind-me-later) on: the session, the question, when it comes back,
+what the agent was told to do meanwhile and **Answer now**, which brings it back at once. Snoozed
+questions are not owed yet, so they are not in the **to answer** count. The topbar shows them as
+a separate **snoozed** figure, which also opens the inbox, so they can be reached when nothing
+else is waiting.
+
 ### Dismiss a row without resolving it
 
 Every row ends its header with **Dismiss**. It takes the row out of the inbox and out of the
@@ -55,7 +64,7 @@ back only when it reports something new, and what counts as new depends on the r
 | Row | Comes back when |
 | --- | --- |
 | Decisions | never, for that run |
-| Questions from agents | the agent asks a new question; only the new one is shown |
+| Questions from agents | the agent asks a new question, or a question you chose **Remind me later** on comes back; only that one is shown |
 | Parked on a menu | the menu's question or options change, including the same options renumbered |
 | Pipeline lifecycle | the commission reports a different problem; a reworded detail line does not count |
 | Pipeline halts | the halt's class or reason changes |

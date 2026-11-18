@@ -15,6 +15,8 @@ import { Tooltip } from "./Tooltip.tsx";
 import { AgentDot, EnsembleProgressDots } from "./session-bits.tsx";
 import { ReviewCard } from "./ReviewModal.tsx";
 import { requestComposerFocus } from "../lib/composer-focus.ts";
+import type { SnoozedQuestion } from "../lib/review-snooze.ts";
+import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 
 /**
  * One place to drain everything that is waiting on a person.
@@ -62,6 +64,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
 
 export function AttentionInbox({
   fold,
+  snoozed = [],
   onClose,
   onDismiss,
   onOpenEnsemble,
@@ -69,6 +72,12 @@ export function AttentionInbox({
   onOpenPipelineCommission = () => undefined,
 }: {
   fold: AttentionFold;
+  /**
+   * Questions the operator chose "Remind me later" on, listed in their own section after
+   * everything that needs an answer now. Outside the fold and its `total` on purpose: nothing
+   * here is owed yet, and the `to answer` figure promises exactly what is owed.
+   */
+  snoozed?: readonly SnoozedQuestion[];
   onClose: () => void;
   /**
    * Dismiss one row's keys without resolving it. Resolves to an error when the daemon did not
@@ -138,6 +147,7 @@ export function AttentionInbox({
               lists four kinds of obligation over a panel holding five reads as a panel showing
               you less than it has. */}
           <span className="dim"> · answers, decisions, halts and stuck finalizations</span>
+          {snoozed.length > 0 && <span className="dim"> · {snoozed.length} snoozed</span>}
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
           <button className="btn btn-ghost" onClick={onClose}>
@@ -148,8 +158,9 @@ export function AttentionInbox({
       <div className="modal-body">
         {fold.items.length === 0 && (
           <p className="inbox-empty">
-            You are all clear. Agents' questions, ensemble decisions and stuck finalizations
-            collect here as they arrive.
+            {snoozed.length > 0
+              ? "Nothing needs an answer right now. Snoozed questions come back here on their own at the time you chose."
+              : "You are all clear. Agents' questions, ensemble decisions and stuck finalizations collect here as they arrive."}
           </p>
         )}
         {fold.items.map((item) => {
@@ -174,6 +185,14 @@ export function AttentionInbox({
             </div>
           );
         })}
+        {snoozed.length > 0 && (
+          <div className="inbox-entry">
+            <h4 className="inbox-section">Snoozed</h4>
+            {snoozed.map(({ review, session }) => (
+              <SnoozedInboxRow key={review.id} review={review} session={session} />
+            ))}
+          </div>
+        )}
       </div>
     </Overlay>
   );

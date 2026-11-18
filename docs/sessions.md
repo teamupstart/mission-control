@@ -2756,6 +2756,51 @@ marks each moved question **Moved to chat** rather than **No option chosen**. Th
 answer carries `chat: true` on each moved decision. A product-issue confirmation moved to chat
 publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 
+#### Remind me later
+
+Every question an agent asks through the `request_input` tool has a **Remind me later…** button
+beside **Dismiss**, on its card in the review modal and in the attention inbox. Use it when you
+cannot decide yet but do not want the agent to stop. The button opens a short sheet in place of
+the answer form with two choices:
+
+- **Ask me again in** 15 minutes, 1 hour, 2 hours, 4 hours or 1 day. The daemon adds the delay to
+  its own clock.
+- **Meanwhile, the agent should** use its best judgment (the default), go with one of the
+  question's options as a provisional answer, or hold the work that depends on the answer and do
+  everything else first.
+
+**Remind me at …** parks the question with the status `snoozed`, and the agent's blocking call
+returns at once. The tool result says the question is not answered, gives the instruction you
+picked, tells the agent not to ask again, and says the answer will arrive later as a message.
+If that call had already ended before you chose, because the agent's MCP client stopped waiting,
+the same instruction reaches the agent as a message instead, so it is never left without it.
+Anything you had typed or picked on the card stays in its draft for when the question returns.
+
+While a question is snoozed it does not count as waiting on you, so its session is not amber.
+The attention inbox and the top bar list it apart from what needs an answer now; see
+[Snoozed questions](attention-and-alerts.md#snoozed-questions). The session's conversation shows
+a blue **Snoozed** entry at the point you snoozed it, with **Answer now**, which brings the
+question back at once.
+
+At the chosen time the daemon puts the question back to pending. It checks every 15 seconds, and
+a question that fell due while the daemon was down comes back as soon as the daemon starts again.
+The returned card carries a **reminder** tag and a line saying when you snoozed it and what the
+agent has been doing since. You can snooze it again: the new delay applies, and the agent keeps
+the instruction it was given the first time, because the first snooze is the only time it is
+told anything. When you resolve it, the agent hears through the same continuation path as any
+resolution given after its wait ended. The message says whether you answered or dismissed the
+question it carried on without: an answer comes with the instruction to reconcile what it did
+meanwhile, and a dismissal with the instruction to keep what it chose. A snoozed question whose
+session goes away is settled as `orphaned`, like a pending one.
+
+Only `request_input`'s own questions offer this. Other cards drawn the same way act on what
+you select and have no agent told how to carry on: a public product issue confirmation, a
+workflow Command override and a resident's proposed instruction changes. The operator alone can
+snooze or bring a question back early. Session control has no snooze command. The daemon refuses
+both from any other actor, such as a controlling session or Foreman, and from any request that
+carries an agent's marks: the machine token, a signed agent credential, an agent-labelled
+operation or a page from another origin. The question stays open.
+
 ### The ask channel
 
 Claude sessions the dashboard dispatches for a task do not use Claude's built-in

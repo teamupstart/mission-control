@@ -50,6 +50,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/mcp/v2/reviews", "attention.request", "permissions"],
   ["POST", "/mcp/reviews/:id/detach", "attention.detach", "permissions"],
   ["POST", "/api/reviews/:id/resolve", "attention.resolve", "permissions"],
+  ["POST", "/api/reviews/:id/snooze", "attention.snooze", "permissions"],
+  ["POST", "/api/reviews/:id/wake", "attention.wake", "permissions"],
   ["POST", "/api/attention/dismissals", "attention.dismiss", "permissions"],
   ["POST", "/api/sessions/:id/mode/cycle", "permission.mode_cycle", "permissions"],
   ["POST", "/api/sessions/:id/mode", "permission.mode_set", "permissions"],

@@ -4,7 +4,7 @@ Plan: `docs/plans/headless-mode/plan.md`. Spec section 9. Index: `docs/plans/hea
 
 ## 1. Outcome
 
-`mctl setup` installs launchd services, the Claude Code plugin and the status line for the default or a named instance; `mctl claude` opens Claude with the instance env and the launcher prompt; `doctor`, `daemon` and `uninstall` manage it. Nothing touches another instance.
+`mctl setup` installs launchd services, the Claude Code plugin and the status line for the default or a named instance; `mctl claude` opens Claude with the instance env and the launcher prompt so the question appears with no typing; `doctor`, `daemon` and `uninstall` manage it. Nothing touches another instance.
 
 ## 2. Entry criteria and dependencies
 
@@ -20,7 +20,7 @@ In scope: `src/cli/instance.ts`, `src/cli/setup/`, `claude`, `doctor`, `daemon`,
 - `launchctl` must be in `FIXED_OS_EXECUTABLES` (`src/server/executables/catalog.ts`) and declared in `CHILD_PROCESS_BOUNDARIES` (`test/executable-contracts.test.ts`).
 - Status line wrap reuses the JSONC edit and sidecar from `hooks/install.mjs`.
 - Workers load the instance plugin; phases 3 and 4 already silence them (decision 25).
-- Spike S-05 decides the exact first-prompt spelling (`/mc` or `/mission-control:mc`).
+- Spike S-05 decides the exact first-prompt spelling (`/mc` or `/mission-control:mc`). Because it starts with `/`, the daemon's first-message launcher never fires a second time (phase 1).
 
 ## 5. Implementation steps
 

@@ -30,7 +30,8 @@ Record results in the "Spike results" section at the end of this file.
 | S-02 | Does `CLAUDE_CONFIG_DIR` isolate `claude plugin install`? | Resolved: yes. Installed mode for every instance. |
 | S-03 | Is `systemMessage` from `UserPromptSubmit` and `PostToolUse` shown to the person? | Resolved: yes. Hooks still emit `additionalContext` too, for Pi and older builds. |
 | S-04 | Does Claude Code render an MCP `elicitation/create` form (single-select enum) in an interactive terminal, and is it available inside a tool call from a plugin server? | Open, not blocking. Needs one interactive run. If yes, a later change can move the guided questions into one MCP tool and drop the skill's `AskUserQuestion` loop. The MVP uses `AskUserQuestion`. |
-| S-05 | Does `SessionStart` input carry `source` with values startup, resume, clear, compact, and does a positional initial prompt (`claude "/mc"`) run a plugin command? | Open, needs one interactive run. Fallback: banner on every `SessionStart` regardless of source, and `mctl claude` passes `/mission-control:mc`. |
+| S-05 | Does `SessionStart` input carry `source` with values startup, resume, clear, compact, and does a positional initial prompt (`claude "/mc"`) run a plugin command? | Open, needs one interactive run. Fallback: `source` unknown means the daemon treats the session as not eligible for the launcher (safe), and `mctl claude` passes `/mission-control:mc`. |
+| S-06 | (a) Which value identifies an interactive session for the entrypoint check (candidate: `CLAUDE_CODE_ENTRYPOINT` equals `cli`, versus `sdk-cli` for `claude -p`)? (b) Does Claude Code let a plugin or settings file submit a first prompt, so plain `claude` could ask on open with no typing? (c) Does `UserPromptSubmit` for the first prompt of a startup session fire before any `/loop` or background report can? | Open, needs interactive and `-p` runs. Not blocking. (a) is required to enable the launcher: until it is confirmed, the check is `entrypoint equals "cli"` and anything else, including unknown, never gets the launcher. (b) if yes, a later change replaces the first-message intercept for plain `claude`. |
 
 ## 2. Contracts (Phase 0a, stream `contracts`)
 
@@ -49,8 +50,9 @@ Zod schemas and types. Names are part of the contract.
   - `scout`: investigate, find out, audit, research, which, why
   - `document`: document, explain, write up, docs, readme
   - `chat`: discuss, talk through, brainstorm
-- `HomeSessionRegistrationSchema`: `{ sessionId, harness: "claude" or "pi", cwd, pluginVersion, claudePid: number or null }`.
+- `HomeSessionRegistrationSchema`: `{ sessionId, harness: "claude" or "pi", cwd, pluginVersion, claudePid: number or null, source: "startup" or "resume" or "clear" or "compact" or null, entrypoint: string or null }`.
 - `TurnOpenSchema`: `{ sessionId, cwd, promptId: string or null, prompt: string }`. The API never stores `prompt`; see 4.1.
+- `TurnOpenResponseSchema`: `{ cardDelta: CardDelta, launcher: { offer: boolean } }`.
 - `TurnCloseSchema`: `{ sessionId }`.
 - `InboxItemSchema`: discriminated by `state`: `"waiting" | "ready" | "running" | "queued" | "shelved" | "failed"`. Common fields: `taskId`, `title`, `kind`, `afterWork` (`{ id, slug, label }` or null), `origin`, `changedAt`, `prUrl` or null, `costUsd` or null. `waiting` adds `request` (see below). `queued` adds `position`. `shelved` is a backlog task whose `enabled` flag is false (filed but not started and not scheduled).
 - `InboxRequestSchema`: discriminated by `type`:
@@ -73,19 +75,21 @@ Zod schemas and types. Names are part of the contract.
   - `HANDOFF_KIND_ORDER`: the explicit order kinds are offered in: ship, bugfix, plan, scout, document, chat. A test requires it to be a permutation of `HANDOFF_KINDS`, so a new harness-launched kind cannot ship without a place in the order.
   - `recommendKind(text): HandoffKind or null`: counts whole-word, case-insensitive matches of `KIND_HINTS` words and phrases in `text`. The kind with most matches wins; a tie goes to the kind earlier in `HANDOFF_KIND_ORDER`; no match returns null.
   - `GuidedOptionSchema`: `{ value: string, label: string, description: string, recommended: boolean }`.
-  - `GuidedQuestionSchema`: `{ id: "repo" | "kind" | "harness" | "afterWork", header: string (at most 12 characters), question: string, options: GuidedOption[] (two to four per page), page: number, pages: number }`.
-  - `DispatchOptionsRequestSchema`: `{ cwd, kind: HandoffKind or null, brief: string or null }`.
+  - `GuidedQuestionSchema`: `{ id: "launcher" | "repo" | "kind" | "harness" | "afterWork", header: string (at most 12 characters), question: string, options: GuidedOption[] (two to four per page), page: number, pages: number }`.
+  - `DispatchOptionsRequestSchema`: `{ cwd, kind: HandoffKind or null, brief: string or null, entry: "command" or "first-message" or "conversation" }`. `entry` defaults to `"command"`.
   - `DispatchOptionsResponseSchema`: `{ guided: boolean, repoRoot: string or null, recommendedKind: HandoffKind or null, defaults: { kind, agent, afterWork: AfterWork or null }, questions: GuidedQuestion[], afterWorkApplies: boolean, banner: string, fallbackText: string }`.
   - `pageOptions(options, size)`: the one paging helper (see 3.5).
+  - `LAUNCHER_CHOICES`: `work-here`, `hand-off`, `check-in`, the `value`s of the launcher question (see 3.5).
 
 ### 2.2 Database (`src/server/db.ts`, schema version 35)
 
 - `tasks`: add `origin_surface TEXT`, `origin_repo TEXT`, `origin_session_id TEXT`. NULL means created by the dashboard or anything else that existed before this feature.
-- `handoff_sessions`: `session_id TEXT PRIMARY KEY, harness TEXT NOT NULL, cwd TEXT NOT NULL, repo_root TEXT, claude_pid INTEGER, plugin_version TEXT, started_at INTEGER NOT NULL, last_turn_at INTEGER, last_stop_at INTEGER, inbox_cursor TEXT`.
+- `handoff_sessions`: `session_id TEXT PRIMARY KEY, harness TEXT NOT NULL, cwd TEXT NOT NULL, repo_root TEXT, claude_pid INTEGER, plugin_version TEXT, start_source TEXT, entrypoint TEXT, launcher_offered_at INTEGER, started_at INTEGER NOT NULL, last_turn_at INTEGER, last_stop_at INTEGER, inbox_cursor TEXT`.
 - `handoff_turns`: `id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, prompt_id TEXT, opened_at INTEGER NOT NULL, closed_at INTEGER, excerpt TEXT NOT NULL, contains_approval INTEGER NOT NULL, mentioned_hashes TEXT NOT NULL DEFAULT '[]', cards_shown TEXT NOT NULL DEFAULT '[]'`. Index on `(session_id, opened_at)`.
 - `handoff_receipts`: `review_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, session_id TEXT, surface TEXT NOT NULL, sent TEXT NOT NULL, from_words TEXT, created_at INTEGER NOT NULL`.
 - `ReviewActor` in `src/shared/types.ts` gains `home:{sessionId}`, `home-approval:{sessionId}` and `"mctl"`. These are new persisted values in `reviews.resolved_by`; never rename them later.
 - No schema change is needed for guided questions or `shelved` (it reads `tasks.enabled`).
+- Phase 0 already created `handoff_sessions` on `feat/headless` without the three new columns. Because schema 35 has not shipped, add them to the same `CREATE TABLE`; if any database already ran the earlier 35, use `addColumn` for them as well.
 
 ### 2.3 Seams so streams do not share hot files
 
@@ -110,9 +114,16 @@ Zod schemas and types. Names are part of the contract.
 The `contracts` stream reopens `src/shared/handoff.ts` once, before any other stream builds on it:
 
 1. Add the `shelved` state to `INBOX_STATES` (between `queued` and `failed`) and `InboxItemSchema`.
-2. Add the guided types and helpers listed at the end of 2.1.
-3. Add `read_dispatch_options` to the pinned `MISSION_MCP_TOOLS` lists and the route and tool inventories (the same test files Phase 0 already updated).
-4. Update `test/handoff-contracts.test.ts` for the new names; the new tests are written with `todo` like the rest.
+2. Add the guided types and helpers listed at the end of 2.1, the registration fields `source` and `entrypoint`, and `TurnOpenResponseSchema`.
+3. Add the three `handoff_sessions` columns (2.2).
+4. Add `read_dispatch_options` to the pinned `MISSION_MCP_TOOLS` lists and the route and tool inventories (the same test files Phase 0 already updated).
+5. Update `test/handoff-contracts.test.ts` and `test/handoff-migration.test.ts` for the new names and columns; the new tests are written with `todo` like the rest.
+
+### 2.5 Launcher switches
+
+- Environment variable `MISSION_HANDOFF_LAUNCHER`. The value `0` makes the hook never ask for the launcher (the daemon is not even consulted for it). Any other value, or unset, leaves it on.
+- Setting `handoff.launcher.prompt`, default `true`, registered in `src/shared/app-config-entries.ts` as `setting` and added to the `mctl config view` output in v1. It is changeable in v1 by editing the app config the same way other settings without a Settings page are changed, and through `mctl config set` in v1.1. It adds no dashboard control.
+- The guided questions (Kind, Harness, After work) additionally follow `ui.guidedDispatch` (3.5). The launcher question itself follows only the two switches above.
 
 ## 3. API (stream `api`)
 
@@ -120,10 +131,11 @@ All routes live under `/mcp/handoff/` and require `x-harness-token` like other `
 
 ### 3.1 Home sessions
 
-- `POST /mcp/handoff/sessions` (`HomeSessionRegistrationSchema`): upsert `handoff_sessions`, resolve `repo_root` from `cwd` with the existing repo resolution, return `{ repoRoot, cardDelta, launcher: { banner } }` where `cardDelta` is the full inbox for that repo and `banner` is the server-built launcher line (see 6).
+- `POST /mcp/handoff/sessions` (`HomeSessionRegistrationSchema`): upsert `handoff_sessions` (storing `start_source` and `entrypoint`), resolve `repo_root` from `cwd` with the existing repo resolution, return `{ repoRoot, cardDelta, launcher: { banner } }` where `cardDelta` is the full inbox for that repo and `banner` is the server-built launcher line (see 6).
 - Identity, from spike S-01: the MCP child sends `CLAUDE_CODE_SESSION_ID` from its environment plus `claudePid` (its parent pid). Hooks send the `session_id` from stdin plus `CLAUDE_PID`.
 - A registration whose `sessionId` is a Mission-managed session (a worker the registry knows, or any id carried by `MISSION_SESSION_ID`) is refused with 403. A worker can never become a home session (AC-API-18).
 - Stale ids: the MCP child's environment is fixed at launch, so after `/clear` or `/resume` it may carry an earlier session id. When a request names a `sessionId` whose row has a `claude_pid`, and a newer registration exists for the same `claude_pid`, the API treats the newer row as the caller (AC-API-19).
+- A registration with a source other than `startup` clears nothing and never makes the session eligible for the launcher.
 
 ### 3.2 Task origin
 
@@ -163,13 +175,14 @@ Rules:
 
 ### 3.5 Dispatch options (guided questions)
 
-`POST /mcp/handoff/dispatch-options` (`DispatchOptionsRequestSchema`) returns `DispatchOptionsResponseSchema`. It is the terminal's version of the dashboard's guided pass: Repo, Kind, Harness, After work, in that order, minus the questions that do not apply.
+`POST /mcp/handoff/dispatch-options` (`DispatchOptionsRequestSchema`) returns `DispatchOptionsResponseSchema`. It is the terminal's version of the dashboard's guided pass: Repo, Kind, Harness, After work, in that order, minus the questions that do not apply, preceded by the launcher question when `entry` is `first-message`.
 
 Source of truth. The rules that decide which kinds are offered, what each after-work default is, and when After work is skipped currently live in `src/web/components/DispatchModal.tsx` (`afterWorkForKind`) and `src/shared/task.ts`. Extract the pure rules into `src/shared/dispatch-options.ts` and have both the dashboard and this route import them. If an exact extraction is not clean, implement the rules server-side and add the parity test AC-GUIDE-07, which fails when the two disagree for any kind. Either way the dashboard's behaviour does not change.
 
 Which questions are returned:
 
-- `guided: false` (Settings, Dispatch, "Guided dispatch" is off, read from `ui.guidedDispatch`): `questions` is empty. `defaults` still carries the recommended kind, the kind's default agent and its default after work, so the skill goes straight to the confirm card.
+- Launcher: present only when `entry` is `first-message`. Three options with `value`s `work-here`, `hand-off`, `check-in`. Labels: "Work in this session", "Hand off to Mission Control", "Check in on my tasks". The Recommended option is `hand-off` when `recommendKind(brief)` is not null, otherwise `work-here`; it is listed first and its label ends with " (Recommended)". The description of `work-here` says the message will be answered normally. Choosing `work-here` ends the flow; `check-in` runs the `checkin` skill; `hand-off` continues with the questions below, using `brief` (the first message) as the brief.
+- `guided: false` (Settings, Dispatch, "Guided dispatch" is off, read from `ui.guidedDispatch`): the Kind, Harness and After work questions are not returned, but the launcher question still is when `entry` is `first-message`. `defaults` carries the recommended kind, the kind's default agent and its default after work, so choosing `hand-off` goes straight to the confirm card.
 - Repo: present only when `repoRoot` is null (the cwd is not inside a repo). Options are the workspace repositories, paged. The person can also type a path through the prompt's Other field.
 - Kind: present when the request carries no `kind`. Options are `HANDOFF_KINDS` in `HANDOFF_KIND_ORDER`, each with the label and blurb from `TASK_KIND_INFO`, plus a final "Check in on my tasks" option. Paged by `pageOptions` (below).
 - Harness: one option per harness in the registry. The recommended option is `resolveTaskAgent(kind)`, so a per-kind default set in Settings wins. Model and effort are not asked; the person can say them in the brief or when editing it.
@@ -182,22 +195,23 @@ Paging. `pageOptions(options, size)` splits a list into pages of at most `size` 
 
 `fallbackText`: the same questions as plain numbered lists, in the same order, for sessions where `AskUserQuestion` is unavailable (`claude -p`, SDK, Pi, older builds). It ends with "Reply with a number."
 
-`banner` is the launcher line (section 6).
+`banner` is the one-line notice printed at session start (section 6).
 
 The route also answers the cwd question: `repoRoot` comes from the existing repo resolution for `cwd`, and is null outside a repo.
 
 ## 4. Turn log and plan approval (stream `api`)
 
-### 4.1 Turn log
+### 4.1 Turn log and launcher offer
 
-- `POST /mcp/handoff/turns/open` (`TurnOpenSchema`):
+- `POST /mcp/handoff/turns/open` (`TurnOpenSchema`) returns `TurnOpenResponseSchema`:
   - closes any open turn for the session
   - inserts a row with `excerpt` = the first 120 characters of `prompt` (whitespace collapsed), `contains_approval = containsApproval(prompt)`, and `mentioned_hashes` = any 6-hex tokens in `prompt`
-  - returns `CardDelta` for the session's repo: `full` is the items not yet shown to this session at their current `changedAt`, and `reminders` is the waiting items already shown
+  - returns `cardDelta` for the session's repo: `full` is the items not yet shown to this session at their current `changedAt`, and `reminders` is the waiting items already shown
   - records every `full` item's key, state and plan `revisionHash` in `cards_shown`
   - never stores `prompt` anywhere
+  - returns `launcher.offer = true`, and sets `launcher_offered_at`, only when all of these hold: the session's `start_source` is `startup`; its `entrypoint` is the interactive value (spike S-06, candidate `cli`); `launcher_offered_at` is NULL; this is the session's first turn; the setting `handoff.launcher.prompt` is true; the prompt, trimmed, is not empty and does not start with `/`; the session is a registered home session (never a worker). Otherwise `offer` is false and `launcher_offered_at` is left as it was.
 - `POST /mcp/handoff/turns/close` (`TurnCloseSchema`): sets `closed_at` and the session's `last_stop_at`.
-- `SessionStart`'s card counts as shown in a synthetic turn with an empty excerpt.
+- `SessionStart`'s card counts as shown in a synthetic turn with an empty excerpt. The synthetic turn is not the first turn for the purpose of the launcher offer.
 - Rows older than 7 days are deleted at daemon start and once a day.
 
 ### 4.2 Plan approval
@@ -224,7 +238,7 @@ In `src/mcp/handoff-tools.ts`.
   - send only what the person said
   - quote nothing you were not told
   - for plans, show the plan card and wait for the person to say approve
-- `read_dispatch_options`: arguments `{ kind?: string, brief?: string }`. Calls the dispatch-options route with `cwd` = `process.cwd()`. Returns the `questions` array as JSON in the shape `AskUserQuestion` takes (header, question, options with label and description), the `value` behind each label, `defaults`, `afterWorkApplies`, `guided`, and `fallbackText`. The description states: ask exactly these questions, one at a time, in this order; do not add, reword or reorder options.
+- `read_dispatch_options`: arguments `{ kind?: string, brief?: string, entry?: "command" | "first-message" | "conversation" }`. Calls the dispatch-options route with `cwd` = `process.cwd()`. Returns the `questions` array as JSON in the shape `AskUserQuestion` takes (header, question, options with label and description), the `value` behind each label, `defaults`, `afterWorkApplies`, `guided`, and `fallbackText`. The description states: ask exactly these questions, one at a time, in this order; do not add, reword or reorder options.
 - `create_task` description: the kind parameter's description is generated from `KIND_HINTS`, one line per kind (`bugfix: fix, repair, broken ...`). Unchanged for workers.
 - `create_task` result: adds `afterWork: { slug, label }` or null and `kindLabel`, resolved by the server with the same resolution the task will dispatch with.
 - `create_task` does not gain `grillFirst` or `personaId`. Grill me first is not offered from the terminal.
@@ -239,20 +253,22 @@ Rules for every event:
 - The API call has a 300 ms timeout. On timeout or any error, print nothing and exit 0.
 - Always exit 0. Never print `decision: "block"`.
 - If `MISSION_HEADLESS` is set, do nothing (existing meaning).
-- If `MISSION_SESSION_ID` is set (a Mission Control worker), do nothing. No registration, no turn log, no banner (AC-HOOK-12).
+- If `MISSION_SESSION_ID` is set (a Mission Control worker), do nothing. No registration, no turn log, no banner, no launcher (AC-HOOK-12).
 - Output is one JSON object: `systemMessage` for the one-line notices, and `hookSpecificOutput.additionalContext` for full details the model needs. Omit keys that have nothing to say; print nothing at all when both are empty.
 
 Per event:
 
 - `SessionStart`:
-  - POST `/mcp/handoff/sessions`; render the card delta as one summary card in `additionalContext`
-  - launcher banner: when the input `source` is `startup` or `clear`, print the server's `launcher.banner` as `systemMessage`, for example `mission-control: hand work off with /mc - ship, bugfix, plan, scout, document, chat`. When the inbox has items, append the counts: `... | 2 running, 1 waiting`. Not printed for `resume` or `compact`. The kinds in the line come from the server, never from the hook.
+  - POST `/mcp/handoff/sessions` with the input's `source` and the environment's entrypoint; render the card delta as one summary card in `additionalContext`
+  - notice: when `source` is `startup` or `clear`, print the server's `launcher.banner` as `systemMessage`. When the launcher will be offered the banner says so, for example `mission-control: I will ask how you want to start. /mc opens the picker any time.` When the launcher is off it lists what can be handed off, for example `mission-control: hand work off with /mc - ship, bugfix, plan, scout, document, chat`. When the inbox has items, append the counts: `... | 2 running, 1 waiting`. Not printed for `resume` or `compact`. The kinds in the line come from the server, never from the hook.
   - `additionalContext` also tells the model: when the person asks to hand work to Mission Control, use the `handoff` skill; `/mc` opens the picker
   - if the API is unreachable and the instance is launchd-managed, start `/bin/launchctl kickstart gui/{uid}/{label}` detached and print `mission-control: starting in the background`
   - if `/api/health` lacks capability `handoff-v1`, or its version differs from the plugin's, print `mission-control: plugin {a} and API {b} don't match. Run: mctl setup`
-- `UserPromptSubmit`: POST `/mcp/handoff/turns/open` with the prompt.
-  - For each `full` item, a `systemMessage` line such as `mission-control: mc-91c2 asks a question (logging cleanup)`, and the full question, options and an instruction to show it in `additionalContext`.
+- `UserPromptSubmit`: if `MISSION_HANDOFF_LAUNCHER` is `0` the hook skips the launcher step but still logs the turn. POST `/mcp/handoff/turns/open` with the prompt.
+  - If `launcher.offer` is true, put the launcher instruction in `additionalContext`: before doing anything else, call `read_dispatch_options` with `entry` `first-message` and the person's message as `brief`, ask the returned launcher question with `AskUserQuestion`, then follow the `handoff` skill's first-message entry. Keep the person's message; do not start the work until they answer. If they choose Work in this session, answer the message normally.
+  - For each `cardDelta.full` item, a `systemMessage` line such as `mission-control: mc-91c2 asks a question (logging cleanup)`, and the full question, options and an instruction to show it in `additionalContext`.
   - For reminders, one line: `mission-control: reminder, mc-91c2 still waiting`.
+  - When both a launcher offer and a waiting question exist, the question card comes first in the context and the launcher instruction last.
 - `Stop`: POST `/mcp/handoff/turns/close`. Print nothing.
 - `PostToolUse` with matcher `.*answer_task`: read the receipt from `tool_response` and print it as `systemMessage` with the `mission-control: ` prefix.
 
@@ -284,8 +300,8 @@ commands/mc.md
 
 Must contain these sections, in this order:
 
-1. When to use. Trigger phrases: "hand this off to mission control", "send this to mc", "have mission control fix", "design this with mission control", "delegate", "queue that for later", and the `/mc` command.
-2. Two entries. **Launcher entry** (`/mc`, no brief yet): ask the questions first, then ask the person to describe the task, then draft the brief. **Conversation entry** (the work is already described): draft the brief first, pass it as `brief` so the server can recommend a kind, then ask the questions. Both end at section 6.
+1. When to use. Trigger phrases: "hand this off to mission control", "send this to mc", "have mission control fix", "design this with mission control", "delegate", "queue that for later", the `/mc` command, and the launcher instruction a hook adds to the first message of a session.
+2. Three entries. **First-message entry** (the hook said to ask the launcher question): call `read_dispatch_options` with `entry` `first-message` and the person's message as `brief`, ask the launcher question first, and do nothing else until it is answered. Work in this session: answer the person's message normally and never mention Mission Control again unless asked. Check in: run the `checkin` skill. Hand off: continue with section 3, using the first message as the brief (if it is empty or only a greeting, ask the person to describe the task). **Launcher entry** (`/mc`, no brief yet): ask the questions first, then ask the person to describe the task, then draft the brief. **Conversation entry** (the work is already described): draft the brief first, pass it as `brief` so the server can recommend a kind, then ask the questions with `entry` `conversation`. All three end at section 6.
 3. Ask the guided questions. Call `read_dispatch_options`. If `guided` is false, skip to section 5 with the defaults. Otherwise ask each returned question with `AskUserQuestion`, one at a time, in the returned order, using the returned labels and descriptions unchanged. Map the answer back to the option's `value`. If the person types an Other answer, match it to an option label ignoring case, otherwise ask again. If "More..." is chosen, show the next page. If "Check in on my tasks" is chosen, stop and run the `checkin` skill. After Kind, call `read_dispatch_options` again with the chosen `kind` to get Harness and After work. If `AskUserQuestion` is not available, print `fallbackText` and wait for a number.
 4. Gather what is known: files, errors, reproduction commands, decisions, stated limits.
 5. Write the brief with the template for the kind: bugfix, plan, ship, scout, document, chat.
@@ -294,6 +310,7 @@ Must contain these sections, in this order:
 8. Rules:
    - never call `dispatch_task` without Dispatch now or the person's "go"
    - never invent, reword or reorder options the server returned
+   - never start the person's work before the launcher question is answered
    - one task per named thing
    - ask one question if the request is too vague to brief
    - never put secrets, tokens or customer data in a brief
@@ -316,11 +333,14 @@ Sections:
 
 ### 7.4 Command `/mc`
 
+Optional shortcuts; the launcher no longer needs them.
+
 - `/mc` with no arguments runs the `handoff` skill's launcher entry.
 - `/mc {kind} {text}` is the fast path: `{kind}` is any `HANDOFF_KINDS` value. Kind is answered, `{text}` is the brief, and the questions start at Harness.
 - `/mc check` runs the `checkin` skill.
 - `/mc {taskId}` shows one task: brief, after-work step, PR and cost.
 - An unknown first word is treated as the start of the brief, not as an error.
+- A first prompt that starts with `/` never triggers the first-message launcher (4.1), so `/mc` and other commands are never asked twice.
 
 ## 8. `mctl` (stream `mctl`)
 
@@ -341,7 +361,7 @@ Sections:
 | `status [--watch]` | Counts by state, slots used of the ceiling, API version, Foreman leader present. `--watch` redraws on SSE events. |
 | `get kinds` | `KIND HINT WORDS AFTER WORK`, using current settings. |
 | `get workflows` | Workflows by slug and id, and the kinds that default to each. |
-| `config view` | Slot ceiling, notification settings, and After work per kind. |
+| `config view` | Slot ceiling, notification settings, After work per kind, and `handoff.launcher.prompt`. |
 | `run` | See 8.3. |
 | `setup`, `doctor`, `daemon status\|restart\|kick`, `uninstall [--purge]`, `claude [args]` | See section 9. |
 | `attach {id}` (v1.1) | See 12.1. |
@@ -413,7 +433,7 @@ mctl run ({prompt} | -f {file}) [--kind k] [--after-work w] [--agent a]
 - `mctl claude [args]`: execs `claude` (located through the executable registry) with:
   - `MISSION_HOME`, `MISSION_PORT`, and `CLAUDE_CONFIG_DIR` (named instances)
   - `--plugin-dir {state}/plugin/{version}` only in `plugin-dir` mode
-  - the launcher prompt: when stdin and stdout are TTYs, the user passed no prompt argument and no `-p`, `--print` or `--resume`/`--continue`, and `--no-launcher` is absent, the first positional argument is `/mc` so the picker opens at once (spike S-05 decides the exact spelling; fallback `/mission-control:mc`)
+  - the launcher prompt: when stdin and stdout are TTYs, the user passed no prompt argument and no `-p`, `--print` or `--resume`/`--continue`, and `--no-launcher` is absent, the first positional argument is `/mc` so the picker opens the moment Claude starts, with no typing (spike S-05 decides the exact spelling; fallback `/mission-control:mc`). Because it starts with `/`, it never triggers the first-message launcher a second time (4.1).
   - the remaining args passed through
 - `mctl doctor`: one line per check, `✓` or `✗` with a fix:
   - API reachable
@@ -444,14 +464,15 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 ## 10. Integration (Phase 2, stream `integration`)
 
 - A full-loop test that spawns the real daemon (pattern: `test/settings-backup-daemon.test.ts`) with fake agent binaries. It drives the source MCP server as a home session, and runs the hook script with prompts. Steps:
-  1. register the home session; the hook prints the launcher banner on `startup`
-  2. `read_dispatch_options` returns the Kind question; the test plays the model and answers kind, harness and after work
-  3. `create_task` with those answers, then the confirm, then `dispatch_task`
-  4. the fake worker calls `request_input`
-  5. a `UserPromptSubmit` hook run outputs the question
-  6. `answer_task` returns a receipt
-  7. the fake worker receives the answer and finishes
-  8. the inbox shows `ready`
+  1. register the home session with source `startup` and the interactive entrypoint; the hook prints the notice
+  2. the first `UserPromptSubmit` returns the launcher instruction; `read_dispatch_options` with `entry` `first-message` returns the launcher question; the test plays the model and answers Hand off, then kind, harness and after work
+  3. `create_task` with those answers and the first message as the brief, then the confirm, then `dispatch_task`
+  4. a second `UserPromptSubmit` in the same session returns no launcher instruction
+  5. the fake worker calls `request_input`
+  6. a `UserPromptSubmit` hook run outputs the question
+  7. `answer_task` returns a receipt
+  8. the fake worker receives the answer and finishes
+  9. the inbox shows `ready`
 - Worker identity test: the same hook and MCP server run with `MISSION_SESSION_ID` set register nothing and print nothing.
 - Isolation test: with a temp `HOME` that contains a fake default `~/.mission-control`, `~/.claude/settings.json`, `~/.claude.json` and a fake LaunchAgents folder, run `mctl --instance sandbox setup`, then `uninstall --purge`. Assert every default file is byte-identical, and that the fake runner never saw a default or legacy label.
 - Dashboard parity: the existing e2e guided-dispatch specs pass unchanged after the shared extraction.
@@ -463,7 +484,8 @@ Because those workers load the instance's plugin, the hook and MCP server must r
   - what it is
   - install
   - instances and the sandbox
-  - the launcher and guided questions, and how they match the dashboard
+  - the launcher: when it asks, when it does not, and how to switch it off
+  - the guided questions, and how they match the dashboard
   - the home session flow
   - each hook and what it shows
   - each skill
@@ -474,7 +496,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 - Linked from `docs/README.md` and `README.md`.
 - `docs/dispatch-and-backlog.md` gets one paragraph pointing to the terminal version of the guided pass.
 - `docs/security.md` gains a section "Home-session answers and plan approvals".
-- `docs/configuration.md` lists any new setting and says Guided dispatch also governs the terminal questions.
+- `docs/configuration.md` lists `handoff.launcher.prompt`, `MISSION_HANDOFF_LAUNCHER`, and says Guided dispatch also governs the terminal questions.
 - The docs link checker test passes.
 
 ## 12. v1.1
@@ -506,6 +528,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
   - `foreman.maxSessions`
   - `handoff.notifications.enabled`
   - `handoff.notifications.afterMinutes`
+  - `handoff.launcher.prompt`
   - `workflow.kindWorkflowDefaults.{kind}`
   - `ui.guidedDispatch`
 - Values are written through the same daemon route and schema the Settings page uses.
@@ -518,7 +541,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 - Set the test home above dynamic imports (`process.env.MISSION_HOME = mkdtempSync(...)`, then `await import(...)`).
 - HTTP: `buildApp(...)` and `app.request(path, { headers: { "x-harness-token": ensureToken() } })` (see `test/mcp-create-task.test.ts`).
 - MCP: spawn the source `src/mcp/server.ts` with `StdioClientTransport` against `buildApp` served on port 0 (see `test/mcp-backlog-tools.test.ts`).
-- Hooks: `execFile(process.execPath, [hook, event])` with stdin JSON and a stub HTTP server (see `test/hook-script-decision.test.ts`). Set `MISSION_HEADLESS: ""` and `MISSION_SESSION_ID: ""`.
+- Hooks: `execFile(process.execPath, [hook, event])` with stdin JSON and a stub HTTP server (see `test/hook-script-decision.test.ts`). Set `MISSION_HEADLESS: ""`, `MISSION_SESSION_ID: ""` and `MISSION_HANDOFF_LAUNCHER: ""`.
 - Workers: a fake SDK handle (`test/mission-session-closure.test.ts`) or fake binaries through `MISSION_CLAUDE_BIN` (`test/claude-sdk-process.test.ts`).
 - A real daemon spawn calls `ensureNativeStateLockAddon` at module scope.
 - CLI: `spawnSync(process.execPath, ["--import", "tsx", "src/cli/index.ts", ...])`, plus direct calls to exported command functions with an injected `isTTY`, `stdout` and command runner.
@@ -533,6 +556,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 - The pipeline kind, model and effort questions, extra-repo, dependency and persona questions in the guided flow (the person can state them in the brief or the Edit brief step).
 - Grill me first from the terminal.
 - MCP elicitation (spike S-04), until a later change.
+- A prompt on open for plain `claude` with no typing at all (spike S-06 part b), until Claude Code supports it. `mctl claude` provides it today.
 - Slack, spending budgets, Linux services.
 - Proving that an ordinary answer was typed by a person, or a server gate on dispatch.
 
@@ -540,7 +564,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 
 | Stream | Owns | Needs |
 |---|---|---|
-| `contracts` | 2.1 to 2.4 | none |
+| `contracts` | 2.1 to 2.5 | none |
 | `api` | 3, 4 | contracts |
 | `guided` | 3.5 and the shared extraction | contracts; can run beside `api` |
 | `mcp` | 5 | contracts, `api`, `guided` |
@@ -581,6 +605,6 @@ Config-folder install is isolated, so the `--plugin-dir`-only fallback is not ne
 
 One prompt that made one MCP tool call. A `systemMessage` from `UserPromptSubmit` showed in the transcript as `UserPromptSubmit says: {text}`. A `systemMessage` from `PostToolUse` showed as `PostToolUse:{tool name} says: {text}`. Both were visible to the person without the model repeating them. `UserPromptSubmit` input had `prompt_id` and `prompt`. Hooks still emit the `additionalContext` instruction as section 6 says, because Pi and older Claude Code builds were not tested.
 
-### S-04 and S-05: open
+### S-04, S-05 and S-06: open
 
-Neither needs to block a stream. Record the answers here after one interactive run each.
+None needs to block a stream. Record the answers here after one interactive run each. S-06 part (a) must be answered before the first-message launcher is enabled by default; until then the entrypoint check accepts only the candidate interactive value, so an unknown value never prompts.

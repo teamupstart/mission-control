@@ -8,11 +8,11 @@ Plan: `docs/plans/headless-mode/plan.md`. Spec section 8. Index: `docs/plans/hea
 
 ## 2. Entry criteria and dependencies
 
-Phase 1 merged (inbox, answers, task origin).
+Phase 1 merged (inbox, answers, task origin, launcher setting).
 
 ## 3. Scope and non-goals
 
-In scope: `src/cli/` commands `get`, `describe`, `logs`, `status`, `config view`, `run`, global flags, `--instance` plumbing input only. Not in scope: `setup`, `doctor`, `daemon`, `uninstall`, `claude` (phase 6); guided questions in `mctl run` (it stays the scripted path); `--grill`.
+In scope: `src/cli/` commands `get`, `describe`, `logs`, `status`, `config view` (including `handoff.launcher.prompt`), `run`, global flags, `--instance` plumbing input only. Not in scope: `setup`, `doctor`, `daemon`, `uninstall`, `claude` (phase 6); guided questions in `mctl run` (it stays the scripted path); `--grill`.
 
 ## 4. Repository findings and contracts
 

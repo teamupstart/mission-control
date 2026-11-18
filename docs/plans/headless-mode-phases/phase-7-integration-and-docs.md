@@ -4,7 +4,7 @@ Plan: `docs/plans/headless-mode/plan.md`. Spec sections 10 and 11. Index: `docs/
 
 ## 1. Outcome
 
-The whole v1 loop is proven end to end without model tokens, isolation is proven, and the feature is documented.
+The whole v1 loop, starting from the automatic first-message launcher, is proven end to end without model tokens, isolation is proven, and the feature is documented.
 
 ## 2. Entry criteria and dependencies
 
@@ -21,9 +21,9 @@ In scope: loop and isolation tests, worker identity test, docs. Not in scope: ne
 
 ## 5. Implementation steps
 
-1. `test/handoff-loop.test.ts`: banner, dispatch-options questions, create with answers, dispatch, worker question, hook card, answer receipt, ready (spec 10), plus the worker-identity test (AC-INT-04) and dashboard parity of choices (AC-INT-05).
+1. `test/handoff-loop.test.ts`: register a `startup` session with the interactive entrypoint, notice, first `UserPromptSubmit` returns the launcher instruction, dispatch-options launcher question then kind, harness, after work, create with the first message as brief, confirm and dispatch, a second prompt in the same session returns no instruction, worker question, hook card, answer receipt, ready (spec 10), plus the worker-identity test (AC-INT-04) and dashboard parity of choices (AC-INT-05).
 2. `test/handoff-isolation.test.ts`: sandbox setup and purge leave default files byte-identical.
-3. `docs/headless-mode.md` per spec 11; link from `docs/README.md` and `README.md`; add the paragraph in `docs/dispatch-and-backlog.md`; the security section in `docs/security.md`; `docs/configuration.md` note.
+3. `docs/headless-mode.md` per spec 11 (when the launcher asks, when it does not, how to switch it off); link from `docs/README.md` and `README.md`; add the paragraph in `docs/dispatch-and-backlog.md`; the security section in `docs/security.md`; `docs/configuration.md` note for `handoff.launcher.prompt` and `MISSION_HANDOFF_LAUNCHER`.
 4. `test/handoff-docs.test.ts`.
 
 ## 6. Data, API and compatibility

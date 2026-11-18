@@ -1,8 +1,8 @@
 # Headless mode: implementation phases
 
-This folder holds the phased implementation of the approved headless mode plan. It exists beside, not inside, `docs/plans/headless-mode/` so the approved source files are not re-saved.
+This folder holds the phased implementation of the approved headless mode plan. It exists beside, not inside, `docs/plans/headless-mode/` so the approved source files are not re-saved for every phase edit.
 
-Approved source (revision 2, final approval given 2026-11-18):
+Approved source (revision 3 of the main bundle, including the automatic first-message launcher):
 
 - `docs/plans/headless-mode/plan.md` - design and decisions
 - `docs/plans/headless-mode/spec.md` - build spec

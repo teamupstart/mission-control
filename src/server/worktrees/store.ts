@@ -516,15 +516,21 @@ export class WorktreeStore {
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
-  markPruning(slotId: string, version: number, now: number): WorktreeSlotRow | null {
+  /** A stale lease may be dropped only with the exact quarantine identity and prune intent. */
+  markPruning(slotId: string, version: number, now: number,
+    staleLease?: { leaseId: string; ownerKind: string; ownerKey: string },
+  ): WorktreeSlotRow | null {
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
-           last_error = NULL, updated_at = ?
+           last_error = NULL, updated_at = ?,
+           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL
          WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
-           AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
+           AND ${staleLease
+             ? "state = 'quarantined' AND active_lease_id = ? AND active_owner_kind = ? AND active_owner_key = ?"
+             : "active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL"}`,
       )
-      .run(now, slotId, version);
+      .run(now, slotId, version, ...(staleLease ? [staleLease.leaseId, staleLease.ownerKind, staleLease.ownerKey] : []));
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 
@@ -532,7 +538,8 @@ export class WorktreeStore {
    * The one transition into quarantine. A slot already quarantined is refused rather than
    * rewritten, so its first reason, category and time stand: a later observation can never
    * relabel a positively unsafe slot as a recoverable one, and `quarantined_at` is only ever
-   * the moment it entered.
+   * the moment it entered. A never-granted reservation may be cancelled in this same CAS,
+   * but only while still provisioning at its expected version under that exact lease.
    */
   quarantine(
     slotId: string,
@@ -541,17 +548,25 @@ export class WorktreeStore {
     error: string | null,
     now: number,
     expectedVersion?: number,
+    reservationLeaseId?: string,
   ): WorktreeSlotRow | null {
+    if (reservationLeaseId && expectedVersion === undefined) return null;
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
-    const args = expectedVersion === undefined
-      ? [reason, category, now, error, now, slotId]
-      : [reason, category, now, error, now, slotId, expectedVersion];
+    const reservationClear = reservationLeaseId
+      ? ["active_lease_id", "active_owner_kind", "active_owner_key", "leased_at"]
+        .map((column) => `, ${column} = CASE WHEN active_lease_id = ? THEN NULL ELSE ${column} END`).join("")
+      : "";
+    const args = [reason, category, now, error, now,
+      ...(reservationLeaseId ? Array<string>(4).fill(reservationLeaseId) : []),
+      slotId, ...(expectedVersion === undefined ? [] : [expectedVersion])];
     const changed = this.db
       .prepare(
         `UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
            quarantine_reason = ?, quarantine_category = ?, quarantined_at = ?,
            last_error = ?, updated_at = ?
-         WHERE ${where} AND state <> 'quarantined'`,
+           ${reservationClear}
+         WHERE ${where} AND state <> 'quarantined'
+           ${reservationLeaseId ? "AND state = 'provisioning'" : ""}`,
       )
       .run(...args);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;

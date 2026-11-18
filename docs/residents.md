@@ -725,8 +725,9 @@ custom server with a secret instead. A reference to an unset variable is refused
 Codex stdio servers may use `env_vars` as a list of local environment variable names. At launch,
 Mission Control copies the set values into the run's private secret snapshot, omits unset names,
 and gives explicit `env` values precedence. Inherited and selected servers use the same path.
-An `env_vars` reference to `MISSION_HOME` requires an explicit `env` override: Mission Control
-gives each process its own state home, and the catalog probe's temporary home cannot be pinned.
+An `env_vars` reference to `MISSION_HOME` or `CODEX_HOME` requires an explicit `env` override:
+Mission Control gives each process its own state home and each resident a private Codex overlay,
+so neither the catalog probe's temporary state home nor its operator Codex home can be pinned.
 Resume uses the saved values, even if the daemon's environment changes. Values are never added
 to catalog responses, generated MCP configuration or launcher arguments. Ambient variables may
 already be visible to the agent through its inherited environment; snapshotting does not make

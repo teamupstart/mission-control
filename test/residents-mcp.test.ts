@@ -400,26 +400,30 @@ test("Codex env_vars are pinned privately for inherited and selected servers, in
   }
 });
 
-test("Codex does not pin the catalog probe's disposable MISSION_HOME", async () => {
+for (const key of ["MISSION_HOME", "CODEX_HOME"]) test(`Codex does not pin the catalog probe's process-scoped ${key}`, async () => {
   const { agentSubprocessEnv } = await import("../src/server/agent-subprocess-env.ts");
   const probeHome = join(home, "catalog-probe");
-  const env = agentSubprocessEnv({ MISSION_HOME: join(home, "operator"), FLEET_HOME: join(home, "legacy"), MCP_TOKEN: SECRET }, { stateHome: probeHome });
+  const operatorCodexHome = join(home, "operator-codex");
+  const env = agentSubprocessEnv({ MISSION_HOME: join(home, "operator"), CODEX_HOME: operatorCodexHome, FLEET_HOME: join(home, "legacy"), MCP_TOKEN: SECRET }, { stateHome: probeHome });
   assert.equal(env.MISSION_HOME, probeHome);
+  assert.equal(env.CODEX_HOME, operatorCodexHome);
   assert.equal(env.FLEET_HOME, undefined, "the catalog probe remains isolated");
-  const entry = { command: "server", env_vars: ["MCP_TOKEN", "MISSION_HOME"] };
+  const entry = { command: "server", env_vars: ["MCP_TOKEN", key] };
+  const reason = new RegExp(`${key}.*cannot be pinned`);
   const definition = catalog.parseCodexServer("state-server", entry, null, env);
-  assert.match(definition.summary.unavailable!, /MISSION_HOME.*cannot be pinned/);
+  assert.match(definition.summary.unavailable!, reason);
   assert.equal(definition.transport, null);
   assert.equal(definition.secrets.size, 0, "a rejected reference binds no values, including preceding names");
   const globals: GlobalRead = { agent: "codex", servers: [definition], problem: null, readAt: 1 };
   for (const settings of [profile({ agent: "codex" }), profile({ agent: "codex", inheritDefaults: false, selected: [{ source: "global", agent: "codex", name: "state-server" }] })]) {
     const resolved = await resolve(settings, globals);
-    assert.ok(!resolved.ok && /MISSION_HOME.*cannot be pinned/.test(resolved.error));
+    assert.ok(!resolved.ok && reason.test(resolved.error));
     assert.ok(!JSON.stringify(resolved).includes(probeHome));
+    assert.ok(!JSON.stringify(resolved).includes(operatorCodexHome));
   }
-  const stable = catalog.parseCodexServer("state-server", { ...entry, env: { MISSION_HOME: "/explicit/server-state" } }, null, env);
+  const stable = catalog.parseCodexServer("state-server", { ...entry, env: { [key]: "/explicit/server-state" } }, null, env);
   assert.equal(stable.summary.unavailable, null, "an explicit value overrides the lifecycle-bound reference");
-  assert.deepEqual(Object.fromEntries(stable.secrets), { "env:MCP_TOKEN": SECRET, "env:MISSION_HOME": "/explicit/server-state" });
+  assert.deepEqual(Object.fromEntries(stable.secrets), { "env:MCP_TOKEN": SECRET, [`env:${key}`]: "/explicit/server-state" });
   const ordinary = catalog.parseCodexServer("ordinary", { command: "server", env_vars: ["MCP_TOKEN", "FLEET_HOME"] }, null, env);
   assert.equal(ordinary.summary.unavailable, null);
   assert.deepEqual(Object.fromEntries(ordinary.secrets), { "env:MCP_TOKEN": SECRET }, "other names still use the isolated probe environment");

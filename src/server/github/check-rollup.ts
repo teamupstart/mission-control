@@ -15,9 +15,11 @@ import type { PrChecks } from "@shared/types.ts";
 // The same check means a GitHub Actions run of the same workflow file, triggering event and check
 // name: a `push` run and a `pull_request` run of one job are two checks, whatever their timing,
 // and a pass in one says nothing about a failure in the other. Two runs of one check that
-// overlapped are independent verdicts too. Only Actions runs say all of that (see `runKey`), so
-// another app's failed check is never retired here. Leaving a stale failure up is a false alarm;
-// letting an unrelated pass hide a real failure would be a merge the gate should have refused.
+// overlapped are independent verdicts too, and so are two jobs of one workflow run that share a
+// display name: a re-run is always a different check suite. Only Actions runs say all of that
+// (see `runKey`), so another app's failed check is never retired here. Leaving a stale failure
+// up is a false alarm; letting an unrelated pass hide a real failure would be a merge the gate
+// should have refused.
 //
 // `gh pr list --json statusCheckRollup`, which the branch poller reads, does not carry the app or
 // the event, so its runs never have a full identity and never retire one another here. What it
@@ -30,7 +32,7 @@ export const CHECK_CONTEXTS = `contexts(first:100){
         nodes{
           __typename
           ... on CheckRun{ name status conclusion startedAt completedAt
-            checkSuite{ app{ slug } workflowRun{ event workflow{ id name } } } }
+            checkSuite{ id app{ slug } workflowRun{ event workflow{ id name } } } }
           ... on StatusContext{ context state createdAt }
         }
       }`;
@@ -56,6 +58,12 @@ interface CheckEntry {
   key: string | null;
   /** The same, by workflow and name alone: enough to suspect a re-run, never to act on one. */
   looseKey: string | null;
+  /**
+   * The check suite this run reported in, or null for a commit status. A run never retires
+   * another from its own suite: two jobs of one workflow run can share a display name, and a
+   * `needs` job with `if: always()` passing after its sibling failed is not a re-run of it.
+   */
+  suite: string | null;
   state: CheckState;
   startedAt: number | null;
   /** When its verdict was in. Null while it is still running: a running check is never stale. */
@@ -101,6 +109,7 @@ function text(value: unknown): string {
 }
 
 type CheckSuite = {
+  id?: unknown;
   app?: { slug?: unknown } | null;
   workflowRun?: { event?: unknown; workflow?: { id?: unknown; name?: unknown } | null } | null;
 } | null;
@@ -112,20 +121,23 @@ const ACTIONS_APP = "github-actions";
  * The full identity of a GraphQL check run - workflow, event and name - or null when there is
  * none to be had, and a run with no identity never retires another.
  *
- * Only a GitHub Actions run has one. Its suite names the workflow it belongs to and the event that
- * triggered it, and both must be there: a blank is not a value two runs can share, or two jobs
- * named `build` in different workflows would become one check and a pass in one would clear the
- * other. The workflow is its node id, not its display name: two workflow files can both be called
- * `CI`, and a name they share is the same blank by another spelling. Every other app's check carries only the app and the name, and an app can report two
+ * Only a GitHub Actions run has one. Its suite names the workflow it belongs to and the event
+ * that triggered it, and both must be there: a blank is not a value two runs can share, or two
+ * jobs named `build` in different workflows would become one check and a pass in one would
+ * clear the other. The workflow is its node id, not its display name: two workflow files can
+ * both be called `CI`, and a name they share is the same blank by another spelling. The suite's
+ * own id must be there too, because a run never retires one from its own suite.
+ *
+ * Every other app's check carries only the app and the name, and an app can report two
  * independent checks under one name - a CI service's `build` job in two of its own workflows -
- * that nothing in GitHub's answer tells apart from a re-run. So another app's failure stands until
- * the next push, exactly as GitHub's own aggregate reads it. Null too for `gh`'s JSON export,
- * which flattens the suite to `workflowName` and drops the rest.
+ * that nothing in GitHub's answer tells apart from a re-run. So another app's failure stands
+ * until the next push, exactly as GitHub's own aggregate reads it. Null too for `gh`'s JSON
+ * export, which flattens the suite to `workflowName` and drops the rest.
  */
 function runKey(o: Record<string, unknown>, name: string): string | null {
   if (!o.checkSuite || typeof o.checkSuite !== "object") return null;
   const suite = o.checkSuite as CheckSuite;
-  if (text(suite?.app?.slug) !== ACTIONS_APP) return null;
+  if (text(suite?.app?.slug) !== ACTIONS_APP || !text(suite?.id)) return null;
   const workflow = text(suite?.workflowRun?.workflow?.id);
   const event = text(suite?.workflowRun?.event);
   return workflow && event ? `run\0${workflow}\0${event}\0${name}` : null;
@@ -152,6 +164,7 @@ function readEntry(e: unknown): CheckEntry | null {
     return {
       key: name ? runKey(o, name) : null,
       looseKey: name ? `run\0${workflowOf(o)}\0${name}` : null,
+      suite: text((o.checkSuite as CheckSuite)?.id) || null,
       state: !done
         ? "pending"
         : FAIL_CONCLUSIONS.has(conclusion)
@@ -174,6 +187,7 @@ function readEntry(e: unknown): CheckEntry | null {
     return {
       key,
       looseKey: key,
+      suite: null,
       state: FAIL_STATES.has(s) ? "fail" : PENDING_STATES.has(s) ? "pending" : s === "SUCCESS" ? "pass" : "unknown",
       startedAt: at,
       finishedAt: at,
@@ -204,7 +218,8 @@ export function rollUpChecks(entries: readonly unknown[]): CheckRollup {
   const read = parsed.filter((e): e is CheckEntry => e !== null);
   const rerun = (entry: CheckEntry, key: "key" | "looseKey"): boolean =>
     entry[key] !== null &&
-    read.some((other) => other !== entry && other[key] === entry[key] && startedAfter(other, entry));
+    read.some((other) => other !== entry && other[key] === entry[key] && startedAfter(other, entry) &&
+      (entry.suite === null || other.suite !== entry.suite));
   let retriedFailure = false;
   let unconfirmedRetry = false;
   let recognized = read.length === parsed.length;

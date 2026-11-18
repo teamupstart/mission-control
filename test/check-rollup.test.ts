@@ -11,13 +11,18 @@ import { rollUpChecks } from "../src/server/github/check-rollup.ts";
 
 const ZERO = "0001-01-01T00:00:00Z"; // `gh`'s export of a timestamp GitHub has not set yet
 
-/** A GraphQL check run from GitHub Actions. The workflow file's id defaults to one per name. */
+let suites = 0;
+/**
+ * A GraphQL check run from GitHub Actions. The workflow file's id defaults to one per name, and
+ * each run reports in its own check suite unless it names one: a re-run is a new workflow run.
+ */
 function run(
   name: string,
   conclusion: string | null,
   startedAt: string | null,
   completedAt: string | null,
-  { workflow = "CI", event = "pull_request", workflowId = `W_${workflow}` }: { workflow?: string; event?: string; workflowId?: string } = {},
+  { workflow = "CI", event = "pull_request", workflowId = `W_${workflow}`, suite = `CS_${++suites}` }:
+    { workflow?: string; event?: string; workflowId?: string; suite?: string } = {},
 ): Record<string, unknown> {
   return {
     __typename: "CheckRun",
@@ -26,7 +31,7 @@ function run(
     conclusion,
     startedAt,
     completedAt,
-    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: workflowId, name: workflow } } },
+    checkSuite: { id: suite, app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: workflowId, name: workflow } } },
   };
 }
 
@@ -146,6 +151,23 @@ test("two workflow files that share a display name are different workflows", () 
   assert.equal(rollup.retriedFailure, false);
 });
 
+test("two jobs of one workflow run that share a name never retire each other", () => {
+  // A `needs` job with `if: always()` starts after its namesake failed and passes. It is the
+  // same suite, so it is a sibling, not a re-run.
+  const rollup = rollUpChecks([
+    run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { suite: "CS_one_run" }),
+    run("build", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z", { suite: "CS_one_run" }),
+  ]);
+  assert.equal(rollup.checks, "failing");
+  assert.equal(rollup.retriedFailure, false);
+  // Without the suite's id there is nothing to tell them apart by, so nothing is retired.
+  const noSuite = (r: Record<string, unknown>) => ({ ...r, checkSuite: { ...(r.checkSuite as object), id: null } });
+  assert.equal(rollUpChecks([
+    noSuite(run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z")),
+    noSuite(run("build", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z")),
+  ]).checks, "failing");
+});
+
 test("a check with the same name in another workflow is a different check", () => {
   const rollup = rollUpChecks([
     run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { workflow: "Release" }),
@@ -184,7 +206,7 @@ test("an Actions run whose suite does not name its app, workflow run, workflow o
   assert.equal(rollUpChecks([
     run("unit", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z"),
     { ...run("unit", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z"),
-      checkSuite: { app: { slug: "github-actions" }, workflowRun: { event: null, workflow: { id: "W_CI", name: "CI" } } } },
+      checkSuite: { id: "CS_eventless", app: { slug: "github-actions" }, workflowRun: { event: null, workflow: { id: "W_CI", name: "CI" } } } },
   ]).checks, "failing");
   // No workflow run at all, on a suite GitHub Actions reported: two workflows' `build` jobs would
   // otherwise share one key.

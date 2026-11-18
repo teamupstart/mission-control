@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { APP_BUNDLE_NAME } from '../src/shared/app-naming.mjs';
 import { dmgRootProblem } from '../src/shared/binary-distribution.mjs';
@@ -89,6 +89,58 @@ function hdiutil(args: readonly string[], beforeAttempt: (attempt: number) => vo
   throw new Error(`hdiutil ${args[0]} failed 3 times:\n${failures.join('\n')}`);
 }
 
+/** True while a volume is mounted at `path`: it then lives on another device than its parent. */
+function isMounted(path: string): boolean {
+  try {
+    return statSync(path).dev !== statSync(dirname(path)).dev;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run `attach`; when it gives up, release whatever it may have left mounted before passing its
+ * error on. A refused attach can still mount the image, and after the last refusal nothing else
+ * would ever detach it, because the work directory's cleanup only deletes files. A release that
+ * itself fails while the mount is still there is reported beside the attach error, never in
+ * place of it; a mount that is gone is a clean release whatever the release reported.
+ */
+function attachOrRelease(
+  attach: () => void,
+  release: () => Pick<SpawnSyncReturns<unknown>, 'status' | 'signal' | 'error'>,
+  mounted: () => boolean,
+): void {
+  try {
+    attach();
+  } catch (error) {
+    const released = release();
+    if ((released.error || released.status !== 0) && mounted()) {
+      const why = `status ${released.status} signal ${released.signal} ${released.error?.message ?? ''}`.trim();
+      throw new Error(`${(error as Error).message}\nForce-detach also failed, so the image may still be mounted: ${why}`, {cause: error});
+    }
+    throw error;
+  }
+}
+
+test('a refused attach releases the mount, and says so when it cannot', () => {
+  const refused = () => { throw new Error('hdiutil attach failed 3 times'); };
+  const failed = () => ({status: 1, signal: null, error: undefined});
+  const ok = () => ({status: 0, signal: null, error: undefined});
+  let released = 0;
+  attachOrRelease(() => {}, () => { released += 1; return ok(); }, () => true);
+  assert.equal(released, 0, 'a successful attach releases nothing');
+  assert.throws(() => attachOrRelease(refused, () => { released += 1; return ok(); }, () => true),
+    (error: Error) => error.message === 'hdiutil attach failed 3 times');
+  assert.equal(released, 1, 'a refused attach is released before its error is passed on');
+  assert.throws(() => attachOrRelease(refused, failed, () => true), (error: Error) =>
+    error.message.startsWith('hdiutil attach failed 3 times\nForce-detach also failed, so the image may still be mounted: status 1')
+    && (error.cause as Error).message === 'hdiutil attach failed 3 times');
+  assert.throws(() => attachOrRelease(refused, () => ({status: null, signal: null, error: new Error('spawnSync hdiutil ETIMEDOUT')}), () => true),
+    /Force-detach also failed, so the image may still be mounted: status null signal null spawnSync hdiutil ETIMEDOUT/);
+  assert.throws(() => attachOrRelease(refused, failed, () => false),
+    (error: Error) => error.message === 'hdiutil attach failed 3 times', 'a mount that is gone needs no report');
+});
+
 function image(t: test.TestContext, entries: readonly string[]): {work: string; dmg: string} {
   const source = layout(t, entries);
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'dmg-root-image-')));
@@ -121,18 +173,16 @@ test('producer qualification refuses a real mounted DMG whose root the installer
     const {work, dmg} = image(t, entries);
     const mount = join(work, 'image');
     mkdirSync(mount);
-    // A refused attach can still leave the image mounted. Before a retry that blocks the next
-    // attempt; after the last refusal nothing else would ever detach it, because the work
-    // directory's cleanup only deletes files.
+    // A refused attach that still mounted would block the next attempt, so each retry starts
+    // from a released mount point, and so does the error after the last one.
     const forceDetach = () => spawnSync('/usr/bin/hdiutil', ['detach', mount, '-force'], {timeout: 60_000, stdio: 'ignore'});
-    try {
-      hdiutil(['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount], (attempt) => {
+    attachOrRelease(
+      () => hdiutil(['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount], (attempt) => {
         if (attempt > 1) forceDetach();
-      });
-    } catch (error) {
-      forceDetach();
-      throw error;
-    }
+      }),
+      forceDetach,
+      () => isMounted(mount),
+    );
     try {
       const installer = installerAcceptsRoot(mount);
       t.diagnostic(JSON.stringify({entries, installer: installer.accepted, producer: producerAccepts(mount)}));

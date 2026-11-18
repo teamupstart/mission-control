@@ -42,9 +42,11 @@ function ghRun(name: string, workflowName: string, conclusion: string, startedAt
     detailsUrl: "https://github.com/acme/demo/actions/runs/1/job/1" };
 }
 
+let suites = 0;
+/** A GraphQL Actions run, each in its own check suite: a re-run is a new workflow run. */
 function node(name: string, workflow: string, event: string, conclusion: string, startedAt: string, completedAt: string) {
   return { __typename: "CheckRun", name, status: "COMPLETED", conclusion, startedAt, completedAt,
-    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: `W_${workflow}`, name: workflow } } } };
+    checkSuite: { id: `CS_${++suites}`, app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: `W_${workflow}`, name: workflow } } } };
 }
 
 function reply(nodes: unknown[], { oid = HEAD, hasNextPage = false } = {}): void {
@@ -119,6 +121,14 @@ test("the failure stands whenever GitHub's answer is not a complete one about th
   await t.test("the answer carries an unreadable node", async () => {
     reply([TITLE_NODES[0], null, TITLE_NODES[1]]);
     assert.equal(await confirmRetriedChecks(dir, nextPr(), { statusCheckRollup: TITLE_RUNS }), "failing");
+  });
+  await t.test("an answer with an unreadable node is read again rather than remembered", async () => {
+    // Same pull request, head and gh rollup: the next tick must ask again, and can then clear.
+    const pr = nextPr();
+    reply([TITLE_NODES[0], null, TITLE_NODES[1]]);
+    assert.equal(await confirmRetriedChecks(dir, pr, { statusCheckRollup: TITLE_RUNS }), "failing");
+    reply(TITLE_NODES);
+    assert.equal(await confirmRetriedChecks(dir, pr, { statusCheckRollup: TITLE_RUNS }), "passing");
   });
   await t.test("an unreadable answer is retried on the next tick rather than remembered", async () => {
     const pr = nextPr();

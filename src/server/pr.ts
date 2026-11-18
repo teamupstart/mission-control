@@ -288,8 +288,10 @@ export async function confirmRetriedChecks(
   if (!contexts) return rollup.checks;
   // The merge gate's bar, so the chip never clears what the gate would still hold: an answer
   // with an unreadable entry or an unrecognised result keeps the failure.
+  // Not remembered either: GitHub may read cleanly on the next tick.
   const confirmed = rollUpChecks(contexts);
-  const checks = confirmed.recognized && confirmed.checks !== null ? confirmed.checks : rollup.checks;
+  if (!confirmed.recognized || confirmed.checks === null) return rollup.checks;
+  const checks = confirmed.checks;
   if (!cacheable) return checks;
   confirmedChecks.delete(candidate.url);
   confirmedChecks.set(candidate.url, { fingerprint, checks });

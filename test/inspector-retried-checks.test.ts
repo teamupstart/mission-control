@@ -27,18 +27,20 @@ chmodSync(gh, 0o755);
 const { fetchPr } = await import("../src/server/inspector/github.ts");
 after(() => rmSync(dir, { force: true, recursive: true }));
 
+let suites = 0;
+/** A GraphQL Actions run, each in its own check suite unless it names one. */
 function run(
   name: string,
   conclusion: string | null,
   startedAt: string,
   completedAt: string | null,
-  { workflow = "Pull request title", event = "pull_request_target", workflowId = `W_${workflow}` }:
-    { workflow?: string; event?: string; workflowId?: string } = {},
+  { workflow = "Pull request title", event = "pull_request_target", workflowId = `W_${workflow}`, suite = `CS_${++suites}` }:
+    { workflow?: string; event?: string; workflowId?: string; suite?: string } = {},
 ) {
   return {
     __typename: "CheckRun", name, status: conclusion === null ? "IN_PROGRESS" : "COMPLETED",
     conclusion, startedAt, completedAt,
-    checkSuite: { app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: workflowId, name: workflow } } },
+    checkSuite: { id: suite, app: { slug: "github-actions" }, workflowRun: { event, workflow: { id: workflowId, name: workflow } } },
   };
 }
 
@@ -63,7 +65,7 @@ test("the query reads the head commit's individual checks beside GitHub's aggreg
   const args = JSON.parse(readFileSync(calls, "utf8").trim()) as string[];
   const query = args.find((arg) => arg.startsWith("query="))!;
   assert.match(query, /statusCheckRollup\{\s*state\s+contexts\(first:100\)/);
-  assert.match(query, /\.\.\. on CheckRun\{ name status conclusion startedAt completedAt\s+checkSuite\{ app\{ slug \} workflowRun\{ event workflow\{ id name \} \} \} \}/);
+  assert.match(query, /\.\.\. on CheckRun\{ name status conclusion startedAt completedAt\s+checkSuite\{ id app\{ slug \} workflowRun\{ event workflow\{ id name \} \} \} \}/);
   assert.match(query, /\.\.\. on StatusContext\{ context state createdAt \}/);
 });
 
@@ -97,6 +99,13 @@ test("GitHub's failing verdict stands whenever the checks cannot prove it stale"
     assert.equal(await checksFor("FAILURE", [
       run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { workflow: "CI", event: "pull_request", workflowId: "W_ci_yml" }),
       run("build", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z", { workflow: "CI", event: "pull_request", workflowId: "W_nightly_yml" }),
+    ]), "failing");
+  });
+  await t.test("two jobs of one workflow run that share a name", async () => {
+    // A `needs` job with `if: always()` passing after its namesake failed is not a re-run of it.
+    assert.equal(await checksFor("FAILURE", [
+      run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { suite: "CS_one_run" }),
+      run("build", "SUCCESS", "2026-10-07T20:02:00Z", "2026-10-07T20:03:00Z", { suite: "CS_one_run" }),
     ]), "failing");
   });
   await t.test("an unreadable node beside a re-checked failure", async () => {

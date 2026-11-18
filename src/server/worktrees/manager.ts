@@ -436,6 +436,23 @@ function validOwner(owner: WorktreeOwner): boolean {
 export const ORPHANED_SLOT_REASON =
   "Git no longer recognizes this slot: its worktree registration is gone, as happens when the main checkout is re-cloned or moved. Destroy removes it.";
 
+const ORPHAN_NOT_PHYSICAL = "orphaned slot path is not its exact physical directory";
+
+/**
+ * `exactSlotPath` compares strings, and every filesystem call resolves each component of the
+ * path it is given. A symbolic link anywhere along it would aim a recursive delete outside the
+ * pool, so the path must be a real directory that resolves to exactly itself (the same bar
+ * `validateResetTarget` holds a reset to).
+ */
+async function physicalDirectory(path: string): Promise<boolean> {
+  try {
+    const [stat, physical] = await Promise.all([lstat(path), realpath(path)]);
+    return stat.isDirectory() && !stat.isSymbolicLink() && physical === resolve(path);
+  } catch {
+    return false;
+  }
+}
+
 function registrationFor(
   registrations: readonly WorktreeRegistration[],
   path: string,
@@ -2180,6 +2197,9 @@ export class WorktreeManager {
       if (!allowUnverifiable) {
         return { outcome: "refused", reason: "Git no longer recognizes this slot, so its files cannot be verified before deletion" };
       }
+      if (!(await physicalDirectory(slot.path))) {
+        return { outcome: "refused", reason: ORPHAN_NOT_PHYSICAL };
+      }
       const blocker = await this.occupancyBlocker(slot.path);
       if (blocker) return { outcome: "refused", reason: blocker };
     }
@@ -2192,6 +2212,10 @@ export class WorktreeManager {
       if ((await observeSlotOrphan(slot.path)) !== "unregistered") {
         this.quarantine(pruning, "transition", "orphaned slot changed before its removal");
         return { outcome: "outcomeUnknown", reason: "orphaned slot changed before its removal" };
+      }
+      if (!(await physicalDirectory(slot.path))) {
+        this.quarantine(pruning, "transition", ORPHAN_NOT_PHYSICAL);
+        return { outcome: "outcomeUnknown", reason: ORPHAN_NOT_PHYSICAL };
       }
       try {
         await rm(slot.path, { recursive: true, maxRetries: 2 });

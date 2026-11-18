@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
 import {
@@ -281,4 +281,23 @@ test("Return on an orphaned slot promises only what it does: the lease goes, the
     if (disk === "unregistered") assert.equal(readFileSync(join(lease.path, "kept.md"), "utf8"), "kept\n");
     db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
   }
+});
+
+test("an orphaned slot reached through a symbolic link is never deleted, wherever the link sits", async () => {
+  const { manager, lease, slot } = await orphanedTaskSlot("mission-orphan-symlink-");
+  assert.equal((await manager.release(current(manager, lease), { ownerAuthorized: true })).outcome, "released");
+  // The slot's parent `pool/N` now leads outside the pool to a directory with no `.git`: by its
+  // string path this is still the exact slot, and by every filesystem read it is an orphan.
+  const { root } = mkOriginAndClone("mission-orphan-symlink-outside-");
+  const outside = join(root, "outside");
+  mkdirSync(join(outside, basename(slot.path)), { recursive: true });
+  writeFileSync(join(outside, basename(slot.path), "precious.md"), "not the pool's\n");
+  rmSync(dirname(slot.path), { recursive: true, force: true });
+  symlinkSync(outside, dirname(slot.path));
+  assert.equal(await observeSlotOrphan(slot.path), "unregistered");
+
+  const removed = await manager.removeSlot({ slotId: slot.id, allowDirty: true, allowUnmerged: true, allowUnverifiable: true });
+  assert.equal(removed.outcome, "refused");
+  assert.equal(readFileSync(join(outside, basename(slot.path), "precious.md"), "utf8"), "not the pool's\n");
+  assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
 });

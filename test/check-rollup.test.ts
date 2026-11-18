@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { rollUpChecks } from "../src/server/github/check-rollup.ts";
 
@@ -196,20 +197,37 @@ test("two jobs of one workflow run that share a name never retire each other", (
   ]).checks, "failing");
 });
 
-test("a manual re-run's earlier attempt never reaches the rollup, so the suite rule cannot hold it", () => {
-  // "Re-run jobs" adds an attempt to the SAME workflow run and check suite. GitHub's rollup keeps
-  // only each job's latest attempt: on teamupstart/mission-control 0868fc5, REST listed the failed
-  // and the passing attempt of `e2e (shard 13/60)` in suite 119508079700, while statusCheckRollup
-  // listed only the pass and read SUCCESS. So what arrives here is the pass alone.
-  assert.equal(rollUpChecks([
-    run("e2e (shard 13/60)", "SUCCESS", "2026-11-17T18:29:08Z", "2026-11-17T18:33:00Z", { suite: "CS_119508079700" }),
-  ]).checks, "passing");
-  // Were both attempts ever reported, one suite would make them siblings and the failure would
-  // stand: a false alarm, never a merge over a failure.
-  assert.equal(rollUpChecks([
-    run("e2e (shard 13/60)", "FAILURE", "2026-11-17T18:19:08Z", "2026-11-17T18:23:00Z", { suite: "CS_119508079700" }),
-    run("e2e (shard 13/60)", "SUCCESS", "2026-11-17T18:29:08Z", "2026-11-17T18:33:00Z", { suite: "CS_119508079700" }),
-  ]).checks, "failing");
+test("a manual re-run's failed attempt is absent from GitHub's rollup, so the same-suite rule never holds it", () => {
+  // Captured from GitHub, not built here: "Re-run jobs" adds an attempt to the SAME workflow run,
+  // and REST lists both attempts of the job in one check suite - yet the GraphQL rollup this
+  // code reads lists only the latest. See the fixture's `source` for the commit and run.
+  type Attempt = { id: number; name: string; conclusion: string; check_suite: { id: number } };
+  type Node = { databaseId?: number; name?: string; conclusion?: string; checkSuite?: { databaseId?: number } };
+  const capture = JSON.parse(readFileSync(new URL("./fixtures/github-rerun-attempts-rollup.json", import.meta.url), "utf8")) as {
+    rest: { check_runs: Attempt[] };
+    graphql: { statusCheckRollup: { state: string; contexts: { pageInfo: { hasNextPage: boolean }; nodes: Node[] } } };
+  };
+  const attempts = capture.rest.check_runs;
+  const failed = attempts.find((attempt) => attempt.conclusion === "failure")!;
+  const passed = attempts.find((attempt) => attempt.conclusion === "success")!;
+  assert.equal(attempts.length, 2);
+  assert.equal(failed.check_suite.id, passed.check_suite.id, "both attempts report in one check suite");
+
+  const rollup = capture.graphql.statusCheckRollup;
+  assert.equal(rollup.contexts.pageInfo.hasNextPage, false, "the capture is the whole rollup");
+  const nodes = rollup.contexts.nodes;
+  assert.ok(!nodes.some((node) => node.databaseId === failed.id), "the failed attempt is not in the rollup");
+  assert.deepEqual(
+    nodes.filter((node) => node.name === passed.name).map((node) => [node.databaseId, node.conclusion, node.checkSuite?.databaseId]),
+    [[passed.id, "SUCCESS", passed.check_suite.id]],
+    "only the latest attempt is",
+  );
+  // So the commit reads passing with no failure to retire - the same answer as GitHub's own state.
+  assert.equal(rollup.state, "SUCCESS");
+  const read = rollUpChecks(nodes);
+  assert.equal(read.checks, "passing");
+  assert.deepEqual(read.failures, []);
+  assert.equal(read.retriedFailure, false);
 });
 
 test("a check with the same name in another workflow is a different check", () => {

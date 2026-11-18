@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import test from 'node:test';
 import { APP_BUNDLE_NAME } from '../src/shared/app-naming.mjs';
 import { dmgRootProblem } from '../src/shared/binary-distribution.mjs';
@@ -90,24 +90,44 @@ function hdiutil(args: readonly string[], beforeAttempt: (attempt: number) => vo
 }
 
 /**
- * True only when nothing is confirmed mounted at `path`: it sits on its parent's device, or it no
- * longer exists. Any other failure to look - `EIO`, `EACCES` - proves nothing either way, so it
- * reads as possibly still mounted.
+ * Every image hdiutil reports attached, by real path, or null when it cannot say. Read the way
+ * `scripts/binary-install-policy.mjs` reads it: `hdiutil info -plist` through `plutil`.
  */
-function mountGone(path: string, stat: (path: string) => {dev: number} = statSync): boolean {
+function attachedImages(): string[] | null {
+  const plist = spawnSync('/usr/bin/hdiutil', ['info', '-plist'], {timeout: 10_000, maxBuffer: 1024 * 1024});
+  if (plist.error || plist.status !== 0) return null;
+  const json = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'],
+    {input: plist.stdout, encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024});
+  if (json.error || json.status !== 0) return null;
   try {
-    return stat(path).dev === stat(dirname(path)).dev;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+    const images = (JSON.parse(json.stdout) as {images?: unknown}).images;
+    if (!Array.isArray(images)) return null;
+    return images.flatMap((image: {'image-path'?: unknown}) => {
+      const path = image['image-path'];
+      if (typeof path !== 'string') return [];
+      try { return [realpathSync(path)]; } catch { return [path]; }
+    });
+  } catch {
+    return null;
   }
+}
+
+/**
+ * True only when hdiutil confirms `dmg` is no longer attached. The image itself, not its mount
+ * point: an attach can attach the device without mounting it where we asked, and a mount point
+ * that is empty says nothing about that. An inventory that cannot be read proves nothing either.
+ */
+function imageDetached(dmg: string, inventory: () => readonly string[] | null = attachedImages): boolean {
+  const images = inventory();
+  return images !== null && !images.includes(dmg);
 }
 
 /**
  * Run `attach`; when it gives up, release whatever it may have left mounted before passing its
  * error on. A refused attach can still mount the image, and after the last refusal nothing else
  * would ever detach it, because the work directory's cleanup only deletes files. A release that
- * itself fails is reported beside the attach error, never in place of it, unless the mount is
- * confirmed gone - an unreadable mount state is not that confirmation.
+ * itself fails is reported beside the attach error, never in place of it, unless the image is
+ * confirmed detached - an inventory that cannot be read is not that confirmation.
  */
 function attachOrRelease(
   attach: () => void,
@@ -143,19 +163,19 @@ test('a refused attach releases the mount, and says so when it cannot', () => {
     /Force-detach also failed, so the image may still be mounted: status null signal null spawnSync hdiutil ETIMEDOUT/);
   assert.throws(() => attachOrRelease(refused, failed, () => true),
     (error: Error) => error.message === 'hdiutil attach failed 3 times', 'a mount that is gone needs no report');
-  // A probe that cannot read the mount state is not proof it is gone: the failed release is reported.
-  const unreadable = () => mountGone('/fixture/image', () => { throw Object.assign(new Error('EIO: i/o error'), {code: 'EIO'}); });
-  assert.throws(() => attachOrRelease(refused, failed, unreadable), /Force-detach also failed/);
+  // An image still attached, or an inventory that cannot be read, is not a clean release.
+  assert.throws(() => attachOrRelease(refused, failed, () => imageDetached('/w/fixture.dmg', () => ['/w/fixture.dmg'])),
+    /Force-detach also failed/);
+  assert.throws(() => attachOrRelease(refused, failed, () => imageDetached('/w/fixture.dmg', () => null)),
+    /Force-detach also failed/);
 });
 
-test('a mount is gone only when the probe confirms it', () => {
-  const devices = (mount: number, parent: number) => (path: string) => ({dev: path === '/fixture/image' ? mount : parent});
-  assert.equal(mountGone('/fixture/image', devices(7, 7)), true, 'same device as its parent: nothing mounted');
-  assert.equal(mountGone('/fixture/image', devices(9, 7)), false, 'another device: still mounted');
-  const failing = (code: string) => () => { throw Object.assign(new Error(code), {code}); };
-  assert.equal(mountGone('/fixture/image', failing('ENOENT')), true, 'a mount point that no longer exists holds nothing');
-  assert.equal(mountGone('/fixture/image', failing('EIO')), false);
-  assert.equal(mountGone('/fixture/image', failing('EACCES')), false);
+test('an image is detached only when the inventory confirms it', () => {
+  // Attached but mounted nowhere we asked: an empty mount point proves nothing, the inventory does.
+  assert.equal(imageDetached('/w/fixture.dmg', () => ['/System/other.dmg', '/w/fixture.dmg']), false);
+  assert.equal(imageDetached('/w/fixture.dmg', () => ['/System/other.dmg']), true);
+  assert.equal(imageDetached('/w/fixture.dmg', () => []), true);
+  assert.equal(imageDetached('/w/fixture.dmg', () => null), false, 'an unreadable inventory is not confirmation');
 });
 
 function image(t: test.TestContext, entries: readonly string[]): {work: string; dmg: string} {
@@ -198,7 +218,7 @@ test('producer qualification refuses a real mounted DMG whose root the installer
         if (attempt > 1) forceDetach();
       }),
       forceDetach,
-      () => mountGone(mount),
+      () => imageDetached(dmg),
     );
     try {
       const installer = installerAcceptsRoot(mount);

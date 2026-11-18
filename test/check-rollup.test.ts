@@ -168,6 +168,22 @@ test("two jobs of one workflow run that share a name never retire each other", (
   ]).checks, "failing");
 });
 
+test("a manual re-run's earlier attempt never reaches the rollup, so the suite rule cannot hold it", () => {
+  // "Re-run jobs" adds an attempt to the SAME workflow run and check suite. GitHub's rollup keeps
+  // only each job's latest attempt: on teamupstart/mission-control 0868fc5, REST listed the failed
+  // and the passing attempt of `e2e (shard 13/60)` in suite 119508079700, while statusCheckRollup
+  // listed only the pass and read SUCCESS. So what arrives here is the pass alone.
+  assert.equal(rollUpChecks([
+    run("e2e (shard 13/60)", "SUCCESS", "2026-11-17T18:29:08Z", "2026-11-17T18:33:00Z", { suite: "CS_119508079700" }),
+  ]).checks, "passing");
+  // Were both attempts ever reported, one suite would make them siblings and the failure would
+  // stand: a false alarm, never a merge over a failure.
+  assert.equal(rollUpChecks([
+    run("e2e (shard 13/60)", "FAILURE", "2026-11-17T18:19:08Z", "2026-11-17T18:23:00Z", { suite: "CS_119508079700" }),
+    run("e2e (shard 13/60)", "SUCCESS", "2026-11-17T18:29:08Z", "2026-11-17T18:33:00Z", { suite: "CS_119508079700" }),
+  ]).checks, "failing");
+});
+
 test("a check with the same name in another workflow is a different check", () => {
   const rollup = rollUpChecks([
     run("build", "FAILURE", "2026-10-07T20:00:00Z", "2026-10-07T20:01:00Z", { workflow: "Release" }),

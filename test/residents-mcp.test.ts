@@ -334,7 +334,7 @@ test("a Codex answer missing its layers is a failed read, so an inherit-on launc
   assert.ok(!inherited.ok && /could not read Codex's global MCP servers: Codex did not report its configuration layers/.test(inherited.error));
 });
 
-test("Codex's catalog reads the raw user layer and refuses fields it cannot map, OAuth and env references", () => {
+test("Codex's catalog reads the raw user layer and refuses fields it cannot map, OAuth and HTTP env references", () => {
   const table = catalog.codexUserMcpTable({ config: {}, layers: [
     { name: { type: "project" }, config: { mcp_servers: { projectonly: { command: "x" } } } },
     { name: { type: "user", file: "/u/config.toml" }, config: { mcp_servers: {
@@ -349,7 +349,7 @@ test("Codex's catalog reads the raw user layer and refuses fields it cannot map,
   assert.ok(typeof table !== "string");
   assert.deepEqual(Object.keys(table), ["fs", "web", "oauth", "refs", "bearer", "off"], "only the user layer");
   const auth = new Map([["web", "bearer_token"], ["oauth", "o_auth"], ["bearer", "bearer_token"]]);
-  const servers = Object.entries(table).map(([name, entry]) => catalog.parseCodexServer(name, entry, auth.get(name) ?? null));
+  const servers = Object.entries(table).map(([name, entry]) => catalog.parseCodexServer(name, entry, auth.get(name) ?? null, {}));
   const [fs, web, oauth, refs, bearer, off] = servers;
   assert.equal(fs!.summary.unavailable, null);
   assert.deepEqual(fs!.options, { codex: { startupTimeoutSec: 12, toolTimeoutSec: 30, enabledTools: ["read"] } });
@@ -357,11 +357,47 @@ test("Codex's catalog reads the raw user layer and refuses fields it cannot map,
   assert.equal(web!.summary.unavailable, null);
   assert.equal(web!.secrets.get("header:Authorization"), `Bearer ${SECRET}`);
   assert.match(oauth!.summary.unavailable!, /OAuth login held by Codex/);
-  assert.match(refs!.summary.unavailable!, /env_vars/);
+  assert.equal(refs!.summary.unavailable, null);
   assert.match(bearer!.summary.unavailable!, /bearer_token_env_var/);
   assert.equal(off!.summary.enabled, false);
   assert.ok(!JSON.stringify(servers.map((server) => server.summary)).includes(SECRET));
   assert.match(catalog.parseCodexServer("web", { url: "https://x" }, undefined).summary.unavailable!, /could not say how it authenticates/);
+});
+
+test("Codex env_vars are pinned privately for inherited and selected servers, including resume", async () => {
+  const env: NodeJS.ProcessEnv = { NODE_REPL_TOKEN: SECRET, OVERRIDE: "ambient", EMPTY: "" };
+  const entry = { command: "node-repl", env_vars: ["NODE_REPL_TOKEN", "OVERRIDE", "EMPTY", "UNSET", "NODE_REPL_TOKEN"], env: { OVERRIDE: "explicit" } };
+  const definition = catalog.parseCodexServer("node_repl", entry, null, env);
+  assert.equal(definition.summary.unavailable, null);
+  assert.deepEqual(definition.summary.envNames, ["NODE_REPL_TOKEN", "OVERRIDE", "EMPTY"]);
+  assert.deepEqual(Object.fromEntries(definition.secrets), { "env:NODE_REPL_TOKEN": SECRET, "env:OVERRIDE": "explicit", "env:EMPTY": "" });
+  assert.ok(!JSON.stringify(definition.summary).includes(SECRET));
+  const globals: GlobalRead = { agent: "codex", servers: [definition], problem: null, readAt: 1 };
+  for (const settings of [profile({ agent: "codex" }), profile({ agent: "codex", inheritDefaults: false, selected: [{ source: "global", agent: "codex", name: "node_repl" }] })]) {
+    const resolved = await resolve(settings, globals);
+    assert.ok(resolved.ok && resolved.servers);
+    assert.deepEqual(resolved.servers.map((server) => server.name), ["node_repl"]);
+    const runId = crypto.randomUUID();
+    seedRun(runId, resolved.servers);
+    for (const changed of [false, true]) {
+      if (changed) env.NODE_REPL_TOKEN = "changed-after-launch";
+      const entries = launch.residentMcpLaunchForRun(runId)!.forStart();
+      assert.ok(!JSON.stringify(entries).includes(SECRET), "neither argv nor generated MCP entries carry the resolved value");
+      const server = entries[0]!;
+      assert.equal(server.shape, "launcher");
+      if (server.shape !== "launcher") throw new Error("expected scoped launcher");
+      const { ticket } = JSON.parse(readFileSync(server.args.at(-1)!, "utf8"));
+      const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: "node_repl" });
+      assert.ok(redeemed.ok && redeemed.definition.transport === "stdio");
+      assert.deepEqual(redeemed.definition.env, { NODE_REPL_TOKEN: SECRET, OVERRIDE: "explicit", EMPTY: "" }, "resume uses the saved values");
+    }
+  }
+  const unset = catalog.parseCodexServer("optional", { command: "srv", env_vars: ["UNSET"] }, null, {});
+  assert.equal(unset.summary.unavailable, null);
+  assert.equal(unset.secrets.size, 0, "Codex omits unset optional variables");
+  for (const env_vars of ["TOKEN", [1], [{ name: "TOKEN", source: "remote" }]]) {
+    assert.match(catalog.parseCodexServer("bad", { command: "srv", env_vars }, null, env).summary.unavailable!, /env_vars/);
+  }
 });
 
 test("a global server named __proto__ is listed as unavailable on either harness, never silently dropped", () => {
@@ -409,7 +445,7 @@ test("a harness without a global reader offers no global servers, never another 
 function globalsOf(agent: "claude" | "codex", servers: Record<string, unknown>): GlobalRead {
   const parse = agent === "claude"
     ? (name: string, entry: unknown) => catalog.parseClaudeServer(name, entry, {})
-    : (name: string, entry: unknown) => catalog.parseCodexServer(name, entry, null);
+    : (name: string, entry: unknown) => catalog.parseCodexServer(name, entry, null, {});
   return { agent, servers: Object.entries(servers).map(([name, entry]) => parse(name, entry)), problem: null, readAt: 1 };
 }
 

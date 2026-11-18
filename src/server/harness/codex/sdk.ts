@@ -1577,6 +1577,11 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // `CODEX_HOME` whose generated `config.toml` holds only the snapshot, verified against
       // every other configuration layer below before any thread loads a server.
       const resident = opts.residentMcp ?? null;
+      // The resident cwd is its worktree root or private repository-free workspace. Bound
+      // project discovery there: an ancestor's .codex (notably the operator home the overlay
+      // replaced) must not merge back in as a project. Workspace-local config still loads.
+      // Use process flags so config/read, thread/start and thread/resume share the boundary.
+      const residentArgs = resident ? ["-c", "project_root_markers=[]"] : [];
       const overlay = resident ? `${resident.privateDir}/codex-home` : null;
       // Verified on credential-free entries first: this start's tickets are minted only once the
       // layers check out, immediately before the thread loads its servers, so a slow startup or
@@ -1585,7 +1590,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       let overlayConfig: string | null = null;
       if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: previewEntries });
       const transport = await deps.connect(
-        [...args, ...extraDirArgs, ...compactArgs],
+        [...args, ...extraDirArgs, ...compactArgs, ...residentArgs],
         opts.cwd,
         opts.stateHome,
         {

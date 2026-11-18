@@ -7,11 +7,13 @@ import { settled } from "../fixtures/settle.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 
 // The fake otherwise mints its conversation id from its pid, which changes on restart.
-test.use({ daemonEnv: { MC_E2E_CODEX_THREAD_ID: "01999999-7777-7000-8000-000000000001", CODEX_HOME: "" } });
+test.use({ daemonEnv: { MC_E2E_CODEX_THREAD_ID: "01999999-7777-7000-8000-000000000001", CODEX_HOME: "", MC_E2E_CODEX_ACTIVE_HOME_LAYER: "1", MC_E2E_NODE_REPL_TOKEN: "e2e-node-repl-sentinel" } });
 
-for (const agent of ["claude", "codex"] as const) {
-  test(`a ${agent} resident without a repository survives restart and removes its workspace on Complete & close`, async ({ dashboard: page, daemon }) => {
-    const evidence = artifactsDir(process.env.MC_E2E_RESIDENT_EVIDENCE_TOPIC ?? "residents-no-repo");
+for (const [agent, inheritDefaults] of [["claude", true], ["codex", false], ["codex", true]] as const) {
+  const defaults = agent === "codex" && inheritDefaults;
+  test(`a ${agent} resident without a repository survives restart and removes its workspace on Complete & close${defaults ? " with default MCP inheritance" : ""}`, async ({ dashboard: page, daemon }) => {
+    const topic = defaults ? "residents-default-mcp" : "residents-no-repo";
+    const evidence = artifactsDir(process.env.MC_E2E_RESIDENT_EVIDENCE_TOPIC ? `${process.env.MC_E2E_RESIDENT_EVIDENCE_TOPIC}/${topic}` : topic);
     if (process.env.MC_E2E_EVIDENCE) mkdirSync(evidence, { recursive: true });
     const read = async <T,>(path: string): Promise<T> => {
       const response = await fetch(`${daemon.baseURL}${path}`);
@@ -36,6 +38,12 @@ for (const agent of ["claude", "codex"] as const) {
       writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({ models: [
         { slug: "gpt-5.4", context_window: 272_000, effective_context_window_percent: 95 },
       ] }));
+      // Setup's own registration must not block launch or resume when Codex would otherwise
+      // rediscover the operator home as an active project layer (issue #1513).
+      writeFileSync(join(codexHome, "config.toml"), '[mcp_servers.mission-control]\ncommand = "native-mission"\n[mcp_servers.node_repl]\ncommand = "native-repl"\nenv_vars = ["MC_E2E_NODE_REPL_TOKEN"]\n');
+      const inheritance = editor.getByRole("checkbox", { name: "Inherit harness defaults" });
+      await expect(inheritance).toBeChecked();
+      if (!inheritDefaults) await inheritance.uncheck();
     }
     // Exercise clearing an existing default in both the editor and Dispatch.
     await editor.getByLabel("Default repository").fill(daemon.repo);
@@ -49,6 +57,7 @@ for (const agent of ["claude", "codex"] as const) {
     const saved = page.getByRole("region", { name: `Resident profile ${name}` });
     await saved.getByRole("button", { name: "Launch" }).click();
     const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    if (defaults) await expect(dialog).toContainText("MCP: defaults");
     await dialog.getByLabel("Repository").fill(daemon.repo);
     await page.keyboard.press("Escape");
     await dialog.getByRole("button", { name: "No repository" }).click();
@@ -108,7 +117,18 @@ for (const agent of ["claude", "codex"] as const) {
           expect(flags.autoMemoryEnabled).toBe(true);
         } else {
           expect(record.argv.join(" ")).toContain(state.directory);
+          expect(record.argv).toContain("project_root_markers=[]");
         }
+      }
+      if (agent === "codex") {
+        const mcpRoot = join(daemon.home, "residents", "mcp");
+        const overlays = readdirSync(mcpRoot).map((run) => join(mcpRoot, run, "codex-home", "config.toml")).filter(existsSync);
+        expect(overlays).toHaveLength(1);
+        const config = readFileSync(overlays[0]!, "utf8");
+        if (defaults) expect(config).toContain('[mcp_servers."node_repl"]');
+        else expect(config).not.toContain('[mcp_servers."node_repl"]');
+        expect(config).not.toContain("e2e-node-repl-sentinel");
+        expect(config).not.toContain("env_vars");
       }
     };
     assertMemoryLaunch();
@@ -119,7 +139,7 @@ for (const agent of ["claude", "codex"] as const) {
     // binding event; crashing before it would correctly take the unresumable exit path.
     await expect.poll(async () => (await read<Session[]>("/api/sessions")).find((candidate) => candidate.id === session.id)?.agentSessionId).toBeTruthy();
     await daemon.crash();
-    await daemon.restart();
+    await daemon.restart(defaults ? { MC_E2E_NODE_REPL_TOKEN: "changed-after-launch" } : undefined);
     await expect.poll(async () => (await read<Session[]>("/api/sessions")).some((candidate) => candidate.id === session.id)).toBeTruthy();
     expect(existsSync(sentinel)).toBeTruthy();
     expect((await read<{ directory: string }>(stateUrl)).directory).toBe(state.directory);
@@ -186,6 +206,8 @@ for (const agent of ["claude", "codex"] as const) {
     await expect(statePanel.getByRole("region", { name: "State file MEMORY.md" })).toContainText("handled reply 42");
     await expect(statePanel.locator("pre")).toHaveCSS("font-size", descriptionSize);
     if (process.env.MC_E2E_EVIDENCE) {
+      // A focused MEMORY.md button can keep its focus tooltip after the pointer leaves.
+      await statePanel.locator("pre").click();
       await page.mouse.move(0, 0);
       await expect(page.locator(".tooltip")).toHaveCount(0);
       await statePanel.screenshot({ path: join(evidence, `${agent}-durable-state.png`) });

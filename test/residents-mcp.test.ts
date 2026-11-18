@@ -400,6 +400,31 @@ test("Codex env_vars are pinned privately for inherited and selected servers, in
   }
 });
 
+test("Codex does not pin the catalog probe's disposable MISSION_HOME", async () => {
+  const { agentSubprocessEnv } = await import("../src/server/agent-subprocess-env.ts");
+  const probeHome = join(home, "catalog-probe");
+  const env = agentSubprocessEnv({ MISSION_HOME: join(home, "operator"), FLEET_HOME: join(home, "legacy"), MCP_TOKEN: SECRET }, { stateHome: probeHome });
+  assert.equal(env.MISSION_HOME, probeHome);
+  assert.equal(env.FLEET_HOME, undefined, "the catalog probe remains isolated");
+  const entry = { command: "server", env_vars: ["MCP_TOKEN", "MISSION_HOME"] };
+  const definition = catalog.parseCodexServer("state-server", entry, null, env);
+  assert.match(definition.summary.unavailable!, /MISSION_HOME.*cannot be pinned/);
+  assert.equal(definition.transport, null);
+  assert.equal(definition.secrets.size, 0, "a rejected reference binds no values, including preceding names");
+  const globals: GlobalRead = { agent: "codex", servers: [definition], problem: null, readAt: 1 };
+  for (const settings of [profile({ agent: "codex" }), profile({ agent: "codex", inheritDefaults: false, selected: [{ source: "global", agent: "codex", name: "state-server" }] })]) {
+    const resolved = await resolve(settings, globals);
+    assert.ok(!resolved.ok && /MISSION_HOME.*cannot be pinned/.test(resolved.error));
+    assert.ok(!JSON.stringify(resolved).includes(probeHome));
+  }
+  const stable = catalog.parseCodexServer("state-server", { ...entry, env: { MISSION_HOME: "/explicit/server-state" } }, null, env);
+  assert.equal(stable.summary.unavailable, null, "an explicit value overrides the lifecycle-bound reference");
+  assert.deepEqual(Object.fromEntries(stable.secrets), { "env:MCP_TOKEN": SECRET, "env:MISSION_HOME": "/explicit/server-state" });
+  const ordinary = catalog.parseCodexServer("ordinary", { command: "server", env_vars: ["MCP_TOKEN", "FLEET_HOME"] }, null, env);
+  assert.equal(ordinary.summary.unavailable, null);
+  assert.deepEqual(Object.fromEntries(ordinary.secrets), { "env:MCP_TOKEN": SECRET }, "other names still use the isolated probe environment");
+});
+
 test("a global server named __proto__ is listed as unavailable on either harness, never silently dropped", () => {
   // Hand-written JSON: JSON.parse keeps `__proto__` as an own key, which is what an operator's
   // .claude.json would carry.

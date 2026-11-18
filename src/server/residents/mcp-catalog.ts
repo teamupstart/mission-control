@@ -407,6 +407,11 @@ export function parseCodexServer(name: string, entry: unknown, authStatus: strin
     // retroactively, but it introduces no new environment exposure on launch or resume.
     const resolvedEnv = new Map<string, string>();
     for (const key of envVars) {
+      // The probe's state home is deleted after this read, and each launch has its own.
+      // An explicit env value wins as usual; otherwise this reference cannot be saved.
+      if (key === "MISSION_HOME" && !Object.hasOwn(envTable, key)) {
+        return unreadable(name, "stdio", "it reads MISSION_HOME from env_vars, which is process-scoped and cannot be pinned; use an explicit env value instead");
+      }
       const value = Object.hasOwn(env, key) ? env[key] : undefined;
       if (value !== undefined) resolvedEnv.set(key, value);
     }

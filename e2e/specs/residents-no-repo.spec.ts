@@ -105,9 +105,10 @@ for (const [agent, inheritDefaults] of [["claude", true], ["codex", false], ["co
     const stateUrl = `/api/residents/profiles/${profile.id}/state`;
     const state = await read<{ directory: string }>(stateUrl);
     writeFileSync(join(state.directory, "MEMORY.md"), "Do not notify twice: handled reply 42.");
-    const assertMemoryLaunch = () => {
-      const records = readdirSync(join(daemon.recordDir, agent)).filter((f) => f.startsWith("invocation-")).map((f) => JSON.parse(readFileSync(join(daemon.recordDir, agent, f), "utf8")))
-        .filter((r) => r.cwd === task!.repoRoot);
+    const launchRecords = () => readdirSync(join(daemon.recordDir, agent)).filter((f) => f.startsWith("invocation-")).map((file) => ({
+      ...JSON.parse(readFileSync(join(daemon.recordDir, agent, file), "utf8")), file,
+    })).filter((r) => r.cwd === task!.repoRoot);
+    const assertMemoryLaunch = (records = launchRecords()) => {
       expect(records.length).toBeGreaterThan(0);
       for (const record of records) {
         expect(record.residentStateDir).toBe(state.directory);
@@ -138,13 +139,16 @@ for (const [agent, inheritDefaults] of [["claude", true], ["codex", false], ["co
     // A restart resumes a bound conversation. Launch acceptance precedes the driver's
     // binding event; crashing before it would correctly take the unresumable exit path.
     await expect.poll(async () => (await read<Session[]>("/api/sessions")).find((candidate) => candidate.id === session.id)?.agentSessionId).toBeTruthy();
+    const beforeRestart = new Set(launchRecords().map((record) => record.file));
     await daemon.crash();
     await daemon.restart(defaults ? { MC_E2E_NODE_REPL_TOKEN: "changed-after-launch" } : undefined);
+    const resumedLaunches = () => launchRecords().filter((record) => !beforeRestart.has(record.file));
+    await expect.poll(() => resumedLaunches().length).toBeGreaterThan(0);
+    assertMemoryLaunch(resumedLaunches());
     await expect.poll(async () => (await read<Session[]>("/api/sessions")).some((candidate) => candidate.id === session.id)).toBeTruthy();
     expect(existsSync(sentinel)).toBeTruthy();
     expect((await read<{ directory: string }>(stateUrl)).directory).toBe(state.directory);
     expect(readFileSync(join(state.directory, "MEMORY.md"), "utf8")).toContain("reply 42");
-    assertMemoryLaunch();
     const restored = (await read<Session[]>("/api/sessions")).find((candidate) => candidate.id === session.id)!;
     expect(restored).toMatchObject({ cwd: task.repoRoot, repoRoot: null, gitRoot: null });
     await page.goto(`${daemon.baseURL}/#/fleet`);

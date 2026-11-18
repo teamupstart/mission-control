@@ -72,8 +72,10 @@ inner tmux pane as the most specific identity, then prefers a persistent Herdr w
 outer self-hosting cmux surface when more than one backend can describe a process.
 
 cmux needs two things from the machine beyond its CLI, both checked and repairable in
-**Settings > Setup**: its app has to be running, since the control socket exists only while it
-is, and `automation.socketControlMode` has to be `allowAll` rather than the shipped `cmuxOnly`,
+**Settings > Setup**: its app has to be running and listening on its control socket. Choose
+**Open cmux** after installing or quitting it, including when an exit left a stale socket
+reporting “Connection refused”. Separately, `automation.socketControlMode` has to be `allowAll`
+rather than the shipped `cmuxOnly`,
 which admits only processes cmux started itself. It is also the one backend whose paste submits.
 cmux's typing method writes a leading ESC in a terminal write of its own, so bracketed-paste
 markers written by hand reach the agent as an Escape keypress and the literal text `[200~`; its

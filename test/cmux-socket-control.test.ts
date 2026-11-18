@@ -48,9 +48,25 @@ test("a closed app and a refusing socket are told apart by what cmux said", asyn
   assert.deepEqual(refused, { state: "refused" });
 });
 
+test("an exited cmux with a stale socket offers the same repair as a missing socket", async () => {
+  // Native cmux 0.64.22 leaves this socket after SIGTERM; connecting cannot launch the app.
+  const probe = await cmuxControlProbe(exec({
+    stderr: "Error: Failed to connect to socket at /tmp/cmux-repro/cmux.sock (Connection refused, errno 61)\n",
+    code: 1,
+  }));
+  assert.deepEqual(probe, { state: "stopped" });
+});
+
 test("any other failure keeps cmux's own sentence rather than being read as one of the two", async () => {
   const probe = await cmuxControlProbe(exec({ stderr: "Error: socket handshake timed out\n", code: 1 }));
   assert.deepEqual(probe, { state: "failed", error: "Error: socket handshake timed out" });
+});
+
+test("a socket connection denied by permissions is not a closed app", async () => {
+  const error = "Error: Failed to connect to socket at /tmp/cmux.sock (Permission denied, errno 13)";
+  assert.deepEqual(await cmuxControlProbe(exec({ stderr: error, code: 1 })), {
+    state: "failed", error,
+  });
 });
 
 test("a failure with nothing on stderr still says which call failed", async () => {

@@ -766,10 +766,16 @@ test("with a scan held, a fresh or rescan read on a stalled mount answers from i
   try {
     rmSync(SNAPSHOT, { force: true });
     setRepoIndexConfig({ directories: [{ path: root }] });
-    process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = "200";
+    // A scan is held from before the mount stalled. It is taken under the default deadline
+    // and handed over through the snapshot, so the short deadline below only ever meets the
+    // walk that is meant to stall - a loaded runner cannot time out the healthy scan.
+    assert.deepEqual(await listRepos({ fresh: true }), [join(root, "alpha")]);
+    await waitForSnapshot(root);
+    // Short enough to keep the test quick, and five times the old 200 ms so the timing bound
+    // below has headroom on a loaded runner while still catching a second deadline.
+    const deadlineMs = 1000;
+    process.env.MISSION_REPOS_SCAN_TIMEOUT_MS = String(deadlineMs);
     const repos = await restartedRepos("stalled-with-held-scan");
-    // A scan is held from before the mount stalled.
-    assert.deepEqual(await repos.listRepos({ fresh: true }), [join(root, "alpha")]);
 
     stalled = true;
     invalidateReposCache();
@@ -779,7 +785,7 @@ test("with a scan held, a fresh or rescan read on a stalled mount answers from i
     const started = Date.now();
     assert.deepEqual(await repos.listRepos({ fresh: true }), [join(root, "alpha")]);
     assert.deepEqual(await repos.listRepos({ rescan: true }), [join(root, "alpha")]);
-    assert.ok(Date.now() - started < 200, "no second deadline was waited out");
+    assert.ok(Date.now() - started < deadlineMs, "no second deadline was waited out");
     assert.equal(rootReads, 2, "the stalled directory was walked once after the scan held");
   } finally {
     recover();

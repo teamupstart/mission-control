@@ -8,6 +8,7 @@ Placeholders in this file are written `{name}` so they are never mistaken for ma
 
 ## 0. Rules for everyone building this
 
+- **This is a spike and alpha code.** Every commit goes to one upstream branch, `feat/headless-mode-spike`. Do not create per-stream or per-phase branches, and do not merge to `main` or release (acceptance section Delivery, AC-DEL-01 to 05). Contracts may change before a merge is decided; record each change in your stream's report.
 - Follow `AGENTS.md` (`CLAUDE.md`). The points below are the ones this feature hits hardest.
 - Code namespace is `handoff`. Never reuse `MISSION_HEADLESS` or the word "headless" in identifiers; that env var already means "hooks stay silent".
 - Wire types and browser-safe logic go in `src/shared/` with no `node:` imports.
@@ -35,7 +36,7 @@ Record results in the "Spike results" section at the end of this file.
 
 ## 2. Contracts (Phase 0a, stream `contracts`)
 
-Land these first, in one stream, so every later stream builds against fixed interfaces. Phase 0 of the contracts is already on `feat/headless` (schema 35, seams, todo tests). Section 2.4 lists what changes in that landed code.
+Land these first, in one stream, so every later stream builds against fixed interfaces. Phase 0 of the contracts is already on the local branch `feat/headless` (schema 35, seams, todo tests); `feat/headless-mode-spike` starts from those commits. Section 2.4 lists what changes in that landed code.
 
 ### 2.1 `src/shared/handoff.ts`
 
@@ -481,6 +482,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 ## 11. Docs (Phase 2, stream `docs`)
 
 - `docs/headless-mode.md`, in plain English:
+  - an opening notice that this is a spike and alpha code on `feat/headless-mode-spike` (AC-DEL-04)
   - what it is
   - install
   - instances and the sandbox
@@ -557,10 +559,13 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 - Grill me first from the terminal.
 - MCP elicitation (spike S-04), until a later change.
 - A prompt on open for plain `claude` with no typing at all (spike S-06 part b), until Claude Code supports it. `mctl claude` provides it today.
+- Merging the spike branch to `main`, a release, or compatibility promises for alpha contracts.
 - Slack, spending budgets, Linux services.
 - Proving that an ordinary answer was typed by a person, or a server gate on dispatch.
 
 ## 15. Streams and order
+
+All streams commit to `feat/headless-mode-spike`, in this order (AC-DEL-05).
 
 | Stream | Owns | Needs |
 |---|---|---|

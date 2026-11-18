@@ -4,15 +4,15 @@ Plan: `docs/plans/headless-mode/plan.md`. Spec section 9. Index: `docs/plans/hea
 
 ## 1. Outcome
 
-`mctl setup` installs launchd services, the Claude Code plugin and the status line for the default or a named instance; `mctl claude` opens Claude with the instance env and the launcher prompt so the question appears with no typing; `doctor`, `daemon` and `uninstall` manage it. Nothing touches another instance.
+`mctl setup` installs launchd services, the Claude Code plugin and the status line for the default or a named instance; `mctl claude` opens Claude with the instance env and the launcher prompt so the question appears with no typing; `doctor`, `daemon` and `uninstall` manage it. Nothing touches another instance. The work is pushed to `feat/headless-mode-spike`.
 
 ## 2. Entry criteria and dependencies
 
-Phases 3 (hook and status line), 4 (plugin build) and 5 (CLI skeleton) merged.
+Phases 3 (hook and status line), 4 (plugin build) and 5 (CLI skeleton) pushed to `feat/headless-mode-spike`.
 
 ## 3. Scope and non-goals
 
-In scope: `src/cli/instance.ts`, `src/cli/setup/`, `claude`, `doctor`, `daemon`, `uninstall`, the `agentSubprocessEnv` change, executable registry entries. Not in scope: plugin content, hook behaviour, v1.1 commands.
+In scope: `src/cli/instance.ts`, `src/cli/setup/`, `claude`, `doctor`, `daemon`, `uninstall`, the `agentSubprocessEnv` change, executable registry entries. Not in scope: plugin content, hook behaviour, v1.1 commands, any pull request or other upstream branch.
 
 ## 4. Repository findings and contracts
 
@@ -24,11 +24,13 @@ In scope: `src/cli/instance.ts`, `src/cli/setup/`, `claude`, `doctor`, `daemon`,
 
 ## 5. Implementation steps
 
-1. Instance resolution and `instance.json` (spec 9.1) with first-free-port logic.
-2. `setup`: build check, plugin copy to `{state}/plugin/{version}/`, plists, `launchctl bootstrap`, plugin install with the instance `CLAUDE_CONFIG_DIR`, status line wrap, default-instance duplicate backup and removal, `daemon.lock` refusal, idempotence.
-3. `claude`: env, optional `--plugin-dir`, launcher prompt rule (TTYs, no prompt, no `-p`, `--print`, `--resume`, `--continue`, no `--no-launcher`).
-4. `doctor`, `daemon status|restart|kick`, `uninstall [--purge]`.
-5. `agentSubprocessEnv` passes `CLAUDE_CONFIG_DIR`.
+1. Start from the tip of `origin/feat/headless-mode-spike`.
+2. Instance resolution and `instance.json` (spec 9.1) with first-free-port logic.
+3. `setup`: build check, plugin copy to `{state}/plugin/{version}/`, plists, `launchctl bootstrap`, plugin install with the instance `CLAUDE_CONFIG_DIR`, status line wrap, default-instance duplicate backup and removal, `daemon.lock` refusal, idempotence.
+4. `claude`: env, optional `--plugin-dir`, launcher prompt rule (TTYs, no prompt, no `-p`, `--print`, `--resume`, `--continue`, no `--no-launcher`).
+5. `doctor`, `daemon status|restart|kick`, `uninstall [--purge]`.
+6. `agentSubprocessEnv` passes `CLAUDE_CONFIG_DIR`.
+7. Fetch, rebase on the branch tip, re-run verification, push fast-forward to `feat/headless-mode-spike`.
 
 ## 6. Data, API and compatibility
 
@@ -36,11 +38,11 @@ Every test sets `HOME`, `CLAUDE_CONFIG_DIR`, `MISSION_HOME` to temp folders and 
 
 ## 7. Tests and verification
 
-Owns AC-SET-01 to AC-SET-16, AC-LAUNCH-04, plus `test/executable-contracts.test.ts`.
+Owns AC-SET-01 to AC-SET-16, AC-LAUNCH-04, `test/executable-contracts.test.ts`, and AC-DEL-05 for its own pushes.
 
-## 8. Merge and exit criteria
+## 8. Exit criteria
 
-Owned rows pass; isolation holds for named instances; build and smoke green.
+Owned rows pass; isolation holds for named instances; build and smoke green; commits pushed to `feat/headless-mode-spike`, no other upstream branch. The operator then releases dependents.
 
 ## 9. Downstream handoff
 

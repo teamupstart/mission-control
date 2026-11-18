@@ -4,7 +4,9 @@ Hand work to Mission Control from the Claude Code session you already use. Open 
 
 This file is the design summary. [spec.md](spec.md) is the detailed build spec, and [acceptance.md](acceptance.md) lists every acceptance criterion with its test. The MVP targets Claude Code. Pi parity comes later.
 
-Revision 2026-11-18 (second): the launcher now prompts automatically when a session opens (section "Guided launcher"), replacing the manual `/mc` requirement. See "Review log" G15 to G17.
+**Status: spike, alpha code.** All of it is built on one upstream branch, `feat/headless-mode-spike`, and is not merged or released until that is decided separately (decision 29).
+
+Revision 2026-11-18 (third): adds the single-branch spike delivery rule (decision 29, acceptance section "Delivery"). Earlier today: the launcher prompts automatically when a session opens (section "Guided launcher"), replacing the manual `/mc` requirement. See "Review log" G15 to G18.
 
 ## Words used here
 
@@ -100,6 +102,7 @@ sequenceDiagram
 | 26 | Launcher frequency | Every new session, never resume, clear or compact. Off with `handoff.launcher.prompt` or `MISSION_HANDOFF_LAUNCHER=0`. (Human decision.) |
 | 27 | Who decides to ask | The daemon, not the hook: it records the session start source and entrypoint and marks the launcher offered once, so it survives hook restarts and cannot repeat. |
 | 28 | Non-interactive runs | No launcher unless the entrypoint is known to be interactive. Unknown means no prompt. Spike S-06 confirms the value to test. |
+| 29 | Delivery | This is a spike and alpha code. Every change is committed under one upstream branch, `feat/headless-mode-spike`, started from the Phase 0 commits on the local `feat/headless`. No per-phase or per-stream branches, no merge to `main` or release until decided separately. Contracts may change before then; changes are recorded in the stream report. (Human decision, 2026-11-18.) |
 
 ## Why a turn log, and what it no longer does
 
@@ -147,16 +150,18 @@ Gaps found in the earlier plan and what changed.
 | G15 | Requiring `/mc` defeats "prompted when they open Claude". | Automatic first-message launcher (decisions 19, 26, 27). |
 | G16 | The first-message prompt could fire in the wrong places: `/loop` and background reports also trigger `UserPromptSubmit`, slash commands, `claude -p`, resumed sessions, workers. | Offered once per session by the daemon, startup source only, skipped for slash commands, non-interactive or unknown entrypoints and workers (AC-LAUNCH-05 to 09). |
 | G17 | No off switch in v1 (`mctl config set` is v1.1) for a prompt that appears every session. | Environment variable `MISSION_HANDOFF_LAUNCHER=0` and the setting `handoff.launcher.prompt` (AC-LAUNCH-10, 11). |
+| G18 | Acceptance criteria did not say where the work lands; the phase tasks each expect their own pull request, which conflicts with a single spike branch. | Decision 29 and AC-DEL-01 to 05. The phase tasks still describe one pull request each and need aligning (see the delivery section of acceptance.md). |
 
 ## Releases
 
-- **v1:** the whole hand-off loop for Claude Code. Plugin, automatic launcher, guided questions, hooks, skills, status line, turn log, inbox, answers, plan approval, `mctl run`, `get`, `describe`, `logs`, `status`, `config view`, `setup`, `doctor`, `daemon`, `uninstall`, and named instances.
+- **v1:** the whole hand-off loop for Claude Code. Plugin, automatic launcher, guided questions, hooks, skills, status line, turn log, inbox, answers, plan approval, `mctl run`, `get`, `describe`, `logs`, `status`, `config view`, `setup`, `doctor`, `daemon`, `uninstall`, and named instances. Built on `feat/headless-mode-spike` as alpha code.
 - **v1.1:** `mctl attach` from any terminal tab, desktop notifications, `mctl config set`.
 - **Later:** Pi parity (picker through the plain-text fallback first), a true on-open prompt for plain `claude` if Claude Code allows it (spike S-06), MCP elicitation, the pipeline kind in conductor repos, model and effort questions, Slack messages, a daily spending budget.
 
 ## Try it without touching your real install
 
 ```sh
+git fetch origin feat/headless-mode-spike && git switch feat/headless-mode-spike
 npm run build
 npm run mctl -- --instance sandbox setup
 cd ~/code/some-repo

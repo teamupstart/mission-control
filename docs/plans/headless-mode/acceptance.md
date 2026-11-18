@@ -4,7 +4,19 @@ Each row is one test (or one check) whose title starts with the ID. Section refe
 
 Phase 0b writes every test below with `{ todo: "AC-..." }` so the branch stays green. The owning stream removes `todo` when it makes the test pass. Nobody weakens a test to make it pass; if a test is wrong, the orchestrator changes it and records why.
 
-Revision 2026-11-18 (second): adds AC-LAUNCH-05 to 11, AC-GUIDE-13, AC-API-21 and AC-PLUG-07; amends AC-C-04, AC-API-02, AC-HOOK-01, AC-LAUNCH-01, AC-LAUNCH-02, AC-PLUG-04 and AC-INT-01. Earlier in the day it added AC-GUIDE, AC-API-18 to 20, AC-HOOK-12, AC-MCP-07 to 09, AC-SET-16 and AC-INT-04, 05. Amended rows are marked (amended).
+Revision 2026-11-18 (third): adds the Delivery section (AC-DEL-01 to 05) and amends AC-INT-03. Earlier the same day: AC-LAUNCH-05 to 11, AC-GUIDE-13, AC-API-21 and AC-PLUG-07 were added; AC-C-04, AC-API-02, AC-HOOK-01, AC-LAUNCH-01, AC-LAUNCH-02, AC-PLUG-04 and AC-INT-01 were amended; and AC-GUIDE, AC-API-18 to 20, AC-HOOK-12, AC-MCP-07 to 09, AC-SET-16 and AC-INT-04, 05 were added. Amended rows are marked (amended).
+
+## Delivery (spike, alpha code)
+
+This is a spike and alpha code. All changes for every stream and every phase are committed under a single upstream branch, `feat/headless-mode-spike`. There is no branch or pull request per stream or per phase. The branch starts from the Phase 0 commits on the local branch `feat/headless` (contracts, schema 35, seams, todo tests) and is pushed to `origin`. Nothing is merged to `main` or released until that is decided separately. Before then the contracts in spec 2 may change; each change is recorded in the owning stream's report and in the commit message. These rows are checks run by the `integration` stream at the end and by each stream when it hands over.
+
+| ID | Test file | Criterion |
+|---|---|---|
+| AC-DEL-01 | (checks) | `git ls-remote --heads origin feat/headless-mode-spike` returns the branch, and its history contains the Phase 0 commits from `feat/headless` and the commits of every stream that has finished. |
+| AC-DEL-02 | (checks) | No other upstream branch carries headless-mode code: for the first commit of each stream, `git branch -r --contains {sha}` lists only `origin/feat/headless-mode-spike`. No per-stream or per-phase feature branch is pushed. |
+| AC-DEL-03 | (checks) | The branch is not merged into `main` and not released. It changes no production, signing, release, CI or deployment configuration (`.github/workflows/`, `electron-builder.yml`); the only `package.json` changes are the scripts and `bin` entry listed in spec 2.3. |
+| AC-DEL-04 | test/handoff-docs.test.ts | `docs/headless-mode.md` opens with a notice that the feature is a spike and alpha code on `feat/headless-mode-spike`, unreleased, with no compatibility promise. |
+| AC-DEL-05 | (checks) | Streams commit to the branch in the order of spec 15, with plain fast-forward pushes (no force push, no history rewrite, no `git reset --hard`). At each stream's last commit the rows that stream owns pass and typecheck and lint are green, before the next stream starts on top of it. |
 
 ## v1
 
@@ -186,7 +198,7 @@ Revision 2026-11-18 (second): adds AC-LAUNCH-05 to 11, AC-GUIDE-13, AC-API-21 an
 |---|---|---|
 | AC-INT-01 | test/handoff-loop.test.ts | (amended) The full loop in spec 10 passes against a real daemon with fake agents and spends no model tokens, starting from the first-message launcher offer and the guided questions, and showing no second offer in the same session. |
 | AC-INT-02 | test/handoff-isolation.test.ts | Sandbox setup and `uninstall --purge` leave every default-instance file byte-identical, and the runner never sees a default or legacy label. |
-| AC-INT-03 | (checks) | `npm run typecheck`, `npm run lint`, `MISSION_TEST_CONCURRENCY=4 npm test`, `npm run build` and `npm run smoke` all pass on `feat/headless`. |
+| AC-INT-03 | (checks) | (amended) `npm run typecheck`, `npm run lint`, `MISSION_TEST_CONCURRENCY=4 npm test`, `npm run build` and `npm run smoke` all pass on the tip of `feat/headless-mode-spike`. |
 | AC-INT-04 | test/handoff-loop.test.ts | The same hook script and MCP server run with `MISSION_SESSION_ID` set (a worker) leave `handoff_sessions` empty and the worker cannot call `answer_task`. |
 | AC-INT-05 | test/handoff-loop.test.ts | Answers chosen in the guided questions (kind, harness, after work) produce a task whose kind, agent and workflow equal the dashboard's result for the same choices on the same settings. |
 
@@ -232,4 +244,4 @@ Revision 2026-11-18 (second): adds AC-LAUNCH-05 to 11, AC-GUIDE-13, AC-API-21 an
 
 | ID | Test file | Criterion |
 |---|---|---|
-| AC-FIN-01 | (checks) | Every check in AC-INT-03 passes again with v1.1 merged. No `todo` remains on any `AC-` test. |
+| AC-FIN-01 | (checks) | Every check in AC-INT-03 passes again with v1.1 merged on the branch. No `todo` remains on any `AC-` test. |

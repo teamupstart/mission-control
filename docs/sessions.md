@@ -68,6 +68,19 @@ quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) r
 PR links are green while open, purple when merged, and red when closed without merging.
 Closed links remain visible until the session moves to a branch with no matching PR.
 
+A red triangle beside the chip (a `⚠` on the rail and the board tile) means a CI check on the
+pull request's head commit is failing. It follows the latest run of each check, the way GitHub's
+checks list and `gh pr checks` do. When a check runs again on the same commit - the title check
+after the title is edited, a run cancelled and started over - the earlier run stops counting once
+the later one has started, so a failure a later run re-checked does not hold the alert. The same
+check means a GitHub Actions run of the same workflow, triggering event and check name: the
+`push` and `pull_request` runs of one job are two checks, whatever their timing, and a failure in
+either still counts. So do two runs of one check that overlapped. Only GitHub Actions reports all
+of that, so a failed check from any other app stays failing until the next push, as GitHub's own
+rollup reads it. `gh pr list` does not report the app or the event, so before a failure is
+cleared the poller reads that commit's checks once more through GitHub's GraphQL API, and keeps
+the failure unless that answer is complete and confirms the later run was the same check.
+
 ### The title bar stays compact at half-screen
 
 The **fleet pulse** is one readout, not a row of pills: the connection state leads it

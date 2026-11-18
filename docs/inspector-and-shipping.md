@@ -458,7 +458,7 @@ Every one of these, on the same read of the pull request:
 | No open GitHub Inspector findings | posted or previewed in dry run - a finding is a finding. [Three ways one closes](#how-a-finding-gets-closed) |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
 | Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
-| **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked |
+| **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked. GitHub's own verdict stands, with one exception: GitHub keeps counting a failed run after a later run of the same check passed, so a failure a later run of that check has re-checked reads as the re-run's result. The same check means a GitHub Actions run of the same workflow, triggering event and name, so a passing `pull_request` run never clears a failed `push` run, and another app's failed check is never cleared. That holds only when GitHub returned every check on one page and each check still counting has a result Mission Control recognises |
 | GitHub says it merges cleanly | `CONFLICTING` blocks, and so does mergeability it has not computed yet |
 | Open for the **soak** | the window in which somebody can look and say no |
 | The repo holds the **merge grant** | its own column in [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository), not the GitHub Inspector's |

@@ -6,6 +6,7 @@ import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/ind
 import { run } from "./util/exec.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
 import { StackMergeWatch } from "./stacking/merges.ts";
+import { CHECK_CONTEXTS, rollUpChecks } from "./github/check-rollup.ts";
 
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
 // session's current branch. It is the source of truth behind the chip: it
@@ -160,7 +161,9 @@ async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Pr
     const match = open ?? arr.find((p) => prStateOf(p) === "merged")
       ?? arr.find((p) => prStateOf(p) === "closed");
     if (!match) return null;
-    return parsePrCandidate(match, worktreeHeadSha) ?? "error";
+    const candidate = parsePrCandidate(match, worktreeHeadSha);
+    if (!candidate) return "error";
+    return { ...candidate, checks: await confirmRetriedChecks(cwd, candidate, match) };
   } catch {
     return "error";
   }
@@ -227,63 +230,99 @@ function prStateOf(p: unknown): PrState | null {
   return null; // unexpected state
 }
 
-// CheckRun conclusions and StatusContext states that we count as a failed check.
-// SUCCESS / NEUTRAL / SKIPPED are treated as passing; anything unrecognized as
-// passing too, so an unknown value never raises a false alarm.
-const FAIL_CONCLUSIONS = new Set([
-  "FAILURE",
-  "TIMED_OUT",
-  "CANCELLED",
-  "ACTION_REQUIRED",
-  "STARTUP_FAILURE",
-  "STALE",
-]);
-const FAIL_STATES = new Set(["FAILURE", "ERROR"]);
-const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
-
-type CheckState = "fail" | "pending" | "pass";
-
-/**
- * Classify one `statusCheckRollup` entry. Entries are either a GraphQL `CheckRun`
- * (has a `status` like QUEUED/IN_PROGRESS/COMPLETED plus, once done, a
- * `conclusion`) or a legacy `StatusContext` (has a `state` like SUCCESS/PENDING/
- * FAILURE). Returns null for a shape we don't recognize.
- */
-function checkEntryState(e: unknown): CheckState | null {
-  const o = e as { status?: unknown; conclusion?: unknown; state?: unknown };
-  if (typeof o.status === "string") {
-    if (o.status.toUpperCase() !== "COMPLETED") return "pending";
-    const c = typeof o.conclusion === "string" ? o.conclusion.toUpperCase() : "";
-    return FAIL_CONCLUSIONS.has(c) ? "fail" : "pass";
-  }
-  if (typeof o.state === "string") {
-    const s = o.state.toUpperCase();
-    if (FAIL_STATES.has(s)) return "fail";
-    if (PENDING_STATES.has(s)) return "pending";
-    return "pass";
-  }
-  return null;
+/** A PR's `statusCheckRollup` entries as `gh pr list` printed them, or none. */
+function rollupOf(p: unknown): unknown[] {
+  const rollup = (p as { statusCheckRollup?: unknown })?.statusCheckRollup;
+  return Array.isArray(rollup) ? rollup : [];
 }
 
 /**
- * Roll a PR's `statusCheckRollup` up to a single chip state: any failing check
- * dominates (that's what the card's alert keys off), else pending while any is
- * still running, else passing. Null when the PR carries no checks at all.
+ * Roll a PR's `statusCheckRollup` up to a single chip state, through `rollUpChecks`, which the
+ * merge gate shares. Null when the PR carries no checks at all. `gh pr list` does not say which
+ * app or event each run belongs to, so this reading never retires a failure on its own - see
+ * `confirmRetriedChecks`.
  */
 function checksOf(p: unknown): PrChecks | null {
-  const rollup = (p as { statusCheckRollup?: unknown })?.statusCheckRollup;
-  if (!Array.isArray(rollup) || rollup.length === 0) return null;
-  let sawPending = false;
-  let sawPass = false;
-  for (const e of rollup) {
-    const s = checkEntryState(e);
-    if (s === "fail") return "failing";
-    if (s === "pending") sawPending = true;
-    else if (s === "pass") sawPass = true;
+  return rollUpChecks(rollupOf(p)).checks;
+}
+
+/**
+ * The verdicts `confirmRetriedChecks` already paid a GraphQL read for, by pull request url and
+ * keyed by the exact `gh pr list` rollup they answered: while a pull request's checks stand still
+ * - a stale failure lingers on a commit until the next push - the confirmation is read once, not
+ * on every tick. Bounded, oldest first, because a long-lived daemon sees many pull requests.
+ */
+const confirmedChecks = new Map<string, { fingerprint: string; checks: PrChecks | null }>();
+const CONFIRMED_CHECKS_LIMIT = 256;
+
+/**
+ * The chip state, with a failure that LOOKS re-checked confirmed before it is cleared.
+ *
+ * A failing run followed by a later run with the same workflow and name is usually that check
+ * running again - the title check after the title is edited - and the chip should follow the
+ * later run. But it can also be a different check: the `push` and `pull_request` runs of one job
+ * carry the same workflow and name, and a pass in one must never clear a failure in the other.
+ * `gh pr list` cannot tell those apart, so this asks GitHub for the same commit's checks with
+ * their app and triggering event (`CHECK_CONTEXTS`), and rolls those up instead. Anything short
+ * of a complete answer about the same head commit keeps the failure.
+ */
+export async function confirmRetriedChecks(
+  cwd: string,
+  candidate: Pick<PrCandidate, "url" | "headSha">,
+  raw: unknown,
+): Promise<PrChecks | null> {
+  const rollup = rollUpChecks(rollupOf(raw));
+  if (rollup.checks !== "failing" || !rollup.unconfirmedRetry || !candidate.headSha) return rollup.checks;
+  const fingerprint = `${candidate.headSha}\0${JSON.stringify(rollupOf(raw))}`;
+  const known = confirmedChecks.get(candidate.url);
+  if (known?.fingerprint === fingerprint) return known.checks;
+  const contexts = await queryHeadChecks(cwd, candidate.url, candidate.headSha);
+  if (!contexts) return rollup.checks;
+  const checks = rollUpChecks(contexts).checks ?? rollup.checks;
+  confirmedChecks.delete(candidate.url);
+  confirmedChecks.set(candidate.url, { fingerprint, checks });
+  if (confirmedChecks.size > CONFIRMED_CHECKS_LIMIT) {
+    const oldest = confirmedChecks.keys().next().value;
+    if (oldest !== undefined) confirmedChecks.delete(oldest);
   }
-  if (sawPending) return "pending";
-  if (sawPass) return "passing";
-  return null;
+  return checks;
+}
+
+const HEAD_CHECKS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    commits(last:1){ nodes{ commit{ oid statusCheckRollup{ ${CHECK_CONTEXTS} } } } }
+  } }
+}`;
+
+/**
+ * Every check on a pull request's head commit, with its app and event, or null when GitHub's
+ * answer is not a complete one about `headSha`: a failed call, more checks than one page, or a
+ * head that moved since `gh pr list` read it.
+ */
+async function queryHeadChecks(cwd: string, url: string, headSha: string): Promise<unknown[] | null> {
+  const parts = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(url);
+  if (!parts) return null;
+  const res = await run(ghBin(), ["api", "graphql", "-f", `query=${HEAD_CHECKS_QUERY}`,
+    "-F", `owner=${parts[1]}`, "-F", `name=${parts[2]}`, "-F", `number=${parts[3]}`], { cwd, timeoutMs: 8000 });
+  if (res.code !== 0) return null;
+  try {
+    const json = JSON.parse(res.stdout) as {
+      errors?: unknown[];
+      data?: { repository?: { pullRequest?: { commits?: { nodes?: Array<{ commit?: {
+        oid?: unknown;
+        statusCheckRollup?: { contexts?: { pageInfo?: { hasNextPage?: unknown }; nodes?: unknown } } | null;
+      } }> } } | null } | null };
+    };
+    if (json.errors?.length) return null;
+    const commit = json.data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit;
+    const contexts = commit?.statusCheckRollup?.contexts;
+    if (commit?.oid !== headSha || contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes)) {
+      return null;
+    }
+    return contexts.nodes;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -16,6 +16,7 @@ import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
 import type { InspectorComment } from "@shared/types.ts";
 import { scrubSecrets } from "./scrub.ts";
+import { CHECK_CONTEXTS, rollUpChecks } from "../github/check-rollup.ts";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -404,7 +405,7 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
       baseRefName baseRefOid mergeCommit{ oid } mergedAt repository{ defaultBranchRef{ name } }
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+      commits(last:1){ nodes{ commit{ statusCheckRollup{ state ${CHECK_CONTEXTS} } } } }
       reviewThreads(first:${GITHUB_PAGE_SIZE}){
         nodes{
           id isResolved path
@@ -535,6 +536,30 @@ function toChecks(state: unknown): ChecksState {
   }
 }
 
+/**
+ * The head commit's CI, for the merge gate: GitHub's own rollup, except where GitHub says
+ * failing only because of a run a later run of the same check has since re-checked.
+ *
+ * GitHub's aggregate counts every check run the commit ever had, so a title check that failed
+ * and then passed after the title was edited reads FAILURE for good, and the gate held the pull
+ * request on "CI is failing" while GitHub's checks list was green. The override is narrow on
+ * purpose, because this verdict lets a pull request merge itself: it only ever clears a failure,
+ * only when the page of checks is complete, only when a failing run was re-checked by a later run
+ * of the same check - a GitHub Actions run of the same workflow, triggering event and name, so a
+ * passing `pull_request` run never clears a failed `push` run and another app's failed check is
+ * never cleared at all - and only when every run still counting has a result
+ * `rollUpChecks` recognises: a conclusion GitHub calls a failure and this code does not know
+ * must not read as a pass here.
+ */
+function checksOf(rollup: { state?: unknown; contexts?: unknown } | null | undefined): ChecksState {
+  const github = toChecks(rollup?.state);
+  if (github !== "failing") return github;
+  const contexts = rollup?.contexts as { pageInfo?: { hasNextPage?: unknown }; nodes?: unknown } | null | undefined;
+  if (contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes)) return github;
+  const current = rollUpChecks(contexts.nodes);
+  return current.retriedFailure && current.recognized && current.checks !== null ? current.checks : github;
+}
+
 function isPrState(value: unknown): value is PrSnapshot["state"] {
   return value === "OPEN" || value === "CLOSED" || value === "MERGED";
 }
@@ -544,7 +569,7 @@ function toSnapshot(pr: Record<string, unknown>, state: PrSnapshot["state"]): Pr
   const firstThreads = threadPage(pr.reviewThreads);
   const headCommit = (
     ((pr.commits as { nodes?: unknown[] } | undefined)?.nodes ?? []) as {
-      commit?: { statusCheckRollup?: { state?: unknown } | null };
+      commit?: { statusCheckRollup?: { state?: unknown; contexts?: unknown } | null };
     }[]
   )[0]?.commit;
   const createdAt = Date.parse(String(pr.createdAt ?? ""));
@@ -569,7 +594,7 @@ function toSnapshot(pr: Record<string, unknown>, state: PrSnapshot["state"]): Pr
       pr.reviewDecision === "REVIEW_REQUIRED"
         ? (pr.reviewDecision as ReviewDecision)
         : null,
-    checks: toChecks(headCommit?.statusCheckRollup?.state),
+    checks: checksOf(headCommit?.statusCheckRollup),
     threads: firstThreads.threads,
     threadError: firstThreads.error
       ?? (typeof pr.isDraft !== "boolean"

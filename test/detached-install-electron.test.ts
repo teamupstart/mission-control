@@ -131,7 +131,7 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   writeFileSync(join(resources, 'package.json'), JSON.stringify(pkg));
   writeFileSync(join(resources, 'fixture-main.cjs'), `
     const {app} = require('electron');
-    const {writeFileSync, readFileSync, existsSync} = require('node:fs');
+    const {writeFileSync, readFileSync, existsSync, renameSync} = require('node:fs');
     const {join, resolve} = require('node:path');
     app.whenReady().then(async () => {
       try {
@@ -151,8 +151,12 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
           runningBundle: resolve(__dirname, '../../..'), nonce: process.argv.includes('--mission-migration') ? process.argv[process.argv.indexOf('--mission-migration') + 1] : undefined, port: 59999});
         if (!result.proceed) {app.exit(0); return;}
         const receipt = JSON.parse(readFileSync(join(process.env.MISSION_HOME, 'install-receipt.json')));
-        writeFileSync(join(process.env.MISSION_HOME, 'fixture-ready.json'), JSON.stringify({result, receipt, pid: process.pid,
+        // Whole, then renamed into place. The test parses this file the moment it exists, and a
+        // plain write is visible empty before its bytes land - which a loaded host does show.
+        const ready = join(process.env.MISSION_HOME, 'fixture-ready.json');
+        writeFileSync(ready + '.partial', JSON.stringify({result, receipt, pid: process.pid,
           nodeFlag: process.env.ELECTRON_RUN_AS_NODE ?? null, electron: process.versions.electron}));
+        renameSync(ready + '.partial', ready);
         app.quit();
       } catch (error) {
         writeFileSync(join(process.env.MISSION_HOME, 'fixture-error.txt'), String(error.stack));

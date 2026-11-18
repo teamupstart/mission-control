@@ -2409,7 +2409,33 @@ export class WorktreeManager {
             continue;
           }
           if (slot.currentHeadSha && slot.currentHeadSha !== inspection.value.head) {
-            reject("state", "available slot HEAD moved outside an allocator transition");
+            // One inconsistent observation is not a durable state fact. Confirm under
+            // the same slot lock, without replacing the allocator's recorded HEAD.
+            const detail = `recorded=${slot.currentHeadSha}; observed=${inspection.value.head}`;
+            let confirmation: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+            try {
+              confirmation = await this.deps.git.inspect(slot.path);
+            } catch (error) {
+              reject("observation", "available slot HEAD mismatch could not be confirmed", `${detail}; confirmation failed: ${String(error)}`);
+              continue;
+            }
+            if (!confirmation.ok) {
+              reject("observation", "available slot HEAD mismatch could not be confirmed", `${detail}; confirmation failed: ${confirmation.reason}`);
+              continue;
+            }
+            const confirmedDetail = `${detail}; confirmed=${confirmation.value.head}`;
+            if (
+              confirmation.value.path !== slot.path ||
+              confirmation.value.commonDirectory !== pool.gitCommonDirectory
+            ) {
+              reject("observation", "available slot HEAD mismatch could not be confirmed", `${confirmedDetail}; confirmation repository identity did not match`);
+              continue;
+            }
+            if (confirmation.value.head !== inspection.value.head) {
+              reject("observation", "available slot HEAD observations disagree", confirmedDetail);
+              continue;
+            }
+            reject("state", "available slot HEAD moved outside an allocator transition", confirmedDetail);
             continue;
           }
           const prior = lastReference(slot);

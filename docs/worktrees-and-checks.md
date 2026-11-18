@@ -108,6 +108,15 @@ leaves occupancy unknown. A read that fails twice records both attempts, for exa
 timed out after 15 s, and after 30 s on retry". A command killed at its timeout is named as a
 timeout, and one killed by another signal names that signal, so neither reads as "exit 1".
 
+Git registration and slot-inspection reads discard inherited repository selectors so each read
+targets the named checkout. A successful HEAD read must contain a full 40-character commit ID; malformed
+output is an unknown observation and receives the same bounded retry. If an available slot's
+HEAD differs from the recorded commit, reconciliation inspects it again under the slot lock.
+Only the same mismatching HEAD from the same checkout and repository on both reads establishes
+a moved-HEAD state quarantine. Disagreeing or failed reads produce a recoverable observation
+quarantine without changing the recorded commit. The quarantine diagnostic includes the recorded,
+observed and, when available, confirmation SHAs.
+
 **Quarantine** takes a slot out of rotation, and records why, as which kind of fact, and when.
 The kind is a persisted, append-only category that decides whether the slot can come back on its
 own; the reason text is only for people and is never read to decide anything:

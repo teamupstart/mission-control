@@ -873,7 +873,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         respond(id, { config: { developer_instructions: null }, origins: {} });
         return;
       }
-      const file = process.env.CODEX_HOME ? join(process.env.CODEX_HOME, "config.toml") : null;
+      const file = join(process.env.CODEX_HOME || join(process.env.HOME, ".codex"), "config.toml");
       let text = "";
       try {
         if (file) text = readFileSync(file, "utf8");
@@ -884,17 +884,33 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       for (const match of text.matchAll(/^\[mcp_servers\.("(?:[^"\\]|\\.)*"|[A-Za-z0-9_-]+)\]\s*$/gm)) {
         user[match[1].startsWith('"') ? JSON.parse(match[1]) : match[1]] = {};
       }
+      // The resident inheritance regression reads the raw operator table for its catalog.
+      // The generated overlay has launcher entries instead, with no env_vars reference.
+      if (user.node_repl && text.includes('env_vars = ["MC_E2E_NODE_REPL_TOKEN"]')) {
+        user.node_repl = { command: "native-repl", env_vars: ["MC_E2E_NODE_REPL_TOKEN"] };
+      }
       const flags = {};
       for (const arg of process.argv) {
         const flag = /^mcp_servers\.([A-Za-z0-9_-]+)\.command=/.exec(arg);
         if (flag) flags[flag[1]] = {};
       }
+      // Native Codex searches ancestors unless project_root_markers=[] bounds discovery
+      // to cwd. The operator home is excluded only when it is the actual CODEX_HOME.
+      const homeProject = process.env.MC_E2E_CODEX_ACTIVE_HOME_LAYER === "1"
+        && file !== join(process.env.HOME, ".codex", "config.toml")
+        && !process.argv.includes("project_root_markers=[]")
+        ? { "mission-control": { command: "native-mission" }, node_repl: { command: "native-repl", env_vars: ["NATIVE_TOKEN"] } }
+        : null;
       respond(id, {
-        config: { mcp_servers: { ...user, ...flags } },
+        config: { mcp_servers: { ...user, ...homeProject, ...flags } },
         origins: {},
         layers: [
           { name: { type: "sessionFlags" }, config: { mcp_servers: flags } },
           { name: { type: "user", file, profile: null }, config: { mcp_servers: user } },
+          ...(homeProject ? [{
+            name: { type: "project", dotCodexFolder: join(process.env.HOME, ".codex") },
+            config: { mcp_servers: homeProject },
+          }] : []),
         ],
       });
       return;

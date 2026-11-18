@@ -155,6 +155,27 @@ test("another layer that switches off or changes Mission Control's own server re
   assert.match((codexResidentMcpVerdict(absent, input) as { reason: string }).reason, /would not start Mission Control's own MCP server/);
 });
 
+test("disabled Codex layers do not contribute MCP servers, including a rediscovered operator home", () => {
+  const inactive = {
+    name: { type: "project", dotCodexFolder: "/operator/.codex" },
+    config: { mcp_servers: { "mission-control": { enabled: false }, snap: { env: { NATIVE: "1" } }, native: { enabled: true } } },
+    disabledReason: "Project configuration is not trusted",
+  };
+  const result = {
+    config: { mcp_servers: { snap: { command: "s" }, "mission-control": { command: "m" } } },
+    layers: [flags, inactive, user({ snap: { command: "s" } })],
+  };
+  assert.deepEqual(codexResidentMcpVerdict(result, input), { kind: "exact" });
+  for (const disabledReason of [undefined, null, "", false]) {
+    assert.equal(codexResidentMcpVerdict({ ...result, layers: [flags, { ...inactive, disabledReason }, user({ snap: {} })] }, input).kind, "refuse",
+      "a home path alone does not exempt an active or unverifiably disabled layer");
+  }
+  assert.equal(codexResidentMcpVerdict({ ...result, layers: [flags, { ...user({ snap: {} }), disabledReason: "disabled" }] }, input).kind, "refuse",
+    "a disabled overlay cannot prove the generated configuration loaded");
+  assert.equal(codexResidentMcpVerdict({ ...result, config: { mcp_servers: { ...result.config.mcp_servers, native: { command: "n" } } } }, input).kind, "refuse",
+    "the effective server set must still be exact");
+});
+
 // ---- the drivers ----
 
 function residentLaunch(
@@ -554,6 +575,58 @@ class ScriptedServer implements AppServerTransport {
 
 const THREAD = { thread: { id: "thread-1", path: "/x/rollout.jsonl", status: { type: "idle" }, turns: [] }, model: "gpt-5", modelProvider: "openai", serviceTier: null, cwd: "/wt", instructionSources: [] };
 
+test("Codex bounds resident discovery to its workspace on launch and resume, excluding an active operator-home layer", async (t) => {
+  const operator = join(root, "active-home", ".codex");
+  mkdirSync(operator, { recursive: true });
+  const original = '[mcp_servers.mission-control]\ncommand = "native-mission"\nenv = { NATIVE = "must-not-merge" }\n';
+  writeFileSync(join(operator, "config.toml"), original);
+  const previousHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = operator;
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+  });
+  for (const resume of [null, "thread-1"]) {
+    const resident = residentLaunch([], () => []);
+    const overlayConfig = join(resident.privateDir, "codex-home", "config.toml");
+    let bounded = false;
+    const server = new ScriptedServer({
+      initialize: () => ({}),
+      "config/read": () => ({
+        config: { mcp_servers: { "mission-control": { command: "m", ...(!bounded ? { env: { NATIVE: "must-not-merge" } } : {}) } } },
+        layers: [flags, { name: { type: "user", file: overlayConfig }, config: {} }, ...(!bounded ? [{
+          name: { type: "project", dotCodexFolder: operator },
+          config: { mcp_servers: { "mission-control": { command: "native-mission", env: { NATIVE: "must-not-merge" } } } },
+        }] : [])],
+      }),
+      "thread/start": () => THREAD,
+      "thread/resume": () => THREAD,
+      "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
+    });
+    const spec = codexSdkSpec({ connect: async (args) => {
+      bounded = args.some((arg, i) => arg === "-c" && args[i + 1] === "project_root_markers=[]");
+      return server;
+    } });
+    const handle = await spec.launch(sdkOptions({ residentMcp: resident, resume }));
+    assert.ok(bounded, "ancestors of a resident workspace must not reintroduce the native home");
+    const method = resume ? "thread/resume" : "thread/start";
+    assert.equal(server.calls(method).length, 1);
+    const order = server.sent.map((frame) => frame.method);
+    assert.ok(order.lastIndexOf("config/read") < order.indexOf(method));
+    assert.equal(readFileSync(join(operator, "config.toml"), "utf8"), original);
+    await handle.stop();
+  }
+  const ordinary = new ScriptedServer({
+    initialize: () => ({}), "config/read": () => ({ config: {} }),
+    "thread/start": () => THREAD, "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
+  });
+  const handle = await codexSdkSpec({ connect: async (args) => {
+    assert.ok(!args.some((arg) => arg.startsWith("project_root_markers=")), "ordinary sessions keep native ancestor discovery");
+    return ordinary;
+  } }).launch(sdkOptions({}));
+  await handle.stop();
+});
+
 test("Codex starts on the run's overlay, switches off a foreign server, and verifies before the thread exists", async () => {
   const operator = join(root, "codex-operator");
   mkdirSync(operator, { recursive: true });
@@ -580,7 +653,11 @@ test("Codex starts on the run's overlay, switches off a foreign server, and veri
       const disabled = readFileSync(overlayConfig, "utf8").includes('[mcp_servers."proj"]\nenabled = false');
       return {
         config: { mcp_servers: { snap: { command: "s" }, secret: {}, "mission-control": {}, proj: { command: "p", ...(disabled ? { enabled: false } : {}) } } },
-        layers: [flags, project({ proj: { command: "p" } }), user({ snap: { command: "s" }, secret: {}, ...(disabled ? { proj: { enabled: false } } : {}) })]
+        layers: [flags, {
+          name: { type: "project", dotCodexFolder: operator },
+          config: { mcp_servers: { "mission-control": { command: "native-mission" }, native: { command: "n" } } },
+          disabledReason: "Project configuration is not trusted",
+        }, project({ proj: { command: "p" } }), user({ snap: { command: "s" }, secret: {}, ...(disabled ? { proj: { enabled: false } } : {}) })]
           .map((layer) => (layer.name.type === "user" ? { ...layer, name: { type: "user", file: overlayConfig } } : layer)),
       };
     },

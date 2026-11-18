@@ -4,9 +4,9 @@ Hand work to Mission Control from the Claude Code session you already use. Open 
 
 This file is the design summary. [spec.md](spec.md) is the detailed build spec, and [acceptance.md](acceptance.md) lists every acceptance criterion with its test. The MVP targets Claude Code. Pi parity comes later.
 
-**Status: spike, alpha code.** All of it is built on one upstream branch, `feat/headless-mode-spike`, and is not merged or released until that is decided separately (decision 29).
+**Status: spike, alpha code.** All of it is built on one upstream branch, `feat/headless-mode-spike`, and is not merged or released until that is decided separately (decision 29). It installs only as a named instance called `spike`, under spike names, beside the desktop app without touching anything the app owns (decision 30).
 
-Revision 2026-11-18 (third): adds the single-branch spike delivery rule (decision 29, acceptance section "Delivery"). Earlier today: the launcher prompts automatically when a session opens (section "Guided launcher"), replacing the manual `/mc` requirement. See "Review log" G15 to G18.
+Revision 2026-11-18 (fourth): install isolation for a machine that already has the desktop app (decision 30, gap G19, spec 9.5, acceptance AC-ISO-01 to 10). Rationale: `docs/plans/headless-mode-install/plan.md`. Earlier today: single-branch spike delivery (decision 29) and the automatic first-message launcher (decisions 19, 26, 27).
 
 ## Words used here
 
@@ -21,7 +21,7 @@ Revision 2026-11-18 (third): adds the single-branch spike delivery rule (decisio
 | Guided questions | Launcher, Kind, Harness, After work (and Repo when needed), asked one at a time as selectable prompts. Kind, Harness and After work are the dashboard's guided dispatch questions. |
 | Card | A short box shown in your home session: a brief to confirm, a question, or finished work. |
 | Turn | One message you send, plus everything the model does until it stops. |
-| Instance | A named, separate copy of Mission Control: its own state folder, port, launchd service and Claude config folder. |
+| Instance | A named, separate copy of Mission Control: its own state folder, port, launchd service and Claude config folder. During the spike the only installable instance is `spike`. |
 
 In code, this feature is called `handoff` (`src/server/handoff/`, `src/shared/handoff.ts`). The word "headless" already means something else in the code: `MISSION_HEADLESS` silences hooks during the daemon's own `claude -p` runs.
 
@@ -38,13 +38,13 @@ The dashboard's Dispatch dialog asks Repo, Kind, Harness, After work, then the t
    - **Repo.** Asked only when the session is not inside a repo.
 4. **Brief.** The first message becomes the brief. If it was empty or just a greeting, the model asks the person to describe the task. A mid-conversation request ("fix this, hand it off") works the same way and skips the launcher question.
 5. **Confirm.** A card shows kind, harness, after work, repo and brief. A final selectable prompt offers Dispatch now, Add to backlog, Edit brief, Cancel. Typing "go" also works.
-6. **Shortcuts.** `/mc` asks the questions any time. `/mc bugfix login times out on retry` answers Kind itself. These are optional now.
+6. **Shortcuts.** `/mc` asks the questions any time. `/mc bugfix login times out on retry` answers Kind itself. These are optional now. In the spike the command is the plugin's own, `/mission-control-spike:mc`, and `/mc` works where it is unambiguous.
 
 The launcher is asked once per new session, never on resume, clear or compact, never for slash commands or non-interactive runs, and never inside a Mission Control worker. It can be switched off with the setting `handoff.launcher.prompt` or the environment variable `MISSION_HANDOFF_LAUNCHER=0`.
 
 The options are not written into the skill. The daemon builds them from the same registries the dashboard uses (`TASK_KIND_INFO`, the harness registry, `taskDefaultWorkflowId`, published workflows), so the terminal and the dashboard cannot drift apart. The skill only asks what the daemon returns.
 
-The flow, as text (the diagram below draws it):
+The flow, as text:
 
 ```mermaid
 sequenceDiagram
@@ -70,6 +70,16 @@ sequenceDiagram
   C->>M: dispatch_task
 ```
 
+## Installing beside the desktop app
+
+A machine with the desktop app already has an owner for the daemon, the Claude hooks, the `mission-control` MCP server, the `mission-*` skills and the status line wrapper. A second installer would collide with each (13 conflicts, listed in the review report). So during the spike:
+
+- Everything installs as the named instance `spike`: its own state folder (`~/.mission-control-instances/spike`), port (first free from 7417), launchd labels (`com.mission-control.daemon.spike`, `com.mission-control.foreman.spike`) and Claude config folder (`~/.mission-control-instances/spike/claude`).
+- Every installed thing has a spike name that no existing recogniser can match: plugin `mission-control-spike`, MCP server `mc-spike`, hook script `handoff-spike-hook.mjs`, command `/mission-control-spike:mc`.
+- Nothing reads or writes `~/.mission-control`, `~/.claude`, `~/.claude.json` or the default launchd labels. Six guards enforce it (spec 9.5, G-1 to G-6).
+- You run it from a stable, non-pooled worktree of the spike branch (for example `~/code/mission-control-spike`), with `npm run mctl -- --instance spike ...`.
+- Graduation into the app's owned surfaces (attach to the app's daemon, extend the owned hook, reconciler skills, an owned `mctl` with a PATH shim) is a later plan with gates (spec section 16).
+
 ## Decisions
 
 | # | Topic | Decision |
@@ -81,9 +91,9 @@ sequenceDiagram
 | 5 | Starting a task | Guided questions, then a brief saved unstarted, then a selectable confirm. It starts only on Dispatch now or when you type "go". |
 | 6 | Where a task stops | The task kind decides, through the existing After work defaults. You can override it in the After work question. |
 | 7 | Recommending | The server matches hint words that live next to `TASK_KINDS`. They mark which launcher option and which kind is Recommended. The person still chooses. |
-| 8 | Keeping the API running | launchd runs the API and Foreman. The plugin and `mctl` ask launchd to start them when they are down. |
+| 8 | Keeping the API running | launchd runs the instance's API and Foreman. The plugin and `mctl` ask launchd to start them when they are down. |
 | 9 | How workers run | Agent SDK. `mctl logs -f` to watch, `mctl attach` to take over (v1.1). |
-| 10 | Installing | `mctl setup` installs the launchd services, the Claude Code plugin and the status line. |
+| 10 | Installing | `mctl --instance spike setup` installs the instance's launchd services and plugin. |
 | 11 | Too many tasks | The task waits in the backlog, and Foreman starts it when a slot frees up. |
 | 12 | What `mctl` can do | Start, watch and configure. It never answers, approves, cancels or reorders a task a home session started. |
 | 13 | Changing settings | `mctl config set` for a short list of global settings, with a yes/no confirm (v1.1). |
@@ -91,7 +101,7 @@ sequenceDiagram
 | 15 | Answering in `mctl run --watch` | Only for tasks `mctl` started. |
 | 16 | Plan approval | A home-session approval counts as the final human approval only when: the plan card for that revision was shown in an earlier turn, a later message you sent contains an approval word, and the approval names that exact revision. |
 | 17 | Dashboard | No visible changes. The API stores task origin and answer receipts; the web UI does not show them. |
-| 18 | Testing beside a real install | Named instances: `mctl --instance sandbox ...` never touches the default instance, your `~/.claude`, or your desktop app. |
+| 18 | Testing beside a real install | Named instances never touch the default instance, your `~/.claude`, or your desktop app. In the spike this is the only way to install (decision 30). |
 | 19 | Opening Claude | The launcher question is asked automatically on the first message of every new session (startup only), with no `/mc` needed. `mctl claude` submits the launcher prompt so it appears with no typing. Human decisions, 2026-11-18, revised the same day from banner plus `/mc`. |
 | 20 | Where the options come from | The daemon, through `read_dispatch_options`, built from shared registries. Never hard-coded in a skill. |
 | 21 | Repo question | Asked only when the session is not inside a repo. Otherwise the card names the repo and Edit brief can change it. (Human decision.) |
@@ -102,7 +112,8 @@ sequenceDiagram
 | 26 | Launcher frequency | Every new session, never resume, clear or compact. Off with `handoff.launcher.prompt` or `MISSION_HANDOFF_LAUNCHER=0`. (Human decision.) |
 | 27 | Who decides to ask | The daemon, not the hook: it records the session start source and entrypoint and marks the launcher offered once, so it survives hook restarts and cannot repeat. |
 | 28 | Non-interactive runs | No launcher unless the entrypoint is known to be interactive. Unknown means no prompt. Spike S-06 confirms the value to test. |
-| 29 | Delivery | This is a spike and alpha code. Every change is committed under one upstream branch, `feat/headless-mode-spike`, started from the Phase 0 commits on the local `feat/headless`. No per-phase or per-stream branches, no merge to `main` or release until decided separately. Contracts may change before then; changes are recorded in the stream report. (Human decision, 2026-11-18.) |
+| 29 | Delivery | This is a spike and alpha code. Every change is committed under one upstream branch, `feat/headless-mode-spike`, started from the Phase 0 commits on the local `feat/headless`. No per-phase or per-stream branches, no merge to `main` or release until decided separately. Contracts may change before then. (Human decision, 2026-11-18.) |
+| 30 | Install isolation | The spike installs only as the named instance `spike`, under spike names, and never reads or writes the default state home, default Claude config or default launchd labels (guards G-1 to G-6). Default-instance install, attach mode, the owned-hook extension, reconciler skills and an owned `mctl` shim are graduation work behind gates (spec 16). Different names are acceptable while this is proven. (Human direction, 2026-11-18.) |
 
 ## Why a turn log, and what it no longer does
 
@@ -120,10 +131,10 @@ Known limit: starting a task is gated by the skill and by a selectable confirm, 
 | Component | What it is | Owns |
 |---|---|---|
 | Home session | Your Claude Code session | Your conversation |
-| Plugin | Hooks, skills, MCP server and `/mc`, in one versioned Claude Code plugin | Nothing durable |
-| `mctl` | Terminal command | Nothing durable |
-| launchd services | One for the API, one for Foreman, per instance | Process supervision |
-| API (the daemon) | `src/server/index.ts` | Tasks, task origin, turn log, receipts, dispatch options, launcher state, the database |
+| Plugin | Hooks, skills, MCP server and `/mc`, in one versioned Claude Code plugin installed only in the instance's config folder | Nothing durable |
+| `mctl` | Terminal command, run from the spike checkout | Nothing durable except the instance manifest |
+| launchd services | One for the API, one for Foreman, suffixed with the instance name | Process supervision |
+| API (the daemon) | `src/server/index.ts`, started on the instance's own state home | Tasks, task origin, turn log, receipts, dispatch options, launcher state, the database |
 | Foreman | Separate worker process | Starting queued tasks |
 | Workers | Agent SDK sessions | Their worktree |
 
@@ -150,25 +161,29 @@ Gaps found in the earlier plan and what changed.
 | G15 | Requiring `/mc` defeats "prompted when they open Claude". | Automatic first-message launcher (decisions 19, 26, 27). |
 | G16 | The first-message prompt could fire in the wrong places: `/loop` and background reports also trigger `UserPromptSubmit`, slash commands, `claude -p`, resumed sessions, workers. | Offered once per session by the daemon, startup source only, skipped for slash commands, non-interactive or unknown entrypoints and workers (AC-LAUNCH-05 to 09). |
 | G17 | No off switch in v1 (`mctl config set` is v1.1) for a prompt that appears every session. | Environment variable `MISSION_HANDOFF_LAUNCHER=0` and the setting `handoff.launcher.prompt` (AC-LAUNCH-10, 11). |
-| G18 | Acceptance criteria did not say where the work lands; the phase tasks each expect their own pull request, which conflicts with a single spike branch. | Decision 29 and AC-DEL-01 to 05. The phase tasks still describe one pull request each and need aligning (see the delivery section of acceptance.md). |
+| G18 | Acceptance criteria did not say where the work lands; the phase tasks each expect their own pull request, which conflicts with a single spike branch. | Decision 29 and AC-DEL-01 to 05; phases push to the branch. |
+| G19 | The plan installed its own daemon, hooks, MCP server, skills and status line on top of a desktop app that already owns each. Default setup refused while the app ran, and its duplicate rule removed the app's own hooks and MCP registration. 13 conflicts in total. | Decision 30: spike-only named instance, spike names, guards G-1 to G-6, AC-ISO-01 to 10, graduation gates (spec 9.5, 16). |
 
 ## Releases
 
-- **v1:** the whole hand-off loop for Claude Code. Plugin, automatic launcher, guided questions, hooks, skills, status line, turn log, inbox, answers, plan approval, `mctl run`, `get`, `describe`, `logs`, `status`, `config view`, `setup`, `doctor`, `daemon`, `uninstall`, and named instances. Built on `feat/headless-mode-spike` as alpha code.
+- **v1:** the whole hand-off loop for Claude Code. Plugin, automatic launcher, guided questions, hooks, skills, status line, turn log, inbox, answers, plan approval, `mctl run`, `get`, `describe`, `logs`, `status`, `config view`, `setup`, `doctor`, `daemon`, `uninstall`, and the `spike` instance. Built on `feat/headless-mode-spike` as alpha code.
 - **v1.1:** `mctl attach` from any terminal tab, desktop notifications, `mctl config set`.
-- **Later:** Pi parity (picker through the plain-text fallback first), a true on-open prompt for plain `claude` if Claude Code allows it (spike S-06), MCP elicitation, the pipeline kind in conductor repos, model and effort questions, Slack messages, a daily spending budget.
+- **Graduation (separate plan):** attach to the app's daemon, extend the owned hook, reconciler skills, owned `mctl` with a PATH shim.
+- **Later:** Pi parity, a true on-open prompt for plain `claude` (spike S-06), MCP elicitation, the pipeline kind in conductor repos, model and effort questions, Slack messages, a daily spending budget.
 
 ## Try it without touching your real install
 
 ```sh
-git fetch origin feat/headless-mode-spike && git switch feat/headless-mode-spike
-npm run build
-npm run mctl -- --instance sandbox setup
+git worktree add ~/code/mission-control-spike feat/headless-mode-spike   # a stable, non-pooled checkout
+cd ~/code/mission-control-spike
+npm install && npm run build
+npm run mctl -- --instance spike setup
+npm run mctl -- --instance spike doctor
 cd ~/code/some-repo
-npm --prefix ~/code/mission-control run mctl -- --instance sandbox claude
+npm --prefix ~/code/mission-control-spike run mctl -- --instance spike claude
 # Claude opens and shows the launcher question straight away; pick a kind, harness and after work
-npm --prefix ~/code/mission-control run mctl -- --instance sandbox get tasks
-npm --prefix ~/code/mission-control run mctl -- --instance sandbox uninstall --purge
+npm --prefix ~/code/mission-control-spike run mctl -- --instance spike get tasks
+npm --prefix ~/code/mission-control-spike run mctl -- --instance spike uninstall --purge
 ```
 
-The sandbox has its own Claude config folder, so the first `claude` start asks you to sign in once. Workers the sandbox starts use the same folder and the same sign-in.
+The `spike` instance has its own Claude config folder, so the first `claude` start asks you to sign in once. Workers the instance starts use the same folder and the same sign-in. The desktop app can stay open the whole time; its daemon, hooks, MCP server, skills and status line are never read or changed.

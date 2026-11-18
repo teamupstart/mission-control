@@ -4,7 +4,7 @@ Each row is one test (or one check) whose title starts with the ID. Section refe
 
 Phase 0b writes every test below with `{ todo: "AC-..." }` so the branch stays green. The owning stream removes `todo` when it makes the test pass. Nobody weakens a test to make it pass; if a test is wrong, the orchestrator changes it and records why.
 
-Revision 2026-11-18 (third): adds the Delivery section (AC-DEL-01 to 05) and amends AC-INT-03. Earlier the same day: AC-LAUNCH-05 to 11, AC-GUIDE-13, AC-API-21 and AC-PLUG-07 were added; AC-C-04, AC-API-02, AC-HOOK-01, AC-LAUNCH-01, AC-LAUNCH-02, AC-PLUG-04 and AC-INT-01 were amended; and AC-GUIDE, AC-API-18 to 20, AC-HOOK-12, AC-MCP-07 to 09, AC-SET-16 and AC-INT-04, 05 were added. Amended rows are marked (amended).
+Revision 2026-11-18 (fourth): adds the Install isolation section (AC-ISO-01 to 10), replaces AC-SET-06 and AC-SET-08, and amends AC-SET-01, 05, 07, 10, 12, AC-LAUNCH-04, AC-PLUG-01 to 03, AC-INT-02 and AC-HOOK-02. Earlier the same day: the Delivery section (AC-DEL-01 to 05), AC-LAUNCH-05 to 11, AC-GUIDE-13, AC-API-21, AC-PLUG-07 and many amendments. Amended rows are marked (amended); replaced rows are marked (replaced).
 
 ## Delivery (spike, alpha code)
 
@@ -17,6 +17,23 @@ This is a spike and alpha code. All changes for every stream and every phase are
 | AC-DEL-03 | (checks) | The branch is not merged into `main` and not released. It changes no production, signing, release, CI or deployment configuration (`.github/workflows/`, `electron-builder.yml`); the only `package.json` changes are the scripts and `bin` entry listed in spec 2.3. |
 | AC-DEL-04 | test/handoff-docs.test.ts | `docs/headless-mode.md` opens with a notice that the feature is a spike and alpha code on `feat/headless-mode-spike`, unreleased, with no compatibility promise. |
 | AC-DEL-05 | (checks) | Streams commit to the branch in the order of spec 15, with plain fast-forward pushes (no force push, no history rewrite, no `git reset --hard`). At each stream's last commit the rows that stream owns pass and typecheck and lint are green, before the next stream starts on top of it. |
+
+## Install isolation (spike beside the desktop app)
+
+The spike installs only as the named instance `spike`, under the names in spec 9.5, and never reads or writes the default state home, the default Claude config or the default launchd labels. Rationale: `docs/plans/headless-mode-install/plan.md`. These rows are owned by the stream named in the last column of the row text.
+
+| ID | Test file | Criterion |
+|---|---|---|
+| AC-ISO-01 | test/handoff-isolation.test.ts | With a temp `HOME` that holds fake default `~/.claude/settings.json`, `~/.claude.json`, `~/.claude/skills/mission-*` links, default LaunchAgents and a fake app state folder, `setup`, launch preparation for `claude`, and `uninstall --purge` for `--instance spike` leave every default file byte-identical, and the injected runner never sees a default or legacy label. (Subsumes AC-SET-05 and AC-INT-02.) Stream `setup`. |
+| AC-ISO-02 | test/handoff-isolation.test.ts | The daemon started with `MISSION_HOME` unset, or set to the default state folder, exits non-zero before opening any database, and a default state folder at schema version 34 stays at 34 (guard G-1). Stream `api`. |
+| AC-ISO-03 | test/handoff-setup.test.ts | Every `mctl` command (`get`, `describe`, `logs`, `status`, `config`, `run`, `setup`, `doctor`, `daemon`, `uninstall`, `claude`) run without an instance, or with `default`, exits 2 with a message naming `--instance`, writes nothing and contacts no daemon (guard G-2). Stream `mctl`. |
+| AC-ISO-04 | test/handoff-plugin.test.ts | The built plugin names are exactly those in spec 9.5. The hook command string is not matched by `isMissionHookCommand`, the hook script and its build output contain neither `harness-hook.mjs` nor `satellites/hook.mjs`, no skill directory the spike creates starts with `mission-` or `fleet-`, and the MCP server name is not `mission-control`. Stream `plugin`. |
+| AC-ISO-05 | test/handoff-hook.test.ts | The hook is a no-op and prints nothing when `MISSION_HOME` is unset or is not under `~/.mission-control-instances/`; it never contacts port 7317 or any default port (guard G-3). Stream `hooks`. |
+| AC-ISO-06 | test/handoff-setup.test.ts | `setup` refuses a `runtimeRoot` inside a pooled or transient checkout and any path inside an `.app` bundle, and bakes the Node path from `stableNodePath` (guard G-4). Stream `setup`. |
+| AC-ISO-07 | test/handoff-isolation.test.ts | Two daemons with different `MISSION_HOME` and ports (one standing in for the desktop app) run at once and both answer health; neither writes to the other's folder, and their state locks are distinct. Stream `integration`. |
+| AC-ISO-08 | test/handoff-setup.test.ts | `uninstall` removes exactly the paths and registrations in the manifest and nothing else; a file added by hand in the instance folder survives a non-purge uninstall (guard G-6). Stream `setup`. |
+| AC-ISO-09 | test/handoff-setup.test.ts | After setup, `claude plugin list` under the default config does not show the spike plugin, and the instance config folder's `settings.json` contains no Mission hook entry. Stream `setup`. |
+| AC-ISO-10 | test/handoff-docs.test.ts | `docs/headless-mode.md` contains the spike names table and the graduation gates, and states that the spike never edits the default config. Stream `docs`. |
 
 ## v1
 
@@ -113,9 +130,9 @@ This is a spike and alpha code. All changes for every stream and every phase are
 | ID | Test file | Criterion |
 |---|---|---|
 | AC-HOOK-01 | test/handoff-hook.test.ts | (amended) `SessionStart` posts the registration and prints a summary card in `additionalContext` when the inbox has items. With an empty inbox it prints only the notice (and the skill hint in `additionalContext`), no card. |
-| AC-HOOK-02 | test/handoff-hook.test.ts | When the stub API does not answer within 300 ms, every event prints nothing and exits 0 in under 1 s. |
-| AC-HOOK-03 | test/handoff-hook.test.ts | `SessionStart` against an API missing `handoff-v1`, or with a different version, prints the "don't match. Run: mctl setup" `systemMessage`. |
-| AC-HOOK-04 | test/handoff-hook.test.ts | `SessionStart` with the API unreachable for a launchd-managed instance starts the kickstart command through the injected runner and prints "starting in the background". |
+| AC-HOOK-02 | test/handoff-hook.test.ts | (amended) When the stub API does not answer within 300 ms, every event prints nothing and exits 0 in under 1 s. The stub listens on the instance port taken from `MISSION_PORT`. |
+| AC-HOOK-03 | test/handoff-hook.test.ts | `SessionStart` against an API missing `handoff-v1`, or with a different version, prints the "don't match. Run: mctl --instance {name} setup" `systemMessage`. |
+| AC-HOOK-04 | test/handoff-hook.test.ts | `SessionStart` with the API unreachable and the instance's services installed starts the kickstart command for the instance's own label through the injected runner and prints "starting in the background". It never kickstarts a default label. |
 | AC-HOOK-05 | test/handoff-hook.test.ts | `UserPromptSubmit` posts the prompt, prints one `systemMessage` line per full item and one reminder line per reminder, and puts the full question and options in `additionalContext`. |
 | AC-HOOK-06 | test/handoff-hook.test.ts | `Stop` posts the close and prints nothing. |
 | AC-HOOK-07 | test/handoff-hook.test.ts | `PostToolUse` for a tool named `*answer_task` prints the receipt as `systemMessage`. Other tools print nothing. |
@@ -132,7 +149,7 @@ This is a spike and alpha code. All changes for every stream and every phase are
 | AC-LAUNCH-01 | test/handoff-hook.test.ts | (amended) `SessionStart` with source `startup` or `clear` prints the server's notice as `systemMessage`. With source `resume` or `compact` it prints no notice. |
 | AC-LAUNCH-02 | test/handoff-hook.test.ts | (amended) The notice text comes from the API response: a stub API returning a different banner is printed verbatim, so the hook holds no kind list. With the API unreachable no notice is printed. |
 | AC-LAUNCH-03 | test/handoff-plugin.test.ts | `commands/mc.md` documents `/mc`, `/mc {kind} {text}`, `/mc check` and `/mc {taskId}`, says an unknown first word starts the brief, and says the shortcuts are optional. |
-| AC-LAUNCH-04 | test/handoff-setup.test.ts | `mctl claude` on a TTY with no prompt argument passes `/mc` as the first positional argument. It does not when a prompt argument, `-p`, `--print`, `--resume`, `--continue` or `--no-launcher` is given, or when stdin is not a TTY. |
+| AC-LAUNCH-04 | test/handoff-setup.test.ts | (amended) `mctl --instance spike claude` on a TTY with no prompt argument passes `/mission-control-spike:mc` as the first positional argument. It does not when a prompt argument, `-p`, `--print`, `--resume`, `--continue` or `--no-launcher` is given, or when stdin is not a TTY. It always sets `MISSION_HOME`, `MISSION_PORT` and `CLAUDE_CONFIG_DIR` from the instance. |
 | AC-LAUNCH-05 | test/handoff-turns-http.test.ts | The daemon offers the launcher only for the first turn of a registered session whose source is `startup`. A session registered with `resume`, `clear`, `compact` or an unknown source is never offered it. |
 | AC-LAUNCH-06 | test/handoff-turns-http.test.ts | No offer when the first prompt is empty or whitespace, or starts with `/` (including `/mc` and the `mctl claude` prompt). |
 | AC-LAUNCH-07 | test/handoff-turns-http.test.ts | No offer when the registered entrypoint is not the interactive value, including an unknown or missing entrypoint and the non-interactive `-p` value. |
@@ -145,10 +162,10 @@ This is a spike and alpha code. All changes for every stream and every phase are
 
 | ID | Test file | Criterion |
 |---|---|---|
-| AC-PLUG-01 | test/handoff-plugin.test.ts | `build-claude-plugin` produces the layout in spec 7.1. `plugin.json` has name `mission-control` and the package version. |
-| AC-PLUG-02 | test/handoff-plugin.test.ts | `hooks.json` registers the four events, every command uses `${CLAUDE_PLUGIN_ROOT}`, and the `PostToolUse` matcher is `.*answer_task`. |
-| AC-PLUG-03 | test/handoff-plugin.test.ts | `.mcp.json` declares one `mission-control` stdio server whose script exists in the built plugin. |
-| AC-PLUG-04 | test/handoff-plugin.test.ts | (amended) `skills/handoff/SKILL.md` and `skills/checkin/SKILL.md` have valid frontmatter (name, description) and contain each section heading in spec 7.2 and 7.3. The handoff skill names `read_dispatch_options`, `AskUserQuestion`, `fallbackText`, `create_task` and `dispatch_task`, forbids calling `dispatch_task` without Dispatch now or "go", forbids rewording options, and contains no offer of Grill me first. It lists no kind names by hand. |
+| AC-PLUG-01 | test/handoff-plugin.test.ts | (amended) `build-claude-plugin` produces the layout in spec 7.1. `plugin.json` has name `mission-control-spike` and the package version. |
+| AC-PLUG-02 | test/handoff-plugin.test.ts | (amended) `hooks.json` registers the four events, every command uses `${CLAUDE_PLUGIN_ROOT}` and names `handoff-spike-hook.mjs`, and the `PostToolUse` matcher is `.*answer_task`. |
+| AC-PLUG-03 | test/handoff-plugin.test.ts | (amended) `.mcp.json` declares one stdio server named `mc-spike` whose script exists in the built plugin. |
+| AC-PLUG-04 | test/handoff-plugin.test.ts | (amended) `skills/handoff/SKILL.md` and `skills/checkin/SKILL.md` have valid frontmatter (name, description) and contain each section heading in spec 7.2 and 7.3. The handoff skill names `read_dispatch_options`, `AskUserQuestion`, `fallbackText`, `create_task` and `dispatch_task` by their bare tool names, forbids calling `dispatch_task` without Dispatch now or "go", forbids rewording options, and contains no offer of Grill me first. It lists no kind names by hand. |
 | AC-PLUG-05 | test/handoff-plugin.test.ts | `commands/mc.md` exists and refers to the handoff and checkin skills. |
 | AC-PLUG-06 | (smoke) | `smokeHandoffPlugin` runs the built hook with `{}` for each event and exits 0, and completes an MCP `initialize` and `tools/list` against the plugin's server path, listing `read_dispatch_options`. |
 | AC-PLUG-07 | test/handoff-plugin.test.ts | The handoff skill has the three entries of spec 7.2 (first-message, launcher, conversation). The first-message entry says to ask the launcher question before anything else, to keep the person's message as the brief, to answer it normally on Work in this session, and never to start the work before the answer. |
@@ -162,7 +179,7 @@ This is a spike and alpha code. All changes for every stream and every phase are
 | AC-CLI-03 | test/handoff-cli.test.ts | `describe` shows kind, after work, origin, PR, and for a waiting home-session task the line "answer this in your home session". |
 | AC-CLI-04 | test/handoff-cli.test.ts | `logs -f` prints new transcript lines from SSE events and exits when the task becomes terminal. It makes no repeated HTTP requests for the same data. |
 | AC-CLI-05 | test/handoff-cli.test.ts | `status` prints counts, slots used and API version. `get kinds` prints each kind's hints and current after work. `get workflows` and `config view` print the documented fields, including `handoff.launcher.prompt`. |
-| AC-CLI-06 | test/handoff-cli.test.ts | Every command uses the selected instance's port and token (`--instance`, then `MCTL_INSTANCE`, then default). |
+| AC-CLI-06 | test/handoff-cli.test.ts | Every command uses the selected instance's port and token (`--instance`, then `MCTL_INSTANCE`); there is no default fallback (AC-ISO-03). |
 | AC-CLI-07 | test/handoff-cli-run.test.ts | `run` without a TTY exits 2 with the "needs an interactive terminal" message and creates nothing. |
 | AC-CLI-08 | test/handoff-cli-run.test.ts | `run` on a TTY creates and dispatches a task with origin `mctl`, kind, after work, model and effort as given, and prints the header line. |
 | AC-CLI-09 | test/handoff-cli-run.test.ts | `--after-work` resolves a slug, an id and `slug@version`. `none` prints the warning. Unknown values, unknown kinds and invalid models exit 2 with the valid list. |
@@ -175,18 +192,18 @@ This is a spike and alpha code. All changes for every stream and every phase are
 
 | ID | Test file | Criterion |
 |---|---|---|
-| AC-SET-01 | test/handoff-instances.test.ts | The default instance resolves to `stateDir()`, `PORT`, the two default labels and the user's Claude config. `sandbox` resolves to the paths and labels in spec 9.1. Invalid names and `default` are refused. |
+| AC-SET-01 | test/handoff-instances.test.ts | (amended) The instance `spike` resolves to `~/.mission-control-instances/spike`, a stored port from 7417 (never 7317), the two suffixed labels and `{state}/claude`. Invalid names are refused, and `default` is refused. |
 | AC-SET-02 | test/handoff-instances.test.ts | Setup picks the first free port from 7417, stores it in `instance.json`, and reuses it on later runs. |
 | AC-SET-03 | test/handoff-setup.test.ts | Setup without built artifacts exits 2 with "run npm run build first". |
 | AC-SET-04 | test/handoff-setup.test.ts | Setup writes two plists with the env vars in spec 9.2, and calls `launchctl bootstrap` for exactly those two labels through the injected runner. |
-| AC-SET-05 | test/handoff-setup.test.ts | Setup for a named instance never writes, or passes to `launchctl`, any default or legacy label, and never touches `~/.claude`, `~/.claude.json` or `~/.mission-control`. |
-| AC-SET-06 | test/handoff-setup.test.ts | Setup for the default instance refuses while another process holds `daemon.lock`, naming its pid. |
-| AC-SET-07 | test/handoff-setup.test.ts | Setup copies the plugin to `{state}/plugin/{version}/` and wraps the status line in that instance's `settings.json`, keeping the prior command in the sidecar. |
-| AC-SET-08 | test/handoff-setup.test.ts | Default-instance setup with existing Mission Control hook groups and a user-scope MCP registration backs both files up, removes the duplicates, and reports the backup path. |
+| AC-SET-05 | test/handoff-setup.test.ts | (amended, subsumed by AC-ISO-01) Setup never writes, or passes to `launchctl`, any default or legacy label, and never touches `~/.claude`, `~/.claude.json` or `~/.mission-control`. |
+| AC-SET-06 | test/handoff-setup.test.ts | (replaced) Setup refuses while another process holds the instance's own `daemon.lock`, naming its pid. |
+| AC-SET-07 | test/handoff-setup.test.ts | (amended) Setup copies the plugin to `{state}/plugin/{version}/` and installs it only in the instance config folder. It does not wrap `statusLine` unless `--statusline` is passed; then the wrapper and its sidecar live inside the instance folders. |
+| AC-SET-08 | test/handoff-setup.test.ts | (replaced) Setup never reads, backs up, edits or removes any entry in `~/.claude/settings.json` or `~/.claude.json`, including existing Mission Control hook groups and a user-scope `mission-control` MCP registration, and writes a manifest of what it wrote. |
 | AC-SET-09 | test/handoff-setup.test.ts | Running setup twice leaves every file byte-identical after the second run. |
-| AC-SET-10 | test/handoff-setup.test.ts | (amended) `mctl claude` execs `claude` with the instance env and passes through extra args. In installed mode (the default for every instance) it passes no `--plugin-dir`; with `--plugin-dir-mode` it does. |
-| AC-SET-11 | test/handoff-setup.test.ts | `doctor` reports each check in spec 9.3 and exits 1 when one fails. It flags duplicate hooks. |
-| AC-SET-12 | test/handoff-setup.test.ts | `uninstall` boots out both labels, deletes the plists, restores the status line and uninstalls the plugin. `--purge` deletes a named instance's folder and is refused for the default instance. |
+| AC-SET-10 | test/handoff-setup.test.ts | (amended) `mctl --instance spike claude` execs `claude` with the instance env and passes through extra args. In installed mode it passes no `--plugin-dir`; with `--plugin-dir-mode` it does. |
+| AC-SET-11 | test/handoff-setup.test.ts | (amended) `doctor` reports each check in spec 9.3, including no spike path in the default Claude config and default labels untouched, and exits 1 when one fails. It reports a conflict with the owner's own repair command and changes nothing. |
+| AC-SET-12 | test/handoff-setup.test.ts | (amended) `uninstall` removes exactly the manifest's entries. `--purge` deletes the instance's folder and is refused for the name `default`. |
 | AC-SET-13 | test/handoff-setup.test.ts | `daemon restart` and `daemon kick` call `kickstart -k` and `kickstart` for the instance's labels. |
 | AC-SET-14 | test/executable-contracts.test.ts | `/bin/launchctl` is in `FIXED_OS_EXECUTABLES`, and every new child process call is declared in `CHILD_PROCESS_BOUNDARIES` (existing test stays green). |
 | AC-SET-15 | test/handoff-instances.test.ts | `agentSubprocessEnv` passes `CLAUDE_CONFIG_DIR` from the daemon env to harness children. |
@@ -196,9 +213,9 @@ This is a spike and alpha code. All changes for every stream and every phase are
 
 | ID | Test file | Criterion |
 |---|---|---|
-| AC-INT-01 | test/handoff-loop.test.ts | (amended) The full loop in spec 10 passes against a real daemon with fake agents and spends no model tokens, starting from the first-message launcher offer and the guided questions, and showing no second offer in the same session. |
-| AC-INT-02 | test/handoff-isolation.test.ts | Sandbox setup and `uninstall --purge` leave every default-instance file byte-identical, and the runner never sees a default or legacy label. |
-| AC-INT-03 | (checks) | (amended) `npm run typecheck`, `npm run lint`, `MISSION_TEST_CONCURRENCY=4 npm test`, `npm run build` and `npm run smoke` all pass on the tip of `feat/headless-mode-spike`. |
+| AC-INT-01 | test/handoff-loop.test.ts | The full loop in spec 10 passes against a real daemon with fake agents and spends no model tokens, starting from the first-message launcher offer and the guided questions, and showing no second offer in the same session. |
+| AC-INT-02 | test/handoff-isolation.test.ts | (amended) Subsumed by AC-ISO-01: setup and `uninstall --purge` for the `spike` instance leave every default file byte-identical. |
+| AC-INT-03 | (checks) | `npm run typecheck`, `npm run lint`, `MISSION_TEST_CONCURRENCY=4 npm test`, `npm run build` and `npm run smoke` all pass on the tip of `feat/headless-mode-spike`. |
 | AC-INT-04 | test/handoff-loop.test.ts | The same hook script and MCP server run with `MISSION_SESSION_ID` set (a worker) leave `handoff_sessions` empty and the worker cannot call `answer_task`. |
 | AC-INT-05 | test/handoff-loop.test.ts | Answers chosen in the guided questions (kind, harness, after work) produce a task whose kind, agent and workflow equal the dashboard's result for the same choices on the same settings. |
 

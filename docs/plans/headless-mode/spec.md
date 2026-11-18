@@ -9,6 +9,7 @@ Placeholders in this file are written `{name}` so they are never mistaken for ma
 ## 0. Rules for everyone building this
 
 - **This is a spike and alpha code.** Every commit goes to one upstream branch, `feat/headless-mode-spike`. Do not create per-stream or per-phase branches, and do not merge to `main` or release (acceptance section Delivery, AC-DEL-01 to 05). Contracts may change before a merge is decided; record each change in your stream's report.
+- **Install isolation.** The spike installs only as the named instance `spike`, under the spike names in 9.5. Nothing it builds, installs or runs reads or writes the default state home `~/.mission-control`, the default Claude config `~/.claude` and `~/.claude.json`, or the default launchd labels (guards G-1 to G-6, acceptance AC-ISO-01 to 10). Rationale and the conflict analysis: `docs/plans/headless-mode-install/plan.md`.
 - Follow `AGENTS.md` (`CLAUDE.md`). The points below are the ones this feature hits hardest.
 - Code namespace is `handoff`. Never reuse `MISSION_HEADLESS` or the word "headless" in identifiers; that env var already means "hooks stay silent".
 - Wire types and browser-safe logic go in `src/shared/` with no `node:` imports.
@@ -28,11 +29,13 @@ Record results in the "Spike results" section at the end of this file.
 | ID | Question | Status |
 |---|---|---|
 | S-01 | Does a plugin's stdio MCP server know which Claude session started it? | Resolved: yes, `CLAUDE_CODE_SESSION_ID` (see results). |
-| S-02 | Does `CLAUDE_CONFIG_DIR` isolate `claude plugin install`? | Resolved: yes. Installed mode for every instance. |
+| S-02 | Does `CLAUDE_CONFIG_DIR` isolate `claude plugin install`? | Resolved: yes. Installed mode for the instance. |
 | S-03 | Is `systemMessage` from `UserPromptSubmit` and `PostToolUse` shown to the person? | Resolved: yes. Hooks still emit `additionalContext` too, for Pi and older builds. |
 | S-04 | Does Claude Code render an MCP `elicitation/create` form (single-select enum) in an interactive terminal, and is it available inside a tool call from a plugin server? | Open, not blocking. Needs one interactive run. If yes, a later change can move the guided questions into one MCP tool and drop the skill's `AskUserQuestion` loop. The MVP uses `AskUserQuestion`. |
-| S-05 | Does `SessionStart` input carry `source` with values startup, resume, clear, compact, and does a positional initial prompt (`claude "/mc"`) run a plugin command? | Open, needs one interactive run. Fallback: `source` unknown means the daemon treats the session as not eligible for the launcher (safe), and `mctl claude` passes `/mission-control:mc`. |
+| S-05 | Does `SessionStart` input carry `source` with values startup, resume, clear, compact, and does a positional initial prompt (`claude "/mc"`) run a plugin command? | Open, needs one interactive run. Fallback: `source` unknown means the daemon treats the session as not eligible for the launcher (safe), and `mctl claude` passes `/mission-control-spike:mc`. |
 | S-06 | (a) Which value identifies an interactive session for the entrypoint check (candidate: `CLAUDE_CODE_ENTRYPOINT` equals `cli`, versus `sdk-cli` for `claude -p`)? (b) Does Claude Code let a plugin or settings file submit a first prompt, so plain `claude` could ask on open with no typing? (c) Does `UserPromptSubmit` for the first prompt of a startup session fire before any `/loop` or background report can? | Open, needs interactive and `-p` runs. Not blocking. (a) is required to enable the launcher: until it is confirmed, the check is `entrypoint equals "cli"` and anything else, including unknown, never gets the launcher. (b) if yes, a later change replaces the first-message intercept for plain `claude`. |
+| S-07 | Does the user-scope `mission-control` MCP server that the desktop app registers see `CLAUDE_CODE_SESSION_ID` the way a plugin server does (S-01)? | Open. Needed only for graduation (spec 16). |
+| S-08 | Can a skill linked by the app's skills reconciler be invoked by its `mission-*` name in a fresh session, and does the Skills master switch hide it? | Open. Needed only for graduation (spec 16). |
 
 ## 2. Contracts (Phase 0a, stream `contracts`)
 
@@ -70,7 +73,7 @@ Zod schemas and types. Names are part of the contract.
   Plus caller fields `{ sessionId: string or null, cwd }`.
 - `AnswerReceiptSchema`: `{ reviewId, taskId, sent: string, fromWords: string or null, at }`. `receiptLine(r)` returns the exact user-facing line: `sent "{sent}" to {taskId}, from your words "{fromWords}"`, or without the `from your words` part when `fromWords` is null.
 - `APPROVAL_PHRASES` and `containsApproval(text): boolean` (see 4.3).
-- `InstanceFileSchema`: the contents of `{stateDir}/instance.json` (see 9.1). Hooks and the status line read it to learn the instance's launchd labels; `mctl` writes it. The default instance writes one too, once set up.
+- `InstanceFileSchema`: the contents of `{stateDir}/instance.json` (see 9.1). Hooks and the status line read it to learn the instance's launchd labels; `mctl` writes it.
 - `HANDOFF_PROTOCOL_VERSION = 1`. The feature is unreleased, so the guided additions below do not bump it.
 - New for guided questions (see 3.5):
   - `HANDOFF_KIND_ORDER`: the explicit order kinds are offered in: ship, bugfix, plan, scout, document, chat. A test requires it to be a permutation of `HANDOFF_KINDS`, so a new harness-launched kind cannot ship without a place in the order.
@@ -91,6 +94,7 @@ Zod schemas and types. Names are part of the contract.
 - `ReviewActor` in `src/shared/types.ts` gains `home:{sessionId}`, `home-approval:{sessionId}` and `"mctl"`. These are new persisted values in `reviews.resolved_by`; never rename them later.
 - No schema change is needed for guided questions or `shelved` (it reads `tasks.enabled`).
 - Phase 0 already created `handoff_sessions` on `feat/headless` without the three new columns. Because schema 35 has not shipped, add them to the same `CREATE TABLE`; if any database already ran the earlier 35, use `addColumn` for them as well.
+- Schema 35 must never be applied to the default state home during the spike (guard G-1, AC-ISO-02): a newer schema could stop the installed desktop app opening its own database.
 
 ### 2.3 Seams so streams do not share hot files
 
@@ -98,17 +102,18 @@ Zod schemas and types. Names are part of the contract.
 - `src/mcp/handoff-tools.ts` exports `registerHandoffTools(server, http)`. `src/mcp/server.ts` calls it once. Phase 0 tools return an MCP error "not implemented".
 - `MISSION_MCP_TOOLS` (`src/server/mission-mcp.ts`) gains `read_inbox`, `answer_task` and `read_dispatch_options`.
 - `DAEMON_PROTOCOL_CAPABILITIES` (`src/shared/daemon-protocol.ts`) gains `handoff: "handoff-v1"`.
-- `hooks/handoff-hook.mjs`: stub that reads stdin and exits 0.
+- `hooks/handoff-spike-hook.mjs`: stub that reads stdin and exits 0.
 - `plugin/`: skeleton (see 7.1) with empty skill files.
 - `src/cli/index.ts`: stub that prints usage and exits 2.
 - `package.json`:
   - `bin.mctl`: `src/cli/index.ts`
   - `scripts.mctl`: `tsx src/cli/index.ts`
   - `build:cli`: esbuild `src/cli/index.ts` to `dist/cli/mctl.mjs`
-  - `build:handoff-hook`: esbuild `hooks/handoff-hook.mjs` to `dist/satellites/handoff-hook.mjs`
+  - `build:handoff-hook`: esbuild `hooks/handoff-spike-hook.mjs` to `dist/satellites/handoff-spike-hook.mjs`
   - `build:claude-plugin`: `node scripts/build-claude-plugin.mjs`, which writes `dist/claude-plugin/`
   - All three are appended to `build`.
 - `scripts/smoke-bundles.mjs` calls `smokeHandoffPlugin()` from `scripts/smoke-handoff-plugin.mjs` and `smokeHandoffCli()` from `scripts/smoke-handoff-cli.mjs`. Phase 0 versions pass trivially.
+- Phase 0 named the hook `hooks/handoff-hook.mjs` and the build output `dist/satellites/handoff-hook.mjs`. The contracts stream renames both to the spike names above. The new names must not contain the app's recogniser substrings `harness-hook.mjs` or `satellites/hook.mjs` (AC-ISO-04).
 
 ### 2.4 Changes to the already-landed Phase 0 contracts
 
@@ -118,12 +123,13 @@ The `contracts` stream reopens `src/shared/handoff.ts` once, before any other st
 2. Add the guided types and helpers listed at the end of 2.1, the registration fields `source` and `entrypoint`, and `TurnOpenResponseSchema`.
 3. Add the three `handoff_sessions` columns (2.2).
 4. Add `read_dispatch_options` to the pinned `MISSION_MCP_TOOLS` lists and the route and tool inventories (the same test files Phase 0 already updated).
-5. Update `test/handoff-contracts.test.ts` and `test/handoff-migration.test.ts` for the new names and columns; the new tests are written with `todo` like the rest.
+5. Rename the hook script and its build output to the spike names (2.3).
+6. Update `test/handoff-contracts.test.ts` and `test/handoff-migration.test.ts` for the new names and columns; the new tests are written with `todo` like the rest.
 
 ### 2.5 Launcher switches
 
 - Environment variable `MISSION_HANDOFF_LAUNCHER`. The value `0` makes the hook never ask for the launcher (the daemon is not even consulted for it). Any other value, or unset, leaves it on.
-- Setting `handoff.launcher.prompt`, default `true`, registered in `src/shared/app-config-entries.ts` as `setting` and added to the `mctl config view` output in v1. It is changeable in v1 by editing the app config the same way other settings without a Settings page are changed, and through `mctl config set` in v1.1. It adds no dashboard control.
+- Setting `handoff.launcher.prompt`, default `true`, registered in `src/shared/app-config-entries.ts` as `setting` and added to the `mctl config view` output in v1. It lives in the instance's own state, so it never affects the desktop app. It is changeable in v1 by editing the instance's app config, and through `mctl config set` in v1.1. It adds no dashboard control.
 - The guided questions (Kind, Harness, After work) additionally follow `ui.guidedDispatch` (3.5). The launcher question itself follows only the two switches above.
 
 ## 3. API (stream `api`)
@@ -244,13 +250,15 @@ In `src/mcp/handoff-tools.ts`.
 - `create_task` result: adds `afterWork: { slug, label }` or null and `kindLabel`, resolved by the server with the same resolution the task will dispatch with.
 - `create_task` does not gain `grillFirst` or `personaId`. Grill me first is not offered from the terminal.
 - Home-session identity: send `sessionId` from `CLAUDE_CODE_SESSION_ID` and `claudePid` (parent pid) per spike S-01. When `MISSION_SESSION_ID` is set (a Mission Control worker), the MCP server sends no home-session identity, and `read_inbox`, `answer_task` and `read_dispatch_options` refuse with "not available inside a Mission Control worker".
+- Inside the plugin the server is named `mc-spike`, so Claude shows these tools with a plugin-namespaced prefix. Instructions and skills therefore refer to the bare tool names (`read_dispatch_options`, `answer_task`, `read_inbox`, `create_task`, `dispatch_task`).
 
 ## 6. Hooks and status line (stream `hooks`)
 
-`hooks/handoff-hook.mjs {Event}`, bundled to `dist/satellites/handoff-hook.mjs`. It reuses `readStdin`, `readClientToken` and `BASE_URL` from `src/shared/hook-bridge.mjs` and `src/shared/harness-runtime.mjs`.
+`hooks/handoff-spike-hook.mjs {Event}`, bundled to `dist/satellites/handoff-spike-hook.mjs`. It reuses `readStdin`, `readClientToken` and `BASE_URL` from `src/shared/hook-bridge.mjs` and `src/shared/harness-runtime.mjs`, with `BASE_URL` taken from the instance's `MISSION_PORT`. It is registered only in the plugin's `hooks.json`, never in `~/.claude/settings.json`.
 
 Rules for every event:
 
+- **Instance guard (G-3).** If `MISSION_HOME` is unset, or does not resolve to a folder under `~/.mission-control-instances/`, do nothing and never contact port 7317 or any default port (AC-ISO-05).
 - The API call has a 300 ms timeout. On timeout or any error, print nothing and exit 0.
 - Always exit 0. Never print `decision: "block"`.
 - If `MISSION_HEADLESS` is set, do nothing (existing meaning).
@@ -263,8 +271,8 @@ Per event:
   - POST `/mcp/handoff/sessions` with the input's `source` and the environment's entrypoint; render the card delta as one summary card in `additionalContext`
   - notice: when `source` is `startup` or `clear`, print the server's `launcher.banner` as `systemMessage`. When the launcher will be offered the banner says so, for example `mission-control: I will ask how you want to start. /mc opens the picker any time.` When the launcher is off it lists what can be handed off, for example `mission-control: hand work off with /mc - ship, bugfix, plan, scout, document, chat`. When the inbox has items, append the counts: `... | 2 running, 1 waiting`. Not printed for `resume` or `compact`. The kinds in the line come from the server, never from the hook.
   - `additionalContext` also tells the model: when the person asks to hand work to Mission Control, use the `handoff` skill; `/mc` opens the picker
-  - if the API is unreachable and the instance is launchd-managed, start `/bin/launchctl kickstart gui/{uid}/{label}` detached and print `mission-control: starting in the background`
-  - if `/api/health` lacks capability `handoff-v1`, or its version differs from the plugin's, print `mission-control: plugin {a} and API {b} don't match. Run: mctl setup`
+  - if the API is unreachable and the instance's launchd services are installed, start `/bin/launchctl kickstart gui/{uid}/{label}` for the instance's own label, detached, and print `mission-control: starting in the background`
+  - if `/api/health` lacks capability `handoff-v1`, or its version differs from the plugin's, print `mission-control: plugin {a} and API {b} don't match. Run: mctl --instance {name} setup`
 - `UserPromptSubmit`: if `MISSION_HANDOFF_LAUNCHER` is `0` the hook skips the launcher step but still logs the turn. POST `/mcp/handoff/turns/open` with the prompt.
   - If `launcher.offer` is true, put the launcher instruction in `additionalContext`: before doing anything else, call `read_dispatch_options` with `entry` `first-message` and the person's message as `brief`, ask the returned launcher question with `AskUserQuestion`, then follow the `handoff` skill's first-message entry. Keep the person's message; do not start the work until they answer. If they choose Work in this session, answer the message normally.
   - For each `cardDelta.full` item, a `systemMessage` line such as `mission-control: mc-91c2 asks a question (logging cleanup)`, and the full question, options and an instruction to show it in `additionalContext`.
@@ -273,7 +281,7 @@ Per event:
 - `Stop`: POST `/mcp/handoff/turns/close`. Print nothing.
 - `PostToolUse` with matcher `.*answer_task`: read the receipt from `tool_response` and print it as `systemMessage` with the `mission-control: ` prefix.
 
-Status line: extend `hooks/harness-statusline.mjs` to append one segment after the inner command's output.
+Status line: `hooks/harness-statusline.mjs` is the desktop app's owned wrapper and is not edited by the spike's install. The instance does not wrap `statusLine` unless the person passes `--statusline` to `setup`; then the wrapper and its saved inner command live inside the instance's own Claude config folder and state folder (never the app's `statusline-inner` file). The segment itself:
 
 - Format: `● mc 2 running · 1 waiting · 1 queued`, `● mc 1 ready · PR #212`, `● mc 3 of 3 busy · 1 queued`, `○ mc offline`. A shelved item counts as `1 shelved` after queued. Show nothing when the repo has no items.
 - It reads a cache file `{stateDir}/handoff/statusline/{sha1(repoRoot)}.json` written by the API whenever that repo's inbox changes, so rendering never waits on HTTP.
@@ -284,18 +292,18 @@ Status line: extend `hooks/harness-statusline.mjs` to append one segment after t
 ### 7.1 Layout (`plugin/`, built to `dist/claude-plugin/`)
 
 ```
-.claude-plugin/plugin.json   name "mission-control", version = package.json version
+.claude-plugin/plugin.json   name "mission-control-spike", version = package.json version
 hooks/hooks.json             SessionStart, UserPromptSubmit, Stop, PostToolUse(.*answer_task)
-                             command: node "${CLAUDE_PLUGIN_ROOT}/satellites/handoff-hook.mjs" {Event}
-.mcp.json                    mission-control: node "${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"
-satellites/handoff-hook.mjs  copied from dist
+                             command: node "${CLAUDE_PLUGIN_ROOT}/satellites/handoff-spike-hook.mjs" {Event}
+.mcp.json                    mc-spike: node "${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"
+satellites/handoff-spike-hook.mjs  copied from dist
 mcp/server.mjs               copied from dist
 skills/handoff/SKILL.md
 skills/checkin/SKILL.md
 commands/mc.md
 ```
 
-`scripts/build-claude-plugin.mjs` assembles it from `plugin/` plus built bundles, and writes the instance-neutral env: hooks and MCP read `MISSION_HOME` and `MISSION_PORT` from the environment that `mctl ... claude` or the installed settings provide.
+The marketplace is named `mission-control-spike-local`. `scripts/build-claude-plugin.mjs` assembles it from `plugin/` plus built bundles. Hooks and MCP read `MISSION_HOME` and `MISSION_PORT` from the environment that `mctl --instance spike claude` sets. The plugin is installed only into the instance's Claude config folder (9.2). The spike plugin uses host `node`, which is acceptable for a developer sandbox; owned-runtime delivery is graduation work (16).
 
 ### 7.2 Skill `handoff`
 
@@ -334,7 +342,7 @@ Sections:
 
 ### 7.4 Command `/mc`
 
-Optional shortcuts; the launcher no longer needs them.
+Optional shortcuts; the launcher no longer needs them. In the spike the command is the plugin's own, `/mission-control-spike:mc`; plain `/mc` works where it is unambiguous (spike S-05).
 
 - `/mc` with no arguments runs the `handoff` skill's launcher entry.
 - `/mc {kind} {text}` is the fast path: `{kind}` is any `HANDOFF_KINDS` value. Kind is answered, `{text}` is the brief, and the questions start at Harness.
@@ -345,11 +353,11 @@ Optional shortcuts; the launcher no longer needs them.
 
 ## 8. `mctl` (stream `mctl`)
 
-`src/cli/`, entry `src/cli/index.ts`, bundled to `dist/cli/mctl.mjs`. It shares an HTTP client with the MCP server: move the request helper used by `src/mcp/server.ts` into `src/shared/handoff-client.ts` only if it has no `node:` imports, otherwise into `src/cli/client.ts` and import it from both.
+`src/cli/`, entry `src/cli/index.ts`, bundled to `dist/cli/mctl.mjs`. During the spike it runs only from the spike checkout (`npm run mctl -- ...`); there is no PATH shim and no desktop-app packaging. It shares an HTTP client with the MCP server: move the request helper used by `src/mcp/server.ts` into `src/shared/handoff-client.ts` only if it has no `node:` imports, otherwise into `src/cli/client.ts` and import it from both.
 
 ### 8.1 Global flags
 
-- `--instance {name}`, or env `MCTL_INSTANCE`. Default is the default instance (section 9).
+- `--instance {name}`, or env `MCTL_INSTANCE`. **Required for every command (G-2).** A missing name, or the name `default`, exits 2 with `name an instance: --instance spike` and does nothing (AC-ISO-03).
 - `--json` on every read command.
 
 ### 8.2 Commands
@@ -404,63 +412,94 @@ mctl run ({prompt} | -f {file}) [--kind k] [--after-work w] [--agent a]
 
 ### 9.1 Instance resolution (`src/cli/instance.ts`)
 
-| | Default instance | Named instance `{n}` |
-|---|---|---|
-| State folder | `stateDir()` as today | `~/.mission-control-instances/{n}` |
-| Port | `PORT` (7317 unless `MISSION_PORT`) | stored in `instance.json`; first free port from 7417 at setup |
-| launchd labels | `com.mission-control.daemon`, `com.mission-control.foreman` | `com.mission-control.daemon.{n}`, `com.mission-control.foreman.{n}` |
-| Claude config | the user's default (`CLAUDE_CONFIG_DIR` or `~/.claude`) | `{state}/claude` |
-| Plugin mode | installed through `claude plugin` | installed through `claude plugin` into the instance's config folder (spike S-02 proved it isolated) |
+During the spike the only installable instance is `spike`. The default instance is the desktop app's and is never installed, modified or started by this feature.
 
-- Names match `[a-z][a-z0-9-]{0,30}`. `default` is reserved.
+| | Instance `spike` |
+|---|---|
+| State folder | `~/.mission-control-instances/spike` |
+| Port | stored in `instance.json`; first free port from 7417 at setup (never 7317) |
+| launchd labels | `com.mission-control.daemon.spike`, `com.mission-control.foreman.spike` |
+| Claude config | `{state}/claude` |
+| Plugin mode | installed through `claude plugin` into the instance's config folder (spike S-02 proved it isolated) |
+
+- Names match `[a-z][a-z0-9-]{0,30}`. `default` is reserved and refused. Other names follow the same suffix rules, so a second sandbox could exist, but only `spike` is documented and tested.
 - `instance.json` records `{ name, port, claudeConfigDir, labels, pluginMode, runtimeRoot, createdAt }`. `pluginMode` is `installed`, or `plugin-dir` only when the person passes `--plugin-dir-mode` to setup as a manual override.
-- `runtimeRoot` is the checkout whose `dist/` the services run.
+- `runtimeRoot` is the checkout whose `dist/` the services run. It must satisfy G-4.
 
-### 9.2 `mctl setup`
+### 9.2 `mctl --instance spike setup`
 
+- Requires a named instance (G-2). Without one, exit 2 and write nothing.
 - Requires `dist/server/index.mjs`, `dist/server/foreman-worker.mjs` and `dist/claude-plugin/`. If any is missing, exit 2 with `run npm run build first`.
+- Refuses a `runtimeRoot` inside a pooled or transient checkout (reuse `transientCheckoutRoot` from `hooks/install-checks.mjs`) and any path inside an `.app` bundle (G-4). It takes the Node path from `stableNodePath`.
+- Creates the instance state folder and `instance.json`, and starts a fresh database there (never copied from `~/.mission-control`).
 - Copies `dist/claude-plugin/` to `{state}/plugin/{version}/`, so a later rebuild cannot break running sessions.
-- Writes two LaunchAgent plists, daemon and Foreman. Both have `RunAtLoad` and `KeepAlive`, logs in `{state}/`, and `EnvironmentVariables` `MISSION_HOME`, `MISSION_PORT` and `CLAUDE_CONFIG_DIR` (named instances only). They run `node` on `{runtimeRoot}/dist/server/index.mjs` and `{runtimeRoot}/dist/server/foreman-worker.mjs`.
+- Writes two LaunchAgent plists, daemon and Foreman, with the suffixed labels. Both have `RunAtLoad` and `KeepAlive`, logs in `{state}/`, and `EnvironmentVariables` `MISSION_HOME`, `MISSION_PORT` and `CLAUDE_CONFIG_DIR`. They run `node` on `{runtimeRoot}/dist/server/index.mjs` and `{runtimeRoot}/dist/server/foreman-worker.mjs`.
 - Loads them with `/bin/launchctl bootstrap gui/{uid} {plist}`.
-- A named instance never unloads, edits or reads any other label, including the legacy labels `scripts/install-service.mjs` removes.
-- Default instance only: if another process holds the state folder's `daemon.lock` (for example the desktop app), refuse with the owner's pid and the line `the desktop app is running Mission Control; quit it or use --instance`.
-- Plugin: runs `claude plugin marketplace add {state}/plugin` and `claude plugin install mission-control@mission-control-local` with that instance's `CLAUDE_CONFIG_DIR`.
-- Status line: wraps `statusLine` in that config folder's `settings.json` with the same JSONC surgical edit and `statusline-inner` sidecar `hooks/install.mjs` uses, pointing at the copied status line script.
-- Duplicates, default instance only: if `settings.json` already has Mission Control hook groups (`isMissionHookCommand`) or `~/.claude.json` has a user-scope `mission-control` MCP server, back up both files to `{state}/backups/{timestamp}/`, then remove those entries so only the plugin's copies run. Print what moved and where the backup is.
+- Never unloads, edits or reads any other label, including `com.mission-control.daemon`, `com.mission-control.foreman` and the legacy labels `scripts/install-service.mjs` removes.
+- Plugin: runs `claude plugin marketplace add {state}/plugin` and `claude plugin install mission-control-spike@mission-control-spike-local` with the instance's `CLAUDE_CONFIG_DIR`.
+- Status line: not wrapped by default. With `--statusline`, wrap `statusLine` in the instance config folder's `settings.json` using a sidecar at `{state}/statusline-inner`, never the desktop app's file.
+- Never reads, backs up, edits or removes anything in `~/.claude/settings.json` or `~/.claude.json` (AC-ISO-01).
+- Writes the **ownership manifest** `{state}/manifest.json`: every file, plist, plugin registration and settings edit that setup wrote.
 - Idempotent: running setup twice changes nothing the second time.
 
 ### 9.3 Other commands
 
-- `mctl claude [args]`: execs `claude` (located through the executable registry) with:
-  - `MISSION_HOME`, `MISSION_PORT`, and `CLAUDE_CONFIG_DIR` (named instances)
+- `mctl --instance spike claude [args]`: execs `claude` (located through the executable registry) with:
+  - `MISSION_HOME`, `MISSION_PORT` and `CLAUDE_CONFIG_DIR` always set from the instance, so the plugin hook can never fall back to the default port (G-3)
   - `--plugin-dir {state}/plugin/{version}` only in `plugin-dir` mode
-  - the launcher prompt: when stdin and stdout are TTYs, the user passed no prompt argument and no `-p`, `--print` or `--resume`/`--continue`, and `--no-launcher` is absent, the first positional argument is `/mc` so the picker opens the moment Claude starts, with no typing (spike S-05 decides the exact spelling; fallback `/mission-control:mc`). Because it starts with `/`, it never triggers the first-message launcher a second time (4.1).
+  - the launcher prompt: when stdin and stdout are TTYs, the user passed no prompt argument and no `-p`, `--print` or `--resume`/`--continue`, and `--no-launcher` is absent, the first positional argument is `/mission-control-spike:mc` so the picker opens the moment Claude starts, with no typing (spike S-05 decides whether plain `/mc` also works). Because it starts with `/`, it never triggers the first-message launcher a second time (4.1).
   - the remaining args passed through
-- `mctl doctor`: one line per check, `✓` or `✗` with a fix:
-  - API reachable
+- `mctl --instance spike doctor`: one line per check, `✓` or `✗` with a fix:
+  - instance API reachable
   - capability `handoff-v1`
   - plugin version equals API version
   - Foreman leader heartbeat within 30 s
-  - status line wrapped
-  - no duplicate hooks or MCP registration
-  - launchd labels loaded
+  - plugin installed in the instance config folder and not listed under the default config
+  - no spike path in the default `~/.claude/settings.json` or `~/.claude.json`
+  - default launchd labels untouched
+  - no service whose program is inside an `.app` bundle
+  - manifest present and every entry exists
 
-  Exit 1 if any check fails.
-- `mctl daemon status`: labels, pids, port and log paths.
-- `mctl daemon restart`: `/bin/launchctl kickstart -k` both labels.
-- `mctl daemon kick`: `kickstart` without `-k`.
-- `mctl uninstall`:
-  - `bootout` both labels and delete their plists
-  - restore the status line from its sidecar
-  - remove the plugin (`claude plugin uninstall`)
-  - `--purge` also deletes the instance folder, named instances only
-  - never touches another instance
+  Exit 1 if any check fails. `doctor` reports conflicts and the owner's own repair command; it never fixes another owner's entry.
+- `mctl --instance spike daemon status`: labels, pids, port and log paths.
+- `mctl --instance spike daemon restart`: `/bin/launchctl kickstart -k` both labels.
+- `mctl --instance spike daemon kick`: `kickstart` without `-k`.
+- `mctl --instance spike uninstall`:
+  - removes exactly the manifest's entries: `bootout` both labels and delete their plists, `claude plugin uninstall` in the instance config folder, and restore the instance status line from its sidecar when it was wrapped
+  - `--purge` also deletes the instance folder
+  - never touches the default instance or anything not in the manifest
 
 ### 9.4 Workers inherit the instance
 
-`agentSubprocessEnv` (`src/server/agent-subprocess-env.ts`) passes `CLAUDE_CONFIG_DIR` through to every harness child, so a named instance's workers use the instance's Claude config. Add it only if it is not already passed.
+`agentSubprocessEnv` (`src/server/agent-subprocess-env.ts`) passes `CLAUDE_CONFIG_DIR` through to every harness child, so the instance's workers use the instance's Claude config. Add it only if it is not already passed.
 
 Because those workers load the instance's plugin, the hook and MCP server must recognise them and stay silent (rule in section 6, AC-HOOK-12, AC-API-18).
+
+### 9.5 Isolation guards and spike names
+
+**Guards**
+
+| # | Guard | Prevents |
+|---|---|---|
+| G-1 | The spike daemon refuses to start unless `MISSION_HOME` is a named instance folder under `~/.mission-control-instances/`. It never opens `~/.mission-control/harness.db`. | Applying schema 35 to the desktop app's real database. |
+| G-2 | Every `mctl` command requires a non-default `--instance` (or `MCTL_INSTANCE`). | Editing `~/.claude`, `~/.claude.json` or default labels. |
+| G-3 | The plugin hook is a no-op unless `MISSION_HOME` names an instance folder; it never falls back to port 7317. | Spike events reaching the app's daemon. |
+| G-4 | `runtimeRoot` is a stable, non-pooled checkout and not inside an `.app` bundle; the Node path comes from `stableNodePath`. | Baked paths the pool deletes; a LaunchAgent that executes the app bundle, which the app's update check treats as a blocker. |
+| G-5 | Workers inherit the instance's config and state (9.4). | Workers reporting to the wrong daemon. |
+| G-6 | `uninstall` removes only manifest entries. | Deleting foreign files. |
+
+**Names**
+
+| Surface | Spike name | What it would otherwise collide with |
+|---|---|---|
+| Instance, state, port | `spike`, `~/.mission-control-instances/spike`, first free port from 7417 | the default instance, `~/.mission-control`, 7317 |
+| launchd labels | `com.mission-control.daemon.spike`, `com.mission-control.foreman.spike` | `com.mission-control.daemon` and its legacy labels |
+| Claude config | `~/.mission-control-instances/spike/claude` | `~/.claude` |
+| Plugin, marketplace | `mission-control-spike`, `mission-control-spike-local` | nothing today |
+| MCP server | `mc-spike` | the owned user-scope `mission-control` server |
+| Hook script | `satellites/handoff-spike-hook.mjs`, registered only in the plugin's `hooks.json` | the app's recogniser substrings `harness-hook.mjs` and `satellites/hook.mjs` |
+| Skills, command | plugin skills `handoff`, `checkin`; `/mission-control-spike:mc` | the skills reconciler's `mission-` and `fleet-` prefixes |
+| CLI | `npm run mctl -- --instance spike`, no PATH shim | nothing |
 
 ## 10. Integration (Phase 2, stream `integration`)
 
@@ -475,17 +514,17 @@ Because those workers load the instance's plugin, the hook and MCP server must r
   8. the fake worker receives the answer and finishes
   9. the inbox shows `ready`
 - Worker identity test: the same hook and MCP server run with `MISSION_SESSION_ID` set register nothing and print nothing.
-- Isolation test: with a temp `HOME` that contains a fake default `~/.mission-control`, `~/.claude/settings.json`, `~/.claude.json` and a fake LaunchAgents folder, run `mctl --instance sandbox setup`, then `uninstall --purge`. Assert every default file is byte-identical, and that the fake runner never saw a default or legacy label.
+- Isolation test (AC-ISO-01): with a temp `HOME` that contains a fake default `~/.mission-control`, `~/.claude/settings.json`, `~/.claude.json`, `~/.claude/skills/mission-*` links and a fake LaunchAgents folder, run `mctl --instance spike setup`, then `uninstall --purge`. Assert every default file is byte-identical, and that the fake runner never saw a default or legacy label. A second case runs two daemons on different state homes and ports at once (AC-ISO-07).
 - Dashboard parity: the existing e2e guided-dispatch specs pass unchanged after the shared extraction.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` pass.
 
 ## 11. Docs (Phase 2, stream `docs`)
 
 - `docs/headless-mode.md`, in plain English:
-  - an opening notice that this is a spike and alpha code on `feat/headless-mode-spike` (AC-DEL-04)
+  - an opening notice that this is a spike and alpha code on `feat/headless-mode-spike`, installed only as the `spike` instance and never editing the default config (AC-DEL-04, AC-ISO-10)
   - what it is
-  - install
-  - instances and the sandbox
+  - install, with the stable-checkout step and the spike names table (9.5)
+  - the guards and what each prevents
   - the launcher: when it asks, when it does not, and how to switch it off
   - the guided questions, and how they match the dashboard
   - the home session flow
@@ -494,6 +533,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
   - the `mctl` reference
   - the plan approval rule
   - what the turn log stores
+  - graduation: the gates and the rename map (section 16)
   - security limits: ordinary answers are not proven human; starting a task is gated by the skill and a confirm, not the server; the machine token is shared with any local process
 - Linked from `docs/README.md` and `README.md`.
 - `docs/dispatch-and-backlog.md` gets one paragraph pointing to the terminal version of the guided pass.
@@ -543,7 +583,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 - Set the test home above dynamic imports (`process.env.MISSION_HOME = mkdtempSync(...)`, then `await import(...)`).
 - HTTP: `buildApp(...)` and `app.request(path, { headers: { "x-harness-token": ensureToken() } })` (see `test/mcp-create-task.test.ts`).
 - MCP: spawn the source `src/mcp/server.ts` with `StdioClientTransport` against `buildApp` served on port 0 (see `test/mcp-backlog-tools.test.ts`).
-- Hooks: `execFile(process.execPath, [hook, event])` with stdin JSON and a stub HTTP server (see `test/hook-script-decision.test.ts`). Set `MISSION_HEADLESS: ""`, `MISSION_SESSION_ID: ""` and `MISSION_HANDOFF_LAUNCHER: ""`.
+- Hooks: `execFile(process.execPath, [hook, event])` with stdin JSON and a stub HTTP server (see `test/hook-script-decision.test.ts`). Set `MISSION_HEADLESS: ""`, `MISSION_SESSION_ID: ""`, `MISSION_HANDOFF_LAUNCHER: ""`, and `MISSION_HOME` to a path under a temp `~/.mission-control-instances/`.
 - Workers: a fake SDK handle (`test/mission-session-closure.test.ts`) or fake binaries through `MISSION_CLAUDE_BIN` (`test/claude-sdk-process.test.ts`).
 - A real daemon spawn calls `ensureNativeStateLockAddon` at module scope.
 - CLI: `spawnSync(process.execPath, ["--import", "tsx", "src/cli/index.ts", ...])`, plus direct calls to exported command functions with an injected `isTTY`, `stdout` and command runner.
@@ -559,6 +599,7 @@ Because those workers load the instance's plugin, the hook and MCP server must r
 - Grill me first from the terminal.
 - MCP elicitation (spike S-04), until a later change.
 - A prompt on open for plain `claude` with no typing at all (spike S-06 part b), until Claude Code supports it. `mctl claude` provides it today.
+- Installing into the default instance: attach to the desktop app's daemon, extending the owned hook, delivering skills through the reconciler, an owned `mctl` with a PATH shim, and any `OPERATOR_SATELLITES` change. These are graduation work (16).
 - Merging the spike branch to `main`, a release, or compatibility promises for alpha contracts.
 - Slack, spending budgets, Linux services.
 - Proving that an ordinary answer was typed by a person, or a server gate on dispatch.
@@ -579,6 +620,25 @@ All streams commit to `feat/headless-mode-spike`, in this order (AC-DEL-05).
 | `setup` | 9 | `plugin` |
 | `integration`, `docs` | 10, 11 | all of v1 |
 | `attach`, `notify`, `config-set` | 12 | v1 |
+
+## 16. Graduation (a later, separate plan)
+
+Nothing here is built during the spike. It records where the spike names end up so the spike code is shaped for it.
+
+**Gates.** All must hold before a graduation plan starts: spikes S-04 to S-08 answered; every `AC-` row passes on the tip of `feat/headless-mode-spike`, including AC-ISO-01 to 10; one week of real use in the `spike` instance beside the running desktop app with no unexplained daemon, hook or port errors; and four decisions made: how the default instance attaches to the app's daemon, whether the owned hook is extended, whether skills move to the reconciler, and how `mctl` is distributed.
+
+**Rename map.**
+
+| Spike | Graduated |
+|---|---|
+| instance `spike`, labels `.spike` | the default instance, attached to the app's daemon (service only when no app owns it) |
+| plugin `mission-control-spike` with MCP `mc-spike` | the owned user-scope `mission-control` server, which already carries the handoff tools |
+| `handoff-spike-hook.mjs` | behaviour inside the owned `satellites/hook.mjs`, with daemon-driven output |
+| plugin skills `handoff`, `checkin` | `skills/handoff`, `skills/checkin`, linked as `mission-handoff` and `mission-checkin` by the reconciler |
+| `/mission-control-spike:mc` | `/mission-handoff` |
+| `npm run mctl` | an owned satellite `dist/satellites/mctl.mjs`, listed in `OPERATOR_SATELLITES`, with an opt-in PATH shim from a Setup row |
+
+**Cut-over order.** Daemon attach, then hook behaviour, then skills, then `mctl`, each behind the same `doctor` checks, keeping the `spike` instance until the product path passes them.
 
 ## Spike results
 
@@ -610,6 +670,6 @@ Config-folder install is isolated, so the `--plugin-dir`-only fallback is not ne
 
 One prompt that made one MCP tool call. A `systemMessage` from `UserPromptSubmit` showed in the transcript as `UserPromptSubmit says: {text}`. A `systemMessage` from `PostToolUse` showed as `PostToolUse:{tool name} says: {text}`. Both were visible to the person without the model repeating them. `UserPromptSubmit` input had `prompt_id` and `prompt`. Hooks still emit the `additionalContext` instruction as section 6 says, because Pi and older Claude Code builds were not tested.
 
-### S-04, S-05 and S-06: open
+### S-04 to S-08: open
 
-None needs to block a stream. Record the answers here after one interactive run each. S-06 part (a) must be answered before the first-message launcher is enabled by default; until then the entrypoint check accepts only the candidate interactive value, so an unknown value never prompts.
+None needs to block a stream. S-07 and S-08 matter only for graduation. Record the answers here after one interactive run each. S-06 part (a) must be answered before the first-message launcher is enabled by default; until then the entrypoint check accepts only the candidate interactive value, so an unknown value never prompts.

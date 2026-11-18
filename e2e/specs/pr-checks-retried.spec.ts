@@ -175,8 +175,10 @@ test("the failed-check alert clears once a later run of the same check passes, a
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const card = dashboard.locator(".console-detail");
-  const chip = card.locator(".pr-chip");
-  const alert = card.getByRole("link", { name: ALERT });
+  // The session's title bar, where the PR chip and its red triangle sit side by side.
+  const titleBar = card.locator("header.detail-head");
+  const chip = titleBar.locator(".pr-chip");
+  const alert = titleBar.getByRole("link", { name: ALERT });
   const railPr = dashboard.getByRole("navigation", { name: "Sessions" }).locator(".rail-pr");
 
   // The title check fails, and it is the latest run of that check: the alert is right to be up.
@@ -187,11 +189,14 @@ test("the failed-check alert clears once a later run of the same check passes, a
   await expect(alert).toHaveAttribute("href", PR_URL);
   await expect(railPr).toHaveText(`#${PR_NUMBER} ⚠`);
   await capture(dashboard, "latest-run-failing.png", card);
+  await capture(dashboard, "titlebar-before-alert-shown.png", titleBar);
 
   // The title is fixed and the check runs again on the SAME commit, and passes. GitHub keeps the
   // failed run beside the new one, exactly as it does for a real pull request.
   writeGhPullRequests(daemon.home, [withChecks(pr, [buildPassed, titleFailed, titlePassed])]);
   await expect(alert).toHaveCount(0);
+  // Not just this title bar: no failed-check alert is left anywhere on the page.
+  await expect(dashboard.getByRole("link", { name: ALERT })).toHaveCount(0);
   await expect(railPr).toHaveText(`#${PR_NUMBER}`);
   // The pull request itself is still shown; only the stale alarm is gone.
   await expect(chip).toHaveAttribute("href", PR_URL);
@@ -199,6 +204,7 @@ test("the failed-check alert clears once a later run of the same check passes, a
     (await api<SessionRow[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.prChecks ?? null,
   ).toBe("passing");
   await capture(dashboard, "retried-run-passed.png", card);
+  await capture(dashboard, "titlebar-after-alert-cleared.png", titleBar);
 
   // The build's `push` run failed, and its `pull_request` run passed later, with no overlap.
   // To `gh pr list` that is the same workflow and name passing after a failure - the shape of a

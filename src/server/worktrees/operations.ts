@@ -824,21 +824,28 @@ export class WorktreeOperationsService {
       diskBytes: null,
     });
     // Only the pool's own proven path can be orphaned: anything else stays exactly as blocked.
-    const orphaned = pool.identityValid && pool.markerValid && slot.nativePath ? slot.orphaned : null;
-    if (orphaned === "unregistered") {
+    const orphaned = this.orphanedTarget(target) ? slot.orphaned : null;
+    if (orphaned) {
       // Cleanliness and the default-branch relationship are Git's answers, and Git has none
-      // here. Waiting for them would block this slot forever, so the operator is told what
-      // cannot be checked and decides.
-      risks.push(risk(
-        "unverifiable",
-        "Git no longer recognizes a target slot, so any uncommitted or unpushed work in it cannot be checked and will be deleted",
-        true,
-      ));
-      consequences.push(action === "destroy"
-        ? `Slot ${slot.slot.ordinal} is deleted from disk directly, because Git no longer recognizes it as a worktree.`
-        : `Slot ${slot.slot.ordinal} cannot be reset because Git no longer recognizes it; its lease is released and it stays quarantined with its files.`);
-    } else if (orphaned === "absent") {
-      consequences.push(`Slot ${slot.slot.ordinal} has nothing left on disk; only its record is removed.`);
+      // here. Waiting for them would block this slot forever. Only Destroy deletes anything,
+      // so only Destroy asks the operator to accept what cannot be checked; Return releases
+      // the lease and keeps both the files and the row.
+      if (action === "destroy") {
+        if (orphaned === "unregistered") {
+          risks.push(risk(
+            "unverifiable",
+            "Git no longer recognizes a target slot, so any uncommitted or unpushed work in it cannot be checked and will be deleted",
+            true,
+          ));
+          consequences.push(`Slot ${slot.slot.ordinal} is deleted from disk directly, because Git no longer recognizes it as a worktree.`);
+        } else {
+          consequences.push(`Slot ${slot.slot.ordinal} has nothing left on disk; only its record is removed.`);
+        }
+      } else {
+        consequences.push(orphaned === "unregistered"
+          ? `Slot ${slot.slot.ordinal} cannot be reset because Git no longer recognizes it; its lease is released and it stays quarantined with its files until it is destroyed.`
+          : `Slot ${slot.slot.ordinal} has nothing left on disk; its lease is released and its record stays quarantined until it is destroyed.`);
+      }
     } else {
       if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
       else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
@@ -1113,6 +1120,11 @@ export class WorktreeOperationsService {
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
+  /** Mirrors `appendNativeTarget`: only the pool's own proven path can be orphaned. */
+  private orphanedTarget({ pool, slot }: NativeTarget): boolean {
+    return pool.identityValid && pool.markerValid && slot.nativePath && slot.orphaned !== null;
+  }
+
   /** Return or destroy a fixed set of native slots, widened to every resource their tasks own. */
   private async buildSlotTargets(
     request: Extract<WorktreeActionRequest, { action: "return" | "destroy" }>,
@@ -1165,7 +1177,7 @@ export class WorktreeOperationsService {
       consequences.push(request.target.kind === "slot"
         ? "Removes this exact manager-owned Git worktree and its slot row after final revalidation."
         : "Removes only the fixed manager-owned slot set shown here after final revalidation.");
-    } else {
+    } else if ([...targets.values()].some((target) => !this.orphanedTarget(target))) {
       consequences.push("Resets the slot to the fetched remote default and retains it as warm capacity.");
     }
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);

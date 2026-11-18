@@ -254,3 +254,31 @@ test("observeSlotOrphan proves only what is on disk, and nothing it cannot read"
   symlinkSync(empty, linked);
   assert.equal(await observeSlotOrphan(linked), null, "a symbolic link is never followed into a deletion");
 });
+
+test("Return on an orphaned slot promises only what it does: the lease goes, the files and row stay", async () => {
+  for (const disk of ["unregistered", "absent"] as const) {
+    const { clone } = mkOriginAndClone(`mission-orphan-return-${disk}-`);
+    const manager = harness();
+    const lease = acquired(await manager.acquire({ repositoryPath: clone, baseSha: gitIn(clone, "rev-parse", "HEAD"),
+      owner: { kind: "task", key: "task-1:0" } }));
+    rmSync(adminDirectory(lease.path), { recursive: true, force: true });
+    if (disk === "absent") rmSync(lease.path, { recursive: true, force: true });
+    else writeFileSync(join(lease.path, "kept.md"), "kept\n");
+    const task = { view: taskOwning(lease, clone, lease.path) as WorktreeTaskView | null, reclaimed: 0 };
+    const operations = operationsFor(manager, task);
+
+    const preview = await operations.preview({ action: "return", slotId: lease.slotId });
+    assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+    assert.deepEqual(preview.requiredAcknowledgements, [], `${disk}: Return deletes nothing, so nothing is acknowledged`);
+    assert.ok(!preview.consequences.some((line) => /deleted|record is removed|warm capacity/.test(line)),
+      JSON.stringify(preview.consequences));
+    assert.ok(preview.consequences.some((line) => /stays quarantined/.test(line)), JSON.stringify(preview.consequences));
+
+    await operations.execute(preview.token, []);
+    const after = manager.store.slot(lease.slotId)!;
+    assert.equal(after.state, "quarantined", disk);
+    assert.equal(after.activeLeaseId, null);
+    if (disk === "unregistered") assert.equal(readFileSync(join(lease.path, "kept.md"), "utf8"), "kept\n");
+    db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
+  }
+});

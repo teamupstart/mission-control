@@ -20,6 +20,7 @@ import {
 } from "../src/web/lib/settings-search.ts";
 import {
   SETTINGS_CATEGORIES,
+  VISIBLE_SETTINGS_CATEGORIES,
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
@@ -178,7 +179,8 @@ test("every control's anchor is one the page actually renders", () => {
 
 test("every category has at least one control indexed", () => {
   const covered = new Set(SETTINGS_CONTROLS.map((c) => c.category));
-  for (const c of SETTINGS_CATEGORIES) {
+  // Every category this build draws; a withheld one (Conductor) indexes nothing on purpose.
+  for (const c of VISIBLE_SETTINGS_CATEGORIES) {
     assert.ok(covered.has(c.id), `category "${c.id}" has no searchable control`);
   }
 });

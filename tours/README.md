@@ -18,5 +18,14 @@ list:
 - **Label:** Description
 ```
 
+An entry about an optional integration ends with a `requires` comment naming it. The entry is
+shown only while that integration is offered, so the copy stays authored when the integration
+is switched off. The ids are listed in `TOUR_REQUIREMENTS` in `src/web/tour/content.ts`; an
+unknown id is refused.
+
+```md
+- **Pipeline:** Start an ai-conductor engineering workflow <!-- requires: ai-conductor -->
+```
+
 After editing, run `npm run tours` and commit the regenerated module. The generated TypeScript
 file is build output and must not be edited by hand.

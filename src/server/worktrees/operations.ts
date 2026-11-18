@@ -178,6 +178,12 @@ function taskIdentity(key: string): { id: string; position: number } | null {
   return { id: key.slice(0, split), position };
 }
 
+/** Only a positive domain lookup can detach an orphan from task/check cleanup. */
+function staleQuarantineLease(status: NativeSlotStatus): boolean {
+  return status.slot.state === "quarantined" && status.slot.activeLeaseId !== null &&
+    status.ownerReferenced === false;
+}
+
 function ownerView(
   status: NativeSlotStatus,
   task: WorktreeTaskOwner,
@@ -802,7 +808,9 @@ export class WorktreeOperationsService {
     consequences: string[],
   ): Promise<void> {
     const { pool, slot } = target;
-    const owner = ownerView(slot, this.deps.tasks);
+    const staleLease = action === "destroy" && staleQuarantineLease(slot);
+    const owner = staleLease ? null : ownerView(slot, this.deps.tasks);
+    if (staleLease) consequences.push(`Clears the stale lease for slot ${slot.slot.ordinal}, which no domain owner references, before removing the slot.`);
     affected.push({
       provider: "mission",
       id: slot.slot.id,
@@ -820,6 +828,7 @@ export class WorktreeOperationsService {
         mergedIntoDefault: slot.mergedIntoDefault,
         occupancy: slot.occupancy,
         orphaned: slot.orphaned,
+        ownerReferenced: slot.ownerReferenced,
       }),
       diskBytes: null,
     });
@@ -1138,6 +1147,7 @@ export class WorktreeOperationsService {
     const targets = new Map(initialTargets.map((target) => [target.slot.slot.id, target]));
     const taskIds = new Set<string>();
     for (const target of initialTargets) {
+      if (request.action === "destroy" && staleQuarantineLease(target.slot)) continue;
       if (target.slot.slot.activeOwnerKind !== "task" || !target.slot.slot.activeOwnerKey) continue;
       const identity = taskIdentity(target.slot.slot.activeOwnerKey);
       if (identity) taskIds.add(identity.id);
@@ -1151,7 +1161,8 @@ export class WorktreeOperationsService {
       const expanded = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
       for (const target of expanded) targets.set(target.slot.slot.id, target);
       for (const target of initialTargets.filter((candidate) =>
-        candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`))) {
+        candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`) &&
+        !(request.action === "destroy" && staleQuarantineLease(candidate.slot)))) {
         const identity = taskIdentity(target.slot.slot.activeOwnerKey!);
         const resource = identity
           ? task.resources.find((candidate) => candidate.position === identity.position)
@@ -1448,6 +1459,8 @@ export class WorktreeOperationsService {
       for (const target of this.removalTargets(preview)) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
+          expectedVersion: target.owner ? undefined : target.version ?? undefined,
+          allowStaleLease: target.owner === null,
           allowDirty: acknowledgements.has("dirty"),
           allowUnmerged: acknowledgements.has("unlanded"),
           allowUnverifiable: acknowledgements.has("unverifiable"),

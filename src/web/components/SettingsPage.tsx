@@ -51,10 +51,12 @@ import type { StorageHealth } from "@shared/storage-health.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
-  SETTINGS_CATEGORIES,
+  VISIBLE_SETTINGS_CATEGORIES,
   SETTINGS_GROUPS,
   SETTINGS_SCOPES,
+  DEFAULT_SETTINGS_CATEGORY,
   settingsCategoriesIn,
+  settingsCategoryAvailable,
   settingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
@@ -312,7 +314,9 @@ export function SettingsPage({
    */
   jump?: { anchor: string; nonce: number } | null;
 }): React.JSX.Element {
-  const shown = category;
+  // A category this build does not offer (Conductor, while the ai-conductor integration is
+  // hidden) renders the default panel, so no caller can mount it by naming it directly.
+  const shown = settingsCategoryAvailable(category) ? category : DEFAULT_SETTINGS_CATEGORY;
   // The Setup rail row, for the tour that teaches where Setup is. One row of the same
   // registry-driven loop below, so it is registered from that loop's ref callback rather
   // than by lifting Setup out of the list it belongs to.
@@ -526,7 +530,7 @@ export function SettingsPage({
   // order (see `SETTINGS_CATEGORIES`) - otherwise Down moves the selection somewhere the
   // eye is not. The stopPropagation keeps these keys inside the rail.
   function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
-    const walk = SETTINGS_CATEGORIES;
+    const walk = VISIBLE_SETTINGS_CATEGORIES;
     const last = walk.length - 1;
     const idx = walk.findIndex((c) => c.id === shown);
     let next: number;

@@ -110,6 +110,94 @@ function stageTooltip(fold: LineStageSummary): string {
 /** The id the drawer's region carries, so an expanded stage button can point at it. */
 export const LINE_DRAWER_DOM_ID = "line-drawer";
 
+/**
+ * The `aria-expanded` and `aria-controls` pair for one stage button, or nothing.
+ *
+ * Only the stages that OPEN something are expandable. Announcing `aria-expanded="false"` on
+ * Working - which clears the filter - would promise a panel that no press produces.
+ */
+function stageDisclosure(
+  stage: LineStageId,
+  openStage: LineStageId | null,
+): Pick<React.ButtonHTMLAttributes<HTMLButtonElement>, "aria-expanded" | "aria-controls"> {
+  if (!lineStageHasDrawer(stage)) return {};
+  return {
+    "aria-expanded": openStage === stage,
+    ...(openStage === stage ? { "aria-controls": LINE_DRAWER_DOM_ID } : {}),
+  };
+}
+
+/**
+ * The stages the dock carries: every stage whose click opens a drawer, read off the target
+ * table so a stage retargeted away from a drawer leaves the dock with it. Working is not one,
+ * and the dock has no use for it anyway - the rail it sits in IS the Working stage.
+ */
+export const LINE_DOCK_STAGES: readonly LineStageId[] = LINE_STAGES.filter(lineStageHasDrawer);
+
+/** What the dock needs from App: the same four things the strip is handed. */
+export interface LineDockProps {
+  summary: LineSummary | null;
+  openStage: LineStageId | null;
+  stageRef?: (stage: LineStageId, button: HTMLButtonElement | null) => void;
+  onStage: (stage: LineStageId) => void;
+}
+
+/**
+ * The Line's drawer stages, for a fleet that has switched the Line off.
+ *
+ * Disabling the Line removes the strip, and the strip was the only door to its five drawers.
+ * The Board keeps a Backlog column; the Console has nothing. So the Console draws this in the
+ * strip's place, and only while the strip is not drawn - two doors to one drawer would be two
+ * answers to "which button is open".
+ *
+ * It is the strip's stage buttons in a smaller register, not a second opinion about them: the
+ * same `line_summary` fold, the same tone, the same accessible name and tooltip, and the same
+ * `onStage` handler, so a press here and a press on the strip are one gesture. It computes
+ * nothing either.
+ *
+ * `row` sits under the rail's head, each stage a glyph, a count and its name. `column` is the
+ * folded rail's 40px strip, where only the glyph and the count fit; the name is still in the
+ * accessible name and the tooltip.
+ */
+export function LineStageDock({
+  summary,
+  openStage,
+  stageRef,
+  onStage,
+  orientation = "row",
+}: LineDockProps & { orientation?: "row" | "column" }): React.JSX.Element {
+  const column = orientation === "column";
+  return (
+    <div
+      className={`line-dock${column ? " is-column" : ""}`}
+      role="group"
+      aria-label="Line drawers"
+    >
+      {LINE_DOCK_STAGES.map((stage) => {
+        const fold = lineStage(summary, stage) ?? blankStage(stage);
+        return (
+          <Tooltip key={stage} label={stageTooltip(fold)}>
+            <button
+              type="button"
+              ref={stageRef ? (el) => stageRef(stage, el) : undefined}
+              className={`line-dock-stage tone-${fold.tone}${openStage === stage ? " is-open" : ""}`}
+              aria-label={stageLabel(fold)}
+              {...stageDisclosure(stage, openStage)}
+              onClick={() => onStage(stage)}
+            >
+              <span className="ld-glyph" aria-hidden>{LINE_STAGE_GLYPHS[stage]}</span>
+              <span className="ld-count" aria-hidden>{fold.count}</span>
+              {!column && (
+                <span className="ld-name" aria-hidden>{LINE_STAGE_LABELS[stage]}</span>
+              )}
+            </button>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
 export function LineStrip({
   summary,
   density = "expanded",
@@ -212,15 +300,7 @@ export function LineStrip({
                 openStage === fold.stage ? " is-open" : ""
               }`}
               aria-label={stageLabel(fold)}
-              // Only the stages that OPEN something are expandable. Announcing
-              // `aria-expanded="false"` on Working - which clears the filter - would promise
-              // a panel that no press produces.
-              {...(lineStageHasDrawer(fold.stage)
-                ? {
-                    "aria-expanded": openStage === fold.stage,
-                    ...(openStage === fold.stage ? { "aria-controls": LINE_DRAWER_DOM_ID } : {}),
-                  }
-                : {})}
+              {...stageDisclosure(fold.stage, openStage)}
               onClick={() => onStage(fold.stage)}
             >
               <span className="ls-head">

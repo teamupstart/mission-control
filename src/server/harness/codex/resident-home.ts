@@ -13,9 +13,11 @@ import type { ResidentMcpEntry } from "../types.ts";
 // removed, then the snapshot's servers. The native MCP table is never copied, rendered or
 // logged, and the generated file holds no secret: secret-bearing servers are launcher entries.
 //
-// An overlay alone is not an exact set. Codex also merges a trusted project's
-// `.codex/config.toml` and any system or managed configuration, so every start is verified
-// against `config/read`'s layers before a thread loads a server (`codexResidentMcpVerdict`).
+// The SDK bounds project discovery to the resident workspace with project_root_markers=[],
+// so the operator's home cannot merge back in from an ancestor. An overlay alone is not an
+// exact set: Codex still merges the workspace's `.codex/config.toml` and any system or managed
+// configuration, so every start is verified against `config/read`'s layers before a thread
+// loads a server (`codexResidentMcpVerdict`).
 
 /** The operator's Codex home, as the daemon sees it. */
 export function operatorCodexHome(env: NodeJS.ProcessEnv = process.env): string {
@@ -368,6 +370,7 @@ function layerLabel(name: unknown): string {
  * Decide, from `config/read` with `includeLayers`, whether this start will load exactly the
  * run's servers plus Mission Control's own.
  *
+ * - Disabled layers are diagnostic only; Codex excludes them from the effective config.
  * - The overlay's user layer must hold exactly the snapshot (and any switched-off names).
  * - A server only another layer defines (a trusted project, the system or managed
  *   configuration) is switched off from the overlay - `disable` - and verified again.
@@ -390,6 +393,9 @@ export function codexResidentMcpVerdict(
   const foreign = new Map<string, string>();
   for (const layer of result.layers) {
     if (!plain(layer) || !plain(layer.name)) continue;
+    // includeLayers reports untrusted project files for diagnostics, but their tables do
+    // not merge. Every active layer still has to pass the checks below.
+    if (typeof layer.disabledReason === "string" && layer.disabledReason.length > 0) continue;
     const servers = plain(layer.config) && plain(layer.config.mcp_servers) ? layer.config.mcp_servers : {};
     if (layer.name.type === "user" && layer.name.file === input.overlayConfig) {
       user = servers;

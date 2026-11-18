@@ -32,9 +32,10 @@ test("builder exposes semantic names, roving focus, live state, and focus restor
   // the execution surfaces is the Line's strip and its drawers, and the disclosure has to
   // announce itself: an expandable stage says so, says what it controls while it is open,
   // and the panel it opens is a named region that takes focus.
-  assert.match(strip, /"aria-expanded": openStage === fold\.stage/);
+  // One disclosure helper serves the strip and the Console's stage dock alike.
+  assert.match(strip, /"aria-expanded": openStage === stage/);
   assert.match(strip, /"aria-controls": LINE_DRAWER_DOM_ID/);
-  assert.match(strip, /lineStageHasDrawer\(fold\.stage\)/);
+  assert.match(strip, /if \(!lineStageHasDrawer\(stage\)\) return \{\};/);
   assert.match(drawer, /aria-label=\{`\$\{title\} drawer`\}/);
   assert.match(drawer, /tabIndex=\{-1\}/);
   assert.match(drawer, /frame\.current\?\.focus/);

@@ -130,8 +130,14 @@ test("a slot whose Git registration vanished is proven orphaned, not merely unkn
 });
 
 test("Destroy removes an orphaned task slot after one acknowledgement, through its task", async () => {
-  const { manager, lease, clone, slot } = await orphanedTaskSlot("mission-orphan-destroy-");
-  const task = { view: taskOwning(lease, clone, slot.path) as WorktreeTaskView | null, reclaimed: 0 };
+  // The task still names the lease, so the domain lookup says it is referenced: Destroy must go
+  // through the task's own cleanup rather than treating the lease as stale.
+  const task = { view: null as WorktreeTaskView | null, reclaimed: 0 };
+  const { manager, lease, clone, slot } = await orphanedTaskSlot("mission-orphan-destroy-", {
+    ownerReferenced: async (reference) =>
+      task.view?.resources.some((resource) => resource.leaseId === reference.leaseId) ?? false,
+  });
+  task.view = taskOwning(lease, clone, slot.path);
   const operations = operationsFor(manager, task);
 
   const card = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((entry) => entry.id === slot.id)!;

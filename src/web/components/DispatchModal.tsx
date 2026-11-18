@@ -154,6 +154,7 @@ import {
 import { StandingInstructionsNote } from "./StandingInstructionsNote.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { supportsManagedPipelineHost, type PipelineLaunchRuntime } from "@shared/pipeline.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 
 /** The runtime-specific provider contract shown where a pipeline launch is chosen. */
 export function pipelineDispatchConstraint(runtime: PipelineLaunchRuntime | null): string {
@@ -1650,7 +1651,10 @@ function DispatchModal({
     : AGENT_TYPES;
   const kindAvailable = (kind: TaskKind): boolean => {
     const behavior = TASK_KIND_BEHAVIOR[kind];
-    return behavior.repoAvailability === "workspace" || pipelineRepos.has(draft.repoRoot.trim());
+    if (behavior.repoAvailability === "workspace") return true;
+    // Pipeline is never offered while the ai-conductor integration is hidden, whatever
+    // repository consent is still stored for it.
+    return CONDUCTOR_INTEGRATION_ENABLED && pipelineRepos.has(draft.repoRoot.trim());
   };
   const kindUnavailable =
     !availableTaskKinds.includes(draft.kind) || !kindAvailable(draft.kind);

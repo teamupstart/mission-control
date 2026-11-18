@@ -33,6 +33,10 @@ import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "../../src/shared/pipeline.ts";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+
+test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+
 /**
  * The three loops added around an external pipeline: dispatch, Inspector adoption, and
  * Foreman triage. The provider and terminal are both fakes, while every Mission Control

@@ -321,7 +321,7 @@ these stays in this browser, and which of them acts publicly under your account.
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Harnesses**, **Tasks**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
-| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
+| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (temporarily unavailable), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
@@ -480,11 +480,18 @@ and size as well as showing the exact text. That matters on Claude, where the te
 system prompt and never enters the transcript. Neither read-only surface is editable: one
 editor, in Settings, is the point.
 
+**Conductor** is temporarily unavailable: while `CONDUCTOR_INTEGRATION_ENABLED` is off it is
+absent from the rail, search, the palette and the router, and `#/settings/conductor` opens
+Display. The rest of this section describes it as it returns.
+
 **Conductor** is the one category whose subject is somebody else's software. It is
-**not** conditional, and that is the current rule for every category:
+**not** conditional on runtime state, and that is the rule for every category:
 [change contracts](agent-guides/change-contracts.md#registries) states that categories are
 unconditional destinations, so the rail, the arrow-key walk, the valid routes, the palette and
-the render tests all read one registry with no availability filter. A destination for software
+the render tests all read one registry with no runtime availability filter. The one exception
+is the build-time `CONDUCTOR_INTEGRATION_ENABLED` switch above: while it is off,
+`settingsCategoryAvailable` withholds Conductor from every one of those readers at once, so none
+of them can disagree. Engine presence, consent and probes never add or remove it. A destination for software
 that is not installed explains that inside its own panel; a local visibility check is how a
 panel becomes reachable from search but absent from the rail, or how a valid deep link
 unexpectedly falls back to Display. It is the consent surface for observing an external SDLC

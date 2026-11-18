@@ -1,6 +1,6 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -64,16 +64,17 @@ function seedRepo(): { repo: string; sha: string } {
  * A step that starts a long-lived descendant in its own process group, records both pids, and
  * then waits forever, so only a Stop or a kill ends either. A real install's build scripts are
  * exactly such descendants; killing the leader alone would leak them. The descendant's pid is
- * written before the leader's, so a leader pid on disk means both exist.
+ * written before the leader's. A trailing newline marks each complete pid record; pathname
+ * existence alone can expose the empty file between open and write under contention.
  */
 const SLEEPER = [
   process.execPath,
   "-e",
   `const fs=require("fs");const {spawn}=require("child_process");fs.mkdirSync("deps",{recursive:true});` +
     `const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});` +
-    `fs.writeFileSync("deps/child.pid",String(child.pid));` +
+    `fs.writeFileSync("deps/child.pid",String(child.pid)+"\\n");` +
     `console.log("resolving fixture packages");` +
-    `fs.writeFileSync("deps/leader.pid",String(process.pid));setInterval(()=>{},1000);`,
+    `fs.writeFileSync("deps/leader.pid",String(process.pid)+"\\n");setInterval(()=>{},1000);`,
 ];
 
 function claimManager(maxSlots = 2): WorktreeManagerT {
@@ -120,17 +121,61 @@ function alive(pid: number): boolean {
 }
 
 /** The pids the running sleeper step wrote into the slot, its own and its descendant's. */
-async function stepPids(m: WorktreeManagerT): Promise<{ leader: number; child: number }> {
+async function stepPids(m: {
+  store: { slots(): Array<{ depsState: string | null; path: string }> };
+}): Promise<{ leader: number; child: number }> {
   const deps = () => {
     const slot = m.store.slots().find((entry) => entry.depsState === "claiming");
     return slot ? join(slot.path, "deps") : "";
   };
-  await waitFor(() => deps() !== "" && existsSync(join(deps(), "leader.pid")), "the claim step to start");
-  return {
-    leader: Number(readFileSync(join(deps(), "leader.pid"), "utf8")),
-    child: Number(readFileSync(join(deps(), "child.pid"), "utf8")),
+  const readPid = (path: string): number | null => {
+    if (!existsSync(path)) return null;
+    const text = readFileSync(path, "utf8");
+    if (!/^[1-9]\d*\n$/.test(text)) return null;
+    const pid = Number(text);
+    return Number.isSafeInteger(pid) ? pid : null;
   };
+  let pids: { leader: number; child: number } | undefined;
+  await waitFor(() => {
+    const directory = deps();
+    if (!directory) return false;
+    const leader = readPid(join(directory, "leader.pid"));
+    const child = readPid(join(directory, "child.pid"));
+    if (leader === null || child === null) return false;
+    pids = { leader, child };
+    return true;
+  }, "the claim step to publish complete pids");
+  assert.ok(pids);
+  return pids;
 }
+
+test("claim pid readiness waits for file contents, not just an open file", async (t) => {
+  const slot = mkdtempSync(join(home, "pid-publication-"));
+  const deps = join(slot, "deps");
+  mkdirSync(deps);
+  const leaderFile = join(deps, "leader.pid");
+  const childFile = join(deps, "child.pid");
+  // writeFileSync creates the pathname before writing. Hold that interleaving open
+  // deterministically instead of relying on machine load to interrupt a small write.
+  writeFileSync(childFile, "12346\n");
+  writeFileSync(leaderFile, "");
+  t.after(() => writeFileSync(leaderFile, "12345\n"));
+  let ready = false;
+  const pending = stepPids({ store: { slots: () => [{ path: slot, depsState: "claiming" }] } });
+  void pending.then(() => { ready = true; });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(ready, false, "an empty pid file must not become PID 0 (the test's own process group)");
+  writeFileSync(leaderFile, "123");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(ready, false, "an unfinished numeric prefix is not the leader's pid");
+  writeFileSync(childFile, "0\n");
+  writeFileSync(leaderFile, "12345\n");
+  t.after(() => writeFileSync(childFile, "12346\n"));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(ready, false, "both records must name a positive process id");
+  writeFileSync(childFile, "12346\n");
+  assert.deepEqual(await pending, { leader: 12345, child: 12346 });
+});
 
 /** Fail with `label` rather than hang the suite when `pending` never settles. */
 async function settlesWithin<T>(pending: Promise<T>, ms: number, label: string): Promise<T> {

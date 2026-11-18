@@ -15,6 +15,7 @@ import {
 import type { HarnessesState } from "../useHarnesses.ts";
 import { SettingsMatrix, type SettingsMatrixRow } from "./SettingsMatrix.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 
 // The Task kinds grid: which harness files a `plan`, and what that harness launches on -
 // asked once here instead of overridden by hand on every dispatch.
@@ -305,9 +306,11 @@ export function TaskKindDefaultsGroup({ state }: { state: HarnessesState }): Rea
         ]}
         rows={rows}
       />
-      <p className="settings-hint foreman-models-hint">
-        Pipeline tasks have no row: Conductor owns their downstream agent, model and effort.
-      </p>
+      {CONDUCTOR_INTEGRATION_ENABLED && (
+        <p className="settings-hint foreman-models-hint">
+          Pipeline tasks have no row: Conductor owns their downstream agent, model and effort.
+        </p>
+      )}
       {error && <p className="settings-error">{error}</p>}
     </div>
   );

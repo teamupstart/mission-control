@@ -334,7 +334,7 @@ export function readClaudeGlobalMcp(path = claudeUserConfigPath(), env: NodeJS.P
 const CODEX_COMMON_FIELDS = new Set([
   "enabled", "startup_timeout_sec", "startup_timeout_ms", "tool_timeout_sec", "enabled_tools", "disabled_tools",
 ]);
-const CODEX_STDIO_FIELDS = new Set([...CODEX_COMMON_FIELDS, "command", "args", "env", "cwd"]);
+const CODEX_STDIO_FIELDS = new Set([...CODEX_COMMON_FIELDS, "command", "args", "env", "env_vars", "cwd"]);
 const CODEX_HTTP_FIELDS = new Set([...CODEX_COMMON_FIELDS, "url", "http_headers"]);
 
 function seconds(value: unknown): number | null | string {
@@ -368,7 +368,7 @@ function codexOptions(entry: Record<string, unknown>): ResidentMcpOptions | stri
  * `authStatus` is `codex mcp list --json`'s answer, the one place Codex says it holds an OAuth
  * login for the server, which the launcher's bridge cannot perform.
  */
-export function parseCodexServer(name: string, entry: unknown, authStatus: string | null | undefined): GlobalMcpDefinition {
+export function parseCodexServer(name: string, entry: unknown, authStatus: string | null | undefined, env: NodeJS.ProcessEnv = process.env): GlobalMcpDefinition {
   const badName = residentMcpGlobalNameProblem(name);
   if (badName) return unreadable(name, "stdio", badName);
   if (!PLAIN(entry)) return unreadable(name, "stdio", "its configuration is not a table");
@@ -396,10 +396,28 @@ export function parseCodexServer(name: string, entry: unknown, authStatus: strin
     if (typeof entry.command !== "string" || !entry.command) return unreadable(name, "stdio", "it has no command");
     const args = entry.args === undefined ? [] : strings(entry.args);
     const envTable = entry.env === undefined ? {} : stringMap(entry.env);
+    const envVars = entry.env_vars === undefined ? [] : strings(entry.env_vars);
     if (!args) return unreadable(name, "stdio", "its args are not a list of strings");
     if (!envTable) return unreadable(name, "stdio", "its env is not a table of strings");
+    if (!envVars) return unreadable(name, "stdio", "its env_vars is not a list of local environment variable names");
     if (entry.cwd !== undefined && typeof entry.cwd !== "string") return unreadable(name, "stdio", "its cwd is not a string");
-    for (const [key, value] of Object.entries(envTable)) secrets.set(residentMcpSecretField("env", key), value);
+    // Codex forwards set env_vars, then applies explicit env overrides. Pin those values
+    // once through the existing secret snapshot, never into the agent's MCP configuration.
+    // Ambient values may already be visible to the agent; this does not make them private
+    // retroactively, but it introduces no new environment exposure on launch or resume.
+    const resolvedEnv = new Map<string, string>();
+    for (const key of envVars) {
+      // The probe's state home is deleted after this read, and residents replace Codex's
+      // operator home with a private overlay. Neither value describes the server's launch.
+      // An explicit env value wins as usual; otherwise this reference cannot be saved.
+      if ((key === "MISSION_HOME" || key === "CODEX_HOME") && !Object.hasOwn(envTable, key)) {
+        return unreadable(name, "stdio", `it reads ${key} from env_vars, which is process-scoped and cannot be pinned; use an explicit env value instead`);
+      }
+      const value = Object.hasOwn(env, key) ? env[key] : undefined;
+      if (value !== undefined) resolvedEnv.set(key, value);
+    }
+    for (const [key, value] of Object.entries(envTable)) resolvedEnv.set(key, value);
+    for (const [key, value] of resolvedEnv) secrets.set(residentMcpSecretField("env", key), value);
     const found = credentialFormArgs(args);
     if (found) problem ??= credentialArgumentProblem(found);
     transport = {
@@ -407,7 +425,7 @@ export function parseCodexServer(name: string, entry: unknown, authStatus: strin
       command: entry.command,
       args: [...args],
       env: {},
-      secretEnv: Object.keys(envTable),
+      secretEnv: [...resolvedEnv.keys()],
       cwd: typeof entry.cwd === "string" ? entry.cwd : null,
     };
   }
@@ -507,7 +525,7 @@ export async function readCodexGlobalMcp(now = Date.now()): Promise<GlobalMcpRea
       : new Map<string, string | null>();
     const servers = Object.entries(table)
       .filter(([name]) => name !== RESIDENT_MCP_RESERVED_NAME)
-      .map(([name, entry]) => parseCodexServer(name, entry, statuses === null ? undefined : statuses.get(name)));
+      .map(([name, entry]) => parseCodexServer(name, entry, statuses === null ? undefined : statuses.get(name), env));
     return { agent: "codex", servers, problem: null, readAt: now };
   } finally {
     rmSync(neutral, { recursive: true, force: true });

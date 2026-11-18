@@ -34,6 +34,7 @@ import {
   RepoGroupHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { LineStageDock, type LineDockProps } from "../LineStrip.tsx";
 import {
   ensembleSummaryFor,
   pipelineCommissionForSession,
@@ -54,6 +55,13 @@ import {
  */
 export function ConsoleView(props: SessionViewProps & {
   onBackToBoard?: () => void;
+  /**
+   * The Line's drawer stages, handed in only while the Line is switched off. The Console has
+   * no Backlog column and no other door to the drawers, so the rail carries them instead.
+   * A Console-only prop rather than part of `SessionViewProps`: the Board's drill-in renders
+   * this view too, and the Board was never cut off from its Backlog.
+   */
+  lineDock?: LineDockProps;
 }): React.JSX.Element {
   const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
   // App's one detail lookup, which can name a resident the Drawer placement keeps out of
@@ -271,13 +279,18 @@ export function ConsoleView(props: SessionViewProps & {
         onFocusCapture={() => props.onConsoleZoneChange("rail")}
       >
         {railFolded ? (
-          <FoldedSessionRail
-            label="All sessions"
-            groups={sections.map((section) => section.kind === "blocked"
-              ? { tone: "blocked", label: BLOCKED_LABEL, count: section.sessions.length }
-              : { tone: section.group.tone, label: section.group.label, count: groupTotal(section.group) })}
-            onUnfold={() => setRailFolded(false)}
-          />
+          <>
+            <FoldedSessionRail
+              label="All sessions"
+              groups={sections.map((section) => section.kind === "blocked"
+                ? { tone: "blocked", label: BLOCKED_LABEL, count: section.sessions.length }
+                : { tone: section.group.tone, label: section.group.label, count: groupTotal(section.group) })}
+              onUnfold={() => setRailFolded(false)}
+            />
+            {/* At the strip's foot, outside its button: the strip is one control that
+                unfolds, and a button inside a button is not a thing a browser keeps. */}
+            {props.lineDock && <LineStageDock {...props.lineDock} orientation="column" />}
+          </>
         ) : (
           <>
             {/* The head stays put while the rows scroll under it, so the fold control - and on
@@ -293,6 +306,9 @@ export function ConsoleView(props: SessionViewProps & {
               <h2>All sessions</h2>
               <SessionRailFoldButton onFold={() => setRailFolded(true)} />
             </header>
+            {/* Under the head and outside the scroller, for the head's own reason: the way to
+                the queue is never scrolled out of reach. */}
+            {props.lineDock && <LineStageDock {...props.lineDock} />}
             <div className="console-rail-rows">
               {sections.map((section) => section.kind === "blocked" ? (
                 <div key="blocked">

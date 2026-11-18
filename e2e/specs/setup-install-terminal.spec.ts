@@ -70,13 +70,6 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
     });
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-install-terminal.png");
-    await openSetupFamily(page, "pipelines");
-    await conductor.scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: join(evidence, "setup-provider-no-candidate.png"),
-    });
-    // eslint-disable-next-line no-console
-    console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-provider-no-candidate.png");
   }
 });
 
@@ -94,6 +87,17 @@ test("Setup links a provider with no verified checkout to its settings instead o
   await expect(conductor).toContainText("No verified local installer checkout was found");
   await expect(conductor.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
   await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("guided-setup-phase-2");
+    mkdirSync(evidence, { recursive: true });
+    await conductor.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: join(evidence, "setup-provider-no-candidate.png"),
+    });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-provider-no-candidate.png");
+  }
 });
 
 test("Setup renders the terminal launcher's refusal sentence", async ({ page, daemon }) => {

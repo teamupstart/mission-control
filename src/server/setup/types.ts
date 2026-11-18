@@ -64,6 +64,11 @@ export interface SetupDeps {
   installedPlugins(): Promise<InstalledPluginsRead>;
   skills(): SetupSkillsRead;
   conductorProbe(): Promise<PipelineProbe>;
+  /**
+   * Whether the hidden ai-conductor integration is reported. Defaults to the daemon's switch
+   * (`server/pipelines/availability.ts`); a test may answer for itself.
+   */
+  conductorIntegration?(): boolean;
   terminalTargets(): TerminalTargetView[];
   /** The repository index this daemon walks: how many checkouts it found, and where it looked. */
   repositoryIndex(): Promise<SetupRepositoryIndexRead>;

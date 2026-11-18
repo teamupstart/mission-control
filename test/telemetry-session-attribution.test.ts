@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DataPointType } from "@opentelemetry/sdk-metrics";
 
 // Phase 3's central claim, under test: what was KNOWN about a session while it did the work.
 //
@@ -44,8 +45,163 @@ const {
 const { TELEMETRY_EVENTS } = await import("../src/shared/telemetry-catalog.ts");
 const { MODEL_CATALOG } = await import("../src/shared/model.ts");
 import type { MetricsBatchPayload, TracesBatchPayload } from "../src/server/telemetry/projection.ts";
+import type { TelemetryActor } from "../src/shared/telemetry.ts";
 
 registerBuiltinTelemetry();
+
+for (const exportShape of ["full", "datadog-lean"] as const) {
+  test(`${exportShape}: interaction sources survive sends, refusals and queued operations in both exports`, async () => {
+    assert.equal(setTelemetryConfig({
+      enabled: true,
+      user: { enabled: true, endpoint: "http://127.0.0.1:14318", exportShape },
+      product: { enabled: true, endpoint: "http://127.0.0.1:14319", exportShape },
+    }).ok, true);
+    const cases: Array<{ actor: TelemetryActor; source: string }> = [
+      { actor: { kind: "human", origin: "dashboard", basis: "app_context" }, source: "dashboard" },
+      ...(["agent", "foreman", "workflow", "scheduler", "recovery", "system"] as const).map((kind) => ({
+        actor: { kind, origin: "mcp", basis: "declared" } as const, source: "automation",
+      })),
+      { actor: { kind: "scheduler", origin: "daemon", basis: "owner" }, source: "automation" },
+      { actor: { kind: "agent", origin: "dashboard", basis: "app_context" }, source: "automation" },
+      { actor: { kind: "human", origin: "dashboard", basis: "declared" }, source: "unknown" },
+      { actor: { kind: "human", origin: "dashboard", basis: "unknown" }, source: "unknown" },
+      { actor: { kind: "human", origin: "dashboard", basis: "inferred" }, source: "unknown" },
+      { actor: { kind: "human", origin: "cli", basis: "app_context" }, source: "unknown" },
+      { actor: { kind: "unknown", origin: "dashboard", basis: "app_context" }, source: "unknown" },
+      { actor: { kind: "unknown", origin: "external_observation", basis: "unknown" }, source: "unknown" },
+      { actor: { kind: "agent", origin: "mcp", basis: "unknown" }, source: "unknown" },
+    ];
+    for (const runtime of ["terminal", "sdk"] as const) {
+      const before = journal("mission.session.operation").length;
+      // A discovered session's ordinary work must not manufacture any input observations.
+      upsert({ runtime, state: "working" });
+      upsert({ runtime, state: "idle" });
+      assert.equal(journal("mission.session.started")[0]?.facts.origin, "discovered");
+      assert.equal(journal("mission.session.operation").length, before);
+      for (const [i, { actor }] of cases.entries()) {
+        for (const [operation, outcome] of [["send", "delivered"], ["send", "refused"], ["queued", "delivered"]] as const) {
+          const input = { session: session({ runtime }) as never, operation, outcome, actor,
+            identity: `${runtime}:${i}:${operation}:${outcome}` };
+          assert.equal(observeSessionOperation(input).kind, "accepted");
+          // A queued delivery replay keeps the same durable identity.
+          assert.equal(observeSessionOperation(input).kind, "duplicate");
+        }
+      }
+      assert.equal(journal("mission.session.operation").length - before, cases.length * 3);
+    }
+    closeDb();
+    runProjectionPass();
+    runProjectionPass();
+    const { toResourceMetrics } = await import("../src/server/telemetry/otlp.ts");
+    for (const profile of ["user", "product"] as const) {
+      const batches = openDb().prepare(
+        "SELECT payload_json FROM telemetry_batches WHERE profile = ? AND signal = 'metrics'",
+      ).all(profile) as Array<{ payload_json: string }>;
+      const points = batches.flatMap(({ payload_json }) =>
+        toResourceMetrics(JSON.parse(payload_json) as MetricsBatchPayload).scopeMetrics
+          .flatMap((scope) => scope.metrics).filter((metric) => metric.descriptor.name === "mission.session.operations")
+          .flatMap((metric) => metric.dataPointType === DataPointType.SUM ? metric.dataPoints : []));
+      assert.ok(points.length > 0);
+      for (const runtime of ["terminal", "sdk"]) {
+        for (const [operation, outcome] of [["send", "delivered"], ["send", "refused"], ["queued", "delivered"]] as const) {
+          const matching = points.filter((point) => point.attributes.runtime === runtime &&
+            point.attributes.operation === operation && point.attributes.outcome === outcome);
+          for (const source of ["dashboard", "automation", "unknown"]) {
+            assert.equal(matching.filter((point) => point.attributes.interaction_source === source)
+              .reduce((sum, point) => sum + Number(point.value), 0), cases.filter((item) => item.source === source).length,
+            `${profile}/${runtime}/${operation}/${outcome}/${source}: exact attribution excludes other operations and replays`);
+          }
+          // Full exports retain basis, so also pin each accepted automation basis separately.
+          // Lean exports drop basis; their exact source totals above still include all three.
+          if (exportShape === "full") {
+            for (const basis of ["owner", "app_context", "declared"]) {
+              assert.equal(matching.filter((point) => point.attributes.interaction_source === "automation" &&
+                point.attributes.actor_basis === basis).reduce((sum, point) => sum + Number(point.value), 0),
+              cases.filter((item) => item.source === "automation" && item.actor.basis === basis).length,
+              `${profile}/${runtime}/${operation}/${outcome}: ${basis} automation retains its source`);
+            }
+          }
+        }
+      }
+      for (const point of points) {
+        assert.ok(["dashboard", "automation", "unknown"].includes(String(point.attributes.interaction_source)));
+        assert.equal("actor_basis" in point.attributes, exportShape === "full");
+      }
+    }
+  });
+}
+
+test("chat HTTP routes derive dashboard attribution and export delivered sends", async (t) => {
+  const { buildApp } = await import("../src/server/routes.ts");
+  const { Registry } = await import("../src/server/registry.ts");
+  const { TaskManager } = await import("../src/server/tasks.ts");
+  const { QueueManager } = await import("../src/server/queue.ts");
+  const { ReviewManager } = await import("../src/server/reviews.ts");
+  const { beginOperation } = await import("../src/web/lib/operation-context.ts");
+  const { toResourceMetrics } = await import("../src/server/telemetry/otlp.ts");
+  type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+
+  assert.equal(setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint: "http://127.0.0.1:14318", exportShape: "full" },
+    product: { enabled: true, endpoint: "http://127.0.0.1:14319", exportShape: "datadog-lean" },
+  }).ok, true);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  t.after(() => tasks.stop());
+  const target = registry.registerSdkSession({
+    id: "sdk:chat-telemetry", agent: "claude", name: "chat telemetry", cwd: home,
+    agentSessionId: "chat-telemetry-conversation",
+  });
+  const delivered: Array<{ id: string; text: string }> = [];
+  // Only the agent boundary is fake: no model is launched or charged.
+  const sdkSessions = {
+    send: async (id: string, turn: { text: string }) => {
+      delivered.push({ id, text: turn.text });
+      return "started" as const;
+    },
+  } as unknown as SdkSupervisor;
+  const app = buildApp({ registry, tasks, queues: new QueueManager(registry),
+    reviews: new ReviewManager(registry), sdkSessions });
+  for (const route of ["send", "inject"] as const) {
+    const text = `PRIVATE_CHAT_SENTINEL_${route}`;
+    const operation = beginOperation("board");
+    const response = await app.request(`/api/sessions/${encodeURIComponent(target.id)}/${route}`, {
+      method: "POST",
+      headers: { host: "127.0.0.1", "content-type": "application/json", ...operation.headers },
+      // Exercise immediate delivery, not an acknowledgement that only queued a message.
+      body: JSON.stringify(route === "send" ? { text, submit: true } : { text, buffer: false }),
+    });
+    const result = await response.json() as { ok: boolean };
+    assert.equal(response.status, 200, JSON.stringify(result));
+    assert.equal(result.ok, true);
+    assert.deepEqual(delivered.at(-1), { id: target.id, text }, "the real route reached the agent boundary");
+  }
+  assert.equal(delivered.length, 2);
+  const actors = openDb().prepare(
+    "SELECT actor_json FROM telemetry_journal WHERE name = 'mission.session.operation'",
+  ).all() as Array<{ actor_json: string }>;
+  assert.equal(actors.length, 2);
+  for (const row of actors) assert.deepEqual(JSON.parse(row.actor_json), {
+    kind: "human", origin: "dashboard", basis: "app_context",
+  });
+  runProjectionPass();
+  for (const profile of ["user", "product"] as const) {
+    const batches = openDb().prepare(
+      "SELECT payload_json FROM telemetry_batches WHERE profile = ? AND signal = 'metrics'",
+    ).all(profile) as Array<{ payload_json: string }>;
+    const points = batches.flatMap(({ payload_json }) =>
+      toResourceMetrics(JSON.parse(payload_json) as MetricsBatchPayload).scopeMetrics
+        .flatMap((scope) => scope.metrics).filter((metric) => metric.descriptor.name === "mission.session.operations")
+        .flatMap((metric) => metric.dataPointType === DataPointType.SUM ? metric.dataPoints : []));
+    assert.equal(points.length, 1, `${profile}: both chat routes contribute to the same delivered-send series`);
+    assert.equal(points[0]!.value, 2);
+    assert.equal(points[0]!.attributes.interaction_source, "dashboard");
+    assert.equal(points[0]!.attributes.operation, "send");
+    assert.equal(points[0]!.attributes.outcome, "delivered");
+    assert.equal(JSON.stringify(batches).includes("PRIVATE_CHAT_SENTINEL"), false);
+  }
+});
 
 after(() => {
   closeDb();

@@ -65,6 +65,9 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     environmentChecks: async () => [],
     readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),
     writeBannerDismissal: () => {},
+    // Every probe is under test here, ai-conductor's included, though the shipped build hides
+    // it. `conductor-integration-switch.test.ts` pins the hidden reading.
+    conductorIntegration: () => true,
     ...overrides,
   };
 }

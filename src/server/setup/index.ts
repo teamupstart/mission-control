@@ -17,7 +17,6 @@ import {
   HERDR_SERVER_REMEDY,
   INDEXED_REPOSITORIES_INFO,
   SETUP_DEPENDENCY_DISPLAY_ORDER,
-  SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
   TERMINAL_PAIR_INFO,
@@ -37,6 +36,8 @@ import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/in
 import { resolveAgentBin } from "../harness/index.ts";
 import { installedPluginsRead, claudePluginsDir } from "../plugins/installed-plugins.ts";
 import { PIPELINE_PROVIDERS } from "../pipelines/providers.ts";
+import { conductorIntegrationEnabled } from "../pipelines/availability.ts";
+import { availableSetupDependencyIds } from "@shared/conductor-integration.ts";
 import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
@@ -593,13 +594,16 @@ export function defaultSetupDeps(): SetupDeps {
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
   await deps.refreshPath?.();
+  // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
+  // count toward any family. See `shared/conductor-integration.ts`.
+  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled());
   const [probed, targets, environment, repositories] = await Promise.all([
-    Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
+    Promise.all(dependencyIds.map((id) => runProbe(id, deps))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
     indexedRepositoriesRow(deps),
   ]);
-  const probeById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, probed[i]!]));
+  const probeById = new Map(dependencyIds.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
   const derived: SetupRowView = {
     ...TERMINAL_PAIR_INFO,
@@ -610,10 +614,12 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   const environmentRows = environment.map(environmentRow).filter((row): row is SetupRowView => row !== null);
   const rows: SetupRowView[] = [];
   for (const family of SETUP_FAMILY_IDS) {
+    // Reading order, with a follow-up step beneath its anchor; a hidden dependency was never
+    // probed and is skipped.
     for (const id of SETUP_DEPENDENCY_DISPLAY_ORDER) {
       const info = SETUP_DEPENDENCY_INFO[id];
-      if (info.family === family) {
-        const probe = probeById.get(id)!;
+      const probe = probeById.get(id);
+      if (probe && info.family === family) {
         rows.push({
           rowId: { source: "dependency", id },
           label: info.label,

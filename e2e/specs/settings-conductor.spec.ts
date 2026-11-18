@@ -18,6 +18,10 @@ import {
 } from "../fixtures/conductor-panel.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+
+test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+
 // The installed-engine Phase 1 vertical slice. The fake CLI records argv and owns its project
 // registry, while the browser drives the separate Mission Control consent write. No agent binary
 // or installer runs, and no model token can be spent.

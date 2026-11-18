@@ -9,6 +9,8 @@ import type {
   PipelineProviderId,
 } from "@shared/pipeline.ts";
 import type { PipelineInstallerPreparation } from "../pipelines/index.ts";
+import { conductorIntegrationEnabled } from "../pipelines/availability.ts";
+import { CONDUCTOR_UNAVAILABLE_DETAIL, setupDependencyAvailable } from "@shared/conductor-integration.ts";
 import { shellCommand } from "../terminal/shell.ts";
 import type {
   TerminalLaunchOutcome,
@@ -145,6 +147,8 @@ export interface SetupInstallExecutionDeps {
   launchTerminal(backend: SetupTerminalInstallerLaunchBody["backend"], spec: TerminalLaunchSpec): Promise<TerminalLaunchOutcome>;
   /** The absolute path the daemon would run for this executable, or null when absent. */
   resolveExecutable(id: ExecutableId): Promise<string | null>;
+  /** Whether the hidden ai-conductor integration is offered; defaults to the daemon's switch. */
+  conductorIntegration?(): boolean;
 }
 
 /** Dependencies routes may override without moving command ownership into a caller. */
@@ -185,6 +189,10 @@ export async function executeSetupInstall(
   deps: SetupInstallExecutionDeps,
 ): Promise<SetupInstallResponse> {
   const info = deps.catalog[body.id];
+  // A dependency Setup does not list has no remedy to run either.
+  if (!setupDependencyAvailable(body.id, deps.conductorIntegration?.() ?? conductorIntegrationEnabled())) {
+    return refused(body.id, info.label, CONDUCTOR_UNAVAILABLE_DETAIL, 404);
+  }
   const remedy = info.remedy;
 
   let launch: TerminalLaunchSpec;

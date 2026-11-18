@@ -19,15 +19,16 @@ once assets are published, preserving their state and destination. Copied signed
 through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
 
 The commands below concern source development. Electron includes Node for the desktop app,
-updates and Mission-owned helpers. Independent agent CLIs, user projects and optional Conductor
-keep their own prerequisites.
+updates and Mission-owned helpers. Independent agent CLIs and user projects keep their own
+prerequisites.
 
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
 agent CLIs, terminal backends, GitHub CLI authentication, the Atlassian CLI for Jira,
-agent extensions, ai-conductor, the system Node.js runtime, and the repositories Mission Control
-can find.
+agent extensions, the system Node.js runtime, and the repositories Mission Control can find.
+The ai-conductor row and its Pipelines family are temporarily unavailable while that integration
+is rebuilt; see [Pipelines](pipelines.md).
 
 The panel opens with a verdict for the whole machine - whether it can run sessions, how many
 checks are ready, and whether any gap is a required one - above a rail of dependency families.
@@ -163,11 +164,11 @@ check as launch targeting. It never starts iTerm2 while reading Setup. The copya
 iTerm2 is controlled or when you explicitly launch through it. See
 [iTerm2 Automation and permission recovery](sessions.md#iterm2-automation-and-permission-recovery).
 
-Package installers never run inside the daemon. Provider installers such as
-ai-conductor additionally require the daemon to resolve exactly one checkout from its verified
-workspace candidates, then reverify that candidate when the button is pressed. If there is no
-verified checkout, or more than one, Setup links to **Settings → Conductor** instead of offering
-a button that must fail or guess.
+Package installers never run inside the daemon. Provider installers additionally require the
+daemon to resolve exactly one checkout from its verified workspace candidates, then reverify that
+candidate when the button is pressed. If there is no verified checkout, or more than one, Setup
+links to the provider's own Settings instead of offering a button that must fail or guess. The
+only provider installer, ai-conductor's, is temporarily unavailable along with its row.
 
 Mission Control also puts a dismissible reminder above the dashboard on first launch, or when
 a required Setup row becomes missing or needs setup. **Open Setup** links directly to this panel.

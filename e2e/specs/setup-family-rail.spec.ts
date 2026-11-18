@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
 import { homeRelative, type SetupChecksSnapshot } from "../../src/shared/setup-catalog.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
@@ -16,7 +17,12 @@ import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-pa
 test.describe.configure({ timeout: 120_000 });
 test.use({ daemonEnv: { MC_E2E_GH_STARTS_MISSING: "1" }, setupReminder: true });
 
-const FAMILIES = ["Agent CLIs", "Terminals", "GitHub", "Repositories", "Agent extensions", "Pipelines"];
+// Pipelines is drawn only while the ai-conductor integration is offered; its one row is hidden
+// with it, and `conductor-hidden.spec.ts` proves the family is absent rather than empty.
+const FAMILIES = [
+  "Agent CLIs", "Terminals", "GitHub", "Repositories", "Agent extensions",
+  ...(CONDUCTOR_INTEGRATION_ENABLED ? ["Pipelines"] : []),
+];
 
 function railItem(page: Page, family: string) {
   return page.getByRole("button", { name: new RegExp(`^${family}(:|$)`) });
@@ -45,8 +51,8 @@ test("the rail selects one family at a time and unmounts the rest", async ({ pag
   await expect(setupRow(page, "dependency-gh-cli")).toHaveCount(0);
   await expect(railItem(page, "GitHub")).not.toHaveAttribute("aria-current", "true");
 
-  await openSetupFamily(page, "pipelines");
-  await expect(page.locator("#setup-pane")).toContainText("ai-conductor");
+  await openSetupFamily(page, "extensions");
+  await expect(page.locator("#setup-pane")).toContainText("Claude Code plugins");
   await expect(setupRow(page, "dependency-claude-cli")).toHaveCount(0);
 });
 
@@ -60,8 +66,8 @@ test("the verdict counts every check, not the family being read", async ({ page,
   // change either. A per-family count belongs on the rail item, and is there.
   const before = await verdict.innerText();
   const ticks = await page.locator(".setup-tick").count();
-  await openSetupFamily(page, "pipelines");
-  await expect(page.locator("#setup-pane")).toContainText("ai-conductor");
+  await openSetupFamily(page, "extensions");
+  await expect(page.locator("#setup-pane")).toContainText("Claude Code plugins");
   expect(await verdict.innerText()).toBe(before);
   expect(await page.locator(".setup-tick").count()).toBe(ticks);
 });

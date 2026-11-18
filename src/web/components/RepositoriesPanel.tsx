@@ -3,6 +3,7 @@ import type { IndexedDirectoryView } from "@shared/repo-index.ts";
 import { SETUP_REPOSITORY_ANCHORS } from "@shared/setup-catalog.ts";
 import type { RepoIndexState } from "../useRepoIndex.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 
 function directoryStatus(row: IndexedDirectoryView): string {
   switch (row.status) {
@@ -110,7 +111,9 @@ export function RepositoriesPanel({
     <div className="ri-panel setup-repositories">
       <p className="settings-hint settings-blurb">
         The directories this daemon walks looking for git checkouts. The dispatch repo picker,
-        tasks filed by repository name through MCP, and Conductor install candidates all read
+        {CONDUCTOR_INTEGRATION_ENABLED
+          ? " tasks filed by repository name through MCP, and Conductor install candidates all read"
+          : " and tasks filed by repository name through MCP both read"}{" "}
         this list. Indexing offers a checkout; it grants nothing. Trust stays separate.
       </p>
 

@@ -12,6 +12,7 @@ import {
   type SetupRowView,
 } from "../src/shared/setup-catalog.ts";
 import { SetupPanel, familyForAnchor, nextSetupSelection } from "../src/web/components/SetupPanel.tsx";
+import { CONDUCTOR_INTEGRATION_ENABLED, visibleSetupFamilyIds } from "../src/shared/conductor-integration.ts";
 
 const HOME = "/home/operator";
 
@@ -86,9 +87,13 @@ test("the rail lists every family always, and the pane renders only the selected
   const html = render([CLAUDE, CMUX, GH_CLI]);
   // Every family stays reachable even though only one family's rows are mounted - that is
   // what keeps a deep link and the guided tour able to ask for any of them.
-  for (const id of ["agents", "terminals", "github", "extensions", "pipelines"]) {
+  for (const id of visibleSetupFamilyIds()) {
     assert.match(html, new RegExp(`id="setup-family-${id}"`));
     assert.match(html, new RegExp(`data-anchor="setup/family-${id}"`));
+  }
+  // A family emptied by a hidden integration is not drawn at all, rather than drawn empty.
+  if (!CONDUCTOR_INTEGRATION_ENABLED) {
+    assert.doesNotMatch(html, /id="setup-family-pipelines"/);
   }
   assert.equal(html.match(/class="setup-pane"/g)?.length, 1);
   // GitHub holds the only required gap, so the rail opens there rather than on the catalog's
@@ -126,7 +131,12 @@ test("a deep link to a family selects it, which is how the guided tour drives th
 
 test("familyForAnchor resolves both anchor shapes and refuses anything else", () => {
   const rows = [CLAUDE, CMUX, GH_CLI];
-  assert.equal(familyForAnchor("setup/family-pipelines", rows), "pipelines");
+  assert.equal(familyForAnchor("setup/family-extensions", rows), "extensions");
+  // Pipelines is a family only while the ai-conductor integration is offered.
+  assert.equal(
+    familyForAnchor("setup/family-pipelines", rows),
+    CONDUCTOR_INTEGRATION_ENABLED ? "pipelines" : null,
+  );
   assert.equal(familyForAnchor("setup/dependency-cmux", rows), "terminals");
   assert.equal(familyForAnchor("setup/dependency-ghostty", rows), null, "a row this snapshot does not carry");
   assert.equal(familyForAnchor("setup/recheck", rows), null);

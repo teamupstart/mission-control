@@ -10,6 +10,10 @@ import {
 } from "../fixtures/conductor.ts";
 import { expect, test } from "../fixtures/test.ts";
 
+import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+
+test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
+
 test.use({
   daemonEnv: {
     MC_E2E_CONDUCTOR_ENGINEER_MODE: "supported",

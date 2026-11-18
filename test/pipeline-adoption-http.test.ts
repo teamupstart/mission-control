@@ -29,6 +29,10 @@ const {
 } = await import("../src/shared/pipeline.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 const { pipelineCredentialFromDescriptor } = await import("./helpers/pipeline-credential.ts");
+// This file exercises the hidden ai-conductor integration itself, so it runs with the
+// switch on. `test/conductor-integration-switch.test.ts` pins the shipped, hidden state.
+const { overrideConductorIntegrationForTests } = await import("../src/server/pipelines/availability.ts");
+overrideConductorIntegrationForTests(true);
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

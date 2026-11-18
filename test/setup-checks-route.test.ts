@@ -3,7 +3,11 @@ import { after, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SETUP_DEPENDENCY_IDS } from "../src/shared/setup-catalog.ts";
+import { availableSetupDependencyIds } from "../src/shared/conductor-integration.ts";
+
+// Setup reports every dependency the build offers; ai-conductor is withheld while its
+// integration is hidden (`shared/conductor-integration.ts`).
+const SETUP_DEPENDENCY_IDS = availableSetupDependencyIds();
 
 const home = mkdtempSync(join(tmpdir(), "mission-setup-route-"));
 process.env.MISSION_HOME = home;

@@ -38,7 +38,7 @@ import { runTriageRound, runTriageSentence } from "../workflows/run-model.ts";
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES, tourEntry } from "../tour/entries.ts";
-import { SETTINGS_CATEGORIES, settingsCategory } from "./settings-registry.ts";
+import { VISIBLE_SETTINGS_CATEGORIES, settingsCategory } from "./settings-registry.ts";
 import { SETTINGS_CONTROLS, type SettingsBindings } from "./settings-search.ts";
 
 /**
@@ -659,7 +659,7 @@ const commandProvider: PaletteProvider = {
 const settingsPanelProvider: PaletteProvider = {
   id: "settings-panels",
   rows: () =>
-    SETTINGS_CATEGORIES.map((category) => ({
+    VISIBLE_SETTINGS_CATEGORIES.map((category) => ({
       id: `panel:${category.id}`,
       kind: "panel" as const,
       title: `${category.label} settings`,

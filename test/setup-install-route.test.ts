@@ -105,6 +105,9 @@ function appFor({
         title: "Install ai-conductor",
         terminalEnv: { PATH: `${checkout}/bin` },
       }),
+      // The provider remedies here are ai-conductor's, which the shipped build hides; this file
+      // tests the remedy itself. `conductor-integration-switch.test.ts` pins the refusal.
+      conductorIntegration: () => true,
       ...install,
     },
   });

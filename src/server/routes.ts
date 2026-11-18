@@ -8978,6 +8978,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     try {
       result = await executeSetupInstall(parsed.data, {
         catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+        // `homedir()` reads this process's HOME, the same effective home the daemon's own
+        // probes run under, so a sign-in pinned to it stores credentials where they are read.
         homeDir: setupInstallDeps?.homeDir ?? homedir(),
         // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
         // the catalog rather than offering it.

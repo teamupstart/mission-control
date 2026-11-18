@@ -307,8 +307,10 @@ Atlassian CLI, without installing, signing in or reviewing on its own. **CodeRab
 the path/source and minimum version 0.9.1 and offers `brew install --cask coderabbit` through
 **Run in a terminal**. **CodeRabbit CLI sign-in** reads the same `coderabbit auth status --agent`
 a workflow review reads, and while the CLI is not signed in its **Run in a terminal** opens
-`coderabbit auth login` for the same coderabbit binary the daemon runs. Sign in under the same
-effective HOME as the daemon, then press Re-check. Managed invocations disable
+`coderabbit auth login` for the same coderabbit binary the daemon runs, with `HOME` set to the
+daemon's effective home so the credentials land where the daemon reads them. If the probe itself
+fails or answers unreadably, the row reports **Unknown** with the probe's reason rather than
+asking you to sign in. After signing in, press Re-check. Managed invocations disable
 auto-update and never authorize usage credits. YAML must explicitly enable each repository;
 installation and login alone do not enable review. YAML-enabled blocks link directly back to
 Setup. See [workflow configuration and findings](workflows.md#local-coderabbit-command).

@@ -95,15 +95,26 @@ export function isSetupInstallArgv(argv: readonly unknown[]): argv is readonly s
  * the same binary - an operator override included - that the daemon will later run, rather
  * than whichever one the terminal's PATH happens to find first.
  */
-const SETUP_SIGN_IN_COMMANDS: readonly { executable: ExecutableId; argv: readonly string[] }[] = [
+interface SetupSignInCommand {
+  executable: ExecutableId;
+  argv: readonly string[];
+  /**
+   * Run with `HOME` set to the daemon's own home. For a CLI whose stored credentials the
+   * daemon later reads from its effective HOME: the terminal app supplies its own `HOME`, and
+   * a login stored under a different one leaves the daemon reading "signed out" forever.
+   */
+  daemonHome?: true;
+}
+
+const SETUP_SIGN_IN_COMMANDS: readonly SetupSignInCommand[] = [
   { executable: "acli", argv: ["acli", "jira", "auth", "login", "--web"] },
-  { executable: "coderabbit", argv: ["coderabbit", "auth", "login"] },
+  { executable: "coderabbit", argv: ["coderabbit", "auth", "login"], daemonHome: true },
 ];
 
 /** The sign-in entry this argv names exactly, or null. */
 export function setupSignInCommand(
   argv: readonly unknown[],
-): { executable: ExecutableId; argv: readonly string[] } | null {
+): SetupSignInCommand | null {
   return SETUP_SIGN_IN_COMMANDS.find((entry) =>
     entry.argv.length === argv.length && entry.argv.every((word, i) => word === argv[i])) ?? null;
 }
@@ -252,7 +263,11 @@ export async function executeSetupInstall(
           argv: [
             FIXED_OS_EXECUTABLES.sh,
             "-c",
-            setupInstallerShell([program, ...signIn.argv.slice(1)], "sign-in"),
+            setupInstallerShell([
+              ...(signIn.daemonHome ? [FIXED_OS_EXECUTABLES.env, `HOME=${deps.homeDir}`] : []),
+              program,
+              ...signIn.argv.slice(1),
+            ], "sign-in"),
           ],
         };
         break;

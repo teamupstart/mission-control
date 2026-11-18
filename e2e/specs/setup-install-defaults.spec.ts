@@ -142,7 +142,10 @@ test("without a system default the picker keeps starting on the first available 
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await openSetupFamily(page, "terminals");
   const picker = setupRow(page, "dependency-wezterm").getByLabel("Terminal for WezTerm");
-  await expect(picker).not.toHaveValue("");
+  // The first enabled option, not merely any: a fallback-order regression must fail here.
+  const first = await picker.locator("option:not([disabled])").first().getAttribute("value");
+  expect(first).toBeTruthy();
+  await expect(picker).toHaveValue(first!);
   await expect(picker.locator("option", { hasText: "(system default)" })).toHaveCount(0);
 });
 
@@ -203,7 +206,7 @@ test("CodeRabbit's sign-in follows its install as its own step, and opens codera
   // The coderabbit the daemon resolves - the fake - never a bare `coderabbit` off PATH.
   const fake = fileURLToPath(new URL("../fixtures/fake-coderabbit.mjs", import.meta.url));
   expect(argv[argv.indexOf("--command") + 1]).toBe(
-    shellCommand(["/bin/sh", "-c", setupInstallerShell([fake, "auth", "login"], "sign-in")]),
+    shellCommand(["/bin/sh", "-c", setupInstallerShell(["/usr/bin/env", `HOME=${daemon.home}`, fake, "auth", "login"], "sign-in")]),
   );
 
   writeFileSync(script, JSON.stringify({}));

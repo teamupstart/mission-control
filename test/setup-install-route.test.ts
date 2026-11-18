@@ -474,7 +474,9 @@ test("the CodeRabbit sign-in opens the coderabbit the daemon resolves", async ()
   assert.deepEqual(calls[0]!.argv, [
     "/bin/sh",
     "-c",
-    setupInstallerShell(["/opt/homebrew/bin/coderabbit", "auth", "login"], "sign-in"),
+    // HOME pinned to the daemon's home: the terminal app's own HOME may differ, and the
+    // daemon reads CodeRabbit's stored credentials from its effective HOME.
+    setupInstallerShell(["/usr/bin/env", `HOME=${home}`, "/opt/homebrew/bin/coderabbit", "auth", "login"], "sign-in"),
   ]);
 });
 

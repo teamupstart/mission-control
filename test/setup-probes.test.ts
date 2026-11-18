@@ -571,12 +571,18 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   });
   // A confirmed old version names the binary the daemon selected, since installing the cask
   // elsewhere would leave a per-user install selected.
-  const oldCli = await probe("coderabbit-cli", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
+  // Nor is the cask offered for it, which would install a second copy and leave this one selected.
+  const oldCli = await probed("coderabbit-cli", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
   assert.deepEqual(oldCli, {
-    state: "needs-setup",
-    why: "CodeRabbit 0.8.0 at /tools/coderabbit is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.",
-    evidence: "/tools/coderabbit",
+    status: {
+      state: "needs-setup",
+      why: "CodeRabbit 0.8.0 at /tools/coderabbit is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.",
+      evidence: "/tools/coderabbit",
+    },
+    remedy: CODERABBIT_CHECK_REMEDY,
   });
+  // A missing CLI still gets the Homebrew install.
+  assert.equal((await probed("coderabbit-cli", { resolveBinPath: async () => null, executableDiagnostic: async () => null })).remedy, undefined);
 
   const old = await probe("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
   assert.match("why" in old ? old.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);

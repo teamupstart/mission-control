@@ -259,11 +259,13 @@ export const CMUX_APP_REMEDY: SetupRemedy = {
 
 /**
  * Check the CodeRabbit CLI Mission Control selected, offered when a CodeRabbit reading was
- * inconclusive: `--version` or `auth status` failed, timed out or answered unreadably.
+ * inconclusive (`--version` or `auth status` failed, timed out or answered unreadably) or the
+ * selected binary is older than 0.9.1.
  *
- * Stands in for both catalog remedies on that reading. Installing would add a second copy
- * without changing the binary that did not answer, and signing in is advice about a state
- * nobody read. The row's text says what failed; this links the CLI's own guide.
+ * Stands in for both catalog remedies on those readings. Installing would add a second copy
+ * without changing the binary the locator selects - a per-user install wins over Homebrew - and
+ * signing in is advice about a state nobody read. The row's text names the binary and what to
+ * do; this links the CLI's own guide.
  */
 export const CODERABBIT_CHECK_REMEDY: SetupRemedy = {
   kind: "link",

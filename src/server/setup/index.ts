@@ -386,10 +386,14 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus | SetupPro
     case "obsolete":
       // Named by path: the locator prefers a per-user install over PATH, so installing the
       // cask elsewhere would leave this binary selected and the row unchanged.
+      // The guide, not the cask, for the same reason: a fresh install elsewhere changes nothing.
       return {
-        state: "needs-setup",
-        why: `CodeRabbit ${reading.version} at ${status.evidence} is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.`,
-        evidence: status.evidence,
+        status: {
+          state: "needs-setup",
+          why: `CodeRabbit ${reading.version} at ${status.evidence} is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.`,
+          evidence: status.evidence,
+        },
+        remedy: CODERABBIT_CHECK_REMEDY,
       };
     case "unreadable":
       return {

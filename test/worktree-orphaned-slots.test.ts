@@ -440,3 +440,28 @@ test("a quarantined orphan whose lease no owner references offers only Destroy",
   assert.equal(preview.allowed, false);
   assert.ok(preview.blockers.some((blocker) => /quarantined, not leased/.test(blocker)), JSON.stringify(preview.blockers));
 });
+
+test("a missing slot beneath a symbolic link is not absent: the place it would be is not the pool's", async () => {
+  const { root } = mkOriginAndClone("mission-orphan-absent-link-");
+  const elsewhere = join(root, "elsewhere");
+  mkdirSync(elsewhere);
+  const viaLink = join(root, "via-link");
+  symlinkSync(elsewhere, viaLink);
+  assert.equal(await observeSlotOrphan(join(viaLink, "repo")), null, "a link to a directory without the slot");
+  const dangling = join(root, "dangling-parent");
+  symlinkSync(join(root, "never-made"), dangling);
+  assert.equal(await observeSlotOrphan(join(dangling, "repo")), null, "a link to nothing at all");
+  assert.equal(await observeSlotOrphan(join(root, "missing-parent", "repo")), "absent",
+    "a missing path under real directories is still absent");
+
+  // Through the manager: the slot's `pool/N` becomes a link to a directory without the slot.
+  const { manager, lease, slot } = await orphanedTaskSlot("mission-orphan-absent-link-slot-");
+  assert.equal((await manager.release(current(manager, lease), { ownerAuthorized: true })).outcome, "released");
+  rmSync(dirname(slot.path), { recursive: true, force: true });
+  symlinkSync(elsewhere, dirname(slot.path));
+  const entry = (await manager.status()).flatMap((pool) => pool.slots).find((candidate) => candidate.slot.id === slot.id)!;
+  assert.equal(entry.orphaned, null, "Settings never offers an unacknowledged Destroy for it");
+  const removed = await manager.removeSlot({ slotId: slot.id, allowDirty: true, allowUnmerged: true, allowUnverifiable: true });
+  assert.equal(removed.outcome, "refused");
+  assert.equal(manager.store.slot(slot.id)?.state, "quarantined", "the row stays");
+});

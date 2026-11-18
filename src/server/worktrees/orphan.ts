@@ -1,5 +1,5 @@
 import { lstat, open, realpath } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 /**
  * How a native slot that its repository's `git worktree list` does not name can be told
@@ -23,6 +23,27 @@ const LINK_FILE_MAX_BYTES = 4_096;
 
 function missing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+/**
+ * The nearest existing ancestor of a missing path is a real directory that resolves to exactly
+ * itself, so no component on the way to the missing path is a symbolic link. A dangling link
+ * is found by `lstat` itself and refused.
+ */
+async function physicalAncestor(path: string): Promise<boolean> {
+  let current = dirname(resolve(path));
+  for (;;) {
+    try {
+      const stat = await lstat(current);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+      return (await realpath(current)) === current;
+    } catch (error) {
+      if (!missing(error)) return false;
+      const parent = dirname(current);
+      if (parent === current) return false;
+      current = parent;
+    }
+  }
 }
 
 async function readLinkFile(path: string): Promise<string | null> {
@@ -50,7 +71,10 @@ export async function observeSlotOrphan(slotPath: string): Promise<SlotOrphanEvi
     // directory outside the pool. Only a path that resolves to exactly itself is the slot.
     if ((await realpath(slotPath)) !== resolve(slotPath)) return null;
   } catch (error) {
-    return missing(error) ? "absent" : null;
+    if (!missing(error)) return null;
+    // A missing path proves the slot is gone only if the place it would be is the pool's own.
+    // Beneath a symbolic link in a parent component, ENOENT describes somewhere else.
+    return (await physicalAncestor(slotPath)) ? "absent" : null;
   }
   const linkPath = join(slotPath, ".git");
   let link: Awaited<ReturnType<typeof lstat>>;

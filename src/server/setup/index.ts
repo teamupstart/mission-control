@@ -1,5 +1,5 @@
 import { mcpTrustStatus } from "./mcp-trust.ts";
-import { codeRabbitAuthReading, codeRabbitVersionProblem, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
+import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
@@ -378,10 +378,21 @@ function configuredAcliSites(): string[] {
 async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
   const status = await present("coderabbit", deps, "coderabbit");
   if (status.state !== "satisfied") return status;
-  let version = "";
-  const problem = await codeRabbitVersionProblem((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV), (value) => { version = value; });
-  return problem ? { state: "needs-setup", why: problem, evidence: status.evidence }
-    : { ...status, evidence: `${status.evidence} (CodeRabbit ${version})` };
+  const reading = await codeRabbitVersionReading((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV));
+  switch (reading.state) {
+    case "compatible":
+      return { ...status, evidence: `${status.evidence} (CodeRabbit ${reading.version})` };
+    case "obsolete":
+      // Named by path: the locator prefers a per-user install over PATH, so installing the
+      // cask elsewhere would leave this binary selected and the row unchanged.
+      return {
+        state: "needs-setup",
+        why: `CodeRabbit ${reading.version} at ${status.evidence} is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.`,
+        evidence: status.evidence,
+      };
+    case "unreadable":
+      return { state: "unknown", why: "The CodeRabbit CLI did not report a readable version, so Mission Control cannot tell whether it is 0.9.1 or newer.", evidence: status.evidence };
+  }
 }
 
 /**
@@ -394,9 +405,12 @@ async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
     return { state: "needs-setup", why: "Install the CodeRabbit CLI first, press Re-check, then sign in.", evidence: null };
   }
   const execute = (args: string[]) => deps.runCommand(installed.evidence, args, CODERABBIT_MANAGED_ENV);
-  const outdated = await codeRabbitVersionProblem(execute);
-  if (outdated) {
+  const version = await codeRabbitVersionReading(execute);
+  if (version.state === "obsolete") {
     return { state: "needs-setup", why: "Upgrade the CodeRabbit CLI to 0.9.1 or newer first, press Re-check, then sign in.", evidence: installed.evidence };
+  }
+  if (version.state === "unreadable") {
+    return { state: "unknown", why: "The CodeRabbit CLI did not report a readable version. Press Re-check once it answers, then sign in.", evidence: installed.evidence };
   }
   const reading = await codeRabbitAuthReading(execute);
   switch (reading.state) {

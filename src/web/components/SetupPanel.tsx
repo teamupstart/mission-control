@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ENVIRONMENT_CHECK_IDS } from "@shared/environment-checks.ts";
 import {
   ENVIRONMENT_ROW_METADATA,
@@ -91,17 +91,25 @@ interface TerminalChoice {
   select(id: TerminalBackendId): void;
 }
 
+/**
+ * The panel's own terminal read, which Re-check refreshes. Every installer picker reads it, so
+ * a Re-check that finds the system default reaches pickers already on screen; a picker mounted
+ * outside the panel falls back to the shared memoized read.
+ */
+const SetupTerminalTargetsContext = createContext<TerminalTargetsState | null>(null);
+
 function useTerminalChoice(): TerminalChoice {
-  const terminals = useTerminalTargets();
-  const [selectedId, setSelectedId] = useState<TerminalBackendId | null>(null);
+  const shared = useContext(SetupTerminalTargetsContext);
+  const own = useTerminalTargets();
+  const terminals = shared ?? own;
+  // Only an operator's pick is stored. The automatic choice is derived from the catalog as it
+  // stands now, so a later read that marks the system default moves an untouched picker to it
+  // instead of leaving it on whatever the first read happened to list first.
+  const [pickedId, setPickedId] = useState<TerminalBackendId | null>(null);
   const available = terminals.targets?.filter((target) => target.unavailable === null) ?? [];
-  const selected = available.find((target) => target.id === selectedId) ?? initialTerminalTarget(available);
+  const selected = available.find((target) => target.id === pickedId) ?? initialTerminalTarget(available);
 
-  useEffect(() => {
-    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
-  }, [selected, selectedId]);
-
-  return { ...terminals, selected, select: setSelectedId };
+  return { ...terminals, selected, select: setPickedId };
 }
 
 function TerminalPicker({
@@ -1125,6 +1133,7 @@ export function SetupPanel({
   const repoIndex = useRepoIndex(active === "repositories");
 
   return (
+    <SetupTerminalTargetsContext.Provider value={terminalTargets}>
     <section className="settings-section setup-panel">
       {/* No standing intro paragraph. It spent the top of the panel restating the question
           ("see what Mission Control can use on this machine") that the verdict now answers
@@ -1258,5 +1267,6 @@ export function SetupPanel({
         </div>
       </div>
     </section>
+    </SetupTerminalTargetsContext.Provider>
   );
 }

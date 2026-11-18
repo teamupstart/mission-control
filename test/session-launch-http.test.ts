@@ -403,6 +403,20 @@ test("the terminal catalog marks the operator's macOS default terminal, and only
   const rows = (await fallback.json()) as { targets: { systemDefault?: boolean }[] };
   assert.ok(rows.targets.length > 0);
   assert.ok(rows.targets.every((target) => target.systemDefault === undefined));
+
+  // A reader that throws before it returns a promise is the same "no preference".
+  const throwsAtOnce = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    systemDefaultTerminal: () => { throw new Error("no LaunchServices here"); },
+  });
+  const immediate = await throwsAtOnce.request("/api/terminal-targets", { headers: { host: "127.0.0.1:7317" } });
+  assert.equal(immediate.status, 200);
+  const unmarked = (await immediate.json()) as { targets: { systemDefault?: boolean }[] };
+  assert.ok(unmarked.targets.length > 0);
+  assert.ok(unmarked.targets.every((target) => target.systemDefault === undefined));
 });
 
 // ---- Inspector follow-ups on PR #269 ----

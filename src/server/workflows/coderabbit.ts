@@ -18,11 +18,29 @@ export function codeRabbitVersionCompatible(output: string): boolean {
   return !!m && (Number(m[1]) > 0 || Number(m[2]) > 9 || Number(m[2]) === 9 && Number(m[3]) >= 1);
 }
 
+/**
+ * What `coderabbit --version` says, kept three ways apart. `obsolete` only for a version that
+ * was read and is older than 0.9.1; a failed, timed-out, overflowing or unparseable answer is
+ * `unreadable`, which says nothing about the version and must not be reported as too old.
+ */
+export type CodeRabbitVersionReading =
+  | { state: "compatible"; version: string }
+  | { state: "obsolete"; version: string }
+  | { state: "unreadable" };
+
+export async function codeRabbitVersionReading(execute: (argv: string[]) => Promise<RunResult>): Promise<CodeRabbitVersionReading> {
+  const result = await execute(["--version"]);
+  if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return { state: "unreadable" };
+  const version = /(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)/.exec(result.stdout.trim())?.[1];
+  if (!version) return { state: "unreadable" };
+  return codeRabbitVersionCompatible(version) ? { state: "compatible", version } : { state: "obsolete", version };
+}
+
 /** The CLI version gate alone. Null when compatible; never echoes stderr. */
 export async function codeRabbitVersionProblem(execute: (argv: string[]) => Promise<RunResult>, onVersion?: (version: string) => void): Promise<string | null> {
-  const version = await execute(["--version"]);
-  if (version.code !== 0 || version.outcomeUnknown || version.overflowed || !codeRabbitVersionCompatible(version.stdout)) return "CodeRabbit CLI >=0.9.1 is required. Install or upgrade the CLI";
-  onVersion?.(/(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)/.exec(version.stdout.trim())![1]!);
+  const reading = await codeRabbitVersionReading(execute);
+  if (reading.state !== "compatible") return "CodeRabbit CLI >=0.9.1 is required. Install or upgrade the CLI";
+  onVersion?.(reading.version);
   return null;
 }
 

@@ -109,6 +109,8 @@ test.describe("with iTerm2 as the default terminal and its Apple Events recorded
     const wezterm = setupRow(page, "dependency-wezterm");
     const picker = wezterm.getByLabel("Terminal for WezTerm");
     await expect(picker).toHaveValue("iterm");
+    // cmux is a real, enabled alternative here, listed before iTerm2.
+    await expect(picker.locator('option[value="cmux"]:not([disabled])')).toHaveCount(1);
     expect(calls()).toEqual([]);
 
     const requestReady = page.waitForRequest((request) =>
@@ -133,19 +135,28 @@ test.describe("with iTerm2 as the default terminal and its Apple Events recorded
         `  create window with default profile command ${appleScriptString(shellCommand(["/bin/sh", "-c", inner]))}\n` +
         `end tell`,
     );
-    // Nothing went to the multiplexers the picker used to start on.
+    // One window, in iTerm2 alone. cmux is usable in this fixture, so an empty cmux record is
+    // proof the launch never reached it, not a refusal.
+    expect(calls().filter((call) => call.script.includes("create window"))).toHaveLength(1);
     expect(recordsIn(daemon.recordDir, (file) => file.startsWith("cmux-"))).toEqual([]);
   });
 });
 
 test("without a system default the picker keeps starting on the first available terminal", async ({ page, daemon }) => {
+  // Two usable terminals and no default, fixed here rather than read off the runner, so a
+  // picker that took the last usable row instead of the first fails.
+  const base = { glyph: "*", blurb: "", detail: null, unavailable: null };
+  const targets: TerminalTargetView[] = [
+    { ...base, id: "tmux", label: "tmux", unavailable: "tmux is not installed" },
+    { ...base, id: "cmux", label: "cmux" },
+    { ...base, id: "iterm", label: "iTerm2" },
+  ];
+  await page.route("**/api/terminal-targets", (route) => route.fulfill({ json: { targets } }));
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await openSetupFamily(page, "terminals");
   const picker = setupRow(page, "dependency-wezterm").getByLabel("Terminal for WezTerm");
-  // The first enabled option, not merely any: a fallback-order regression must fail here.
-  const first = await picker.locator("option:not([disabled])").first().getAttribute("value");
-  expect(first).toBeTruthy();
-  await expect(picker).toHaveValue(first!);
+  await expect(picker.locator("option:not([disabled])")).toHaveCount(2);
+  await expect(picker).toHaveValue("cmux");
   await expect(picker.locator("option", { hasText: "(system default)" })).toHaveCount(0);
 });
 

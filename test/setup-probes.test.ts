@@ -525,13 +525,40 @@ test("the CodeRabbit rows split install from sign-in, the way acli's do", async 
   ] as const) {
     assert.deepEqual(await probe("coderabbit-auth", { runCommand: answering(auth) }), { state: "unknown", why, evidence: "/tools/coderabbit" }, label);
   }
-  const timedOut = await probe("coderabbit-auth", { runCommand: async (_bin, argv) => argv[0] === "--version"
+  // Isolates `outcomeUnknown`: the same clean, signed-in answer is Ready without the flag and
+  // Unknown with it, so the test fails if the probe stops honouring a timeout.
+  const signedInAnswer = (outcomeUnknown: boolean) => async (_bin: string, argv: readonly string[]) => argv[0] === "--version"
     ? stubRun({ stdout: "0.9.1", stderr: "", code: 0 })
-    : { ...stubRun({ stdout: "", stderr: "", code: 1 }), outcomeUnknown: true } });
-  assert.equal(timedOut.state, "unknown");
+    : { ...stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 }), outcomeUnknown };
+  assert.equal((await probe("coderabbit-auth", { runCommand: signedInAnswer(false) })).state, "satisfied");
+  const timedOut = await probe("coderabbit-auth", { runCommand: signedInAnswer(true) });
+  assert.deepEqual(timedOut, {
+    state: "unknown",
+    why: "CodeRabbit authentication is unavailable. Run coderabbit auth login using the daemon's effective HOME.",
+    evidence: "/tools/coderabbit",
+  });
   // An explicit action_required is the CLI saying it needs a login.
   const actionRequired = await probe("coderabbit-auth", { runCommand: answering({ stdout: JSON.stringify({ type: "action_required" }), code: 0 }) });
   assert.equal(actionRequired.state, "needs-setup");
+
+  // A version that could not be read is not an old version: neither row recommends an upgrade.
+  const versionTimesOut = async (_bin: string, argv: readonly string[]) => argv[0] === "--version"
+    ? { ...stubRun({ stdout: "0.9.1", stderr: "", code: 0 }), outcomeUnknown: true }
+    : stubRun({ stdout: JSON.stringify({ type: "status", authenticated: true }), stderr: "", code: 0 });
+  const unreadableCli = await probe("coderabbit-cli", { runCommand: versionTimesOut });
+  assert.equal(unreadableCli.state, "unknown");
+  assert.doesNotMatch("why" in unreadableCli ? unreadableCli.why : "", /older than|[Uu]pgrade/);
+  const unreadableAuth = await probe("coderabbit-auth", { runCommand: versionTimesOut });
+  assert.equal(unreadableAuth.state, "unknown");
+  assert.doesNotMatch("why" in unreadableAuth ? unreadableAuth.why : "", /[Uu]pgrade/);
+  // A confirmed old version names the binary the daemon selected, since installing the cask
+  // elsewhere would leave a per-user install selected.
+  const oldCli = await probe("coderabbit-cli", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
+  assert.deepEqual(oldCli, {
+    state: "needs-setup",
+    why: "CodeRabbit 0.8.0 at /tools/coderabbit is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI, then press Re-check.",
+    evidence: "/tools/coderabbit",
+  });
 
   const old = await probe("coderabbit-auth", { runCommand: async () => stubRun({ stdout: "0.8.0", stderr: "", code: 0 }) });
   assert.match("why" in old ? old.why : "", /Upgrade the CodeRabbit CLI to 0\.9\.1 or newer first/);

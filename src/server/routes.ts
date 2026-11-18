@@ -4162,7 +4162,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     emulators: configuredTerminalTargetDeps.emulators,
   }));
   app.get("/api/terminal-targets", async (c) => {
-    const systemDefault = await readSystemDefaultTerminal().catch(() => null);
+    // try/await, not `.catch`: a reader that throws before returning a promise must still
+    // leave the catalog answering, just without a default marked.
+    let systemDefault: EmulatorId | null = null;
+    try {
+      systemDefault = await readSystemDefaultTerminal();
+    } catch {
+      systemDefault = null;
+    }
     const targets = terminalTargetViews(configuredTerminalTargetDeps).map((view) =>
       view.id === systemDefault ? { ...view, systemDefault: true } : view);
     return c.json({ targets });

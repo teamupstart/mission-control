@@ -242,7 +242,7 @@ test("an existing binding stays on No-Mistakes version 21 and never gains CodeRa
 
 test("Setup reports an old CLI and a corrected stored-auth state without starting a review",async({dashboard,daemon})=>{
  writeFileSync(join(daemon.home,"coderabbit-script.json"),JSON.stringify({old:true}));
- await dashboard.goto(`${daemon.baseURL}/#/settings/setup`);await dashboard.getByRole("button",{name:/Agent extensions:/}).click();await expect(dashboard.getByRole("main")).toContainText("CodeRabbit CLI >=0.9.1 is required");
+ await dashboard.goto(`${daemon.baseURL}/#/settings/setup`);await dashboard.getByRole("button",{name:/Agent extensions:/}).click();await expect(dashboard.getByRole("main")).toContainText("is older than 0.9.1. Upgrade that binary, or set MISSION_CODERABBIT_BIN to a newer CLI");
  writeFileSync(join(daemon.home,"coderabbit-script.json"),JSON.stringify({unauthenticated:true}));
  await dashboard.getByRole("button",{name:/Re-check/}).click();await expect(dashboard.getByRole("main")).toContainText("The CodeRabbit CLI is installed but not signed in.");
  writeFileSync(join(daemon.home,"coderabbit-script.json"),JSON.stringify({}));await dashboard.getByRole("button",{name:/Re-check/}).click();

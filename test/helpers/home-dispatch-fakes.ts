@@ -57,6 +57,9 @@ export async function startFakeDaemon(options: { flag?: boolean } = {}): Promise
       };
       const key = `${req.method} ${path}`;
       if (key === "GET /events") {
+        // The real daemon only needs a loopback Host here, but the client sends its token like
+        // every other call; refusing a tokenless stream keeps that from regressing unnoticed.
+        if (!req.headers["x-harness-token"]) return send(401, { error: "unauthorized" });
         // The daemon's event stream: a snapshot with the flag config, then `feature_flags` events.
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write(`data: ${JSON.stringify({ type: "snapshot", featureFlags: flagConfig() })}\n\n`);

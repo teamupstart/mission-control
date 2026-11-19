@@ -1717,7 +1717,8 @@ const homeDispatch = registerHomeDispatchTools(server, http, {
     const res = await http("/api/health", "GET", undefined, false, AbortSignal.timeout(2000));
     return res.ok ? await res.json() : null;
   },
-  openEvents: (signal) => fetch(BASE_URL + "/events", { signal, headers: { accept: "text/event-stream" } }),
+  // Through the same authenticated helper as every other daemon call.
+  openEvents: (signal) => http("/events", "GET", undefined, false, signal, { accept: "text/event-stream" }),
 });
 
 await server.connect(new StdioServerTransport());

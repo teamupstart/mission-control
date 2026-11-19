@@ -28,6 +28,7 @@ import {
   wakeReviewRow,
 } from "./db.ts";
 import { unref } from "./util/timers.ts";
+import { isRewordedRetry } from "./review-retry.ts";
 
 /**
  * How often the daemon looks for snoozed questions that are due. A sweep rather than one timer
@@ -36,6 +37,17 @@ import { unref } from "./util/timers.ts";
  * shortest delay anyone can pick.
  */
 export const SNOOZE_SWEEP_MS = 15_000;
+
+/**
+ * How close together two `request_input` asks from one session must arrive to be parallel calls
+ * rather than a retry (`ReviewManager.supersedeAbandonedAsks`).
+ *
+ * The call is blocking, so an agent still waiting on one question can only ask another in the
+ * same batch of parallel tool calls, which reach the daemon within milliseconds of each other.
+ * A retry comes after the MCP client has given up, which takes minutes: five, in every
+ * duplicate the live database recorded. Thirty seconds sits far from both.
+ */
+export const PARALLEL_ASK_WINDOW_MS = 30_000;
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
@@ -261,6 +273,8 @@ export class ReviewManager {
    * This is one floor, not the fix for the timeout itself. The MCP side reports progress to
    * clients that ask for it and persists detachment when a client's maximum still expires.
    * A retry remains harmless, while a later answer no longer depends on a retry occurring.
+   *
+   * A retry that is NOT byte-identical is the second floor (`supersedeAbandonedAsks`).
    */
   create(
     sessionId: string,
@@ -268,7 +282,7 @@ export class ReviewManager {
     title: string,
     body: string,
     decisions: PlanDecision[] | null = null,
-    options: { snoozable?: boolean } = {},
+    options: { snoozable?: boolean; now?: number } = {},
   ): ReviewItem {
     // A SNOOZED twin is the same question too. Its agent was told not to ask again, and one that
     // does anyway is handed the parked row back, whose wait returns at once with the same
@@ -290,12 +304,48 @@ export class ReviewManager {
       selections: null,
       resolvedBy: null,
       ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
-      createdAt: Date.now(),
+      createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
     insertReview(review);
     this.registry.upsertReview(review);
+    this.supersedeAbandonedAsks(review);
     return review;
+  }
+
+  /**
+   * Withdraw the questions a new `request_input` ask replaces.
+   *
+   * The exact-match re-attach in `create` covers a retry sent byte for byte. Agents rarely
+   * retry that way. When an MCP client gives up on a blocking call, the model reads a timeout
+   * error and reissues the decision in new words: "The previous prompt timed out. May I
+   * proceed...". Codex does exactly this, and its client sends no cancellation, so the daemon
+   * never records the first wait as detached. Both cards stayed in the queue, and the operator
+   * answered the same decision twice.
+   *
+   * So when a session's new `request_input` ask is a reworded retry of an older one from the
+   * same session that is still pending (`isRewordedRetry`: the same decision, by its wording and
+   * by any phase, PR or other number it names), the older card is settled and the newer one
+   * stays. Any
+   * other older question stays exactly where it is, because a later, different ask is no
+   * evidence that the operator no longer needs to answer it. Parallel calls are never retries:
+   * `request_input` blocks, so an agent still waiting on one question can only ask another in
+   * the same batch, and those arrive less than `PARALLEL_ASK_WINDOW_MS` apart.
+   *
+   * Only `request_input`'s own asks (`snoozable`), on both sides: plan approvals, diff reviews,
+   * and the confirmations other tools raise are not retried this way and are never withdrawn
+   * by it. A question the operator snoozed is excluded even after it comes back to `pending`,
+   * because they chose to park it and its agent was told to carry on, so a later, different
+   * question from that agent is expected rather than a retry.
+   */
+  private supersedeAbandonedAsks(newer: ReviewItem): void {
+    if (newer.snoozable !== true) return;
+    const cutoff = newer.createdAt - PARALLEL_ASK_WINDOW_MS;
+    for (const older of this.registry.outstandingReviews(newer.sessionId)) {
+      if (older.id === newer.id || older.status !== "pending" || older.snoozable !== true) continue;
+      if (older.snooze || older.createdAt > cutoff || !isRewordedRetry(older, newer)) continue;
+      this.settle(older, "superseded", null);
+    }
   }
 
   /**
@@ -654,7 +704,8 @@ export class ReviewManager {
     response: string | null,
     /**
      * Null for the two orphan paths below, which are the daemon tidying up after a session
-     * that went away - not a decision anyone made, and so not a voice in the conversation.
+     * that went away, and for `supersedeAbandonedAsks` - not a decision anyone made, and so
+     * not a voice in the conversation.
      */
     resolvedBy: ReviewActor | null = null,
     selections: PlanDecisionAnswer[] | null = null,

@@ -92,6 +92,14 @@ function reviewResolutionResult(review: ReviewItem): { text: string; isError: bo
   if (review.status === "orphaned") {
     return { text: "Review channel went away before a human answered.", isError: true };
   }
+  if (review.status === "superseded") {
+    return {
+      text:
+        "Withdrawn without an answer: you asked a newer request_input question after this call " +
+        "ended, so the human answers that one instead.",
+      isError: true,
+    };
+  }
   if (review.status === "dismissed") {
     return {
       text:

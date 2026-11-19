@@ -255,3 +255,109 @@ test("Launch as a new resident after a lost answer launches the repository set i
   const persisted = (await api<ProfileRow[]>(daemon, "/api/residents/profiles")).find((p) => p.name === PROFILE);
   expect(persisted?.settings.workspace.additionalRepoRoots).toEqual([]);
 });
+
+/** A profile created through the API, so a test can start from a chosen repository set. */
+async function createProfile(daemon: DaemonHandle, name: string, additionalRepoRoots: string[]): Promise<string> {
+  const response = await fetch(`${daemon.baseURL}/api/residents/profiles`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ settings: {
+      identity: { name },
+      persona: { personaId: "" },
+      instructions: { markdown: "Keep the shared contract in step across repositories." },
+      workspace: { defaultRepoRoot: daemon.repo, additionalRepoRoots },
+    } }),
+  });
+  if (response.status !== 201) throw new Error(`creating ${name} answered ${response.status}: ${await response.text()}`);
+  return ((await response.json()) as { id: string }).id;
+}
+
+interface LaunchBody { requestId: string; repoRoot: string | null; additionalRepoRoots?: string[] }
+
+/** Every resident launch request the page sends, in order, including one that is aborted. */
+function recordLaunches(page: Page): LaunchBody[] {
+  const sent: LaunchBody[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && /\/api\/residents\/profiles\/[^/]+\/launch$/.test(new URL(request.url()).pathname)) {
+      sent.push(request.postDataJSON() as LaunchBody);
+    }
+  });
+  return sent;
+}
+
+test("Add another repo in Dispatch > Resident attaches a repository to one run and leaves the profile without it", async ({
+  dashboard,
+  daemon,
+}) => {
+  const SINGLE = "Single Repo Keeper";
+  const id = await createProfile(daemon, SINGLE, []);
+  await dashboard.goto(`${daemon.baseURL}/#/residents/${id}`);
+  await dashboard.getByRole("region", { name: `Resident profile ${SINGLE}` }).getByRole("button", { name: "Launch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog.getByLabel("Repository")).toHaveValue(daemon.repo);
+  await expect(dialog.getByRole("button", { name: /^Detach repo: / })).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+  await expect(dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` })).toBeVisible();
+  await expect(dialog.getByLabel("Repository")).toHaveValue(daemon.repo);
+  const sent = recordLaunches(dashboard);
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+  expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, additionalRepoRoots: [daemon.secondRepo] });
+  const task = await provisionedResidentTask(daemon);
+  expect(task.repoRoot).toBe(daemon.repo);
+  expect(task.extraRepos.map((entry) => entry.repoRoot)).toEqual([daemon.secondRepo]);
+  const persisted = (await api<ProfileRow[]>(daemon, "/api/residents/profiles")).find((p) => p.name === SINGLE);
+  expect(persisted?.settings.workspace).toEqual({ defaultRepoRoot: daemon.repo, additionalRepoRoots: [] });
+});
+
+test("a dock Launch whose answer was lost retries the repository set it sent, after the profile drops it", async ({
+  dashboard,
+  daemon,
+}) => {
+  const id = await createProfile(daemon, PROFILE, [daemon.secondRepo]);
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  const sent = recordLaunches(dashboard);
+  // The first launch never reaches the daemon, so its answer is lost and it stays outstanding.
+  await dashboard.route("**/api/residents/profiles/*/launch", (route) => route.abort(), { times: 1 });
+
+  await dashboard.locator("header.topbar").getByRole("button", { name: /^Residents - \d+ live$/ }).click();
+  const dock = dashboard.getByRole("dialog", { name: "Residents" });
+  const launch = dock.getByRole("button", { name: `Launch ${PROFILE}` });
+  await launch.click();
+  await expect(dock.getByRole("alert")).toBeVisible();
+  await expect(launch).toBeEnabled();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, additionalRepoRoots: [daemon.secondRepo] });
+
+  // Another window drops the attachment while that launch is outstanding.
+  const stored = (await api<Array<ProfileRow & { id: string; revision: number; settings: Record<string, unknown> }>>(daemon, "/api/residents/profiles"))
+    .find((p) => p.id === id)!;
+  const edited = await fetch(`${daemon.baseURL}/api/residents/profiles/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      expectedRevision: stored.revision,
+      settings: { ...stored.settings, workspace: { defaultRepoRoot: daemon.repo, additionalRepoRoots: [] } },
+    }),
+  });
+  expect(edited.status).toBe(200);
+  await expect.poll(async () =>
+    (await api<ProfileRow[]>(daemon, "/api/residents/profiles")).find((p) => p.name === PROFILE)?.settings.workspace.additionalRepoRoots,
+  ).toEqual([]);
+
+  // Launch again replays exactly what was sent - same request id, same repositories.
+  await launch.click();
+  await expect(dock.getByRole("button", { name: `Open ${PROFILE}` })).toBeEnabled({ timeout: 60_000 });
+  // A still-starting launch is polled with the same request, so every later send is that replay.
+  expect(sent.length).toBeGreaterThanOrEqual(2);
+  for (const replay of sent.slice(1)) expect(replay).toEqual(sent[0]);
+
+  const task = await provisionedResidentTask(daemon);
+  expect(task.extraRepos.map((entry) => entry.repoRoot)).toEqual([daemon.secondRepo]);
+  expect((await api<TaskRow[]>(daemon, "/api/tasks")).filter((t) => t.kind === "resident")).toHaveLength(1);
+});

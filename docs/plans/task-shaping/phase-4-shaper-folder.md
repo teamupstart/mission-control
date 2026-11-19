@@ -43,7 +43,9 @@ non-goal), any sandbox.
    or transport this build does not know: Mission Control never writes a manifest, so there
    is nothing to preserve. Record the SHA-256 of the
    file's bytes.
-4. **Cache.** Re-read a manifest only when its size or modification time changed.
+4. **Read every time.** Read and hash every manifest on every scan. That is at most 32 files
+   of 16 KiB. Keep only the parsed result, keyed by the hash, so an unchanged manifest is not
+   parsed again and a replaced one is always noticed, whatever its size or timestamps.
 5. **States.** `ok`, `invalid`, `refused`, or `shadowed` when a registered shaper has the same
    id. Only `ok` can run.
 6. **Enablement.** Already in `resolveShapers` from Phase 1, as the table in `plan.md` states
@@ -75,7 +77,8 @@ non-goal), any sandbox.
 - `test/shaping-discovery.test.ts`, in a temporary state home: a valid folder, invalid JSON, a
   schema failure, an id that differs from the folder name, an oversize manifest, a manifest
   that is not a regular file, a symlinked folder, a group-writable folder (refused), 33 folders,
-  a re-read after a change, a `./` command that escapes.
+  a re-read after a change, a replacement of the same size that keeps the old modification
+  time, a `./` command that escapes.
 - Engine tests: a discovered shaper runs with no settings write; a stored off wins; a manifest
   with `"enabled": false` does not run until the operator switches it on, and then does; a
   shadowed one does not run; `origin` and `sha256` are
@@ -91,6 +94,8 @@ non-goal), any sandbox.
 
 - A dropped-in folder takes effect at the next dispatch and is visible in Settings and in the
   viewer.
+- A replaced manifest runs as its new definition at the next dispatch, and that launch
+  records the new hash.
 - A stored choice, on or off, always wins over the manifest, and survives a daemon restart.
 - A refused, invalid or shadowed manifest never runs and says why.
 
@@ -112,3 +117,7 @@ rule that a repository's own files never register a shaper.
   behaviour unchanged.
 - Plan validation repair 3, 2026-11-19: a manifest's size cap is 16 KiB, the same as a stored
   entry, and the scan at daemon start that `plan.md` lists is now stated in step 9.
+- Review of the plan pull request, 2026-11-19, the operator's choice: step 4 trusted a
+  manifest's size and modification time, so a file replaced with one of the same size and a
+  preserved timestamp would have kept running as its old definition under its old hash.
+  Every scan now reads and hashes every manifest, and only parsing is cached.

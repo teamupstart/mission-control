@@ -41,8 +41,19 @@ identity, stored secrets.
 1. **References.** `resolveReferences(text, ctx)` replaces `{caller.user}`, `{caller.agent}`,
    `{caller.conversation}` and `{env:NAME}`, and reports the names it could not resolve. An
    empty value counts as unresolved. `referenceStatus` lists every environment name any shaper
-   references, as set or unset. No resolved value is ever logged, stored or returned, and
-   failure reasons are scrubbed of them.
+   references, as set or unset. No resolved value is ever logged, stored or returned.
+   - **Scrubbing.** `scrubResolved` enforces that for whatever a shaper sends back. Before a
+     transport hands anything to the engine, it replaces every whole occurrence of a value it
+     resolved for an `{env:NAME}` reference with `[NAME redacted]`. That covers every string
+     in a successful reply, keys included (entry ids, paths, titles and bodies,
+     `repo.summary`, `repo.facts`, `notes`, `version`), and a failure reason. Follow
+     `redactClaimValues` in `src/server/worktrees/claim.ts`: find every match in the original
+     text first, so a value inside or overlapping another is still covered.
+   - **Mark.** A reply that was changed is returned with `redacted: true`, which the engine
+     records on that shaper. The outcome does not change, and the rest of the reply is used.
+   - **Scope.** Only values resolved for `{env:NAME}` references are scrubbed. `{caller.*}`
+     values are not secrets. A variable a local server receives through `env` pass-through is
+     not a reference, and that server's output is not scrubbed of it.
 2. **Fail closed.** A transport that cannot resolve a reference makes no call and answers
    `unavailable`, naming the reference.
 3. **`http`.** `POST` the request as JSON with the resolved headers. HTTPS unless the host is
@@ -82,10 +93,13 @@ identity, stored secrets.
 ## Tests and verification
 
 - `test/shaping-references.test.ts`: each reference kind, a missing and an empty value, the
-  status list, and that no value appears in a reason.
+  status list, that no value appears in a reason, and `scrubResolved` over a reply: a value
+  in an entry body, a title, the summary, a fact name, a fact value and a note, one value
+  inside another, and a reply with no value, which comes back unchanged and unmarked.
 - `test/shaping-transport-http.test.ts`, against a loopback server: success, a non-2xx
   status, a redirect off the origin, the HTTPS rule, the body cap, a timeout, resolved headers,
-  and no request when a reference is missing.
+  a reply that echoes a resolved header value, which comes back redacted and marked, and no
+  request when a reference is missing.
 - `test/shaping-transport-mcp.test.ts`, against `test/fixtures/fake-guidance-mcp.mjs` (a local
   server with a `get_guidance` tool): exactly three arguments in `folded` mode and exactly four, the fourth being `context`, in
   `argument` mode,
@@ -93,16 +107,20 @@ identity, stored secrets.
   after-work step, labels, priority, both repositories) reaches the tool in each mode,
   structured and text replies, a tool error, a timeout, a `degraded: true` reply passed
   through, one server process for a run over two repositories, and the same calls over
-  streamable HTTP.
+  streamable HTTP. Over streamable HTTP the fixture also has an echo mode that returns a
+  header value it received inside a guidance body, and the transport redacts and marks it.
 - `test/shaping-http.test.ts` gains the `references` field and a dry-run of the fixture
-  selector.
+  selector, including one in echo mode whose reply carries `[NAME redacted]` and never the
+  value.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` and `npm run smoke`.
 
 ## Merge and exit criteria
 
 - Registering the fixture `get_guidance` tool through the API and dry-running it returns its
   guidance, with no code beyond configuration.
-- No value of an environment reference appears in any reply, log or record.
+- No value of an environment reference appears in any reply, log or record. That includes a
+  successful reply that echoes one: the fixture's echoed value is absent from the engine's
+  section and summary and from the dry-run reply, and the shaper is marked `redacted`.
 - In both `contextDelivery` modes the tool receives the complete collected input, and no
   configuration can reduce it.
 - In `folded` mode the fixture `get_guidance` tool is called with exactly its three FR-02
@@ -127,3 +145,8 @@ free of shaping-specific assumptions where that is cheap.
 - Plan validation repair 3, 2026-11-19: step 4 gave one three-argument shape and then a mode
   that adds a fourth. Each mode now states its own shape: three in `folded`, four in
   `argument`. `plan.md` and `phased-plan.md` say the same.
+- Review of the plan pull request, 2026-11-19, the operator's choice: step 1 scrubbed failure
+  reasons only, so a shaper that echoed a resolved value in a valid reply could have put it in
+  a worker's prompt, in the stored text and in a dry-run reply. Every reply is now scrubbed
+  before it reaches the engine, and the shaper is marked `redacted`. Phase 1's transport
+  reply and summary carry that mark, and Phase 2's viewer shows it.

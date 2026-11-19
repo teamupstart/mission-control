@@ -48,15 +48,22 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    progress, await `shapeTask`, clear the mark, and run the existing settled check. Append
    `section` through one helper, after `withTaskKindContract`, so both `composeTurnOne` calls
    carry it. An empty section changes nothing.
-2. **Record.** `Task.shaping` and `TaskSummary.shaping`, column `tasks.shaping`, written with
-   the task patch. Table `task_shaping_text (task_id primary key, text, created_at)` holds the
-   delivered section, replaced on each dispatch. `GET /api/tasks/:id/shaping` returns both.
+2. **Record.** `Task.shaping` and `TaskSummary.shaping`, column `tasks.shaping`, and table
+   `task_shaping_text (task_id primary key, text, created_at)` for the delivered section.
+   The record describes the task's latest launch and nothing older. Every dispatch settles it
+   at the seam, whether or not shaping ran, through one database function in one transaction,
+   and the task patch carries the result. A launch that received a section replaces the
+   summary and the text together. A launch that received none, because no shaper applied or
+   the flag is off, sets the column to null and deletes the row together. A task that has no
+   record is not written to. `GET /api/tasks/:id/shaping` returns both, or neither when the
+   task has no record.
 3. **Progress.** A derived, unpersisted mark in the manner of `Task.provisioning`.
    `phaseCopy` reads "Shaping context" while it is set.
 4. **Chip and viewer.** A `ShapingChip` beside the standing-instructions chip: "Context: N
    entries", or an amber "Context degraded". Its viewer, "Context this session received",
-   lists each shaper's origin, outcome, reason, duration and version, each entry, and a
-   "truncated" note. It follows the modal inset rule in the repository instructions.
+   lists each shaper's origin, outcome, reason, duration and version, each entry, a
+   "truncated" note, and a "credential value removed" note for a shaper whose record is
+   marked `redacted`. It follows the modal inset rule in the repository instructions.
 5. **Marker.** A small degraded marker on the board card and rail row, beside claim warnings.
 6. **Task reads.** The JSON record gains `shaping` with `state` and a one-line `summary`.
 7. **Docs.** Fill "Seeing what was added" in `docs/task-shaping.md`. Add the turn-one order to
@@ -66,7 +73,8 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 
 - One additive column and one new table, each beside its upgrade path in `db.ts`.
 - With the flag off, or with no shaper that applies, turn one, argv and process count are
-  byte-identical to today, and no row is written.
+  byte-identical to today, and no record is written. A record left by an earlier launch of
+  the same task is cleared (step 2).
 - Order with FR-05 repository task skills when both exist: kind contract, task context,
   repository task skill.
 
@@ -75,15 +83,19 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 - `test/dispatcher-shaping.test.ts`, beside `test/standing-instructions-delivery.test.ts`:
   byte-identical turn one with the flag off and with no shaper; the section's position in both
   turn-one variants; a rejecting or slow `shapeTask` stand-in still launches and marks the task
-  degraded; identical text for Claude, Codex and Pi on both runtimes.
+  degraded; identical text for Claude, Codex and Pi on both runtimes; a shaped launch followed
+  by a second dispatch of the same task, once with its shaper switched off and once with the
+  flag off, leaves no summary and no text.
 - A test that composes a 64 KiB section and delivers it through the SDK, paste and Pi
   launch-argument paths. If one path cannot carry it, lower the maximum and record that here.
-- Database tests for the column and table on an upgraded database.
+- Database tests for the column and table on an upgraded database, and for the one function
+  that replaces or clears both in one transaction.
 - `renderToStaticMarkup` tests for the chip's states.
 - `e2e/specs/task-shaping.spec.ts` with fake agents and `e2e/fixtures/fake-shaper.mjs` (modes
   ok, degraded, slow, garbage): "Shaping context" appears, the chip reads "Context: 2
   entries", the viewer lists them, a slow shaper still launches and shows "Context degraded"
-  with its reason, and `expectContentClearsBorder` passes on the viewer.
+  with its reason, a second dispatch of the same task after its shaper is switched off shows
+  no chip, and `expectContentClearsBorder` passes on the viewer.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e`.
 
@@ -91,6 +103,8 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 
 - Every item in the Outcome is demonstrated by a test or spec.
 - The byte-identical tests pass.
+- A launch that received no shaping context shows none: no summary, text or chip from an
+  earlier launch of the same task.
 - No model tokens are spent by any test.
 
 ## Handoff
@@ -105,3 +119,8 @@ including the `origin` and `sha256` that Phase 4 fills. They must not add a seco
   the dispatch half of D3.
 - Checked against Phase 4: the viewer already renders `origin`, so that phase adds no session
   surface.
+- Review of the plan pull request, 2026-11-19, the operator's choice: the record is cleared
+  by a launch that received no section. Before, step 2 replaced the text only when a launch
+  was shaped and wrote nothing otherwise, so an unshaped retry kept showing the earlier
+  launch's summary and text. The viewer also gained the note for a `redacted` shaper, which
+  Phase 5 sets.

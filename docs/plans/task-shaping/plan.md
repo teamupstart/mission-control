@@ -341,8 +341,9 @@ refused or shadowed entry never runs, whatever is stored for its id.
 - **When the folder is read.** At daemon start, when Settings opens, and at the start of
   every shaping run. A folder dropped in by setup tooling therefore takes effect at the next
   dispatch, with no restart and no click. There is no file watcher. A scan reads at most 32
-  folders and manifests of at most 16 KiB, the same cap as a stored entry, and re-reads a manifest only when its size or
-  modification time changed.
+  folders and manifests of at most 16 KiB, the same cap as a stored entry. It reads and
+  hashes every manifest on every scan, so a replaced file is always noticed, whatever its
+  size or timestamps. Only parsing is skipped, when the hash is unchanged.
 - **One list.** Settings shows both kinds in one ordered list, each marked Registered or
   Found on disk, with the path of a discovered one. The order is stored. A newly discovered
   shaper joins at the end of its stage.
@@ -426,6 +427,12 @@ reference is resolved at call time.
 - Header names are config, so a company's header never appears in Mission Control's code.
 - A reference that resolves to nothing fails closed: the shaper is not called and is recorded
   as `unavailable`, with a reason that names the missing reference.
+- A shaper cannot hand a value back. Before a reply reaches the engine, the transport
+  replaces every occurrence of a value it resolved for an `{env:NAME}` reference with
+  `[NAME redacted]`. That covers every string of a successful reply (entries, summary, facts,
+  notes and version) as well as a failure reason. The shaper's record is marked `redacted`,
+  and the viewer and a dry-run say that a credential value was removed. Redaction is not
+  degradation: the outcome does not change and the rest of the reply is used.
 - A `command` shaper may also rely on its own program's sign-in, as the GitHub and Jira task
   sources do.
 - The identity is declared and unverified, which is what the reference server accepts today.
@@ -464,14 +471,17 @@ cannot relax their authorization, plan or workflow rules.
   "Provisioning its worktree" and "Launching claude".
 - **On the task.** A bounded summary is stored on the task record and travels with
   `task_upsert`:
-  `{ state, at, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, version }] }`.
+  `{ state, at, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, redacted, version }] }`.
   `state` is `ok` or `degraded`. `origin` is `registered` or `discovered`. `outcome` is one of
   `ok`, `degraded`, `failed`, `timed_out`, `invalid`, `unavailable`. The field is absent when
-  no shaper applied.
+  no shaper applied. The record describes the task's latest launch and nothing older. Each
+  dispatch replaces the summary and the delivered text together, or clears both when that
+  launch received no section, so a retry never shows an earlier launch's context.
 - **In the dashboard.** A chip in the session header beside the standing-instructions chip:
   "Context: 3 entries", or an amber "Context degraded". It opens a viewer, "Context this
-  session received", listing each shaper's origin, outcome, reason, duration and version, and
-  each injected entry. A degraded task also carries a small marker on its board card and rail
+  session received", listing each shaper's origin, outcome, reason, duration and version,
+  each injected entry, and a note for a shaper whose reply had a credential value removed.
+  A degraded task also carries a small marker on its board card and rail
   row, where claim warnings show today.
 - **Headless and `mctl`.** The summary is part of every task read: `GET /api/tasks`, and the
   Mission Control MCP tools `get_task` and `list_tasks`, whose records gain a `shaping` field
@@ -500,7 +510,9 @@ cannot relax their authorization, plan or workflow rules.
 
 While the flag is off, and while it is on with no shaper that applies, every worker launch is
 byte-identical to today: same argv, same first prompt, no extra process. A test pins both.
-Turning the flag off deletes nothing: stored shapers, the folder and past records stay.
+Turning the flag off deletes nothing: stored shapers, the folder and past records stay. A task
+that is dispatched again while the flag is off launches unshaped, so its own record is cleared
+then, as it is for any launch that received no section.
 Mission Control ships no enabled shaper, because which files to read is the operator's choice.
 
 ### Harnesses

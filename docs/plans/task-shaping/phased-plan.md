@@ -71,6 +71,12 @@ Each phase document cites the findings it depends on. The ones that shaped the s
     allocated last: it is given `limits.totalBytes` less the `bytes` the shaping summary
     records, and lessons are fitted into that remainder by `allocateBudget`. `plan.md` states
     the rule under "Lesson selection at dispatch (FR-06)".
+13. **Three rules from the review of the plan pull request.** The operator chose each on
+    2026-11-19. The task record describes the latest launch only, so a launch that received
+    no section clears the summary and the text an earlier launch left (Phase 2). A resolved
+    `{env:NAME}` value is redacted from every reply, successful or not, before it reaches the
+    engine, and the shaper is marked `redacted` (Phases 1 and 5). Every folder scan reads and
+    hashes every manifest instead of trusting its size and modification time (Phase 4).
 
 ## Size and phase count
 
@@ -126,16 +132,16 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Registry data | 1 | `src/shared/shaping-registry.ts`: `SHAPING_STAGES` (`gather`, `select`), `SHAPING_TRANSPORTS` (`command`, `mcp`, `http`, `builtin`), `SHAPING_BUILTINS` (`repository-files`), `SHAPING_OUTCOMES`, `SHAPING_ORIGINS`, `SHAPING_REFERENCE_KINDS` and retired tuples |
 | Schemas and pure logic | 1 | `src/shared/shaping.ts`: `ShapingRequestSchema`, `ShapingResultSchema`, `StoredShaperSchema` (the stored envelope), `ShaperSchema` (the strict definition), `classifyShaper`, `ShaperManifestSchema`, `ShapingConfigSchema` (`caller`, `limits`, `shapers`, `overrides`, `order`), `ShapingIntentSchema`, `TaskShaping`, `resolveShapers(config, discovered, input)`, `applyShapingIntent`, `allocateBudget`, `composeShapingSection`, `summariseShaping` |
 | Engine | 1 | `shapeTask(input)` in `src/server/shaping/engine.ts` resolves to `{ summary, section }`. It never throws. `summary` is null and `section` is empty when no shaper applied. |
-| Transport | 1 | `call(request, shaper, ctx)` resolves to `{ kind: "data", data }` or `{ kind: "failed" or "timed_out" or "unavailable", reason }`. `ctx` carries the deadline, a signal and a per-run scope. One file per transport in `src/server/shaping/transports/`. |
+| Transport | 1 | `call(request, shaper, ctx)` resolves to `{ kind: "data", data, redacted? }` or `{ kind: "failed" or "timed_out" or "unavailable", reason }`. `ctx` carries the deadline, a signal and a per-run scope. One file per transport in `src/server/shaping/transports/`. `redacted` is true when the transport removed a resolved `{env:NAME}` value from the reply. |
 | Enablement | 1 | In `resolveShapers` only. A stored choice in `overrides`, on or off, always wins. With no stored choice, a registered shaper is off, and a discovered one runs unless its manifest says `"enabled": false`. |
 | Context budget | 1 | One total, `limits.totalBytes`, filled in pipeline order by `allocateBudget`, which takes the total it may fill as an argument and reads no config. The summary's `bytes` is what the shaping stages used. A later step outside shaping, which is FR-06 lesson selection, is allocated last, from the remainder. |
 | Unknown ids | 1 | The config stores `StoredShaperSchema` envelopes. An entry that fails the strict `ShaperSchema` is unsupported: never resolved or called, never switched on, and carried through every write unchanged. `upsert` accepts only a strict definition. |
 | HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
-| Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping` |
+| Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping`. The record describes the task's latest launch: each dispatch replaces the summary and the text together, or clears both when that launch received no section. |
 | Event | 3 | `shaping_config`, and the snapshot field `shaping` |
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
-| Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts` |
-| References | 5 | `resolveReferences` and `referenceStatus` in `src/server/shaping/references.ts` |
+| Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts`. Every scan reads and hashes every manifest, and only parsing is cached. |
+| References | 5 | `resolveReferences`, `referenceStatus` and `scrubResolved` in `src/server/shaping/references.ts`. Every reply and reason is scrubbed of resolved `{env:NAME}` values before it reaches the engine. |
 | MCP context delivery | 1 (schema), 5 (behaviour) | `contextDelivery` is `folded` or `argument`. `folded` calls the tool with exactly three arguments, `{ task, repo, version? }`, with the rest of the collected input inside `task`. `argument` calls it with four, `{ task, repo, version?, context }`. Both deliver the complete collected input, and no mode omits it. |
 | Guide | 1 | `docs/task-shaping.md`, one section per phase |
 

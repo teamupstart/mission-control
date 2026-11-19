@@ -34,15 +34,23 @@ test("Pi OAuth failure stays visible after reload and the session accepts a retr
   const failure = detail.getByText(/Pi turn failed: OAuth auth derivation failed/).first();
   await expect(failure).toBeVisible();
   await expect(detail).not.toContainText("synthetic-secret");
+  await expect(detail).not.toContainText("synthetic-json-secret");
   await dashboard.reload();
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   await expect(failure).toBeVisible();
+  await expect(detail).not.toContainText("synthetic-json-secret");
+  const composer = detail.getByPlaceholder(/^Reply to this session/);
+  await composer.fill("PI_AUTH_SIGNED_OUT");
+  await composer.press("Enter");
+  const signedOut = detail.getByText(/^Pi turn failed: No API key found/).first();
+  await expect(signedOut).toBeVisible();
+  await expect(signedOut).toContainText("open a Pi session and run /login anthropic");
+  expect((await signedOut.textContent())!.length).toBeLessThanOrEqual(400);
   const dir = artifactsDir("pi-oauth-failure");
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(dir, { recursive: true });
     await dashboard.screenshot({ path: join(dir, "failed-turn.png") });
   }
-  const composer = detail.getByPlaceholder(/^Reply to this session/);
   await composer.fill("retry after provider repair");
   await composer.press("Enter");
   await expect(detail.getByText(/pi answered: retry after provider repair/)).toBeVisible();

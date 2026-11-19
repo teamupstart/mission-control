@@ -225,8 +225,10 @@ class FakeSession {
   }
 
   settleWith(text, aborted = false) {
-    const errorMessage = !aborted && text.includes("PI_OAUTH_FAILURE")
-      ? `OAuth auth derivation failed for ${this.modelId?.split("/")[0]}: Cannot find module 'provider.js' access_token=synthetic-secret`
+    const errorMessage = !aborted && text.includes("PI_AUTH_SIGNED_OUT")
+      ? `No API key found for anthropic. ${"provider detail ".repeat(50)}`
+      : !aborted && text.includes("PI_OAUTH_FAILURE")
+      ? `OAuth auth derivation failed for ${this.modelId?.split("/")[0]}: Cannot find module 'provider.js' {"access_token":"synthetic-json-secret"} access_token=synthetic-secret`
       : undefined;
     const reply = errorMessage ? "" : aborted
       ? this.partialReply ?? ""

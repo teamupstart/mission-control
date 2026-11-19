@@ -26,3 +26,11 @@ test("Pi failure preserves partial output, has a fallback, and never labels succ
   assert.match(piToMessages(record("error"))[0]!.text, /Pi turn failed/);
   assert.deepEqual(piToMessages(record("stop", "stale error")), []);
 });
+
+test("quoted JSON OAuth credentials never reach a failed-turn transcript message", () => {
+  const messages = piToMessages(record("error",
+    'OAuth auth derivation failed: {"access_token":"synthetic-json-secret","refresh_token":"synthetic-refresh-secret","status":"denied"}'));
+  assert.equal(messages.length, 1);
+  assert.doesNotMatch(messages[0]!.text, /synthetic-json-secret|synthetic-refresh-secret/);
+  assert.match(messages[0]!.text, /denied/);
+});

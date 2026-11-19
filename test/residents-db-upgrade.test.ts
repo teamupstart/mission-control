@@ -214,3 +214,27 @@ test("schema 31 upgrade captures recovery and leaves every run owing no restatem
     { wake_text: null, reanchor_epoch: null }, "an older wake still reads as marker and loop prompt");
   assert.equal(db.prepare("PRAGMA user_version").get()!.user_version, CURRENT_DATABASE_SCHEMA_VERSION);
 });
+
+test("schema 34 upgrade captures recovery before adding attachment spellings, and existing runs read as attaching none", async () => {
+  const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 35);
+  closeDb();
+  const previous = new DatabaseSync(join(home, "harness.db"));
+  previous.exec("ALTER TABLE resident_runs DROP COLUMN launch_extra_repo_spellings; PRAGMA user_version = 34;");
+  previous.close();
+  const backupRoot = join(home, "backups", "database");
+  const before = new Set(readdirSync(backupRoot));
+  const db = openDb();
+  const captured = readdirSync(backupRoot).filter(name => !before.has(name) && name.startsWith("pre-migration-"));
+  assert.equal(captured.length, 1, "a version-34 database needs a recovery point before the column is added");
+  const recovery = new DatabaseSync(join(backupRoot, captured[0]!), { readOnly: true });
+  try {
+    assert.equal(recovery.prepare("PRAGMA user_version").get()!.user_version, 34);
+    const columns = (recovery.prepare("PRAGMA table_info(resident_runs)").all() as Array<{ name: string }>).map(c => c.name);
+    assert.ok(!columns.includes("launch_extra_repo_spellings"), "the recovery point is the database as it was");
+  } finally {
+    recovery.close();
+  }
+  assert.equal(db.prepare("PRAGMA user_version").get()!.user_version, CURRENT_DATABASE_SCHEMA_VERSION);
+  assert.deepEqual(store.residentRunIdentityByRequest("phase1-request")?.extraRepoSpellings, [], "an existing run attached nothing");
+});

@@ -403,10 +403,12 @@ async function smokeMcp() {
 }
 
 async function declaredTaskExtraRepoLimit() {
-  const source = await readFile(resolve("src/shared/protocol.ts"), "utf8");
+  // Defined beside the task kinds (and re-exported by protocol.ts) so the resident launch
+  // schemas can share it without an import cycle.
+  const source = await readFile(resolve("src/shared/task.ts"), "utf8");
   const value = /export const MAX_TASK_EXTRA_REPOS = (\d+);/.exec(source)?.[1];
   if (!value) {
-    fail("MAX_TASK_EXTRA_REPOS could not be read out of src/shared/protocol.ts");
+    fail("MAX_TASK_EXTRA_REPOS could not be read out of src/shared/task.ts");
     return null;
   }
   return Number(value);

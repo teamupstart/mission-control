@@ -1,11 +1,13 @@
 # Residents
 
 A **resident** is a long-running agent with a standing role. You author a **resident profile**
-once - an optional Persona, instructions, a harness, model and effort, and a default repository - and
+once - an optional Persona, instructions, a harness, model and effort, and a default repository with
+any repositories attached beside it - and
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
-This page describes profiles, launch, the persistent wake loop, repository-free residents,
+This page describes profiles, launch, [residents across several repositories](#attaching-more-than-one-repository),
+the persistent wake loop, repository-free residents,
 [instruction changes a resident proposes](#changing-instructions-from-the-conversation) and its
 retro, skill sources, session control, MCP servers and their dashboard controls. Skill selection remains a later phase of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
@@ -22,7 +24,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
-| Workspace | The repository Dispatch pre-fills | none |
+| Workspace | The repository Dispatch pre-fills, and any repositories **+ Add another repo** attaches beside it | none |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
 | MCP servers | A pinned set or, on Claude Code, all native sources; whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | pinned, inherit on, none selected |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
@@ -129,12 +131,42 @@ A launch is a task of kind `resident`:
 - It has no backlog, dependencies, schedule, autopilot, after-work Workflow or task-kind contract.
   Single agent Dispatch, MCP `create_task`, recurring missions and task sources do not offer it.
 
+### Attaching more than one repository
+
+A resident can work across several repositories in one session, the way a
+[multi-repository task](dispatch-and-backlog.md#attaching-more-than-one-repository) does.
+**+ Add another repo** under the profile's **Default repository** attaches secondary
+repositories to every launch of that profile. Dispatch > Resident pre-fills them under
+**Repository**, where you can detach one or attach another for this run alone. Changing the
+repository or its attachments in Dispatch makes the whole set your choice for this run; the
+profile's default is unchanged.
+
+- The primary repository stays the session's working directory and the task's repository.
+  Each attached repository gets its own worktree, and the resident has write access to all of
+  them: Claude Code through the Agent SDK's additional directories, Codex through its sandbox
+  writable roots. Provisioning is all-or-nothing, as for a task.
+- Turn one opens with the repository manifest: where each worktree is, its branch, and the
+  instruction to read each repository's own `AGENTS.md` or `CLAUDE.md` and open one pull request
+  per repository it changed. Because a compaction summarizes that turn away, the
+  [restated wake](#keeping-the-mission-through-compaction) after a compaction repeats the
+  manifest after the resident section.
+- Attached repositories need a primary. **No repository** detaches them, and a launch or
+  profile that names attachments without a primary is refused. A repository named twice, or
+  attached as its own primary, is refused too.
+- The **Launch** button in the [Residents dock](#the-residents-dock) launches with the
+  profile's default repository and its attachments.
+- **Restart on new profile** keeps the replaced run's whole repository set. To change which
+  repositories a running resident can write to, edit its launch and launch again: a running
+  session's write access cannot be widened.
+
 A launch is idempotent. Repeating a request - a second click, or a response lost on the way back
 - returns the same resident rather than starting a second one, including when two identical
 requests race. Reusing a launch for a different profile, repository or set of run instructions
-is refused. An exact repeat is recognized by the repository path as it was typed, even after that
-path stops resolving or a symlink in it is pointed elsewhere; any other spelling is compared by
-the repository it resolves to. If a profile is archived while one of its launches is still
+is refused, as is one that attaches a different set of repositories. An exact repeat is
+recognized by the repository path as it was typed, even after that path stops resolving or a
+symlink in it is pointed elsewhere; any other spelling is compared by the repository it resolves
+to. Attached repositories are recognized the same way: each by its path as typed, and any other
+spelling by the repository it resolves to. If a profile is archived while one of its launches is still
 unanswered, Dispatch keeps that one launch available to retry exactly.
 
 ## Finding a resident
@@ -307,7 +339,7 @@ any resident is running it shows how many; with none running it shows no number.
   revision asks for session control also shows a **Control** badge at the end of the footer when
   control is granted, or **No control** beside the session control menu when it is not.
 - **Profiles** lists every live profile with **Launch**. A profile with a default repository
-  launches straight away, through the same launch call as Dispatch; while it starts the row reads
+  launches straight away, with any repositories the profile attaches beside it, through the same launch call as Dispatch; while it starts the row reads
   *starting…*, and closing the dock does not lose it - launching again resumes that same launch,
   in the repository it was sent with even if the profile's default has changed since.
   If it is still starting after a minute, the dock stops waiting and the row reads *still
@@ -443,7 +475,7 @@ it there, or cancel to keep it. The old session's Console band also says it was 
 new revision and offers **Open new session** and **Complete & close**, so you decide when the
 replaced conversation closes. The offer stays until that task is completed, even if the new
 session has since ended or never started, and survives a reload or daemon restart. Restart
-preserves the repository choice and run instructions; a repository-free resident receives a fresh
+preserves the repository choice, including any attached repositories, and run instructions; a repository-free resident receives a fresh
 private workspace. New conversation creation ensures every changed launch option takes effect.
 If Restart is interrupted, recovery depends on whether it had reserved its replacement yet. Before
 the reservation no replacement launch exists, so retrying Restart starts it. After the
@@ -505,7 +537,9 @@ instead of its role. Two things keep it on its role:
 - **A restated wake.** The first wake after any compaction opens with **Your standing task,
   restated after compaction**: a line saying the summary is context rather than the mission,
   then the run's resident section exactly as its launch composed it (Persona guidance, profile
-  instructions, run instructions and the durable-state note), then the loop prompt. That covers
+  instructions, run instructions and the durable-state note), then, for a resident with
+  [attached repositories](#attaching-more-than-one-repository), the repository manifest, then the
+  loop prompt. That covers
   compactions the daemon did not start too: Claude Code's own auto-compact, Codex's native
   backstop, and a `/compact` you typed. Repository standing instructions are not repeated,
   because they are not the resident's role.

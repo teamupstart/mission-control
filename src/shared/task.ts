@@ -20,6 +20,16 @@ import { TASK_KINDS } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
+ * How many SECONDARY repositories one request may attach.
+ *
+ * A sanity bound on a request body rather than a product limit on how many repositories a
+ * task may coordinate - nothing downstream reads it as a maximum. Named because several
+ * request surfaces - task dispatch, MCP task creation and resident launch - bound the same
+ * launch manifest and must not carry private copies.
+ */
+export const MAX_TASK_EXTRA_REPOS = 8;
+
+/**
  * How each kind PRESENTS itself. Where a surface offers the choice, its copy comes from
  * here - every one of them, now that `TaskSourcesPanel` and `ScheduleEditor` render from
  * this record too. They used to spell their own `<option>`s, each differently, and were

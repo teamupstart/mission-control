@@ -37,6 +37,7 @@ import {
   residentLaunchInput,
   residentRoleProblem,
   residentRunControlRecorded,
+  residentRepoSetProblem,
   residentRunSummary,
   type ResidentRunControl,
   type ResidentRunSummary,
@@ -53,7 +54,7 @@ import { isTerminalTask } from "@shared/task-status.ts";
 import type { Persona } from "@shared/workflow.ts";
 import type { ServerEvent, Session, SessionRuntime, Task } from "@shared/types.ts";
 import { getTask as getDurableTask, logEvent } from "../db.ts";
-import { resolveTaskRepoRoot } from "../repos.ts";
+import { resolveTaskExtraRepoRoots, resolveTaskRepoRoot } from "../repos.ts";
 import { getSdkSession, sdkSessionIdsForTask } from "../sdk/store.ts";
 import { residentLaunchAuthorization, type AuthorizeResidentLaunch } from "../session-control-authorization.ts";
 import type { CreateTaskInput, InternalCreateOptions } from "../tasks.ts";
@@ -106,6 +107,23 @@ function knownRepoForSpelling(known: ResidentRunIdentity | null, spelling: strin
   if (!known || !spelling || known.repoSpelling !== spelling) return null;
   const stored = known.launchInput as { repoRoot?: unknown } | null;
   return typeof stored?.repoRoot === "string" ? stored.repoRoot : null;
+}
+
+/**
+ * The attached repositories a stored run resolved, when a replay spells them exactly as the
+ * original request did, or null. The `knownRepoForSpelling` rule for each attachment: it wins
+ * over resolving the spellings again, because an attachment named through a symlink may since
+ * have stopped resolving or been pointed elsewhere. Any other spelling is compared by the
+ * repositories it resolves to.
+ */
+function knownExtrasForSpelling(known: ResidentRunIdentity | null, spelled: readonly string[]): string[] | null {
+  if (!known || spelled.length === 0) return null;
+  const original = known.extraRepoSpellings;
+  if (original.length !== spelled.length || original.some((path, index) => path !== spelled[index])) return null;
+  const stored = (known.launchInput as { additionalRepoRoots?: unknown } | null)?.additionalRepoRoots;
+  return Array.isArray(stored) && stored.length === spelled.length && stored.every((path) => typeof path === "string")
+    ? (stored as string[])
+    : null;
 }
 
 /**
@@ -333,6 +351,9 @@ export class ResidentManager {
     if (!harnessOffersRuntime(settings.execution.agent, "sdk")) {
       return `${settings.execution.agent} has no Agent SDK driver, so it cannot run a resident`;
     }
+    if (settings.workspace.additionalRepoRoots.length > 0 && !capabilitiesFor(settings.execution.agent).multiRepoDispatch) {
+      return `${AGENT_IDENTITY[settings.execution.agent].label} cannot be given write access to more than one repo`;
+    }
     return residentSpendProblem(settings) ?? this.mcpProblem(settings);
   }
 
@@ -486,7 +507,12 @@ export class ResidentManager {
     options: ResidentLaunchOptions = {},
   ): Promise<ResidentLaunchOutcome> {
     const spelling = input.repoRoot?.trim() ?? "";
-    const resolved = spelling ? await this.resolveRepoRoot(spelling) : { ok: true as const, repoRoot: null };
+    const extraSpellings = (input.additionalRepoRoots ?? []).map((path) => path.trim());
+    const setProblem = residentRepoSetProblem(spelling || null, extraSpellings);
+    if (setProblem) return { ok: false, status: 400, code: "invalid", error: setProblem };
+    const resolved = spelling
+      ? await this.resolveRepoSet(spelling, extraSpellings)
+      : { ok: true as const, repoRoot: null, extraRepoRoots: [] };
     if (this.resettingState.has(profileId)) return { ok: false, status: 409, code: "conflict", error: "State reset is in progress; retry launch." };
     // A replay first, from the run row alone, read AFTER the await: a racing request with the
     // same id may have reserved while this one resolved its repository, and its run - not this
@@ -497,6 +523,7 @@ export class ResidentManager {
     const request = residentLaunchInput(
       knownRepoForSpelling(known, spelling) ?? (resolved.ok ? resolved.repoRoot : spelling),
       input.instructions,
+      knownExtrasForSpelling(known, extraSpellings) ?? (resolved.ok ? resolved.extraRepoRoots : extraSpellings),
     );
     if (known) return this.replay(known, profileId, request, input.answerWhen);
     if (!resolved.ok) return { ok: false, status: 400, code: "invalid", error: resolved.error };
@@ -508,6 +535,13 @@ export class ResidentManager {
     }
     const problem = this.settingsProblem(profile.settings);
     if (problem) return { ok: false, status: 400, code: "invalid", error: problem };
+    // Refused here, with the harness named, rather than by the dispatcher after a task exists:
+    // a resident that started with fewer repositories than it was sent with would quietly do
+    // less than the operator asked for.
+    if (request.additionalRepoRoots.length > 0 && !capabilitiesFor(profile.settings.execution.agent).multiRepoDispatch) {
+      const label = AGENT_IDENTITY[profile.settings.execution.agent].label;
+      return { ok: false, status: 400, code: "invalid", error: `${label} cannot be given write access to more than one repo` };
+    }
     const persona = profile.settings.persona.personaId === ""
       ? null
       : this.deps.persona(profile.settings.persona.personaId)!;
@@ -527,6 +561,7 @@ export class ResidentManager {
       launchRequestId: input.requestId,
       launchInput: request,
       repoSpelling: spelling,
+      extraRepoSpellings: extraSpellings,
       workspaceDir: request.repoRoot === null ? residentWorkspaceDir(runId) : null,
       persona: snapshot,
       runInstructions: normalizeRunInstructions(input.instructions),
@@ -561,6 +596,18 @@ export class ResidentManager {
     if (input.answerWhen === "accepted") await this.awaitBriefly(acceptance, this.acceptanceWaitMs);
     else await this.awaitBriefly(settlement);
     return this.answer(runId);
+  }
+
+  /** Resolve a launch's primary repository and its attached ones, as one answer. */
+  private async resolveRepoSet(
+    primary: string,
+    extras: readonly string[],
+  ): Promise<{ ok: true; repoRoot: string; extraRepoRoots: string[] } | { ok: false; error: string }> {
+    const resolved = await this.resolveRepoRoot(primary);
+    if (!resolved.ok) return resolved;
+    const attached = await resolveTaskExtraRepoRoots(resolved.repoRoot, extras, this.resolveRepoRoot);
+    if (!attached.ok) return attached;
+    return { ok: true, repoRoot: resolved.repoRoot, extraRepoRoots: attached.repoRoots };
   }
 
   /**
@@ -696,6 +743,7 @@ export class ResidentManager {
       this.deps.createTask(
         {
           repoRoot: run.workspaceDir ?? request.repoRoot!,
+          ...(request.additionalRepoRoots.length > 0 ? { extraRepoRoots: request.additionalRepoRoots } : {}),
           intent: RESIDENT_OPENING_TURN,
           title: run.settings.identity.name,
           kind: "resident",

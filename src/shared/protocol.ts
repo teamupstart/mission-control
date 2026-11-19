@@ -16,6 +16,7 @@ import {
   GRILL_FIRST_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
+  MAX_TASK_EXTRA_REPOS,
   RESIDENT_TASK_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
@@ -900,14 +901,8 @@ export const ProductIssuePreflightSchema = z.object({
   ),
 });
 
-/**
- * How many SECONDARY repositories one request may attach.
- *
- * A sanity bound on a request body rather than a product limit on how many repositories a
- * task may coordinate - nothing downstream reads it as a maximum. Named because several
- * request surfaces bound the same launch manifest and must not carry private copies.
- */
-export const MAX_TASK_EXTRA_REPOS = 8;
+/** Defined beside the task kinds so resident launch schemas share it without a cycle. */
+export { MAX_TASK_EXTRA_REPOS };
 
 const McpCreateTaskBaseSchema = z.object({
   env: EnvSchema,

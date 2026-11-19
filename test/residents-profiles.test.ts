@@ -120,7 +120,7 @@ test("a revision fills every later section with its defaults and round-trips unc
     persona: { personaId: PERSONA.id },
     instructions: { markdown: "" },
     execution: { agent: "claude", model: null, effort: null },
-    workspace: { defaultRepoRoot: null },
+    workspace: { defaultRepoRoot: null, additionalRepoRoots: [] },
     board: { colorId: "cyan", label: null, pin: true },
     loop: { prompt: "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.", delaySeconds: 300, minDelaySeconds: 60, maxDelaySeconds: 3600, iterationCap: 200, spendCapUsd: 20, contextThreshold: 70, compactionFocus: "" },
     authority: { controlOtherSessions: false },

@@ -86,6 +86,7 @@ import {
   type ResolveHarnessModelCatalog,
   useHarnessModelCatalogs,
 } from "../model-catalog.tsx";
+import { AttachedRepoChips } from "./AttachedRepoChips.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import {
@@ -1355,8 +1356,6 @@ function DispatchModal({
   // is always mounted: an empty repo picker sitting under the primary on every dispatch
   // would read as a second required field. Local rather than drafted - a half-typed path
   // in a picker that has not been confirmed is not part of the task.
-  const [addingRepo, setAddingRepo] = useState(false);
-  const [addRepoValue, setAddRepoValue] = useState("");
   // The configured per-harness defaults, so both pickers can name what "Default"
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
@@ -1828,10 +1827,6 @@ function DispatchModal({
    * form changes shape instead of leaving Dispatch enabled for a request the daemon refuses.
    */
   function selectKind(kind: TaskKind): void {
-    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
-      setAddingRepo(false);
-      setAddRepoValue("");
-    }
     const normalizedPipelineAgent = pipelineAgentForKindTransition(
       kind,
       pipelineLaunchRuntime,
@@ -2871,76 +2866,14 @@ function DispatchModal({
         // combobox the pass cannot see, where ↵ answers nothing and the operator is stuck in a
         // question they cannot finish. They come back the moment the pass hands over. The other
         // three steps need no rule here - the whole field is dim for them.
-        <div className={`repo-chips${guidedStep?.id === "repo" ? " dispatch-guided-dim" : ""}`}>
-          {draft.extraRepoRoots.map((root, index) => (
-            <span key={`${root}-${index}`} className="repo-chip">
-              {/* The full path through the app's own tooltip, never a native `title` -
-                  `tooltip-coverage.test.ts` enforces that, and it is what makes the
-                  shortened chip readable without a browser-styled box. */}
-              <RepositoryName path={root} className="repo-chip-name" />
-              <Tooltip label="Detach this repo">
-                <button
-                  type="button"
-                  className="dep-chip-x"
-                  aria-label={`Detach repo: ${root}`}
-                  onClick={() =>
-                    update({
-                      extraRepoRoots: draft.extraRepoRoots.filter((_, i) => i !== index),
-                    })
-                  }
-                >
-                  ✕
-                </button>
-              </Tooltip>
-            </span>
-          ))}
-          {!multiRepoOffered ? null : addingRepo ? (
-            <div className="repo-chip-add">
-              <RepoCombobox
-                repos={repos}
-                value={addRepoValue}
-                placeholder="repo to attach…"
-                onChange={setAddRepoValue}
-              />
-              <Tooltip label="Attach this repo to the task">
-                <button
-                  type="button"
-                  className="dep-add"
-                  aria-label="Attach repo"
-                  // Refuses the obviously redundant entry - the same path as the primary, or
-                  // one already attached. Deliberately STRING equality and nothing cleverer:
-                  // only the daemon resolves a path to a repo's main checkout, so it stays
-                  // the one authority on whether two spellings are one repo, and a second
-                  // half-implementation of that rule here would be a source of truth that
-                  // could disagree with it.
-                  disabled={
-                    !addRepoValue.trim()
-                    || addRepoValue.trim() === draft.repoRoot.trim()
-                    || draft.extraRepoRoots.includes(addRepoValue.trim())
-                  }
-                  onClick={() => {
-                    update({ extraRepoRoots: [...draft.extraRepoRoots, addRepoValue.trim()] });
-                    setAddRepoValue("");
-                    setAddingRepo(false);
-                  }}
-                >
-                  Attach
-                </button>
-              </Tooltip>
-            </div>
-          ) : (
-            <Tooltip label="Work across several repos in one session - each changed repo gets its own PR">
-              <button
-                type="button"
-                className="dep-add"
-                aria-label="Add another repo"
-                onClick={() => setAddingRepo(true)}
-              >
-                + Add another repo
-              </button>
-            </Tooltip>
-          )}
-        </div>
+        <AttachedRepoChips
+          className={guidedStep?.id === "repo" ? "dispatch-guided-dim" : ""}
+          primary={draft.repoRoot}
+          attached={draft.extraRepoRoots}
+          repos={repos}
+          canAttach={multiRepoOffered}
+          onChange={(extraRepoRoots) => update({ extraRepoRoots })}
+        />
       )}
       {draft.extraRepoRoots.length > 0 && multiRepoOffered && (
         <span className="field-hint">

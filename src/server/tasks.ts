@@ -56,12 +56,15 @@ import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
 import {
+  CHAT_DEPENDENCY_REFUSAL,
+  CHAT_WORKFLOW_REFUSAL,
   taskHasRepository,
   dispatchHasNoProvisionedResources,
   isGrillFirstTaskKind,
   taskGrillsFirst,
   RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
+  taskAllowsBacklog,
   taskKindAllowsBacklog,
   taskKindBacklogRefusal,
   taskKindCreator,
@@ -3074,6 +3077,24 @@ export class TaskManager {
   }
 
   /**
+   * Whether this is the scheduler filing backlog work that `taskAllowsBacklog` admits only
+   * because a Recurring Mission filed it. Plain backlog work, no source, no dependencies and
+   * no after-work Workflow: the provenance is the only thing that admits it, so nothing else
+   * may ride along. `workflowId` must be an explicit null - an absent one would resolve to
+   * the dispatch default.
+   */
+  private isScheduledBacklogCreate(input: CreateTaskInput, internal?: InternalCreateOptions): boolean {
+    return (
+      internal?.schedule !== undefined &&
+      input.backlog === true &&
+      input.source === undefined &&
+      (input.dependencies?.length ?? 0) === 0 &&
+      input.workflowId === null &&
+      taskAllowsBacklog({ kind: input.kind, scheduleId: internal.schedule.scheduleId })
+    );
+  }
+
+  /**
    * Create a task, and - when the operator left the title blank - name it with a model
    * before anything downstream reads that name.
    *
@@ -3112,10 +3133,17 @@ export class TaskManager {
       }
     } else if (internal?.resident) {
       throw new TaskKindBacklogError(`a ${input.kind} task cannot be reserved by a resident run`);
-    } else if (creator === "dispatch" && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
+    } else if (
+      creator === "dispatch" &&
+      manualDispatch !== MANUAL_DISPATCH_TASK_CREATE &&
+      // A Recurring Mission's scheduler is the one other creator of a `scheduled-only` kind,
+      // and only as backlog work with no source or dependencies - see `taskAllowsBacklog`.
+      !this.isScheduledBacklogCreate(input, internal)
+    ) {
       throw new TaskKindBacklogError(refusal);
     }
     if (
+      !this.isScheduledBacklogCreate(input, internal) &&
       !taskKindAllowsBacklog(input.kind) &&
       (input.backlog || (internal !== undefined && !internal.resident) ||
         input.source !== undefined || (input.dependencies?.length ?? 0) > 0)
@@ -3568,7 +3596,7 @@ export class TaskManager {
       return { ok: false, error: RESIDENT_TASK_REFUSAL, task: t };
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
-      if (!taskKindAllowsBacklog(t.kind)) {
+      if (!taskAllowsBacklog(t)) {
         return { ok: false, error: taskKindBacklogRefusal(t.kind), task: t };
       }
       // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
@@ -4192,7 +4220,7 @@ export class TaskManager {
     if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
-    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind)) {
+    if (!isAnnotationOnlyUpdate(patch) && !taskAllowsBacklog({ kind: patch.kind ?? t.kind, scheduleId: t.scheduleId })) {
       return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
     }
     const intent = patch.intent?.trim() ?? t.intent;
@@ -4296,6 +4324,14 @@ export class TaskManager {
     const becomesPlan = patch.kind === "plan" && t.kind !== "plan";
     let planPolicy = t.planPolicy;
     let workflowId = patch.workflowId === undefined ? t.workflowId : patch.workflowId;
+    // A row edited into a kind with no backlog of its own - a chat a mission filed - takes
+    // that kind's None instead of inheriting the previous kind's review Workflow. Launch arms
+    // whatever the row names without asking its kind, so a kind-only patch must not carry it
+    // over; a Workflow the patch names is refused below with `CHAT_WORKFLOW_REFUSAL`.
+    if (patch.workflowId === undefined && patch.kind !== undefined && patch.kind !== t.kind
+      && !taskKindAllowsBacklog(patch.kind)) {
+      workflowId = null;
+    }
     try {
       if (patch.planStorage !== undefined && (patch.kind ?? t.kind) !== "plan") {
         throw new PlanStoreError("Plan storage is only available for plan tasks");
@@ -4339,6 +4375,21 @@ export class TaskManager {
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return { ok: false, error: error.message };
       throw error;
+    }
+    // A kind with no backlog of its own never waits on other work, even on the one row that
+    // may hold it - a chat a Recurring Mission filed. Checked on the RESULT, so an edit that
+    // turns a dependent task into a chat is refused as surely as one that adds an edge to a chat.
+    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind) && dependencies.length > 0) {
+      return { ok: false, error: CHAT_DEPENDENCY_REFUSAL };
+    }
+    // Nor does it run after-work: the only chat a non-annotation edit can reach is one a
+    // Recurring Mission filed (the status guard above keeps every other edit to the backlog),
+    // and that run exists so nothing reviews it. Asked of the RESULT, so naming a Workflow on
+    // an existing chat and switching a row to chat with one are both refused. A priority or
+    // label edit is left alone: it also reaches a running hand-dispatched chat, which may
+    // hold the Workflow it opted into in Dispatch, and the edit does not touch it.
+    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind) && workflowId !== null) {
+      return { ok: false, error: CHAT_WORKFLOW_REFUSAL };
     }
     const grillFirst = resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t);
     const next: Task = {
@@ -6186,7 +6237,7 @@ export class TaskManager {
     }
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    if (!taskKindAllowsBacklog(t.kind)) {
+    if (!taskAllowsBacklog(t)) {
       return { ok: false, error: taskKindBacklogRefusal(t.kind) };
     }
     if (t.status !== "cancelled" && t.status !== "failed") {
@@ -6887,8 +6938,8 @@ export class TaskManager {
       if (!current || !dispatchHasNoProvisionedResources(current)) return;
       this.registry.upsertTask({
         ...current,
-        status: taskKindAllowsBacklog(current.kind) ? "backlog" : "failed",
-        error: taskKindAllowsBacklog(current.kind)
+        status: taskAllowsBacklog(current) ? "backlog" : "failed",
+        error: taskAllowsBacklog(current)
           ? INTERRUPTED_BEFORE_PROVISION_ERROR
           : taskKindCreator(current.kind) === "resident-launch"
             ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR

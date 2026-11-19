@@ -19,7 +19,9 @@ import {
   RESIDENT_TASK_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
+  CHAT_WORKFLOW_REFUSAL,
   taskKindAllowsBacklog,
+  taskKindAllowsSchedule,
   taskKindBacklogRefusal,
   taskKindCreator,
   taskKindPersonaRefusal,
@@ -1729,6 +1731,19 @@ const UpdateTaskFieldsSchema = z
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
+  .extend({
+    /**
+     * Any kind a Recurring Mission may file, so the dashboard can edit a mission-filed row
+     * into a chat. Whether THIS row may hold the kind is the task's question, not the
+     * schema's: `TaskManager.update` asks `taskAllowsBacklog`, which admits a chat only on a
+     * row a mission filed. The MCP schemas keep the backlog kinds: an agent cannot file or
+     * edit a chat.
+     */
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsSchedule, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
+      .optional(),
+  })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
@@ -8773,7 +8788,7 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
+      .refine(taskKindAllowsSchedule, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
       .default("ship"),
     /**
      * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
@@ -8810,6 +8825,12 @@ const ScheduleTemplateSchema = z
   .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  // A chat mission exists so nothing reviews its runs. The editor stands After work down for
+  // it; this keeps a direct API caller from storing one the editor would never offer.
+  .refine((t) => taskKindAllowsBacklog(t.kind) || t.workflowId === null, {
+    path: ["workflowId"],
+    message: CHAT_WORKFLOW_REFUSAL,
   });
 
 /**

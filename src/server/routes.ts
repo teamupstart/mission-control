@@ -67,7 +67,7 @@ import {
   isShippingTaskKind,
   kindsDefaultingToWorkflow,
   taskHasRepository,
-  taskKindAllowsBacklog,
+  taskAllowsBacklog,
   taskKindCreator,
 } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
@@ -9271,7 +9271,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (taskKindCreator(task.kind) === "resident-launch") {
       return c.json({ error: "launch this resident again from its profile" }, 409);
     }
-    if (taskKindAllowsBacklog(task.kind)) {
+    if (taskAllowsBacklog(task)) {
       const refused = taskWorkflowDispatchRefusal(task);
       if (refused) return c.json(refused.body, refused.status);
       // A failure that kept a worktree cannot be dispatched over it; re-file it first, which

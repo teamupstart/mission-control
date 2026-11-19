@@ -31,6 +31,7 @@ import {
 import { withAttachments } from "@shared/attachments.ts";
 import {
   BACKLOG_TASK_KINDS,
+  SCHEDULE_TASK_KINDS,
   DISPATCH_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
@@ -40,7 +41,9 @@ import {
   hasReviewableDiff,
   isGrillFirstTaskKind,
   taskDefaultWorkflowId,
+  taskAllowsBacklog,
   taskKindAllowsBacklog,
+  CHAT_WORKFLOW_REFUSAL,
   type GrillFirstTaskKind,
 } from "@shared/task.ts";
 import type { EnvironmentCheckId, EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -1318,9 +1321,26 @@ function DispatchModal({
   // Every kind Dispatch launches, for the two modes that launch something new - `resident` is
   // launched from a profile in Resident mode, never picked as a kind. An edit is confined to
   // the kinds a backlog row can hold, and Ensemble to the kinds its members can be.
+  //
+  // A backlog row a Recurring Mission filed may also hold a chat, so its edit offers the
+  // mission's kinds - see `taskAllowsBacklog`.
+  const editedScheduleId = mode.kind === "edit" ? mode.task.scheduleId : null;
   const availableTaskKinds: readonly TaskKind[] =
-    mode.kind === "single" || mode.kind === "tour" ? DISPATCH_TASK_KINDS : BACKLOG_TASK_KINDS;
-  const backlogCompatible = taskKindAllowsBacklog(draft.kind);
+    mode.kind === "single" || mode.kind === "tour"
+      ? DISPATCH_TASK_KINDS
+      : editedScheduleId !== null
+        ? SCHEDULE_TASK_KINDS
+        : BACKLOG_TASK_KINDS;
+  const allowsBacklog = (kind: TaskKind): boolean =>
+    taskAllowsBacklog({ kind, scheduleId: editedScheduleId });
+  const backlogCompatible = allowsBacklog(draft.kind);
+  // A separate question from the one above, and asked of the KIND: a chat a mission filed may
+  // sit in the backlog, but a conversation never waits on other work. See
+  // `CHAT_DEPENDENCY_REFUSAL`.
+  const dependenciesAllowed = taskKindAllowsBacklog(draft.kind);
+  // An edit can only reach a chat on a row a mission filed, and that chat runs no after-work:
+  // the daemon refuses a Workflow on it (`CHAT_WORKFLOW_REFUSAL`), so the control stands down.
+  const afterWorkLocked = editing !== null && !dependenciesAllowed;
   // Opens on the last list this window received, so a rescan behind the daemon never leaves
   // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
   const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
@@ -1768,6 +1788,9 @@ function DispatchModal({
     if (!workflowConfig || !guess || busy) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
+    // An edit into a mission chat is locked at None (`afterWorkLocked`): a chat row configured
+    // in Settings must not land on it late, where the daemon would refuse the save.
+    if (editing !== null && !taskKindAllowsBacklog(guess.kind)) return;
     const resolved = taskDefaultWorkflowId(
       guess.kind,
       workflowConfig.kindWorkflowDefaults,
@@ -1817,6 +1840,10 @@ function DispatchModal({
     update({
       kind,
       ...afterWorkForKind(kind),
+      // A row edited into a mission chat takes None, whatever the kind's Settings row arms.
+      ...(editing !== null && kind !== draft.kind && !taskKindAllowsBacklog(kind)
+        ? { workflowId: null }
+        : {}),
       ...dependenciesForKind(kind),
       ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
@@ -2666,6 +2693,7 @@ function DispatchModal({
       kindUnavailable ||
       (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet) ||
+      (!dependenciesAllowed && draft.dependencies.length > 0) ||
       (!backlogCompatible &&
         (!dispatchNow || editing !== null || ensembleMode || draft.dependencies.length > 0))
     ) return;
@@ -3006,9 +3034,11 @@ function DispatchModal({
     ...(backlogCompatible
       ? [
           draft.enabled ? "autopilot on" : "autopilot off",
-          dependencyCount > 0
-            ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
-            : "no dependencies",
+          ...(dependenciesAllowed
+            ? [dependencyCount > 0
+              ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
+              : "no dependencies"]
+            : []),
         ]
       : []),
   ].join(" · ");
@@ -3459,7 +3489,7 @@ function DispatchModal({
             <Tooltip label={AFTER_WORK_FIELD_TIP}>
               <select
                 className="field-input"
-                disabled={!usesHarness}
+                disabled={!usesHarness || afterWorkLocked}
                 value={
                   draft.workflowId === undefined
                     ? "__default"
@@ -3530,6 +3560,9 @@ function DispatchModal({
             place: "above",
           })}
         </div>
+        {afterWorkLocked && (
+          <span className={`field-hint${guidedDim}`}>{CHAT_WORKFLOW_REFUSAL}</span>
+        )}
         {selectedWorkflowBlocked && (
           <span className={`dispatch-workflow-warning${guidedDim}`}>
             {!foremanEnabled
@@ -3644,7 +3677,7 @@ function DispatchModal({
                   </div>
                 )}
 
-                {backlogCompatible && <div className="field">
+                {dependenciesAllowed && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
                     <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR unless set to Stack"}</span>

@@ -406,8 +406,10 @@ diff is not suppressed as an incidental review artifact.
 **chat** starts a conversation rather than a delivery. The task box becomes **What would you
 like to talk about?**, and that opener is required and delivered exactly as written. A chat
 launches immediately from the manual single-agent Dispatch form. It cannot be added to the
-backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
-for an Ensemble member. Mission Control adds no task-kind prompt appendix, artifact, or archive
+backlog, carry dependencies, be created by a task source, or be selected for an Ensemble
+member. The one exception is a [Recurring Mission](recurring-missions.md#chat-missions): a
+mission may name **chat**, and each run files a chat into the backlog that Foreman launches in a
+fresh session like any other run. Mission Control adds no task-kind prompt appendix, artifact, or archive
 contract. Chat agents can still schedule separate work with Mission MCP's `create_task` and
 launch it with `dispatch_task`; both tools are pre-approved on chat launches. These tasks use
 the ordinary backlog and dispatch checks while the original conversation stays a chat.
@@ -883,8 +885,9 @@ remote-default fetch, including broken Git or SSH authentication to `origin`, is
 and retried from the Board instead of disappearing into terminal history. Its next launch starts
 with a new dispatch timestamp. While the card carries that error, it is excluded from Foreman's
 ready list and is not marked `next up`, so unattended scheduling cannot retry a persistent Git or
-SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task kind
-that cannot appear in Backlog remains failed even in this resource-free state. Deterministic
+SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task that
+cannot appear in Backlog, such as a chat no Recurring Mission filed, remains failed even in this
+resource-free state. Deterministic
 launch refusals outside that resource phase also remain failed, and once any launch resource
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
@@ -994,7 +997,7 @@ or kept failure whose card is hidden - a folded Backlog column, a fleet filter -
 tile instead.
 
 Each one offers the way back in for its kind - **Retry**, for a launch that kept nothing,
-dispatches a Backlog kind again as the same task and files a chat again as a new one; a resident offers **Launch again** and
+dispatches a Backlog kind, or a chat a Recurring Mission filed, again as the same task and files any other chat again as a new one; a resident offers **Launch again** and
 **Open profile**; a kept failure bound to its session offers **Open** - plus **Dismiss** on every
 failure, and **Report bug** on every failure except a report session's own (see below). The
 top bar counts open failures as **N did not start**, and a toast appears the moment one
@@ -1088,8 +1091,14 @@ difference from Kill: Kill keeps the tree and settles the task `failed`. An agen
 it keeps running; only the task leaves it.
 
 The control is disabled, with the reason in its tooltip, on a session with no task, a done
-task, a chat task (chat never sits in the backlog), and a Pipeline commission, which has a
-lifecycle of its own and is restarted by filing a new Pipeline task.
+task, any chat task, and a Pipeline commission, which has a lifecycle of its own and is
+restarted by filing a new Pipeline task. A chat's session is a conversation, so it is never
+sent back from there - that holds for a chat a Recurring Mission filed, too. A mission-filed
+chat returns to its Backlog card on its own when its launch fails while freezing its base or
+cutting its worktree, before anything was provisioned, the way other backlog work does. A
+refusal before that phase leaves it failed instead. When a failed launch kept no session,
+**Retry** dispatches that same chat again; one that kept its session offers **Open**, not
+Retry. Its mission's next run files a new chat rather than returning this one.
 
 A task that has already stopped - `cancelled` or `failed`, including one whose agent you
 killed - no longer has a session to press this from. It is re-filed from its own row in

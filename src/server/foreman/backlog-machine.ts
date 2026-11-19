@@ -7,7 +7,7 @@ import { stackStartEdge } from "@shared/stacking.ts";
 import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
 import { hasBlocker, settledIdle } from "@shared/session.ts";
-import { allowsBacklogAutopilot } from "@shared/task.ts";
+import { taskAllowsBacklogAutopilot, taskKindAllowsBacklog } from "@shared/task.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
 // plan, what should Foreman do THIS tick? Zero I/O, `now` always injected - mirroring
@@ -265,6 +265,9 @@ function freeAgentFor(
   // And for a task that names a Persona: it rides the launch's standing instructions, which a
   // live process cannot take on, so `TaskManager.assign` refuses it and only dispatch starts it.
   if (task.personaId) return null;
+  // And for a mission-filed chat: its opener is a new conversation's first message, so
+  // `TaskManager.assign` refuses to type it into a session already holding another one.
+  if (!taskKindAllowsBacklog(task.kind)) return null;
   for (const s of sessions) {
     if (unassignable.has(s.id)) continue;
     // Compared on repoRoot, not cwd - a linked worktree of the task's repo is a
@@ -328,7 +331,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
 
   const backlog = backlogTasks(tasks);
   if (backlog.length === 0) return { kind: "none", why: "the backlog is empty" };
-  const automatableBacklog = backlog.filter((task) => allowsBacklogAutopilot(task.kind));
+  const automatableBacklog = backlog.filter((task) => taskAllowsBacklogAutopilot(task));
   if (automatableBacklog.length === 0) {
     return { kind: "none", why: "no backlog item allows unattended scheduling" };
   }
@@ -362,7 +365,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   }
 
   const ready = readyBacklog(tasks, plan).filter(
-    (t) => allowsBacklogAutopilot(t.kind) && taskReposAllowlisted(t, cfg.allowlist),
+    (t) => taskAllowsBacklogAutopilot(t) && taskReposAllowlisted(t, cfg.allowlist),
   );
   if (ready.length === 0) {
     // Counted over the ALLOWED items, so the number matches the sentence: an item in an

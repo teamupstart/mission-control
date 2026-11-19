@@ -163,7 +163,7 @@ test("guided dispatch selects chat with c and uses the same conversational form"
     .toBeVisible();
 });
 
-test("backlog edit, ensemble, schedules, and task sources do not offer chat", async ({
+test("backlog edit, ensemble, and task sources do not offer chat; recurring missions do", async ({
   dashboard,
   daemon,
 }) => {
@@ -185,8 +185,9 @@ test("backlog edit, ensemble, schedules, and task sources do not offer chat", as
   await dashboard.getByRole("button", { name: "Recurring missions" }).click();
   const missions = dashboard.getByRole("dialog", { name: "Recurring missions" });
   await missions.getByRole("button", { name: "Create mission" }).click();
+  // A mission is the one creator that may file a chat - see `mission-chat-kind.spec.ts`.
   expect(await options(missions.getByRole("combobox", { name: "Task kind" })))
-    .toEqual(["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
+    .toEqual(["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
   await missions.getByRole("button", { name: "Close" }).click();
 
   await api(daemon, "/api/task-sources/config", {

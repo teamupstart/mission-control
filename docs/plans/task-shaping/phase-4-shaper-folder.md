@@ -39,14 +39,17 @@ non-goal), any sandbox.
 2. **Ownership.** The directory and the manifest must belong to the daemon's user and have no
    group or other write bit. Otherwise the state is `refused`, with the reason.
 3. **Parse.** JSON, then `ShaperManifestSchema`. The manifest's `id` must equal the folder
-   name. A failure is `invalid`, with the problem as a sentence. Record the SHA-256 of the
+   name. A failure is `invalid`, with the problem as a sentence. That includes a stage
+   or transport this build does not know: Mission Control never writes a manifest, so there
+   is nothing to preserve. Record the SHA-256 of the
    file's bytes.
 4. **Cache.** Re-read a manifest only when its size or modification time changed.
 5. **States.** `ok`, `invalid`, `refused`, or `shadowed` when a registered shaper has the same
    id. Only `ok` can run.
-6. **Enablement.** Already in `resolveShapers` from Phase 1: a discovered shaper runs unless
-   `overrides[id]` is false or its manifest says `"enabled": false`. A stored choice always
-   wins. This phase supplies the list and proves the rule end to end.
+6. **Enablement.** Already in `resolveShapers` from Phase 1, as the table in `plan.md` states
+   it: a stored choice for the id, on or off, always wins. With no stored choice a discovered
+   shaper runs, unless its manifest says `"enabled": false`. This phase supplies the list and
+   proves the rule end to end.
 7. **Order.** Also already there: `order` lists ids, and a discovered id that is not listed
    sorts after the listed ones of its stage, by id.
 8. **Commands.** A `command` that starts with `./` resolves against the folder's real path and
@@ -74,7 +77,8 @@ non-goal), any sandbox.
   that is not a regular file, a symlinked folder, a group-writable folder (refused), 33 folders,
   a re-read after a change, a `./` command that escapes.
 - Engine tests: a discovered shaper runs with no settings write; a stored off wins; a manifest
-  with `"enabled": false` does not run; a shadowed one does not run; `origin` and `sha256` are
+  with `"enabled": false` does not run until the operator switches it on, and then does; a
+  shadowed one does not run; `origin` and `sha256` are
   recorded.
 - `renderToStaticMarkup` tests for the row's four states.
 - `e2e/specs/task-shaping-folder.spec.ts`: with the daemon running, write a folder into its
@@ -87,7 +91,7 @@ non-goal), any sandbox.
 
 - A dropped-in folder takes effect at the next dispatch and is visible in Settings and in the
   viewer.
-- A stored off always wins, and survives a daemon restart.
+- A stored choice, on or off, always wins over the manifest, and survives a daemon restart.
 - A refused, invalid or shadowed manifest never runs and says why.
 
 ## Handoff
@@ -99,6 +103,9 @@ rule that a repository's own files never register a shaper.
 
 - Phase 1: the enablement and ordering rule was moved into Phase 1's `resolveShapers`, so this
   phase edits no shared function. It owns D4's folder half and D4a.
+- Plan validation repair 2, 2026-11-19: step 6 said a manifest's `"enabled": false` kept a
+  shaper off even against a stored on, which contradicted `plan.md`. A stored choice now
+  always wins, in every file.
 - Phase 2: the viewer already shows `origin`. No session surface is added here.
 - Phase 3: rows reuse its component.
 - Phases 5 and 6: a discovered manifest may name any transport, and gets that transport's

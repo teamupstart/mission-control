@@ -32,7 +32,8 @@ Each phase document cites the findings it depends on. The ones that shaped the s
 2. **Phase 1 declares all four transport ids and their config schemas.** Persisted id tuples
    are append-only, and three concurrent phases appending to one tuple would collide. Until its
    phase lands, `mcp`, `http` and `builtin` each answer `unavailable` from their own file. That
-   state is tested, and it is what a build reports for any transport it cannot run.
+   state is tested. An id that is not in the tuple at all is a different case: such an entry
+   is unsupported and is never called (decision 11).
 3. **The backup domain starts on the `runtime` surface.** Phase 1 has no Settings control, so
    the `shaping` domain cannot be on the `settings` surface yet. Phase 3 moves it. The persisted
    id does not change. The feature-flag core did the same.
@@ -51,6 +52,15 @@ Each phase document cites the findings it depends on. The ones that shaped the s
    that folded only three fields into `task`. There are now two modes, `folded` and
    `argument`, and both carry everything constraint C2 lists. The `get_guidance` call itself
    is unchanged.
+10. **A stored choice always wins over a manifest.** Plan validation found two statements of
+    the enablement rule that disagreed about a discovered shaper whose manifest says
+    `"enabled": false` while the operator has switched it on. The stored choice wins, on or
+    off. `plan.md` has the table, and `resolveShapers` is the only place the rule lives.
+11. **Stored shapers are parsed in two layers.** A single strict schema could not preserve an
+    entry whose stage or transport id this build does not know. The config stores a lenient
+    envelope, the strict definition is checked per entry, and every write carries the other
+    entries through unchanged. `plan.md` states the rule under "Stored shapers this build does
+    not understand".
 
 ## Size and phase count
 
@@ -104,10 +114,11 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | --- | --- | --- |
 | Flag | 1 | `task-shaping`, stage `preview` |
 | Registry data | 1 | `src/shared/shaping-registry.ts`: `SHAPING_STAGES` (`gather`, `select`), `SHAPING_TRANSPORTS` (`command`, `mcp`, `http`, `builtin`), `SHAPING_BUILTINS` (`repository-files`), `SHAPING_OUTCOMES`, `SHAPING_ORIGINS`, `SHAPING_REFERENCE_KINDS` and retired tuples |
-| Schemas and pure logic | 1 | `src/shared/shaping.ts`: `ShapingRequestSchema`, `ShapingResultSchema`, `ShaperSchema`, `ShaperManifestSchema`, `ShapingConfigSchema` (`caller`, `limits`, `shapers`, `overrides`, `order`), `ShapingIntentSchema`, `TaskShaping`, `resolveShapers(config, discovered, input)`, `applyShapingIntent`, `allocateBudget`, `composeShapingSection`, `summariseShaping` |
+| Schemas and pure logic | 1 | `src/shared/shaping.ts`: `ShapingRequestSchema`, `ShapingResultSchema`, `StoredShaperSchema` (the stored envelope), `ShaperSchema` (the strict definition), `classifyShaper`, `ShaperManifestSchema`, `ShapingConfigSchema` (`caller`, `limits`, `shapers`, `overrides`, `order`), `ShapingIntentSchema`, `TaskShaping`, `resolveShapers(config, discovered, input)`, `applyShapingIntent`, `allocateBudget`, `composeShapingSection`, `summariseShaping` |
 | Engine | 1 | `shapeTask(input)` in `src/server/shaping/engine.ts` resolves to `{ summary, section }`. It never throws. `summary` is null and `section` is empty when no shaper applied. |
 | Transport | 1 | `call(request, shaper, ctx)` resolves to `{ kind: "data", data }` or `{ kind: "failed" or "timed_out" or "unavailable", reason }`. `ctx` carries the deadline, a signal and a per-run scope. One file per transport in `src/server/shaping/transports/`. |
-| Enablement | 1 | In `resolveShapers`: a registered shaper runs when `overrides[id]` is true. A discovered one runs unless `overrides[id]` is false or its manifest says `"enabled": false`. |
+| Enablement | 1 | In `resolveShapers` only. A stored choice in `overrides`, on or off, always wins. With no stored choice, a registered shaper is off, and a discovered one runs unless its manifest says `"enabled": false`. |
+| Unknown ids | 1 | The config stores `StoredShaperSchema` envelopes. An entry that fails the strict `ShaperSchema` is unsupported: never resolved or called, never switched on, and carried through every write unchanged. `upsert` accepts only a strict definition. |
 | HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
 | Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping` |
 | Event | 3 | `shaping_config`, and the snapshot field `shaping` |

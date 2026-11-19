@@ -242,7 +242,7 @@ The feature-flag pattern, applied to shapers.
 | `featureEnabled`, `requireFeature`, `onFeatureFlagsChanged` | `src/server/shaping/`: `shapeTask` (the only caller of transports), `getShapingConfig`, `applyShapingIntent`, `onShapingConfigChanged` |
 | `GET` and `PUT /api/feature-flags` with an intent union | `GET` and `PUT /api/shaping` with an intent union: `upsert`, `remove`, `enable`, `reorder`, `settings` |
 | `feature_flags` event and snapshot field | `shaping_config` event and snapshot field. Per-task results travel on `task_upsert`. |
-| Unknown ids ignored on read, preserved on write | A shaper whose stage or transport this build does not know is kept on write, never called, and listed as unsupported |
+| Unknown ids ignored on read, preserved on write | A stored shaper whose stage or transport this build does not know is kept on every write, never resolved or called, and listed as unsupported. The parsing rule is under "Stored shapers this build does not understand". |
 | A stored choice wins over the default | A stored on or off for a shaper id wins over its manifest, for registered and discovered shapers alike |
 | Daemon and dashboard share one resolver | `resolveShapers(config, discovered, taskInput)` decides which shapers apply |
 
@@ -277,6 +277,32 @@ A shaper, as stored and as written in a manifest:
 the outcome, the latency and what would be injected. `GET /api/tasks/:id/shaping` returns one
 task's record and delivered text.
 
+### Stored shapers this build does not understand
+
+An installation can move between builds, so the stored list is read in two layers, the way
+flag overrides are keyed by string and not by the id union.
+
+1. **The envelope.** The config stores each entry as a `StoredShaperSchema`: `id`, `label`,
+   `stage` and `transport.type` are bounded strings, and every other field is kept as it is,
+   as bounded JSON of at most 16 KiB per entry. A stage or transport id this build has never
+   heard of is valid in the envelope, so one such entry cannot invalidate the config or any
+   other shaper.
+2. **The definition.** Each envelope is then checked against the strict `ShaperSchema`, whose
+   `stage` is one of `SHAPING_STAGES` and whose `transport` is the discriminated union over
+   `SHAPING_TRANSPORTS`. `classifyShaper` returns a known shaper when the entry passes. When
+   it does not, the entry is **unsupported**, with the reason.
+
+- **Reading.** Only known shapers are resolved and called. An unsupported entry is listed in
+  Settings as unsupported, with its reason.
+- **Writing.** `upsert` accepts only a definition that passes the strict schema, so a build
+  creates and edits only shapers it understands, and answers 400 otherwise. Every intent
+  rewrites the list from the envelopes, so every other entry, unsupported ones and their
+  unknown fields included, is carried through unchanged. `remove` works on any id, and so
+  does switching an entry off. Switching an unsupported entry on is refused.
+- **Manifests in the folder** are never written by Mission Control, so there is nothing to
+  preserve. One whose stage or transport is unknown fails the strict schema and is listed as
+  invalid, with that reason.
+
 ### Installing and discovering shapers
 
 There are two ways in (D4) and one list.
@@ -288,8 +314,18 @@ is sent to it, and stores it.
 
 **Discovered.** A folder under the state home, `shapers/<id>/shaper.json`, with any program
 it runs beside it. The manifest has the same shape as a stored shaper. A discovered shaper is
-**enabled as soon as it is discovered** (D4a), unless its manifest says `"enabled": false` or
-the operator has switched it off in Settings. A stored off is the operator's choice and wins.
+**enabled as soon as it is discovered** (D4a). Its manifest may ask to start switched off, with
+`"enabled": false`. A choice the operator stores in Settings, on or off, always wins over the
+manifest. That is the one precedence rule, and `resolveShapers` is the only place it lives:
+
+| Shaper | No stored choice | Stored on | Stored off |
+| --- | --- | --- | --- |
+| Registered | Off | Runs | Off |
+| Discovered, manifest silent or `"enabled": true` | Runs | Runs | Off |
+| Discovered, manifest `"enabled": false` | Off | Runs | Off |
+
+The table decides only whether an eligible shaper is switched on. An unsupported, invalid,
+refused or shadowed entry never runs, whatever is stored for its id.
 
 - **When the folder is read.** At daemon start, when Settings opens, and at the start of
   every shaping run. A folder dropped in by setup tooling therefore takes effect at the next

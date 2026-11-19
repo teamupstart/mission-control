@@ -47,19 +47,27 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 1. **Flag.** Add `task-shaping` to `FEATURE_FLAGS` with the definition in `plan.md`.
 2. **`src/shared/shaping-registry.ts`.** Data only, no imports from `node:` or `protocol.ts`:
    the tuples listed under "Registry data" in `phased-plan.md`.
-3. **`src/shared/shaping.ts`.** The request and result schemas from `plan.md`. `ShaperSchema`
-   with a discriminated `transport` for all four ids, header and env reference syntax checked
-   but not resolved. The `mcp` config's `contextDelivery` is `folded` or `argument`, with no
-   value that omits the context. `ShaperManifestSchema` adds an optional `enabled`. `ShapingConfigSchema`
-   with defaults (5 s, 10 s, 16 KiB, 32 KiB) and maxima (30 s, 60 s, 64 KiB), at most 32
-   shapers. `ShapingIntentSchema`: `upsert`, `remove`, `enable`, `reorder`, `settings`. The pure
-   functions, each taking its definitions as arguments so tests inject their own.
-   `resolveShapers` implements the whole enablement and ordering rule now, including for a
-   discovered list that stays empty until Phase 4: a registered shaper runs when
-   `overrides[id]` is true, and a discovered one runs unless `overrides[id]` is false or its
-   manifest says `"enabled": false`. `shaperIsLocal(shaper)` says whether a shaper may be sent
-   local paths. A shaper whose stage or transport this build does not know is kept on write and
-   never called.
+3. **`src/shared/shaping.ts`.** The request and result schemas from `plan.md`. Two schemas
+   for a shaper, as `plan.md` sets out under "Stored shapers this build does not understand".
+   `StoredShaperSchema` is the lenient envelope the config stores: `id`, `label`, `stage` and
+   `transport.type` as bounded strings, every other field kept as bounded JSON, at most 16 KiB
+   per entry. An unknown stage or transport id is valid in it. `ShaperSchema` is the strict
+   definition: `stage` from `SHAPING_STAGES`, and a discriminated `transport` for all four
+   ids, with header and env reference syntax checked but not resolved. The `mcp` config's
+   `contextDelivery` is `folded` or `argument`, with no value that omits the context.
+   `classifyShaper(stored)` returns a known shaper, or an unsupported entry with its reason.
+   `ShaperManifestSchema` is the strict definition plus an optional `enabled`.
+   `ShapingConfigSchema` holds a list of envelopes, at most 32, with defaults (5 s, 10 s,
+   16 KiB, 32 KiB) and maxima (30 s, 60 s, 64 KiB). `ShapingIntentSchema`: `upsert`, `remove`,
+   `enable`, `reorder`, `settings`. `applyShapingIntent` accepts an `upsert` only when it
+   passes the strict schema, refuses to switch an unsupported entry on, and carries every
+   other entry through unchanged, unknown fields included. The pure functions each take their
+   definitions as arguments so tests inject their own. `resolveShapers` returns known shapers
+   only, and implements the whole enablement and ordering rule now, including for a
+   discovered list that stays empty until Phase 4. A stored choice in `overrides`, on or off,
+   always wins. With no stored choice, a registered shaper is off, and a discovered one runs
+   unless its manifest says `"enabled": false`. `shaperIsLocal(shaper)` says whether a shaper
+   may be sent local paths.
 4. **Config entry and domain.** `shaping` in `APP_CONFIG_ENTRIES`, and a `shaping` backup
    domain.
 5. **`src/server/shaping/index.ts`.** `getShapingConfig`, `applyShapingIntent`,
@@ -96,8 +104,10 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 
 ## Tests and verification
 
-- `test/shaping.test.ts`: every pure function, every intent, unknown ids preserved, id rules,
-  no `node:` import in the shared modules.
+- `test/shaping.test.ts`: every pure function and every intent; the enablement table in
+  `plan.md`, row for row; an entry with an unknown stage or transport id that survives a
+  parse and every intent unchanged, is never resolved, cannot be switched on, and cannot be
+  written by `upsert`; the id rules; no `node:` import in the shared modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
   timeouts and the deadline, partial results, each outcome.
 - `test/shaping-transport-command.test.ts` with a fixture script under `test/fixtures/`: argv
@@ -136,5 +146,11 @@ reshape them. They replace the contents of their own transport file, `discovery.
 - Plan validation repair, 2026-11-19: `contextDelivery` lost its third value. Every shaper
   receives the complete collected input (constraint C2), so the schema must not offer a way
   to withhold it.
+- Plan validation repair 2, 2026-11-19. The enablement rule here contradicted `plan.md`: it
+  kept a discovered shaper off when its manifest said `"enabled": false` even with a stored
+  on. A stored choice now always wins, here, in `plan.md`, in `phased-plan.md` and in
+  Phase 4. And the single strict schema could not have preserved an entry with an unknown
+  stage or transport id, so the stored envelope, `classifyShaper` and the write rule were
+  added.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

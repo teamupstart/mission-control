@@ -28,7 +28,17 @@ export async function readHeadlessFlag(fetchFn: typeof fetch = fetch): Promise<F
       const stale = res.status === 401 || res.status === 403 ? " (the client token may be stale: restart Mission Control)" : "";
       return { error: "HTTP " + res.status + stale };
     }
-    const body = (await res.json()) as { config?: unknown };
+    // The daemon answered, so a body that is not JSON is its error, not a missing daemon.
+    let body: { config?: unknown };
+    try {
+      body = (await res.json()) as { config?: unknown };
+    } catch {
+      return { error: "the feature-flag answer it sent was not valid JSON" };
+    }
+    // The real route always sends `{ config }`; the schema's defaults must not turn a missing one into "off".
+    if (typeof body !== "object" || body === null || !("config" in body)) {
+      return { error: "the feature-flag config it sent could not be read" };
+    }
     const config = FeatureFlagsConfigSchema.safeParse(body.config);
     if (!config.success) return { error: "the feature-flag config it sent could not be read" };
     return resolveFeatureFlags(config.data)[HEADLESS_MODE_FLAG_ID] === true ? "on" : "off";

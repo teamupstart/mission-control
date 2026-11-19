@@ -91,6 +91,11 @@ test("F1 mctl reads the flag from the daemon on every call: off, on, off", async
     assert.deepEqual(await readHeadlessFlag(viaFake), { error: "HTTP 401 (the client token may be stale: restart Mission Control)" });
     daemon.route("GET /api/feature-flags", 200, { config: { overrides: { "headless-mode": "yes" } } });
     assert.deepEqual(await readHeadlessFlag(viaFake), { error: "the feature-flag config it sent could not be read" });
+    // A 200 whose body is not JSON, and a JSON null body, are still the daemon answering.
+    const garbled: typeof fetch = async () => new Response("<html>proxy error</html>", { status: 200 });
+    assert.deepEqual(await readHeadlessFlag(garbled), { error: "the feature-flag answer it sent was not valid JSON" });
+    const nullBody: typeof fetch = async () => new Response("null", { status: 200 });
+    assert.deepEqual(await readHeadlessFlag(nullBody), { error: "the feature-flag config it sent could not be read" });
     await daemon.close();
     assert.equal(await readHeadlessFlag((url, init) => fetch(String(url).replace(/:\d+/, ":" + daemon.port), init)), "unreachable", "no answer at all is");
   } finally {

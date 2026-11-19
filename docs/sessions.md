@@ -2738,7 +2738,7 @@ as small (**deploy to staging and notify alice** then **deploy to production and
 staging.** and then over **Deploy to production.** keeps both cards, while a retry that restates
 its background in its own words does not. A question that gains or loses a negation is a
 different decision too (**should I grant alice access** to **should I not grant alice access**,
-or a **shouldn't**), and so is one that keeps the same words but moves its negation to another
+a **shouldn't**, or **deploy with backups** to **deploy without backups**), and so is one that keeps the same words but moves its negation to another
 action (**should I not deploy to staging and deploy to production** to **should I deploy to
 staging and not deploy to production**): approving one means the opposite of approving the
 other. Only the question is read for negation, not its context, which a retry restates freely,

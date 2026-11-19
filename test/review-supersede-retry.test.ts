@@ -511,6 +511,19 @@ test("a question reworded around a kept negation is still the same decision", ()
   assert.equal(registry.getReview(first.id)?.status, "superseded");
 });
 
+test("with to without reverses the decision, announced or not", () => {
+  // GitHub Inspector on PR #1538: "with" is a stopword, so only reading "without" as a negation
+  // keeps the edit from passing as rephrasing.
+  for (const [asked, status] of pairOutcomes("Should I deploy with backups?", "Should I deploy without backups?", ["Approve", "Deny"])) {
+    assert.equal(status, "pending", `withdrawn by: ${asked}`);
+  }
+  // An announcement that says the last call ended without an answer is not part of the decision.
+  const { registry, ask } = fixture();
+  const first = ask("Should I deploy with backups?", ["Approve", "Deny"], T0);
+  ask("The earlier request timed out without an answer. Should I deploy with backups?", ["Approve", "Deny"], AFTER_TIMEOUT);
+  assert.equal(registry.getReview(first.id)?.status, "superseded");
+});
+
 test("a retry that keeps its negation is still the same decision", () => {
   const { registry, ask } = fixture();
   const question = "Should I not grant alice access to the production repository for this release?";

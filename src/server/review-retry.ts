@@ -335,8 +335,11 @@ function matchingRun(a: string[], b: string[], i: number, j: number, step: 1 | -
 /**
  * Words that reverse what a question asks. "not" is also a stopword, which is exactly why it
  * needs its own check: word overlap ignores it, and the word-swap check ignores insertions.
+ * "without" belongs here too: "Should I deploy with backups?" then "Should I deploy without
+ * backups?" authorizes the opposite, and "with" is a stopword the edit checks skip. A retry
+ * announcement that says "timed out without an answer" is set aside before this is counted.
  */
-const NEGATIONS = new Set(["not", "no", "never", "nor", "cannot"]);
+const NEGATIONS = new Set(["not", "no", "never", "nor", "cannot", "without"]);
 
 /** Negative contractions as agents also write them, without an apostrophe. */
 const BARE_CONTRACTIONS = new Set([

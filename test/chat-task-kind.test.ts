@@ -345,3 +345,21 @@ test("a mission-filed chat never carries dependencies, however the edit arrives"
   assert.equal((await tasks.update("mission-chat-row", { dependencies: edge })).error, CHAT_DEPENDENCY_REFUSAL);
   assert.deepEqual(registry.getTask("mission-chat-row")?.dependencies, []);
 });
+
+test("editing a mission task into a chat drops the previous kind's Workflow unless the edit names one", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const review = "builtin-workflow:general-review";
+  registry.upsertTask(mkTask({ id: "kind-only", kind: "ship", status: "backlog", scheduleId: "mission-1", workflowId: review }));
+  registry.upsertTask(mkTask({ id: "explicit", kind: "ship", status: "backlog", scheduleId: "mission-1", workflowId: review }));
+  registry.upsertTask(mkTask({ id: "stays-ship", kind: "ship", status: "backlog", scheduleId: "mission-1", workflowId: review }));
+
+  assert.equal((await tasks.update("kind-only", { kind: "chat" })).ok, true);
+  assert.equal(registry.getTask("kind-only")?.workflowId, null, "a kind-only edit takes chat's None");
+
+  assert.equal((await tasks.update("explicit", { kind: "chat", workflowId: review })).ok, true);
+  assert.equal(registry.getTask("explicit")?.workflowId, review, "a Workflow the edit names stands");
+
+  assert.equal((await tasks.update("stays-ship", { kind: "bugfix" })).ok, true);
+  assert.equal(registry.getTask("stays-ship")?.workflowId, review, "other kind changes are unchanged");
+});

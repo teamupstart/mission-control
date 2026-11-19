@@ -885,8 +885,9 @@ remote-default fetch, including broken Git or SSH authentication to `origin`, is
 and retried from the Board instead of disappearing into terminal history. Its next launch starts
 with a new dispatch timestamp. While the card carries that error, it is excluded from Foreman's
 ready list and is not marked `next up`, so unattended scheduling cannot retry a persistent Git or
-SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task kind
-that cannot appear in Backlog remains failed even in this resource-free state. Deterministic
+SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task that
+cannot appear in Backlog, such as a chat no Recurring Mission filed, remains failed even in this
+resource-free state. Deterministic
 launch refusals outside that resource phase also remain failed, and once any launch resource
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
@@ -1093,10 +1094,11 @@ The control is disabled, with the reason in its tooltip, on a session with no ta
 task, any chat task, and a Pipeline commission, which has a lifecycle of its own and is
 restarted by filing a new Pipeline task. A chat's session is a conversation, so it is never
 sent back from there - that holds for a chat a Recurring Mission filed, too. A mission-filed
-chat does return to its Backlog card on its own when its launch fails before anything was
-provisioned, the way other backlog work does, and **Retry** on a launch that failed later
-dispatches that same chat again. Its mission's next run files a new chat rather than returning
-this one.
+chat returns to its Backlog card on its own when its launch fails while freezing its base or
+cutting its worktree, before anything was provisioned, the way other backlog work does. A
+refusal before that phase leaves it failed instead. When a failed launch kept no session,
+**Retry** dispatches that same chat again; one that kept its session offers **Open**, not
+Retry. Its mission's next run files a new chat rather than returning this one.
 
 A task that has already stopped - `cancelled` or `failed`, including one whose agent you
 killed - no longer has a session to press this from. It is re-filed from its own row in

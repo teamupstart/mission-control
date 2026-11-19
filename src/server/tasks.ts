@@ -4317,6 +4317,15 @@ export class TaskManager {
     const becomesPlan = patch.kind === "plan" && t.kind !== "plan";
     let planPolicy = t.planPolicy;
     let workflowId = patch.workflowId === undefined ? t.workflowId : patch.workflowId;
+    // A row edited into a kind with no backlog of its own - a chat a mission filed - takes
+    // that kind's None, as the Dispatch form and the mission editor both preselect, instead of
+    // inheriting the previous kind's review Workflow. Launch arms whatever the row names
+    // without asking its kind, so a kind-only patch must not carry it over. An explicit
+    // `workflowId` in the same patch is the caller's choice and stands.
+    if (patch.workflowId === undefined && patch.kind !== undefined && patch.kind !== t.kind
+      && !taskKindAllowsBacklog(patch.kind)) {
+      workflowId = null;
+    }
     try {
       if (patch.planStorage !== undefined && (patch.kind ?? t.kind) !== "plan") {
         throw new PlanStoreError("Plan storage is only available for plan tasks");

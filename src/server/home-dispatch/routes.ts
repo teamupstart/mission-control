@@ -31,6 +31,11 @@ import type { HomeDispatchResult } from "./stub.ts";
 const draftId = (c: Context): string => c.req.param("id") ?? "";
 
 export interface HomeDispatchRouteDeps extends HomeDispatchDeps {
+  /** Required at the route boundary: a registration cannot omit the daemon services the handlers use. */
+  tasks: NonNullable<HomeDispatchDeps["tasks"]>;
+  /** Null is a valid daemon state (no workflow manager), but it must be said. */
+  workflows: NonNullable<HomeDispatchDeps["workflows"]> | null;
+  registry: NonNullable<HomeDispatchDeps["registry"]>;
   /** The `x-harness-token` check every ingest-family route uses. */
   authed: (c: Context) => boolean;
 }

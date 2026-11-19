@@ -343,3 +343,26 @@ test("F3 drafts: a draft is still valid at exactly 24 hours after its last chang
   now += DRAFT_TTL_MS + 1;
   assert.equal((await post(r, "/drafts/" + draft.body.draftId, { ...caller(repo), words: "late" })).status, 404);
 });
+
+test("F3 confirm: a failed confirmation does not replace a newer draft the session made meanwhile", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  // The confirmation is held open after it has taken its draft, then refused.
+  const r = rig({ list: () => [], workflowSelectionBlock: async () => { await held; return { message: "blocked after preparation" }; } });
+  const repo = gitRepo("race");
+  const older = await create(r, repo, { words: "older" });
+  const failing = post(r, "/drafts/" + older.body.draftId + "/confirm", { ...caller(repo), choice: "backlog" });
+  // Wait until the confirmation has taken the draft out of the session's slot.
+  for (let tries = 0; tries < 200; tries++) {
+    const probe = await post(r, "/drafts/" + older.body.draftId, { ...caller(repo), words: "older" });
+    if (probe.status === 404) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const newer = await create(r, repo, { words: "newer" });
+  release();
+  const failed = await failing;
+  assert.deepEqual([failed.status, failed.body.error], [409, "blocked after preparation"]);
+  assert.equal((await post(r, "/drafts/" + newer.body.draftId, { ...caller(repo), words: "newer, edited" })).status, 200, "the newer draft survives");
+  assert.equal((await post(r, "/drafts/" + older.body.draftId, { ...caller(repo), words: "x" })).status, 404, "the older one stays replaced");
+  assert.equal(r.tasks.list().length, 0);
+});

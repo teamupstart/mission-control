@@ -248,7 +248,7 @@ export async function handleConfirmDraft(
     });
     if (!prepared.ok) throw new DraftRefusal(prepared.status, prepared.error);
     const creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: draft.workflowId });
-    const blocked = creationPolicy.workflowId ? deps.workflows?.workflowSelectionBlock(creationPolicy.workflowId) : null;
+    const blocked = creationPolicy.workflowId ? await deps.workflows?.workflowSelectionBlock(creationPolicy.workflowId) : null;
     if (blocked) throw new DraftRefusal(409, blocked.message);
     const brief = briefText({ words: draft.words, context: draft.context });
     const task = tasks.create(
@@ -277,7 +277,8 @@ export async function handleConfirmDraft(
     return { status: 200, body: { outcome: "started", taskId: task.id, refusal: null } };
   } catch (error) {
     // Nothing was created: keep the draft so the person can fix the problem and confirm again.
-    if (!created && !byId.has(draft.id)) remember(draft);
+    // Put it back only if the session has not started a newer draft while this one was out.
+    if (!created && !bySession.has(draft.sessionId)) remember(draft);
     if (error instanceof DraftRefusal) return refuse(error.status, error.message);
     if (error instanceof PlanStoreError) return refuse(409, error.message);
     throw error;

@@ -1,3 +1,4 @@
+import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -366,6 +367,7 @@ export function App(): React.JSX.Element {
     fileCommentReviews,
     fleetCost,
     lineSummary,
+    featureFlags,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -4509,6 +4511,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <FeatureFlagsContext.Provider value={featureFlags}>
       <FleetPauseContext.Provider value={fleetPause}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
@@ -5390,6 +5393,7 @@ export function App(): React.JSX.Element {
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
       </FleetPauseContext.Provider>
+      </FeatureFlagsContext.Provider>
     </OverlayHost>
   );
 }

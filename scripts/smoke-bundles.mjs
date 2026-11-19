@@ -608,12 +608,12 @@ await smokePiExtension();
  * The second cannot be asked of that file at all. Its Pi module is an internal lazy chunk
  * with no export anyone outside can reach, and importing the bundle starts a daemon. So the
  * load is proven on a second artifact built from the daemon's OWN entry module for the
- * driver, with the flags READ OUT OF `build:server` rather than restated here - a probe
+ * driver plus a synthetic OAuth probe, with flags READ OUT OF `build:server` - a probe
  * carrying its own copy of the bundler configuration would pass while the shipped one
  * failed, which is the same class of lie as the stale MCP bundle above.
  *
- * It resolves a path and loads a module. It reads no credential, opens no session file, and
- * contacts nothing.
+ * It loads the SDK and derives OAuth auth from in-memory synthetic credentials with fetch
+ * disabled. It reads no operator credentials, opens no session file, and contacts nothing.
  */
 async function smokePiSdkBundle() {
   const bundle = resolve("dist/server/index.mjs");
@@ -657,7 +657,7 @@ async function smokePiSdkBundle() {
   // platform binary rather than a script, and running it through node parses Mach-O as
   // JavaScript. `npm run build` spends the same file.
   const built = await run(resolve("node_modules/.bin/esbuild"), [
-    "src/server/harness/pi/sdk-deps.ts",
+    "test/helpers/pi-oauth-probe.ts",
     ...flags,
     `--outfile=${out}`,
   ]);
@@ -676,7 +676,7 @@ async function smokePiSdkBundle() {
   const override = process.env[overrideEnv];
   delete process.env[overrideEnv];
   try {
-    const { defaultPiSdkDeps } = await import(pathToFileURL(out).href);
+    const { defaultPiSdkDeps, verifyBundledOAuth } = await import(pathToFileURL(out).href);
     const sdk = await defaultPiSdkDeps.load();
     for (const name of [
       "agentDir",
@@ -696,7 +696,8 @@ async function smokePiSdkBundle() {
       fail("the bundled Pi SDK could not resolve Pi's agent directory");
       return;
     }
-    console.log("[smoke] the pinned Pi SDK is inlined in the daemon bundle and loads");
+    await verifyBundledOAuth(dirname(out));
+    console.log("[smoke] bundled Pi SDK loads and derives OpenAI Codex and Anthropic OAuth auth without network or provider sidecars");
   } catch (err) {
     fail(`the bundled Pi SDK could not be loaded (${err instanceof Error ? err.message : err})`);
   } finally {

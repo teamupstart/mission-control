@@ -5,6 +5,7 @@ import {
   PiSdkError,
   REDACTED,
   classifyPiFailure,
+  piTurnFailure,
   redact,
 } from "../src/server/harness/pi/sdk-errors.ts";
 
@@ -245,4 +246,27 @@ test("an already-classified failure is never re-wrapped, so remedies cannot comp
   const twice = classifyPiFailure(once, "amazon-bedrock");
   assert.equal(twice, once);
   assert.equal(twice.message, once.message);
+});
+
+test("failed-turn prefix shares the cap with detail and the complete login remedy", () => {
+  const raw = new Error(`No API key found for anthropic. ${"detail ".repeat(100)}`);
+  for (const error of [raw, classifyPiFailure(raw, "anthropic")]) {
+    const failure = piTurnFailure(error, "anthropic");
+    assert.ok(failure.length <= PI_FAILURE_MESSAGE_CAP, `failure is ${failure.length} characters`);
+    assert.match(failure, /^Pi turn failed: No API key found/);
+    assert.ok(failure.endsWith("open a Pi session and run /login anthropic"));
+    assert.equal(failure.match(/\/login/g)?.length, 1);
+    assert.equal(redact(failure), failure, "note() must not truncate the remedy again");
+  }
+  assert.equal(piTurnFailure("unknown ".repeat(100), null).length, PI_FAILURE_MESSAGE_CAP);
+});
+
+test("quoted credential values with spaces and escaped quotes are fully redacted", () => {
+  for (const key of ["access_token", "refresh_token", "api_key", "password", "aws_secret_access_key"]) {
+    const raw = `upstream details: ${JSON.stringify({ [key]: 'synthetic secret "quoted" tail', status: "denied" })}`;
+    const redacted = piTurnFailure(raw, "anthropic");
+    assert.doesNotMatch(redacted, /\b(?:synthetic|secret|quoted|tail)\b/);
+    assert.match(redacted, /denied/);
+    assert.match(redacted, /\[redacted\]/);
+  }
 });

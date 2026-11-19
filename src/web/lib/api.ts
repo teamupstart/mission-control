@@ -1,3 +1,4 @@
+import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -459,6 +460,8 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
 /** Settings > Storage: what the idle-cache budget would remove now. Observes every slot. */
@@ -2346,6 +2349,8 @@ export const api = {
     put<ActionResult & { message?: string }>(`/api/storage/backups/config`, request),
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
+  setFeatureFlags: (intent: FeatureFlagIntent) =>
+    put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent),
   setStorageLimits: (patch: StorageLimitsConfigPatch) =>
     put<ActionResult & { message?: string }>(`/api/storage/limits`, patch),
   /** Start measuring the state directory. It finishes in the background. */

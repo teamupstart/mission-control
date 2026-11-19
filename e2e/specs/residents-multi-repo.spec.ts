@@ -196,3 +196,62 @@ test("Detach in Dispatch > Resident launches one run without the attachment and 
   const persisted = (await api<ProfileRow[]>(daemon, "/api/residents/profiles")).find((p) => p.name === PROFILE);
   expect(persisted?.settings.workspace.additionalRepoRoots).toEqual([daemon.secondRepo]);
 });
+
+test("the attachment control stops at the shared cap of eight and Detach reopens it", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/residents`);
+  await dashboard.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const editor = dashboard.getByRole("region", { name: "New resident profile" });
+  await editor.getByLabel("Default repository").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  const add = editor.getByRole("button", { name: "Add another repo" });
+  for (let index = 0; index < 8; index += 1) {
+    await add.click();
+    await editor.getByPlaceholder("repo to attach…").fill(`${daemon.repo}-extra-${index}`);
+    await dashboard.keyboard.press("Escape");
+    await editor.getByRole("button", { name: "Attach repo" }).click();
+  }
+  await expect(editor.getByRole("button", { name: /^Detach repo: / })).toHaveCount(8);
+  // A ninth would only be refused on save or launch, so the control stops offering one.
+  await expect(add).toBeDisabled();
+  await editor.getByRole("button", { name: `Detach repo: ${daemon.repo}-extra-0` }).click();
+  await expect(add).toBeEnabled();
+});
+
+test("Launch as a new resident after a lost answer launches the repository set it displayed, not a default edited since", async ({
+  dashboard,
+  daemon,
+}) => {
+  await authorMultiRepoProfile(dashboard, daemon);
+  const dialog = await openResidentDispatch(dashboard);
+
+  // The first launch never reaches the daemon: its answer is lost, so it stays outstanding.
+  await dashboard.route("**/api/residents/profiles/*/launch", (route) => route.abort(), { times: 1 });
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await expect(dialog.getByRole("alert").filter({ hasNotText: "may already be running" })).toBeVisible();
+
+  // Another window detaches the profile's attachment while this launch is outstanding.
+  const stored = (await api<Array<ProfileRow & { id: string; revision: number; settings: Record<string, unknown> }>>(daemon, "/api/residents/profiles"))
+    .find((p) => p.name === PROFILE)!;
+  const edited = await fetch(`${daemon.baseURL}/api/residents/profiles/${stored.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      expectedRevision: stored.revision,
+      settings: { ...stored.settings, workspace: { defaultRepoRoot: daemon.repo, additionalRepoRoots: [] } },
+    }),
+  });
+  expect(edited.status).toBe(200);
+  await expect(dialog).toContainText(`revision ${stored.revision + 1}`);
+  // The form still shows the set that was sent.
+  await expect(dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` })).toBeVisible();
+
+  // A changed request asks which to do; launching it separately sends what is on screen.
+  await dialog.getByLabel("Instructions for this run").fill("A separate run.");
+  await dialog.getByRole("button", { name: "Launch as a new resident" }).click();
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+  const task = await provisionedResidentTask(daemon);
+  expect(task.extraRepos.map((entry) => entry.repoRoot)).toEqual([daemon.secondRepo]);
+  const persisted = (await api<ProfileRow[]>(daemon, "/api/residents/profiles")).find((p) => p.name === PROFILE);
+  expect(persisted?.settings.workspace.additionalRepoRoots).toEqual([]);
+});

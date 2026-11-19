@@ -18,6 +18,7 @@ import {
   residentRetryWithoutProfile,
   retryResidentAttempt,
   selectResidentProfile,
+  separateResidentLaunch,
   type ResidentDispatchDraft,
 } from "./dispatch-draft.ts";
 import { launchResident, residentLaunchCanGrantControl } from "./launch.ts";
@@ -347,7 +348,7 @@ export function ResidentDispatch({
                   className="btn"
                   disabled={busy || !profile}
                   onClick={() => {
-                    const next = { ...draft, requestId: crypto.randomUUID(), uncertain: null };
+                    const next = separateResidentLaunch(draft, profile);
                     mode.onResidentChange(next);
                     void launch(next);
                   }}

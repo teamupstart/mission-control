@@ -184,3 +184,25 @@ export function chooseResidentAttachedRepos(
 ): ResidentDispatchDraft {
   return { ...draft, repoRoot: residentDispatchRepo(draft, profile), additionalRepoRoots, repoFromProfile: false };
 }
+
+/**
+ * **Launch as a new resident**: a fresh launch of exactly the repository set the form shows.
+ *
+ * While a launch is outstanding, a profile-sourced set is displayed as it was sent, not as the
+ * profile reads now. Clearing the outstanding launch would make the draft follow the profile
+ * again, so a default edited in the meantime would launch repositories the operator never saw.
+ * The displayed set is therefore taken over as the operator's own before the launch is cleared.
+ */
+export function separateResidentLaunch(
+  draft: ResidentDispatchDraft,
+  profile: ResidentProfile | null,
+): ResidentDispatchDraft {
+  return {
+    ...draft,
+    repoRoot: residentDispatchRepo(draft, profile),
+    additionalRepoRoots: residentDispatchAttachedRepos(draft, profile),
+    repoFromProfile: false,
+    requestId: crypto.randomUUID(),
+    uncertain: null,
+  };
+}

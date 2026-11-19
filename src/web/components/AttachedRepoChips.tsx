@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MAX_TASK_EXTRA_REPOS } from "@shared/task.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -40,6 +41,10 @@ export function AttachedRepoChips({
   const [adding, setAdding] = useState(false);
   const [value, setValue] = useState("");
   const candidate = value.trim();
+  // The same bound every request surface enforces: a ninth attachment would only be refused on
+  // save or launch. Detach stays available, so a full set can always be changed.
+  const full = attached.length >= MAX_TASK_EXTRA_REPOS;
+  const fullLabel = `At most ${MAX_TASK_EXTRA_REPOS} repos can be attached; detach one to attach another`;
   return (
     <div className={`repo-chips${className ? ` ${className}` : ""}`}>
       {attached.map((root, index) => (
@@ -70,7 +75,7 @@ export function AttachedRepoChips({
             disabled={disabled}
             onChange={setValue}
           />
-          <Tooltip label={attachLabel}>
+          <Tooltip label={full ? fullLabel : attachLabel}>
             <button
               type="button"
               className="dep-add"
@@ -83,6 +88,7 @@ export function AttachedRepoChips({
               // could disagree with it.
               disabled={
                 disabled
+                || full
                 || !candidate
                 || candidate === primary.trim()
                 || attached.includes(candidate)
@@ -98,12 +104,12 @@ export function AttachedRepoChips({
           </Tooltip>
         </div>
       ) : (
-        <Tooltip label="Work across several repos in one session - each changed repo gets its own PR">
+        <Tooltip label={full ? fullLabel : "Work across several repos in one session - each changed repo gets its own PR"}>
           <button
             type="button"
             className="dep-add"
             aria-label="Add another repo"
-            disabled={disabled}
+            disabled={disabled || full}
             onClick={() => setAdding(true)}
           >
             + Add another repo

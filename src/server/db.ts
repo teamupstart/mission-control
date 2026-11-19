@@ -251,7 +251,9 @@ let db: DatabaseSync | undefined;
 //     `snoozed_until`, `snooze_mode`, `snooze_option_id`, `snooze_reminded_at`,
 //     `snooze_instruction_owed_at`, `snooze_instruction_queued_at`), nullable with no backfill:
 //     no question offered or used a snooze before these existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 34;
+// 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
+//     '[]' with no backfill: no run attached a repository before this existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

@@ -18,7 +18,10 @@ import {
   residentRetryWithoutProfile,
   retryResidentAttempt,
   selectResidentProfile,
+  separateResidentLaunch,
 } from "../src/web/residents/dispatch-draft.ts";
+import { AttachedRepoChips } from "../src/web/components/AttachedRepoChips.tsx";
+import { MAX_TASK_EXTRA_REPOS } from "../src/shared/task.ts";
 import { parseMissionRoute, missionRouteHash } from "../src/web/workflows/useWorkflowRoute.ts";
 import {
   RESIDENT_PROFILE_SECTION_IDS,
@@ -250,4 +253,37 @@ test("Dispatch > Resident shows the profile's attached repositories with Detach 
     onClose: () => {},
   })));
   assert.doesNotMatch(none, /Add another repo/, "a repository-free resident has nothing to attach beside");
+});
+
+test("Launch as a new resident keeps the repository set the form displayed, not the profile's edited default", () => {
+  const a = withAttached(profile("a", "/repos/a"), ["/repos/b"]);
+  const draft = selectResidentProfile(freshResidentDispatchDraft(), a);
+  const attempt = { requestId: draft.requestId, profileId: "a", profileName: "Profile a", repoRoot: "/repos/a", additionalRepoRoots: ["/repos/b"], instructions: "" };
+  // The answer was lost, then the profile's default moved and the operator changed the instructions.
+  const edited = withAttached(profile("a", "/repos/a-moved"), ["/repos/c"]);
+  const outstanding = { ...draft, uncertain: attempt, instructions: "Something else" };
+  assert.equal(residentDispatchRepo(outstanding, edited), "/repos/a", "the form shows the set that was sent");
+  assert.deepEqual(residentDispatchAttachedRepos(outstanding, edited), ["/repos/b"]);
+  const next = separateResidentLaunch(outstanding, edited);
+  assert.equal(next.uncertain, null);
+  assert.notEqual(next.requestId, draft.requestId, "a separate resident is a new launch");
+  assert.equal(residentDispatchRepo(next, edited), "/repos/a", "and it launches what was displayed");
+  assert.deepEqual(residentDispatchAttachedRepos(next, edited), ["/repos/b"]);
+  assert.equal(next.instructions, "Something else");
+});
+
+test("the attachment control stops offering attachments at the shared cap and keeps Detach", () => {
+  const render = (count: number) => renderToStaticMarkup(withOverlayHost(createElement(AttachedRepoChips, {
+    primary: "/repos/a",
+    attached: Array.from({ length: count }, (_, index) => `/repos/extra-${index}`),
+    repos: [],
+    onChange: () => {},
+  })));
+  const add = (html: string) => /<button[^>]*aria-label="Add another repo"[^>]*>/.exec(html)?.[0] ?? "";
+  assert.doesNotMatch(add(render(MAX_TASK_EXTRA_REPOS - 1)), /disabled/, "below the cap, another can be attached");
+  const full = render(MAX_TASK_EXTRA_REPOS);
+  assert.match(add(full), /disabled/, "at the cap, Add another repo is disabled");
+  const detach = /<button[^>]*aria-label="Detach repo: \/repos\/extra-0"[^>]*>/.exec(full)?.[0] ?? "";
+  assert.ok(detach, "every attachment still renders");
+  assert.doesNotMatch(detach, /disabled/, "and can still be detached");
 });

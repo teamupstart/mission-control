@@ -9,7 +9,13 @@ import { EXIT, type CommandContext } from "./types.ts";
 export const FLAG_OFF_MESSAGE = "headless-mode is off: run mctl setup";
 export const DAEMON_DOWN_MESSAGE = "Mission Control is not running: start the app, or run mctl setup --service";
 
-export type FlagState = "on" | "off" | "unreachable";
+/**
+ * `unreachable`: no answer at all. `{ error }`: the daemon answered, but not with the flag (a 5xx,
+ * or a 401 from a stale token), which is not the same trouble and must not read as "not running".
+ */
+export type FlagState = "on" | "off" | "unreachable" | { error: string };
+
+export const daemonErrorMessage = (detail: string): string => "mctl: Mission Control answered with an error: " + detail;
 
 /** Reads the flag from the daemon on every invocation. Never from `process.env`, never cached. */
 export async function readHeadlessFlag(fetchFn: typeof fetch = fetch): Promise<FlagState> {
@@ -18,10 +24,13 @@ export async function readHeadlessFlag(fetchFn: typeof fetch = fetch): Promise<F
       headers: { "x-harness-token": readClientToken(), "x-mission-operation-surface": "cli" },
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) return "unreachable";
+    if (!res.ok) {
+      const stale = res.status === 401 || res.status === 403 ? " (the client token may be stale: restart Mission Control)" : "";
+      return { error: "HTTP " + res.status + stale };
+    }
     const body = (await res.json()) as { config?: unknown };
     const config = FeatureFlagsConfigSchema.safeParse(body.config);
-    if (!config.success) return "unreachable";
+    if (!config.success) return { error: "the feature-flag config it sent could not be read" };
     return resolveFeatureFlags(config.data)[HEADLESS_MODE_FLAG_ID] === true ? "on" : "off";
   } catch {
     return "unreachable";
@@ -48,6 +57,10 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
   }
   if (spec.needsFlag) {
     const state = await (deps.readFlag ?? readHeadlessFlag)();
+    if (typeof state === "object") {
+      io.stderr.write(daemonErrorMessage(state.error) + "\n");
+      return EXIT.failed;
+    }
     if (state === "unreachable") {
       io.stderr.write(DAEMON_DOWN_MESSAGE + "\n");
       return EXIT.failed;

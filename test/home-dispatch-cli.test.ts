@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { COMMANDS, findCommand } from "../src/cli/commands/index.ts";
-import { DAEMON_DOWN_MESSAGE, FLAG_OFF_MESSAGE, main, readHeadlessFlag, type FlagState } from "../src/cli/index.ts";
+import { DAEMON_DOWN_MESSAGE, FLAG_OFF_MESSAGE, daemonErrorMessage, main, readHeadlessFlag, type FlagState } from "../src/cli/index.ts";
 import { startFakeDaemon } from "./helpers/home-dispatch-fakes.ts";
 
 function capture() {
@@ -55,6 +55,13 @@ test("F1 mctl daemon down: exits 1 with the start-the-app message", async () => 
   assert.equal(c.err(), DAEMON_DOWN_MESSAGE + "\n");
 });
 
+test("F1 mctl daemon error: a daemon that answered with an error is not reported as not running", async () => {
+  const c = capture();
+  assert.equal(await main(["status"], { io: c.io, readFlag: async () => ({ error: "HTTP 500" }) }), 1);
+  assert.equal(c.err(), daemonErrorMessage("HTTP 500") + "\n");
+  assert.ok(!c.err().includes("not running"));
+});
+
 test("F6 mctl usage: no command exits 2, help exits 0, an unknown command exits 2 and lists commands", async () => {
   const none = capture();
   assert.equal(await main([], { io: none.io }), 2);
@@ -79,7 +86,13 @@ test("F1 mctl reads the flag from the daemon on every call: off, on, off", async
     assert.equal(await readHeadlessFlag(viaFake), "off");
     assert.ok(daemon.requests.every((r) => r.path === "/api/feature-flags" && r.headers["x-mission-operation-surface"] === "cli"));
     daemon.route("GET /api/feature-flags", 500, { error: "boom" });
-    assert.equal(await readHeadlessFlag(viaFake), "unreachable");
+    assert.deepEqual(await readHeadlessFlag(viaFake), { error: "HTTP 500" }, "an error answer is not 'not running'");
+    daemon.route("GET /api/feature-flags", 401, { error: "unauthorized" });
+    assert.deepEqual(await readHeadlessFlag(viaFake), { error: "HTTP 401 (the client token may be stale: restart Mission Control)" });
+    daemon.route("GET /api/feature-flags", 200, { config: { overrides: { "headless-mode": "yes" } } });
+    assert.deepEqual(await readHeadlessFlag(viaFake), { error: "the feature-flag config it sent could not be read" });
+    await daemon.close();
+    assert.equal(await readHeadlessFlag((url, init) => fetch(String(url).replace(/:\d+/, ":" + daemon.port), init)), "unreachable", "no answer at all is");
   } finally {
     if (prior !== undefined) process.env.MISSION_PORT = prior;
     await daemon.close();

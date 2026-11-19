@@ -6,6 +6,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 let build: Awaited<ReturnType<typeof buildFeatureFlags>>;
+type FlagStreamWindow = Window & { flagStream: { source: EventSource; hold: boolean; messages: string[]; delivered: number } };
 test.beforeAll(async () => {
   const nodeEnv = process.env.NODE_ENV;
   build = await buildFeatureFlags();
@@ -185,6 +186,114 @@ test("Advanced can collapse after a filter opens it and reopen for a new query",
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
   await advanced.click();
   await expect(compactHistory).toBeVisible();
+});
+
+test("successful master and flag writes stay optimistic until stream confirmation in either response order", async ({ page, context, daemon }) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) !== "/events") return;
+        const gate = { source: this, hold: true, messages: [] as string[], delivered: 0 };
+        (window as FlagStreamWindow).flagStream = gate;
+        this.addEventListener("message", event => {
+          if (JSON.parse(event.data).type !== "feature_flags") return;
+          if (gate.hold) {
+            gate.messages.push(event.data);
+            event.stopImmediatePropagation();
+          } else gate.delivered++;
+        });
+      }
+    };
+  });
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const peer = await context.newPage();
+  await peer.goto(page.url());
+  for (const kind of ["master", "flag"] as const) {
+    const control = (window: Page) => kind === "master"
+      ? window.getByRole("checkbox", { name: /Enable all feature flags/ })
+      : window.getByRole("button", { name: /^Preview navigation:/ });
+    const expectValue = async (window: Page, enabled: boolean) => {
+      if (kind === "master") await expect(control(window)).toBeChecked({ checked: enabled });
+      else await expect(control(window)).toHaveAttribute("aria-pressed", String(enabled));
+    };
+    await expect(control(page)).toBeEnabled();
+    await expectValue(page, false);
+    await page.evaluate(() => { (window as FlagStreamWindow).flagStream.hold = true; });
+    const response = page.waitForResponse(response => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/feature-flags");
+    await control(page).click();
+    const saved = await response;
+    expect(saved.ok()).toBe(true);
+    await saved.finished();
+    await expectValue(peer, true);
+    await expect.poll(() => page.evaluate(() => (window as FlagStreamWindow).flagStream.messages.length)).toBe(1);
+    // Let the completed fetch handler render before checking the state with SSE still held.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expectValue(page, true);
+    await expect(control(page)).toBeDisabled();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("feature-flags/inspector-stream");
+      mkdirSync(dir, { recursive: true });
+      await page.screenshot({ path: `${dir}awaiting-${kind}-stream.png` });
+    }
+    await page.evaluate(() => {
+      const gate = (window as FlagStreamWindow).flagStream;
+      gate.hold = false;
+      for (const data of gate.messages.splice(0)) gate.source.dispatchEvent(new MessageEvent("message", { data }));
+    });
+    await expect(control(page)).toBeEnabled();
+    await expectValue(page, true);
+
+    // Reverse the choice with SSE arriving before the HTTP response this time.
+    const deliveredBefore = await page.evaluate(() => (window as FlagStreamWindow).flagStream.delivered);
+    let release!: () => void;
+    const heldResponse = new Promise<void>(resolve => { release = resolve; });
+    await page.route("**/api/feature-flags", async route => {
+      if (route.request().method() !== "PUT") return route.continue();
+      expect(route.request().postDataJSON()).toEqual(kind === "master"
+        ? { kind, enabled: false } : { kind, id: "preview-navigation", enabled: false });
+      const response = await route.fetch();
+      await heldResponse;
+      await route.fulfill({ response });
+    });
+    await control(page).click();
+    await expectValue(peer, false);
+    await expect.poll(() => page.evaluate(() => (window as FlagStreamWindow).flagStream.delivered)).toBeGreaterThan(deliveredBefore);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expectValue(page, false);
+    await expect(control(page)).toBeDisabled();
+    if (kind === "flag") {
+      // A later peer choice must win even while our older HTTP response is still held.
+      await control(peer).click();
+      await expectValue(peer, true);
+      await expectValue(page, true);
+    }
+    release();
+    await expect(control(page)).toBeEnabled();
+    await expectValue(page, kind === "flag");
+    await page.unroute("**/api/feature-flags");
+  }
+  // Missing our acknowledgement during a disconnect must not leave controls stuck pending.
+  const navigation = page.getByRole("button", { name: /^Preview navigation:/ });
+  await page.evaluate(() => { (window as FlagStreamWindow).flagStream.hold = true; });
+  const response = page.waitForResponse(response => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/feature-flags");
+  await navigation.click();
+  await (await response).finished();
+  await expect(peer.getByRole("button", { name: /^Preview navigation:/ })).toHaveAttribute("aria-pressed", "false");
+  await expect(navigation).toBeDisabled();
+  await context.setOffline(true);
+  await daemon.crash();
+  await expect(page.getByText("reconnecting", { exact: true })).toBeVisible();
+  await daemon.restart();
+  const changed = await fetch(`${daemon.baseURL}/api/feature-flags`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "flag", id: "preview-navigation", enabled: true }),
+  });
+  expect(changed.ok).toBe(true);
+  await context.setOffline(false);
+  await expect(navigation).toBeEnabled();
+  await expect(navigation).toHaveAttribute("aria-pressed", "true");
 });
 
 test("a refused master write rolls back, reports its error and leaves the peer unchanged", async ({ dashboard: page, context, daemon }) => {

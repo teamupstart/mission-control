@@ -183,3 +183,35 @@ test("F4 checkin route: tasks are classified into waiting, running and finished,
   assert.equal(body.finished.find((i) => i.title === "ready inside").pullRequestUrl, "https://example.test/pr/1");
   assert.deepEqual([body.queued, body.shelved], [0, 0]);
 });
+
+test("F4 checkin route: the 7-day ready and 24-hour failed cutoffs include the exact edge and exclude one millisecond beyond", async () => {
+  const { openDb } = await import("../src/server/db.ts");
+  const { stampTaskOrigin } = await import("../src/server/home-dispatch/origin.ts");
+  openDb().exec("DELETE FROM tasks");
+  const NOW = 2_000_000_000_000;
+  resetCheckinsForTest(() => NOW);
+  const HOUR = 3_600_000;
+  const repo = realpathSync(mkdtempSync(join(repos, "edges-")));
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const file = (title: string, patch: Record<string, unknown>) => {
+    const t = tasks.create({ repoRoot: repo, intent: title, title, kind: "ship", agent: "claude", backlog: true });
+    stampTaskOrigin(t.id, { surface: "home-session", repo, sessionId: "s1" });
+    registry.upsertTask({ ...t, ...patch } as never);
+  };
+  const DAYS7 = 7 * 24 * HOUR;
+  file("ready at edge", { status: "done", completedAt: NOW - DAYS7, updatedAt: NOW - DAYS7 });
+  file("ready past edge", { status: "done", completedAt: NOW - DAYS7 - 1, updatedAt: NOW - DAYS7 - 1 });
+  file("failed at edge", { status: "failed", updatedAt: NOW - 24 * HOUR });
+  file("failed past edge", { status: "failed", updatedAt: NOW - 24 * HOUR - 1 });
+  const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks, queues: new QueueManager(registry) });
+  flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
+  const res = await app.request("/mcp/dispatch/checkins", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ sessionId: "s1", cwd: repo }),
+  });
+  const body = (await res.json()) as { finished: { title: string }[] };
+  assert.deepEqual(body.finished.map((i) => i.title).sort(), ["failed at edge", "ready at edge"]);
+});

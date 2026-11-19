@@ -26,8 +26,9 @@ export function FeatureFlagsView({ definitions, config, pending = null, errors =
   useEffect(() => {
     if (definitions.some(flag => flag.stage === "default-on" && jumpAnchor === `feature-flags/${flag.id}`)) setAdvanced(true);
   }, [jumpAnchor, definitions]);
-  const showAdvanced = advanced || (!!query && !visiblePreviews.length && !!visibleDefaults.length)
-    || defaults.some(flag => jumpAnchor === `feature-flags/${flag.id}`);
+  useEffect(() => {
+    if (query && !visiblePreviews.length && visibleDefaults.length) setAdvanced(true);
+  }, [query, visiblePreviews.length, visibleDefaults.length]);
   const busy = !ready || pending !== null;
   const enableMaster = (enableDisabled?: boolean) => {
     setConfirm(false);
@@ -74,12 +75,12 @@ export function FeatureFlagsView({ definitions, config, pending = null, errors =
     </div>
     {!!defaults.length && <div className="feature-flag-list">
       <Tooltip label="Show or hide features that are on by default.">
-      <button type="button" className="feature-flag-advanced settings-pane-head" aria-expanded={showAdvanced}
-        aria-controls="feature-flags-advanced" onClick={() => setAdvanced(!showAdvanced)}>
-        <span className="settings-pane-title">{showAdvanced ? "▾" : "▸"} Advanced</span>
+      <button type="button" className="feature-flag-advanced settings-pane-head" aria-expanded={advanced}
+        aria-controls="feature-flags-advanced" onClick={() => setAdvanced(!advanced)}>
+        <span className="settings-pane-title">{advanced ? "▾" : "▸"} Advanced</span>
         <span className="settings-pane-count">{disabledDefaults} turned off</span>
       </button></Tooltip>
-      <div id="feature-flags-advanced" hidden={!showAdvanced}>
+      <div id="feature-flags-advanced" hidden={!advanced}>
         <p className="feature-flag-empty">These features are on by default. You can switch them off here.</p>
         {visibleDefaults.map(row)}
       </div>

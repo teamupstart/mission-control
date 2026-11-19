@@ -149,6 +149,44 @@ test("populated flags apply live, preserve choices, filter Advanced and roll bac
   }
 });
 
+test("Advanced can collapse after a filter opens it and reopen for a new query", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const advanced = page.getByRole("button", { name: /Advanced/ });
+  const filter = page.getByRole("textbox", { name: "Filter feature flags" });
+  const compactHistory = page.getByRole("button", { name: /^Compact history:/ });
+  const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
+  const capture = async (name: string) => {
+    if (!process.env.MC_E2E_EVIDENCE) return;
+    const dir = artifactsDir("feature-flags/coderabbit-advanced");
+    mkdirSync(dir, { recursive: true });
+    await page.screenshot({ path: `${dir}${name}.png` });
+  };
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await filter.fill("archive");
+  await expect(advanced).toHaveAttribute("aria-expanded", "true");
+  await expect(compactHistory).toBeVisible();
+  await capture("filter-expanded");
+  await advanced.click();
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(compactHistory).toBeHidden();
+  // An unrelated confirmed-state update must not reopen a manually closed disclosure.
+  await master.check();
+  await expect(master).toBeEnabled();
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(filter).toHaveValue("archive");
+  await capture("filter-collapsed");
+  // Another query matching the same rows is still a fresh request to reveal them.
+  await filter.fill("history");
+  await expect(advanced).toHaveAttribute("aria-expanded", "true");
+  await expect(compactHistory).toBeVisible();
+  await capture("new-query-expanded");
+  await advanced.click();
+  await filter.fill("");
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await advanced.click();
+  await expect(compactHistory).toBeVisible();
+});
+
 test("a refused master write rolls back, reports its error and leaves the peer unchanged", async ({ dashboard: page, context, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
   const peer = await context.newPage();

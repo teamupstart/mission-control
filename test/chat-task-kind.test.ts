@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { plannableBacklog, readyBacklog } from "../src/shared/backlog.ts";
 import { DispatchSchema, CreateScheduleSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
-import { CHAT_DEPENDENCY_REFUSAL, TASK_KIND_BACKLOG_REFUSAL, taskAllowsBacklogAutopilot } from "../src/shared/task.ts";
+import { CHAT_DEPENDENCY_REFUSAL, CHAT_WORKFLOW_REFUSAL, TASK_KIND_BACKLOG_REFUSAL, taskAllowsBacklogAutopilot } from "../src/shared/task.ts";
 import { TaskSourceDefaultsSchema } from "../src/shared/task-source.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
@@ -346,20 +346,50 @@ test("a mission-filed chat never carries dependencies, however the edit arrives"
   assert.deepEqual(registry.getTask("mission-chat-row")?.dependencies, []);
 });
 
-test("editing a mission task into a chat drops the previous kind's Workflow unless the edit names one", async () => {
+test("a mission-filed chat runs no after-work Workflow, however the edit or save arrives", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const review = "builtin-workflow:general-review";
   registry.upsertTask(mkTask({ id: "kind-only", kind: "ship", status: "backlog", scheduleId: "mission-1", workflowId: review }));
   registry.upsertTask(mkTask({ id: "explicit", kind: "ship", status: "backlog", scheduleId: "mission-1", workflowId: review }));
+  registry.upsertTask(mkTask({ id: "already-chat", kind: "chat", status: "backlog", scheduleId: "mission-1", workflowId: null }));
   registry.upsertTask(mkTask({ id: "stays-ship", kind: "ship", status: "backlog", scheduleId: "mission-1", workflowId: review }));
 
+  // A kind-only edit takes chat's None rather than carrying the previous kind's Workflow.
   assert.equal((await tasks.update("kind-only", { kind: "chat" })).ok, true);
-  assert.equal(registry.getTask("kind-only")?.workflowId, null, "a kind-only edit takes chat's None");
+  assert.equal(registry.getTask("kind-only")?.workflowId, null);
 
-  assert.equal((await tasks.update("explicit", { kind: "chat", workflowId: review })).ok, true);
-  assert.equal(registry.getTask("explicit")?.workflowId, review, "a Workflow the edit names stands");
+  // Naming one is refused, whether the row is becoming a chat or already is one.
+  assert.equal((await tasks.update("explicit", { kind: "chat", workflowId: review })).error, CHAT_WORKFLOW_REFUSAL);
+  assert.equal(registry.getTask("explicit")?.kind, "ship", "the refused edit changes nothing");
+  assert.equal((await tasks.update("already-chat", { workflowId: review })).error, CHAT_WORKFLOW_REFUSAL);
+  assert.equal(registry.getTask("already-chat")?.workflowId, null);
 
+  // Other kind changes keep their Workflow, as before.
   assert.equal((await tasks.update("stays-ship", { kind: "bugfix" })).ok, true);
-  assert.equal(registry.getTask("stays-ship")?.workflowId, review, "other kind changes are unchanged");
+  assert.equal(registry.getTask("stays-ship")?.workflowId, review);
+
+  // The mission template refuses one too...
+  const template = {
+    name: "Conversation",
+    expression: "0 9 * * *",
+    timezone: "UTC",
+    overlapPolicy: "skip-active",
+    missedPolicy: "coalesce-latest",
+    template: { title: "Talk", intent: "Talk.", repoRoot: "/repo", kind: "chat", agent: "claude" },
+  };
+  assert.equal(CreateScheduleSchema.safeParse(template).success, true);
+  const withWorkflow = CreateScheduleSchema.safeParse({ ...template, template: { ...template.template, workflowId: review } });
+  assert.equal(withWorkflow.success, false);
+  assert.equal(withWorkflow.error?.issues[0]?.message, CHAT_WORKFLOW_REFUSAL);
+
+  // ...and the scheduler cannot file a chat that names one, or that leaves it to the dispatch default.
+  for (const [id, workflowId] of [["sched-armed", review], ["sched-default", undefined]] as const) {
+    assert.throws(
+      () => tasks.create({ ...chatInput, backlog: true, workflowId }, scheduled(id)),
+      (error) => error instanceof TaskKindBacklogError,
+      id,
+    );
+    assert.equal(registry.getTask(id), undefined, id);
+  }
 });

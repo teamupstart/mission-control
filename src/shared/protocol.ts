@@ -18,6 +18,7 @@ import {
   RESIDENT_TASK_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
+  CHAT_WORKFLOW_REFUSAL,
   taskKindAllowsBacklog,
   taskKindAllowsSchedule,
   taskKindBacklogRefusal,
@@ -8823,6 +8824,12 @@ const ScheduleTemplateSchema = z
   .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  // A chat mission exists so nothing reviews its runs. The editor stands After work down for
+  // it; this keeps a direct API caller from storing one the editor would never offer.
+  .refine((t) => taskKindAllowsBacklog(t.kind) || t.workflowId === null, {
+    path: ["workflowId"],
+    message: CHAT_WORKFLOW_REFUSAL,
   });
 
 /**

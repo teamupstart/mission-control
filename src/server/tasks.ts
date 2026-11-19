@@ -57,6 +57,7 @@ import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
 import {
   CHAT_DEPENDENCY_REFUSAL,
+  CHAT_WORKFLOW_REFUSAL,
   taskHasRepository,
   dispatchHasNoProvisionedResources,
   isGrillFirstTaskKind,
@@ -3074,8 +3075,10 @@ export class TaskManager {
 
   /**
    * Whether this is the scheduler filing backlog work that `taskAllowsBacklog` admits only
-   * because a Recurring Mission filed it. Plain backlog work, no source and no dependencies:
-   * the provenance is the only thing that admits it, so nothing else may ride along.
+   * because a Recurring Mission filed it. Plain backlog work, no source, no dependencies and
+   * no after-work Workflow: the provenance is the only thing that admits it, so nothing else
+   * may ride along. `workflowId` must be an explicit null - an absent one would resolve to
+   * the dispatch default.
    */
   private isScheduledBacklogCreate(input: CreateTaskInput, internal?: InternalCreateOptions): boolean {
     return (
@@ -3083,6 +3086,7 @@ export class TaskManager {
       input.backlog === true &&
       input.source === undefined &&
       (input.dependencies?.length ?? 0) === 0 &&
+      input.workflowId === null &&
       taskAllowsBacklog({ kind: input.kind, scheduleId: internal.schedule.scheduleId })
     );
   }
@@ -4318,10 +4322,9 @@ export class TaskManager {
     let planPolicy = t.planPolicy;
     let workflowId = patch.workflowId === undefined ? t.workflowId : patch.workflowId;
     // A row edited into a kind with no backlog of its own - a chat a mission filed - takes
-    // that kind's None, as the Dispatch form and the mission editor both preselect, instead of
-    // inheriting the previous kind's review Workflow. Launch arms whatever the row names
-    // without asking its kind, so a kind-only patch must not carry it over. An explicit
-    // `workflowId` in the same patch is the caller's choice and stands.
+    // that kind's None instead of inheriting the previous kind's review Workflow. Launch arms
+    // whatever the row names without asking its kind, so a kind-only patch must not carry it
+    // over; a Workflow the patch names is refused below with `CHAT_WORKFLOW_REFUSAL`.
     if (patch.workflowId === undefined && patch.kind !== undefined && patch.kind !== t.kind
       && !taskKindAllowsBacklog(patch.kind)) {
       workflowId = null;
@@ -4375,6 +4378,12 @@ export class TaskManager {
     // turns a dependent task into a chat is refused as surely as one that adds an edge to a chat.
     if (!taskKindAllowsBacklog(patch.kind ?? t.kind) && dependencies.length > 0) {
       return { ok: false, error: CHAT_DEPENDENCY_REFUSAL };
+    }
+    // Nor does it run after-work: the only chat this path can edit is one a Recurring Mission
+    // filed, and that run exists so nothing reviews it. Asked of the RESULT, so naming a
+    // Workflow on an existing chat and switching a row to chat with one are both refused.
+    if (!taskKindAllowsBacklog(patch.kind ?? t.kind) && workflowId !== null) {
+      return { ok: false, error: CHAT_WORKFLOW_REFUSAL };
     }
     const grillFirst = resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t);
     const next: Task = {

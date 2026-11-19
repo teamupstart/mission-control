@@ -437,6 +437,13 @@ export function taskKindAllowsSchedule(kind: TaskKind): boolean {
  */
 export const CHAT_DEPENDENCY_REFUSAL = "A chat cannot wait on other tasks. Remove its dependencies first.";
 
+/**
+ * Why a chat a Recurring Mission filed takes no after-work Workflow. A chat dispatched by hand
+ * may still opt into one in Dispatch; a mission's chat is the run the operator scheduled so
+ * that nothing reviews it afterwards.
+ */
+export const CHAT_WORKFLOW_REFUSAL = "A chat a recurring mission files runs no after-work Workflow.";
+
 /** Task kinds the Recurring Mission editor offers, in `TASK_KINDS` order. */
 export const SCHEDULE_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsSchedule);
 

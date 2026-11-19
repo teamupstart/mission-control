@@ -43,6 +43,7 @@ import {
   taskDefaultWorkflowId,
   taskAllowsBacklog,
   taskKindAllowsBacklog,
+  CHAT_WORKFLOW_REFUSAL,
   type GrillFirstTaskKind,
 } from "@shared/task.ts";
 import type { EnvironmentCheckId, EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -1337,6 +1338,9 @@ function DispatchModal({
   // sit in the backlog, but a conversation never waits on other work. See
   // `CHAT_DEPENDENCY_REFUSAL`.
   const dependenciesAllowed = taskKindAllowsBacklog(draft.kind);
+  // An edit can only reach a chat on a row a mission filed, and that chat runs no after-work:
+  // the daemon refuses a Workflow on it (`CHAT_WORKFLOW_REFUSAL`), so the control stands down.
+  const afterWorkLocked = editing !== null && !dependenciesAllowed;
   // Opens on the last list this window received, so a rescan behind the daemon never leaves
   // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
   const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
@@ -1833,6 +1837,10 @@ function DispatchModal({
     update({
       kind,
       ...afterWorkForKind(kind),
+      // A row edited into a mission chat takes None, whatever the kind's Settings row arms.
+      ...(editing !== null && kind !== draft.kind && !taskKindAllowsBacklog(kind)
+        ? { workflowId: null }
+        : {}),
       ...dependenciesForKind(kind),
       ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
@@ -3478,7 +3486,7 @@ function DispatchModal({
             <Tooltip label={AFTER_WORK_FIELD_TIP}>
               <select
                 className="field-input"
-                disabled={!usesHarness}
+                disabled={!usesHarness || afterWorkLocked}
                 value={
                   draft.workflowId === undefined
                     ? "__default"
@@ -3549,6 +3557,9 @@ function DispatchModal({
             place: "above",
           })}
         </div>
+        {afterWorkLocked && (
+          <span className={`field-hint${guidedDim}`}>{CHAT_WORKFLOW_REFUSAL}</span>
+        )}
         {selectedWorkflowBlocked && (
           <span className={`dispatch-workflow-warning${guidedDim}`}>
             {!foremanEnabled

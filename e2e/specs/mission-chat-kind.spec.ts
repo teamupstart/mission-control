@@ -112,7 +112,12 @@ test("a recurring mission can file a chat that runs with no after-work", async (
   await expect(dialog).toBeVisible();
   await expectContentClearsBorder(dialog);
   await expect(dialog.getByRole("combobox", { name: "Kind", exact: true })).toHaveValue("chat");
-  await shoot(dashboard, "03-edit-scheduled-chat", dialog);
+  // A mission's chat runs no after-work, and its editor does not offer one.
+  const editAfterWork = dialog.getByRole("combobox", { name: "After work" });
+  await expect(editAfterWork).toBeDisabled();
+  await expect(editAfterWork).toHaveValue("__none");
+  await expect(dialog.getByText("A chat a recurring mission files runs no after-work Workflow.")).toBeVisible();
+  await shoot(dashboard, "03-edit-scheduled-chat", dialog.getByText("A chat a recurring mission files runs no after-work Workflow."));
 
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect
@@ -186,7 +191,7 @@ test("Foreman launches a mission-filed chat on its own, with nobody pressing Dis
   await shoot(dashboard, "04-foreman-launched-chat-running");
 });
 
-test("editing a dependent mission task into a chat drops its dependencies, and the saved chat waits on nothing", async ({ dashboard, daemon }) => {
+test("editing a dependent mission task into a chat drops its dependencies and Workflow, and the saved chat waits on nothing", async ({ dashboard, daemon }) => {
   const prerequisite = await api<TaskSnapshot>(daemon, "/api/tasks", {
     repoRoot: daemon.repo,
     title: "Finish the prerequisite",
@@ -201,7 +206,15 @@ test("editing a dependent mission task into a chat drops its dependencies, and t
     timezone: "UTC",
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
-    template: { title: "Weekly sync", intent: "Talk through the week.", repoRoot: daemon.repo, kind: "ship", agent: "claude" },
+    template: {
+      title: "Weekly sync",
+      intent: "Talk through the week.",
+      repoRoot: daemon.repo,
+      kind: "ship",
+      agent: "claude",
+      // A review the ship run would arm, so the switch to chat has one to drop.
+      workflowId: "builtin-workflow:general-review",
+    },
   }, "POST");
   await api(daemon, `/api/schedules/${mission.id}/run-now`, {}, "POST");
   let filed: TaskSnapshot & { dependencies: unknown[] } | undefined;
@@ -226,8 +239,11 @@ test("editing a dependent mission task into a chat drops its dependencies, and t
   await expect(fold).toHaveAttribute("aria-expanded", "true");
   await expect(dialog.getByText("Finish the prerequisite").first()).toBeVisible();
   await expect(dialog.getByRole("combobox", { name: "Add dependency" })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "After work" })).toHaveValue("builtin-workflow:general-review");
 
   await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("chat");
+  await expect(dialog.getByRole("combobox", { name: "After work" })).toBeDisabled();
+  await expect(dialog.getByRole("combobox", { name: "After work" })).toHaveValue("__none");
   await expect(dialog.getByRole("combobox", { name: "Add dependency" })).toHaveCount(0);
   await expect(dialog.getByText("Finish the prerequisite")).toHaveCount(0);
   await shoot(dashboard, "05-chat-drops-dependencies", dialog.getByRole("button", { name: "Save" }));
@@ -237,6 +253,7 @@ test("editing a dependent mission task into a chat drops its dependencies, and t
   await expect.poll(async () => {
     const saved = (await api<Array<TaskSnapshot & { dependencies: unknown[] }>>(daemon, "/api/tasks"))
       .find((t) => t.id === filed!.id);
-    return saved ? { kind: saved.kind, dependencies: saved.dependencies.length } : null;
-  }, { message: "the saved chat should carry no dependencies" }).toEqual({ kind: "chat", dependencies: 0 });
+    return saved ? { kind: saved.kind, dependencies: saved.dependencies.length, workflowId: saved.workflowId } : null;
+  }, { message: "the saved chat should carry no dependencies and no after-work Workflow" })
+    .toEqual({ kind: "chat", dependencies: 0, workflowId: null });
 });

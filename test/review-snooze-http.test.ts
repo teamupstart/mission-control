@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { decisionLead, formatResponse } from "../src/shared/review-item.ts";
 
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-review-snooze-http-"));
 
-const { openDb } = await import("../src/server/db.ts");
+const { insertReview, openDb, snoozeReviewRow } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -21,17 +22,20 @@ openDb();
 const TOKEN = ensureToken();
 
 const registry = new Registry();
-const reviews = new ReviewManager(registry);
-const app = buildApp({
-  registry,
-  reviews,
-  tasks: new TaskManager(registry),
-  queues: new QueueManager(registry),
-});
+function reviewApp(registry: InstanceType<typeof Registry>) {
+  return buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+  });
+}
+const app = reviewApp(registry);
 
 const LOOPBACK = { host: "127.0.0.1:7317" };
 const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-token": TOKEN };
 const json = { ...LOOPBACK, "content-type": "application/json" };
+const dashboard = { ...json, "x-mission-operation-actor": "human", origin: "http://127.0.0.1:7317" };
 
 const discovered: DiscoveredSession = {
   syntheticId: "sess-snooze",
@@ -82,6 +86,55 @@ test("request_input's question snoozes over HTTP and the agent's wait returns it
 
   const waited = await app.request(`/mcp/reviews/${id}/wait`, { headers: authed });
   assert.equal(((await waited.json()) as ReviewItem).status, "snoozed");
+});
+
+test("the dashboard can reopen a restored snoozed request and submit a typed answer", async () => {
+  const id = "legacy-snoozed-question";
+  const sessionId = discovered.syntheticId;
+  const question = "Which linter?";
+  const decisions = [{ id: "q", question, options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] }];
+  // Seed the persisted shape from before text entry became unconditional.
+  const now = Date.now();
+  insertReview({
+    id, sessionId, kind: "input", title: question, body: question, status: "pending",
+    response: null, decisions, snoozable: true, createdAt: now, resolvedAt: null,
+  });
+  assert.ok(snoozeReviewRow(id, { at: now, until: now + 60_000, mode: "judgment", optionId: null, listening: true }));
+  const restoredRegistry = new Registry();
+  restoredRegistry.applyDiscovery([discovered]);
+  const restoredApp = reviewApp(restoredRegistry);
+
+  const waiting = await restoredApp.request(`/mcp/reviews/${id}/wait`, { headers: authed });
+  assert.equal(waiting.status, 200, await waiting.clone().text());
+  const parked = (await waiting.json()) as ReviewItem;
+  assert.equal(parked.status, "snoozed");
+  assert.equal(parked.decisions?.[0]?.allowOther, true);
+
+  const woke = await restoredApp.request(`/api/reviews/${id}/wake`, { method: "POST", headers: dashboard });
+  assert.equal(woke.status, 200, await woke.clone().text());
+  const pending = (await woke.json()) as ReviewItem;
+  assert.equal(pending.status, "pending");
+  assert.ok(pending.decisions);
+  assert.equal(pending.decisions[0]?.allowOther, true);
+
+  const selections = [{ decisionId: "q", selected: [], other: "Use oxlint instead" }];
+  const response = formatResponse(pending.decisions, selections, decisionLead(pending.kind));
+  const resolved = await restoredApp.request(`/api/reviews/${id}/resolve`, {
+    method: "POST",
+    headers: dashboard,
+    body: JSON.stringify({ action: "answer", response, selections, by: "human" }),
+  });
+  assert.equal(resolved.status, 200, await resolved.clone().text());
+  assert.equal(((await resolved.json()) as ReviewItem).status, "answered");
+
+  const history = await restoredApp.request(`/api/sessions/${sessionId}/resolved-reviews`, { headers: LOOPBACK });
+  assert.equal(history.status, 200, await history.clone().text());
+  const saved = ((await history.json()) as ReviewItem[]).find((review) => review.id === id);
+  assert.ok(saved);
+  assert.equal(saved.resolvedBy, "human");
+  assert.equal(saved.response, `Answered:\n\n• ${question}\n  Other: Use oxlint instead`);
+  assert.deepEqual(saved.selections, selections);
+  assert.deepEqual(saved.decisions, decisions);
 });
 
 test("Answer now brings a snoozed question back, and only a snoozed one", async () => {
@@ -142,7 +195,6 @@ test("only the operator's dashboard may snooze or wake: agent-marked and foreign
   }
 
   // The dashboard's own request names a human actor and carries no token.
-  const dashboard = { ...json, "x-mission-operation-actor": "human", origin: "http://127.0.0.1:7317" };
   const parked = await app.request(`/api/reviews/${id}/snooze`, { method: "POST", headers: dashboard, body: JSON.stringify({ delay: "1h" }) });
   assert.equal(parked.status, 200);
 

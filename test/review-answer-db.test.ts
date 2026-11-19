@@ -13,7 +13,6 @@ process.env.MISSION_HOME = home;
 const {
   openDb,
   insertReview,
-  snoozeReviewRow,
   updateReviewStatus,
   loadHumanResolvedReviews,
   hasHumanResolvedReview,
@@ -76,26 +75,6 @@ test("an answered review round-trips its selections and its actor", () => {
   assert.equal(loaded.resolvedBy, "human");
   assert.deepEqual(loaded.selections, [{ decisionId: "q", selected: ["o1"], other: "pinned" }]);
   assert.deepEqual(loaded.decisions, decisions, "the question survives beside the answer");
-});
-
-test("a snoozed legacy question can still take a typed answer", () => {
-  const question = review("r-legacy-snoozed", { snoozable: true });
-  insertReview(question);
-  const snoozed = snoozeReviewRow(question.id, {
-    at: 1500,
-    until: 3500,
-    mode: "judgment",
-    optionId: null,
-    listening: true,
-  });
-  assert.equal(snoozed?.review.status, "snoozed");
-  assert.equal(snoozed.review.decisions?.[0]?.allowOther, true);
-
-  const selections = [{ decisionId: "q", selected: [], other: "Use oxlint instead" }];
-  updateReviewStatus(question.id, "answered", "Use oxlint instead", 2000, selections, "human");
-  const loaded = loadHumanResolvedReviews(question.sessionId).find((r) => r.id === question.id);
-  assert.deepEqual(loaded?.decisions, decisions);
-  assert.deepEqual(loaded?.selections, selections);
 });
 
 test("Foreman's answer is stored but kept out of the conversation", () => {

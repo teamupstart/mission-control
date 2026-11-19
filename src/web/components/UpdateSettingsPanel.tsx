@@ -58,6 +58,7 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
           </span>
         </label>
       </Tooltip>
+      <p className="settings-hint">Alpha builds do not turn on preview features. Choose them in <Tooltip label="Choose which preview features to enable"><a href="#/settings/feature-flags">Feature flags</a></Tooltip>.</p>
       <p className="settings-hint">Signed binaries download while you work. You choose when to restart and install. No host Node or local compilation is needed for updates.</p>
       <Tooltip label={snapshot?.alpha ? "Check for new main commits now." : "Check for a newer stable release now."}>
         <button type="button" className="btn btn-ghost" disabled={busy || snapshot?.phase === "disabled"}

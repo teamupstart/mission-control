@@ -26325,7 +26325,7 @@ button.sc-row:focus-visible {
   overflow: hidden;
   background: var(--bg);
 }
-.trust-pane-head {
+.settings-pane-head {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -26338,12 +26338,12 @@ button.sc-row:focus-visible {
   align-items: center;
   gap: 10px;
 }
-.trust-pane-title-row {
+.settings-pane-title-row {
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
-.trust-pane-title {
+.settings-pane-title {
   margin: 0;
   font-size: 11px;
   font-weight: 640;
@@ -26351,16 +26351,16 @@ button.sc-row:focus-visible {
   letter-spacing: 0.05em;
   color: var(--dim);
 }
-.trust-pane-count {
+.settings-pane-count {
   font-size: 11.5px;
   color: var(--dim);
   white-space: nowrap;
 }
-.trust-pane-title-row .trust-pane-count,
+.settings-pane-title-row .settings-pane-count,
 .trust-picked-count {
   margin-left: auto;
 }
-.trust-search,
+.settings-search,
 .trust-path {
   font: inherit;
   font-size: 12px;
@@ -26372,13 +26372,13 @@ button.sc-row:focus-visible {
   width: 100%;
   min-width: 0;
 }
-.trust-search:focus,
+.settings-search:focus,
 .trust-path:focus {
   outline: none;
   border-color: var(--working);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 22%, transparent);
 }
-.trust-matrix-head .trust-search {
+.trust-matrix-head .settings-search {
   flex: 1;
   width: auto;
 }
@@ -26455,7 +26455,7 @@ button.sc-row:focus-visible {
   color: var(--muted);
 }
 /* The same pill the cells wear, as a legend of what an add will write - never a control. */
-.trust-grant.trust-default {
+.settings-grant.trust-default {
   padding: 1px 8px;
   font-size: 10.5px;
   cursor: default;
@@ -26552,7 +26552,7 @@ button.sc-row:focus-visible {
 .trust-c.is-trap {
   background: color-mix(in oklab, var(--attention) 7%, transparent);
 }
-.trust-grant {
+.settings-grant {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -26565,52 +26565,52 @@ button.sc-row:focus-visible {
   cursor: pointer;
   transition: border-color 0.14s ease, background 0.14s ease;
 }
-.trust-grant-dot {
+.settings-grant-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex: none;
 }
-.trust-grant.is-on {
+.settings-grant.is-on {
   color: var(--idle);
   border-color: color-mix(in oklab, var(--idle) 35%, transparent);
   background: color-mix(in oklab, var(--idle) 8%, transparent);
 }
-.trust-grant.is-on .trust-grant-dot {
+.settings-grant.is-on .settings-grant-dot {
   background: var(--idle);
 }
-.trust-grant.is-off {
+.settings-grant.is-off {
   color: var(--dim);
   border-color: var(--border-soft);
   background: color-mix(in oklab, var(--dim) 6%, transparent);
 }
-.trust-grant.is-off .trust-grant-dot {
+.settings-grant.is-off .settings-grant-dot {
   background: var(--exited);
 }
-.trust-grant.is-trapped {
+.settings-grant.is-trapped {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 45%, transparent);
   background: color-mix(in oklab, var(--attention) 9%, transparent);
 }
-.trust-grant.is-trapped .trust-grant-dot {
+.settings-grant.is-trapped .settings-grant-dot {
   background: var(--attention);
 }
 /* Armed check execution. The same amber as a trapped cell, and deliberately so: both mean
    "read the footnote", and giving this a colour of its own would make the matrix teach two
    alert vocabularies for one glance. It stays a granted pill - `is-on`'s green dot would
    contradict the wash, so the dot moves with it. */
-.trust-grant.is-armed {
+.settings-grant.is-armed {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 45%, transparent);
   background: color-mix(in oklab, var(--attention) 9%, transparent);
 }
-.trust-grant.is-armed .trust-grant-dot {
+.settings-grant.is-armed .settings-grant-dot {
   background: var(--attention);
 }
-.trust-grant:hover:not(:disabled) {
+.settings-grant:hover:not(:disabled) {
   border-color: var(--dim);
 }
-.trust-grant:disabled {
+.settings-grant:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -41572,3 +41572,14 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--danger);
   font-size: 11px;
 }
+
+.feature-flags { display: flex; flex-direction: column; gap: 16px; }
+.feature-flag-list { border: 1px solid var(--border-soft); border-radius: 11px; overflow: hidden; background: var(--bg); }
+.feature-flag-row { display: flex; align-items: center; gap: 16px; padding: 14px 12px; border-top: 1px solid var(--border-soft); }
+.feature-flag-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.feature-flag-copy strong { font-size: 13px; font-weight: 600; }
+.feature-flag-copy p, .feature-flag-empty { font-size: 12px; color: var(--dim); line-height: 1.6; margin: 4px 0 0; }
+.feature-flag-copy [role="alert"] { color: var(--attention); }
+.feature-flag-empty { padding: 12px; margin: 0; }
+.feature-flag-row .settings-grant { flex: none; }
+.feature-flag-advanced { width: 100%; flex-direction: row; justify-content: space-between; cursor: pointer; border: 0; text-align: left; }

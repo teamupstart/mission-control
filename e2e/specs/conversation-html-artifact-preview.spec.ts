@@ -255,8 +255,13 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   await page.emulateMedia({ colorScheme: "dark" });
   await capture(page, restoredCard, "console-dark.png");
 
+  const refresh = restoredCard.getByRole("button", { name: `Refresh preview of ${REPORT}` });
+  // Load the visible previews before deleting: scrolling to an unloaded card after
+  // deletion can shrink its siblings between the refresh click's pointer events.
+  await refresh.scrollIntoViewIfNeeded();
+  await expect(restoredCard).toHaveAttribute("data-preview-source", "loaded");
   unlinkSync(join(live.cwd, REPORT));
-  await restoredCard.getByRole("button", { name: `Refresh preview of ${REPORT}` }).click();
+  await refresh.click();
   await expect(restoredCard.getByText("File no longer exists.")).toBeVisible();
   await expect(restoredCard.getByRole("button", { name: `Refresh preview of ${REPORT}` })).toBeVisible();
   await expect(restoredCard.getByRole("button", { name: `Comment on ${REPORT} in Files` })).toBeVisible();

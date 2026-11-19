@@ -3,13 +3,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Phase 1 has no flag control or gated feature to select. In a PRIVATE dashboard build,
- * supply a fixture registry and expose App's stream state plus a real useFeatureFlag
+ * Check the stream and resolved hook independently of Settings controls. In a PRIVATE
+ * dashboard build, supply a fixture registry and expose App's state plus a real useFeatureFlag
  * consumer. The probes own no state, handle no events and perform no fetches.
  */
 export async function buildFeatureFlagsDashboard(outDir: string): Promise<void> {
   const root = fileURLToPath(new URL("../..", import.meta.url));
-  await build({
+  const nodeEnv = process.env.NODE_ENV;
+  try { await build({
     configFile: join(root, "vite.config.ts"),
     logLevel: "error",
     build: { outDir, emptyOutDir: true },
@@ -53,4 +54,9 @@ export async function buildFeatureFlagsDashboard(outDir: string): Promise<void> 
       },
     }],
   });
+  } finally {
+    // A private production build must not turn later dev-dashboard specs into production.
+    if (nodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = nodeEnv;
+  }
 }

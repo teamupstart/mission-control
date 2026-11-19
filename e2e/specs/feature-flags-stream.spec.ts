@@ -8,7 +8,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 let webDir: string;
 test.beforeAll(async () => {
   webDir = mkdtempSync(join(tmpdir(), "mission-feature-flags-web-"));
+  const nodeEnv = process.env.NODE_ENV;
   await buildFeatureFlagsDashboard(webDir);
+  expect(process.env.NODE_ENV, "private builds must not contaminate later dev-server specs").toBe(nodeEnv);
 });
 test.afterAll(() => { if (webDir) rmSync(webDir, { recursive: true, force: true }); });
 

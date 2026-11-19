@@ -320,7 +320,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Harnesses**, **Tasks**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (temporarily unavailable), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -351,6 +351,10 @@ In the desktop app, **Application updates** also offers **Check for updates** an
 default-off **Alpha updates** preference, which follows the latest `main` commit while
 including stable release news. Its badge says `This installation` because this page combines
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
+
+**Feature flags** sits directly after Setup under Sessions, scoped to this machine. It offers
+searchable preview toggles, Enable all, and Advanced for default-on features. Alpha builds
+do not enable previews. See [Feature flags](feature-flags.md).
 
 Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
 (today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**

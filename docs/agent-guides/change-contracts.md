@@ -134,8 +134,8 @@ The daemon is the sole database writer. Foreman and MCP reach it through HTTP.
 ## Persisted identifiers
 
 Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never reused. The
-`feature-flags` settings backup domain id is also persisted and final; Phase 2 changes its
-surface from `runtime` to `settings` when a control exists. See [Feature flags](../feature-flags.md).
+`feature-flags` settings backup domain id is also persisted and final; its surface is
+`settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
 
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
@@ -1205,6 +1205,9 @@ Drafts live in `lib/drafts.ts` and survive unmounts. Successful submission clear
 Human conversation composer submissions enter the durable pending-turn outbox. Only its newest `queued` row is recallable. A `sending` row has crossed the delivery boundary and cannot be recalled; an `uncertain` row requires an explicit retry or resolution.
 
 Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns pending-turn, work-queue, workflow, work-episode, and cache cleanup. It raises the registry reset marker before asking `PendingTurnManager` to settle a claimed SDK or terminal delivery. A turn refused before runtime acceptance is safe to discard. A turn that may have crossed that boundary is retained as `uncertain` through successful reset cleanup for explicit operator resolution. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
+
+Trust and Feature flags share the `settings-pane-*`, `settings-search`, and `settings-grant`
+CSS leaves. Keep Trust-specific states and layout in Trust; do not fork the shared rules.
 
 ## Overlays and shortcuts
 

@@ -427,7 +427,7 @@ export function TrustPanel({
         <Tooltip label={col.title}>
           <button
             type="button"
-            className={`trust-grant ${on ? "is-on" : "is-off"}${
+            className={`settings-grant ${on ? "is-on" : "is-off"}${
               trappedPill ? " is-trapped" : ""
             }${arms ? " is-armed" : ""}`}
             disabled={!configPresent[col.key]}
@@ -435,7 +435,7 @@ export function TrustPanel({
             aria-label={`${on ? "Revoke" : "Grant"}: ${col.label} for ${row.repo}`}
             onClick={() => void grant(col.key, row.repo, on)}
           >
-            <span className="trust-grant-dot" aria-hidden />
+            <span className="settings-grant-dot" aria-hidden />
             {on ? `allowed${marker}` : "grant"}
           </button>
         </Tooltip>
@@ -503,16 +503,16 @@ export function TrustPanel({
           role="group"
           aria-labelledby="trust-add-title"
         >
-          <div className="trust-pane-head">
-            <div className="trust-pane-title-row">
-              <h3 className="trust-pane-title" id="trust-add-title">
+          <div className="settings-pane-head">
+            <div className="settings-pane-title-row">
+              <h3 className="settings-pane-title" id="trust-add-title">
                 Add repositories
               </h3>
-              <span className="trust-pane-count">{candidates.length} available</span>
+              <span className="settings-pane-count">{candidates.length} available</span>
             </div>
             <input
               type="search"
-              className="trust-search"
+              className="settings-search"
               placeholder="Search repositories…"
               aria-label="Search repositories to add"
               value={pickQuery}
@@ -539,7 +539,7 @@ export function TrustPanel({
                   Clear
                 </button>
               </Tooltip>
-              <span className="trust-pane-count trust-picked-count">{pickedCount} selected</span>
+              <span className="settings-pane-count trust-picked-count">{pickedCount} selected</span>
             </div>
           </div>
 
@@ -597,9 +597,9 @@ export function TrustPanel({
                 return (
                   <span
                     key={c.key}
-                    className={`trust-grant trust-default ${on ? "is-on" : "is-off"}`}
+                    className={`settings-grant trust-default ${on ? "is-on" : "is-off"}`}
                   >
-                    <span className="trust-grant-dot" aria-hidden />
+                    <span className="settings-grant-dot" aria-hidden />
                     {on ? c.short : `${c.short} off`}
                   </span>
                 );
@@ -630,12 +630,12 @@ export function TrustPanel({
         </div>
 
         <div className="trust-pane trust-matrix" data-anchor="trust/matrix" ref={matrixTourRef}>
-          <div className="trust-pane-head trust-matrix-head">
-            <h3 className="trust-pane-title">Trusted</h3>
-            <span className="trust-pane-count">{rows.length}</span>
+          <div className="settings-pane-head trust-matrix-head">
+            <h3 className="settings-pane-title">Trusted</h3>
+            <span className="settings-pane-count">{rows.length}</span>
             <input
               type="search"
-              className="trust-search"
+              className="settings-search"
               placeholder="Filter trusted…"
               aria-label="Filter trusted repositories"
               value={trustedQuery}

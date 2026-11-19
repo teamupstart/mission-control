@@ -4376,13 +4376,16 @@ export class TaskManager {
     // A kind with no backlog of its own never waits on other work, even on the one row that
     // may hold it - a chat a Recurring Mission filed. Checked on the RESULT, so an edit that
     // turns a dependent task into a chat is refused as surely as one that adds an edge to a chat.
-    if (!taskKindAllowsBacklog(patch.kind ?? t.kind) && dependencies.length > 0) {
+    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind) && dependencies.length > 0) {
       return { ok: false, error: CHAT_DEPENDENCY_REFUSAL };
     }
-    // Nor does it run after-work: the only chat this path can edit is one a Recurring Mission
-    // filed, and that run exists so nothing reviews it. Asked of the RESULT, so naming a
-    // Workflow on an existing chat and switching a row to chat with one are both refused.
-    if (!taskKindAllowsBacklog(patch.kind ?? t.kind) && workflowId !== null) {
+    // Nor does it run after-work: the only chat a non-annotation edit can reach is one a
+    // Recurring Mission filed (the status guard above keeps every other edit to the backlog),
+    // and that run exists so nothing reviews it. Asked of the RESULT, so naming a Workflow on
+    // an existing chat and switching a row to chat with one are both refused. A priority or
+    // label edit is left alone: it also reaches a running hand-dispatched chat, which may
+    // hold the Workflow it opted into in Dispatch, and the edit does not touch it.
+    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind) && workflowId !== null) {
       return { ok: false, error: CHAT_WORKFLOW_REFUSAL };
     }
     const grillFirst = resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t);

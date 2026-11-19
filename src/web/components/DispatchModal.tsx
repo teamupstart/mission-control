@@ -1788,6 +1788,9 @@ function DispatchModal({
     if (!workflowConfig || !guess || busy) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
+    // An edit into a mission chat is locked at None (`afterWorkLocked`): a chat row configured
+    // in Settings must not land on it late, where the daemon would refuse the save.
+    if (editing !== null && !taskKindAllowsBacklog(guess.kind)) return;
     const resolved = taskDefaultWorkflowId(
       guess.kind,
       workflowConfig.kindWorkflowDefaults,

@@ -393,3 +393,17 @@ test("a mission-filed chat runs no after-work Workflow, however the edit or save
     assert.equal(registry.getTask(id), undefined, id);
   }
 });
+
+test("a priority or label edit on a running hand-dispatched chat keeps working with its opt-in Workflow", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const review = "builtin-workflow:general-review";
+  registry.upsertTask(mkTask({ id: "manual-chat", kind: "chat", status: "running", workflowId: review }));
+
+  const edited = await tasks.update("manual-chat", { labels: ["follow-up"], priority: "high" });
+  assert.equal(edited.ok, true, edited.error);
+  const after = registry.getTask("manual-chat")!;
+  assert.deepEqual(after.labels, ["follow-up"]);
+  assert.equal(after.priority, "high");
+  assert.equal(after.workflowId, review, "the Workflow it opted into is untouched");
+});

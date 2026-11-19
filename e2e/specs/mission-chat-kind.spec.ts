@@ -257,3 +257,61 @@ test("editing a dependent mission task into a chat drops its dependencies and Wo
   }, { message: "the saved chat should carry no dependencies and no after-work Workflow" })
     .toEqual({ kind: "chat", dependencies: 0, workflowId: null });
 });
+
+test("a configured chat Workflow that loads after an edit switches to chat does not land on the mission chat", async ({ dashboard, daemon }) => {
+  // The chat row on Settings -> Tasks names a review, which a hand-dispatched chat would arm.
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: false,
+    repoAllowlist: [],
+    kindWorkflowDefaults: { chat: "builtin-workflow:general-review" },
+  });
+  const mission = await api<StoredSchedule>(daemon, "/api/schedules", {
+    name: "Late config mission",
+    expression: "0 9 1 * *",
+    timezone: "UTC",
+    overlapPolicy: "skip-active",
+    missedPolicy: "coalesce-latest",
+    template: { title: "Late config sync", intent: "Check in.", repoRoot: daemon.repo, kind: "ship", agent: "claude" },
+  }, "POST");
+  await api(daemon, `/api/schedules/${mission.id}/run-now`, {}, "POST");
+  let filed: TaskSnapshot | undefined;
+  await expect.poll(async () => {
+    filed = (await api<TaskSnapshot[]>(daemon, "/api/tasks")).find((t) => t.scheduleId === mission.id);
+    return filed?.status ?? null;
+  }).toBe("backlog");
+
+  await api(daemon, "/api/ui/config", { layout: "board" });
+  await dashboard.reload();
+
+  // Hold the editor's Workflow config read until the kind has already moved to chat.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await dashboard.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await held;
+    await route.continue();
+  });
+
+  await dashboard.locator("main.board section.board-backlog .bl-card", { hasText: "Late config sync" })
+    .getByRole("button", { name: "Late config sync", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("chat");
+  const afterWork = dialog.getByRole("combobox", { name: "After work" });
+  await expect(afterWork).toHaveValue("__none");
+
+  const configRead = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/workflows/config") && response.request().method() === "GET");
+  release();
+  await configRead;
+  // Give the late rows a render to land, then check they did not.
+  await expect(afterWork).toHaveValue("__none");
+  await expect(afterWork).toBeDisabled();
+
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(async () => {
+    const saved = (await api<TaskSnapshot[]>(daemon, "/api/tasks")).find((t) => t.id === filed!.id);
+    return saved ? { kind: saved.kind, workflowId: saved.workflowId } : null;
+  }, { message: "the save should succeed as a chat with no Workflow" }).toEqual({ kind: "chat", workflowId: null });
+});

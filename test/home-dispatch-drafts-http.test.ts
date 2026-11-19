@@ -366,3 +366,34 @@ test("F3 confirm: a failed confirmation does not replace a newer draft the sessi
   assert.equal((await post(r, "/drafts/" + older.body.draftId, { ...caller(repo), words: "x" })).status, 404, "the older one stays replaced");
   assert.equal(r.tasks.list().length, 0);
 });
+
+test("F16 drafts repository: a home-relative path is expanded", async () => {
+  const r = rig();
+  const here = gitRepo("tilde-here");
+  const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), "mission-fake-home-")));
+  const inHome = join(fakeHome, "code", "my-repo");
+  mkdirSync(inHome, { recursive: true });
+  execFileSync("git", ["-C", inHome, "init", "-q"]);
+  const savedHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    const draft = await create(r, here, { repo: "~/code/my-repo" });
+    assert.equal(draft.status, 200);
+    assert.equal(draft.body.repoRoot, realpathSync(inHome));
+  } finally {
+    process.env.HOME = savedHome;
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("F3 confirm: a failure after the task exists still hands back its id", async () => {
+  const r = rig();
+  const repo = gitRepo("post-create");
+  r.tasks.dispatch = (async () => { throw new Error("launcher exploded"); }) as typeof r.tasks.dispatch;
+  const draft = await create(r, repo, { words: "go" });
+  const done = await post(r, "/drafts/" + draft.body.draftId + "/confirm", { ...caller(repo), choice: "start" });
+  assert.equal(done.status, 200);
+  assert.deepEqual([done.body.outcome, done.body.refusal], ["saved", "launcher exploded"]);
+  assert.ok(done.body.taskId);
+  assert.equal(originRow(done.body.taskId).s, "home-session", "the origin was stamped before the launch failed");
+});

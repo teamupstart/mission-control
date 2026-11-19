@@ -215,3 +215,16 @@ test("F4 checkin route: the 7-day ready and 24-hour failed cutoffs include the e
   const body = (await res.json()) as { finished: { title: string }[] };
   assert.deepEqual(body.finished.map((i) => i.title).sort(), ["failed at edge", "ready at edge"]);
 });
+
+test("F4 checkin: a session's last check-in time is swept once it is older than the retention window", async () => {
+  const { HOME_DISPATCH_RETENTION_MS } = await import("../src/shared/home-dispatch.ts");
+  let now = 1_000;
+  resetCheckinsForTest(() => now);
+  const deps = { readInbox: async () => ({ status: 200 as const, body: { items: [item("old", "ready", 5)] } }) };
+  const caller = (sessionId: string) => ({ sessionId, claudePid: null, cwd: tmpdir() });
+  await handleCheckin(caller("gone"), deps);
+  now += HOME_DISPATCH_RETENTION_MS + 1;
+  await handleCheckin(caller("other"), deps); // sweeps "gone"
+  const back = await handleCheckin(caller("gone"), deps);
+  assert.equal((back.body as { finished: unknown[] }).finished.length, 1, "treated as a first check-in again");
+});

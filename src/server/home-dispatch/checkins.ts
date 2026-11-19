@@ -1,3 +1,4 @@
+import { HOME_DISPATCH_RETENTION_MS } from "@shared/home-dispatch.ts";
 import type { CheckinResponse, HomeCaller, InboxItem } from "@shared/home-dispatch.ts";
 import { openDb } from "../db.ts";
 import { resolveRepoRoot } from "../repos.ts";
@@ -93,6 +94,9 @@ export async function handleCheckin(
   else if (inbox.status === 501) items = inboxFromTasks(deps, repo, clock());
   else return inbox as HomeDispatchResult<never>;
   const body = buildCheckin(items, lastCheckin.get(input.sessionId) ?? null);
-  lastCheckin.set(input.sessionId, clock());
+  const at = clock();
+  // Entries older than the retention window no longer change what a check-in shows: sweep on write.
+  for (const [id, when] of lastCheckin) if (at - when > HOME_DISPATCH_RETENTION_MS) lastCheckin.delete(id);
+  lastCheckin.set(input.sessionId, at);
   return { status: 200, body };
 }

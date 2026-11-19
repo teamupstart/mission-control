@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { basename, isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { afterWorkFor, UNAVAILABLE_WORKFLOW_LABEL } from "@shared/after-work.ts";
 import { briefText, kindAfterWork, summaryText } from "@shared/dispatch-options.ts";
 import type {
@@ -90,7 +91,9 @@ type RepoChoice = { ok: true; repoRoot: string } | { ok: false; result: HomeDisp
 async function resolveRepoSelector(selector: string, cwd: string): Promise<RepoChoice> {
   const trimmed = selector.trim();
   if (isAbsolute(trimmed) || trimmed.includes("/") || trimmed.startsWith("~")) {
-    const path = resolve(cwd, trimmed);
+    // `resolve` never expands a home-relative path, so do it first.
+    const expanded = trimmed === "~" || trimmed.startsWith("~/") ? join(homedir(), trimmed.slice(1)) : trimmed;
+    const path = resolve(cwd, expanded);
     const resolved = await resolveTaskRepoRoot(path);
     return resolved.ok ? resolved : { ok: false, result: refuse(400, `not a repository: ${path}`) };
   }
@@ -98,7 +101,11 @@ async function resolveRepoSelector(selector: string, cwd: string): Promise<RepoC
   try {
     repos = await listRepos();
   } catch {
-    repos = [];
+    // A failed scan is not "no such repository": say so, so the person can retry or give a path.
+    return {
+      ok: false,
+      result: refuse(409, `could not look up a repository named ${trimmed}: the workspace repository list is unavailable; try again or give a path`),
+    };
   }
   const wanted = trimmed.toLowerCase();
   const roots = new Set<string>();
@@ -268,13 +275,19 @@ export async function handleConfirmDraft(
       creationPolicy,
     );
     created = true;
-    stampTaskOrigin(task.id, { surface: "home-session", repo: draft.sessionRepo, sessionId: draft.sessionId });
-    if (input.choice === "backlog") return { status: 200, body: { outcome: "saved", taskId: task.id, refusal: null } };
-    const started = await tasks.dispatch(task.id, { overrideDisabled: true });
-    if (!started.ok) {
-      return { status: 200, body: { outcome: "saved", taskId: task.id, refusal: started.error } };
+    // From here the task exists, so a failure must still hand its id back rather than throw.
+    try {
+      stampTaskOrigin(task.id, { surface: "home-session", repo: draft.sessionRepo, sessionId: draft.sessionId });
+      if (input.choice === "backlog") return { status: 200, body: { outcome: "saved", taskId: task.id, refusal: null } };
+      const started = await tasks.dispatch(task.id, { overrideDisabled: true });
+      if (!started.ok) {
+        return { status: 200, body: { outcome: "saved", taskId: task.id, refusal: started.error } };
+      }
+      return { status: 200, body: { outcome: "started", taskId: task.id, refusal: null } };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { status: 200, body: { outcome: "saved", taskId: task.id, refusal: reason } };
     }
-    return { status: 200, body: { outcome: "started", taskId: task.id, refusal: null } };
   } catch (error) {
     // Nothing was created: keep the draft so the person can fix the problem and confirm again.
     // Put it back only if the session has not started a newer draft while this one was out.

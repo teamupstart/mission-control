@@ -24,7 +24,13 @@ export const WORKER_TEXT_NOTE =
 // control characters too: a tab or a bare CR in a label can fake a column or overwrite a line.
 // eslint-disable-next-line no-control-regex
 const CONTROL_EXCEPT_NEWLINE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
-const FENCE_CLOSE = /<\/(\s*)(worker-(?:question|options|summary))/gi;
+// Zero-width and bidi format characters render as nothing, so they can hide a tag from a reader
+// while a model still sees it. They are dropped from worker text before anything is matched.
+const INVISIBLE_FORMAT = /[\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g;
+// A closing fence is `<`, optional filler, `/`, optional filler, then the tag name. The filler is
+// any run of up to eight non-alphanumeric characters (whitespace, newlines, punctuation), so
+// padding between the `<` and the `/`, or after it, does not slip a closing tag past the escape.
+const FENCE_CLOSE = /<([^\w<>]{0,8})\/([^\w<>]{0,8})(worker-(?:question|options|summary))/gi;
 
 function capCodePoints(text: string, max: number): string {
   const points = Array.from(text);
@@ -33,11 +39,11 @@ function capCodePoints(text: string, max: number): string {
 
 /** Neutralise a closing fence tag: `</worker-question>` becomes `<\/worker-question>`. */
 export function neutraliseFences(text: string): string {
-  return text.replace(FENCE_CLOSE, (_m, space: string, name: string) => `<\\/${space}${name}`);
+  return text.replace(FENCE_CLOSE, (_m, before: string, after: string, name: string) => "<" + before + "\\/" + after + name);
 }
 
 function cleanText(text: string, max: number, keepNewlines: boolean): string {
-  const withoutControls = text.replace(/\r\n?/g, "\n").replace(CONTROL_EXCEPT_NEWLINE, "");
+  const withoutControls = text.replace(/\r\n?/g, "\n").replace(CONTROL_EXCEPT_NEWLINE, "").replace(INVISIBLE_FORMAT, "");
   const shaped = keepNewlines ? withoutControls : withoutControls.replace(/\n/g, "\\n");
   // Escape first, then cap: escaping adds a backslash per fence tag, so the cap holds for what is shown.
   return capCodePoints(neutraliseFences(shaped), max);

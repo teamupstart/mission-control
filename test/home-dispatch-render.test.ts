@@ -21,6 +21,24 @@ test("F10 render: case and spacing tricks do not reopen a fence", () => {
   assert.equal(neutraliseFences("</ worker-options>"), "<\\/ worker-options>");
 });
 
+test("F10 render: filler between the angle bracket and the slash, or a hidden character in the name, does not reopen a fence", () => {
+  const variants = [
+    "<\n/worker-question>", "< /worker-question>", "<  /  worker-question>", "<.:/worker-options>", "<\t/worker-summary>",
+    "<\u200b/worker-question>", "</\u200bworker-question>", "</worker\u2060-question>", "<\u202e/worker-summary>",
+  ];
+  for (const text of variants) {
+    for (const out of [renderWorkerQuestion("x" + text + "y"), renderWorkerSummary("x" + text + "y"), renderWorkerOptions(["x" + text])]) {
+      // An unescaped closer has no backslash in front of its slash; the escaped form `<\\/` does.
+      const closers = out.match(/<[^\w<>\\]{0,8}\/[^\w<>]{0,8}worker-(question|options|summary)/gi) ?? [];
+      assert.equal(closers.length, 1, JSON.stringify(text) + " leaves only the real closing tag");
+      assert.ok(out.endsWith(closers[0] + ">"), JSON.stringify(text));
+    }
+  }
+  assert.equal(neutraliseFences("<\n/worker-question>"), "<\n\\/worker-question>");
+  assert.equal(neutraliseFences("<.:/worker-options>"), "<.:\\/worker-options>");
+  assert.equal(renderWorkerLabel("a\u200bb"), "ab", "invisible format characters are dropped from shown text");
+});
+
 test("F10 render: control characters are removed", () => {
   assert.equal(renderWorkerLabel("a\u0000b\u001b[31mc\u007fd\te"), "ab[31mcde");
   assert.equal(renderWorkerLabel("a\rb"), "a\\nb", "a bare carriage return is a line break, never an overwrite");

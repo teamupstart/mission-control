@@ -2867,12 +2867,18 @@ export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
 /**
  * Persisted as text in `reviews.status`, so these spellings are append-only.
  *
- * `orphaned` is the only one the DAEMON writes; the other four terminal statuses are a
- * human's answer arriving through `/api/reviews/:id/resolve`. It means the session that
- * asked went away before anyone answered, which is why it is not `dismissed` - the
+ * `orphaned` and `superseded` are the ones the DAEMON writes; the other four terminal statuses
+ * are a human's answer arriving through `/api/reviews/:id/resolve`. `orphaned` means the session
+ * that asked went away before anyone answered, which is why it is not `dismissed` - the
  * operator declining to choose and the agent no longer being there to hear a choice are
  * different facts, and only the first is evidence of intent (see
  * `loadResolvedWorkflowReviews`, which reads none of it).
+ *
+ * `superseded` means the same session asked a new `request_input`
+ * question after the blocking call that asked this one had already given up, which is what an
+ * agent does when its MCP client times out: it asks the same decision again, often reworded.
+ * The newer card is the one its agent is waiting on, so this one leaves the queue rather than
+ * making the operator answer the same decision twice (`ReviewManager.create`).
  *
  * `snoozed` is the one status that is NOT terminal. The operator chose "Remind me later" on a
  * `request_input` question: the agent's blocking call has returned and it is carrying on, and
@@ -2887,7 +2893,8 @@ export type ReviewStatus =
   | "answered"
   | "dismissed"
   | "orphaned"
-  | "snoozed";
+  | "snoozed"
+  | "superseded";
 
 /**
  * What the operator told the agent to do while a snoozed question is parked. Persisted in

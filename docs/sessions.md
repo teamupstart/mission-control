@@ -2702,6 +2702,87 @@ so an agent that legitimately asks the same thing again later gets a fresh sessi
   session's identical question is never folded into yours; and changing the options makes it a
   different question, because the options are what you are choosing between.
 
+**A reworded retry replaces the question it retries.** Agents usually do not retry word for
+word. Codex's client gives up on a blocking call after five minutes without telling Mission
+Control, and the model then reissues the decision in new words ("The previous prompt timed
+out..."). When a session's new `request_input` question is a retry of an older one from that
+same session that is still waiting on you, the older card is withdrawn and leaves the queue,
+so you answer the decision once. The older one is recorded as `superseded`, which is nobody's
+answer, so it is not shown in the conversation and nothing is sent to the agent.
+
+A new question counts as a retry of an older one when it asks the same decision, judged in
+two ways:
+
+- **It says it is a retry in its question** (a sentence that is not itself a question mentions
+  that an earlier request or prompt timed out or was interrupted, or that the decision is still
+  unresolved), and it shares at least 35% of its wording with the older question, counting the
+  question and its context. A reference in the context alone, such as **See previous request.**,
+  is not an announcement. The `request_input` tool description asks agents to say so when they
+  ask again.
+- **It does not say so, but restates the older question almost word for word**: at least 80% of
+  its wording is shared.
+
+Either way, a new question that swaps what the older one is about is a different decision, and
+both cards stay: a number under the same label changes (**Phase 1** to **Phase 2**, **PR #101**
+to **PR #102**), a capitalised name is replaced (**grant Alice access** to **grant Bob
+access**), or one word is replaced, by up to three words or with up to three words, inside at
+least three identical words on each side (**should I grant alice access to the production
+repository** to **...grant bob access...** or **...grant bob temporary access...**). The questions are
+also compared whole, after setting aside a sentence that only announces the retry. A question
+edited in one place keeps both cards however little wording surrounds the edit: one subject
+changed (**Grant alice access?** then **The earlier request timed out. Grant bob access?**), or
+wording added or removed (**Should I deploy to production?** then **Should I deploy to
+production and delete the database?**), since approving the newer one would authorize something
+else. Targets swapped in several places count the same way when every other difference is just
+as small (**deploy to staging and notify alice** then **deploy to production and notify bob**). The context beneath the question is read the same way: the same question over **Deploy to
+staging.** and then over **Deploy to production.** keeps both cards, while a retry that restates
+its background in its own words does not. A question that gains or loses a negation is a
+different decision too (**should I grant alice access** to **should I not grant alice access**,
+a **shouldn't**, or **deploy with backups** to **deploy without backups**), and so is one that keeps the same words but moves its negation to another
+action (**should I not deploy to staging and deploy to production** to **should I deploy to
+staging and not deploy to production**): approving one means the opposite of approving the
+other. Only the question is read for negation, not its context, which a retry restates freely,
+and not the retry announcement (**The previous prompt was not answered.** is about the last
+call). A retry that only leaves a number or a name out still counts as the same
+decision.
+
+The choices must be identical, because the options are what you are choosing between. Every
+option's label and detail, and how many options there are, must match the older question
+exactly; only case, punctuation and a **(Recommended)** marker are ignored. Only the question
+itself may be reworded. A **Ship** option whose detail goes from **deploy to staging** to
+**roll out to production** is a different choice, and so is one that merely rewords its detail:
+no wording rule could tell a restatement from a changed action, so both keep two cards.
+
+That is the operator's decision for issue #1527, made after its consequence was laid out:
+removing a different decision is worse than leaving two cards. Agents that retry usually reword
+their options as well as their question, and every retry in Mission Control's own history
+reworded at least one option, including the Codex retry behind issue #1527. Those retries still
+show two cards, as an accepted result of that decision rather than an open defect. The
+`request_input` tool description asks an agent that re-asks to offer the same options, which is
+what lets its retry collapse to one card.
+
+The matching reads wording, so it has one known edge, accepted as a product decision for this
+feature (issue #1527): a paraphrase that shares too little of the question's wording keeps both
+cards, for example **Which linter should this repository use?** then **Choose a linting tool for
+this project.** The options never count toward that wording, because they already have to be
+identical; two different questions offering the same long options are not made alike by them.
+The same goes for numbers: **PR #101**, **pull/101** and **pull request 101** are one pull
+request, so **#101** then **pull/102** is a different one, and a sign is part of a number
+(**+5** and **-5** are different settings).
+
+A card withdrawn by mistake is a question you never see again, while a card kept by mistake is
+one extra answer, so where the rules are unsure they keep the card.
+
+Any other new question leaves every older one in place, however similar it looks.
+Two kinds of question are never withdrawn at all:
+
+- Questions asked together in one batch of parallel tool calls, which reach Mission Control
+  less than 30 seconds apart. The agent is still waiting on all of them.
+- A question you chose **Remind me later** on, even after it comes back. You parked it on
+  purpose.
+
+Plan approvals, diff reviews, and other tools' confirmations are not affected.
+
 If the client cancels the blocking call before you answer, Mission Control marks that result
 channel detached. Your eventual answer is then queued through the same durable pending-turn
 outbox as a message you type into the session. The review id makes that fallback idempotent, so

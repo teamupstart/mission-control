@@ -3,7 +3,7 @@
  * Browser-safe. `src/mcp/home-dispatch/index.ts` registers them; later packages fill them in.
  */
 import { z } from "zod";
-import { AnswerRequestSchema, DispatchEntrySchema, DraftIntentSchema, HomeDispatchKindSchema } from "./home-dispatch.ts";
+import { ANSWER_ACTIONS, AnswerRequestSchema, DispatchEntrySchema, DraftIntentSchema, HomeDispatchKindSchema } from "./home-dispatch.ts";
 
 /** Registered in the `mission-control` server, outside workers, only while the flag is on. */
 export const HOME_DISPATCH_MCP_TOOLS = [
@@ -37,7 +37,7 @@ export const ReadInboxInputSchema = z.object({});
 
 /** `answer_task` mirrors the answers route without the caller fields. */
 export const AnswerTaskInputSchema = z.object({
-  action: z.enum(["answer", "approve_plan", "request_changes", "approve_review", "reject_review"]),
+  action: z.enum(ANSWER_ACTIONS),
   reviewId: z.string().min(1),
   option: z.string().optional(),
   text: z.string().optional(),

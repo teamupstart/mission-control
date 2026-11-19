@@ -577,7 +577,7 @@ change, describe it in an issue for the maintainers to evaluate. See
 - [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
   gaps and the OTLP query contract.
 - [Feature flags](docs/feature-flags.md) - machine-wide choices and live daemon and dashboard
-  gates. The registry ships one preview flag, `headless-mode`; Settings controls arrive separately.
+  gates. The registry ships one preview flag, `headless-mode`, which Settings > Feature flags toggles live.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries

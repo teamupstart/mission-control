@@ -39,7 +39,8 @@ export function neutraliseFences(text: string): string {
 function cleanText(text: string, max: number, keepNewlines: boolean): string {
   const withoutControls = text.replace(/\r\n?/g, "\n").replace(CONTROL_EXCEPT_NEWLINE, "");
   const shaped = keepNewlines ? withoutControls : withoutControls.replace(/\n/g, "\\n");
-  return neutraliseFences(capCodePoints(shaped, max));
+  // Escape first, then cap: escaping adds a backslash per fence tag, so the cap holds for what is shown.
+  return capCodePoints(neutraliseFences(shaped), max);
 }
 
 function fence(name: (typeof WORKER_FENCES)[number], body: string): string {

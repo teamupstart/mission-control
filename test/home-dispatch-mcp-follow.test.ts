@@ -88,3 +88,17 @@ test("F1 MCP follow: losing the stream fails closed, and a reconnect snapshot re
     t.stop();
   }
 });
+
+test("F1 MCP follow: a refused event stream has its body cancelled before the retry", async () => {
+  let cancelled = false;
+  let opens = 0;
+  const refused = () => new Response(new ReadableStream<Uint8Array>({ cancel() { cancelled = true; } }), { status: 503 });
+  const t = tools({ openEvents: async () => { opens++; return refused(); } });
+  try {
+    t.follow();
+    await eventually(() => (opens >= 1 && cancelled) || false);
+    assert.equal(t.isEnabled(), false);
+  } finally {
+    t.stop();
+  }
+});

@@ -507,7 +507,8 @@ async function smokeMctl() {
   child.stdout.on("data", (d) => (out += d));
   const code = await new Promise((done) => {
     child.on("error", () => done(-1));
-    child.on("exit", (c) => done(c));
+    // `close`, not `exit`: stdout is only guaranteed fully read once the stdio streams have closed.
+    child.on("close", (c) => done(c));
   });
   if (code !== 0 || !out.includes("usage: mctl") || !out.includes("doctor")) {
     fail(`mctl --help did not list its commands (exit ${code})`);

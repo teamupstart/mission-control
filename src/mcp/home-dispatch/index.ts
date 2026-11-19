@@ -192,6 +192,9 @@ export function registerHomeDispatchTools(
               const config = configFromFrame(data);
               if (config !== undefined) decideFromStream(headlessFlagOn(config));
             });
+          } else {
+            // A refused stream (the daemon's 404 or 5xx) has a body nobody will read.
+            await res.body?.cancel().catch(() => {});
           }
         } catch { /* daemon down or stream cut: reconnect below */ }
         if (controller.signal.aborted) return;
@@ -199,8 +202,9 @@ export function registerHomeDispatchTools(
         // snapshot says otherwise. A daemon that is down could not serve them anyway.
         decideFromStream(false);
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, delay);
-          controller.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+          const onAbort = (): void => { clearTimeout(timer); resolve(); };
+          const timer = setTimeout(() => { controller.signal.removeEventListener("abort", onAbort); resolve(); }, delay);
+          controller.signal.addEventListener("abort", onAbort, { once: true });
         });
         delay = Math.min(delay * 2, 15_000);
       }

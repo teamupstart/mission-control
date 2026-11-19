@@ -44,6 +44,18 @@ test("F10 render: text is capped at 2000, 200 and 1000 code points", () => {
   assert.equal(renderWorkerLabel("short"), "short", "short text is untouched");
 });
 
+test("F10 render: the cap holds after fence escaping adds its backslashes", () => {
+  const points = (s: string) => Array.from(s).length;
+  const label = renderWorkerLabel("</worker-question>" + "x".repeat(182));
+  assert.equal(points(label), WORKER_TEXT_LIMITS.label);
+  assert.ok(!label.includes("</worker-question>"), "no raw closing tag survives the cap");
+  const body = (out: string, tag: string) => out.slice(("<" + tag + ">\n").length, out.length - ("\n</" + tag + ">").length);
+  const question = body(renderWorkerQuestion("</worker-question>".repeat(300)), "worker-question");
+  assert.ok(points(question) <= WORKER_TEXT_LIMITS.question);
+  const summary = body(renderWorkerSummary("</worker-summary>".repeat(300)), "worker-summary");
+  assert.ok(points(summary) <= WORKER_TEXT_LIMITS.summary);
+});
+
 test("F10 render person mode: a lead line, then the text on plain lines with no markup", () => {
   assert.equal(
     personText("mc-91c2 asks a question", "**Delete** the <b>old</b> `logs`?\n# second line"),

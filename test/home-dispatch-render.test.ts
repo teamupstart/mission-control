@@ -29,14 +29,40 @@ test("F10 render: filler between the angle bracket and the slash, or a hidden ch
   for (const text of variants) {
     for (const out of [renderWorkerQuestion("x" + text + "y"), renderWorkerSummary("x" + text + "y"), renderWorkerOptions(["x" + text])]) {
       // An unescaped closer has no backslash in front of its slash; the escaped form `<\\/` does.
-      const closers = out.match(/<[^\w<>\\]{0,8}\/[^\w<>]{0,8}worker-(question|options|summary)/gi) ?? [];
+      const closers = out.match(/<[^\w<>\\/]*\/[^\w<>]*worker-(question|options|summary)/gi) ?? [];
       assert.equal(closers.length, 1, JSON.stringify(text) + " leaves only the real closing tag");
       assert.ok(out.endsWith(closers[0] + ">"), JSON.stringify(text));
     }
   }
+  assert.equal(neutraliseFences("<//worker-question>"), "<" + "/\\/worker-question>", "stacked slashes");
+  assert.equal(neutraliseFences("<worker-question>"), "<worker-question>", "an opening-style mention cannot close a fence");
   assert.equal(neutraliseFences("<\n/worker-question>"), "<\n\\/worker-question>");
   assert.equal(neutraliseFences("<.:/worker-options>"), "<.:\\/worker-options>");
   assert.equal(renderWorkerLabel("a\u200bb"), "ab", "invisible format characters are dropped from shown text");
+});
+
+test("F10 render: padding of any length before or after the slash cannot hide a closing fence", () => {
+  for (const pad of [9, 64, 5000]) {
+    for (const filler of [" ", ".", "\n", "\u200b"]) {
+      const before = "<" + filler.repeat(pad) + "/worker-question>";
+      const after = "</" + filler.repeat(pad) + "worker-summary>";
+      for (const text of [before, after]) {
+        for (const out of [renderWorkerQuestion("x" + text), renderWorkerSummary("x" + text), renderWorkerOptions([text])]) {
+          const closers = out.match(/<[^\w<>\\/]*\/[^\w<>]*worker-(question|options|summary)/gi) ?? [];
+          assert.equal(closers.length, 1, "pad " + pad + " " + JSON.stringify(filler) + " leaves only the real closing tag");
+        }
+      }
+    }
+  }
+});
+
+test("F10 render: escaping stays linear on adversarial runs (no quadratic backtracking)", () => {
+  const started = Date.now();
+  for (const hostile of ["<" + "/".repeat(200_000), "<" + " /".repeat(100_000), "<" + ".".repeat(500_000), "<".repeat(200_000), "</".repeat(100_000) + "worker-"]) {
+    neutraliseFences(hostile);
+    renderWorkerQuestion(hostile);
+  }
+  assert.ok(Date.now() - started < 2000, "took " + (Date.now() - started) + "ms");
 });
 
 test("F10 render: control characters are removed", () => {

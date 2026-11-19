@@ -27,11 +27,11 @@ const CONTROL_EXCEPT_NEWLINE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
 // Zero-width and bidi format characters render as nothing, so they can hide a tag from a reader
 // while a model still sees it. They are dropped from worker text before anything is matched.
 const INVISIBLE_FORMAT = /[\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g;
-// A closing fence is `<`, optional filler, `/`, optional filler, then the tag name. The filler is
-// any run of up to eight non-alphanumeric characters (whitespace, newlines, punctuation), so
-// padding between the `<` and the `/`, or after it, does not slip a closing tag past the escape.
-const FENCE_CLOSE = /<([^\w<>]{0,8})\/([^\w<>]{0,8})(worker-(?:question|options|summary))/gi;
-
+// A fence name preceded by `<` and a run of non-alphanumeric filler of ANY length (whitespace,
+// newlines, punctuation, slashes). One unbounded run, with no second filler group around a
+// required slash: that keeps the match linear in the text, where two slash-bearing groups would
+// backtrack quadratically on a long run of slashes, and the cap is applied after this escape.
+const FENCE_CLOSE = /<([^\w<>]*)(worker-(?:question|options|summary))/gi;
 function capCodePoints(text: string, max: number): string {
   const points = Array.from(text);
   return points.length <= max ? text : `${points.slice(0, max - 1).join("")}…`;
@@ -39,7 +39,11 @@ function capCodePoints(text: string, max: number): string {
 
 /** Neutralise a closing fence tag: `</worker-question>` becomes `<\/worker-question>`. */
 export function neutraliseFences(text: string): string {
-  return text.replace(FENCE_CLOSE, (_m, before: string, after: string, name: string) => "<" + before + "\\/" + after + name);
+  return text.replace(FENCE_CLOSE, (match, filler: string, name: string) => {
+    // No slash in the filler: an opening-style mention, which cannot close a fence.
+    const slash = filler.lastIndexOf("/");
+    return slash === -1 ? match : "<" + filler.slice(0, slash) + "\\" + filler.slice(slash) + name;
+  });
 }
 
 function cleanText(text: string, max: number, keepNewlines: boolean): string {

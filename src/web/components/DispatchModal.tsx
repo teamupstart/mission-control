@@ -31,6 +31,7 @@ import {
 import { withAttachments } from "@shared/attachments.ts";
 import {
   BACKLOG_TASK_KINDS,
+  SCHEDULE_TASK_KINDS,
   DISPATCH_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
@@ -40,7 +41,7 @@ import {
   hasReviewableDiff,
   isGrillFirstTaskKind,
   taskDefaultWorkflowId,
-  taskKindAllowsBacklog,
+  taskAllowsBacklog,
   type GrillFirstTaskKind,
 } from "@shared/task.ts";
 import type { EnvironmentCheckId, EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -1318,9 +1319,19 @@ function DispatchModal({
   // Every kind Dispatch launches, for the two modes that launch something new - `resident` is
   // launched from a profile in Resident mode, never picked as a kind. An edit is confined to
   // the kinds a backlog row can hold, and Ensemble to the kinds its members can be.
+  //
+  // A backlog row a Recurring Mission filed may also hold a chat, so its edit offers the
+  // mission's kinds - see `taskAllowsBacklog`.
+  const editedScheduleId = mode.kind === "edit" ? mode.task.scheduleId : null;
   const availableTaskKinds: readonly TaskKind[] =
-    mode.kind === "single" || mode.kind === "tour" ? DISPATCH_TASK_KINDS : BACKLOG_TASK_KINDS;
-  const backlogCompatible = taskKindAllowsBacklog(draft.kind);
+    mode.kind === "single" || mode.kind === "tour"
+      ? DISPATCH_TASK_KINDS
+      : editedScheduleId !== null
+        ? SCHEDULE_TASK_KINDS
+        : BACKLOG_TASK_KINDS;
+  const allowsBacklog = (kind: TaskKind): boolean =>
+    taskAllowsBacklog({ kind, scheduleId: editedScheduleId });
+  const backlogCompatible = allowsBacklog(draft.kind);
   // Opens on the last list this window received, so a rescan behind the daemon never leaves
   // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
   const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
@@ -1780,11 +1791,11 @@ function DispatchModal({
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
   function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
-    if (!taskKindAllowsBacklog(kind)) {
+    if (!allowsBacklog(kind)) {
       stashedDependencies.current = draft.dependencies;
       return { dependencies: [] };
     }
-    if (!taskKindAllowsBacklog(draft.kind)) {
+    if (!allowsBacklog(draft.kind)) {
       const stashed = stashedDependencies.current;
       stashedDependencies.current = NO_STASH;
       return stashed === NO_STASH ? {} : { dependencies: stashed };

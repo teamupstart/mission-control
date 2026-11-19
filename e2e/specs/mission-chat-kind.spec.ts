@@ -1,0 +1,187 @@
+import { mkdirSync } from "node:fs";
+
+import type { Locator, Page } from "@playwright/test";
+
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { expect, test } from "../fixtures/test.ts";
+
+/**
+ * A Recurring Mission whose runs are chats, so no after-work Workflow follows them.
+ *
+ * Chat is otherwise Dispatch-only: it never sits in the backlog. A mission is the one creator
+ * that may file one there, and this drives the whole path a person takes: choose chat in the
+ * mission editor, watch After work stand down, save, press Run now, find the chat on the
+ * Backlog, and launch it from its card's editor.
+ *
+ * NO MODEL TOKENS ARE SPENT: every agent binary is redirected at `e2e/fixtures/fake-agents.ts`.
+ */
+
+const EVIDENCE = artifactsDir("mission-chat-kind");
+
+async function shoot(page: Page, name: string, scrollTo?: Locator): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  if (scrollTo) await scrollTo.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
+  // oxlint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/mission-chat-kind/${name}.png`);
+}
+
+async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method = "PUT"): Promise<T> {
+  const response = await fetch(`${daemon.baseURL}${path}`, {
+    method: body === undefined ? "GET" : method,
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${path} answered ${response.status}: ${text}`);
+  return (text ? JSON.parse(text) : null) as T;
+}
+
+interface StoredSchedule {
+  id: string;
+  name: string;
+  template: { kind: string; workflowId: string | null } | null;
+}
+
+interface TaskSnapshot {
+  id: string;
+  title: string;
+  kind: string;
+  status: string;
+  scheduleId: string | null;
+  workflowId: string | null;
+}
+
+const MISSION = "Morning check-in";
+const TITLE = "Talk through today";
+
+test("a recurring mission can file a chat that runs with no after-work", async ({ dashboard, daemon }) => {
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await dashboard.getByRole("button", { name: "Create mission" }).click();
+
+  const kind = dashboard.getByRole("combobox", { name: "Task kind" });
+  await expect(kind.getByRole("option", { name: /^chat - / })).toHaveCount(1);
+  await kind.selectOption("chat");
+  const afterWork = dashboard.getByRole("combobox", { name: "After work" });
+  await expect(dashboard.getByText("A chat has no diff to review, so no Workflow runs after it.")).toBeVisible();
+  await expect(afterWork).toBeDisabled();
+  await expect(afterWork).toHaveValue("");
+  await shoot(dashboard, "01-editor-chat-kind", afterWork);
+
+  await dashboard.getByPlaceholder("e.g. Dependency audit").fill(MISSION);
+  await dashboard.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  // `RepoCombobox` portals its listbox over the fields below it; close it before reaching them.
+  await dashboard.keyboard.press("Escape");
+  await dashboard.getByPlaceholder("e.g. Run dependency audit and update unsafe packages").fill(TITLE);
+  await dashboard.getByPlaceholder("What should the agent do each run?").fill("What is on your mind this morning?");
+  // Paused, so no clock starts; Run now below is the only occurrence.
+  await dashboard.getByRole("button", { name: "Save paused" }).click();
+
+  let mission: StoredSchedule | undefined;
+  await expect
+    .poll(async () => {
+      mission = (await api<StoredSchedule[]>(daemon, "/api/schedules")).find((s) => s.name === MISSION);
+      return mission?.template ?? null;
+    }, { message: "the chat mission should reach the daemon" })
+    .toMatchObject({ kind: "chat", workflowId: null });
+
+  await dashboard.getByRole("button", { name: MISSION, exact: false }).first().click();
+  await dashboard.getByRole("button", { name: "Run now" }).click();
+
+  let filed: TaskSnapshot | undefined;
+  await expect
+    .poll(async () => {
+      filed = (await api<TaskSnapshot[]>(daemon, "/api/tasks")).find((t) => t.title === TITLE);
+      return filed ? { kind: filed.kind, status: filed.status, scheduleId: filed.scheduleId, workflowId: filed.workflowId } : null;
+    }, { message: "Run now should file a chat into the backlog" })
+    .toEqual({ kind: "chat", status: "backlog", scheduleId: mission!.id, workflowId: null });
+
+  // The chat waits on the Board's Backlog like any other mission run.
+  await api(daemon, "/api/ui/config", { layout: "board" });
+  await dashboard.reload();
+  const card = dashboard.locator("main.board section.board-backlog .bl-card", { hasText: TITLE });
+  await expect(card).toBeVisible();
+  await shoot(dashboard, "02-backlog-chat-card", card);
+
+  await card.getByRole("button", { name: TITLE, exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  await expect(dialog).toBeVisible();
+  await expectContentClearsBorder(dialog);
+  await expect(dialog.getByRole("combobox", { name: "Kind", exact: true })).toHaveValue("chat");
+  await shoot(dashboard, "03-edit-scheduled-chat", dialog);
+
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect
+    .poll(async () => (await api<TaskSnapshot[]>(daemon, "/api/tasks")).find((t) => t.id === filed!.id)?.status, {
+      message: "a mission-filed chat should launch from its backlog card",
+      timeout: 60_000,
+    })
+    .toBe("running");
+  const launched = (await api<TaskSnapshot[]>(daemon, "/api/tasks")).find((t) => t.id === filed!.id)!;
+  expect(launched.kind).toBe("chat");
+  expect(launched.workflowId).toBeNull();
+});
+
+test("Foreman launches a mission-filed chat on its own, with nobody pressing Dispatch", async ({ dashboard, daemon }) => {
+  const title = "Unattended check-in";
+  const mission = await api<StoredSchedule>(daemon, "/api/schedules", {
+    name: "Unattended chat mission",
+    // Monthly, so the cadence never fires during the test: Run now is the only occurrence.
+    expression: "0 9 1 * *",
+    timezone: "UTC",
+    overlapPolicy: "skip-active",
+    missedPolicy: "coalesce-latest",
+    template: {
+      title,
+      intent: "Ask me how the week is going.",
+      repoRoot: daemon.repo,
+      kind: "chat",
+      agent: "claude",
+    },
+  }, "POST");
+  expect(mission.template).toMatchObject({ kind: "chat", workflowId: null });
+
+  // Arm the backlog autopilot for this repo, live, and start the worker - the same switch an
+  // operator turns on. From here no step in this test dispatches anything.
+  await api(daemon, "/api/foreman/config", {
+    enabled: true,
+    mode: "live",
+    autoBacklog: true,
+    maxSessions: 2,
+    repoAllowlist: [daemon.repo],
+  });
+  await daemon.startForeman();
+
+  await api(daemon, "/api/ui/config", { layout: "board" });
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+  await dashboard.getByRole("button", { name: "Unattended chat mission", exact: false }).first().click();
+  await dashboard.getByRole("button", { name: "Run now" }).click();
+
+  let launched: (TaskSnapshot & { sessionId: string | null }) | undefined;
+  try {
+    await expect
+      .poll(async () => {
+        launched = (await api<Array<TaskSnapshot & { sessionId: string | null }>>(daemon, "/api/tasks"))
+          .find((t) => t.title === title);
+        return launched ? { status: launched.status, bound: launched.sessionId !== null } : null;
+      }, { message: "Foreman should launch the mission-filed chat without a manual dispatch", timeout: 90_000 })
+      .toEqual({ status: "running", bound: true });
+  } catch (error) {
+    throw new Error(`${(error as Error).message}\n\n--- daemon log ---\n${daemon.readLog()}`);
+  }
+  expect(launched!.kind).toBe("chat");
+  expect(launched!.scheduleId).toBe(mission.id);
+  expect(launched!.workflowId).toBeNull();
+
+  // What a person sees: the chat has left the Backlog and is running on the fleet.
+  await dashboard.keyboard.press("Escape");
+  const board = dashboard.locator("main.board");
+  await expect(board.locator("section.board-backlog .bl-card", { hasText: title })).toHaveCount(0);
+  await expect(board.getByText(title).first()).toBeVisible();
+  await shoot(dashboard, "04-foreman-launched-chat-running");
+});

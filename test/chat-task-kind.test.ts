@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { plannableBacklog, readyBacklog } from "../src/shared/backlog.ts";
 import { DispatchSchema, CreateScheduleSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
-import { TASK_KIND_BACKLOG_REFUSAL } from "../src/shared/task.ts";
+import { TASK_KIND_BACKLOG_REFUSAL, taskAllowsBacklogAutopilot } from "../src/shared/task.ts";
 import { TaskSourceDefaultsSchema } from "../src/shared/task-source.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
@@ -49,10 +49,13 @@ test("the dispatch schema accepts only an immediate dependency-free chat", () =>
     }).success,
     false,
   );
-  assert.equal(UpdateTaskSchema.safeParse({ kind: "chat" }).success, false);
+  // The schema admits chat as a kind a mission-filed row may be edited into; whether THIS
+  // row may hold it is `TaskManager.update`'s answer - see the malformed-row test below.
+  assert.equal(UpdateTaskSchema.safeParse({ kind: "chat" }).success, true);
+  assert.equal(UpdateTaskSchema.safeParse({ kind: "resident" }).success, false);
 });
 
-test("schedule and task-source schemas refuse chat instead of normalizing it", () => {
+test("a recurring mission may name chat; a task source still may not", () => {
   assert.equal(
     CreateScheduleSchema.safeParse({
       name: "Conversation",
@@ -72,7 +75,7 @@ test("schedule and task-source schemas refuse chat instead of normalizing it", (
         effort: null,
       },
     }).success,
-    false,
+    true,
   );
   assert.equal(TaskSourceDefaultsSchema.safeParse({ kind: "chat" }).success, false);
 });
@@ -225,4 +228,98 @@ test("startup never recovers an interrupted chat into the backlog", () => {
   const task = registry.getTask("chat-interrupted")!;
   assert.equal(task.status, "failed");
   assert.equal(task.error, INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR);
+});
+
+// ---- a chat a Recurring Mission filed ----
+
+const scheduled = (id: string) => ({
+  id,
+  schedule: { scheduleId: "mission-1", scheduleOccurrenceId: `occ-${id}`, scheduledFor: 1_700_000_000_000 },
+});
+
+test("the scheduler alone may file a chat into the backlog, and only as plain backlog work", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+
+  const filed = tasks.create({ ...chatInput, backlog: true }, scheduled("chat-scheduled"));
+  assert.equal(filed.status, "backlog");
+  assert.equal(filed.kind, "chat");
+  assert.equal(filed.scheduleId, "mission-1");
+  assert.equal(filed.workflowId, null, "a scheduled chat has no after-work");
+
+  for (const [id, create] of [
+    ["not backlog", () => tasks.create({ ...chatInput, backlog: false }, scheduled("chat-now"))],
+    [
+      "dependency",
+      () =>
+        tasks.create(
+          { ...chatInput, backlog: true, dependencies: [{ type: "task", taskId: filed.id }] },
+          scheduled("chat-dep"),
+        ),
+    ],
+    [
+      "source",
+      () =>
+        tasks.create(
+          { ...chatInput, backlog: true, source: { sourceId: "s", externalId: "e", url: null } },
+          scheduled("chat-source"),
+        ),
+    ],
+  ] as const) {
+    assert.throws(create, (error) => {
+      assert.ok(error instanceof TaskKindBacklogError, id);
+      return true;
+    });
+  }
+  for (const id of ["chat-now", "chat-dep", "chat-source"]) {
+    assert.equal(registry.getTask(id), undefined, id);
+  }
+});
+
+test("a mission-filed chat is ready backlog work Foreman may launch, but never assign", async () => {
+  const chat = mkTask({ id: "chat-mission", kind: "chat", status: "backlog", scheduleId: "mission-1" });
+  const stray = mkTask({ id: "chat-stray", kind: "chat", status: "backlog" });
+  assert.deepEqual(readyBacklog([chat, stray], null).map((task) => task.id), [chat.id]);
+  assert.deepEqual(plannableBacklog([chat, stray]).map((task) => task.id), [chat.id]);
+  assert.equal(taskAllowsBacklogAutopilot(chat), true);
+  assert.equal(taskAllowsBacklogAutopilot(stray), false);
+  assert.equal(taskAllowsBacklogAutopilot({ kind: "pipeline", scheduleId: "mission-1" }), false,
+    "a scheduled Pipeline still waits for a manual start");
+
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const launched: string[] = [];
+  (tasks as unknown as { dispatcher: unknown }).dispatcher = {
+    dispatch: async (id: string) => {
+      launched.push(id);
+      return { ok: true, task: registry.getTask(id)! };
+    },
+  };
+  registry.upsertTask(chat);
+  assert.equal((await tasks.assign(chat.id, "missing-session")).error, TASK_KIND_BACKLOG_REFUSAL);
+  const dispatched = await tasks.dispatch(chat.id);
+  assert.equal(dispatched.ok, true);
+  assert.deepEqual(launched, [chat.id]);
+});
+
+test("a mission-filed chat can be edited, re-filed, and recovered to its backlog card", async () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "edit-me", kind: "ship", status: "backlog", scheduleId: "mission-1" }));
+  registry.upsertTask(mkTask({ id: "failed-chat", kind: "chat", status: "failed", scheduleId: "mission-1" }));
+  registry.upsertTask(mkTask({
+    id: "interrupted-chat",
+    kind: "chat",
+    status: "dispatching",
+    scheduleId: "mission-1",
+    worktreePath: null,
+    homeName: null,
+    sessionId: null,
+  }));
+  const tasks = new TaskManager(registry);
+
+  assert.equal(registry.getTask("interrupted-chat")?.status, "backlog");
+  assert.equal((await tasks.update("edit-me", { kind: "chat" })).ok, true);
+  assert.equal(registry.getTask("edit-me")?.kind, "chat");
+  assert.equal((await tasks.reschedule("failed-chat")).ok, true);
+  assert.equal(registry.getTask("failed-chat")?.status, "backlog");
 });

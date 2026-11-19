@@ -14,8 +14,8 @@ import { capabilitiesFor, portableEffortLevels } from "@shared/harness-capabilit
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import type { KindWorkflowDefaults } from "@shared/task.ts";
 import {
-  BACKLOG_TASK_KINDS,
   MAX_LABELS,
+  SCHEDULE_TASK_KINDS,
   PRIORITY_LABELS,
   TASK_KIND_INFO,
   TASK_PRIORITIES,
@@ -591,8 +591,10 @@ export function ScheduleEditor({
                       dispatch form beside it offered. `label - purpose` because this
                       select is the only thing on this row that says what a kind IS - the
                       dispatch form can afford the blurb beside the option, and this
-                      cannot. */}
-                  {BACKLOG_TASK_KINDS.map((kind) => (
+                      cannot. Chat is offered here though no backlog form offers it: a
+                      mission-filed chat is the one chat Foreman launches - see
+                      `taskAllowsBacklog`. */}
+                  {SCHEDULE_TASK_KINDS.map((kind) => (
                     <option key={kind} value={kind}>
                       {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
                     </option>

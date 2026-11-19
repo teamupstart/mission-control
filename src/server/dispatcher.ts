@@ -42,7 +42,7 @@ import {
   dispatchHasNoProvisionedResources,
   taskGrillsFirst,
   TASK_KIND_BEHAVIOR,
-  taskKindAllowsBacklog,
+  taskAllowsBacklog,
   taskKindForcedRuntime,
   taskKindPersonaRefusal,
 } from "@shared/task.ts";
@@ -1158,7 +1158,7 @@ export class Dispatcher {
       // launch refusals before this phase remain failed so an unchanged retry is not
       // presented as ordinary work; failures after it retain the conservative cleanup path.
       if (backlogRecoveryEligible && dispatchHasNoProvisionedResources(cur)) {
-        const returnsToBacklog = taskKindAllowsBacklog(cur.kind);
+        const returnsToBacklog = taskAllowsBacklog(cur);
         this.patch(taskId, {
           status: returnsToBacklog ? "backlog" : "failed",
           error: message,

@@ -192,6 +192,28 @@ test("one due instant files exactly one backlog task, with full provenance", asy
   assert.equal(store.getSchedule(created.id)?.nextRunAt, NINE + DAY);
 });
 
+test("a chat mission files a chat backlog task with no after-work Workflow", async () => {
+  const h = harness("chat");
+  const base = definition();
+  const created = ok(
+    await h.manager.create({
+      ...base,
+      name: "Morning check-in",
+      template: { ...base.template, kind: "chat", title: "Talk through today" },
+    }),
+  ).schedule;
+  assert.equal(created.template?.kind, "chat");
+
+  h.clock.now = NINE + 5_000;
+  assert.equal((await h.manager.tick()).created, 1);
+
+  const [task] = tasksFor(created.id);
+  assert.equal(task?.kind, "chat");
+  assert.equal(task?.status, "backlog");
+  assert.equal(task?.workflowId, null, "a chat runs no after-work");
+  assert.equal(task?.sessionId, null, "the schedule files it; Foreman launches it");
+});
+
 test("a tick that lands ON the due instant runs it, rather than repairing past it", async () => {
   // This is the tick the LOOP actually performs. `sleepMs` sleeps `due - now`, so the
   // wake-up lands on the instant or a millisecond or two after it - never the comfortable

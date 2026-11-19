@@ -62,6 +62,7 @@ import {
   taskGrillsFirst,
   RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
+  taskAllowsBacklog,
   taskKindAllowsBacklog,
   taskKindBacklogRefusal,
   taskKindCreator,
@@ -3071,6 +3072,21 @@ export class TaskManager {
   }
 
   /**
+   * Whether this is the scheduler filing backlog work that `taskAllowsBacklog` admits only
+   * because a Recurring Mission filed it. Plain backlog work, no source and no dependencies:
+   * the provenance is the only thing that admits it, so nothing else may ride along.
+   */
+  private isScheduledBacklogCreate(input: CreateTaskInput, internal?: InternalCreateOptions): boolean {
+    return (
+      internal?.schedule !== undefined &&
+      input.backlog === true &&
+      input.source === undefined &&
+      (input.dependencies?.length ?? 0) === 0 &&
+      taskAllowsBacklog({ kind: input.kind, scheduleId: internal.schedule.scheduleId })
+    );
+  }
+
+  /**
    * Create a task, and - when the operator left the title blank - name it with a model
    * before anything downstream reads that name.
    *
@@ -3109,10 +3125,17 @@ export class TaskManager {
       }
     } else if (internal?.resident) {
       throw new TaskKindBacklogError(`a ${input.kind} task cannot be reserved by a resident run`);
-    } else if (creator === "dispatch" && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
+    } else if (
+      creator === "dispatch" &&
+      manualDispatch !== MANUAL_DISPATCH_TASK_CREATE &&
+      // A Recurring Mission's scheduler is the one other creator of a `scheduled-only` kind,
+      // and only as backlog work with no source or dependencies - see `taskAllowsBacklog`.
+      !this.isScheduledBacklogCreate(input, internal)
+    ) {
       throw new TaskKindBacklogError(refusal);
     }
     if (
+      !this.isScheduledBacklogCreate(input, internal) &&
       !taskKindAllowsBacklog(input.kind) &&
       (input.backlog || (internal !== undefined && !internal.resident) ||
         input.source !== undefined || (input.dependencies?.length ?? 0) > 0)
@@ -3565,7 +3588,7 @@ export class TaskManager {
       return { ok: false, error: RESIDENT_TASK_REFUSAL, task: t };
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
-      if (!taskKindAllowsBacklog(t.kind)) {
+      if (!taskAllowsBacklog(t)) {
         return { ok: false, error: taskKindBacklogRefusal(t.kind), task: t };
       }
       // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
@@ -4189,7 +4212,7 @@ export class TaskManager {
     if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
-    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind)) {
+    if (!isAnnotationOnlyUpdate(patch) && !taskAllowsBacklog({ kind: patch.kind ?? t.kind, scheduleId: t.scheduleId })) {
       return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
     }
     const intent = patch.intent?.trim() ?? t.intent;
@@ -6183,7 +6206,7 @@ export class TaskManager {
     }
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    if (!taskKindAllowsBacklog(t.kind)) {
+    if (!taskAllowsBacklog(t)) {
       return { ok: false, error: taskKindBacklogRefusal(t.kind) };
     }
     if (t.status !== "cancelled" && t.status !== "failed") {
@@ -6884,8 +6907,8 @@ export class TaskManager {
       if (!current || !dispatchHasNoProvisionedResources(current)) return;
       this.registry.upsertTask({
         ...current,
-        status: taskKindAllowsBacklog(current.kind) ? "backlog" : "failed",
-        error: taskKindAllowsBacklog(current.kind)
+        status: taskAllowsBacklog(current) ? "backlog" : "failed",
+        error: taskAllowsBacklog(current)
           ? INTERRUPTED_BEFORE_PROVISION_ERROR
           : taskKindCreator(current.kind) === "resident-launch"
             ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR

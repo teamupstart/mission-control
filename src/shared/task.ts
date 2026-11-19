@@ -403,6 +403,63 @@ export function taskKindBacklogRefusal(kind: TaskKind): string {
 }
 
 /**
+ * How a Recurring Mission may file this kind.
+ *
+ * - `backlog`: as ordinary backlog work. The kind's own backlog and autopilot answers apply
+ *   unchanged, so a scheduled Pipeline still waits for a manual start.
+ * - `scheduled-only`: a kind with no backlog of its own (`chat`) that a mission may still
+ *   file. Only a task the mission filed may sit in the backlog, and Foreman launches it like
+ *   any other run - otherwise every occurrence would wait for a click, which is not a
+ *   recurring mission. A chat dispatched by hand stays Dispatch-only.
+ * - `never`: no mission may file it.
+ */
+type KindScheduleFiling = "backlog" | "scheduled-only" | "never";
+
+const KIND_SCHEDULE_FILING: Record<TaskKind, KindScheduleFiling> = {
+  document: "backlog",
+  ship: "backlog",
+  bugfix: "backlog",
+  scout: "backlog",
+  plan: "backlog",
+  pipeline: "backlog",
+  chat: "scheduled-only",
+  resident: "never",
+};
+
+/** Whether a Recurring Mission's template may name this kind. */
+export function taskKindAllowsSchedule(kind: TaskKind): boolean {
+  return KIND_SCHEDULE_FILING[kind] !== "never";
+}
+
+/** Task kinds the Recurring Mission editor offers, in `TASK_KINDS` order. */
+export const SCHEDULE_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsSchedule);
+
+/** The fields the task-level backlog answers read, so a draft answers as well as a `Task`. */
+export type BacklogCandidate = Pick<Task, "kind"> & { scheduleId?: string | null };
+
+/** A task of a `scheduled-only` kind that a Recurring Mission filed. */
+function scheduledOnlyTask(task: BacklogCandidate): boolean {
+  return KIND_SCHEDULE_FILING[task.kind] === "scheduled-only" && (task.scheduleId ?? null) !== null;
+}
+
+/**
+ * Whether this TASK may sit in the backlog and be launched from it.
+ *
+ * The kind's answer, plus a mission-filed task of a `scheduled-only` kind. Every gate that
+ * asks about an existing backlog row asks this rather than `taskKindAllowsBacklog`, so a
+ * scheduled chat can be edited, dispatched, retried and returned to its card on a failed
+ * launch exactly like the backlog work around it.
+ */
+export function taskAllowsBacklog(task: BacklogCandidate): boolean {
+  return taskKindAllowsBacklog(task.kind) || scheduledOnlyTask(task);
+}
+
+/** Whether Foreman's unattended backlog loop may launch this TASK. See `taskAllowsBacklog`. */
+export function taskAllowsBacklogAutopilot(task: BacklogCandidate): boolean {
+  return allowsBacklogAutopilot(task.kind) || scheduledOnlyTask(task);
+}
+
+/**
  * Which creation surface may file a task of this kind.
  *
  * - `any`: every creator, durable producers included.

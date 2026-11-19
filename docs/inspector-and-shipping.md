@@ -909,8 +909,15 @@ holds any pull request.
 
 ### When a task's pull request merges
 
-A task whose pull request merged ends as **done**, with that pull request as its outcome,
-instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
+**Chat tasks are exempt from merge-driven completion.** A merged pull request stays recorded
+on the session and in its repository PR history, and still satisfies matching dependencies.
+The chat stays running with the same conversation and checkout, even while idle and regardless
+of the Shipping close-session setting. Use **Complete & close** when the conversation is over.
+If its agent disappears, normal failure and worktree retention rules apply; a later merge does
+not upgrade a failed or cancelled chat to done.
+
+For other task kinds, a task whose pull request merged ends as **done**, with that pull request
+as its outcome, instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
 yourself on GitHub lands its task exactly the same way.
 
 Everything in this section is written about the task's pull request, singular, which is what

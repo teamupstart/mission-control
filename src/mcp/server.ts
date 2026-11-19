@@ -832,11 +832,10 @@ server.registerTool(
     title: "Ask the human a question",
     description:
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
-      "they resolve it. Without `options`, they answer in free text or dismiss without an " +
-      "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
-      "the tool returns their answer, selections, or an explicit dismissal. They may also " +
-      "choose to chat about it instead; the result then says so and how to proceed, and you " +
-      "must not decide or re-ask the question yourself. They may also choose Remind me later: " +
+      "they resolve it. The operator can always type an answer. With `options`, they can also " +
+      "pick choices and add typed context. The tool returns their answer, selections, or an " +
+      "explicit dismissal. They may choose to chat about it, in which case the result tells you " +
+      "how to proceed. Do not decide or re-ask that question yourself. They may also choose Remind me later. " +
       "the tool then returns at once WITHOUT an answer, saying how to carry on meanwhile (your " +
       "best judgment, a provisional option, or holding the dependent work). Follow it, do not " +
       "ask the question again, and expect the answer later as a message in this conversation. " +
@@ -880,10 +879,10 @@ server.registerTool(
       allowOther: z
         .boolean()
         .optional()
-        .describe("Adds a free-text 'Other' field for an answer outside the options"),
+        .describe("Deprecated compatibility field. The text box is always available."),
     },
   },
-  async ({ question, context, options, multiSelect, allowOther }, extra) => {
+  async ({ question, context, options, multiSelect }, extra) => {
     // Refused before any review exists: a card the human cannot answer would leave this call,
     // and the session, waiting on something nobody can resolve. The daemon's schema enforces
     // the same rule; checking here first lets the agent read why instead of a transport error.
@@ -901,7 +900,7 @@ server.registerTool(
       // (`inputReviewBody`), and positional option ids, which the human's answer never shows the
       // agent - it comes back as LABELS. A resident's proposed instruction changes are asked
       // through the same builder.
-      const ask = requestInputReview({ question, context, options, multiSelect, allowOther });
+      const ask = requestInputReview({ question, context, options, multiSelect });
       const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions, undefined, true);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);

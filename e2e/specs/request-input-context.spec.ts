@@ -107,6 +107,14 @@ async function missionTools(daemon: DaemonHandle, launch: LaunchRecord): Promise
   return client;
 }
 
+async function openReview(page: Page): Promise<Locator> {
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  await page.locator(".console-detail").getByRole("button", { name: "to review" }).click();
+  const modal = page.getByRole("dialog", { name: "Review request" });
+  await expect(modal).toBeVisible();
+  return modal;
+}
+
 test("a task's decision reaches the operator with its context and tradeoffs, and the answer returns", async ({
   dashboard,
   daemon,
@@ -151,10 +159,7 @@ test("a task's decision reaches the operator with its context and tradeoffs, and
       { timeout: 120_000 },
     );
 
-    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-    await dashboard.locator(".console-detail").getByRole("button", { name: "to review" }).click();
-    const modal = dashboard.getByRole("dialog", { name: "Review request" });
-    await expect(modal).toBeVisible();
+    const modal = await openReview(dashboard);
 
     // The decision is the heading, printed once - not repeated as the body's lead.
     await expect(modal.getByRole("heading", { name: QUESTION })).toBeVisible();
@@ -174,9 +179,12 @@ test("a task's decision reaches the operator with its context and tradeoffs, and
     await expect(group.getByText(BIOME_TRADEOFF)).toBeVisible();
     await expect(group.getByText(ESLINT_TRADEOFF)).toBeVisible();
     await expect(group.getByRole("radio", { name: /^eslint/ })).toHaveAccessibleName(/recommended/i);
-    await evidence(modal, "decision-with-context");
 
     await group.getByRole("radio", { name: /^eslint/ }).check();
+    const answerBox = group.getByRole("textbox", { name: /^Other answer or context/ });
+    await expect(answerBox).toBeVisible();
+    await answerBox.fill("Please keep the flat config.");
+    await evidence(modal, "decision-with-typed-context");
     await modal.getByRole("button", { name: /^Submit/ }).click();
     await expect(modal).toBeHidden();
 
@@ -184,7 +192,51 @@ test("a task's decision reaches the operator with its context and tradeoffs, and
     const result = await answered;
     const text = (result.content as { type: string; text: string }[]).map((item) => item.text).join("\n");
     expect(result.isError, text).toBeFalsy();
-    expect(text).toContain("eslint");
+    expect(text).toContain("→ eslint\n  Context: Please keep the flat config.");
+  } finally {
+    await tools.close();
+  }
+});
+
+test("a legacy allowOther false still lets the operator submit a typed answer by itself", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  const tools = await missionTools(daemon, await dispatchedLaunch(daemon));
+  try {
+    const [result] = await Promise.all([
+      tools.callTool(
+        {
+          name: "request_input",
+          arguments: {
+            question: QUESTION,
+            options: [{ label: "biome" }, { label: "eslint" }],
+            allowOther: false,
+          },
+        },
+        undefined,
+        { timeout: 120_000 },
+      ),
+      (async () => {
+        const modal = await openReview(dashboard);
+        const group = modal.getByRole("group", { name: QUESTION });
+        await expect(group.getByRole("radio", { name: "biome" })).toBeVisible();
+        await expect(group.getByRole("radio", { name: "Chat about it" })).toBeVisible();
+        const text = group.getByRole("textbox", { name: /^Other answer or context/ });
+        await expect(text).toBeVisible();
+        const submit = modal.getByRole("button", { name: "Submit" });
+        await expect(submit).toBeDisabled();
+        await text.fill("Use oxlint instead.");
+        await expect(submit).toBeEnabled();
+        await evidence(modal, "decision-with-typed-answer");
+        await submit.click();
+        await expect(modal).toBeHidden();
+      })(),
+    ]);
+    const text = (result.content as { type: string; text: string }[]).map((item) => item.text).join("\n");
+    expect(result.isError, text).toBeFalsy();
+    expect(text).toBe(`Answered:\n\n• ${QUESTION}\n  Other: Use oxlint instead.`);
   } finally {
     await tools.close();
   }

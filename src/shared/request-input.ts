@@ -5,7 +5,7 @@
 // agent's behalf - a resident's proposed instruction changes - so the two can never render or
 // answer differently.
 
-import type { PlanDecision } from "./types.ts";
+import type { PlanDecision, ReviewKind } from "./types.ts";
 import { titleLine } from "./title.ts";
 import { inputReviewBody } from "./decision-asks.ts";
 
@@ -27,7 +27,6 @@ export interface RequestInputAsk {
   context?: string;
   options?: ReadonlyArray<{ label: string; detail?: string; recommended?: boolean }>;
   multiSelect?: boolean;
-  allowOther?: boolean;
 }
 
 export interface RequestInputReview {
@@ -44,8 +43,8 @@ export interface RequestInputReview {
  * its context (`inputReviewBody`), so a long or multi-line ask is readable rather than folded into
  * a bold one-liner with its newlines collapsed. A question already short enough comes back as its
  * own title, which keeps the equal case equal, and the review modal then shows it once. With
- * options, the ask carries exactly one decision; without, it is the open-ended ask the human
- * answers in free text.
+ * options, the ask carries exactly one decision with a text field. Without options it is an
+ * open-ended ask.
  */
 export function requestInputReview(ask: RequestInputAsk): RequestInputReview {
   const decisions = ask.options?.length
@@ -54,8 +53,19 @@ export function requestInputReview(ask: RequestInputAsk): RequestInputReview {
       question: ask.question,
       options: ask.options.map((option, index) => ({ ...option, id: requestInputOptionId(index) })),
       multiSelect: ask.multiSelect,
-      allowOther: ask.allowOther,
+      allowOther: true,
     }]
     : undefined;
   return { kind: "input", title: titleLine(ask.question), body: inputReviewBody(ask.question, ask.context), decisions };
+}
+
+/** Older request_input cards used the same positional IDs before they tracked snoozability. */
+export function restoreRequestInputText(kind: ReviewKind, decisions: PlanDecision[] | null): PlanDecision[] | null {
+  const decision = decisions?.[0];
+  if (
+    kind !== "input" || decisions?.length !== 1 || decision?.id !== REQUEST_INPUT_DECISION_ID ||
+    decision.allowOther || !Array.isArray(decision.options) || !decision.options.length ||
+    !decision.options.every((option, index) => option?.id === requestInputOptionId(index))
+  ) return decisions;
+  return [{ ...decision, allowOther: true }];
 }

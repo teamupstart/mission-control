@@ -40,17 +40,20 @@ test("F1 MCP real daemon: the tool list follows the flag over the daemon's own /
   const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks: new TaskManager(registry), queues: new QueueManager(registry) });
   const server = serve({ hostname: "127.0.0.1", port, fetch: app.fetch });
   await new Promise<void>((resolve) => (server.listening ? resolve() : server.once("listening", resolve)));
-  const session = await connectFakeFormsClient({ daemonPort: port, forms: true, home, env: { MISSION_API_TOKEN: ensureToken() } });
   const hasAll = (list: string[]) => HOME_DISPATCH_MCP_TOOLS.every((n) => list.includes(n));
   const hasNone = (list: string[]) => HOME_DISPATCH_MCP_TOOLS.every((n) => !list.includes(n));
+  let session: Awaited<ReturnType<typeof connectFakeFormsClient>> | undefined;
   try {
-    assert.ok(hasNone(await session.listTools()), "off at start");
+    // Connected inside the try, so a failed connect still closes the daemon below.
+    session = await connectFakeFormsClient({ daemonPort: port, forms: true, home, env: { MISSION_API_TOKEN: ensureToken() } });
+    const live = session;
+    assert.ok(hasNone(await live.listTools()), "off at start");
     flags.applyFeatureFlagIntent({ kind: "flag", id: "headless-mode", enabled: true });
-    await eventually(async () => (hasAll(await session.listTools()) ? true : false), 10_000);
+    await eventually(async () => (hasAll(await live.listTools()) ? true : false), 10_000);
     flags.applyFeatureFlagIntent({ kind: "flag", id: "headless-mode", enabled: false });
-    await eventually(async () => (hasNone(await session.listTools()) ? true : false), 10_000);
+    await eventually(async () => (hasNone(await live.listTools()) ? true : false), 10_000);
   } finally {
-    await session.close();
+    await session?.close();
     unsubscribe();
     (server as { closeAllConnections?: () => void }).closeAllConnections?.();
     await new Promise<void>((resolve) => server.close(() => resolve()));

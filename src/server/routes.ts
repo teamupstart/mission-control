@@ -1,3 +1,5 @@
+import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { applyFeatureFlagIntent, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -8874,6 +8876,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
     registry.emitStorageConfigChanged();
     return c.json(saved);
+  });
+
+  app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
+  app.put("/api/feature-flags", async (c) => {
+    const parsed = await parseBody(c, FeatureFlagIntentSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = applyFeatureFlagIntent(parsed.data);
+      if (!result.ok) return c.json({ error: result.error }, 400);
+      return c.json({ config: result.config });
+    } catch (error) {
+      return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
+    }
   });
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the

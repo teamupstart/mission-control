@@ -136,3 +136,14 @@ hook's `storageConfigRevision` counter, bumped on that event and on every reconn
 open Settings > Storage re-read the route. `storage_health` cannot carry that signal: a save
 that prunes nothing leaves the aggregate unchanged, so no frame is sent. A re-read replaces only
 the fields not edited in that window, and Save sends only the fields edited there.
+
+## Feature flags
+
+`feature_flags` carries `{ config }`, the machine's full `{ enableAll, overrides }` setting.
+The reconnect snapshot carries it as `featureFlags`, and `MissionState.featureFlags` is the
+only browser owner. `useFeatureFlag` resolves against that state; before a snapshot it uses
+defaults. The record is bounded to 512 overrides with ids at most 64 characters, below 40 KiB
+when serialized even at the maximum. Identical frames are suppressed by comparing the master
+and every override, independent of key order. It is not a `LINE_INPUT_EVENTS` member: no Line
+stage consumes flags. Writes and settings restores publish after persistence, without polling.
+See [Feature flags](feature-flags.md).

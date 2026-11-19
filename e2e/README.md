@@ -1,3 +1,15 @@
+`feature-flags-stream.spec.ts` exercises Phase 1's real dashboard event consumer against the
+isolated production daemon. A private Vite build substitutes a preview fixture registry and
+adds diagnostic outputs of App's `featureFlags`, `connected` and `hasSnapshot` values plus a
+consumer of the real `useFeatureFlag` hook beneath App's provider. It does not replace the
+hook, routes or SSE transport. Two open windows assert both config and the resolved answer
+from a seeded snapshot, live master changes and a reconnect snapshot after missing a change,
+without navigation. The shipped registry stays empty and no product controls are added.
+`MC_E2E_FEATURE_FLAGS_DROP=snapshot` or `live` omits that handler's state update only in the
+private build; `hook` forces the hook's answer to false. Each negative control must fail.
+`MC_E2E_EVIDENCE=1` captures the peer window after reconnection under
+`e2e/.artifacts/feature-flags-stream/`.
+
 # Browser end-to-end tests
 
 `specs/sdk-terminal-handoff.spec.ts` extends the terminal boundary with

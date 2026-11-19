@@ -43,6 +43,8 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "database-backups", surface: "settings" },
   // Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget.
   { id: "storage-limits", surface: "settings" },
+  // Phase 2 moves this to settings when its operator control arrives. The id is final.
+  { id: "feature-flags", surface: "runtime" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

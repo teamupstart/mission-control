@@ -1,3 +1,5 @@
+import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import { getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
@@ -615,6 +617,7 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  * `settings_restored` is deliberately absent: it invalidates browser configuration and
  * catalogs, none of which is a Line fold input.
  */
+// feature_flags is not a Line input: the empty flag registry supplies no stage data.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",
@@ -1167,6 +1170,7 @@ export class Registry extends EventEmitter {
   /** Last fleet figures emitted, so an unchanged recompute doesn't wake every browser. */
   private lastFleetCost: FleetCost | null = null;
   private lastFleetCostAt = 0;
+  private lastFeatureFlags: FeatureFlagsConfig | null = null;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
@@ -1303,6 +1307,7 @@ export class Registry extends EventEmitter {
     fileCommentReviews: FileCommentReview[];
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
+    featureFlags: FeatureFlagsConfig;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1344,6 +1349,7 @@ export class Registry extends EventEmitter {
       // first mutation: the strip is permanent chrome, so a dashboard opened onto a quiet
       // fleet must read "nothing waiting · no sessions open" rather than six blanks.
       lineSummary: this.lineSummaryNow(),
+      featureFlags: getFeatureFlagsConfig(),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1437,6 +1443,13 @@ export class Registry extends EventEmitter {
     this.keepAwake = status;
     if (same) return;
     this.emitEvent({ type: "keep_awake_status", status });
+  }
+
+  /** Publish the full bounded config, suppressing identical writes. */
+  emitFeatureFlags(config: FeatureFlagsConfig): void {
+    if (this.lastFeatureFlags && sameFeatureFlagsConfig(this.lastFeatureFlags, config)) return;
+    this.lastFeatureFlags = { ...config, overrides: { ...config.overrides } };
+    this.emitEvent({ type: "feature_flags", config });
   }
 
   /**

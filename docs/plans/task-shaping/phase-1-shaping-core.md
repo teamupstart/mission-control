@@ -49,7 +49,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    the tuples listed under "Registry data" in `phased-plan.md`.
 3. **`src/shared/shaping.ts`.** The request and result schemas from `plan.md`. `ShaperSchema`
    with a discriminated `transport` for all four ids, header and env reference syntax checked
-   but not resolved. `ShaperManifestSchema` adds an optional `enabled`. `ShapingConfigSchema`
+   but not resolved. The `mcp` config's `contextDelivery` is `folded` or `argument`, with no
+   value that omits the context. `ShaperManifestSchema` adds an optional `enabled`. `ShapingConfigSchema`
    with defaults (5 s, 10 s, 16 KiB, 32 KiB) and maxima (30 s, 60 s, 64 KiB), at most 32
    shapers. `ShapingIntentSchema`: `upsert`, `remove`, `enable`, `reorder`, `settings`. The pure
    functions, each taking its definitions as arguments so tests inject their own.
@@ -132,5 +133,8 @@ reshape them. They replace the contents of their own transport file, `discovery.
   reference that fails closed, `ctx` gained the per-run scope for one MCP connection per run,
   and `shaperIsLocal` keeps local paths out of remote requests.
 - For Phase 6: the built-in id and its options are declared here.
+- Plan validation repair, 2026-11-19: `contextDelivery` lost its third value. Every shaper
+  receives the complete collected input (constraint C2), so the schema must not offer a way
+  to withhold it.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

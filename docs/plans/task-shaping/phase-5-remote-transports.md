@@ -49,9 +49,13 @@ identity, stored secrets.
    loopback. Redirects by hand, same origin only. Read at most 256 KiB. A status outside 2xx is
    `failed`, with the status. The deadline aborts the request.
 4. **`mcp`.** Connect, call the configured tool once per repository, close at the end of the
-   run. Arguments are `{ task, repo: { name, facts?, summary? }, version? }`.
-   `contextDelivery`: `folded` appends three fixed lines to `task` (kind, harness, after-work
-   step), `argument` adds a `context` argument, `none` adds nothing. Read the reply from the
+   run. Arguments are `{ task, repo: { name, facts?, summary? }, version? }`. The complete
+   collected input always reaches the tool, in one of the two `contextDelivery` modes that
+   `plan.md` defines. `folded` (default) appends one fixed block to `task` that states every
+   other collected field: title, kind, harness and runtime, after-work step, labels, priority,
+   and each attached repository with its role and branch. `argument` sends the whole `context`
+   object as a `context` argument. There is no mode that omits it. Render the block with one
+   pure function, so a test can pin its text. Read the reply from the
    structured content when it is an object, otherwise from the first text content parsed as
    JSON. A tool error is `failed`, with its text, bounded.
 5. **Reply field.** `GET /api/shaping` returns `references` from `referenceStatus`.
@@ -62,6 +66,7 @@ identity, stored secrets.
 ## Data, API and compatibility
 
 - No schema change. The `mcp` and `http` config shapes were declared in Phase 1.
+  `contextDelivery` has exactly two values, `folded` and `argument`.
 - A local path is never sent to a remote shaper. Phase 1's request builder already omits paths
   for a transport that is not local. Add a test that pins it for both transports here.
 - Nothing company-specific: header names, tool names and URLs are all configuration.
@@ -74,7 +79,9 @@ identity, stored secrets.
   status, a redirect off the origin, the HTTPS rule, the body cap, a timeout, resolved headers,
   and no request when a reference is missing.
 - `test/shaping-transport-mcp.test.ts`, against `test/fixtures/fake-guidance-mcp.mjs` (a local
-  server with a `get_guidance` tool): the argument shape in each `contextDelivery` mode,
+  server with a `get_guidance` tool): the argument shape in both `contextDelivery` modes,
+  that every collected field of a two-repository task (title, kind, harness, runtime,
+  after-work step, labels, priority, both repositories) reaches the tool in each mode,
   structured and text replies, a tool error, a timeout, a `degraded: true` reply passed
   through, one server process for a run over two repositories, and the same calls over
   streamable HTTP.
@@ -87,6 +94,8 @@ identity, stored secrets.
 - Registering the fixture `get_guidance` tool through the API and dry-running it returns its
   guidance, with no code beyond configuration.
 - No value of an environment reference appears in any reply, log or record.
+- In both `contextDelivery` modes the tool receives the complete collected input, and no
+  configuration can reduce it.
 
 ## Handoff
 
@@ -100,3 +109,7 @@ free of shaping-specific assumptions where that is cheap.
 - Phase 3: renders `references` and lists environment names at import. This phase supplies
   the data only.
 - Phase 4: a discovered manifest with an `mcp` or `http` transport works with no change here.
+- Plan validation repair, 2026-11-19: the mode that sent no context was removed, and `folded`
+  now carries the whole collected input instead of three fields. An `mcp` shaper can no
+  longer be configured to receive less than constraint C2 requires. Phase 1's schema was
+  changed to match.

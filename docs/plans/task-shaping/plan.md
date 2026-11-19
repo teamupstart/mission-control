@@ -132,8 +132,11 @@ Result:
 
 Rules:
 
-- `task` is the operator's prompt and nothing else. Kind, harness, after-work step, labels and
-  the repository list are in `context`, which is how C2's "complete collected input" is met.
+- `task` is the operator's prompt and nothing else. Title, kind, harness, runtime, after-work
+  step, labels, priority and the whole repository list are in `context`. Together they are
+  C2's "complete collected input", and every shaper receives all of it on every transport. No
+  setting withholds any of it. The `mcp` transport, whose tool has no `context` field, has its
+  own rule for carrying it, under Transports.
 - `repo.path` and the paths in `context.repositories` go to local transports only (`command`,
   `builtin`, an `mcp` server started as a local process). A remote shaper never gets a local path.
 - `repo.facts` and `repo.summary` are absent in a gather request, because producing them is
@@ -156,7 +159,8 @@ Mapping to FR-02 `get_guidance(task, repo{name, facts?, summary?}, version?) -> 
 guidance[], truncated, degraded}`: the names and shapes are identical. Mission Control adds
 `protocol`, `stage`, `context` and `limits` to the request, and reads `title`, `repo` and
 `notes` from the result when present. FR-02's caps match the defaults here: 16 KiB per body,
-a 4 KiB summary, 10 results.
+a 4 KiB summary, 10 results. An `mcp` selector is called with exactly FR-02's three arguments,
+and the rest of the input reaches it folded into `task` or as a `context` argument.
 
 ### Stages
 
@@ -194,15 +198,37 @@ mapping and the record. A new transport cannot change those semantics.
   worktree and a selector in an empty directory. Output is capped at 256 KiB, and a timeout
   kills the process group.
 - **`mcp`.** Config is `{ server, tool, contextDelivery }`. `server` is
-  `{ type: "stdio", command, args, env }` or `{ type: "http", url, headers }`. The tool
-  receives `{ task, repo: { name, facts?, summary? }, version? }`, the `get_guidance` input.
-  `contextDelivery` says what happens to `context`: `folded` (default) appends three fixed
-  lines to `task` naming the kind, harness and after-work step, as FR-02 section 5a proposes.
-  `argument` sends it as a `context` argument. `none` sends neither. A local server is
-  started once per shaping run and closed when the run ends.
+  `{ type: "stdio", command, args, env }` or `{ type: "http", url, headers }`. The tool's
+  arguments are `{ task, repo: { name, facts?, summary? }, version? }`, the `get_guidance`
+  input, so an existing tool is called unchanged. That input has no field for the rest of the
+  request, so the transport always delivers the complete collected input in one of two ways.
+  There is no mode that omits it.
+  - `folded` (default). The `task` argument is the operator's prompt followed by one fixed,
+    labelled block that states every other collected field: title, kind, harness and runtime,
+    after-work step, labels, priority, and each attached repository with its role and branch.
+    This is the folding FR-02 section 5a proposes, applied to the whole input instead of
+    three fields. It works with any `get_guidance` implementation.
+  - `argument`. `task` is the prompt alone, and the whole `context` object is sent as a
+    `context` argument, for a server whose tool accepts one.
+
+  In both, `repo` is the repository the call is about, with the facts and summary a gatherer
+  produced. A local server is started once per shaping run and closed when the run ends.
 - **`http`.** Config is `{ url, headers }`. HTTPS only, except to loopback. Redirects are not
   followed off the origin. The response body is capped at 256 KiB.
 - **`builtin`.** Config is `{ builtin, options }`. v1 ships one, `repository-files`.
+
+The block that `folded` appends to the prompt, for a task with two repositories:
+
+```text
+Task context from Mission Control:
+- Title: Retry failed charges
+- Kind: ship
+- Harness: claude (sdk)
+- After-work step: Review and merge
+- Labels: payments
+- Priority: high
+- Repositories: billing-api (primary, branch task/retry), ledger (additional, branch task/retry)
+```
 
 ### Registry, config and wire
 
@@ -558,7 +584,7 @@ after phase 5.
 | Spec | Change |
 | --- | --- |
 | MC context plugin interface (placeholder) | Replaced by this design. Its open questions are answered by D4 to D8 and the sections above. |
-| FR-02, section 5a and question 8 | The generic call site ships with this plan (D11). The FR-02 owner registers a selector shaper for `get_guidance` instead of writing a call site. Question 12 is answered by D6, D7 and D8. |
+| FR-02, section 5a and question 8 | The generic call site ships with this plan (D11). The FR-02 owner registers a selector shaper for `get_guidance` instead of writing a call site. The complete collected input reaches the tool folded into `task`, which is section 5a's proposal applied to the whole input. Question 12 is answered by D6, D7 and D8. |
 | FR-04 | `route_skills` becomes the `route` stage when its contract is published (D5). |
 | FR-05, section 12.2 | `degraded` reaches headless surfaces through the task record. No headless change. |
 | FR-06 | The promotion adapter gets its own registry on this foundation (D10). Step 7 fits as a built-in selector. |

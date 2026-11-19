@@ -46,6 +46,11 @@ Each phase document cites the findings it depends on. The ones that shaped the s
 7. **Prompt-size measurement belongs to Phase 2**, which owns the seam.
 8. **A local `command` call is bounded by its timeout.** `run()` cannot be aborted, so the step
    deadline is enforced by giving each call the time that is left.
+9. **An `mcp` shaper always receives the complete collected input.** Plan validation found
+   that the first version of `contextDelivery` had a mode that sent none of it and a default
+   that folded only three fields into `task`. There are now two modes, `folded` and
+   `argument`, and both carry everything constraint C2 lists. The `get_guidance` call itself
+   is unchanged.
 
 ## Size and phase count
 
@@ -109,6 +114,7 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
 | Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts` |
 | References | 5 | `resolveReferences` and `referenceStatus` in `src/server/shaping/references.ts` |
+| MCP context delivery | 1 (schema), 5 (behaviour) | `contextDelivery` is `folded` or `argument`. Both deliver the complete collected input, and no mode omits it. |
 | Guide | 1 | `docs/task-shaping.md`, one section per phase |
 
 ## Who owns each decision

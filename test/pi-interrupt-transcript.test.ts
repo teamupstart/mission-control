@@ -62,7 +62,7 @@ test("Pi only attributes assistant stopReason aborted to an interruption", (t) =
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "session.jsonl");
   const records = [null, {}, { type: "message", message: null },
-    ...["stop", "length", "error", "toolUse", "unknown"].map((stopReason) => ({
+    ...["stop", "length", "toolUse", "unknown"].map((stopReason) => ({
       ...capturedAbort, message: { ...capturedAbort.message, stopReason },
     })),
     ...["user", "toolResult"].map((role) => ({

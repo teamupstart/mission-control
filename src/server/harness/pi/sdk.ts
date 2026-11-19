@@ -14,7 +14,7 @@ import type {
   SdkUsage,
 } from "../types.ts";
 import { defaultPiSdkDeps } from "./sdk-deps.ts";
-import { PiSdkError, classifyPiFailure, redact } from "./sdk-errors.ts";
+import { PiSdkError, classifyPiFailure, piTurnFailure, redact } from "./sdk-errors.ts";
 import type {
   PiAssistantSummary,
   PiImage,
@@ -350,7 +350,7 @@ class PiSdkSession implements SdkSessionHandle {
             // abort that clear performed and the note belongs to nobody.
             if (this.session !== session) return;
             if (this.turnActive && this.settled === before) this.completeTurn();
-            this.note(classifyPiFailure(err, this.providerOfRecord()).message);
+            this.note(piTurnFailure(err, this.providerOfRecord()));
           },
         );
       void running;
@@ -552,11 +552,11 @@ class PiSdkSession implements SdkSessionHandle {
     if (!this.turnActive || this.stopped || this.clearing) return;
     this.turnActive = false;
     this.prTools.clear();
-    const failure = this.lastAssistant?.errorMessage ?? null;
+    const failure = this.lastAssistant?.stopReason === "error" || !!this.lastAssistant?.errorMessage;
     if (this.lastAssistant?.modelId) this.modelId = this.lastAssistant.modelId;
     this.out.emit({ kind: "turn_done", usage: usageFrom(this.lastAssistant) });
     this.activity = failure
-      ? classifyPiFailure(new Error(failure), this.providerOfRecord()).message
+      ? piTurnFailure(this.lastAssistant?.errorMessage, this.providerOfRecord())
       : null;
     this.lastAssistant = null;
     this.publish("idle");

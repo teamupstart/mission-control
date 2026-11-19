@@ -198,8 +198,19 @@ test("a turn that failed still completes, and says why in words an operator can 
   const idle = emitted.at(-1)!;
   assert.equal(idle.kind, "state");
   assert.equal(idle.state, "idle");
-  assert.match(idle.activity ?? "", /expired/i);
+  assert.match(idle.activity ?? "", /^Pi turn failed:.*expired/i);
   assert.match(idle.activity ?? "", /\/login amazon-bedrock/);
+});
+
+test("a provider error without details is visibly failed and a successful retry clears live activity", async () => {
+  const pi = await running();
+  await pi.play(assistant({ stopReason: "error", errorMessage: null }), { type: "agent_settled" });
+  const failed = pi.events.at(-1);
+  assert.match(failed?.kind === "state" ? failed.activity ?? "" : "", /Pi turn failed/);
+  pi.session.finish();
+  await pi.handle.send({ text: "retry" });
+  await pi.play({ type: "agent_start" }, assistant(), { type: "agent_settled" });
+  assert.deepEqual(pi.events.at(-1), { kind: "state", state: "idle", activity: null });
 });
 
 test("a failure that arrives after acceptance is surfaced rather than thrown into the void", async () => {

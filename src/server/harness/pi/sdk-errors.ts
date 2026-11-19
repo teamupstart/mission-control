@@ -183,3 +183,9 @@ function classifyKind(raw: string): PiFailureKind {
   }
   return "provider-error";
 }
+
+/** Shared live activity and durable transcript wording for a failed Pi turn. */
+export function piTurnFailure(error: unknown, provider: string | null): string {
+  const detail = typeof error === "string" ? error.trim() : error;
+  return `Pi turn failed: ${classifyPiFailure(detail || "Provider returned an error without details", provider).message}`;
+}

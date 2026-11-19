@@ -5,6 +5,7 @@ import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
 import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
+import { piTurnFailure } from "./sdk-errors.ts";
 import { piPassiveRead } from "./meta.ts";
 import { readRange } from "../../util/file-tail.ts";
 
@@ -179,6 +180,11 @@ export function piToMessages(o: unknown): TranscriptMessage[] {
   // a successful Escape write alone is not proof that the agent stopped a turn.
   if (role === "assistant" && m.stopReason === "aborted") {
     messages.push({ id: `interrupt:${id}`, role: "user", text: "[Request interrupted by user]", tools: [], ts });
+  }
+  if (role === "assistant" && m.stopReason === "error") {
+    messages.push({ id: `failure:${id}`, role: "assistant", tools: [], ts,
+      text: piTurnFailure(typeof m.errorMessage === "string" ? m.errorMessage : null,
+        typeof m.provider === "string" ? m.provider : null) });
   }
   return messages;
 }

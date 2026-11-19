@@ -4999,7 +4999,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     checkToken(c.req.header("x-harness-token"));
 
   // --- headless mode: every /mcp/dispatch/* route, behind one requireFeature gate ---
-  registerHomeDispatchRoutes(app, { authed, tasks, workflows });
+  registerHomeDispatchRoutes(app, { authed, tasks, workflows, registry });
 
   // --- hook ingest (token-guarded) ---
   app.post("/hooks/:event", async (c) => {

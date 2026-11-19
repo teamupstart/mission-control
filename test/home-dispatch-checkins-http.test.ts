@@ -93,8 +93,8 @@ test("F4 checkin: a refused inbox read passes its status through and does not re
   let now = 100;
   resetCheckinsForTest(() => now);
   const caller = { sessionId: "s1", claudePid: null, cwd: tmpdir() };
-  const refused = await handleCheckin(caller, { readInbox: async () => ({ status: 501, body: { error: "not implemented" } }) });
-  assert.equal(refused.status, 501);
+  const refused = await handleCheckin(caller, { readInbox: async () => ({ status: 409, body: { error: "inbox unavailable" } }) });
+  assert.equal(refused.status, 409);
   now = 200;
   const ok = await handleCheckin(caller, { readInbox: async () => ({ status: 200, body: { items: [item("old", "ready", 50)] } }) });
   assert.equal((ok.body as { finished: unknown[] }).finished.length, 1, "the failed read did not count as a check-in");
@@ -110,4 +110,32 @@ test("F4 checkin route: the flag gate answers 404 off, and the body is validated
   assert.deepEqual(await off.json(), DISPATCH_FEATURE_DISABLED);
   flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
   assert.equal((await call({ cwd: repos })).status, 400, "sessionId is required");
+});
+
+test("F4 checkin route: while the inbox handler is still a stub, the live route lists this repository's tasks", async () => {
+  const { openDb } = await import("../src/server/db.ts");
+  const { stampTaskOrigin } = await import("../src/server/home-dispatch/origin.ts");
+  openDb().exec("DELETE FROM tasks");
+  const repo = realpathSync(mkdtempSync(join(repos, "live-")));
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const file = (title: string, enabled: boolean, origin: string | null) => {
+    const t = tasks.create({ repoRoot: repo, intent: title, title, kind: "ship", agent: "claude", backlog: true, enabled });
+    if (origin) stampTaskOrigin(t.id, { surface: "home-session", repo: origin, sessionId: "s1" });
+    return t;
+  };
+  file("queued one", true, repo);
+  file("shelved one", false, repo);
+  file("not mine", true, "/somewhere/else");
+  file("dashboard task", true, null);
+  const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks, queues: new QueueManager(registry) });
+  flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
+  const res = await app.request("/mcp/dispatch/checkins", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ sessionId: "s1", cwd: repo }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { waiting: [], running: [], finished: [], queued: 1, shelved: 1 });
 });

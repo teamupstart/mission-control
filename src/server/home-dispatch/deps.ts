@@ -1,3 +1,4 @@
+import type { Registry } from "../registry.ts";
 import type { TaskManager } from "../tasks.ts";
 import type { WorkflowManager } from "../workflows/manager.ts";
 import type { InboxResponse } from "@shared/home-dispatch.ts";
@@ -11,6 +12,7 @@ import type { HomeDispatchResult } from "./stub.ts";
 export interface HomeDispatchDeps {
   tasks?: TaskManager;
   workflows?: WorkflowManager | null;
+  registry?: Registry;
   /** Where a check-in reads the repository's tasks from. Defaults to the inbox handler. */
   readInbox?: (input: { repo: string }) => Promise<HomeDispatchResult<InboxResponse>>;
 }

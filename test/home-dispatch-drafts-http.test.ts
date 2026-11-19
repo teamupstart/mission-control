@@ -26,6 +26,12 @@ const { taskKindBacklogRefusal } = await import("../src/shared/task.ts");
 
 const FLAG = "headless-mode" as const;
 
+/** A workflow manager that answers only what a test scripts; every other method is a no-op. */
+function fakeWorkflows(scripted: unknown): unknown {
+  const table = scripted as Record<string, unknown>;
+  return new Proxy(table, { get: (target, prop) => (prop in target ? target[prop as string] : () => undefined) });
+}
+
 after(() => {
   closeDb();
   rmSync(home, { recursive: true, force: true });
@@ -56,7 +62,7 @@ interface Rig {
   refuse: { with: string | null };
 }
 
-function rig(): Rig {
+function rig(workflows?: unknown): Rig {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const dispatched: Rig["dispatched"] = [];
@@ -66,7 +72,7 @@ function rig(): Rig {
     dispatched.push({ id, ...options });
     return refuse.with === null ? { ok: true, task: tasks.get(id)! } : { ok: false, error: refuse.with };
   }) as typeof tasks.dispatch;
-  const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks, queues: new QueueManager(registry) });
+  const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks, queues: new QueueManager(registry), workflows: (workflows === undefined ? undefined : fakeWorkflows(workflows)) as never });
   return { app, tasks, dispatched, refuse };
 }
 
@@ -274,4 +280,49 @@ test("F3 drafts: bodies are validated", async () => {
   assert.equal((await post(r, "/drafts", { ...caller(repo) })).status, 400, "kind is required");
   assert.equal((await post(r, "/drafts", { ...caller(repo), kind: "pipeline" })).status, 400, "only dispatch kinds");
   assert.equal((await post(r, "/drafts/x/confirm", { ...caller(repo), choice: "maybe" })).status, 400);
+});
+
+test("F3 confirm: the chosen after-work workflow reaches the created task (default, explicit, None)", async () => {
+  const { NO_MISTAKES_REVIEW_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
+  const r = rig({ list: () => [], workflowSelectionBlock: () => null });
+  const repo = gitRepo("workflow-choice");
+  const confirmed = async (extra: Record<string, unknown>) => {
+    const draft = await create(r, repo, { words: "w", ...extra });
+    const done = await post(r, "/drafts/" + draft.body.draftId + "/confirm", { ...caller(repo), choice: "backlog" });
+    assert.equal(done.status, 200);
+    return r.tasks.get(done.body.taskId)!.workflowId;
+  };
+  assert.equal(await confirmed({}), NO_MISTAKES_REVIEW_WORKFLOW_ID, "the kind's default");
+  assert.equal(await confirmed({ workflowId: "w-explicit" }), "w-explicit");
+  assert.equal(await confirmed({ workflowId: null }), null, "explicit None");
+  assert.equal(await confirmed({ kind: "bugfix" }), "builtin-workflow:bug-fix-review");
+});
+
+test("F3 confirm: a refusal before the task exists keeps the draft, creates nothing, and can be corrected", async () => {
+  let block: { message: string } | null = { message: "that workflow cannot launch" };
+  const r = rig({ list: () => [], workflowSelectionBlock: () => block });
+  const repo = gitRepo("refusal-keep");
+  const draft = await create(r, repo, { words: "go", workflowId: "w-bad" });
+  const refused = await post(r, "/drafts/" + draft.body.draftId + "/confirm", { ...caller(repo), choice: "start" });
+  assert.deepEqual([refused.status, refused.body.error], [409, "that workflow cannot launch"]);
+  assert.equal(r.tasks.list().length, 0, "no task was created");
+  assert.deepEqual(r.dispatched, []);
+  const fixed = await post(r, "/drafts/" + draft.body.draftId, { ...caller(repo), workflowId: null });
+  assert.equal(fixed.status, 200, "the same draft is still there");
+  block = null;
+  const done = await post(r, "/drafts/" + draft.body.draftId + "/confirm", { ...caller(repo), choice: "start" });
+  assert.equal(done.body.outcome, "started");
+  assert.equal(r.tasks.list().length, 1);
+  const outside = mkdtempSync(join(tmpdir(), "mission-not-a-repo-"));
+  try {
+    const bad = await create(r, repo, { words: "x" });
+    await post(r, "/drafts/" + bad.body.draftId, { ...caller(repo), repo });
+    // A preparation refusal: the repo vanishes between choosing it and confirming.
+    rmSync(repo, { recursive: true, force: true });
+    const gone = await post(r, "/drafts/" + bad.body.draftId + "/confirm", { ...caller(outside), choice: "backlog" });
+    assert.equal(gone.status, 400);
+    assert.equal((await post(r, "/drafts/" + bad.body.draftId, { ...caller(outside), words: "y" })).status, 200, "kept after a preparation refusal");
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
 });

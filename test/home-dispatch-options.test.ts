@@ -30,6 +30,12 @@ const { setUiConfig } = await import("../src/server/ui-config.ts");
 
 const FLAG = "headless-mode" as const;
 
+/** A workflow manager that answers only what a test scripts; every other method is a no-op. */
+function fakeWorkflows(scripted: unknown): unknown {
+  const table = scripted as Record<string, unknown>;
+  return new Proxy(table, { get: (target, prop) => (prop in target ? target[prop as string] : () => undefined) });
+}
+
 after(() => {
   closeDb();
   rmSync(home, { recursive: true, force: true });
@@ -47,9 +53,9 @@ function gitRepo(name: string): string {
   return realpathSync(dir);
 }
 
-function app() {
+function app(workflows?: unknown) {
   const registry = new Registry();
-  return buildApp({ registry, reviews: new ReviewManager(registry), tasks: new TaskManager(registry), queues: new QueueManager(registry) });
+  return buildApp({ registry, reviews: new ReviewManager(registry), tasks: new TaskManager(registry), queues: new QueueManager(registry), workflows: (workflows === undefined ? undefined : fakeWorkflows(workflows)) as never });
 }
 const headers = () => ({ host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() });
 const post = (a: ReturnType<typeof app>, body: unknown) =>
@@ -287,4 +293,17 @@ test("F3 route: a request without cwd or entry is a 400", async () => {
   flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
   assert.equal((await post(app(), { entry: "command" })).status, 400);
   assert.equal((await post(app(), { cwd: repos })).status, 400);
+});
+
+test("F3 route: only published, unarchived workflows from the daemon are offered after the work", async () => {
+  const row = (id: string, name: string, over: Record<string, unknown> = {}) => ({ id, name, archivedAt: null, currentVersionId: id + "@1", ...over });
+  const a = app({
+    list: () => [row("w-live", "Live Review"), row("w-old", "Old Review", { archivedAt: 5 }), row("w-draft", "Draft Review", { currentVersionId: null })],
+  });
+  const repo = gitRepo("workflows");
+  flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
+  const body = (await (await post(a, { cwd: repo, entry: "command", kind: "ship" })).json()) as { forms: { afterWork: { options: { value: string }[] } } };
+  const values = body.forms.afterWork.options.map((o) => o.value);
+  assert.ok(values.includes("w-live"));
+  assert.ok(!values.includes("w-old") && !values.includes("w-draft"));
 });

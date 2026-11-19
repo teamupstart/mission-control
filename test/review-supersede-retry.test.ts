@@ -22,6 +22,7 @@ process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb, loadPendingReviews } = await import("../src/server/db.ts");
+import type { ReviewItem } from "../src/shared/types.ts";
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager, PARALLEL_ASK_WINDOW_MS } = await import("../src/server/reviews.ts");
 const { ANNOUNCED_RETRY_MIN_OVERLAP, REWORDED_MIN_OVERLAP, SWAP_CONTEXT_WORDS, MAX_SWAP_WORDS } =
@@ -569,16 +570,21 @@ test("swapping only a stopword is rephrasing, not a different subject", () => {
   assert.equal(registry.getReview(first.id)?.status, "superseded");
 });
 
-test("an unannounced paraphrase below 80% keeps both cards, and announcing it matches", () => {
-  // The deliberate boundary: wording alone cannot tell this paraphrase from a different
-  // question, so without the agent saying it is a retry, both cards stay.
-  const [quietCase, announcedCase] = pairOutcomes(
+test("a paraphrase sharing too little of the question keeps both cards, announced or not", () => {
+  // The deliberate boundary: wording alone cannot tell this paraphrase from a different question.
+  // Its identical options do not count as shared wording, so even announced it shares nothing.
+  for (const [asked, status] of pairOutcomes(
     "Which linter should this repository use?",
     "Choose a linting tool for this project.",
     ["biome", "eslint"],
-  );
-  assert.equal(quietCase?.[1], "pending");
-  assert.equal(announcedCase?.[1], "superseded");
+  )) {
+    assert.equal(status, "pending", `withdrawn by: ${asked}`);
+  }
+  // An announced restatement that keeps the question's words is matched.
+  const { registry, ask } = fixture();
+  const first = ask("Which linter should this repository use?", ["biome", "eslint"], T0);
+  ask(`${ANNOUNCE}Which linter should the repository use going forward?`, ["biome", "eslint"], AFTER_TIMEOUT);
+  assert.equal(registry.getReview(first.id)?.status, "superseded");
 });
 
 test("a retry that drops a number the older ask named is still the same decision", () => {
@@ -731,4 +737,84 @@ test("a negation that changes only in the context is restating, not a different 
   ask(`${ANNOUNCE}${question}`, "Probes show Claude does not enforce the frozen skill set, and Codex does not either.",
     ["Keep it", "Investigate"], AFTER_TIMEOUT);
   assert.equal(registry.getReview(first.id)?.status, "superseded");
+});
+
+// ---- PR #1538 review findings ----
+
+test("a retry reference in the context is not a retry announcement", () => {
+  // CodeRabbit: "See previous request." in the context must not earn the 35% threshold. The
+  // questions share 67% of their wording, enough for an announced retry and not for a plain one.
+  const outcome = (newerQuestion: string, newerContext: string) => {
+    const { registry, ask } = fixtureWithContext();
+    const first = ask("Should the nightly job compact the event log before the backup window opens?",
+      "Storage is nearly full.", ["Approve", "Hold"], T0);
+    ask(newerQuestion, newerContext, ["Approve", "Hold"], AFTER_TIMEOUT);
+    return registry.getReview(first.id)?.status;
+  };
+  const reordered = "Before the backup window opens, should the event log be compacted by the nightly job?";
+  assert.equal(outcome(reordered, "See previous request."), "pending", "a context reference earned the lower threshold");
+  assert.equal(outcome(`The previous prompt timed out. ${reordered}`, "Storage is nearly full."), "superseded",
+    "an announcement in the question did not earn the lower threshold");
+});
+
+test("identical options are a gate, not wording the questions share", () => {
+  // CodeRabbit: two different questions offering the same long options reached 80% on the options.
+  const options = ["Approve and proceed as proposed", "Hold pending further operator review"];
+  const { registry, ask } = fixture();
+  const first = ask("Enable caching?", options, T0);
+  ask("Rotate the stale database credentials now?", options, AFTER_TIMEOUT);
+  assert.equal(registry.getReview(first.id)?.status, "pending");
+});
+
+test("pull request numbers are compared across reference formats", () => {
+  // CodeRabbit: "PR #101" and ".../pull/102" were filed under different labels and never compared.
+  const { registry, ask } = fixture();
+  const first = ask("Please review the migration in PR #101 before the release.", ["Approve", "Request changes"], T0);
+  ask("The previous prompt timed out. Please review the migration in https://github.com/acme/app/pull/102 before the release.",
+    ["Approve", "Request changes"], AFTER_TIMEOUT);
+  assert.equal(registry.getReview(first.id)?.status, "pending");
+});
+
+test("a number's sign in an option is part of the choice", () => {
+  // CodeRabbit: "+5" and "-5" normalized to the same words.
+  const question = "Which clock offset should the scheduler apply for the nightly window?";
+  const outcome = (newerDetail: string) => {
+    const { registry, reviews, session } = fixture();
+    const ask = (q: string, detail: string, now: number) =>
+      reviews.create(session, "input", q, q, [{ id: "q", question: q, options: [
+        { id: "o0", label: "Apply", detail }, { id: "o1", label: "Leave it" },
+      ] }], { snoozable: true, now });
+    const first = ask(question, "Set offset to +5", T0);
+    ask(`${ANNOUNCE}${question}`, newerDetail, AFTER_TIMEOUT);
+    return registry.getReview(first.id)?.status;
+  };
+  assert.equal(outcome("Set offset to -5"), "pending", "a flipped sign withdrew the older card");
+  assert.equal(outcome("Set offset to +5."), "superseded", "a trailing period was treated as a changed choice");
+});
+
+test("a decision that mentions a previous request is still compared", () => {
+  // CodeRabbit: the whole question matched the announcement phrase and was stripped from both sides.
+  for (const [asked, status] of pairOutcomes("Should I approve the previous request?", "Should I not approve the previous request?", ["Approve", "Deny"])) {
+    assert.equal(status, "pending", `withdrawn by: ${asked}`);
+  }
+});
+
+test("a failed withdrawal leaves neither the new card nor the withdrawal", () => {
+  // CodeRabbit: the insert and the withdrawal commit together, or not at all.
+  const { session, registry, ask } = fixture();
+  const first = ask(FIRST, FIRST_OPTIONS, T0);
+  openDb().exec(`CREATE TRIGGER fail_supersede BEFORE UPDATE OF status ON reviews
+    WHEN NEW.status = 'superseded' BEGIN SELECT RAISE(ABORT, 'withdrawal failed'); END`);
+  try {
+    assert.throws(() => ask(RETRY, RETRY_OPTIONS, AFTER_TIMEOUT), /withdrawal failed/);
+  } finally {
+    openDb().exec("DROP TRIGGER fail_supersede");
+  }
+  const persisted: ReviewItem[] = loadPendingReviews().filter((r) => r.sessionId === session);
+  assert.deepEqual(persisted.map((r) => r.id), [first.id], "the new card was written without its withdrawal");
+  assert.deepEqual(registry.pendingReviews(session).map((r) => r.id), [first.id], "the new card was published");
+
+  const retry = ask(RETRY, RETRY_OPTIONS, AFTER_TIMEOUT + 1);
+  assert.equal(registry.getReview(first.id)?.status, "superseded");
+  assert.deepEqual(loadPendingReviews().filter((r) => r.sessionId === session).map((r) => r.id), [retry.id]);
 });

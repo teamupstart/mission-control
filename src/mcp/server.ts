@@ -842,9 +842,10 @@ server.registerTool(
       "ask the question again, and expect the answer later as a message in this conversation. " +
       "If an earlier request_input call ended before the human answered (for example it timed " +
       "out) and you ask the same decision again, say so in the question (for example \"The " +
-      "earlier request timed out.\") and offer the same options: Mission Control then " +
-      "withdraws the earlier card so the human answers it once. A different question, or " +
-      "different options, never withdraws an earlier one. " +
+      "earlier request timed out.\") and offer exactly the same options. Mission Control " +
+      "withdraws the earlier card only when it recognizes the new ask as the same decision with " +
+      "the same options; otherwise both cards stay and the human may answer both. A different " +
+      "question, or different options, never withdraws an earlier one. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
       "`options` only for open-ended asks. " +
       DECISION_CONTEXT_RULE,

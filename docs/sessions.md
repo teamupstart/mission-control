@@ -2713,10 +2713,12 @@ answer, so it is not shown in the conversation and nothing is sent to the agent.
 A new question counts as a retry of an older one when it asks the same decision, judged in
 two ways:
 
-- **It says it is a retry** (it mentions that an earlier request or prompt timed out or was
-  interrupted, or that the decision is still unresolved), and it shares at least 35% of its
-  wording with the older question, counting the question, its context, and its options.
-  The `request_input` tool description asks agents to say so when they ask again.
+- **It says it is a retry in its question** (a sentence that is not itself a question mentions
+  that an earlier request or prompt timed out or was interrupted, or that the decision is still
+  unresolved), and it shares at least 35% of its wording with the older question, counting the
+  question and its context. A reference in the context alone, such as **See previous request.**,
+  is not an announcement. The `request_input` tool description asks agents to say so when they
+  ask again.
 - **It does not say so, but restates the older question almost word for word**: at least 80% of
   its wording is shared.
 
@@ -2760,10 +2762,13 @@ show two cards, as an accepted result of that decision rather than an open defec
 what lets its retry collapse to one card.
 
 The matching reads wording, so it has one known edge, accepted as a product decision for this
-feature (issue #1527): a paraphrase that does not say it is a retry and shares less than 80% of
-its wording keeps both cards, for example **Which linter should this repository use?** then
-**Choose a linting tool for this project.** The same paraphrase that says it is a retry is
-matched.
+feature (issue #1527): a paraphrase that shares too little of the question's wording keeps both
+cards, for example **Which linter should this repository use?** then **Choose a linting tool for
+this project.** The options never count toward that wording, because they already have to be
+identical; two different questions offering the same long options are not made alike by them.
+The same goes for numbers: **PR #101**, **pull/101** and **pull request 101** are one pull
+request, so **#101** then **pull/102** is a different one, and a sign is part of a number
+(**+5** and **-5** are different settings).
 
 A card withdrawn by mistake is a question you never see again, while a card kept by mistake is
 one extra answer, so where the rules are unsure they keep the card.

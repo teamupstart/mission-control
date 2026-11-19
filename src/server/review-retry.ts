@@ -54,7 +54,7 @@ import type { ReviewItem } from "@shared/types.ts";
 export function isRewordedRetry(older: ReviewItem, newer: ReviewItem): boolean {
   const before = askText(older);
   const after = askText(newer);
-  const announced = RETRY_ANNOUNCEMENT.test(newer.body);
+  const announced = announcesRetry(newer);
   if (
     changedIdentifiers(before, after) ||
     substitutedNames(older, newer) ||
@@ -66,7 +66,10 @@ export function isRewordedRetry(older: ReviewItem, newer: ReviewItem): boolean {
   ) {
     return false;
   }
-  const overlap = wordOverlap(before, after);
+  // Over the question and its context only. The options already have to be identical
+  // (`changedChoices`), so counting their words as shared wording would let two different
+  // questions that offer the same long options clear the threshold on the options alone.
+  const overlap = wordOverlap(older.body, newer.body);
   return announced ? overlap >= ANNOUNCED_RETRY_MIN_OVERLAP : overlap >= REWORDED_MIN_OVERLAP;
 }
 
@@ -84,6 +87,15 @@ export const ANNOUNCED_RETRY_MIN_OVERLAP = 0.35;
 /** With no announcement, only a near-restatement counts. */
 export const REWORDED_MIN_OVERLAP = 0.8;
 
+/**
+ * The words of a text, lower-cased, punctuation dropped. A sign directly before a number is kept
+ * as a word of its own, because "+5" and "-5" are different settings, while a trailing period or
+ * a hyphen inside "existing-link" is cosmetic.
+ */
+function tokens(text: string): string[] {
+  return (text.toLowerCase().replace(/\u2212/g, "-").match(/[+-](?=\p{N})|[\p{L}\p{N}]+/gu) ?? []);
+}
+
 const STOPWORDS = new Set(
   ("the and for that this with you your are was were has have had not but can should would will " +
     "from into what which when then than they them their its our out all any one two may there " +
@@ -98,8 +110,7 @@ function askText(review: ReviewItem): string {
 }
 
 function contentWords(text: string): Set<string> {
-  const words = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  return new Set(words.filter((w) => w.length >= 3 && !STOPWORDS.has(w)));
+  return new Set(tokens(text).filter((w) => w.length >= 3 && !STOPWORDS.has(w)));
 }
 
 /**
@@ -120,10 +131,19 @@ function setOverlap(left: Set<string>, right: Set<string>): number {
 }
 
 /**
- * The numbers an ask names, keyed by what they number: "phase 1", "pull 101", "revision 16",
- * "#1264". These are what tells two otherwise identical asks apart, and they are exactly what
+ * The numbers an ask names, keyed by what they number: "phase 1", "revision 16", and every pull
+ * request reference under one label (`PULL_REQUEST_LABELS`). These are what tells two otherwise identical asks apart, and they are exactly what
  * `contentWords` cannot see, since it drops every token shorter than three characters.
  */
+const PULL_REQUEST = "pr";
+
+/**
+ * Labels that all name a pull request: "PR 101", "PR #101", "pull/101" in a link, "pulls/101",
+ * "pull request 101", and a bare "#101". Read as one label, so "Review PR #101?" and "Review
+ * pull/102?" compare their numbers instead of looking like two unrelated labels.
+ */
+const PULL_REQUEST_LABELS = new Set(["pr", "pull", "pulls", "request"]);
+
 function labelledNumbers(text: string): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   const add = (label: string, value: string) => {
@@ -132,8 +152,8 @@ function labelledNumbers(text: string): Map<string, Set<string>> {
     values.add(value);
   };
   for (const m of text.toLowerCase().matchAll(/(\p{L}+)[\s/:-]+#?(\d+(?:\.\d+)*)\b|#(\d+)\b/gu)) {
-    if (m[3] !== undefined) add("#", m[3]);
-    else add(m[1]!, m[2]!);
+    if (m[3] !== undefined) add(PULL_REQUEST, m[3]);
+    else add(PULL_REQUEST_LABELS.has(m[1]!) ? PULL_REQUEST : m[1]!, m[2]!);
   }
   return out;
 }
@@ -183,7 +203,7 @@ function names(review: ReviewItem): Set<string> {
 }
 
 function everyWord(review: ReviewItem): Set<string> {
-  return new Set(askSegments(review).join(" ").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+  return new Set(tokens(askSegments(review).join(" ")));
 }
 
 /**
@@ -202,11 +222,12 @@ function substitutedNames(older: ReviewItem, newer: ReviewItem): boolean {
 }
 
 /**
- * One option as the operator reads it: its label and detail, lower-cased, punctuation dropped,
- * and without the "(Recommended)" marker an agent may add or drop between asks.
+ * One option as the operator reads it: its label and detail as `tokens` reads them (lower-cased,
+ * cosmetic punctuation dropped, a number's sign kept), without the "(Recommended)" marker an
+ * agent may add or drop between asks.
  */
 function choice(label: string, detail: string | undefined): string {
-  const words = (text: string) => text.toLowerCase().replace(/\(recommended\)/g, " ").match(/[\p{L}\p{N}]+/gu) ?? [];
+  const words = (text: string) => tokens(text.replace(/\(recommended\)/gi, " "));
   return `${words(label).join(" ")}\n${words(detail ?? "").join(" ")}`;
 }
 
@@ -266,8 +287,8 @@ const MAX_DIFF_WORDS = 1_500;
  * subject.
  */
 function swappedWord(before: string, after: string): boolean {
-  const a = (before.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, MAX_DIFF_WORDS);
-  const b = (after.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, MAX_DIFF_WORDS);
+  const a = tokens(before).slice(0, MAX_DIFF_WORDS);
+  const b = tokens(after).slice(0, MAX_DIFF_WORDS);
   const n = a.length;
   const m = b.length;
   // lcs[i][j]: length of the longest common subsequence of a[i..] and b[j..].
@@ -374,14 +395,32 @@ function changedNegation(before: string, after: string): boolean {
  * ("The previous prompt was not answered." is about the last call, not this decision).
  */
 function decisionText(review: ReviewItem): string {
-  return questionText(review)
-    .split(/(?<=[.!?;])\s+/)
-    .filter((sentence) => !RETRY_ANNOUNCEMENT.test(sentence))
-    .join(" ");
+  return questionSentences(review).filter((sentence) => !isAnnouncement(sentence)).join(" ");
+}
+
+function questionSentences(review: ReviewItem): string[] {
+  return questionText(review).split(/(?<=[.!?;])\s+/);
+}
+
+/**
+ * A sentence that only announces a retry: it uses a retry phrase and is not itself a question.
+ * "The previous prompt timed out." announces; "Should I approve the previous request?" is the
+ * decision, and stripping it would leave nothing to compare.
+ */
+function isAnnouncement(sentence: string): boolean {
+  return RETRY_ANNOUNCEMENT.test(sentence) && !sentence.trim().endsWith("?");
+}
+
+/**
+ * Does the newer ask announce that it is a retry, in its question? A reference in the context
+ * ("See previous request.") is background, and does not earn the lower overlap threshold.
+ */
+function announcesRetry(review: ReviewItem): boolean {
+  return questionSentences(review).some(isAnnouncement);
 }
 
 function decisionWords(review: ReviewItem): string[] {
-  return decisionText(review).toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  return tokens(decisionText(review));
 }
 
 /**
@@ -415,7 +454,7 @@ function contextWords(review: ReviewItem): string[] {
   const context = question !== undefined && body.startsWith(question)
     ? body.slice(question.length)
     : body.split(/\n\s*\n/).slice(1).join("\n\n");
-  return context.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  return tokens(context);
 }
 
 /**

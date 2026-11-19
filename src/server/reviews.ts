@@ -40,7 +40,7 @@ export const SNOOZE_SWEEP_MS = 15_000;
 
 /**
  * How close together two `request_input` asks from one session must arrive to be parallel calls
- * rather than a retry (`ReviewManager.supersedeAbandonedAsks`).
+ * rather than a retry (`ReviewManager.retriesReplacedBy`).
  *
  * The call is blocking, so an agent still waiting on one question can only ask another in the
  * same batch of parallel tool calls, which reach the daemon within milliseconds of each other.
@@ -274,7 +274,7 @@ export class ReviewManager {
    * clients that ask for it and persists detachment when a client's maximum still expires.
    * A retry remains harmless, while a later answer no longer depends on a retry occurring.
    *
-   * A retry that is NOT byte-identical is the second floor (`supersedeAbandonedAsks`).
+   * A retry that is NOT byte-identical is the second floor (`retriesReplacedBy`).
    */
   create(
     sessionId: string,
@@ -307,14 +307,24 @@ export class ReviewManager {
       createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
-    insertReview(review);
+    // Decided before anything is written, then committed with the new card in one transaction:
+    // a failure part way leaves neither the new card nor a withdrawal, rather than both cards
+    // pending with the withdrawal lost. Only after the commit is anything published or woken.
+    const replaced = this.retriesReplacedBy(review);
+    const resolvedAt = Date.now();
+    inTransaction(() => {
+      insertReview(review);
+      for (const older of replaced) updateReviewStatus(older.id, "superseded", null, resolvedAt, null, null);
+    });
     this.registry.upsertReview(review);
-    this.supersedeAbandonedAsks(review);
+    for (const older of replaced) {
+      this.publishSettled({ ...older, status: "superseded", response: null, resolvedAt, resolvedBy: null, selections: null });
+    }
     return review;
   }
 
   /**
-   * Withdraw the questions a new `request_input` ask replaces.
+   * The questions a new `request_input` ask replaces, which `create` withdraws with it.
    *
    * The exact-match re-attach in `create` covers a retry sent byte for byte. Agents rarely
    * retry that way. When an MCP client gives up on a blocking call, the model reads a timeout
@@ -338,14 +348,12 @@ export class ReviewManager {
    * because they chose to park it and its agent was told to carry on, so a later, different
    * question from that agent is expected rather than a retry.
    */
-  private supersedeAbandonedAsks(newer: ReviewItem): void {
-    if (newer.snoozable !== true) return;
+  private retriesReplacedBy(newer: ReviewItem): ReviewItem[] {
+    if (newer.snoozable !== true) return [];
     const cutoff = newer.createdAt - PARALLEL_ASK_WINDOW_MS;
-    for (const older of this.registry.outstandingReviews(newer.sessionId)) {
-      if (older.id === newer.id || older.status !== "pending" || older.snoozable !== true) continue;
-      if (older.snooze || older.createdAt > cutoff || !isRewordedRetry(older, newer)) continue;
-      this.settle(older, "superseded", null);
-    }
+    return this.registry.outstandingReviews(newer.sessionId).filter((older) =>
+      older.id !== newer.id && older.status === "pending" && older.snoozable === true &&
+      !older.snooze && older.createdAt <= cutoff && isRewordedRetry(older, newer));
   }
 
   /**
@@ -704,7 +712,7 @@ export class ReviewManager {
     response: string | null,
     /**
      * Null for the two orphan paths below, which are the daemon tidying up after a session
-     * that went away, and for `supersedeAbandonedAsks` - not a decision anyone made, and so
+     * that went away, and for `retriesReplacedBy` - not a decision anyone made, and so
      * not a voice in the conversation.
      */
     resolvedBy: ReviewActor | null = null,
@@ -715,7 +723,16 @@ export class ReviewManager {
     const write = () => updateReviewStatus(cur.id, status, response, resolvedAt, selections, resolvedBy);
     if (persistWith) inTransaction(() => { write(); persistWith(); });
     else write();
-    const updated: ReviewItem = { ...cur, status, response, resolvedAt, resolvedBy, selections };
+    return this.publishSettled({ ...cur, status, response, resolvedAt, resolvedBy, selections });
+  }
+
+  /**
+   * Everything a settle does after its status is durably written: publish it, credit or retire
+   * what the actor's decision affects, and release the waiters. Split from `settle` so `create`
+   * can commit a withdrawal in the same transaction as the card that replaced it.
+   */
+  private publishSettled(updated: ReviewItem): ReviewItem {
+    const { resolvedBy } = updated;
     this.registry.upsertReview(updated);
 
     // You decided this yourself, so Foreman's pinned note about the same review is spent.
@@ -727,7 +744,7 @@ export class ReviewManager {
     // away: no decision was made, so there is no answer of yours to credit, and the note
     // rightly stays until the session's own teardown clears it.
     if (resolvedBy === "human") {
-      this.registry.retireNoteAnsweredByYou(cur.sessionId, `review:${cur.id}`);
+      this.registry.retireNoteAnsweredByYou(updated.sessionId, `review:${updated.id}`);
     }
     this.markSteered(updated);
     if (isConversationResolvedReview(updated)) {

@@ -49,13 +49,18 @@ identity, stored secrets.
    loopback. Redirects by hand, same origin only. Read at most 256 KiB. A status outside 2xx is
    `failed`, with the status. The deadline aborts the request.
 4. **`mcp`.** Connect, call the configured tool once per repository, close at the end of the
-   run. Arguments are `{ task, repo: { name, facts?, summary? }, version? }`. The complete
-   collected input always reaches the tool, in one of the two `contextDelivery` modes that
-   `plan.md` defines. `folded` (default) appends one fixed block to `task` that states every
-   other collected field: title, kind, harness and runtime, after-work step, labels, priority,
-   and each attached repository with its role and branch. `argument` sends the whole `context`
-   object as a `context` argument. There is no mode that omits it. Render the block with one
-   pure function, so a test can pin its text. Read the reply from the
+   run. The arguments depend on `contextDelivery`, as `plan.md` defines. Either way the
+   complete collected input reaches the tool, and there is no mode that omits it.
+   - `folded` (default): exactly three arguments,
+     `{ task, repo: { name, facts?, summary? }, version? }`, the FR-02 `get_guidance` input.
+     `task` is the prompt followed by one fixed block that states every other collected
+     field: title, kind, harness and runtime, after-work step, labels, priority, and each
+     attached repository with its role and branch.
+   - `argument`: four arguments,
+     `{ task, repo: { name, facts?, summary? }, version?, context }`. `task` is the prompt
+     alone, and `context` is the request's whole `context` object.
+
+   Render the folded block with one pure function, so a test can pin its text. Read the reply from the
    structured content when it is an object, otherwise from the first text content parsed as
    JSON. A tool error is `failed`, with its text, bounded.
 5. **Reply field.** `GET /api/shaping` returns `references` from `referenceStatus`.
@@ -68,7 +73,10 @@ identity, stored secrets.
 - No schema change. The `mcp` and `http` config shapes were declared in Phase 1.
   `contextDelivery` has exactly two values, `folded` and `argument`.
 - A local path is never sent to a remote shaper. Phase 1's request builder already omits paths
-  for a transport that is not local. Add a test that pins it for both transports here.
+  for a transport that is not local. An `mcp` tool's `repo` argument never carries a path. In
+  `argument` mode a server started as a local process receives worktree paths in
+  `context.repositories`, and a remote server does not. Add a test that pins this for both
+  transports here.
 - Nothing company-specific: header names, tool names and URLs are all configuration.
 
 ## Tests and verification
@@ -79,7 +87,8 @@ identity, stored secrets.
   status, a redirect off the origin, the HTTPS rule, the body cap, a timeout, resolved headers,
   and no request when a reference is missing.
 - `test/shaping-transport-mcp.test.ts`, against `test/fixtures/fake-guidance-mcp.mjs` (a local
-  server with a `get_guidance` tool): the argument shape in both `contextDelivery` modes,
+  server with a `get_guidance` tool): exactly three arguments in `folded` mode and exactly four, the fourth being `context`, in
+  `argument` mode,
   that every collected field of a two-repository task (title, kind, harness, runtime,
   after-work step, labels, priority, both repositories) reaches the tool in each mode,
   structured and text replies, a tool error, a timeout, a `degraded: true` reply passed
@@ -96,6 +105,8 @@ identity, stored secrets.
 - No value of an environment reference appears in any reply, log or record.
 - In both `contextDelivery` modes the tool receives the complete collected input, and no
   configuration can reduce it.
+- In `folded` mode the fixture `get_guidance` tool is called with exactly its three FR-02
+  arguments.
 
 ## Handoff
 
@@ -113,3 +124,6 @@ free of shaping-specific assumptions where that is cheap.
   now carries the whole collected input instead of three fields. An `mcp` shaper can no
   longer be configured to receive less than constraint C2 requires. Phase 1's schema was
   changed to match.
+- Plan validation repair 3, 2026-11-19: step 4 gave one three-argument shape and then a mode
+  that adds a fourth. Each mode now states its own shape: three in `folded`, four in
+  `argument`. `plan.md` and `phased-plan.md` say the same.

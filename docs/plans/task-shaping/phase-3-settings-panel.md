@@ -47,8 +47,9 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 2. **Category.** `task-shaping`, labelled "Task shaping", in the Sessions group, shown only
    while the flag is on, in the sidebar, search and the command palette alike.
 3. **List.** One row per shaper in stored order, grouped by stage: label, id, transport, what
-   it runs or calls, and its enable pill. Drag or buttons to reorder within a stage. A shaper
-   whose transport this build cannot run is marked and cannot be enabled. A row that names
+   it runs or calls, and its enable pill. Drag or buttons to reorder within a stage. An entry
+   this build does not understand is marked unsupported, with its reason: it can be switched
+   off or removed, but not switched on or edited. A row that names
    `{env:NAME}` references shows each as set or not set when the reply's `references` field
    has it, and never a value.
 4. **Import.** A dialog that takes a manifest as pasted JSON or a file, validates it with
@@ -76,8 +77,7 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 - `test/settings-sidebar-render.test.ts`, `test/settings-search.test.ts`,
   `test/palette-index.test.ts` and `test/settings-backup-coverage.test.ts` gain the category,
   its anchors and its domain, with the flag off and on.
-- `renderToStaticMarkup` tests for the list: empty, populated, a transport this build cannot
-  run, and a row with one set and one unset reference.
+- `renderToStaticMarkup` tests for the list: empty, populated, an unsupported entry, and a row with one set and one unset reference.
 - `e2e/specs/task-shaping-settings.spec.ts`: the category appears when the flag is turned on
   in another window; import a manifest and see what it will run; enable it; dry-run it against
   a repository; reorder; remove; set the identity and limits; search finds the category; a
@@ -105,3 +105,5 @@ registered rows behave.
   that phase adds data, not a second row type.
 - Reconciled with Phase 5: the references note moved here, read from Phase 1's reply shape, so
   Phase 5 has no dashboard work and the two can merge in either order.
+- Plan validation repair 3, 2026-11-19: the row for an entry this build does not understand
+  now uses `plan.md`'s word, unsupported, and its rule: switch off or remove only.

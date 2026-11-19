@@ -35,7 +35,7 @@ non-goal), any sandbox.
 1. **Scan** (`src/server/shaping/discovery.ts`). List `shapers/` under the state home. A missing
    folder is an empty result, and the daemon never creates it. Read at most 32 entries in name
    order and report whether more were ignored. An entry may be a symlink to a directory. Its
-   `shaper.json` must be a regular file inside the resolved directory, of at most 64 KiB.
+   `shaper.json` must be a regular file inside the resolved directory, of at most 16 KiB, the same cap as a stored entry.
 2. **Ownership.** The directory and the manifest must belong to the daemon's user and have no
    group or other write bit. Otherwise the state is `refused`, with the reason.
 3. **Parse.** JSON, then `ShaperManifestSchema`. The manifest's `id` must equal the folder
@@ -54,8 +54,8 @@ non-goal), any sandbox.
    sorts after the listed ones of its stage, by id.
 8. **Commands.** A `command` that starts with `./` resolves against the folder's real path and
    must stay inside it. Otherwise the manifest is `invalid`.
-9. **Engine and routes.** With the flag on, scan at the start of every shaping run and every
-   dry-run. `GET /api/shaping` scans and returns `discovered`: id, path, state, problem,
+9. **Engine and routes.** With the flag on, scan at daemon start, at the start of every
+   shaping run and at the start of every dry-run. `GET /api/shaping` scans and returns `discovered`: id, path, state, problem,
    SHA-256 and the parsed shaper.
 10. **Settings.** Found on disk rows in the same list: the path, the state, and an enable pill
     that writes the stored choice. No edit or remove: the folder is the source.
@@ -110,3 +110,5 @@ rule that a repository's own files never register a shaper.
 - Phase 3: rows reuse its component.
 - Phases 5 and 6: a discovered manifest may name any transport, and gets that transport's
   behaviour unchanged.
+- Plan validation repair 3, 2026-11-19: a manifest's size cap is 16 KiB, the same as a stored
+  entry, and the scan at daemon start that `plan.md` lists is now stated in step 9.

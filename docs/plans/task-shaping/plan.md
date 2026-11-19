@@ -85,8 +85,11 @@ parallel. Nothing in the three boxes can stop the launch.
 
 ### One contract
 
-Every shaper, on every transport, receives one request shape and answers in one result shape.
-The select stage is the FR-02 `get_guidance` contract plus fields an implementation may ignore.
+Mission Control builds one request for every shaper and reads one result shape back, on every
+transport. `command` and `http` shapers are sent the request as it is, and a `builtin`
+receives it in-process. The `mcp` transport maps it onto a tool's arguments, as Transports
+sets out. The select stage is the FR-02 `get_guidance` contract plus fields an implementation
+may ignore.
 
 Request, one per attached repository:
 
@@ -135,10 +138,12 @@ Rules:
 - `task` is the operator's prompt and nothing else. Title, kind, harness, runtime, after-work
   step, labels, priority and the whole repository list are in `context`. Together they are
   C2's "complete collected input", and every shaper receives all of it on every transport. No
-  setting withholds any of it. The `mcp` transport, whose tool has no `context` field, has its
-  own rule for carrying it, under Transports.
-- `repo.path` and the paths in `context.repositories` go to local transports only (`command`,
-  `builtin`, an `mcp` server started as a local process). A remote shaper never gets a local path.
+  setting withholds any of it. The `mcp` transport, whose tool may take only FR-02's three
+  arguments, has its own rule for carrying it, under Transports.
+- Local paths go to local shapers only. `command` and `builtin` shapers receive `repo.path`
+  and the paths in `context.repositories`. An `mcp` tool's `repo` argument never carries a
+  path: a server started as a local process that needs one runs in `argument` mode, where
+  `context.repositories` carries it. A remote shaper never gets a local path.
 - `repo.facts` and `repo.summary` are absent in a gather request, because producing them is
   the gatherer's job, and present in a select request when a gatherer supplied them.
 - The result key is `guidance` at every stage, so every shaper answers in one shape and an
@@ -159,13 +164,14 @@ Mapping to FR-02 `get_guidance(task, repo{name, facts?, summary?}, version?) -> 
 guidance[], truncated, degraded}`: the names and shapes are identical. Mission Control adds
 `protocol`, `stage`, `context` and `limits` to the request, and reads `title`, `repo` and
 `notes` from the result when present. FR-02's caps match the defaults here: 16 KiB per body,
-a 4 KiB summary, 10 results. An `mcp` selector is called with exactly FR-02's three arguments,
-and the rest of the input reaches it folded into `task` or as a `context` argument.
+a 4 KiB summary, 10 results. How many arguments an `mcp` selector is called with depends on
+its `contextDelivery` mode: exactly FR-02's three in `folded` mode, with the rest of the input
+inside `task`, and four in `argument` mode, the fourth being `context`.
 
 ### Stages
 
 **Gather.** A gatherer is called once per attached repository, the primary first and then the
-others in manifest order. A local gatherer runs with the worktree as its working directory.
+others in manifest order. A `command` gatherer runs with the worktree as its working directory.
 It returns context entries, facts and a summary, any of which may be absent. When several
 gatherers return facts for one repository, facts merge by name and the later shaper in the
 list wins. The summary comes from the last gatherer that returns one. Mission Control cuts a
@@ -198,18 +204,20 @@ mapping and the record. A new transport cannot change those semantics.
   worktree and a selector in an empty directory. Output is capped at 256 KiB, and a timeout
   kills the process group.
 - **`mcp`.** Config is `{ server, tool, contextDelivery }`. `server` is
-  `{ type: "stdio", command, args, env }` or `{ type: "http", url, headers }`. The tool's
-  arguments are `{ task, repo: { name, facts?, summary? }, version? }`, the `get_guidance`
-  input, so an existing tool is called unchanged. That input has no field for the rest of the
-  request, so the transport always delivers the complete collected input in one of two ways.
-  There is no mode that omits it.
-  - `folded` (default). The `task` argument is the operator's prompt followed by one fixed,
-    labelled block that states every other collected field: title, kind, harness and runtime,
-    after-work step, labels, priority, and each attached repository with its role and branch.
-    This is the folding FR-02 section 5a proposes, applied to the whole input instead of
-    three fields. It works with any `get_guidance` implementation.
-  - `argument`. `task` is the prompt alone, and the whole `context` object is sent as a
-    `context` argument, for a server whose tool accepts one.
+  `{ type: "stdio", command, args, env }` or `{ type: "http", url, headers }`. The
+  arguments the tool is called with depend on `contextDelivery`. Either way the transport
+  delivers the complete collected input, and there is no mode that omits it.
+  - `folded` (default). The tool is called with exactly three arguments,
+    `{ task, repo: { name, facts?, summary? }, version? }`. That is the FR-02 `get_guidance`
+    input, so an existing tool is called unchanged. `task` is the operator's prompt followed
+    by one fixed, labelled block that states every other collected field: title, kind, harness
+    and runtime, after-work step, labels, priority, and each attached repository with its role
+    and branch. This is the folding FR-02 section 5a proposes, applied to the whole input
+    instead of three fields.
+  - `argument`. The tool is called with four arguments,
+    `{ task, repo: { name, facts?, summary? }, version?, context }`. `task` is the prompt
+    alone, and `context` is the request's whole `context` object. This is not the FR-02 call.
+    It is for a server whose tool declares a `context` argument.
 
   In both, `repo` is the repository the call is about, with the facts and summary a gatherer
   produced. A local server is started once per shaping run and closed when the run ends.
@@ -330,7 +338,7 @@ refused or shadowed entry never runs, whatever is stored for its id.
 - **When the folder is read.** At daemon start, when Settings opens, and at the start of
   every shaping run. A folder dropped in by setup tooling therefore takes effect at the next
   dispatch, with no restart and no click. There is no file watcher. A scan reads at most 32
-  folders and manifests of at most 64 KiB, and re-reads a manifest only when its size or
+  folders and manifests of at most 16 KiB, the same cap as a stored entry, and re-reads a manifest only when its size or
   modification time changed.
 - **One list.** Settings shows both kinds in one ordered list, each marked Registered or
   Found on disk, with the path of a discovered one. The order is stored. A newly discovered
@@ -620,7 +628,7 @@ after phase 5.
 | Spec | Change |
 | --- | --- |
 | MC context plugin interface (placeholder) | Replaced by this design. Its open questions are answered by D4 to D8 and the sections above. |
-| FR-02, section 5a and question 8 | The generic call site ships with this plan (D11). The FR-02 owner registers a selector shaper for `get_guidance` instead of writing a call site. The complete collected input reaches the tool folded into `task`, which is section 5a's proposal applied to the whole input. Question 12 is answered by D6, D7 and D8. |
+| FR-02, section 5a and question 8 | The generic call site ships with this plan (D11). The FR-02 owner registers a selector shaper for `get_guidance` instead of writing a call site. Registered in `folded` mode, the tool keeps exactly its three arguments and the complete collected input reaches it inside `task`, which is section 5a's proposal applied to the whole input. Question 12 is answered by D6, D7 and D8. |
 | FR-04 | `route_skills` becomes the `route` stage when its contract is published (D5). |
 | FR-05, section 12.2 | `degraded` reaches headless surfaces through the task record. No headless change. |
 | FR-06 | The promotion adapter gets its own registry on this foundation (D10). Step 7 fits as a built-in selector. |

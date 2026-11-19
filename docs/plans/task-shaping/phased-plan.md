@@ -50,8 +50,9 @@ Each phase document cites the findings it depends on. The ones that shaped the s
 9. **An `mcp` shaper always receives the complete collected input.** Plan validation found
    that the first version of `contextDelivery` had a mode that sent none of it and a default
    that folded only three fields into `task`. There are now two modes, `folded` and
-   `argument`, and both carry everything constraint C2 lists. The `get_guidance` call itself
-   is unchanged.
+   `argument`, and both carry everything constraint C2 lists. `folded` calls the tool with
+   exactly FR-02's three arguments, so `get_guidance` is unchanged. `argument` calls it with
+   four, adding `context`, and is for a server whose tool declares that argument.
 10. **A stored choice always wins over a manifest.** Plan validation found two statements of
     the enablement rule that disagreed about a discovered shaper whose manifest says
     `"enabled": false` while the operator has switched it on. The stored choice wins, on or
@@ -125,7 +126,7 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
 | Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts` |
 | References | 5 | `resolveReferences` and `referenceStatus` in `src/server/shaping/references.ts` |
-| MCP context delivery | 1 (schema), 5 (behaviour) | `contextDelivery` is `folded` or `argument`. Both deliver the complete collected input, and no mode omits it. |
+| MCP context delivery | 1 (schema), 5 (behaviour) | `contextDelivery` is `folded` or `argument`. `folded` calls the tool with exactly three arguments, `{ task, repo, version? }`, with the rest of the collected input inside `task`. `argument` calls it with four, `{ task, repo, version?, context }`. Both deliver the complete collected input, and no mode omits it. |
 | Guide | 1 | `docs/task-shaping.md`, one section per phase |
 
 ## Who owns each decision

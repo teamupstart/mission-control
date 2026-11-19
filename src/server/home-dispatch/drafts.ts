@@ -61,7 +61,14 @@ function forget(draft: Draft): void {
   byId.delete(draft.id);
 }
 
+/** Drop drafts nobody has touched for longer than the TTL, so an abandoned one cannot linger. */
+function sweepExpired(): void {
+  const at = clock();
+  for (const stale of [...byId.values()]) if (at - stale.touchedAt > DRAFT_TTL_MS) forget(stale);
+}
+
 function remember(draft: Draft): void {
+  sweepExpired();
   const earlier = bySession.get(draft.sessionId);
   if (earlier) forget(earlier);
   bySession.set(draft.sessionId, draft);

@@ -228,3 +228,25 @@ test("F4 checkin: a session's last check-in time is swept once it is older than 
   const back = await handleCheckin(caller("gone"), deps);
   assert.equal((back.body as { finished: unknown[] }).finished.length, 1, "treated as a first check-in again");
 });
+
+test("F4 checkin: a session outside any repository still sees the tasks it started", async () => {
+  const { openDb } = await import("../src/server/db.ts");
+  const { stampTaskOrigin } = await import("../src/server/home-dispatch/origin.ts");
+  openDb().exec("DELETE FROM tasks");
+  const repo = realpathSync(mkdtempSync(join(repos, "target-")));
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  const outside = mkdtempSync(join(tmpdir(), "mission-outside-"));
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const mine = tasks.create({ repoRoot: repo, intent: "mine", title: "mine", kind: "ship", agent: "claude", backlog: true });
+  stampTaskOrigin(mine.id, { surface: "home-session", repo: null, sessionId: "s-out" });
+  const other = tasks.create({ repoRoot: repo, intent: "theirs", title: "theirs", kind: "ship", agent: "claude", backlog: true });
+  stampTaskOrigin(other.id, { surface: "home-session", repo: null, sessionId: "someone-else" });
+  try {
+    const out = await handleCheckin({ sessionId: "s-out", claudePid: null, cwd: outside }, { tasks, registry });
+    assert.equal(out.status, 200);
+    assert.equal((out.body as { queued: number }).queued, 1, "only the session's own task");
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

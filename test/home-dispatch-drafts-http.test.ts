@@ -397,3 +397,15 @@ test("F3 confirm: a failure after the task exists still hands back its id", asyn
   assert.ok(done.body.taskId);
   assert.equal(originRow(done.body.taskId).s, "home-session", "the origin was stamped before the launch failed");
 });
+
+test("F3 drafts: an abandoned draft is swept when any session next makes one", async () => {
+  let now = 9_000_000;
+  resetDraftsForTest(() => now);
+  const r = rig();
+  const repo = gitRepo("sweep");
+  const abandoned = await create(r, repo, { words: "left behind" }, "gone-session");
+  now += DRAFT_TTL_MS + 1;
+  await create(r, repo, { words: "fresh" }, "other-session");
+  now -= DRAFT_TTL_MS + 1; // the abandoned draft would be valid again if it had merely been skipped
+  assert.equal((await post(r, "/drafts/" + abandoned.body.draftId, { ...caller(repo, "gone-session"), words: "x" })).status, 404);
+});

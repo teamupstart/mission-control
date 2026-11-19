@@ -45,10 +45,13 @@ const FAILED_WINDOW_MS = 24 * 60 * 60 * 1000;
  * answers with real lists today; once that handler answers, it is the single source and this
  * is never reached. Scope is the same: tasks whose `origin_repo` is this repository.
  */
-export function inboxFromTasks(deps: HomeDispatchDeps, repo: string, now: number): InboxItem[] {
+export function inboxFromTasks(deps: HomeDispatchDeps, scope: { repo: string | null; sessionId: string }, now: number): InboxItem[] {
   const { tasks, registry } = deps;
   if (!tasks) return [];
-  const ids = openDb().prepare("SELECT id FROM tasks WHERE origin_repo = ?").all(repo) as { id: string }[];
+  // A session outside any repository stamped `origin_repo` NULL, so it sees its own tasks by session.
+  const ids = (scope.repo === null
+    ? openDb().prepare("SELECT id FROM tasks WHERE origin_repo IS NULL AND origin_session_id = ?").all(scope.sessionId)
+    : openDb().prepare("SELECT id FROM tasks WHERE origin_repo = ?").all(scope.repo)) as { id: string }[];
   const items: InboxItem[] = [];
   for (const { id } of ids) {
     const task = tasks.get(id);
@@ -87,11 +90,11 @@ export async function handleCheckin(
   input: HomeCaller,
   deps: HomeDispatchDeps = {},
 ): Promise<HomeDispatchResult<CheckinResponse>> {
-  const repo = (await resolveRepoRoot(input.cwd)) ?? input.cwd;
-  const inbox = await (deps.readInbox ?? handleReadInbox)({ repo });
+  const repoRoot = await resolveRepoRoot(input.cwd);
+  const inbox = await (deps.readInbox ?? handleReadInbox)({ repo: repoRoot ?? input.cwd });
   let items: InboxItem[];
   if (inbox.status === 200) items = (inbox.body as { items: InboxItem[] }).items;
-  else if (inbox.status === 501) items = inboxFromTasks(deps, repo, clock());
+  else if (inbox.status === 501) items = inboxFromTasks(deps, { repo: repoRoot, sessionId: input.sessionId }, clock());
   else return inbox as HomeDispatchResult<never>;
   const body = buildCheckin(items, lastCheckin.get(input.sessionId) ?? null);
   const at = clock();

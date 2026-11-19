@@ -4,6 +4,7 @@ import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from 
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
+import { HomeTerminalSchema } from "./home-dispatch.ts";
 import { ModelIdSchema } from "./model-id.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import { SESSION_PAUSE_MODES, SESSION_PAUSE_REASONS } from "./pause.ts";
@@ -364,6 +365,22 @@ export const HookIngestSchema = z.object({
   // in-flight set - an agent past the cut is still running - so it may add agents but never stop
   // one by omission.
   backgroundTasksTruncated: z.literal(true).optional().catch(undefined),
+  // Headless mode (FR-05, spec 7.3): what the owned hook adds so the daemon can register a home
+  // session from ANY event, not only `SessionStart`. All optional, and each one catches to absent
+  // rather than failing the parse, so a hook that lags or leads this code never costs the event.
+  // The daemon ignores every one of them while `headless-mode` is off.
+  /** `CLAUDE_CODE_ENTRYPOINT`: `cli` for an interactive session, `sdk-cli` for `claude -p`. */
+  entrypoint: z.string().min(1).max(64).optional().catch(undefined),
+  /** `CLAUDE_PID`, the `claude` process the hook was started by. */
+  claudePid: z.number().int().positive().optional().catch(undefined),
+  /** True when `MISSION_DISPATCH_LAUNCHER=0` was set for this shell. */
+  launcherDisabled: z.boolean().optional().catch(undefined),
+  /** The multiplexer pane the session runs in (`homeTerminalFromEnv`). */
+  terminal: HomeTerminalSchema.optional().catch(undefined),
+  /** `SessionStart` only: true when `NO_COLOR` is set and not empty, or `TERM` is `dumb`. */
+  noColor: z.boolean().optional().catch(undefined),
+  /** The hook script's own version, compared with the daemon's to spot a stale install. */
+  hookVersion: z.string().min(1).max(64).optional().catch(undefined),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;

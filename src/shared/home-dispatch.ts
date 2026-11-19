@@ -352,3 +352,46 @@ export const HomeDispatchNotImplementedSchema = z.object({
   owner: z.string(),
 });
 export type HomeDispatchNotImplemented = z.infer<typeof HomeDispatchNotImplementedSchema>;
+
+// ---- the run-now or schedule intent (7.20) ------------------------------------------
+
+const MISSION_CONTROL_NAME = /\b(?:mission[\s-]control|mc)\b/i;
+// Whole words, with the plain inflections a person types ("scheduling", "queued", "kicked off").
+const SCHEDULE_WORDS = /\b(?:schedul(?:e|es|ed|ing)|backlog(?:s|ged|ging)?|later|queu(?:e|es|ed|ing)|park(?:s|ed|ing)?)\b/i;
+const RUN_VERBS =
+  /\b(?:run(?:s|ning)?|start(?:s|ed|ing)?|kick(?:s|ed|ing)?\s+off|send(?:s|ing)?|dispatch(?:es|ed|ing)?|hand(?:s|ing)?|delegat(?:e|es|ed|ing))\b/i;
+
+/**
+ * Whether a prompt asks to run something in Mission Control now, or to schedule it in the
+ * backlog (spec 7.20). Pure and case-insensitive: it reads the prompt the hook already sends and
+ * stores nothing.
+ *
+ * It matches only when the prompt names Mission Control (`mission control`, `mission-control`,
+ * or `MC` as a whole word) AND carries a verb. A schedule word beats a run verb, so "queue this
+ * in MC and start it later" is `backlog`. A verb with a negation before it in its clause ("do not run
+ * this in Mission Control") does not count, and the verb's own clause must name Mission Control. Anything else is null.
+ */
+export function dispatchIntentFor(prompt: string): "now" | "backlog" | null {
+  // Each segment is judged on its own: the action must be in a segment that names Mission Control,
+  // and a negation only cancels an action it comes before in that same segment. So "Do not run this
+  // in Mission Control. Start it locally" and "Do not schedule this in MC but run it now in MC" are
+  // read one clause at a time.
+  const segments = prompt.replace(/[\u2018\u2019]/g, "'").split(/[.!?;,\n]+|\bbut\b/i);
+  const named = segments.filter((segment) => MISSION_CONTROL_NAME.test(segment));
+  if (named.some((segment) => affirms(SCHEDULE_WORDS, segment))) return "backlog";
+  if (named.some((segment) => affirms(RUN_VERBS, segment))) return "now";
+  return null;
+}
+
+// A refusal such as "do not run this in Mission Control" is not a request (spec 7.20 reads
+// requests; a negated verb is the opposite of one).
+const INTENT_NEGATIONS = /\b(?:not|no|never|don't|dont|doesn't|cannot|can't|won't|without|stop|skip)\b/i;
+
+/** True when some match of the word has no negation before it in the segment. */
+function affirms(word: RegExp, segment: string): boolean {
+  const all = new RegExp(word.source, "gi");
+  for (const match of segment.matchAll(all)) {
+    if (!INTENT_NEGATIONS.test(segment.slice(0, match.index))) return true;
+  }
+  return false;
+}

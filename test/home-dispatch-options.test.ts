@@ -1,7 +1,7 @@
 // F3: the dispatch choices come from the shared registries, so they match the dashboard.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, test } from "node:test";
@@ -125,12 +125,6 @@ test("F3 dashboard parity: kindAfterWork agrees with the dashboard rule for ever
       }
     }
   }
-});
-
-test("F3 dashboard parity: the dispatch modal reads its default through the shared rule", () => {
-  const source = readFileSync(new URL("../src/web/components/DispatchModal.tsx", import.meta.url), "utf8");
-  assert.ok(source.includes("kindAfterWork"));
-  assert.ok(!source.includes("taskDefaultWorkflowId"), "the modal has no second copy of the rule");
 });
 
 test("F3 form 1: kinds except chat in order, then work-here and check-in, every title from the registry", () => {

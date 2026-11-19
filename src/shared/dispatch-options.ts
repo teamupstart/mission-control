@@ -1,7 +1,11 @@
 /**
  * Guided dispatch choices (headless mode, spec 7.5, 7.6). Pure and browser-safe: the daemon
  * gathers the facts (repositories, workflows, settings), and everything below turns them into
- * the two shapes of the same choices (`forms` and `questions`), so their values cannot differ.
+ * two shapes of the choices, `forms` for clients that can show forms and `questions` for the
+ * `AskUserQuestion` fallback. Both are built from the same facts and the same option lists, but
+ * they are not identical by design: the fallback's Start question offers a plain "dispatch"
+ * choice instead of a list of kinds, and its Kind question keeps chat, which the start form
+ * leaves out because a chat task cannot be filed from a draft.
  *
  * Every list comes from a registry: kinds from `TASK_KIND_INFO` and `HOME_DISPATCH_KIND_ORDER`,
  * defaults from `taskDefaultWorkflowId`. Nothing here spells a kind out by hand except the

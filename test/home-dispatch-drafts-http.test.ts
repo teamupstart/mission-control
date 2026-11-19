@@ -70,7 +70,10 @@ function rig(workflows?: unknown): Rig {
   // The route under test must never launch a real agent. Everything up to the launch is real.
   tasks.dispatch = (async (id: string, options: { overrideDisabled?: boolean; overridePauseHold?: boolean } = {}) => {
     dispatched.push({ id, ...options });
-    return refuse.with === null ? { ok: true, task: tasks.get(id)! } : { ok: false, error: refuse.with };
+    if (refuse.with !== null) return { ok: false, error: refuse.with };
+    // Stand in for the launch by making the one change a launch makes: the task is running.
+    registry.upsertTask({ ...tasks.get(id)!, status: "running", dispatchedAt: Date.now() } as never);
+    return { ok: true, task: tasks.get(id)! };
   }) as typeof tasks.dispatch;
   const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks, queues: new QueueManager(registry), workflows: (workflows === undefined ? undefined : fakeWorkflows(workflows)) as never });
   return { app, tasks, dispatched, refuse };
@@ -148,6 +151,8 @@ test("F3 confirm start: creates a shelved task with its origin and the exact bri
   const repo = gitRepo("start");
   const other = gitRepo("elsewhere");
   const draft = await create(r, repo, { repo: other, words: "add retries", context: "ctx" });
+  assert.equal(r.tasks.list().length, 0, "a draft is not a task");
+  assert.deepEqual(r.dispatched, [], "nothing starts before Start now");
   const done = await post(r, "/drafts/" + draft.body.draftId + "/confirm", { ...caller(repo), choice: "start" });
   assert.equal(done.status, 200);
   assert.equal(done.body.outcome, "started");
@@ -160,6 +165,7 @@ test("F3 confirm start: creates a shelved task with its origin and the exact bri
   assert.equal(row.intent, "add retries\n\n## Context Claude added\nctx");
   assert.equal(r.tasks.get(done.body.taskId)!.repoRoot, other);
   assert.deepEqual(r.dispatched, [{ id: done.body.taskId, overrideDisabled: true }]);
+  assert.equal(r.tasks.get(done.body.taskId)!.status, "running", "the task started as a result of Start now");
   const again = await post(r, "/drafts/" + draft.body.draftId + "/confirm", { ...caller(repo), choice: "start" });
   assert.equal(again.status, 404, "a second confirm is a 404");
   assert.equal(r.tasks.list().length, 1, "one draft makes at most one task");

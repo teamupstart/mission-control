@@ -10,6 +10,7 @@ import { SESSION_PAUSE_MODES, SESSION_PAUSE_REASONS } from "./pause.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { STACK_DEPTH_LIMITS } from "./stacking.ts";
 import { HOOK_BACKGROUND_TASKS_MAX, HOOK_SUBAGENT_TEXT_MAX } from "./hook-subagents.mjs";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
@@ -3067,7 +3068,7 @@ export const ShippingConfigSchema = z.object({
    * that targets the default branch. A dependent whose parent is already this deep waits for
    * the bottom of its stack to merge.
    */
-  maxStackDepth: z.number().int().min(1).max(5).default(3),
+  maxStackDepth: z.number().int().min(STACK_DEPTH_LIMITS.min).max(STACK_DEPTH_LIMITS.max).default(STACK_DEPTH_LIMITS.default),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 

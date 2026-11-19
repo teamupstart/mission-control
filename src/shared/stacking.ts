@@ -28,7 +28,7 @@ export type StackingMode = "merge" | "stack";
 export const STACKING_SHIPPED_DEFAULT: StackingMode = "stack";
 
 /** Bounds and default for `ShippingConfig.maxStackDepth`. */
-export const STACK_DEPTH_LIMITS = { min: 1, max: 5, default: 3 } as const;
+export const STACK_DEPTH_LIMITS = { min: 1, max: 10, default: 3 } as const;
 
 /** The Shipping default an edge with no `mode` inherits right now. */
 export function effectiveStacking(config: Pick<ShippingConfig, "stacking">): StackingMode {

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { applyFeatureFlagIntent, sameFeatureFlagsConfig, type FeatureFlagIntent, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { api } from "./lib/api.ts";
+import type { MissionState } from "./useEventStream.ts";
 
 /** Optimism is temporary; the event stream remains the only confirmed state. */
-export function useFeatureFlagsSettings(confirmed: FeatureFlagsConfig, ready: boolean) {
+export function useFeatureFlagsSettings(confirmed: FeatureFlagsConfig, ready: boolean, subscribe: MissionState["subscribeFeatureFlags"]) {
   const [pending, setPending] = useState<{
     intent: FeatureFlagIntent;
     accepted: boolean;
@@ -11,6 +12,15 @@ export function useFeatureFlagsSettings(confirmed: FeatureFlagsConfig, ready: bo
   } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const writing = useRef<FeatureFlagIntent | null>(null);
+  useEffect(() => subscribe(config => {
+    const request = writing.current;
+    if (!request) return;
+    const applied = applyFeatureFlagIntent(config, request);
+    // Keep the receipt even when a peer's later choice replaces this config in the same render.
+    if (applied.ok && sameFeatureFlagsConfig(config, applied.config)) {
+      setPending(current => current?.intent === request ? { ...current, observed: true } : current);
+    }
+  }), [subscribe]);
   const optimistic = pending ? applyFeatureFlagIntent(confirmed, pending.intent) : null;
   const reflected = optimistic?.ok === true && sameFeatureFlagsConfig(confirmed, optimistic.config);
   useEffect(() => {

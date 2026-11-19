@@ -369,6 +369,7 @@ export function App(): React.JSX.Element {
     fleetCost,
     lineSummary,
     featureFlags,
+    subscribeFeatureFlags,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -1145,7 +1146,7 @@ export function App(): React.JSX.Element {
    * and cost telemetry is already App-owned, so all three are honestly bindable wherever the
    * palette opens.
    */
-  const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected);
+  const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected, subscribeFeatureFlags);
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({

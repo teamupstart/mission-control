@@ -273,6 +273,40 @@ test("successful master and flag writes stay optimistic until stream confirmatio
     await expect(control(page)).toBeEnabled();
     await expectValue(page, kind === "flag");
     await page.unroute("**/api/feature-flags");
+
+    // A write and its peer's opposite may arrive in one task, without an intermediate render.
+    for (const streamFirst of [false, true]) {
+      const original = kind === "flag";
+      await page.evaluate(() => { (window as FlagStreamWindow).flagStream.hold = true; });
+      let finish!: () => void;
+      const held = new Promise<void>(resolve => { finish = resolve; });
+      await page.route("**/api/feature-flags", async route => {
+        if (route.request().method() !== "PUT") return route.continue();
+        const response = await route.fetch();
+        if (streamFirst) await held;
+        await route.fulfill({ response });
+      });
+      const response = page.waitForResponse(response => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/feature-flags");
+      await control(page).click();
+      await expectValue(peer, !original);
+      await expect(control(peer)).toBeEnabled();
+      await control(peer).click();
+      await expectValue(peer, original);
+      await expect.poll(() => page.evaluate(() => (window as FlagStreamWindow).flagStream.messages.length)).toBe(2);
+      if (!streamFirst) await (await response).finished();
+      await page.evaluate(() => {
+        const gate = (window as FlagStreamWindow).flagStream;
+        gate.hold = false;
+        for (const data of gate.messages.splice(0)) gate.source.dispatchEvent(new MessageEvent("message", { data }));
+      });
+      await expectValue(page, original);
+      if (streamFirst) await expect(control(page)).toBeDisabled();
+      finish();
+      await (await response).finished();
+      await expect(control(page)).toBeEnabled();
+      await expectValue(page, original);
+      await page.unroute("**/api/feature-flags");
+    }
   }
   // Missing our acknowledgement during a disconnect must not leave controls stuck pending.
   const navigation = page.getByRole("button", { name: /^Preview navigation:/ });

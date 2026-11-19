@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,6 +69,24 @@ for (const [name, entries, accepted] of [
   });
 }
 
+/**
+ * One `hdiutil` verb, with the bounded retry `image()` gives `hdiutil create`: `attach` and
+ * `detach` fail the same way on a loaded host, exit 1 while the disk image service is busy.
+ * A persistent failure still fails with every attempt's text, and a timed-out child that
+ * happens to exit 0 is not a success. `beforeAttempt` undoes what a refused attempt left.
+ */
+function hdiutil(args: readonly string[], beforeAttempt: (attempt: number) => void = () => {}): void {
+  const failures: string[] = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    beforeAttempt(attempt);
+    const ran = spawnSync('/usr/bin/hdiutil', args, {encoding: 'utf8', timeout: 60_000});
+    if (!ran.error && ran.status === 0) return;
+    failures.push(`attempt ${attempt}: status ${ran.status} signal ${ran.signal} ${ran.error?.message ?? ''}\n${ran.stdout}${ran.stderr}`.trim());
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500 * attempt);
+  }
+  throw new Error(`hdiutil ${args[0]} failed 3 times:\n${failures.join('\n')}`);
+}
+
 function image(t: test.TestContext, entries: readonly string[], retainWriter = false): {work: string; dmg: string} {
   const source = layout(t, entries);
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'dmg-root-image-')));
@@ -127,14 +145,18 @@ test('producer qualification refuses a real mounted DMG whose root the installer
     const {work, dmg} = image(t, entries);
     const mount = join(work, 'image');
     mkdirSync(mount);
-    execFileSync('/usr/bin/hdiutil', ['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount], {timeout: 60_000, stdio: 'ignore'});
+    // A refused attach can still leave the image attached, so each retry starts from a released
+    // image; after the last refusal `image()`'s own cleanup releases it, and reports if it cannot.
+    hdiutil(['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount], (attempt) => {
+      if (attempt > 1) releaseFixtureImage(dmg);
+    });
     try {
       const installer = installerAcceptsRoot(mount);
       t.diagnostic(JSON.stringify({entries, installer: installer.accepted, producer: producerAccepts(mount)}));
       assert.equal(installer.accepted, accepted, installer.stderr);
       assert.equal(producerAccepts(mount), accepted);
     } finally {
-      execFileSync('/usr/bin/hdiutil', ['detach', mount], {timeout: 60_000, stdio: 'ignore'});
+      hdiutil(['detach', mount]);
     }
   }
 });

@@ -131,6 +131,18 @@ export interface FakePullRequest {
   createdAt: string;
   mergedAt: string | null;
   headRefOid: string;
+  /**
+   * The head commit's checks, in the shape `gh pr list --json statusCheckRollup` prints: one
+   * entry per check RUN, so a check that ran twice on one commit appears twice. Omitted means
+   * none reported.
+   */
+  statusCheckRollup?: unknown[];
+  /**
+   * The same runs as GraphQL's `statusCheckRollup.contexts` nodes, which carry each run's app
+   * and triggering event. The branch poller reads these before it lets a later run clear a
+   * failure. Omitted means that read finds no pull request, and the failure stands.
+   */
+  checkContexts?: unknown[];
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
@@ -743,6 +755,15 @@ if (argv[0] === "--version") {
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
     mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
     repository: { defaultBranchRef: { name: "main" } },
+  } : null } } }));
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("statusCheckRollup"))) {
+  // The branch poller confirming a re-run before it clears a failure: the head commit's checks
+  // with their app and event. Answered for the checkout it was run in, like \`pr list\`.
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr && pr.checkContexts ? {
+    commits: { nodes: [{ commit: { oid: pr.headRefOid,
+      statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts } } } }] },
   } : null } } }));
 } else if (argv[0] === "api" && (argv[1] || "").includes("/compare/")) {
   let statuses = {};

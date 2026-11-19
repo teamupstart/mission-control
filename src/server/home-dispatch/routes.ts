@@ -17,6 +17,7 @@ import {
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { handleAnswer } from "./answers.ts";
+import type { HomeDispatchDeps } from "./deps.ts";
 import { handleCheckin } from "./checkins.ts";
 import { handleReadConfig } from "./config.ts";
 import { handleConfirmDraft, handleCreateDraft, handleUpdateDraft } from "./drafts.ts";
@@ -29,7 +30,7 @@ import type { HomeDispatchResult } from "./stub.ts";
 /** The `:id` of the draft routes. The paths come from the shared table, so Hono cannot infer it. */
 const draftId = (c: Context): string => c.req.param("id") ?? "";
 
-export interface HomeDispatchRouteDeps {
+export interface HomeDispatchRouteDeps extends HomeDispatchDeps {
   /** The `x-harness-token` check every ingest-family route uses. */
   authed: (c: Context) => boolean;
 }
@@ -76,31 +77,31 @@ export function registerHomeDispatchRoutes(parent: Hono, deps: HomeDispatchRoute
   app.post(at(R.dispatchOptions), async (c) => {
     const parsed = await parseBody(c, DispatchOptionsRequestSchema);
     if (!parsed.ok) return parsed.res;
-    return reply(c, await handleDispatchOptions(parsed.data));
+    return reply(c, await handleDispatchOptions(parsed.data, deps));
   });
 
   app.post(at(R.drafts), async (c) => {
     const parsed = await parseBody(c, DraftCreateSchema);
     if (!parsed.ok) return parsed.res;
-    return reply(c, await handleCreateDraft(parsed.data));
+    return reply(c, await handleCreateDraft(parsed.data, deps));
   });
 
   app.post(at(R.draft), async (c) => {
     const parsed = await parseBody(c, DraftUpdateSchema);
     if (!parsed.ok) return parsed.res;
-    return reply(c, await handleUpdateDraft(draftId(c), parsed.data));
+    return reply(c, await handleUpdateDraft(draftId(c), parsed.data, deps));
   });
 
   app.post(at(R.draftConfirm), async (c) => {
     const parsed = await parseBody(c, DraftConfirmSchema);
     if (!parsed.ok) return parsed.res;
-    return reply(c, await handleConfirmDraft(draftId(c), parsed.data));
+    return reply(c, await handleConfirmDraft(draftId(c), parsed.data, deps));
   });
 
   app.post(at(R.checkins), async (c) => {
     const parsed = await parseBody(c, CheckinRequestSchema);
     if (!parsed.ok) return parsed.res;
-    return reply(c, await handleCheckin(parsed.data));
+    return reply(c, await handleCheckin(parsed.data, deps));
   });
 
   app.get(at(R.config), async (c) => reply(c, await handleReadConfig({})));

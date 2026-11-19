@@ -51,6 +51,9 @@ const ROUTES: Array<{ name: string; method: "GET" | "POST"; path: string; body?:
   { name: "config", method: "GET", path: "/mcp/dispatch/config", owner: "WP2b" },
   { name: "jump", method: "POST", path: "/mcp/dispatch/jump", body: { target: "home" }, owner: "WP10" },
 ];
+/** Work packages whose routes answer for real now; the rest still answer their 501 stub. */
+const LANDED_OWNERS = new Set(["WP3"]);
+const STUB_ROUTES = ROUTES.filter((r) => !LANDED_OWNERS.has(r.owner));
 const call = (a: ReturnType<typeof app>, r: (typeof ROUTES)[number], headers = authed()) =>
   a.request(r.path, { method: r.method, headers, body: r.body === undefined ? undefined : JSON.stringify(r.body) });
 
@@ -80,11 +83,13 @@ test("F1 routes: the registered dispatch routes are exactly the shared table, an
   assert.deepEqual(registered, Object.values(HOME_DISPATCH_ROUTES).map(homeDispatchRouteLabel).sort());
   flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
   const labels = new Set<string>();
-  for (const r of ROUTES) {
+  for (const r of STUB_ROUTES) {
     const res = await call(a, r);
     labels.add(((await res.json()) as { route: string }).route);
   }
-  assert.deepEqual([...labels].sort(), Object.values(HOME_DISPATCH_ROUTES).map(homeDispatchRouteLabel).sort());
+  const landed = ROUTES.filter((r) => LANDED_OWNERS.has(r.owner)).map((r) => r.path.split("?")[0]!);
+  const expected = Object.values(HOME_DISPATCH_ROUTES).filter((route) => !landed.some((path) => path === route.path || (route.path.includes(":id") && path.startsWith(route.path.split(":id")[0]!))));
+  assert.deepEqual([...labels].sort(), expected.map(homeDispatchRouteLabel).sort());
 });
 
 test("F1 flag off: every dispatch route answers the 404 disabled body and runs no handler", async () => {
@@ -114,7 +119,12 @@ test("F1 flag on: each route validates its body (400) and otherwise answers its 
   const a = app();
   flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
   for (const r of ROUTES) {
-    const res = await call(a, r);
+    const res = LANDED_OWNERS.has(r.owner) ? null : await call(a, r);
+    if (res === null) {
+      const bad = await a.request(r.path, { method: r.method, headers: authed(), body: JSON.stringify({}) });
+      assert.equal(bad.status, 400, `${r.name} rejects an empty body`);
+      continue;
+    }
     assert.equal(res.status, 501, r.name);
     const body = (await res.json()) as { error: string; feature: string; route: string; owner: string };
     assert.equal(body.error, "not implemented", r.name);

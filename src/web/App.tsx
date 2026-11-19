@@ -1,3 +1,4 @@
+import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -1144,18 +1145,20 @@ export function App(): React.JSX.Element {
    * and cost telemetry is already App-owned, so all three are honestly bindable wherever the
    * palette opens.
    */
+  const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected);
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
         formatMessages: { value: richText, set: setRichText },
         guidedDispatch: { value: guidedDispatch, set: setGuidedDispatch },
+        featureFlags: featureFlagsSettings,
         autoMode: null,
         skillsEnabled: null,
         costTrack: cost.status
           ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
           : null,
       }),
-    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update],
+    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update, featureFlagsSettings],
   );
   /**
    * Session names, for the run rows that are bound to one.
@@ -4817,6 +4820,7 @@ export function App(): React.JSX.Element {
           }
           settings={(
             <SettingsPage
+              featureFlagsSettings={featureFlagsSettings}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:

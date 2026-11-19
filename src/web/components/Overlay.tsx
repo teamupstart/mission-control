@@ -93,6 +93,7 @@ export const OVERLAY_IDS = {
   residentMcpAllSources: "resident-mcp-all-sources",
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
+  featureFlagsConfirm: "feature-flags-confirm",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

@@ -147,6 +147,9 @@ block. The one macOS job, `package (macOS arm64)`, builds an unsigned developer 
 
 ## Working rules
 
+New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the three-release lifecycle.
+
+
 1. Inspect `git status` before editing. Preserve unrelated changes.
 2. Follow existing module ownership and registry patterns. Do not create parallel sources of truth.
 3. Add focused tests for behavior changes and regressions.

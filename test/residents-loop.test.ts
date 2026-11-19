@@ -413,7 +413,7 @@ for (const contextPct of [null, NaN, Infinity, -1]) test(`unmeasured context (${
   assert.equal(f.run().iteration, 2);
 });
 
-for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const }, { paneDialog: { options: [], highlighted: 0 } }]) test(`human request holds overdue wakes without pausing: ${JSON.stringify(hold)}`, async () => {
+for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const }, { paneDialog: { options: [], highlighted: 0 } }]) test(`human request holds overdue wakes without pausing: ${JSON.stringify(hold)}`, async t => {
   const f = fixture(); const loop = f.loop(); await flush();
   const due = f.run().nextWakeAt;
   f.patch(hold); await flush();
@@ -421,8 +421,9 @@ for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const },
   assert.equal(f.run().nextWakeAt, due);
   await loop.stop(); f.advance(400_000); f.loop(); await flush();
   assert.equal(f.calls.length, 0);
-  f.patch({ pendingReviews: 0, state: "idle", paneDialog: null }); await flush();
-  assert.equal(f.calls.length, 1);
+  f.patch({ pendingReviews: 0, state: "idle", paneDialog: null });
+  // Observation arms a timer, so one fixed sleep can finish before delivery under load.
+  await t.waitFor(() => assert.equal(f.calls.length, 1));
 });
 
 test("pacing before and during a review survives resolution and completes with the requested delay", async () => {

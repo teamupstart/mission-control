@@ -1,3 +1,4 @@
+import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -177,6 +178,8 @@ export interface MissionState {
    * quiet fleet is six real sentences, not an absence.
    */
   lineSummary: LineSummary | null;
+  /** Whole flag config from SSE, defaulting off before the first snapshot. */
+  featureFlags: FeatureFlagsConfig;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
@@ -290,6 +293,7 @@ export function useEventStream(): MissionState {
   );
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
+  const [featureFlags, setFeatureFlags] = useState<FeatureFlagsConfig>(FEATURE_FLAGS_DEFAULTS);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
   const [pauseState, setPauseState] = useState<PauseState>(EMPTY_PAUSE_STATE);
@@ -424,6 +428,7 @@ export function useEventStream(): MissionState {
           // And the strip, for the same reason it is in the snapshot at all: it is permanent
           // chrome, so waiting for the next change would open the fleet on six blank stages.
           setLineSummary(msg.lineSummary);
+          setFeatureFlags(msg.featureFlags ?? FEATURE_FLAGS_DEFAULTS);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -667,6 +672,9 @@ export function useEventStream(): MissionState {
         case "line_summary":
           setLineSummary(msg.line);
           break;
+        case "feature_flags":
+          setFeatureFlags(msg.config);
+          break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
@@ -825,6 +833,7 @@ export function useEventStream(): MissionState {
     fileCommentReviews: fileCommentReviewsList,
     fleetCost,
     lineSummary,
+    featureFlags,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

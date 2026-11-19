@@ -576,6 +576,8 @@ change, describe it in an issue for the maintainers to evaluate. See
   dashboard sends, automation and unknown attribution, with direct terminal input left unmeasured.
 - [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
   gaps and the OTLP query contract.
+- [Feature flags](docs/feature-flags.md) - machine-wide choices and live daemon and dashboard
+  gates. The registry ships empty; Settings controls arrive separately.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries

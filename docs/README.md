@@ -49,6 +49,7 @@ Mission Control's product reference is organized by feature below.
 - [Tasks, queues, and schedules](tasks-and-scheduling.md)
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)
+- [Feature flags](feature-flags.md): flag core, live gates and the three-release lifecycle.
 - [Desktop shell and packaging](desktop-and-packaging.md)
 - [Owned runtimes and integration repair](owned-runtimes.md)
 - [Signed release production and verification](release-verification.md)

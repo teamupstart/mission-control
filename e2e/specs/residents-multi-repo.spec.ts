@@ -333,6 +333,8 @@ test("a dock Launch whose answer was lost retries the repository set it sent, af
   await expect(launch).toBeEnabled();
   expect(sent).toHaveLength(1);
   expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, additionalRepoRoots: [daemon.secondRepo] });
+  await dashboard.keyboard.press("Escape");
+  await expect(dock).toBeHidden();
 
   // Another window drops the attachment while that launch is outstanding.
   const stored = (await api<Array<ProfileRow & { id: string; revision: number; settings: Record<string, unknown> }>>(daemon, "/api/residents/profiles"))
@@ -346,11 +348,17 @@ test("a dock Launch whose answer was lost retries the repository set it sent, af
     }),
   });
   expect(edited.status).toBe(200);
-  await expect.poll(async () =>
-    (await api<ProfileRow[]>(daemon, "/api/residents/profiles")).find((p) => p.name === PROFILE)?.settings.workspace.additionalRepoRoots,
-  ).toEqual([]);
+  // Proven in the BROWSER, not only the daemon: an in-app navigation (the dashboard stays loaded,
+  // so the dock's outstanding launch is kept) to the profile page, which draws the new revision
+  // and no attachment once the edit has reached this page.
+  await dashboard.evaluate((hash) => { window.location.hash = hash; }, `#/residents/${id}`);
+  const page = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+  await expect(page).toContainText(`Revision ${stored.revision + 1}`);
+  await expect(page.getByRole("button", { name: /^Detach repo: / })).toHaveCount(0);
 
   // Launch again replays exactly what was sent - same request id, same repositories.
+  await dashboard.locator("header.topbar").getByRole("button", { name: /^Residents - \d+ live$/ }).click();
+  await expect(launch).toBeEnabled();
   await launch.click();
   await expect(dock.getByRole("button", { name: `Open ${PROFILE}` })).toBeEnabled({ timeout: 60_000 });
   // A still-starting launch is polled with the same request, so every later send is that replay.

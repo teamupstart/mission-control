@@ -62,6 +62,15 @@ Each phase document cites the findings it depends on. The ones that shaped the s
     envelope, the strict definition is checked per entry, and every write carries the other
     entries through unchanged. `plan.md` states the rule under "Stored shapers this build does
     not understand".
+12. **FR-06 lesson selection is a step after shaping, not a shaper.** Plan validation found
+    `plan.md` describing it twice, as a later stage and as a built-in selector. It has one
+    placement: a step of its own after the last shaping stage and before `composeTurnOne`,
+    which is where FR-06 puts it, because it selects only the lessons that `select` and
+    `route` did not already deliver. It is not an id in `SHAPING_STAGES` or
+    `SHAPING_BUILTINS`, and no phase here builds it. It shares the one context budget by being
+    allocated last: it is given `limits.totalBytes` less the `bytes` the shaping summary
+    records, and lessons are fitted into that remainder by `allocateBudget`. `plan.md` states
+    the rule under "Lesson selection at dispatch (FR-06)".
 
 ## Size and phase count
 
@@ -119,6 +128,7 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Engine | 1 | `shapeTask(input)` in `src/server/shaping/engine.ts` resolves to `{ summary, section }`. It never throws. `summary` is null and `section` is empty when no shaper applied. |
 | Transport | 1 | `call(request, shaper, ctx)` resolves to `{ kind: "data", data }` or `{ kind: "failed" or "timed_out" or "unavailable", reason }`. `ctx` carries the deadline, a signal and a per-run scope. One file per transport in `src/server/shaping/transports/`. |
 | Enablement | 1 | In `resolveShapers` only. A stored choice in `overrides`, on or off, always wins. With no stored choice, a registered shaper is off, and a discovered one runs unless its manifest says `"enabled": false`. |
+| Context budget | 1 | One total, `limits.totalBytes`, filled in pipeline order by `allocateBudget`, which takes the total it may fill as an argument and reads no config. The summary's `bytes` is what the shaping stages used. A later step outside shaping, which is FR-06 lesson selection, is allocated last, from the remainder. |
 | Unknown ids | 1 | The config stores `StoredShaperSchema` envelopes. An entry that fails the strict `ShaperSchema` is unsupported: never resolved or called, never switched on, and carried through every write unchanged. `upsert` accepts only a strict definition. |
 | HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
 | Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping` |
@@ -141,8 +151,8 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | D5 skill routing | Not built. The stage tuple in 1 is where `route` is appended once FR-04 publishes a contract |
 | D6 identity and references | Syntax in 1, the identity setting in 3, resolution in 5 |
 | D7 where `degraded` shows | 2 |
-| D8 and D9 budgets | 1 |
-| D10 lesson promotion | Not built. 5 leaves the references and egress helpers reusable |
+| D8 and D9 budgets | 1. D9's total also bounds FR-06's later lesson step, which is allocated last (decision 12 above) |
+| D10 lesson promotion | Not built. 5 leaves the references and egress helpers reusable. Lesson selection at dispatch is a different FR-06 step and is not a shaper (decision 12 above) |
 | D11 call site | 2 |
 
 ## Final verification

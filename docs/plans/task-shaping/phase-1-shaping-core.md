@@ -62,7 +62,10 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    `enable`, `reorder`, `settings`. `applyShapingIntent` accepts an `upsert` only when it
    passes the strict schema, refuses to switch an unsupported entry on, and carries every
    other entry through unchanged, unknown fields included. The pure functions each take their
-   definitions as arguments so tests inject their own. `resolveShapers` returns known shapers
+   definitions as arguments so tests inject their own. `allocateBudget` likewise takes the
+   total it may fill as an argument and reads no config, so a later step outside shaping can
+   call it with what the shaping stages left (decision 12 in `phased-plan.md`).
+   `resolveShapers` returns known shapers
    only, and implements the whole enablement and ordering rule now, including for a
    discovered list that stays empty until Phase 4. A stored choice in `overrides`, on or off,
    always wins. With no stored choice, a registered shaper is off, and a discovered one runs
@@ -152,5 +155,8 @@ reshape them. They replace the contents of their own transport file, `discovery.
   Phase 4. And the single strict schema could not have preserved an entry with an unknown
   stage or transport id, so the stored envelope, `classifyShaper` and the write rule were
   added.
+- Plan validation repair 4, 2026-11-19: step 3 now says `allocateBudget` takes its total as
+  an argument. That is how FR-06's lesson step, which runs after shaping and is not a shaper,
+  is allocated last from the one context budget. Nothing else in this phase changed.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

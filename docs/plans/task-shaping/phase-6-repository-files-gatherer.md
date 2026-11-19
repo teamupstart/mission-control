@@ -16,7 +16,8 @@ one gatherer that ships inside Mission Control, and it reads only what its confi
 - `src/server/shaping/builtin/repository-files.ts`.
 - Its section of the guide.
 
-Not here: any other built-in, a facts format other than flat JSON, the FR-06 lessons selector.
+Not here: any other built-in, or a facts format other than flat JSON. FR-06 lesson selection
+is not a built-in at all (see Handoff).
 
 ## Repository findings
 
@@ -74,11 +75,19 @@ Not here: any other built-in, a facts format other than flat JSON, the FR-06 les
 
 ## Handoff
 
-A later built-in, such as the FR-06 lessons selector, is one appended id in `SHAPING_BUILTINS`
-and one entry in the `Record`. It shares the context budget through the allocator.
+A later built-in is one appended id in `SHAPING_BUILTINS` and one entry in the `Record`, and
+its entries share the context budget like any other shaper's.
+
+FR-06 lesson selection is not one. It is a step of its own after the last shaping stage, as
+`plan.md` states under "Lesson selection at dispatch (FR-06)", and it is allocated last from
+the same budget. Do not add it to `SHAPING_BUILTINS` or serve it through this transport.
 
 ## Cross-phase audit
 
 - Phase 1: uses the declared id, options and transport reply. Owns the `builtin` part of D2.
 - Phase 4: a discovered manifest may use this built-in.
 - Phases 2, 3 and 5: no shared files.
+- Plan validation repair 4, 2026-11-19: the scope line and the handoff named an "FR-06 lessons
+  selector" as a later built-in, while `plan.md` also called lesson selection a later stage.
+  It has one placement now, a step after the shaping stages that is not a shaper, and this
+  file says so.

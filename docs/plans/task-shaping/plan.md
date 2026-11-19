@@ -72,7 +72,8 @@ flowchart LR
   C --> S1[Gather: repository gatherers]
   S1 --> S2[Select: guidance selectors]
   S2 --> S3[Route skills, later]
-  S3 --> D[composeTurnOne]
+  S3 --> L[Select lessons, later: FR-06 step, not a shaper]
+  L --> D[composeTurnOne]
   D --> E[Worker launched]
   S1 -. failure or timeout: continue, degraded .-> D
   S2 -. failure or timeout: continue, degraded .-> D
@@ -81,7 +82,9 @@ flowchart LR
 Today the flow goes from "Standing instructions and plan inputs" straight to `composeTurnOne`.
 The three shaping boxes are new. A stage starts when the one before it has settled. Shapers
 in one stage run in parallel, and each is called once per attached repository, also in
-parallel. Nothing in the three boxes can stop the launch.
+parallel. Nothing in the three boxes can stop the launch. The lessons box is not shaping
+and is not built by this plan. It is FR-06's later step, drawn to show its one place, after
+the last shaping stage. "Lesson selection at dispatch (FR-06)" describes it.
 
 ### One contract
 
@@ -402,8 +405,11 @@ refused or shadowed entry never runs, whatever is stored for its id.
   Both are recorded.
 - Truncation is not degradation. A truncated launch shows a neutral "truncated" note.
   `degraded` is reserved for a shaper that failed or said it was degraded.
-- The allocator is one pure function. It is where a later lessons stage (FR-06 step 7) and
-  routed skills share one budget.
+- There is one budget and one allocator. `limits.totalBytes` bounds everything this pipeline
+  adds to turn one, and `allocateBudget`, one pure function, fills it in pipeline order:
+  gather, select, later the routed skills of stage `route`, and last the repository lessons
+  that FR-06 selects in its own step after shaping. "Lesson selection at dispatch (FR-06)"
+  states that step's place and its share.
 
 ### Caller identity and credentials
 
@@ -561,8 +567,32 @@ engine: it runs at task end, it writes (it opens a pull request or calls a servi
 approves it, a failure must be reported and retried instead of ignored, and it has no latency
 budget. It is not a shaper stage (D10). It reuses the foundation built here, which is the
 transports, the reference resolver, the egress guards and the manifest and Settings pattern,
-and gets its own small registry and contract. FR-06 step 7, selecting repository lessons at
-dispatch, is different: it is a natural built-in selector here and shares this budget.
+and gets its own small registry and contract.
+
+## Lesson selection at dispatch (FR-06)
+
+FR-06 step 7 selects repository lessons for a task at dispatch. FR-06 owns it, and this plan
+does not build it. This plan fixes two things about it: where it runs, and how it shares the
+context budget.
+
+- **Where it runs.** In a step of its own, after the last shaping stage and before
+  `composeTurnOne`. The order is gather, select, later route, then lesson selection, which
+  FR-06 calls stage 4 of the post-shaping pipeline. It has to follow `select` and `route`:
+  under FR-06, promoted lessons arrive as guidance from a selector, lessons attached to a
+  skill arrive with routed skills, and this step selects only from the lessons that are left.
+- **It is not a shaper.** No configured entry and no transport serves it. So it is not a
+  selector, not a built-in, and not an id in `SHAPING_STAGES` or `SHAPING_BUILTINS`. Mission
+  Control's own selection function reads the lessons kept in the task's repositories.
+- **How it shares the context budget.** There is no second budget. `limits.totalBytes` (D9)
+  bounds the shaping section and the lessons together, and lessons are allocated last. The
+  step is given what the shaping stages left: `limits.totalBytes` less the `bytes` the
+  shaping summary records, or all of it when no shaper applied. That remainder is the byte
+  budget FR-06's selection function takes. Lesson bodies are fitted into it by
+  `allocateBudget`, so a lesson is cut, dropped and recorded by the rules that apply to a
+  context entry. When nothing is left, no lesson body is added, and FR-06 keeps the lesson
+  index in the repository's root document as the floor.
+- **What changes when FR-06 builds it.** One awaited call after `shapeTask`, and FR-06's own
+  record of what was loaded. The shaping engine, its stages and its transports do not change.
 
 ## Implementation
 
@@ -599,6 +629,8 @@ after phase 5.
 - Stored secrets. v1 has references only.
 - The `route` stage and the lesson promotion registry. Each is designed here and built when
   its upstream contract exists.
+- FR-06 lesson selection at dispatch. This plan fixes only its place after the shaping
+  stages and its share of the context budget.
 - A nudge or a task that hydrates missing repository facts (FR-02 section 5).
 
 ## Risks
@@ -631,7 +663,7 @@ after phase 5.
 | FR-02, section 5a and question 8 | The generic call site ships with this plan (D11). The FR-02 owner registers a selector shaper for `get_guidance` instead of writing a call site. Registered in `folded` mode, the tool keeps exactly its three arguments and the complete collected input reaches it inside `task`, which is section 5a's proposal applied to the whole input. Question 12 is answered by D6, D7 and D8. |
 | FR-04 | `route_skills` becomes the `route` stage when its contract is published (D5). |
 | FR-05, section 12.2 | `degraded` reaches headless surfaces through the task record. No headless change. |
-| FR-06 | The promotion adapter gets its own registry on this foundation (D10). Step 7 fits as a built-in selector. |
+| FR-06 | The promotion adapter gets its own registry on this foundation (D10). Step 7, lesson selection at dispatch, is not a shaper or a built-in. It is FR-06's own step after the shaping stages, allocated last from the one context budget. |
 
 ## Dependencies outside this plan
 

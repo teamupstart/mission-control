@@ -139,3 +139,47 @@ test("F4 checkin route: while the inbox handler is still a stub, the live route 
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { waiting: [], running: [], finished: [], queued: 1, shelved: 1 });
 });
+
+test("F4 checkin route: tasks are classified into waiting, running and finished, with the 7-day and 24-hour edges", async () => {
+  const { openDb } = await import("../src/server/db.ts");
+  const { stampTaskOrigin } = await import("../src/server/home-dispatch/origin.ts");
+  openDb().exec("DELETE FROM tasks");
+  const repo = realpathSync(mkdtempSync(join(repos, "classify-")));
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const HOUR = 3_600_000;
+  const now = Date.now();
+  const file = (title: string, patch: Record<string, unknown>) => {
+    const t = tasks.create({ repoRoot: repo, intent: title, title, kind: "ship", agent: "claude", backlog: true });
+    stampTaskOrigin(t.id, { surface: "home-session", repo, sessionId: "s1" });
+    registry.upsertTask({ ...t, ...patch } as never);
+  };
+  file("asking", { status: "running", sessionId: "sess-a", updatedAt: now - HOUR });
+  file("working", { status: "running", sessionId: "sess-b", updatedAt: now - HOUR });
+  file("starting", { status: "dispatching", updatedAt: now - HOUR });
+  file("ready inside", { status: "done", completedAt: now - 6 * 24 * HOUR, updatedAt: now - 6 * 24 * HOUR, outcomeUrl: "https://example.test/pr/1" });
+  file("ready outside", { status: "done", completedAt: now - 8 * 24 * HOUR, updatedAt: now - 8 * 24 * HOUR });
+  file("failed inside", { status: "failed", updatedAt: now - 23 * HOUR });
+  file("failed outside", { status: "failed", updatedAt: now - 25 * HOUR });
+  file("cancelled inside", { status: "cancelled", updatedAt: now - HOUR });
+  registry.upsertReview({
+    id: "rev-1", sessionId: "sess-a", kind: "input", title: "A question", body: "Keep or drop?", status: "pending", response: null,
+    createdAt: now - HOUR / 2,
+    decisions: [{ id: "d1", question: "Keep or drop?", options: [{ id: "keep", label: "Keep" }, { id: "drop", label: "Drop" }] }],
+  } as never);
+  const app = buildApp({ registry, reviews: new ReviewManager(registry), tasks, queues: new QueueManager(registry) });
+  flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
+  const res = await app.request("/mcp/dispatch/checkins", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ sessionId: "s1", cwd: repo }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { waiting: any[]; running: any[]; finished: any[]; queued: number; shelved: number };
+  assert.deepEqual(body.waiting.map((i) => [i.title, i.reviewId, i.question, i.options]), [["asking", "rev-1", "Keep or drop?", ["Keep", "Drop"]]]);
+  assert.deepEqual(body.running.map((i) => i.title).sort(), ["starting", "working"]);
+  assert.deepEqual(body.finished.map((i) => i.title).sort(), ["cancelled inside", "failed inside", "ready inside"]);
+  assert.equal(body.finished.find((i) => i.title === "ready inside").pullRequestUrl, "https://example.test/pr/1");
+  assert.deepEqual([body.queued, body.shelved], [0, 0]);
+});

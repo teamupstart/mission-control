@@ -295,6 +295,10 @@ test("F3 confirm: the chosen after-work workflow reaches the created task (defau
   assert.equal(await confirmed({}), NO_MISTAKES_REVIEW_WORKFLOW_ID, "the kind's default");
   assert.equal(await confirmed({ workflowId: "w-explicit" }), "w-explicit");
   assert.equal(await confirmed({ workflowId: null }), null, "explicit None");
+  const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+  setWorkflowPolicy({ ...getWorkflowPolicy(), kindWorkflowDefaults: { ship: "w-configured" } });
+  assert.equal(await confirmed({}), "w-configured", "an operator-configured default for the kind");
+  assert.equal(await confirmed({ workflowId: null }), null, "explicit None still beats the configured default");
   assert.equal(await confirmed({ kind: "bugfix" }), "builtin-workflow:bug-fix-review");
 });
 

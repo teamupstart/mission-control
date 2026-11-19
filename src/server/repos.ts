@@ -681,10 +681,11 @@ export async function resolveTaskRepoSet(
 export async function resolveTaskExtraRepoRoots(
   repoRoot: string,
   extras: readonly string[],
+  resolve: typeof resolveTaskRepoRoot = resolveTaskRepoRoot,
 ): Promise<{ ok: true; repoRoots: string[] } | { ok: false; error: string }> {
   const repoRoots: string[] = [];
   for (const entry of extras) {
-    const resolved = await resolveTaskRepoRoot(entry);
+    const resolved = await resolve(entry);
     if (!resolved.ok) return resolved;
     if (resolved.repoRoot === repoRoot) {
       return {

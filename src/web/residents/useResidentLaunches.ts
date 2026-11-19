@@ -23,7 +23,7 @@ export interface ResidentLaunchState {
    * launch", and the fresh id that follows could start a second resident. Cleared only by a
    * definitive answer.
    */
-  outstanding: { requestId: string; repoRoot: string } | null;
+  outstanding: { requestId: string; repoRoot: string; additionalRepoRoots: string[] } | null;
   busy: boolean;
   error: string | null;
   /** The launch reached its session; cleared on the next launch. */
@@ -43,7 +43,8 @@ export interface ResidentLaunchState {
 export interface ResidentLaunches {
   launches: Readonly<Record<string, ResidentLaunchState>>;
   /**
-   * Launch a profile in its default repository, or replay its outstanding launch. Answers
+   * Launch a profile in its default repository, with the repositories it attaches beside it,
+   * or replay its outstanding launch. Answers
    * `"needs-repository"` without sending anything when the profile has no default repository
    * and nothing is outstanding: the caller opens Dispatch > Resident on it instead.
    */
@@ -84,8 +85,9 @@ export function useResidentLaunches(): ResidentLaunches {
     const outstanding = current?.outstanding ?? null;
     const repoRoot = outstanding?.repoRoot ?? profile.settings.workspace.defaultRepoRoot?.trim();
     if (!repoRoot) return "needs-repository";
+    const additionalRepoRoots = outstanding?.additionalRepoRoots ?? profile.settings.workspace.additionalRepoRoots;
     const requestId = outstanding?.requestId ?? current?.requestId ?? crypto.randomUUID();
-    const sent = { requestId, repoRoot };
+    const sent = { requestId, repoRoot, additionalRepoRoots };
     // Recorded BEFORE it is sent: from here until a definitive answer, this is the launch.
     patchLaunch(profile.id, {
       requestId,
@@ -96,7 +98,7 @@ export function useResidentLaunches(): ResidentLaunches {
       stillStarting: false,
       controlReport: null,
     });
-    const input = { repoRoot, requestId };
+    const input = { repoRoot, ...(additionalRepoRoots.length > 0 ? { additionalRepoRoots } : {}), requestId };
     const startedAt = Date.now();
     // Still inside the Launch click: the one call that may arm session control for this run.
     let answer = await launchResident(profile.id, input, { profile });

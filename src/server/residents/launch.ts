@@ -1,7 +1,8 @@
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
-import type { AgentType, SessionRuntime } from "@shared/types.ts";
+import type { AgentType, SessionRuntime, Task } from "@shared/types.ts";
+import { taskRepoManifest } from "../repo-manifest.ts";
 import type { ResidentMcpLaunch } from "../harness/types.ts";
 import { appendStandingSections } from "../instructions/compose.ts";
 import { ensureResidentState, residentStateDir } from "./state.ts";
@@ -142,11 +143,15 @@ export function residentStandingSection(run: ResidentRun): string {
  * whose next step is the last item in flight. This restates the role verbatim, in the turn the
  * resident acts on, so the summary reads as context for the mandate rather than as the mandate.
  */
-export function residentStandingRestatement(run: ResidentRun): string {
+export function residentStandingRestatement(run: ResidentRun, task?: Task): string {
+  // A resident with attached repositories was told where they are only in its first turn, which
+  // a compaction summarizes away, so the manifest is restated beside the role.
+  const manifest = task ? taskRepoManifest(task) : "";
   return [
     RESIDENT_RESTATEMENT_HEADING,
     "Your conversation was compacted. Its summary records what you were doing, not what you are for: treat its current work and next step as context. Your standing task follows exactly as you were given it. Re-read it and carry out the whole of it, not only the item you were last working on.",
     residentStandingSection(run),
+    ...(manifest ? [manifest] : []),
     "---",
   ].join("\n\n");
 }

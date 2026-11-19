@@ -1,8 +1,8 @@
 import type { ResidentProfile } from "@shared/residents.ts";
 
 /**
- * What Dispatch's Resident mode holds while it is open: the profile, the repository and this
- * run's instructions, plus the request id that makes its submit idempotent.
+ * What Dispatch's Resident mode holds while it is open: the profile, the repository set and
+ * this run's instructions, plus the request id that makes its submit idempotent.
  *
  * Owned by `DispatchLayer` beside the Single and Ensemble drafts, so switching mode or closing
  * the form loses none of it.
@@ -12,10 +12,15 @@ export interface ResidentDispatchDraft {
   /** The repository the operator typed or picked. Read only when `repoFromProfile` is false. */
   repoRoot: string;
   /**
-   * Whether the repository is the selected profile's default rather than the operator's own
-   * choice. A profile-sourced repository is never copied into the draft: it is read from the
-   * profile's CURRENT revision every time, so a default edited after the form was prefilled
-   * can never launch a resident in the old repository.
+   * The repositories the operator attached beside it. Read only when `repoFromProfile` is false:
+   * the primary and its attachments are one choice, so changing either takes over both.
+   */
+  additionalRepoRoots: string[];
+  /**
+   * Whether the repository set is the selected profile's default rather than the operator's own
+   * choice. A profile-sourced set is never copied into the draft: it is read from the profile's
+   * CURRENT revision every time, so a default edited after the form was prefilled can never
+   * launch a resident in the old repositories.
    */
   repoFromProfile: boolean;
   instructions: string;
@@ -43,6 +48,8 @@ export interface ResidentLaunchAttempt {
   profileName: string;
   /** The repository as it was sent, not as the profile's default reads now. */
   repoRoot: string;
+  /** The attached repositories as they were sent. */
+  additionalRepoRoots: string[];
   instructions: string;
 }
 
@@ -50,6 +57,7 @@ export function freshResidentDispatchDraft(): ResidentDispatchDraft {
   return {
     profileId: null,
     repoRoot: "",
+    additionalRepoRoots: [],
     repoFromProfile: true,
     instructions: "",
     requestId: crypto.randomUUID(),
@@ -63,8 +71,11 @@ export function residentAttemptMatches(
   draft: ResidentDispatchDraft,
   profile: ResidentProfile | null,
 ): boolean {
+  const attached = residentDispatchAttachedRepos(draft, profile);
   return attempt.profileId === draft.profileId
     && attempt.repoRoot === residentDispatchRepo(draft, profile).trim()
+    && attempt.additionalRepoRoots.length === attached.length
+    && attempt.additionalRepoRoots.every((path, index) => path === attached[index])
     && attempt.instructions.trim() === draft.instructions.trim();
 }
 
@@ -92,6 +103,7 @@ export function retryResidentAttempt(
     ...draft,
     profileId: attempt.profileId,
     repoRoot: attempt.repoRoot,
+    additionalRepoRoots: [...attempt.additionalRepoRoots],
     repoFromProfile: false,
     instructions: attempt.instructions,
     requestId: attempt.requestId,
@@ -131,7 +143,44 @@ export function selectResidentProfile(
   };
 }
 
-/** The operator typed or picked a repository: from now on it is theirs. */
-export function chooseResidentRepo(draft: ResidentDispatchDraft, repoRoot: string): ResidentDispatchDraft {
-  return { ...draft, repoRoot, repoFromProfile: false };
+/**
+ * The repositories this draft would attach beside its primary, by the same rule as
+ * `residentDispatchRepo`: the profile's current default, the outstanding launch's set while it
+ * is outstanding, or the operator's own. Always empty without a primary, because attached
+ * repositories need one.
+ */
+export function residentDispatchAttachedRepos(
+  draft: ResidentDispatchDraft,
+  profile: ResidentProfile | null,
+): string[] {
+  if (!residentDispatchRepo(draft, profile).trim()) return [];
+  if (!draft.repoFromProfile) return draft.additionalRepoRoots.map((path) => path.trim()).filter(Boolean);
+  const outstanding = draft.uncertain;
+  if (outstanding && outstanding.requestId === draft.requestId && outstanding.profileId === draft.profileId) {
+    return outstanding.additionalRepoRoots;
+  }
+  return profile?.settings.workspace.additionalRepoRoots ?? [];
+}
+
+/**
+ * The operator typed or picked a repository: from now on the repository set is theirs. The
+ * attachments shown with it come along, so taking over the primary never silently drops the
+ * profile's attached repositories; choosing no repository detaches them all.
+ */
+export function chooseResidentRepo(
+  draft: ResidentDispatchDraft,
+  repoRoot: string,
+  profile: ResidentProfile | null,
+): ResidentDispatchDraft {
+  const additionalRepoRoots = repoRoot.trim() ? residentDispatchAttachedRepos(draft, profile) : [];
+  return { ...draft, repoRoot, additionalRepoRoots, repoFromProfile: false };
+}
+
+/** The operator attached or detached a repository: the whole set is now theirs. */
+export function chooseResidentAttachedRepos(
+  draft: ResidentDispatchDraft,
+  additionalRepoRoots: string[],
+  profile: ResidentProfile | null,
+): ResidentDispatchDraft {
+  return { ...draft, repoRoot: residentDispatchRepo(draft, profile), additionalRepoRoots, repoFromProfile: false };
 }

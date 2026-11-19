@@ -598,12 +598,25 @@ export interface ResidentRunIdentity {
   launchInput: unknown;
   /** The repository exactly as the original request spelled it. */
   repoSpelling: string;
+  /** The attached repositories exactly as the original request spelled them, in order. */
+  extraRepoSpellings: string[];
+}
+
+/** A stored spelling list, or none when the column holds anything but an array of strings. */
+function parseSpellings(raw: string): string[] {
+  try {
+    const value: unknown = JSON.parse(raw);
+    return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : [];
+  } catch {
+    return [];
+  }
 }
 
 export function residentRunIdentityByRequest(requestId: string): ResidentRunIdentity | null {
   const row = openDb()
     .prepare(
-      `SELECT id, profile_id, task_id, launch_state, launch_error, launch_input, launch_repo_spelling
+      `SELECT id, profile_id, task_id, launch_state, launch_error, launch_input, launch_repo_spelling,
+              launch_extra_repo_spellings
          FROM resident_runs WHERE launch_request_id = ?`,
     )
     .get(requestId) as
@@ -615,6 +628,7 @@ export function residentRunIdentityByRequest(requestId: string): ResidentRunIden
         launch_error: string | null;
         launch_input: string;
         launch_repo_spelling: string;
+        launch_extra_repo_spellings: string;
       }
     | undefined;
   if (!row) return null;
@@ -632,6 +646,7 @@ export function residentRunIdentityByRequest(requestId: string): ResidentRunIden
     launchError: row.launch_error,
     launchInput,
     repoSpelling: row.launch_repo_spelling,
+    extraRepoSpellings: parseSpellings(row.launch_extra_repo_spellings),
   };
 }
 
@@ -673,6 +688,8 @@ export interface ReserveResidentRunInput {
   launchInput: ResidentLaunchInput;
   /** The repository exactly as the request spelled it, trimmed. */
   repoSpelling: string;
+  /** The attached repositories exactly as the request spelled them, trimmed, in order. */
+  extraRepoSpellings?: readonly string[];
   persona: ResidentPersonaSnapshot | null;
   runInstructions: string;
   at: number;
@@ -690,9 +707,9 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
     .prepare(
       `INSERT INTO resident_runs (
          id, profile_id, profile_revision, task_id, launch_request_id, launch_input,
-         launch_repo_spelling, launch_state, launch_error, persona_snapshot, run_instructions,
-         created_at, ended_at, workspace_dir
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL, ?)
+         launch_repo_spelling, launch_extra_repo_spellings, launch_state, launch_error,
+         persona_snapshot, run_instructions, created_at, ended_at, workspace_dir
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL, ?)
        ON CONFLICT(launch_request_id) DO NOTHING`,
     )
     .run(
@@ -703,6 +720,7 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
       input.launchRequestId,
       canonicalResidentJson(input.launchInput),
       input.repoSpelling,
+      JSON.stringify(input.extraRepoSpellings ?? []),
       canonicalResidentJson(input.persona),
       input.runInstructions,
       input.at,

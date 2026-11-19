@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ResidentLaunchResult } from "../src/shared/residents.ts";
+import { LaunchResidentRequestSchema, MAX_TASK_EXTRA_REPOS } from "../src/shared/protocol.ts";
 
 import type { Persona } from "../src/shared/workflow.ts";
 import type { Task } from "../src/shared/types.ts";
@@ -1618,4 +1619,202 @@ test("reset excludes concurrent resets and launch reservations until removal fin
   assert.match(launch.error, /reset is in progress/);
   await reset;
   assert.ok((await h.residents.launch(profile.id, { requestId: "after-reset", repoRoot: null })).ok);
+});
+
+const THIRD_REPO = "/work/third-repo";
+async function resolveWithThird(path: string) {
+  if (path === THIRD_REPO) return { ok: true as const, repoRoot: THIRD_REPO };
+  return resolveRepoRoot(path);
+}
+
+test("attached repositories reach the resident task, are stored resolved, and replay only as the same set", async () => {
+  const h = harness({ resolve: resolveWithThird });
+  const profile = profileIn(h);
+  const outcome = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [OTHER_REPO, THIRD_REPO], requestId: "req-attached" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const task = h.registry.getTask(outcome.result.taskId)!;
+  assert.equal(task.repoRoot, REPO, "the primary stays the task's repository and the session's cwd");
+  assert.deepEqual(task.extraRepos.map((entry) => entry.repoRoot), [OTHER_REPO, THIRD_REPO], "in request order");
+  const stored = openDb().prepare("SELECT launch_input FROM resident_runs WHERE id = ?").get(outcome.result.run.id) as { launch_input: string };
+  assert.deepEqual(JSON.parse(stored.launch_input), residentLaunchInput(REPO, undefined, [OTHER_REPO, THIRD_REPO]));
+
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [OTHER_REPO, THIRD_REPO], requestId: "req-attached" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.equal(replay.result.run.id, outcome.result.run.id);
+  for (const additionalRepoRoots of [[OTHER_REPO], [THIRD_REPO, OTHER_REPO], undefined]) {
+    const changed = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots, requestId: "req-attached" });
+    assert.equal(changed.status, 409, `a different repository set under the same id is refused: ${JSON.stringify(additionalRepoRoots)}`);
+  }
+  assert.equal(runCount(), 1);
+  assert.deepEqual(h.dispatched, [outcome.result.taskId]);
+});
+
+test("a launch input recorded before attached repositories existed still replays as the same single-repository launch", async () => {
+  const h = harness();
+  const profile = profileIn(h);
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-v2" });
+  if (!("result" in first)) assert.fail(JSON.stringify(first));
+  const { additionalRepoRoots: _dropped, ...v2 } = residentLaunchInput(REPO, undefined);
+  openDb().prepare("UPDATE resident_runs SET launch_input = ? WHERE id = ?").run(JSON.stringify({ ...v2, version: 2 }), first.result.run.id);
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-v2" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.equal(replay.result.run.id, first.result.run.id);
+});
+
+test("attached repositories are refused without a primary, as the primary, twice, or when they do not resolve", async () => {
+  const h = harness();
+  const profile = profileIn(h);
+  const refusals: Array<[Parameters<typeof h.residents.launch>[1], RegExp]> = [
+    [{ repoRoot: null, additionalRepoRoots: [OTHER_REPO], requestId: "r1" }, /need a primary repository/],
+    [{ repoRoot: REPO, additionalRepoRoots: [REPO], requestId: "r2" }, /already the primary repository/],
+    [{ repoRoot: REPO, additionalRepoRoots: ["/work/./mission-control"], requestId: "r3" }, /already this task's primary repo/],
+    [{ repoRoot: REPO, additionalRepoRoots: [OTHER_REPO, OTHER_REPO], requestId: "r4" }, /attached twice/],
+    [{ repoRoot: REPO, additionalRepoRoots: ["/nowhere"], requestId: "r5" }, /not a git repository: \/nowhere/],
+  ];
+  for (const [input, error] of refusals) {
+    const outcome = await h.residents.launch(profile.id, input);
+    assert.equal(outcome.status, 400, JSON.stringify(input));
+    assert.match("error" in outcome ? outcome.error ?? "" : "", error);
+  }
+  assert.equal(runCount(), 0, "a refused repository set reserves nothing");
+  assert.equal(residentTasks(h.registry).length, 0);
+});
+
+test("a profile's attached repositories need its default repository and parse from a profile saved before them", () => {
+  assert.deepEqual(settings().workspace, { defaultRepoRoot: REPO, additionalRepoRoots: [] }, "an older profile reads as attaching none");
+  const attached = ResidentProfileRevisionSchema.parse({
+    identity: { name: "Multi" }, persona: { personaId: PERSONA.id },
+    workspace: { defaultRepoRoot: REPO, additionalRepoRoots: [OTHER_REPO] },
+  });
+  assert.deepEqual(attached.workspace.additionalRepoRoots, [OTHER_REPO]);
+  for (const workspace of [
+    { defaultRepoRoot: null, additionalRepoRoots: [OTHER_REPO] },
+    { defaultRepoRoot: REPO, additionalRepoRoots: [REPO] },
+    { defaultRepoRoot: REPO, additionalRepoRoots: [OTHER_REPO, OTHER_REPO] },
+  ]) {
+    const parsed = ResidentProfileRevisionSchema.safeParse({ identity: { name: "Bad" }, persona: { personaId: PERSONA.id }, workspace });
+    assert.equal(parsed.success, false, JSON.stringify(workspace));
+  }
+});
+
+test("Restart on new profile keeps the replaced run's attached repositories", async t => {
+  const h = harness();
+  const loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
+  t.after(() => loop.stop());
+  const app = new Hono();
+  registerResidentLoopRoutes(app, { registry: h.registry, loop, residents: h.residents });
+  const profile = profileIn(h);
+  const original = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [OTHER_REPO], requestId: "before-multi-restart" });
+  if (!("result" in original) || original.result.state !== "launched") assert.fail(JSON.stringify(original));
+  assert.equal(h.residents.updateProfile(profile.id, 1, settings({ instructions: "Updated brief" })).ok, true);
+  const response = await app.request(`/api/residents/runs/${original.result.run.id}/restart`, { method: "POST" });
+  assert.equal(response.status, 200);
+  const replacement = await response.json() as ResidentLaunchResult;
+  if (replacement.state !== "launched") assert.fail(JSON.stringify(replacement));
+  const task = h.registry.getTask(replacement.taskId)!;
+  assert.equal(task.repoRoot, REPO);
+  assert.deepEqual(task.extraRepos.map((entry) => entry.repoRoot), [OTHER_REPO]);
+});
+
+test("a resident attaches at most MAX_TASK_EXTRA_REPOS repositories, in its profile and in a launch", async () => {
+  const extras = (count: number) => Array.from({ length: count }, (_, index) => `/work/extra-${index}`);
+  assert.equal(MAX_TASK_EXTRA_REPOS, 8);
+  const workspace = (count: number) => ResidentProfileRevisionSchema.safeParse({
+    identity: { name: "Many" }, persona: { personaId: PERSONA.id },
+    workspace: { defaultRepoRoot: REPO, additionalRepoRoots: extras(count) },
+  });
+  assert.equal(workspace(8).success, true, "a profile may attach eight");
+  const nine = workspace(9);
+  assert.equal(nine.success, false, "a profile may not attach nine");
+  assert.deepEqual(nine.error?.issues.map((issue) => [issue.code, issue.path.join(".")]), [["too_big", "workspace.additionalRepoRoots"]]);
+
+  const request = (count: number) => LaunchResidentRequestSchema.safeParse({ repoRoot: REPO, additionalRepoRoots: extras(count), requestId: `limit-${count}` });
+  assert.equal(request(8).success, true, "a launch may attach eight");
+  const refused = request(9);
+  assert.equal(refused.success, false, "a launch may not attach nine");
+  assert.deepEqual(refused.error?.issues.map((issue) => [issue.code, issue.path.join(".")]), [["too_big", "additionalRepoRoots"]]);
+
+  // Eight attachments launch end to end, each reaching the task in order.
+  const h = harness({
+    resolve: async (path) => path.startsWith("/work/extra-") ? { ok: true as const, repoRoot: path } : resolveRepoRoot(path),
+  });
+  const profile = profileIn(h);
+  const outcome = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: extras(8), requestId: "limit-launch" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  assert.deepEqual(h.registry.getTask(outcome.result.taskId)!.extraRepos.map((entry) => entry.repoRoot), extras(8));
+});
+
+test("an exact repeat replays after an attached repository stops resolving, and a changed attachment is still refused", async () => {
+  let third: "resolves" | "gone" | "moved" = "resolves";
+  const h = harness({
+    resolve: async (path) => {
+      if (path !== THIRD_REPO || third === "resolves") return resolveWithThird(path);
+      // "moved": a symlink in the path now points at another checkout.
+      return third === "moved" ? { ok: true as const, repoRoot: "/work/retargeted" } : { ok: false as const, error: `not a git repository: ${path}` };
+    },
+  });
+  const profile = profileIn(h);
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [THIRD_REPO], requestId: "req-gone" });
+  if (!("result" in first) || first.result.state !== "launched") assert.fail(JSON.stringify(first));
+
+  // The attached checkout is gone: resolving it now fails.
+  third = "gone";
+  assert.equal((await resolveWithThird(THIRD_REPO)).ok, true, "the fixture itself is unchanged");
+  const fresh = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [THIRD_REPO], requestId: "req-gone-new" });
+  assert.equal(fresh.status, 400, "a NEW launch naming it is refused, so resolution really fails");
+  assert.match("error" in fresh ? fresh.error ?? "" : "", /not a git repository: \/work\/third-repo/);
+
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [THIRD_REPO], requestId: "req-gone" });
+  if (!("result" in replay) || replay.result.state !== "launched") assert.fail(JSON.stringify(replay));
+  assert.equal(replay.status, 200);
+  assert.equal(replay.result.run.id, first.result.run.id, "the exact repeat answers with the original run");
+  assert.equal(replay.result.taskId, first.result.taskId);
+
+  // Re-pointed rather than gone: the same spelling now resolves to another checkout. The exact
+  // repeat still names the launch it recorded, which only the stored spelling can answer.
+  third = "moved";
+  const moved = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [THIRD_REPO], requestId: "req-gone" });
+  if (!("result" in moved) || moved.result.state !== "launched") assert.fail(JSON.stringify(moved));
+  assert.equal(moved.result.run.id, first.result.run.id, "an exact repeat is not re-resolved against the moved path");
+
+  for (const additionalRepoRoots of [[OTHER_REPO], [THIRD_REPO, OTHER_REPO], ["/work/./third-repo"]]) {
+    const changed = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots, requestId: "req-gone" });
+    assert.equal(changed.status, 409, `a changed attachment under the same id is refused: ${JSON.stringify(additionalRepoRoots)}`);
+  }
+  assert.equal(runCount(), 1);
+  assert.deepEqual(h.dispatched, [first.result.taskId]);
+});
+
+test("an attachment spelled through an alias replays exactly after the alias stops resolving or is pointed elsewhere", async () => {
+  const ALIAS = "/work/contracts-link";
+  let alias: "resolves" | "gone" | "moved" = "resolves";
+  const h = harness({
+    resolve: async (path) => {
+      if (path !== ALIAS) return resolveWithThird(path);
+      if (alias === "resolves") return { ok: true as const, repoRoot: THIRD_REPO };
+      return alias === "moved" ? { ok: true as const, repoRoot: OTHER_REPO } : { ok: false as const, error: `not a git repository: ${path}` };
+    },
+  });
+  const profile = profileIn(h);
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [ALIAS], requestId: "req-alias" });
+  if (!("result" in first) || first.result.state !== "launched") assert.fail(JSON.stringify(first));
+  assert.deepEqual(h.registry.getTask(first.result.taskId)!.extraRepos.map((entry) => entry.repoRoot), [THIRD_REPO], "stored resolved");
+  const row = openDb().prepare("SELECT launch_extra_repo_spellings FROM resident_runs WHERE id = ?").get(first.result.run.id) as { launch_extra_repo_spellings: string };
+  assert.deepEqual(JSON.parse(row.launch_extra_repo_spellings), [ALIAS], "and spelled as the request typed it");
+
+  for (const state of ["gone", "moved"] as const) {
+    alias = state;
+    const replay = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [ALIAS], requestId: "req-alias" });
+    if (!("result" in replay) || replay.result.state !== "launched") assert.fail(`${state}: ${JSON.stringify(replay)}`);
+    assert.equal(replay.result.run.id, first.result.run.id, `the exact repeat answers with the original run once the alias is ${state}`);
+  }
+  // Another spelling is compared by what it resolves to: the real path names the same launch,
+  // and the alias's new target does not.
+  const real = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [THIRD_REPO], requestId: "req-alias" });
+  if (!("result" in real)) assert.fail(JSON.stringify(real));
+  assert.equal(real.result.run.id, first.result.run.id);
+  const other = await h.residents.launch(profile.id, { repoRoot: REPO, additionalRepoRoots: [OTHER_REPO], requestId: "req-alias" });
+  assert.equal(other.status, 409);
+  assert.equal(runCount(), 1);
+  assert.deepEqual(h.dispatched, [first.result.taskId]);
 });

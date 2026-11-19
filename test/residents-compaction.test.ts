@@ -8,6 +8,9 @@ import { RESIDENT_RESTATEMENT_HEADING, RESIDENT_STANDING_HEADING, composeResiden
 import { RESIDENT_COMPACTION_FOCUS, ResidentProfileRevisionSchema, residentCompactionFocus, type ResidentRun } from "../src/shared/residents.ts";
 import { HARNESS_MODEL_CATALOG_LIMITS } from "../src/shared/protocol.ts";
 import { Registry, type SessionCompacted } from "../src/server/registry.ts";
+import { taskRepoManifest } from "../src/server/repo-manifest.ts";
+import type { Task } from "../src/shared/types.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 test("Codex compaction refuses an oversized native model catalog", (t) => {
   const home = mkdtempSync(join(tmpdir(), "resident-model-window-bound-"));
@@ -69,6 +72,14 @@ test("the restatement is the resident section its launch delivered, verbatim, af
   const restatement = residentStandingRestatement(run);
   assert.ok(restatement.startsWith(`${RESIDENT_RESTATEMENT_HEADING}\n\n`));
   assert.ok(restatement.includes(`\n\n${section}\n\n---`), "the section is carried whole, not summarized");
+  // A single-repository task restates the same text with or without its task.
+  const single = mkTask({ id: "task", repoRoot: "/work/primary", worktreePath: "/trees/primary", branch: "harness/x" });
+  assert.equal(residentStandingRestatement(run, single), restatement);
+  // Attached repositories were named only in turn one, so the restatement names them again.
+  const multi = { ...single, extraRepos: [{ repoRoot: "/work/secondary", worktreePath: "/trees/secondary", branch: "harness/x", worktreeLeaseId: null, provider: null, baseSha: null, prUrl: null, prState: null, mergedAt: null }] } satisfies Task;
+  const restated = residentStandingRestatement(run, multi);
+  assert.equal(restated, `${restatement.slice(0, -"---".length)}${taskRepoManifest(multi)}\n\n---`);
+  assert.match(restated, /- \/trees\/secondary - from \/work\/secondary, on branch harness\/x/);
 });
 
 test("every resident compaction carries the mission-preserving focus ahead of the profile's own", () => {

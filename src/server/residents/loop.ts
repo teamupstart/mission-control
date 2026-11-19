@@ -370,7 +370,7 @@ export class ResidentLoop {
    */
   private restatement(run: ResidentRun): string | null {
     if (!residentRestatementOwed(run.id)) return null;
-    try { return residentStandingRestatement(run); }
+    try { return residentStandingRestatement(run, this.deps.registry.getTask(run.taskId)); }
     catch (error) { console.error(`[residents] could not restate the standing task for run ${run.id}:`, error); return null; }
   }
   private findMarker(session: Session, claim: ResidentIteration, run: ResidentRun): number | null {

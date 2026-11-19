@@ -88,7 +88,15 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
           if (!stored) throw new ResidentLoopRefusal("No such resident.");
           const task = deps.registry.getTask(stored.run.taskId);
           if (!task) throw new ResidentLoopRefusal("The original task is unavailable.");
-          const request = { repoRoot: taskHasRepository(task) ? task.repoRoot : null, instructions: stored.run.runInstructions, requestId: residentRestartRequestId(id) };
+          // The replacement keeps the replaced run's whole repository set: its primary and every
+          // repository attached beside it.
+          const repository = taskHasRepository(task);
+          const request = {
+            repoRoot: repository ? task.repoRoot : null,
+            ...(repository && task.extraRepos.length > 0 ? { additionalRepoRoots: task.extraRepos.map((entry) => entry.repoRoot) } : {}),
+            instructions: stored.run.runInstructions,
+            requestId: residentRestartRequestId(id),
+          };
           if (residentRunIdentityByRequest(request.requestId)) {
             const replay = await deps.residents.launch(stored.run.profileId, request);
             return "result" in replay ? c.json(replay.result, replay.status) : c.json({ error: replay.error }, replay.status);

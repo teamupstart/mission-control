@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/types.ts";
+import type { ServerEvent, Session, Task, TranscriptMessage } from "../src/shared/types.ts";
 import { RESIDENT_COMPACTION_FOCUS, residentRunSummary, ResidentProfileRevisionSchema, type ResidentLoopSettings } from "../src/shared/residents.ts";
 import { foldAttention } from "../src/web/lib/attention.ts";
 import { residentWakeMarker } from "../src/shared/resident-turn.ts";
@@ -68,7 +68,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Watcher" }, persona: { personaId: "p" }, loop: options });
   store.createResidentProfile({ id: "profile", settings, at: now });
   store.reserveResidentRun({ id: "run", profileId: "profile", profileRevision: 1, taskId: "task", launchRequestId: "request",
-    launchInput: { version: 1, repoRoot: "/repo", instructions: "" }, repoSpelling: "/repo", persona: { personaId: "p", name: "Observer", guidanceMarkdown: "Observe" }, runInstructions: "", at: now });
+    launchInput: { version: 1, repoRoot: "/repo", additionalRepoRoots: [], instructions: "" }, repoSpelling: "/repo", persona: { personaId: "p", name: "Observer", guidanceMarkdown: "Observe" }, runInstructions: "", at: now });
   if (launched) store.markResidentRunLaunched("run", null, now);
   let session = mkSession({ id: "sdk:resident", runtime: "sdk", state: "idle", terminals: [], task: mkTaskSummary({ id: "task", kind: "resident" }),
     workCycle: { logicalKey: "native", generation: 1, active: false, completedAt: now, updatedAt: now }, meta: meta({ contextPct: 5 }) });
@@ -90,11 +90,12 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   let unreadable = false;
   let refreshedContext: number | null = null;
   let onRefresh: (() => void) | null = null;
+  let task = mkTask({ id: "task", sessionId: session.id, kind: "resident" });
   const registry = {
     subscribe: (fn: (e: ServerEvent) => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
     onTurnDelivered: (fn: (event: TurnDelivered) => void) => { humans.add(fn); return () => { humans.delete(fn); }; },
     onCompacted: (fn: (event: SessionCompacted) => void) => { compactions.add(fn); return () => { compactions.delete(fn); }; },
-    getTask: () => mkTask({ id: "task", sessionId: session.id, kind: "resident" }),
+    getTask: () => task,
     getSession: () => session,
     upsertResidentRun: (run: NonNullable<ReturnType<typeof import("../src/shared/residents.ts").residentRunSummary>>) => { for (const fn of listeners) fn({ type: "resident_run_upsert", run }); },
   };
@@ -126,6 +127,8 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
     setSend: (value: typeof send) => { send = value; }, setCompact: (fn: typeof compact) => { compact = fn; },
     refreshContext: (value: number) => { refreshedContext = value; },
     onRefresh: (fn: (() => void) | null) => { onRefresh = fn; },
+    /** What the registry holds for the run's task, as the loop reads it at wake time. */
+    setTask: (patch: Partial<Task>) => { task = { ...task, ...patch }; },
     patch: (value: Partial<Session>) => { session = { ...session, ...value }; emit(); },
     complete: (generation = session.workCycle!.generation) => { session = { ...session, state: "idle", workCycle: { ...session.workCycle!, generation, active: false, completedAt: now, updatedAt: now } }; emit(); },
     human: (turnId = "human") => { session = { ...session, state: "working", workCycle: { ...session.workCycle!, active: true, generation: session.workCycle!.generation + 1 } }; for (const fn of humans) fn({ sessionId: session.id, turnId, deliveredAt: now }); emit(); },
@@ -753,6 +756,31 @@ test("the first wake after a compaction restates the standing task verbatim, onc
   await loop.runNow("run");
   assert.equal(f.calls[2], `${residentWakeMarker("run", 3)}\n${f.settings.loop.prompt}`, "one restatement per compaction");
   assert.equal(f.rows()[2]!.wake_text, null);
+});
+
+test("a resident with attached repositories is told where they are again in the first wake after a compaction", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.setTask({
+    repoRoot: "/repo", worktreePath: "/trees/primary", branch: "harness/watcher",
+    extraRepos: [{ repoRoot: "/work/contracts", worktreePath: "/trees/contracts", branch: "harness/watcher", provider: null, worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null }],
+  });
+  f.patch({ meta: meta({ contextPct: 80 }) });
+  await loop.runNow("run");
+  assert.equal(f.calls[0], "compact");
+  const delivered = f.calls[1]!;
+  // Observed on the wake the loop actually sent, not composed by the test.
+  assert.ok(delivered.includes("## Repositories for this task"), delivered);
+  assert.ok(delivered.includes("- /trees/contracts - from /work/contracts, on branch harness/watcher"), "the attached worktree path is delivered");
+  assert.ok(delivered.includes("- /trees/primary - PRIMARY (your working directory), from /repo"), "beside the primary's");
+  assert.ok(delivered.indexOf(residentStandingSection(f.run())) < delivered.indexOf("## Repositories for this task"), "after the resident section");
+  assert.ok(delivered.endsWith(`\n\n---\n\n${f.settings.loop.prompt}`), "the loop prompt still closes the wake");
+  assert.equal(f.rows()[1]!.wake_text, delivered, "the exact text, manifest included, is recorded for confirmation");
+
+  // An ordinary wake carries no manifest: it rides only with a restatement.
+  f.complete(); await flush();
+  f.patch({ meta: meta({ contextPct: 5 }) });
+  await loop.runNow("run");
+  assert.equal(f.calls[2], `${residentWakeMarker("run", 3)}\n${f.settings.loop.prompt}`);
 });
 
 const epochs = () => ({ ...openDb().prepare("SELECT compaction_epoch, reanchored_epoch FROM resident_runs WHERE id = 'run'").get() });

@@ -20,6 +20,8 @@ export function ResidentProfileLaunchList({ profiles, launches, onLaunch }: {
         const state = launches[profile.id];
         const mark = residentProfileMark(profile);
         const repo = profile.settings.workspace.defaultRepoRoot;
+        const attached = state?.outstanding?.additionalRepoRoots ?? profile.settings.workspace.additionalRepoRoots;
+        const alsoIn = attached.length > 0 ? ` and ${attached.length} attached ${attached.length === 1 ? "repo" : "repos"}` : "";
         return (
           <li key={profile.id} className="residents-pop-row">
             <ResidentChip mark={mark} />
@@ -34,9 +36,9 @@ export function ResidentProfileLaunchList({ profiles, launches, onLaunch }: {
             </span>
             <Tooltip
               label={state?.outstanding
-                ? `Check on the launch of ${profile.name} in ${state.outstanding.repoRoot}`
+                ? `Check on the launch of ${profile.name} in ${state.outstanding.repoRoot}${alsoIn}`
                 : repo
-                  ? `Launch ${profile.name} in ${repo}`
+                  ? `Launch ${profile.name} in ${repo}${alsoIn}`
                   : `Choose a repository for ${profile.name} in Dispatch`}
             >
               <button

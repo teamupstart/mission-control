@@ -247,6 +247,9 @@ Some work does not fit in one repo: a contract change and its consumers, a locks
 migration, an integration that has to land on both sides at once. **+ Add another repo**
 under the Repo field attaches secondary repositories to the task.
 
+A [resident profile](residents.md#attaching-more-than-one-repository) can attach the same kind
+of repository set to every launch, and Dispatch > Resident can change it for one run.
+
 Mission MCP agents can create the same repository set with `create_task`. Omitting repository
 selectors keeps the caller's main checkout as primary. `repository` selects another primary and
 `additionalRepositories` attaches secondaries; each accepts an absolute local checkout path or a

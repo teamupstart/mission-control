@@ -85,6 +85,12 @@ test("the Stacked pull requests card shows Stack as the shipped default, sets an
   await expect(card).toContainText("Wait for merge - a dependent starts once its prerequisite merges");
   const depth = card.getByRole("spinbutton", { name: "stacked pull requests above one on the default branch" });
   await expect(depth).toHaveValue("3");
+  await expect(depth).toHaveAttribute("max", "10");
+  await depth.fill("10");
+  await depth.blur();
+  await expect.poll(async () => (await api<ShippingConfig>(daemon, "/api/shipping/config")).maxStackDepth).toBe(10);
+  await expect(depth).toHaveValue("10");
+  await shoot(card, "shipping-card-depth-10");
   await depth.fill("2");
   await depth.blur();
   await expect.poll(async () => (await api<ShippingConfig>(daemon, "/api/shipping/config")).maxStackDepth).toBe(2);

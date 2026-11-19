@@ -539,7 +539,7 @@ because the [stack lifecycle](#the-stack-lifecycle) catches a stacked child up, 
 restacks it, and holds it with a named reason and a fix when its stack breaks. It lands a stack
 automatically when the conditions in [when a stack lands by itself](#the-stack-lifecycle) hold;
 that section also lists what needs an operator. An install that never chose a value follows the shipped default,
-and only an explicit choice is stored, so an explicit *Wait for merge* is kept. **Maximum stack depth** (1 to 5, default 3) caps how many stacked pull requests may
+and only an explicit choice is stored, so an explicit *Wait for merge* is kept. **Maximum stack depth** (1 to 10, default 3) caps how many stacked pull requests may
 sit above one that targets the default branch. Each dependency can override the default from
 its chip in the dispatch form and the backlog editor: **Stack** or **After merge**.
 

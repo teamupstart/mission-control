@@ -31,10 +31,8 @@ import type {
 /**
  * Pi's own model object, derived from the runtime that hands them out.
  *
- * Named from `ModelRuntime` rather than imported from `@earendil-works/pi-ai`, which is a
- * TRANSITIVE dependency of the pinned package rather than one this repository declares -
- * reaching for it directly would make the driver depend on a package `npm ls` says we do
- * not have, and which a future Pi release is free to move.
+ * Derived from `ModelRuntime` so model types stay coupled to the coding-agent SDK. The direct pi-ai dependency is used
+ * only for its public OAuth bundling registration.
  */
 type PiVendorModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
 
@@ -86,6 +84,10 @@ export const PI_SDK_MODULE_ENV = "MISSION_PI_SDK_MODULE";
  */
 async function importPi(): Promise<typeof import("@earendil-works/pi-coding-agent")> {
   try {
+    // Register Pi's literal imports before any runtime can derive OAuth auth. Its default
+    // variable imports resolve beside index.mjs, where no provider sidecars are shipped.
+    const { registerLazyOAuthFlows } = await import("@earendil-works/pi-ai/lazy-oauth");
+    registerLazyOAuthFlows();
     return await import("@earendil-works/pi-coding-agent");
   } catch (err) {
     throw new PiSdkError(

@@ -2985,3 +2985,10 @@ Selecting a report opens its source HTML in the Files preview. **Open archive** 
 immutable published copy in the archive reader with a source-session filter. Report publication is
 available from every task kind and from taskless sessions; it does not complete the task.
 See [Archives](archives.md) for titles, immutable retries, and retained provenance.
+
+### Pi provider failures
+
+A Pi assistant turn recorded with an error shows **Pi turn failed** and a bounded, redacted
+provider diagnostic in the conversation, including when the provider produced no response.
+The marker survives reload and remains beside later successful turns. The managed session
+stays available for another message after the provider or credentials are repaired.

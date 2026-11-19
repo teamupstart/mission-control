@@ -1,4 +1,8 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import type { Session, Task } from "../../src/shared/types.ts";
+import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -159,7 +163,7 @@ test("guided dispatch selects chat with c and uses the same conversational form"
     .toBeVisible();
 });
 
-test("backlog edit, ensemble, schedules, and task sources do not offer chat", async ({
+test("backlog edit, ensemble, and task sources do not offer chat; recurring missions do", async ({
   dashboard,
   daemon,
 }) => {
@@ -181,8 +185,9 @@ test("backlog edit, ensemble, schedules, and task sources do not offer chat", as
   await dashboard.getByRole("button", { name: "Recurring missions" }).click();
   const missions = dashboard.getByRole("dialog", { name: "Recurring missions" });
   await missions.getByRole("button", { name: "Create mission" }).click();
+  // A mission is the one creator that may file a chat - see `mission-chat-kind.spec.ts`.
   expect(await options(missions.getByRole("combobox", { name: "Task kind" })))
-    .toEqual(["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
+    .toEqual(["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
   await missions.getByRole("button", { name: "Close" }).click();
 
   await api(daemon, "/api/task-sources/config", {
@@ -324,4 +329,63 @@ test("a fake-agent chat survives idle and a later turn until Complete and close"
     (await api<Array<{ kind: string; status: string }>>(daemon, "/api/tasks"))
       .find((task) => task.kind === "chat")?.status ?? null,
   ).toBe("done");
+});
+
+
+test("a chat keeps its session and checkout after a PR merges and accepts another turn", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  await api(daemon, "/api/shipping/config", { closeSessionAfterMerge: true }, "PUT");
+  const task = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title: "Ongoing chat", intent: OPENER,
+    kind: "chat", agent: "claude", runtime: "sdk", workflowId: null,
+  });
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find(s => s.task?.id === task.id)!;
+    return session?.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  const cwd = session.cwd!;
+  const git = (...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  git("switch", "-c", "fix/chat-side-change");
+  writeFileSync(join(cwd, "shipped.txt"), "A small change from the chat.\n");
+  git("add", "shipped.txt");
+  git("-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "Chat side change");
+  const branch = git("branch", "--show-current");
+  const head = git("rev-parse", "HEAD");
+  writeFileSync(join(cwd, "chat-notes.txt"), "Keep these notes for the next turn.\n");
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const hook = async (event: string, extra = {}) => {
+    const response = await fetch(`${daemon.baseURL}/hooks/${event}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-harness-token": token },
+      body: JSON.stringify({ agent: session.agent, sessionId: session.agentSessionId, cwd, env: {}, ...extra }),
+    });
+    expect(response.status).toBe(204);
+  };
+  const prUrl = "https://github.com/acme/mission-e2e/pull/1525";
+  writeGhPullRequests(daemon.home, [{
+    cwd, number: 1525, url: prUrl, state: "MERGED", createdAt: new Date().toISOString(),
+    mergedAt: new Date().toISOString(), headRefOid: head, headRefName: branch,
+  }]);
+  await hook("PostToolUse", { toolName: "Bash", prCreated: true, prUrl, prUrls: [prUrl] });
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions"))
+    .find(s => s.id === session.id)?.prState, { timeout: 30_000 }).toBe("merged");
+  // The merge is already observed before Stop: this is the completion boundary, not a timer.
+  await hook("Stop");
+  expect((await api<Task[]>(daemon, "/api/tasks")).find(t => t.id === task.id)?.status).toBe("running");
+  expect((await api<Task[]>(daemon, "/api/tasks")).find(t => t.id === task.id)?.worktreePath).toBe(cwd);
+  expect(readFileSync(join(cwd, "chat-notes.txt"), "utf8")).toContain("Keep these notes");
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await expect(card.getByText("chat", { exact: true })).toBeVisible();
+  await expect(card.locator(`a[href="${prUrl}"]`).first()).toBeVisible();
+  await card.getByRole("tab", { name: "Conversation" }).click();
+  const reply = card.getByPlaceholder(/^Reply to this session/);
+  await reply.fill(LATER_TURN);
+  await reply.press("Enter");
+  await expect(card.getByText(`Mock reply to: ${LATER_TURN}`, { exact: true })).toBeVisible({ timeout: 30_000 });
+  expect((await api<Session[]>(daemon, "/api/sessions")).find(s => s.id === session.id)?.cwd).toBe(cwd);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/chat-merge", { recursive: true });
+    await dashboard.screenshot({ path: "e2e/.artifacts/chat-merge/continued-chat.png" });
+  }
 });

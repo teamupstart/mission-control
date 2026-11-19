@@ -225,7 +225,12 @@ class FakeSession {
   }
 
   settleWith(text, aborted = false) {
-    const reply = aborted
+    const errorMessage = !aborted && text.includes("PI_AUTH_SIGNED_OUT")
+      ? `No API key found for anthropic. ${"provider detail ".repeat(50)}`
+      : !aborted && text.includes("PI_OAUTH_FAILURE")
+      ? `OAuth auth derivation failed for ${this.modelId?.split("/")[0]}: Cannot find module 'provider.js' {"access_token":"synthetic-json-secret"} access_token=synthetic-secret`
+      : undefined;
+    const reply = errorMessage ? "" : aborted
       ? this.partialReply ?? ""
       : `pi answered: ${[text, this.steered].filter(Boolean).join(" + ")}`;
     this.steered = undefined;
@@ -242,7 +247,8 @@ class FakeSession {
     this.writeMessage("assistant", reply, {
       model: this.modelId?.split("/").slice(1).join("/") ?? "fake",
       provider: this.modelId?.split("/")[0] ?? "fake",
-      stopReason: aborted ? "aborted" : "stop",
+      stopReason: errorMessage ? "error" : aborted ? "aborted" : "stop",
+      errorMessage,
       usage,
     });
     this.emit({
@@ -251,7 +257,8 @@ class FakeSession {
         role: "assistant",
         provider: this.modelId?.split("/")[0] ?? "fake",
         model: this.modelId?.split("/").slice(1).join("/") ?? "fake",
-        stopReason: aborted ? "aborted" : "stop",
+        stopReason: errorMessage ? "error" : aborted ? "aborted" : "stop",
+        errorMessage,
         usage,
       },
     });

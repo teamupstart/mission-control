@@ -1,3 +1,4 @@
+export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
@@ -9,16 +10,20 @@ import { SESSION_PAUSE_MODES, SESSION_PAUSE_REASONS } from "./pause.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { STACK_DEPTH_LIMITS } from "./stacking.ts";
 import { HOOK_BACKGROUND_TASKS_MAX, HOOK_SUBAGENT_TEXT_MAX } from "./hook-subagents.mjs";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   GRILL_FIRST_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
+  MAX_TASK_EXTRA_REPOS,
   RESIDENT_TASK_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
+  CHAT_WORKFLOW_REFUSAL,
   taskKindAllowsBacklog,
+  taskKindAllowsSchedule,
   taskKindBacklogRefusal,
   taskKindCreator,
   taskKindPersonaRefusal,
@@ -897,14 +902,8 @@ export const ProductIssuePreflightSchema = z.object({
   ),
 });
 
-/**
- * How many SECONDARY repositories one request may attach.
- *
- * A sanity bound on a request body rather than a product limit on how many repositories a
- * task may coordinate - nothing downstream reads it as a maximum. Named because several
- * request surfaces bound the same launch manifest and must not carry private copies.
- */
-export const MAX_TASK_EXTRA_REPOS = 8;
+/** Defined beside the task kinds so resident launch schemas share it without a cycle. */
+export { MAX_TASK_EXTRA_REPOS };
 
 const McpCreateTaskBaseSchema = z.object({
   env: EnvSchema,
@@ -1728,6 +1727,19 @@ const UpdateTaskFieldsSchema = z
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
+  .extend({
+    /**
+     * Any kind a Recurring Mission may file, so the dashboard can edit a mission-filed row
+     * into a chat. Whether THIS row may hold the kind is the task's question, not the
+     * schema's: `TaskManager.update` asks `taskAllowsBacklog`, which admits a chat only on a
+     * row a mission filed. The MCP schemas keep the backlog kinds: an agent cannot file or
+     * edit a chat.
+     */
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsSchedule, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
+      .optional(),
+  })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
@@ -3056,7 +3068,7 @@ export const ShippingConfigSchema = z.object({
    * that targets the default branch. A dependent whose parent is already this deep waits for
    * the bottom of its stack to merge.
    */
-  maxStackDepth: z.number().int().min(1).max(5).default(3),
+  maxStackDepth: z.number().int().min(STACK_DEPTH_LIMITS.min).max(STACK_DEPTH_LIMITS.max).default(STACK_DEPTH_LIMITS.default),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 
@@ -8772,7 +8784,7 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
+      .refine(taskKindAllowsSchedule, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
       .default("ship"),
     /**
      * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
@@ -8809,6 +8821,12 @@ const ScheduleTemplateSchema = z
   .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  // A chat mission exists so nothing reviews its runs. The editor stands After work down for
+  // it; this keeps a direct API caller from storing one the editor would never offer.
+  .refine((t) => taskKindAllowsBacklog(t.kind) || t.workflowId === null, {
+    path: ["workflowId"],
+    message: CHAT_WORKFLOW_REFUSAL,
   });
 
 /**

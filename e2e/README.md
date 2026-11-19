@@ -1,3 +1,15 @@
+`feature-flags-stream.spec.ts` exercises Phase 1's real dashboard event consumer against the
+isolated production daemon. A private Vite build substitutes a preview fixture registry and
+adds diagnostic outputs of App's `featureFlags`, `connected` and `hasSnapshot` values plus a
+consumer of the real `useFeatureFlag` hook beneath App's provider. It does not replace the
+hook, routes or SSE transport. Two open windows assert both config and the resolved answer
+from a seeded snapshot, live master changes and a reconnect snapshot after missing a change,
+without navigation. The shipped registry stays empty and the probe adds no product controls.
+`MC_E2E_FEATURE_FLAGS_DROP=snapshot` or `live` omits that handler's state update only in the
+private build; `hook` forces the hook's answer to false. Each negative control must fail.
+`MC_E2E_EVIDENCE=1` captures the peer window after reconnection under
+`e2e/.artifacts/feature-flags-stream/`.
+
 # Browser end-to-end tests
 
 `specs/sdk-terminal-handoff.spec.ts` extends the terminal boundary with
@@ -2262,3 +2274,11 @@ tool list, including the planning tools; no external provider or account is used
 Pi's isolated extensions directory to the installer's isolated directory, proves automatic
 symlink discovery, and tears down only that task's tmux session. Screenshots are written to
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
+
+`feature-flags.spec.ts` covers the shipped empty registry. `feature-flags-populated.spec.ts`
+uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
+`feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
+Use this build when a spec needs populated flag controls, search, palette or daemon writes.
+The spec owns and cleans up its private bundles. Both flag build helpers restore `NODE_ENV`
+after Vite builds, so reused workers still launch real development dashboards. `MC_E2E_EVIDENCE=1` retains panel screenshots
+under `e2e/.artifacts/feature-flags/`. No product module contains a fixture switch.

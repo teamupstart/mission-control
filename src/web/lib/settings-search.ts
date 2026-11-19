@@ -1,3 +1,6 @@
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { resolveFeatureFlag, type FeatureFlagDefinition } from "@shared/feature-flags.ts";
+import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 // The settings search index: one flat, control-level list of everything the settings
 // page can be told to do.
 //
@@ -69,6 +72,12 @@ const HARNESS_CONTROLS: SettingsControl[] = AGENT_TYPES.map((agent) => ({
   keywords: ["model", "effort", "dispatch", "default", AGENT_IDENTITY[agent].label.toLowerCase()],
   kind: "jump",
   backup: backupDomains("harnesses"),
+}));
+
+const FEATURE_FLAG_CONTROLS: SettingsControl[] = (FEATURE_FLAGS as readonly FeatureFlagDefinition[]).map(flag => ({
+  id: `feature-flag-${flag.id}`, label: flag.label, description: flag.description,
+  category: "feature-flags", anchor: `feature-flags/${flag.id}`,
+  keywords: [flag.id, ...flag.keywords], kind: "toggle", backup: backupDomains("feature-flags"),
 }));
 
 /**
@@ -506,6 +515,11 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("harnesses"),
   },
   ...HARNESS_CONTROLS,
+  ...FEATURE_FLAG_CONTROLS,
+  { id: "feature-flags-enable-all", label: "Enable all feature flags",
+    description: "Opt in to current and future preview features, keeping individual choices.",
+    category: "feature-flags", anchor: "feature-flags/enable-all",
+    keywords: ["preview", "alpha", "experimental", "master"], kind: "jump", backup: backupDomains("feature-flags") },
   {
     id: "task-kind-workflow-defaults",
     label: "Default dispatch workflow per task kind",
@@ -1270,6 +1284,7 @@ export function buildSettingsBindings(sources: {
   autoMode: ToggleSource;
   skillsEnabled: ToggleSource;
   costTrack: ToggleSource;
+  featureFlags?: FeatureFlagsSettings;
 }): SettingsBindings {
   const map: SettingsBindings = new Map();
   map.set("format-messages", {
@@ -1289,5 +1304,12 @@ export function buildSettingsBindings(sources: {
   put("auto-mode", sources.autoMode);
   put("skills-enabled", sources.skillsEnabled);
   put("cost-track", sources.costTrack);
+  if (sources.featureFlags?.ready && !sources.featureFlags.pending) {
+    const state = sources.featureFlags;
+    for (const flag of FEATURE_FLAGS as readonly FeatureFlagDefinition[]) {
+      map.set(`feature-flag-${flag.id}`, { get: () => resolveFeatureFlag(flag.id, state.config),
+        set: enabled => { void state.set({ kind: "flag", id: flag.id, enabled }); } });
+    }
+  }
   return map;
 }

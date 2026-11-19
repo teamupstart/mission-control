@@ -1,3 +1,5 @@
+import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { applyFeatureFlagIntent, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -65,7 +67,7 @@ import {
   isShippingTaskKind,
   kindsDefaultingToWorkflow,
   taskHasRepository,
-  taskKindAllowsBacklog,
+  taskAllowsBacklog,
   taskKindCreator,
 } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
@@ -8876,6 +8878,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(saved);
   });
 
+  app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
+  app.put("/api/feature-flags", async (c) => {
+    const parsed = await parseBody(c, FeatureFlagIntentSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = applyFeatureFlagIntent(parsed.data);
+      if (!result.ok) return c.json({ error: result.error }, 400);
+      return c.json({ config: result.config });
+    } catch (error) {
+      return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
+    }
+  });
+
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.
   app.put("/api/storage/limits", async (c) => {
@@ -9256,7 +9271,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (taskKindCreator(task.kind) === "resident-launch") {
       return c.json({ error: "launch this resident again from its profile" }, 409);
     }
-    if (taskKindAllowsBacklog(task.kind)) {
+    if (taskAllowsBacklog(task)) {
       const refused = taskWorkflowDispatchRefusal(task);
       if (refused) return c.json(refused.body, refused.status);
       // A failure that kept a worktree cannot be dispatched over it; re-file it first, which

@@ -251,7 +251,9 @@ let db: DatabaseSync | undefined;
 //     `snoozed_until`, `snooze_mode`, `snooze_option_id`, `snooze_reminded_at`,
 //     `snooze_instruction_owed_at`, `snooze_instruction_queued_at`), nullable with no backfill:
 //     no question offered or used a snooze before these existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 34;
+// 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
+//     '[]' with no backfill: no run attached a repository before this existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -2249,6 +2251,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- repository resolves (launch_input holds the real path); it is what lets an exact
       -- replay be recognized once the repository no longer resolves.
       launch_repo_spelling TEXT NOT NULL DEFAULT '',
+      -- The attached repositories exactly as the request spelled them, trimmed, as a JSON array
+      -- in request order. The same role as launch_repo_spelling, for each attachment.
+      launch_extra_repo_spellings TEXT NOT NULL DEFAULT '[]',
       workspace_dir      TEXT,
       launch_state       TEXT NOT NULL,
       launch_error       TEXT,
@@ -3493,6 +3498,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "resident_runs", "launch_extra_repo_spellings", "TEXT NOT NULL DEFAULT '[]'");
   addColumn(d, "resident_runs", "loop_state", "TEXT NOT NULL DEFAULT 'waiting'");
   addColumn(d, "resident_runs", "iteration", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "resident_runs", "last_seq", "INTEGER NOT NULL DEFAULT 0");

@@ -388,6 +388,57 @@ test("Retry dispatches a backlog kind as the same task, files a chat again, and 
   assert.match(String(resident.body.error), /from its profile/);
 });
 
+test("a mission-filed chat that fails before provisioning returns to the Backlog and relaunches as the same task", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const { registry, dispatched, post } = setup();
+  const scheduled = { scheduleId: "mission-1", scheduleOccurrenceId: "occurrence-1", scheduledFor: 1_700_000_000_000 };
+  registry.upsertTask(mkTask({
+    id: "mission-chat",
+    kind: "chat",
+    status: "dispatching",
+    repoRoot: mkRepo("mission-chat-repo"),
+    title: "Talk through today",
+    intent: "What is on your mind this morning?",
+    ...scheduled,
+  }));
+
+  // The real dispatcher, failing before anything is provisioned.
+  await new Dispatcher(registry, undefined, { resolveBases: failingBases }).dispatch("mission-chat");
+  const failed = registry.getTask("mission-chat")!;
+  assert.equal(failed.status, "backlog", "a mission-filed chat returns to its card, unlike a hand-dispatched one");
+  assert.match(failed.error ?? "", /git fetch origin failed/);
+  assert.equal(failed.dispatchedAt, null);
+  assert.equal(lf.launchFailureOutcome(failed), "returned");
+
+  // A returned failure is retried from its Backlog card, which dispatches the saved task.
+  const relaunched = await post("/api/tasks/mission-chat/dispatch", {});
+  assert.equal(relaunched.status, 200, JSON.stringify(relaunched.body));
+  assert.deepEqual(dispatched, ["mission-chat"], "the same task id, never a replacement chat");
+  const missionTasks = () => registry.listTasks().filter((task) => task.scheduleId === "mission-1").map((task) => task.id).sort();
+  assert.deepEqual(missionTasks(), ["mission-chat"]);
+  assert.equal(registry.getTask("mission-chat")!.scheduleId, "mission-1", "the mission provenance survives");
+
+  // A later launch failure that left it `failed` with no session takes Retry, which treats a
+  // mission-filed chat as the backlog task it is: the same id again, not a new chat.
+  registry.upsertTask(mkTask({
+    id: "mission-chat-launch",
+    kind: "chat",
+    status: "failed",
+    repoRoot: mkRepo("mission-chat-launch-repo"),
+    title: "Talk through today",
+    intent: "What is on your mind this morning?",
+    error: "boom",
+    launchFailure: failure({ phase: "launch" }),
+    ...scheduled,
+  }));
+  assert.equal(lf.launchFailureOutcome(registry.getTask("mission-chat-launch")!), "not-started");
+  const retried = await post("/api/launch-failures/retry", { taskId: "mission-chat-launch" });
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.equal((retried.body.task as Task).id, "mission-chat-launch", "retried as the same task, never filed again");
+  assert.deepEqual(dispatched, ["mission-chat", "mission-chat-launch"]);
+  assert.deepEqual(missionTasks(), ["mission-chat", "mission-chat-launch"], "no replacement chat");
+});
+
 test("Retry files a chat again with its own Grill me first pin, not the kind's current default", async () => {
   const { registry, post } = setup();
   const repo = mkRepo("retry-grill-repo");

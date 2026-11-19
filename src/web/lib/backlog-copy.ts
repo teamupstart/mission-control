@@ -1,6 +1,6 @@
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import { missingTaskRepoRoots } from "@shared/allowlist.ts";
-import { allowsBacklogAutopilot, PRIORITY_LABELS, priorityRank } from "@shared/task.ts";
+import { PRIORITY_LABELS, priorityRank, taskAllowsBacklogAutopilot } from "@shared/task.ts";
 import { isWorkDependency } from "@shared/task-dependency.ts";
 import type { ForemanStatus, Task } from "@shared/types.ts";
 import { relativeTime, repoLeaf } from "./format.ts";
@@ -120,7 +120,7 @@ export interface BacklogTrustView {
  * deliberately absent from this gate: finishing upstream work cannot grant repository trust.
  */
 export function backlogTrustHold(
-  task: Pick<Task, "status" | "enabled" | "error" | "kind" | "repoRoot" | "extraRepos">,
+  task: Pick<Task, "status" | "enabled" | "error" | "kind" | "scheduleId" | "repoRoot" | "extraRepos">,
   view: BacklogTrustView | null,
 ): string[] | null {
   if (
@@ -132,7 +132,7 @@ export function backlogTrustHold(
     || task.status !== "backlog"
     || !task.enabled
     || task.error !== null
-    || !allowsBacklogAutopilot(task.kind)
+    || !taskAllowsBacklogAutopilot(task)
   ) {
     return null;
   }
@@ -171,7 +171,7 @@ export function backlogTrustNoticeText(missingRoots: readonly string[]): string 
  * Trust remains derived browser state and is never copied into `task.error`.
  */
 export function backlogTaskNotice(
-  task: Pick<Task, "status" | "enabled" | "error" | "kind" | "repoRoot" | "extraRepos">,
+  task: Pick<Task, "status" | "enabled" | "error" | "kind" | "scheduleId" | "repoRoot" | "extraRepos">,
   view: BacklogTrustView | null,
 ): BacklogTaskNoticeView | null {
   if (task.error !== null) {

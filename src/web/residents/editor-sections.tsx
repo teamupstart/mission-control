@@ -19,6 +19,7 @@ import {
 import type { ThinkingLevel } from "@shared/types.ts";
 import { personasForDisplay, type PersonaView } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { AttachedRepoChips } from "../components/AttachedRepoChips.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
@@ -231,6 +232,12 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
       live = false;
     };
   }, []);
+  const { defaultRepoRoot, additionalRepoRoots } = draft.workspace;
+  // Attached repositories need a primary, so clearing the primary detaches them in the same
+  // write rather than leaving a profile the daemon would refuse to save.
+  const setPrimary = (value: string | null): void =>
+    update("workspace", { defaultRepoRoot: value, additionalRepoRoots: value ? additionalRepoRoots : [] });
+  const canAttach = capabilitiesFor(draft.execution.agent).multiRepoDispatch !== null;
   return (
     <div className="field">
       <label className="field-label" htmlFor="resident-default-repo">
@@ -240,13 +247,30 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
         placeholder="No repository"
         id="resident-default-repo"
         repos={repos}
-        value={draft.workspace.defaultRepoRoot ?? ""}
+        value={defaultRepoRoot ?? ""}
         disabled={disabled}
-        onChange={(value) => update("workspace", { defaultRepoRoot: value.trim() ? value : null })}
+        onChange={(value) => setPrimary(value.trim() ? value : null)}
       />
       <Tooltip label="Clear the default repository for this resident profile">
-        <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => update("workspace", { defaultRepoRoot: null })}>No repository</button>
+        <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => setPrimary(null)}>No repository</button>
       </Tooltip>
+      {defaultRepoRoot && (canAttach || additionalRepoRoots.length > 0) && (
+        <AttachedRepoChips
+          primary={defaultRepoRoot}
+          attached={additionalRepoRoots}
+          repos={repos}
+          canAttach={canAttach}
+          disabled={disabled}
+          attachLabel="Attach this repo to every launch of this profile"
+          onChange={(next) => update("workspace", { defaultRepoRoot, additionalRepoRoots: next })}
+        />
+      )}
+      {additionalRepoRoots.length > 0 && (
+        <span className="field-hint">
+          Each launch gets one worktree per repo, with write access to all of them. Each repo the
+          resident changes gets its own pull request.
+        </span>
+      )}
     </div>
   );
 }

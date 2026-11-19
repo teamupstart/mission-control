@@ -620,7 +620,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     ? await (await import("./terminal-boundary-build.ts")).buildTerminalBoundaryDaemon(
         REPO_ROOT, `${process.pid}-${Date.now()}`, extraEnv.MC_E2E_WEZTERM_BOUNDARY === "1",
       )
-    : join(REPO_ROOT, "dist/server/index.mjs");
+    : extraEnv.MC_E2E_FEATURE_FLAGS_BUNDLE ?? join(REPO_ROOT, "dist/server/index.mjs");
 
   // Herdr's host CLI must expose a real socket identity to the WezTerm adapter. The
   // fixture owns its lifetime; the fake CLI only connects and never starts a server.

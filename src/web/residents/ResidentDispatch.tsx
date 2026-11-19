@@ -1,19 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { RESIDENT_LIMITS, residentLaunchSummary, residentProfileChoiceName, type ResidentProfile } from "@shared/residents.ts";
 import type { DispatchMode } from "../lib/dispatch-mode.ts";
 import { fetchRepos } from "../lib/api.ts";
+import { AttachedRepoChips } from "../components/AttachedRepoChips.tsx";
 import { DispatchModeToggle } from "../components/DispatchModeToggle.tsx";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import {
+  chooseResidentAttachedRepos,
   chooseResidentRepo,
   residentAttemptMatches,
+  residentDispatchAttachedRepos,
   residentDispatchRepo,
   residentRetryWithoutProfile,
   retryResidentAttempt,
   selectResidentProfile,
+  separateResidentLaunch,
   type ResidentDispatchDraft,
 } from "./dispatch-draft.ts";
 import { launchResident, residentLaunchCanGrantControl } from "./launch.ts";
@@ -84,6 +89,10 @@ export function ResidentDispatch({
     mode.onResidentChange(selectResidentProfile(draft, next));
   };
   const repoRoot = residentDispatchRepo(draft, profile);
+  const attachedRepos = residentDispatchAttachedRepos(draft, profile);
+  // Offered for a profile whose harness can hold write access beyond its cwd, and only beside
+  // a primary: a repository-free resident has no worktree for the others to sit beside.
+  const canAttachRepos = profile !== null && capabilitiesFor(profile.settings.execution.agent).multiRepoDispatch !== null;
   // An earlier launch may be running (its answer was lost) and the form now asks for something
   // else: the operator chooses before anything is sent, so that run is neither hidden nor
   // collided with.
@@ -106,8 +115,10 @@ export function ResidentDispatch({
     if (!profileId || blocked) return;
     setBusy(true);
     setError(null);
+    const attached = residentDispatchAttachedRepos(from, profile);
     const input = {
       repoRoot: residentDispatchRepo(from, profile).trim(),
+      ...(attached.length > 0 ? { additionalRepoRoots: attached } : {}),
       ...(from.instructions.trim() ? { instructions: from.instructions } : {}),
       requestId: from.requestId,
     };
@@ -121,6 +132,7 @@ export function ResidentDispatch({
         profileId,
         profileName: profile?.name ?? archivedRetry?.profileName ?? "",
         repoRoot: input.repoRoot,
+        additionalRepoRoots: attached,
         instructions: from.instructions,
       },
     };
@@ -237,12 +249,31 @@ export function ResidentDispatch({
                 disabled={busy}
                 onChange={(value) => {
                   setError(null);
-                  mode.onResidentChange(chooseResidentRepo(draft, value));
+                  mode.onResidentChange(chooseResidentRepo(draft, value, profile));
                 }}
               />
               <Tooltip label="Launch in a private working directory without a repository">
-                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => mode.onResidentChange(chooseResidentRepo(draft, ""))}>No repository</button>
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => mode.onResidentChange(chooseResidentRepo(draft, "", profile))}>No repository</button>
               </Tooltip>
+              {repoRoot.trim() && (canAttachRepos || attachedRepos.length > 0) && (
+                <AttachedRepoChips
+                  primary={repoRoot}
+                  attached={attachedRepos}
+                  repos={repos}
+                  canAttach={canAttachRepos}
+                  disabled={busy}
+                  attachLabel="Attach this repo to the resident's run"
+                  onChange={(next) => {
+                    setError(null);
+                    mode.onResidentChange(chooseResidentAttachedRepos(draft, next, profile));
+                  }}
+                />
+              )}
+              {attachedRepos.length > 0 && (
+                <p className="field-hint">
+                  One session, one worktree per repo. Each repo the resident changes gets its own pull request.
+                </p>
+              )}
               {!repoRoot.trim() && <p className="field-hint">A private working directory is created for this run and removed when it ends.</p>}
             </div>
             <label className="field">
@@ -293,7 +324,8 @@ export function ResidentDispatch({
           <div className="resident-conflict" role="alert">
             <p>
               An earlier launch of {uncertainProfile?.name ?? draft.uncertain.profileName} in{" "}
-              <code>{draft.uncertain.repoRoot || "no repository"}</code> may already be running: its answer never
+              <code>{draft.uncertain.repoRoot || "no repository"}</code>
+              {draft.uncertain.additionalRepoRoots.length > 0 && <> with {draft.uncertain.additionalRepoRoots.length} attached {draft.uncertain.additionalRepoRoots.length === 1 ? "repo" : "repos"}</>} may already be running: its answer never
               arrived. Retry it exactly, or launch this changed request as a separate resident.
             </p>
             <div className="resident-conflict-actions">
@@ -316,7 +348,7 @@ export function ResidentDispatch({
                   className="btn"
                   disabled={busy || !profile}
                   onClick={() => {
-                    const next = { ...draft, requestId: crypto.randomUUID(), uncertain: null };
+                    const next = separateResidentLaunch(draft, profile);
                     mode.onResidentChange(next);
                     void launch(next);
                   }}

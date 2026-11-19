@@ -31,6 +31,7 @@ import {
 import { withAttachments } from "@shared/attachments.ts";
 import {
   BACKLOG_TASK_KINDS,
+  SCHEDULE_TASK_KINDS,
   DISPATCH_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
@@ -40,7 +41,9 @@ import {
   hasReviewableDiff,
   isGrillFirstTaskKind,
   taskDefaultWorkflowId,
+  taskAllowsBacklog,
   taskKindAllowsBacklog,
+  CHAT_WORKFLOW_REFUSAL,
   type GrillFirstTaskKind,
 } from "@shared/task.ts";
 import type { EnvironmentCheckId, EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -83,6 +86,7 @@ import {
   type ResolveHarnessModelCatalog,
   useHarnessModelCatalogs,
 } from "../model-catalog.tsx";
+import { AttachedRepoChips } from "./AttachedRepoChips.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import {
@@ -1318,9 +1322,26 @@ function DispatchModal({
   // Every kind Dispatch launches, for the two modes that launch something new - `resident` is
   // launched from a profile in Resident mode, never picked as a kind. An edit is confined to
   // the kinds a backlog row can hold, and Ensemble to the kinds its members can be.
+  //
+  // A backlog row a Recurring Mission filed may also hold a chat, so its edit offers the
+  // mission's kinds - see `taskAllowsBacklog`.
+  const editedScheduleId = mode.kind === "edit" ? mode.task.scheduleId : null;
   const availableTaskKinds: readonly TaskKind[] =
-    mode.kind === "single" || mode.kind === "tour" ? DISPATCH_TASK_KINDS : BACKLOG_TASK_KINDS;
-  const backlogCompatible = taskKindAllowsBacklog(draft.kind);
+    mode.kind === "single" || mode.kind === "tour"
+      ? DISPATCH_TASK_KINDS
+      : editedScheduleId !== null
+        ? SCHEDULE_TASK_KINDS
+        : BACKLOG_TASK_KINDS;
+  const allowsBacklog = (kind: TaskKind): boolean =>
+    taskAllowsBacklog({ kind, scheduleId: editedScheduleId });
+  const backlogCompatible = allowsBacklog(draft.kind);
+  // A separate question from the one above, and asked of the KIND: a chat a mission filed may
+  // sit in the backlog, but a conversation never waits on other work. See
+  // `CHAT_DEPENDENCY_REFUSAL`.
+  const dependenciesAllowed = taskKindAllowsBacklog(draft.kind);
+  // An edit can only reach a chat on a row a mission filed, and that chat runs no after-work:
+  // the daemon refuses a Workflow on it (`CHAT_WORKFLOW_REFUSAL`), so the control stands down.
+  const afterWorkLocked = editing !== null && !dependenciesAllowed;
   // Opens on the last list this window received, so a rescan behind the daemon never leaves
   // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
   const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
@@ -1335,8 +1356,6 @@ function DispatchModal({
   // is always mounted: an empty repo picker sitting under the primary on every dispatch
   // would read as a second required field. Local rather than drafted - a half-typed path
   // in a picker that has not been confirmed is not part of the task.
-  const [addingRepo, setAddingRepo] = useState(false);
-  const [addRepoValue, setAddRepoValue] = useState("");
   // The configured per-harness defaults, so both pickers can name what "Default"
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
@@ -1768,6 +1787,9 @@ function DispatchModal({
     if (!workflowConfig || !guess || busy) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
+    // An edit into a mission chat is locked at None (`afterWorkLocked`): a chat row configured
+    // in Settings must not land on it late, where the daemon would refuse the save.
+    if (editing !== null && !taskKindAllowsBacklog(guess.kind)) return;
     const resolved = taskDefaultWorkflowId(
       guess.kind,
       workflowConfig.kindWorkflowDefaults,
@@ -1805,10 +1827,6 @@ function DispatchModal({
    * form changes shape instead of leaving Dispatch enabled for a request the daemon refuses.
    */
   function selectKind(kind: TaskKind): void {
-    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
-      setAddingRepo(false);
-      setAddRepoValue("");
-    }
     const normalizedPipelineAgent = pipelineAgentForKindTransition(
       kind,
       pipelineLaunchRuntime,
@@ -1817,6 +1835,10 @@ function DispatchModal({
     update({
       kind,
       ...afterWorkForKind(kind),
+      // A row edited into a mission chat takes None, whatever the kind's Settings row arms.
+      ...(editing !== null && kind !== draft.kind && !taskKindAllowsBacklog(kind)
+        ? { workflowId: null }
+        : {}),
       ...dependenciesForKind(kind),
       ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
@@ -2666,6 +2688,7 @@ function DispatchModal({
       kindUnavailable ||
       (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet) ||
+      (!dependenciesAllowed && draft.dependencies.length > 0) ||
       (!backlogCompatible &&
         (!dispatchNow || editing !== null || ensembleMode || draft.dependencies.length > 0))
     ) return;
@@ -2843,76 +2866,14 @@ function DispatchModal({
         // combobox the pass cannot see, where ↵ answers nothing and the operator is stuck in a
         // question they cannot finish. They come back the moment the pass hands over. The other
         // three steps need no rule here - the whole field is dim for them.
-        <div className={`repo-chips${guidedStep?.id === "repo" ? " dispatch-guided-dim" : ""}`}>
-          {draft.extraRepoRoots.map((root, index) => (
-            <span key={`${root}-${index}`} className="repo-chip">
-              {/* The full path through the app's own tooltip, never a native `title` -
-                  `tooltip-coverage.test.ts` enforces that, and it is what makes the
-                  shortened chip readable without a browser-styled box. */}
-              <RepositoryName path={root} className="repo-chip-name" />
-              <Tooltip label="Detach this repo">
-                <button
-                  type="button"
-                  className="dep-chip-x"
-                  aria-label={`Detach repo: ${root}`}
-                  onClick={() =>
-                    update({
-                      extraRepoRoots: draft.extraRepoRoots.filter((_, i) => i !== index),
-                    })
-                  }
-                >
-                  ✕
-                </button>
-              </Tooltip>
-            </span>
-          ))}
-          {!multiRepoOffered ? null : addingRepo ? (
-            <div className="repo-chip-add">
-              <RepoCombobox
-                repos={repos}
-                value={addRepoValue}
-                placeholder="repo to attach…"
-                onChange={setAddRepoValue}
-              />
-              <Tooltip label="Attach this repo to the task">
-                <button
-                  type="button"
-                  className="dep-add"
-                  aria-label="Attach repo"
-                  // Refuses the obviously redundant entry - the same path as the primary, or
-                  // one already attached. Deliberately STRING equality and nothing cleverer:
-                  // only the daemon resolves a path to a repo's main checkout, so it stays
-                  // the one authority on whether two spellings are one repo, and a second
-                  // half-implementation of that rule here would be a source of truth that
-                  // could disagree with it.
-                  disabled={
-                    !addRepoValue.trim()
-                    || addRepoValue.trim() === draft.repoRoot.trim()
-                    || draft.extraRepoRoots.includes(addRepoValue.trim())
-                  }
-                  onClick={() => {
-                    update({ extraRepoRoots: [...draft.extraRepoRoots, addRepoValue.trim()] });
-                    setAddRepoValue("");
-                    setAddingRepo(false);
-                  }}
-                >
-                  Attach
-                </button>
-              </Tooltip>
-            </div>
-          ) : (
-            <Tooltip label="Work across several repos in one session - each changed repo gets its own PR">
-              <button
-                type="button"
-                className="dep-add"
-                aria-label="Add another repo"
-                onClick={() => setAddingRepo(true)}
-              >
-                + Add another repo
-              </button>
-            </Tooltip>
-          )}
-        </div>
+        <AttachedRepoChips
+          className={guidedStep?.id === "repo" ? "dispatch-guided-dim" : ""}
+          primary={draft.repoRoot}
+          attached={draft.extraRepoRoots}
+          repos={repos}
+          canAttach={multiRepoOffered}
+          onChange={(extraRepoRoots) => update({ extraRepoRoots })}
+        />
       )}
       {draft.extraRepoRoots.length > 0 && multiRepoOffered && (
         <span className="field-hint">
@@ -3006,9 +2967,11 @@ function DispatchModal({
     ...(backlogCompatible
       ? [
           draft.enabled ? "autopilot on" : "autopilot off",
-          dependencyCount > 0
-            ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
-            : "no dependencies",
+          ...(dependenciesAllowed
+            ? [dependencyCount > 0
+              ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
+              : "no dependencies"]
+            : []),
         ]
       : []),
   ].join(" · ");
@@ -3459,7 +3422,7 @@ function DispatchModal({
             <Tooltip label={AFTER_WORK_FIELD_TIP}>
               <select
                 className="field-input"
-                disabled={!usesHarness}
+                disabled={!usesHarness || afterWorkLocked}
                 value={
                   draft.workflowId === undefined
                     ? "__default"
@@ -3530,6 +3493,9 @@ function DispatchModal({
             place: "above",
           })}
         </div>
+        {afterWorkLocked && (
+          <span className={`field-hint${guidedDim}`}>{CHAT_WORKFLOW_REFUSAL}</span>
+        )}
         {selectedWorkflowBlocked && (
           <span className={`dispatch-workflow-warning${guidedDim}`}>
             {!foremanEnabled
@@ -3644,7 +3610,7 @@ function DispatchModal({
                   </div>
                 )}
 
-                {backlogCompatible && <div className="field">
+                {dependenciesAllowed && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
                     <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR unless set to Stack"}</span>

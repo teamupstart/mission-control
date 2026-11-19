@@ -1,3 +1,5 @@
+import { FeatureFlagsPanel } from "./FeatureFlagsPanel.tsx";
+import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
@@ -221,8 +223,10 @@ export function SettingsPage({
   onStartTour,
   onBrowseTours,
   onOpenForemanProfile,
+  featureFlagsSettings,
   jump = null,
 }: {
+  featureFlagsSettings?: FeatureFlagsSettings;
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
@@ -620,6 +624,8 @@ export function SettingsPage({
             />
           </>
         );
+      case "feature-flags":
+        return <FeatureFlagsPanel state={featureFlagsSettings} jumpAnchor={unhandledJump?.anchor} />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":

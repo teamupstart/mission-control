@@ -251,7 +251,9 @@ test("the editor distinguishes Save paused from Save & enable, and only offers l
   assert.match(html, /No work runs while this laptop is asleep or powered off/);
   assert.match(html, /<option value="ship" selected="">ship - deliver a change<\/option>/);
   assert.match(html, /<option value="plan">plan - produce a reviewed plan<\/option>/);
-  assert.doesNotMatch(html, /<option value="chat"/);
+  // A mission is the one creator that may file a chat into the backlog.
+  assert.match(html, /<option value="chat">chat - have an open-ended conversation<\/option>/);
+  assert.doesNotMatch(html, /<option value="resident"/);
 });
 
 test("a mission's stored effort survives a switch to an agent that does not offer it", () => {

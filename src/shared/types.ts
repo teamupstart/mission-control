@@ -1,3 +1,4 @@
+import type { FeatureFlagsConfig } from "./feature-flags.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -3796,6 +3797,8 @@ export type ServerEvent =
        * never told.
        */
       lineSummary: LineSummary;
+      /** Bounded to 512 overrides with ids of at most 64 characters. */
+      featureFlags: FeatureFlagsConfig;
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -3949,6 +3952,8 @@ export type ServerEvent =
    * source of these facts: the rail dots and the topbar gear read it, never a re-poll.
    */
   | { type: "settings_status"; status: SettingsStatus }
+  /** Content travels with the event so all windows resolve gates without a second fetch. */
+  | { type: "feature_flags"; config: FeatureFlagsConfig }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.

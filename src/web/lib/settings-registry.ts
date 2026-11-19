@@ -158,6 +158,12 @@ export const SETTINGS_CATEGORIES = [
     ],
   },
   {
+    id: "feature-flags", label: "Feature flags", icon: "⚑",
+    blurb: "Choose preview features and manage features that are on by default",
+    group: "sessions", scope: "machine",
+    keywords: ["preview", "experimental", "beta", "flag", "opt in"],
+  },
+  {
     id: "harnesses",
     label: "Harnesses",
     icon: "⚙",

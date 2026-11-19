@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkTask } from "./helpers/session-fixture.ts";
 import {
   STACKING_SHIPPED_DEFAULT,
+  STACK_DEPTH_LIMITS,
   effectiveEdgeMode,
   effectiveStacking,
   expectedStackBase,
@@ -57,7 +58,8 @@ test("an old Shipping blob gains a depth default and keeps stacking absent", () 
   const patched = ShippingConfigSchema.parse({ ...old, ...ShippingConfigPatchSchema.parse({ soakMinutes: 9 }) });
   assert.equal(patched.stacking, undefined);
   assert.equal(JSON.parse(JSON.stringify(patched)).stacking, undefined);
-  assert.throws(() => ShippingConfigSchema.parse({ maxStackDepth: 6 }));
+  assert.equal(ShippingConfigSchema.parse({ maxStackDepth: 10 }).maxStackDepth, 10, "a stack may be ten deep");
+  assert.throws(() => ShippingConfigSchema.parse({ maxStackDepth: 11 }));
   assert.throws(() => ShippingConfigSchema.parse({ maxStackDepth: 0 }));
 });
 
@@ -151,6 +153,30 @@ test("the depth cap counts unmerged stacked ancestors", () => {
   const aMerged = { ...a, dependencies: [edge("R", { satisfiedAt: 3 })] };
   assert.equal(stackDepth(b, byId(root, aMerged, b)), 1);
   assert.equal(stackEligibility(c, [root, aMerged, b, c], { ...STACK, maxStackDepth: 2 }).ok, true);
+});
+
+test("at the largest depth cap a tenth stacked pull request starts and an eleventh waits", () => {
+  const ten = ShippingConfigSchema.parse({ stacking: "stack", maxStackDepth: STACK_DEPTH_LIMITS.max });
+  assert.equal(ten.maxStackDepth, 10);
+  // R targets the default branch; S1..S10 each stack on the one below.
+  const chain: Task[] = [mkTask({ id: "R", title: "Root", status: "running" })];
+  for (let n = 1; n <= 10; n++) {
+    const below = chain[n - 1]!.id;
+    chain.push(mkTask({ id: `S${n}`, title: `Stack ${n}`, status: "running", stackParentTaskId: below, dependencies: [edge(below)] }));
+  }
+  const tasks = byId(...chain);
+  assert.equal(stackDepth(chain[10]!, tasks), 10);
+  // A sixth, past the old cap of five, now stacks.
+  const sixth = mkTask({ id: "N6", dependencies: [edge("S5")] });
+  assert.equal(stackEligibility(sixth, [...chain, sixth], ten).ok, true);
+  // The tenth stacks on S9, which sits nine deep.
+  const tenth = mkTask({ id: "N10", dependencies: [edge("S9")] });
+  assert.equal(stackEligibility(tenth, [...chain, tenth], ten).ok, true);
+  // The eleventh would sit on S10, already ten deep.
+  const eleventh = mkTask({ id: "N11", dependencies: [edge("S10")] });
+  const blocked = stackEligibility(eleventh, [...chain, eleventh], ten);
+  assert.equal(!blocked.ok && blocked.code, "too-deep");
+  assert.equal(!blocked.ok && blocked.reason, "the stack under Stack 10 is already 10 deep");
 });
 
 test("declaredBlockersIn: only a stamped, structurally eligible edge stops blocking a start", () => {

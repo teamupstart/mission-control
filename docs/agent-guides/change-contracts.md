@@ -133,6 +133,10 @@ The daemon is the sole database writer. Foreman and MCP reach it through HTTP.
 
 ## Persisted identifiers
 
+Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never reused. The
+`feature-flags` settings backup domain id is also persisted and final; its surface is
+`settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs
@@ -1202,6 +1206,9 @@ Human conversation composer submissions enter the durable pending-turn outbox. O
 
 Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns pending-turn, work-queue, workflow, work-episode, and cache cleanup. It raises the registry reset marker before asking `PendingTurnManager` to settle a claimed SDK or terminal delivery. A turn refused before runtime acceptance is safe to discard. A turn that may have crossed that boundary is retained as `uncertain` through successful reset cleanup for explicit operator resolution. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
 
+Trust and Feature flags share the `settings-pane-*`, `settings-search`, and `settings-grant`
+CSS leaves. Keep Trust-specific states and layout in Trust; do not fork the shared rules.
+
 ## Overlays and shortcuts
 
 Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overlays.anyOpen` and `overlays.onlyOpen`; do not maintain a second list. The overlay owns Escape.
@@ -1237,7 +1244,9 @@ Extend existing registries instead of adding parallel lists:
   its panel; engine presence may remain in `SettingsStatus` for wire compatibility, but it
   does not add or remove navigation. A local visibility check is how a panel becomes
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
-  falls back to Display. The one exception is a build-time switch, never a runtime probe:
+  falls back to Display. Visibility may be gated by a build-time switch or a registered feature flag, never by a
+  runtime probe for installed software. A feature flag must feed one shared availability gate
+  for all readers, updated live rather than frozen at module load. The existing build-time gate is:
   `settingsCategoryAvailable` in `src/web/lib/settings-registry.ts` withholds Conductor while
   `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off, and every
   reader (rail, walk, router, palette, settings search, `SettingsPage`) goes through it or

@@ -106,6 +106,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "cost",
       "costOtelLastSeen",
       "costTelemetryEnabledAt",
+      "featureFlags",
       "foreman",
       "foreman.instructions",
       "foreman.lease",

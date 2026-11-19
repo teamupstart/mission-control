@@ -137,6 +137,24 @@ test("pipeline tasks never enter backlog autopilot", () => {
   });
 });
 
+test("a chat a Recurring Mission filed is launched in a fresh session, never assigned", () => {
+  // `TaskManager.assign` refuses a chat with `scope: "task"`: its opener is a new
+  // conversation's first message. Offered for assignment, it would be offered every tick.
+  const chat = mkTask({ kind: "chat", scheduleId: "mission-1" });
+  const free = mkSession();
+  const a = decide({ tasks: [chat], sessions: [free], plan: mkPlan([[chat.id, []]]) });
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", chat.id);
+});
+
+test("a chat no mission filed never enters backlog autopilot", () => {
+  const chat = mkTask({ kind: "chat" });
+  assert.deepEqual(decide({ tasks: [chat], plan: mkPlan([[chat.id, []]]) }), {
+    kind: "none",
+    why: "no backlog item allows unattended scheduling",
+  });
+});
+
 // ---- the switch, and the empty cases -------------------------------------------------
 
 test("autopilot off decides nothing, whatever is waiting", () => {

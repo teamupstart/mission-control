@@ -214,6 +214,45 @@ test("a chat mission files a chat backlog task with no after-work Workflow", asy
   assert.equal(task?.sessionId, null, "the schedule files it; Foreman launches it");
 });
 
+test("an open chat from the last run makes the next chat run skip under the default overlap policy", async () => {
+  const h = harness("chat-overlap");
+  const base = definition();
+  assert.equal(base.overlapPolicy, "skip-active", "the default this test is about");
+  const created = ok(
+    await h.manager.create({
+      ...base,
+      name: "Daily check-in",
+      template: { ...base.template, kind: "chat", title: "Talk through today" },
+    }),
+  ).schedule;
+
+  h.clock.now = NINE + 5_000;
+  assert.equal((await h.manager.tick()).created, 1);
+  const first = tasksFor(created.id)[0]!;
+  assert.equal(first.kind, "chat");
+  // Foreman launched it and the conversation is still open: a chat is human-ended.
+  registry.upsertTask({ ...first, status: "running", sessionId: "chat-session" });
+
+  h.clock.now = NINE + DAY + 5_000;
+  const blocked = await h.manager.tick();
+  assert.equal(blocked.created, 0, "no second chat is filed while the first is open");
+  assert.equal(blocked.skippedOverlap, 1);
+  assert.deepEqual(tasksFor(created.id).map((task) => task.id), [first.id]);
+  const skipped = occurrencesFor(created.id)[0]!;
+  assert.equal(skipped.status, "skipped_overlap");
+  assert.equal(skipped.blockingTaskId, first.id, "history names the open chat");
+
+  // Once the person chooses Complete, the next due run files a fresh chat.
+  registry.upsertTask({ ...first, status: "done", completedAt: h.clock.now });
+  h.clock.now = NINE + 2 * DAY + 5_000;
+  assert.equal((await h.manager.tick()).created, 1);
+  const filed = tasksFor(created.id);
+  assert.equal(filed.length, 2);
+  const next = filed.find((task) => task.id !== first.id)!;
+  assert.equal(next.kind, "chat");
+  assert.equal(next.status, "backlog");
+});
+
 test("a tick that lands ON the due instant runs it, rather than repairing past it", async () => {
   // This is the tick the LOOP actually performs. `sleepMs` sleeps `due - now`, so the
   // wake-up lands on the instant or a millisecond or two after it - never the comfortable

@@ -403,7 +403,9 @@ function decisionWords(review: ReviewItem): string[] {
  * treated as a different decision.
  */
 function editedQuestion(older: ReviewItem, newer: ReviewItem): boolean {
-  return editedInOnePlace(decisionWords(older), decisionWords(newer));
+  const before = decisionWords(older);
+  const after = decisionWords(newer);
+  return editedInOnePlace(before, after) || onlySmallEdits(before, after);
 }
 
 /** The context beneath the question: the body after its leading paragraph (`inputReviewBody`). */
@@ -423,7 +425,9 @@ function contextWords(review: ReviewItem): string[] {
  * target for the same approval.
  */
 function editedContext(older: ReviewItem, newer: ReviewItem): boolean {
-  return editedInOnePlace(contextWords(older), contextWords(newer));
+  const before = contextWords(older);
+  const after = contextWords(newer);
+  return editedInOnePlace(before, after) || onlySmallEdits(before, after);
 }
 
 function editedInOnePlace(before: string[], after: string[]): boolean {
@@ -443,4 +447,52 @@ function editedInOnePlace(before: string[], after: string[]): boolean {
   if (Math.min(removed.length, added.length) !== 1) return false;
   if (Math.max(removed.length, added.length) > MAX_SWAP_WORDS) return false;
   return removed.some(content) && added.some(content);
+}
+
+/**
+ * Is every difference between the two texts a small edit (at most `MAX_SWAP_WORDS` words on each
+ * side), with at least one replacing a content word by another?
+ *
+ * That is the same sentence with its targets swapped, in as many places as the agent changed
+ * them: "Should I deploy to staging and notify alice?" then "Should I deploy to production and
+ * notify bob?". Neither swap has three matching words on both sides for `swappedWord`, and two
+ * edits are not one for `editedInOnePlace`. A retry that rewords its question rewrites at least
+ * one longer run somewhere ("Claude 2.1.310 and Codex 0.160.0 both" became "both harnesses"),
+ * which this leaves to the other checks. Small insertions and deletions alone change no target:
+ * "Please confirm which button location I should implement" restates "Which button location
+ * should I implement" with nothing replaced.
+ *
+ * The differences are the runs between a longest common subsequence of the two word lists.
+ */
+function onlySmallEdits(before: string[], after: string[]): boolean {
+  const a = before.slice(0, MAX_DIFF_WORDS);
+  const b = after.slice(0, MAX_DIFF_WORDS);
+  const n = a.length;
+  const m = b.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  let swappedTarget = false;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    const startA = i;
+    const startB = j;
+    while ((i < n || j < m) && !(i < n && j < m && a[i] === b[j])) {
+      if (j < m && (i === n || lcs[i]![j + 1]! >= lcs[i + 1]![j]!)) j++;
+      else i++;
+    }
+    if (i - startA > MAX_SWAP_WORDS || j - startB > MAX_SWAP_WORDS) return false;
+    const content = (w: string) => !STOPWORDS.has(w);
+    if (a.slice(startA, i).some(content) && b.slice(startB, j).some(content)) swappedTarget = true;
+  }
+  return swappedTarget;
 }

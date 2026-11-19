@@ -435,7 +435,7 @@ test("a free-text ask is judged by its question paragraph, not its context", () 
   };
   assert.equal(
     outcome(`${ANNOUNCE}Should I grant alice access to the production repository for this release?`,
-      "The audit and the change log both leave her account unflagged."),
+      "Her account came back clean from both sources we checked, the audit and the change log."),
     "superseded", "a negation that changed only in the context withdrew nothing");
   assert.equal(
     outcome(`${ANNOUNCE}Should I not grant alice access to the production repository for this release?`,
@@ -533,6 +533,23 @@ test("a short question about a different person never withdraws another's card",
   }
 });
 
+test("a question with several targets swapped is a different decision, announced or not", () => {
+  // GitHub Inspector's case on PR #1538: two swaps, neither with three matching words on both sides,
+  // and two edits rather than one.
+  const older = "Should I deploy to staging and notify alice?";
+  const newer = "Should I deploy to production and notify bob?";
+  for (const [asked, status] of pairOutcomes(older, newer, ["Approve", "Deny"])) {
+    assert.equal(status, "pending", `withdrawn by: ${asked}`);
+  }
+});
+
+test("targets swapped in several places in the context are a different decision", () => {
+  const { registry, ask } = fixtureWithContext();
+  const first = ask("Should I ship?", "Deploy to staging and notify alice.", ["Approve", "Hold"], T0);
+  ask(`${ANNOUNCE}Should I ship?`, "Deploy to production and notify bob.", ["Approve", "Hold"], AFTER_TIMEOUT);
+  assert.equal(registry.getReview(first.id)?.status, "pending");
+});
+
 test("a short question repeated under a retry announcement is still the same decision", () => {
   const { registry, ask } = fixture();
   const first = ask("Grant alice access?", ["Approve", "Deny"], T0);
@@ -603,8 +620,12 @@ test("a near-restatement with no retry announcement still replaces the earlier c
 // labelled number, so each ask's overlap is exactly `shared / 20`.
 const POOL = Array.from({ length: 80 }, (_, i) => `zq${String.fromCharCode(97 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}`);
 const OLDER_WORDS = POOL.slice(0, 20);
-/** Twenty content words, `shared` of them from the older ask and the rest fresh. */
-const newerWords = (shared: number) => [...OLDER_WORDS.slice(0, shared), ...POOL.slice(40, 40 + 20 - shared)];
+/**
+ * Twenty content words, `shared` of them from the older ask and the rest fresh. The shared words
+ * come reversed, so the overlap is exactly `shared / 20` while no run of the older ask survives
+ * in order: what is measured is the overlap threshold, not an edit to the same sentence.
+ */
+const newerWords = (shared: number) => [...POOL.slice(40, 40 + 20 - shared), ...OLDER_WORDS.slice(0, shared).reverse()];
 /** "previous", "prompt" and "timed" add three content words, so the smaller side stays the older 20. */
 const ANNOUNCED = "The previous prompt timed out.";
 
@@ -632,15 +653,16 @@ test("an unannounced rewording needs exactly 80% shared wording", () => {
 test("a swapped word needs exactly three matching words on each side to mark a new subject", () => {
   assert.equal(SWAP_CONTEXT_WORDS, 3);
   // The swap sits in the CONTEXT, so the question is unchanged and only the word-swap check can
-  // keep the older card. An inserted word at the front stops the matching run on the left, which
-  // would otherwise reach back into the question; the context's end stops it on the right.
+  // keep the older card. Four inserted words at the front stop the matching run on the left, which
+  // would otherwise reach back into the question, and are too long a run for the small-edits
+  // check; the context's end stops the run on the right.
   const question = "Which option should the release take?";
   const swapAt = (index: number) => {
     const { registry, ask } = fixtureWithContext();
     const first = ask(question, OLDER_WORDS.join(" "), [], T0);
     const newer = [...OLDER_WORDS];
     newer[index] = "zqzz";
-    ask(question, ["zqins", ...newer].join(" "), [], AFTER_TIMEOUT);
+    ask(question, ["zqia", "zqib", "zqic", "zqid", ...newer].join(" "), [], AFTER_TIMEOUT);
     return registry.getReview(first.id)?.status;
   };
   assert.equal(swapAt(2), "superseded", "two words before the swap marked a new subject");

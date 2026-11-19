@@ -2731,7 +2731,8 @@ edited in one place keeps both cards however little wording surrounds the edit: 
 changed (**Grant alice access?** then **The earlier request timed out. Grant bob access?**), or
 wording added or removed (**Should I deploy to production?** then **Should I deploy to
 production and delete the database?**), since approving the newer one would authorize something
-else. The context beneath the question is read the same way: the same question over **Deploy to
+else. Targets swapped in several places count the same way when every other difference is just
+as small (**deploy to staging and notify alice** then **deploy to production and notify bob**). The context beneath the question is read the same way: the same question over **Deploy to
 staging.** and then over **Deploy to production.** keeps both cards, while a retry that restates
 its background in its own words does not. A question that gains or loses a negation is a
 different decision too (**should I grant alice access** to **should I not grant alice access**,

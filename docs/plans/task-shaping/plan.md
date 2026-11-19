@@ -474,9 +474,11 @@ cannot relax their authorization, plan or workflow rules.
   `{ state, at, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, redacted, version }] }`.
   `state` is `ok` or `degraded`. `origin` is `registered` or `discovered`. `outcome` is one of
   `ok`, `degraded`, `failed`, `timed_out`, `invalid`, `unavailable`. The field is absent when
-  no shaper applied. The record describes the task's latest launch and nothing older. Each
-  dispatch replaces the summary and the delivered text together, or clears both when that
-  launch received no section, so a retry never shows an earlier launch's context.
+  no shaper applied. The record describes the task's latest launch and nothing older. In one
+  transaction each dispatch sets the summary to this launch's own, or clears it when no
+  shaper applied, and replaces the delivered text, or deletes it when this launch's section
+  is empty. A launch whose shapers all failed therefore keeps its `degraded` summary and has
+  no text, and a retry never shows an earlier launch's context.
 - **In the dashboard.** A chip in the session header beside the standing-instructions chip:
   "Context: 3 entries", or an amber "Context degraded". It opens a viewer, "Context this
   session received", listing each shaper's origin, outcome, reason, duration and version,
@@ -512,7 +514,7 @@ While the flag is off, and while it is on with no shaper that applies, every wor
 byte-identical to today: same argv, same first prompt, no extra process. A test pins both.
 Turning the flag off deletes nothing: stored shapers, the folder and past records stay. A task
 that is dispatched again while the flag is off launches unshaped, so its own record is cleared
-then, as it is for any launch that received no section.
+then, as it is for any launch that no shaper applied to.
 Mission Control ships no enabled shaper, because which files to read is the operator's choice.
 
 ### Harnesses
@@ -546,8 +548,10 @@ Sources context from the task's repositories and returns text, facts and a summa
   (one path, cut to 4 KiB, returned as `repo.summary`) and `facts` (one path to a flat JSON
   object of strings or string lists, returned as `repo.facts`).
 - It reads only regular files inside the worktree, with size caps, and records every skip
-  without stopping the launch. Phase 6 states the rules. The facts file format a setup skill
-  writes is owned by FR-03 and is not published, so flat JSON is what it reads for now.
+  without stopping the launch. Containment and size are verified on the file it opened, not
+  on a path checked beforehand, so a file swapped while shaping runs cannot get past them.
+  Phase 6 states the rules. The facts file format a setup skill writes is owned by FR-03 and
+  is not published, so flat JSON is what it reads for now.
 
 ### Guidance selector
 

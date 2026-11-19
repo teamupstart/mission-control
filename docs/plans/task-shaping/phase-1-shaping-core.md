@@ -79,8 +79,9 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    select, one call per shaper per repository in parallel, merge facts and summary for the
    selectors, cut a summary to 4 KiB, validate every reply with `ShapingResultSchema`, map
    every failure to an outcome, allocate the budget, compose the section, build the summary.
-   A transport's data reply may carry `redacted: true`, which Phase 5 sets when it removed a
-   credential value, and the summary records it for that shaper.
+   A transport reply of any kind may carry `redacted: true`, which Phase 5 sets when it
+   removed a credential value from the data or from a failure reason, and the summary records
+   it for that shaper.
    Each call's timeout is the smaller of the shaper's and the time left in the step. Paths are
    put in a request only when `shaperIsLocal`. The summary records each shaper's origin and
    the SHA-256 of its definition, taken over canonical JSON for a registered shaper.
@@ -115,7 +116,7 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   written by `upsert`; the id rules; no `node:` import in the shared modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
   timeouts and the deadline, partial results, each outcome, and a `redacted` mark carried
-  into the summary.
+  into the summary from a data reply and from a failed one.
 - `test/shaping-transport-command.test.ts` with a fixture script under `test/fixtures/`: argv
   without a shell, the scrubbed environment, stdin and stdout, the cap, a timeout.
 - `test/shaping-http.test.ts`: the three routes, each intent, 404 with the flag off, reload
@@ -164,5 +165,7 @@ reshape them. They replace the contents of their own transport file, `discovery.
 - Review of the plan pull request, 2026-11-19: the transport's data reply gained an optional
   `redacted` mark and the per-shaper summary a `redacted` field, so Phase 5 can report a
   removed credential value without reshaping a Phase 1 contract afterwards.
+- Review of the plan pull request, round 2, 2026-11-19: the mark is allowed on a failure
+  reply too. A scrubbed failure reason could not otherwise be reported.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

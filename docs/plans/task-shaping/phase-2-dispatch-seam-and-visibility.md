@@ -52,11 +52,13 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    `task_shaping_text (task_id primary key, text, created_at)` for the delivered section.
    The record describes the task's latest launch and nothing older. Every dispatch settles it
    at the seam, whether or not shaping ran, through one database function in one transaction,
-   and the task patch carries the result. A launch that received a section replaces the
-   summary and the text together. A launch that received none, because no shaper applied or
-   the flag is off, sets the column to null and deletes the row together. A task that has no
-   record is not written to. `GET /api/tasks/:id/shaping` returns both, or neither when the
-   task has no record.
+   and the task patch carries the result. The summary and the text are settled separately,
+   each from what `shapeTask` returned for this launch. `tasks.shaping` is set to the
+   summary, or to null when no shaper applied or the flag is off. The `task_shaping_text` row
+   is replaced when the section is not empty and deleted when it is. So a launch whose only
+   shaper failed or timed out keeps its degraded summary and its reason and has no text row,
+   and a launch that no shaper applied to has neither. A task that has no record is not
+   written to. `GET /api/tasks/:id/shaping` returns the summary and the text that exist.
 3. **Progress.** A derived, unpersisted mark in the manner of `Task.provisioning`.
    `phaseCopy` reads "Shaping context" while it is set.
 4. **Chip and viewer.** A `ShapingChip` beside the standing-instructions chip: "Context: N
@@ -85,11 +87,12 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   turn-one variants; a rejecting or slow `shapeTask` stand-in still launches and marks the task
   degraded; identical text for Claude, Codex and Pi on both runtimes; a shaped launch followed
   by a second dispatch of the same task, once with its shaper switched off and once with the
-  flag off, leaves no summary and no text.
+  flag off, leaves no summary and no text; a shaped launch followed by one whose only shaper
+  times out leaves that launch's degraded summary with its reason, and no text.
 - A test that composes a 64 KiB section and delivers it through the SDK, paste and Pi
   launch-argument paths. If one path cannot carry it, lower the maximum and record that here.
 - Database tests for the column and table on an upgraded database, and for the one function
-  that replaces or clears both in one transaction.
+  that settles the summary and the text in one transaction, in each of the four combinations.
 - `renderToStaticMarkup` tests for the chip's states.
 - `e2e/specs/task-shaping.spec.ts` with fake agents and `e2e/fixtures/fake-shaper.mjs` (modes
   ok, degraded, slow, garbage): "Shaping context" appears, the chip reads "Context: 2
@@ -103,8 +106,8 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 
 - Every item in the Outcome is demonstrated by a test or spec.
 - The byte-identical tests pass.
-- A launch that received no shaping context shows none: no summary, text or chip from an
-  earlier launch of the same task.
+- A launch shows only its own record: never a summary, text or chip from an earlier launch
+  of the same task. A launch whose only shaper failed still shows `degraded` with its reason.
 - No model tokens are spent by any test.
 
 ## Handoff
@@ -119,8 +122,12 @@ including the `origin` and `sha256` that Phase 4 fills. They must not add a seco
   the dispatch half of D3.
 - Checked against Phase 4: the viewer already renders `origin`, so that phase adds no session
   surface.
-- Review of the plan pull request, 2026-11-19, the operator's choice: the record is cleared
-  by a launch that received no section. Before, step 2 replaced the text only when a launch
-  was shaped and wrote nothing otherwise, so an unshaped retry kept showing the earlier
-  launch's summary and text. The viewer also gained the note for a `redacted` shaper, which
-  Phase 5 sets.
+- Review of the plan pull request, 2026-11-19, the operator's choice: every launch settles
+  the record, so nothing an earlier launch of the task left can outlive it. Before, step 2
+  replaced the text only when a launch was shaped and wrote nothing otherwise, so a retry
+  that no shaper applied to kept showing the earlier launch's summary and text. The viewer
+  also gained the note for a `redacted` shaper, which Phase 5 sets.
+- Review of the plan pull request, round 2, 2026-11-19: the first wording of that rule
+  cleared the summary whenever the section was empty, which would have dropped the degraded
+  marker of a launch whose only shaper failed. The summary now follows whether a shaper
+  applied, and the text row follows whether the section is empty.

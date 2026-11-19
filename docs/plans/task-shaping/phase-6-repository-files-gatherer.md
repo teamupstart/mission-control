@@ -26,20 +26,29 @@ is not a built-in at all (see Handoff).
   path) and `facts` (one path).
 - **Reading rules.** FR-05 section 7.15 states the rules this follows. If its reader
   (`src/server/instructions/repo-task-skill.ts`) has merged, share the file-reading helper
-  instead of writing a second one.
+  instead of writing a second one, provided it reads through an opened and verified handle as
+  step 2 requires. `readFileWithinCap` in `src/server/session-files.ts` already reads from a
+  handle and stops at a byte limit.
 - **Byte handling.** `src/server/util/utf8.ts` has `utf8Bytes` and `clipUtf8Bytes`.
 - **In-process.** A built-in shares the daemon's event loop, so it must be bounded by
-  construction: `stat` before every read, fixed limits, and the `ctx` signal checked between
-  files.
+  construction: `fstat` on the opened handle before every read, a read that stops at its
+  limit, fixed limits, and the `ctx` signal checked between files.
 
 ## Steps
 
 1. **`builtin.ts`.** An exhaustive `Record` from built-in id to implementation. A shaper whose
    built-in does not serve its stage answers `unavailable`.
-2. **Read one file.** Resolve the path inside `repo.path`. It must be a regular file whose real
-   path stays inside the worktree, and at most 4 MiB by `stat`. Replace invalid UTF-8, drop a
-   byte order mark, and cut at the last line boundary within the cap. A skip has one reason:
-   `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`, `unreadable` or `empty`.
+2. **Read one file.** Every check is made on the file that is read, never on a path that is
+   read afterwards, because a worktree file can be replaced while shaping runs. Refuse a
+   configured path that is absolute or has a `..` segment. Resolve its real path, which must
+   lie inside the worktree's real path, and open that real path with `O_NOFOLLOW`. Then verify
+   the handle: `fstat` must report a regular file of at most 4 MiB, and the same real path,
+   looked up again after the open, must still lie inside the worktree and name the same
+   device and inode as the handle. Read from the handle with a hard limit, so a file that
+   grows meanwhile is still cut off. Replace invalid
+   UTF-8, drop a byte order mark, and cut at the last line boundary within the cap. A skip
+   has one reason: `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`,
+   `unreadable` or `empty`.
 3. **`include`.** At most 16 paths. Each readable file becomes one entry whose id and title are
    its path, with `truncated` set when it was cut. The per-file cap is its `maxBytes`, at most
    16 KiB.
@@ -62,7 +71,9 @@ is not a built-in at all (see Handoff).
 - `test/shaping-builtin-repository-files.test.ts`, in a temporary worktree: every skip reason
   (including a symlink that leaves the worktree and a directory), the line-boundary cut, the
   summary cut, a valid and an invalid facts file, the limits, and a signal that stops the run
-  between files.
+  between files. Two cases drive the helper through a filesystem seam it takes as an argument:
+  a file swapped for a symlink out of the worktree after its path was resolved, which is
+  refused, and a file that grows past the limit while it is read, which is cut off.
 - An engine test: the facts and summary this gatherer returns reach a selector's request.
 - `test/shaping-http.test.ts` gains a dry-run of a registered `repository-files` gatherer.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` and `npm run smoke`.
@@ -71,7 +82,8 @@ is not a built-in at all (see Handoff).
 
 - A registered `repository-files` gatherer dry-runs against a repository and returns the
   entries, summary and facts its options name.
-- No path outside the worktree is ever read.
+- No file outside the worktree is ever read, and no read exceeds its limit: both are
+  verified on the opened file, not on a path checked beforehand.
 
 ## Handoff
 
@@ -91,3 +103,7 @@ the same budget. Do not add it to `SHAPING_BUILTINS` or serve it through this tr
   selector" as a later built-in, while `plan.md` also called lesson selection a later stage.
   It has one placement now, a step after the shaping stages that is not a shaper, and this
   file says so.
+- Review of the plan pull request, round 2, 2026-11-19, the operator's choice: step 2 checked
+  a path's real location and size and then read it by path, so a file swapped in between
+  could have been read from outside the worktree or past the limit. The checks now run on the
+  opened handle, and the read has a hard limit.

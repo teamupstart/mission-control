@@ -49,8 +49,9 @@ identity, stored secrets.
      `repo.summary`, `repo.facts`, `notes`, `version`), and a failure reason. Follow
      `redactClaimValues` in `src/server/worktrees/claim.ts`: find every match in the original
      text first, so a value inside or overlapping another is still covered.
-   - **Mark.** A reply that was changed is returned with `redacted: true`, which the engine
-     records on that shaper. The outcome does not change, and the rest of the reply is used.
+   - **Mark.** A reply that was changed is returned with `redacted: true`, whether it is a
+     data reply or a failure whose reason was scrubbed, and the engine records it on that
+     shaper. The outcome does not change, and the rest of a data reply is used.
    - **Scope.** Only values resolved for `{env:NAME}` references are scrubbed. `{caller.*}`
      values are not secrets. A variable a local server receives through `env` pass-through is
      not a reference, and that server's output is not scrubbed of it.
@@ -108,7 +109,9 @@ identity, stored secrets.
   structured and text replies, a tool error, a timeout, a `degraded: true` reply passed
   through, one server process for a run over two repositories, and the same calls over
   streamable HTTP. Over streamable HTTP the fixture also has an echo mode that returns a
-  header value it received inside a guidance body, and the transport redacts and marks it.
+  header value it received inside a guidance body, and the transport redacts and marks it. A tool
+  error whose text echoes that value comes back `failed`, with the reason scrubbed and the
+  reply marked.
 - `test/shaping-http.test.ts` gains the `references` field and a dry-run of the fixture
   selector, including one in echo mode whose reply carries `[NAME redacted]` and never the
   value.
@@ -150,3 +153,5 @@ free of shaping-specific assumptions where that is cheap.
   a worker's prompt, in the stored text and in a dry-run reply. Every reply is now scrubbed
   before it reaches the engine, and the shaper is marked `redacted`. Phase 1's transport
   reply and summary carry that mark, and Phase 2's viewer shows it.
+- Review of the plan pull request, round 2, 2026-11-19: a failure reply can carry the mark
+  too, so a scrubbed tool error is reported like a scrubbed data reply.

@@ -37,8 +37,9 @@ Not in scope:
 
 Inherited from Phase 1 and not to be changed: the registry module's path and its two exports,
 the config shape, the intent shapes, a flag intent always storing the choice, the
-explicitly-switched-off list, `GET` and `PUT /api/feature-flags`, the `feature_flags` event,
-`MissionState.featureFlags`, and the backup domain id `feature-flags`.
+explicitly-switched-off list, a master intent clearing only the stored choices it names,
+`GET` and `PUT /api/feature-flags`, the `feature_flags` event, `MissionState.featureFlags`,
+and the backup domain id `feature-flags`.
 
 Findings:
 
@@ -105,10 +106,17 @@ Findings:
    - The master question. Turning the master on while Phase 1's explicitly-switched-off list
      is non-empty opens a dialog built on `Overlay` and the `.modal` shell. It names those
      flags and offers **Keep them off**, **Turn them on too**, and Cancel. Keep sends the
-     master intent alone. Turn on sends it with `enableDisabled`. Cancel and Escape send
-     nothing. With nothing switched off, the master applies immediately. Turning it off never
-     asks. Because a flag intent always stores the choice, a flag switched off while the
-     master was off is in that list and is asked about.
+     master intent alone. Cancel and Escape send nothing. With nothing switched off, the
+     master applies immediately. Turning it off never asks. Because a flag intent always
+     stores the choice, a flag switched off while the master was off is in that list and is
+     asked about.
+   - The answer is scoped to what the dialog showed. The dialog captures the list of flags
+     once, when it opens, and does not grow or shrink while it is open, whatever the
+     `feature_flags` event reports in the meantime. **Turn them on too** sends the master
+     intent with `alsoEnable` set to exactly the ids in that captured list. It never asks the
+     daemon to clear "everything switched off". So if another window switches a further flag
+     off while this dialog is open, that flag was not named, is not sent, and stays off. The
+     panel behind the dialog then shows it off, which is how the operator learns of it.
 4. **Connected panel** `src/web/components/FeatureFlagsPanel.tsx`. Reads the config from
    mission state, takes its definitions from the registry module, and sends intents through
    the Phase 1 client. A click updates the control at once; a refusal rolls it back and shows
@@ -182,6 +190,9 @@ metadata, which is not persisted. A snapshot written after Phase 1 restores unch
   - with the master off, switch a preview flag on and then off, then turn the master on: the
     dialog names that flag. Keep them off leaves it off with the master on. Turn them on too
     brings it on. Cancel changes nothing;
+  - the concurrent case: with the dialog open in one page and naming flag A, switch flag B
+    off in a second page. The dialog still names only A. Choose Turn them on too: the master
+    is on, A is on, and B is still off in both pages;
   - a refused write: intercept `PUT /api/feature-flags` with Playwright's `route` and answer
     with an error. The pill rolls back, the row shows its inline error, and no other page changes;
   - `expectContentClearsBorder` passes on the dialog.
@@ -230,4 +241,10 @@ what that pull request owes, including a browser assertion against the shipped r
     sequence that the first draft would have missed.
   - The alpha copy in step 3 and step 8 follows the one rule in `plan.md`: the channel never
     changes a flag, and a single flag can be switched on by hand on any channel.
+- Review of the planning pull request:
+  - Turn them on too sent a boolean, and the daemon cleared every stored `off` it held at that
+    moment. A flag switched off in another window while the dialog was open would have been
+    turned on without being named, overriding the newer choice. The dialog now fixes its list
+    when it opens and sends exactly those ids in `alsoEnable`. Step 3 states the rule and
+    section 7 drives the two-window case.
 - Every requirement in `plan.md` has an owner in the table in `phased-plan.md`. No conflicts found.

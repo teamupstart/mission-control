@@ -113,9 +113,9 @@ it in its own pull request and says so there.
 | Stored key | `app_config` key `featureFlags`, shape `{ enableAll: boolean, overrides: Record<string, boolean> }` |
 | Backup domain id | `feature-flags`. Surface is `runtime` after Phase 1 and `settings` after Phase 2 |
 | Resolution | Stored choice, then `default-on` is on, then `preview` follows `enableAll`. The update channel is never an input |
-| Intent | Master: `{ kind: "master", enabled, enableDisabled? }`. Flag: `{ kind: "flag", id, enabled }` |
-| Stored choice | A flag intent always stores `overrides[id] = enabled`. It is never dropped for matching the default. A master intent changes no stored choice, except that `enabled` with `enableDisabled` clears every stored `false` for a known id |
-| Explicitly switched off | The known definitions with a stored `false`. This list is what Phase 2's question names |
+| Intent | Master: `{ kind: "master", enabled, alsoEnable? }`, where `alsoEnable` is a list of flag ids and is accepted only with `enabled: true`. Flag: `{ kind: "flag", id, enabled }` |
+| Stored choice | A flag intent always stores `overrides[id] = enabled`. It is never dropped for matching the default. A master intent changes no stored choice, except that it clears the stored `false` of each id named in `alsoEnable`. A stored `false` it does not name is never touched |
+| Explicitly switched off | The known definitions with a stored `false`. This list is what Phase 2's question names, and the ids it sends back in `alsoEnable` |
 | Pure functions | Resolve one flag, resolve all, list the flags explicitly switched off, apply an intent. Each takes definitions as a defaulted parameter |
 | Routes | `GET /api/feature-flags` and `PUT /api/feature-flags`, both answering `{ config }` |
 | Event and snapshot | `{ type: "feature_flags", config }` and snapshot field `featureFlags` |
@@ -162,3 +162,10 @@ Plan Validation v3, repair round 1, asked for three changes, all applied:
 3. A fixture-registry build in Phase 2 that runs populated flags through the connected panel,
    a second window, settings search and the palette, with a refused write and rollback. It
    replaces the earlier plan to mount only the presentational list with local state.
+
+Review of the planning pull request asked for one change, applied:
+
+4. The master intent named no flags and cleared every stored `off` at the moment of the write.
+   A flag switched off in another window while the question was open would have been turned
+   on without ever being named. The intent now carries the ids the question listed, and only
+   those are cleared.

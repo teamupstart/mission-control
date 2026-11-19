@@ -71,7 +71,8 @@ Not in scope:
      `boundedRecord` of kebab-case keys (at most 64 characters, at most 512 entries) to
      booleans, defaulting to empty. Export the inferred type and a defaults constant.
    - `FeatureFlagIntentSchema`, a discriminated union on `kind`: `{ kind: "master", enabled,
-     enableDisabled? }` and `{ kind: "flag", id, enabled }`.
+     alsoEnable? }` and `{ kind: "flag", id, enabled }`. `alsoEnable` is a bounded list of
+     flag ids (at most 512), and the schema refuses it unless `enabled` is `true`.
    - Pure functions, each taking `definitions` as a parameter that defaults to `FEATURE_FLAGS`:
      resolve one flag; resolve all into a record; list the definitions explicitly switched
      off (a stored `false` for a known id); apply an intent, returning the next config or an
@@ -80,9 +81,13 @@ Not in scope:
      - Flag: **always** store `overrides[id] = enabled`. Do not drop the entry when it matches
        what the flag would be without it. A flag switched off while the master is off must
        leave a stored `false`, because Phase 2's question is built from that list.
-     - Master: set `enableAll` and change no stored choice, unless `enabled` and
-       `enableDisabled` are both true, in which case also delete every stored `false` for a
-       known id.
+     - Master: set `enableAll` and change no stored choice, with one exception. For each id in
+       `alsoEnable`, delete its stored `false` if it has one. An id with no stored `false` is
+       a no-op, so a flag switched back on elsewhere in the meantime is not disturbed. An id
+       this build does not know refuses the whole intent as `unknown_flag`.
+     - A master intent never clears a stored `false` that `alsoEnable` does not name. There is
+       no "clear everything" form. The caller names what the operator saw and agreed to, and a
+       choice made in another window after that question opened is left alone.
      - Every write drops ids in the retired list and preserves ids that are neither known nor
        retired.
 3. **Backup domain and `app_config` entry.** Append `{ id: "feature-flags", surface:
@@ -156,9 +161,13 @@ Not in scope:
   - a flag intent always stores the choice, in both directions and under both master states;
   - the sequence the review named: master off, flag on, flag off leaves a stored `false`;
     master on then leaves that flag off, and it appears in the explicitly-switched-off list;
-  - master on and off leave every stored choice alone;
-  - `enableDisabled` clears stored `false` for known ids only, after which those flags follow
+  - master on and off, without `alsoEnable`, leave every stored choice alone;
+  - `alsoEnable` clears the stored `false` of the ids it names, after which those flags follow
     their defaults;
+  - the concurrent case: two flags hold a stored `false`, the intent names one, and the other
+    keeps its stored `false` and stays off;
+  - an id in `alsoEnable` with no stored `false` is a no-op, an unknown id there refuses the
+    intent, and `alsoEnable` with `enabled: false` is refused by the schema;
   - unknown ids preserved across a write, retired ids dropped, an unknown flag id refused,
     schema bounds.
 - The same file, against the real registry and source: ids unique and kebab-case, no id in
@@ -166,9 +175,10 @@ Not in scope:
   two tuples, and neither flag module nor `src/server/feature-flags/` imports an update-channel
   module (`update.ts`, `update-preferences.ts`).
 - `test/feature-flags-http.test.ts`: GET defaults; PUT master; a flag intent with fixture
-  definitions supplied through the app's dependencies stores the choice and is emitted; PUT
-  with an unknown id is 400; the event is emitted once and not repeated for a no-change write;
-  the snapshot carries the config; a subscriber is called; a restore republishes.
+  definitions supplied through the app's dependencies stores the choice and is emitted; a
+  master intent naming one of two switched-off fixture flags leaves the other off; PUT with an
+  unknown id is 400; the event is emitted once and not repeated for a no-change write; the
+  snapshot carries the config; a subscriber is called; a restore republishes.
 - Updated pins: `test/settings-backup-coverage.test.ts`, `test/route-surface-oracle.test.ts`.
 - Commands: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`.
   For one file: `node --test --import ./test/setup-state.mjs --import tsx test/feature-flags.test.ts`.
@@ -191,6 +201,8 @@ Phase 2 may rely on, and must not change:
 - The logic module's schemas and pure functions, and the stored shape.
 - A flag intent always storing the choice, and the explicitly-switched-off list being the
   known definitions with a stored `false`. Phase 2's question names exactly that list.
+- A master intent clearing only the stored `false` choices named in `alsoEnable`. Phase 2
+  sends the ids its question listed and nothing else.
 - The two routes and their `{ config }` responses, the `feature_flags` event, the snapshot
   field, `MissionState.featureFlags`, and the backup domain id `feature-flags`.
 
@@ -202,7 +214,7 @@ Phase 2 will change exactly one thing this phase wrote: the backup domain's `sur
 - Written first. No earlier phase to reconcile.
 - After Phase 2 was written: the pure functions take definitions as a parameter for unit and
   in-process HTTP tests; the explicitly-switched-off list exists because Phase 2's dialog
-  names those flags; the master intent carries `enableDisabled` because that dialog needs one
+  names those flags; the master intent can clear stored choices because that dialog needs one
   atomic write. The `runtime` surface was chosen so this phase passes the coverage test
   without a control, and Phase 2 owns the move.
 - Plan Validation v3, repair round 1:
@@ -214,3 +226,9 @@ Phase 2 will change exactly one thing this phase wrote: the backup domain's `sur
     registry at build time and exercise populated flags through the connected panel.
   - The alpha rule is stated once, in section 5 step 11, and resolution is tested to have no
     channel input.
+- Review of the planning pull request:
+  - The master intent carried a boolean that cleared every stored `false` present at write
+    time. If one window had the question open and another switched a further flag off, the
+    answer would have turned on a flag the question never named. The boolean is replaced by
+    `alsoEnable`, a list of ids, and only those are cleared. Section 7 tests two switched-off
+    flags with one named.

@@ -138,9 +138,11 @@ applies an intent to a config, so both sides agree and a test can drive it direc
 - **Setting the master switch** changes `enableAll` and nothing else. Individual choices are
   kept: a flag switched on by hand stays on when the master goes off, and a flag switched off by
   hand stays off when the master goes on.
-- **Turning the master on with flags switched off.** The intent carries one extra boolean. When
-  it is set, the same write also clears every stored `off`, so those flags follow their
-  defaults again and come on. The panel sets it only after asking (see the panel below).
+- **Turning the master on with flags switched off.** The intent can name the flags the
+  operator agreed to turn on as well. The same write clears the stored `off` for exactly those
+  flags, so they follow their defaults again and come on. A flag the intent does not name is
+  left alone, even one that another window switched off a moment earlier. The panel sends the
+  names only after asking, and sends only the flags its question listed (see the panel below).
 
 `overrides` is keyed by string, not by the id union, for three reasons that all come from
 installations moving between builds:
@@ -239,6 +241,9 @@ One sentence an operator can act on.
   flags are switched off opens a small dialog that names them and offers **Keep them off**,
   **Turn them on too**, and Cancel. Either answer turns the master on in one write. Cancel
   writes nothing. With nothing switched off there is no dialog. Turning the master off never asks.
+- **The answer covers exactly the flags the dialog named.** The list is fixed when the dialog
+  opens, and **Turn them on too** sends those flag ids with the master intent. A flag that
+  another window switches off while the dialog is open was never named, so it stays off.
 - **The filter** matches label, description, keywords and id, and covers the Advanced list too.
   A filter with matches only under Advanced opens it.
 - **Advanced** is a collapsed disclosure listing `default-on` flags. Its summary line counts
@@ -328,13 +333,13 @@ helpers, `TOUR_REQUIREMENTS`) into functions of the resolved flags, and removing
 
 | Layer | What it pins |
 | --- | --- |
-| `test/feature-flags.test.ts` | The resolution table above, row for row, with injected definitions, including a preview flag switched on by hand with the master off. A flag intent always stores the choice: with the master off, on then off leaves a stored `off`, and that flag stays off and is listed when the master goes on. The master switch keeping individual choices. The extra boolean clearing every stored `off`. Unknown ids preserved, retired ids dropped. No live id in the retired list. Ids unique and kebab-case. Neither flag module imports an update-channel module. |
+| `test/feature-flags.test.ts` | The resolution table above, row for row, with injected definitions, including a preview flag switched on by hand with the master off. A flag intent always stores the choice: with the master off, on then off leaves a stored `off`, and that flag stays off and is listed when the master goes on. The master switch keeping individual choices. A master intent that names flags clears the stored `off` for those flags only, and a stored `off` it does not name survives. Unknown ids preserved, retired ids dropped. No live id in the retired list. Ids unique and kebab-case. Neither flag module imports an update-channel module. |
 | `test/feature-flags-http.test.ts` | GET and PUT, a flag intent with fixture definitions injected into the app, refusal of an unknown id, the emitted event, the snapshot field, republish after a settings restore. |
 | `test/settings-backup-coverage.test.ts` | The new `featureFlags` key and `feature-flags` domain in the pinned lists. |
 | `test/route-surface-oracle.test.ts`, `test/settings-sidebar-render.test.ts`, `test/palette-index.test.ts` | The new routes, category, anchors and palette entries. |
 | `renderToStaticMarkup` | The list's markup for the empty state, a populated list, and Advanced with a turned-off count. |
 | `e2e/specs/feature-flags.spec.ts` (the shipped build, empty registry) | The category is in the rail after Setup. The empty state. The master switch writes on click, shows in a second window without a reload, and survives a reload. Settings search finds it. The alpha sentence in Setup links here. |
-| `e2e/specs/feature-flags-populated.spec.ts` (the real daemon and dashboard, built with a fixture registry substituted) | Through the connected panel: fixture rows are listed; a toggle reaches the daemon, a second window follows without a reload, and the state survives a reload. Settings search finds a flag and flips it from the result. The command palette lists it. The filter narrows and opens Advanced. Advanced counts what is turned off. With the master off, a flag switched on then off is asked about when the master goes on, and each of the dialog's three answers does what it says. A refused write rolls the control back and shows an inline error. `expectContentClearsBorder` on the dialog. |
+| `e2e/specs/feature-flags-populated.spec.ts` (the real daemon and dashboard, built with a fixture registry substituted) | Through the connected panel: fixture rows are listed; a toggle reaches the daemon, a second window follows without a reload, and the state survives a reload. Settings search finds a flag and flips it from the result. The command palette lists it. The filter narrows and opens Advanced. Advanced counts what is turned off. With the master off, a flag switched on then off is asked about when the master goes on, and each of the dialog's three answers does what it says. A flag switched off in a second window while the dialog is open stays off after **Turn them on too**. A refused write rolls the control back and shows an inline error. `expectContentClearsBorder` on the dialog. |
 
 The fixture-registry build is what closes the gap an empty registry leaves. It bundles the
 production daemon entry and the production dashboard with exactly one module,

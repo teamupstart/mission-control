@@ -330,3 +330,16 @@ test("F3 confirm: a refusal before the task exists keeps the draft, creates noth
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test("F3 drafts: a draft is still valid at exactly 24 hours after its last change and gone one millisecond later", async () => {
+  let now = 5_000_000;
+  resetDraftsForTest(() => now);
+  const r = rig();
+  const repo = gitRepo("expiry-edge");
+  const draft = await create(r, repo, { words: "w" });
+  now += DRAFT_TTL_MS;
+  const atEdge = await post(r, "/drafts/" + draft.body.draftId, { ...caller(repo), words: "still here" });
+  assert.equal(atEdge.status, 200, "exactly at the limit is not expired");
+  now += DRAFT_TTL_MS + 1;
+  assert.equal((await post(r, "/drafts/" + draft.body.draftId, { ...caller(repo), words: "late" })).status, 404);
+});

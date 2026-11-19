@@ -125,7 +125,6 @@ test("the proposal is a request_input question that shows every passage in full,
     { label: "3. Drop Fridays", detail: "Profile instructions" },
   ]);
   assert.equal(ask.multiSelect, true);
-  assert.equal(ask.allowOther, true);
 });
 
 test("the question becomes exactly the review the request_input tool would open for it", () => {

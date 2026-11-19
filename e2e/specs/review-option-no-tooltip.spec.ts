@@ -231,6 +231,7 @@ test("a multi-select request_input question's checkboxes leave no tooltip either
   const group = modal.getByRole("group", { name: LINTER });
   const biome = group.getByRole("checkbox", { name: /^biome/ });
   const eslint = group.getByRole("checkbox", { name: /^eslint/ });
+  await expect(group.getByRole("textbox", { name: /^Other answer or context/ })).toBeVisible();
 
   await group.getByRole("checkbox", { name: "Chat about it" }).hover();
   await expect(bubble).toHaveText(/^Skip choosing for now/);

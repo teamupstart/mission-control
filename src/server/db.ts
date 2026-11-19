@@ -140,6 +140,7 @@ import {
   type WritebackSignal,
 } from "@shared/task-source.ts";
 import { HUMAN_REVIEW_STATUSES, isConversationResolvedReview } from "@shared/review-item.ts";
+import { restoreRequestInputText } from "@shared/request-input.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
   FILE_COMMENT_MESSAGES_PER_THREAD_MAX,
@@ -5157,15 +5158,21 @@ interface ReviewRow {
 
 function rowToReview(r: ReviewRow): ReviewItem {
   const snooze = rowToSnooze(r);
+  const kind = r.kind as ReviewKind;
+  const status = r.status as ReviewStatus;
+  const decisions = parseJsonArray<PlanDecision>(r.decisions);
   return {
     id: r.id,
     sessionId: r.session_id,
-    kind: r.kind as ReviewKind,
+    kind,
     title: r.title,
     body: r.body,
-    status: r.status as ReviewStatus,
+    status,
     response: r.response,
-    decisions: parseJsonArray<PlanDecision>(r.decisions),
+    // Add text entry to open questions while preserving the stored conversation history.
+    decisions: status === "pending" || status === "snoozed"
+      ? restoreRequestInputText(kind, decisions)
+      : decisions,
     selections: parseJsonArray<PlanDecisionAnswer>(r.selections),
     resolvedBy: (r.resolved_by as ReviewActor | null) ?? null,
     // Spread only when set, so a row that never offered or used "Remind me later" decodes to

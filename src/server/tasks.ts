@@ -56,6 +56,7 @@ import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
 import {
+  CHAT_DEPENDENCY_REFUSAL,
   taskHasRepository,
   dispatchHasNoProvisionedResources,
   isGrillFirstTaskKind,
@@ -4359,6 +4360,12 @@ export class TaskManager {
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return { ok: false, error: error.message };
       throw error;
+    }
+    // A kind with no backlog of its own never waits on other work, even on the one row that
+    // may hold it - a chat a Recurring Mission filed. Checked on the RESULT, so an edit that
+    // turns a dependent task into a chat is refused as surely as one that adds an edge to a chat.
+    if (!taskKindAllowsBacklog(patch.kind ?? t.kind) && dependencies.length > 0) {
+      return { ok: false, error: CHAT_DEPENDENCY_REFUSAL };
     }
     const grillFirst = resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t);
     const next: Task = {

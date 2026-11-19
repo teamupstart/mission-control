@@ -431,6 +431,12 @@ export function taskKindAllowsSchedule(kind: TaskKind): boolean {
   return KIND_SCHEDULE_FILING[kind] !== "never";
 }
 
+/**
+ * Why a chat a Recurring Mission filed still cannot carry dependencies: the backlog row is only
+ * how its run reaches Foreman, and a conversation does not wait on other work.
+ */
+export const CHAT_DEPENDENCY_REFUSAL = "A chat cannot wait on other tasks. Remove its dependencies first.";
+
 /** Task kinds the Recurring Mission editor offers, in `TASK_KINDS` order. */
 export const SCHEDULE_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsSchedule);
 

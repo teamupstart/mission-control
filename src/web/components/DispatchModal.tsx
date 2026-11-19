@@ -42,6 +42,7 @@ import {
   isGrillFirstTaskKind,
   taskDefaultWorkflowId,
   taskAllowsBacklog,
+  taskKindAllowsBacklog,
   type GrillFirstTaskKind,
 } from "@shared/task.ts";
 import type { EnvironmentCheckId, EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -1332,6 +1333,10 @@ function DispatchModal({
   const allowsBacklog = (kind: TaskKind): boolean =>
     taskAllowsBacklog({ kind, scheduleId: editedScheduleId });
   const backlogCompatible = allowsBacklog(draft.kind);
+  // A separate question from the one above, and asked of the KIND: a chat a mission filed may
+  // sit in the backlog, but a conversation never waits on other work. See
+  // `CHAT_DEPENDENCY_REFUSAL`.
+  const dependenciesAllowed = taskKindAllowsBacklog(draft.kind);
   // Opens on the last list this window received, so a rescan behind the daemon never leaves
   // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
   const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
@@ -1791,11 +1796,11 @@ function DispatchModal({
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
   function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
-    if (!allowsBacklog(kind)) {
+    if (!taskKindAllowsBacklog(kind)) {
       stashedDependencies.current = draft.dependencies;
       return { dependencies: [] };
     }
-    if (!allowsBacklog(draft.kind)) {
+    if (!taskKindAllowsBacklog(draft.kind)) {
       const stashed = stashedDependencies.current;
       stashedDependencies.current = NO_STASH;
       return stashed === NO_STASH ? {} : { dependencies: stashed };
@@ -2677,6 +2682,7 @@ function DispatchModal({
       kindUnavailable ||
       (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet) ||
+      (!dependenciesAllowed && draft.dependencies.length > 0) ||
       (!backlogCompatible &&
         (!dispatchNow || editing !== null || ensembleMode || draft.dependencies.length > 0))
     ) return;
@@ -3017,9 +3023,11 @@ function DispatchModal({
     ...(backlogCompatible
       ? [
           draft.enabled ? "autopilot on" : "autopilot off",
-          dependencyCount > 0
-            ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
-            : "no dependencies",
+          ...(dependenciesAllowed
+            ? [dependencyCount > 0
+              ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
+              : "no dependencies"]
+            : []),
         ]
       : []),
   ].join(" · ");
@@ -3655,7 +3663,7 @@ function DispatchModal({
                   </div>
                 )}
 
-                {backlogCompatible && <div className="field">
+                {dependenciesAllowed && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
                     <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR unless set to Stack"}</span>

@@ -185,3 +185,58 @@ test("Foreman launches a mission-filed chat on its own, with nobody pressing Dis
   await expect(board.getByText(title).first()).toBeVisible();
   await shoot(dashboard, "04-foreman-launched-chat-running");
 });
+
+test("editing a dependent mission task into a chat drops its dependencies, and the saved chat waits on nothing", async ({ dashboard, daemon }) => {
+  const prerequisite = await api<TaskSnapshot>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo,
+    title: "Finish the prerequisite",
+    intent: "Land the groundwork first.",
+    kind: "ship",
+    agent: "claude",
+    backlog: true,
+  }, "POST");
+  const mission = await api<StoredSchedule>(daemon, "/api/schedules", {
+    name: "Ship that becomes a chat",
+    expression: "0 9 1 * *",
+    timezone: "UTC",
+    overlapPolicy: "skip-active",
+    missedPolicy: "coalesce-latest",
+    template: { title: "Weekly sync", intent: "Talk through the week.", repoRoot: daemon.repo, kind: "ship", agent: "claude" },
+  }, "POST");
+  await api(daemon, `/api/schedules/${mission.id}/run-now`, {}, "POST");
+  let filed: TaskSnapshot & { dependencies: unknown[] } | undefined;
+  await expect.poll(async () => {
+    filed = (await api<Array<TaskSnapshot & { dependencies: unknown[] }>>(daemon, "/api/tasks"))
+      .find((t) => t.scheduleId === mission.id);
+    return filed?.status ?? null;
+  }).toBe("backlog");
+  await api(daemon, `/api/tasks/${filed!.id}/update`, {
+    dependencies: [{ type: "task", taskId: prerequisite.id }],
+  }, "POST");
+
+  await api(daemon, "/api/ui/config", { layout: "board" });
+  await dashboard.reload();
+  await dashboard.locator("main.board section.board-backlog .bl-card", { hasText: "Weekly sync" })
+    .getByRole("button", { name: "Weekly sync", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  await expect(dialog).toBeVisible();
+  // The fold opens on its own for a task that carries dependencies; open it only if it did not.
+  const fold = dialog.getByRole("button", { name: "Backlog details" });
+  if ((await fold.getAttribute("aria-expanded")) !== "true") await fold.click();
+  await expect(fold).toHaveAttribute("aria-expanded", "true");
+  await expect(dialog.getByText("Finish the prerequisite").first()).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "Add dependency" })).toBeVisible();
+
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("chat");
+  await expect(dialog.getByRole("combobox", { name: "Add dependency" })).toHaveCount(0);
+  await expect(dialog.getByText("Finish the prerequisite")).toHaveCount(0);
+  await shoot(dashboard, "05-chat-drops-dependencies", dialog.getByRole("button", { name: "Save" }));
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect.poll(async () => {
+    const saved = (await api<Array<TaskSnapshot & { dependencies: unknown[] }>>(daemon, "/api/tasks"))
+      .find((t) => t.id === filed!.id);
+    return saved ? { kind: saved.kind, dependencies: saved.dependencies.length } : null;
+  }, { message: "the saved chat should carry no dependencies" }).toEqual({ kind: "chat", dependencies: 0 });
+});

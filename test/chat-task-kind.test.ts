@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { plannableBacklog, readyBacklog } from "../src/shared/backlog.ts";
 import { DispatchSchema, CreateScheduleSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
-import { TASK_KIND_BACKLOG_REFUSAL, taskAllowsBacklogAutopilot } from "../src/shared/task.ts";
+import { CHAT_DEPENDENCY_REFUSAL, TASK_KIND_BACKLOG_REFUSAL, taskAllowsBacklogAutopilot } from "../src/shared/task.ts";
 import { TaskSourceDefaultsSchema } from "../src/shared/task-source.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
@@ -322,4 +322,26 @@ test("a mission-filed chat can be edited, re-filed, and recovered to its backlog
   assert.equal(registry.getTask("edit-me")?.kind, "chat");
   assert.equal((await tasks.reschedule("failed-chat")).ok, true);
   assert.equal(registry.getTask("failed-chat")?.status, "backlog");
+});
+
+test("a mission-filed chat never carries dependencies, however the edit arrives", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.upsertTask(mkTask({ id: "prerequisite", kind: "ship", status: "backlog" }));
+  registry.upsertTask(mkTask({ id: "mission-ship", kind: "ship", status: "backlog", scheduleId: "mission-1" }));
+  registry.upsertTask(mkTask({ id: "mission-chat-row", kind: "chat", status: "backlog", scheduleId: "mission-1" }));
+  const edge = [{ type: "task" as const, taskId: "prerequisite" }];
+
+  // A dependent mission task turned into a chat keeps its edges, so the edit is refused...
+  assert.equal((await tasks.update("mission-ship", { dependencies: edge })).ok, true);
+  assert.equal(registry.getTask("mission-ship")?.dependencies.length, 1);
+  assert.equal((await tasks.update("mission-ship", { kind: "chat" })).error, CHAT_DEPENDENCY_REFUSAL);
+  assert.equal(registry.getTask("mission-ship")?.kind, "ship", "the refused edit changes nothing");
+  // ...and accepted once the same edit clears them, which is what the dashboard sends.
+  assert.equal((await tasks.update("mission-ship", { kind: "chat", dependencies: [] })).ok, true);
+  assert.deepEqual(registry.getTask("mission-ship")?.dependencies, []);
+
+  // An edge added to a chat that is already one is refused too.
+  assert.equal((await tasks.update("mission-chat-row", { dependencies: edge })).error, CHAT_DEPENDENCY_REFUSAL);
+  assert.deepEqual(registry.getTask("mission-chat-row")?.dependencies, []);
 });

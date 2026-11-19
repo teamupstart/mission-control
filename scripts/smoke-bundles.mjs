@@ -495,6 +495,27 @@ async function declaredMcpTools() {
  * a dispatched session is pointed at, and the hook bridge a dispatched Codex session runs -
  * are both launch paths whose failure mode is silence.
  */
+async function smokeMctl() {
+  // Headless mode's CLI (`bin.mctl`). `--help` needs no daemon, so this proves only that the
+  // bundle loads, has a shebang, and lists the command registry.
+  const path = resolve("dist/cli/mctl.mjs");
+  if (!existsSync(path)) return fail("the mctl bundle is missing: dist/cli/mctl.mjs");
+  const source = await readFile(path, "utf8");
+  if (!source.startsWith("#!/usr/bin/env node")) fail("the mctl bundle has no node shebang, so bin.mctl would not run");
+  const child = spawn(process.execPath, [path, "--help"], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  const code = await new Promise((done) => {
+    child.on("error", () => done(-1));
+    child.on("exit", (c) => done(c));
+  });
+  if (code !== 0 || !out.includes("usage: mctl") || !out.includes("doctor")) {
+    fail(`mctl --help did not list its commands (exit ${code})`);
+    return;
+  }
+  console.log("[smoke] mctl --help lists its commands");
+}
+
 async function smokeSatellitePaths() {
   const bundle = resolve("dist/server/index.mjs");
   const source = await readFile(bundle, "utf8");
@@ -811,6 +832,7 @@ await smokeNativeKeepAwake();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
+await smokeMctl();
 await smokeSatellitePaths();
 // The optional wrapper ships under dist/**/*, alongside the other satellites.
 if (!existsSync(resolve("dist/satellites/harness-statusline.mjs"))) fail("the shipped statusline wrapper is missing");

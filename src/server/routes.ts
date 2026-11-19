@@ -1,5 +1,5 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
-import { applyFeatureFlagIntent, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -34,6 +34,9 @@ import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOthe
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
 import { parseBody } from "./http-body.ts";
+import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
+import { homeDispatchHookOutput } from "./home-dispatch/hook-output.ts";
+import { HEADLESS_MODE_FLAG_ID, HOME_DISPATCH_CAPABILITY } from "@shared/home-dispatch.ts";
 import {
   localPlanAuthorityContext,
   validatePlanReview,
@@ -1906,7 +1909,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       service: "mission-control",
       version: SERVICE_VERSION,
       pid: process.pid,
-      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+      // `home-dispatch-v1` is listed only while headless mode is on, read per request.
+      capabilities: [
+        ...Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+        ...(featureEnabled(HEADLESS_MODE_FLAG_ID) ? [HOME_DISPATCH_CAPABILITY] : []),
+      ],
     }),
   );
 
@@ -4991,6 +4998,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
     checkToken(c.req.header("x-harness-token"));
 
+  // --- headless mode: every /mcp/dispatch/* route, behind one requireFeature gate ---
+  registerHomeDispatchRoutes(app, { authed });
+
   // --- hook ingest (token-guarded) ---
   app.post("/hooks/:event", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
@@ -5009,6 +5019,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const refusal = registry.promptRefusalForHook(parsed.data);
     if (refusal) return c.json({ decision: "block", reason: refusal });
     registry.applyHook(parsed.data);
+    // Headless mode: the flag is read for this event, never cached. Off (or nothing to say)
+    // keeps today's 204 byte for byte.
+    const dispatch = featureEnabled(HEADLESS_MODE_FLAG_ID) ? homeDispatchHookOutput(parsed.data) : null;
+    if (dispatch) return c.json({ dispatch });
     return c.body(null, 204);
   });
 

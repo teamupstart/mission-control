@@ -253,7 +253,11 @@ let db: DatabaseSync | undefined;
 //     no question offered or used a snooze before these existed.
 // 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
 //     '[]' with no backfill: no run attached a repository before this existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
+// 36: headless mode (FR-05): `tasks.origin_surface`, `origin_repo`, `origin_session_id`,
+//     `origin_terminal`, `session_standing_instructions.repo_task_skills`, and the tables
+//     `home_dispatch_sessions`, `home_dispatch_turns` and `home_dispatch_receipts`. All
+//     nullable or empty with no backfill; nothing writes them while `headless-mode` is off.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4744,6 +4748,63 @@ function migrate(d: DatabaseSync): void {
       item_id      TEXT NOT NULL UNIQUE,
       occurrence   TEXT NOT NULL,
       dismissed_at INTEGER NOT NULL
+    );
+  `);
+
+  // Schema 36, headless mode (FR-05, spec 2.4: the spec said 35, which main took first). Additive only, and ungated by design: a
+  // migration cannot know the flag, and an older build that opens a migrated database does
+  // not refuse it. NOTHING writes to these tables or columns while `headless-mode` is off.
+  //
+  // `origin_*`: where a task came from. NULL for dashboard tasks. `origin_surface` is
+  // `home-session` or `mctl` (`HOME_DISPATCH_SURFACES`); `origin_terminal` is the JSON home
+  // pane recorded at create time. Persisted values are append-only: never rename them.
+  addColumn(d, "tasks", "origin_surface", "TEXT");
+  addColumn(d, "tasks", "origin_repo", "TEXT");
+  addColumn(d, "tasks", "origin_session_id", "TEXT");
+  addColumn(d, "tasks", "origin_terminal", "TEXT");
+  // What repository task skill text a launch included or skipped (7.15).
+  addColumn(d, "session_standing_instructions", "repo_task_skills", "TEXT");
+  d.exec(`
+    -- One row per home session (7.2). The prompt text is never stored anywhere in here.
+    CREATE TABLE IF NOT EXISTS home_dispatch_sessions (
+      session_id          TEXT PRIMARY KEY,
+      harness             TEXT NOT NULL,
+      cwd                 TEXT NOT NULL,
+      repo_root           TEXT,
+      claude_pid          INTEGER,
+      hook_version        TEXT,
+      start_source        TEXT,
+      entrypoint          TEXT,
+      terminal            TEXT,             -- JSON HomeTerminal | NULL
+      launcher_offered_at INTEGER,
+      launcher_disabled   INTEGER NOT NULL DEFAULT 0,
+      started_at          INTEGER,
+      last_turn_at        INTEGER,
+      last_stop_at        INTEGER
+    );
+    -- One row per message the person sends (7.9). excerpt is at most 120 characters.
+    CREATE TABLE IF NOT EXISTS home_dispatch_turns (
+      session_id        TEXT NOT NULL,
+      prompt_id         TEXT NOT NULL,
+      opened_at         INTEGER NOT NULL,
+      closed_at         INTEGER,
+      excerpt           TEXT NOT NULL DEFAULT '',
+      contains_approval INTEGER NOT NULL DEFAULT 0,
+      mentioned_hashes  TEXT,             -- JSON string[]
+      cards_shown       TEXT,             -- JSON [{ key, changedAt, state, revisionHash }]
+      PRIMARY KEY (session_id, prompt_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_home_dispatch_turns_session
+      ON home_dispatch_turns(session_id, opened_at);
+    -- One row per answer relayed from a home session or mctl (7.8).
+    CREATE TABLE IF NOT EXISTS home_dispatch_receipts (
+      review_id   TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      session_id  TEXT,
+      surface     TEXT NOT NULL,
+      sent        TEXT NOT NULL,
+      from_words  TEXT,
+      created_at  INTEGER NOT NULL
     );
   `);
 

@@ -105,6 +105,14 @@ export const MISSION_MCP_TOOLS = [
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
 
+/**
+ * Headless mode's dispatch tools (`src/mcp/home-dispatch/`). They are NOT in `MISSION_MCP_TOOLS`:
+ * a launch can never require them, because the server publishes them only to a person's own
+ * session, outside any worker, while `headless-mode` is on (spec 7.10, L19). Listed here so the
+ * vocabulary has one home and `home-dispatch-flag.test.ts` can pin the two lists apart.
+ */
+export { HOME_DISPATCH_MCP_TOOLS } from "@shared/home-dispatch-tools.ts";
+
 /** The fully-qualified name, as an MCP client namespaces a server's tool. */
 export function missionMcpToolName(tool: MissionMcpTool): string {
   return `mcp__${MISSION_MCP_SERVER_NAME}__${tool}`;

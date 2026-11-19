@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 120 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 123 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>120</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>123</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -636,6 +636,15 @@ LIMIT 20;
                 <div class="table-row"><code>driver_usage_snapshots</code><p>The last accepted cumulative driver usage snapshot per native conversation, committed atomically with its ledger delta so resume cannot book earlier spend again. Retains legacy transition-gap and pending cumulative-cost baseline markers independently of ledger retention.</p></div>
                 <div class="table-row"><code>usage_ledger</code><p>Deduplicated token and cost cells by stable note key, model, query source, and high-precision source window identity. It separates session and automation spend.</p></div>
                 <div class="table-row"><code>usage_sources</code><p>Durable byte cursors and file identity for append-only usage inputs so a crash may replay data but cannot skip it.</p></div>
+              </div>
+            </details>
+
+            <details class="family">
+              <summary><strong>Headless mode dispatch (reserved)</strong><span>3 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>home_dispatch_sessions</code><p>Reserved for headless mode (FR-05), created empty by schema 36 and not yet written by any code. It is intended to hold one row per Claude Code session the person runs outside Mission Control, once the owned hook registers home sessions in a later release: working folder, resolved repository, process id, start source, entrypoint, home terminal pane, and when the dispatch launcher was offered. Nothing writes to it while the headless-mode flag is off.</p></div>
+                <div class="table-row"><code>home_dispatch_turns</code><p>Reserved for headless mode (FR-05), created empty by schema 36 and not yet written. It is intended to hold one row per message the person sends in a home session: when the turn opened and closed, a short excerpt of at most 120 characters, whether it contained an approval, the plan hashes it named, and the cards shown. A seven-day expiry is planned but is not implemented yet.</p></div>
+                <div class="table-row"><code>home_dispatch_receipts</code><p>Reserved for headless mode (FR-05), created empty by schema 36 and not yet written. It is intended to hold one row per answer relayed from a home session or mctl: the review, the task, the session, what was sent, the person's words it came from, and when. A seven-day expiry is planned but is not implemented yet.</p></div>
               </div>
             </details>
 

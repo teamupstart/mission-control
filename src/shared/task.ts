@@ -284,6 +284,30 @@ export const HARNESS_LAUNCHED_TASK_KINDS = TASK_KINDS.filter(
   taskKindLaunchesHarness,
 ) as readonly HarnessLaunchedTaskKind[];
 
+/**
+ * Headless mode (FR-05): the kinds a person can start from a home session, in the order the
+ * forms offer them. Declared here, in a kind registry, so no other file writes the set out.
+ * `src/shared/home-dispatch.ts` re-exports both. A test requires `HOME_DISPATCH_KINDS` and
+ * this order to hold exactly the same kinds, so a new dispatchable kind cannot ship without
+ * a place in the order.
+ */
+export const HOME_DISPATCH_KIND_ORDER = [
+  "ship",
+  "bugfix",
+  "plan",
+  "scout",
+  "document",
+  "chat",
+] as const satisfies readonly TaskKind[];
+export type HomeDispatchKind = (typeof HOME_DISPATCH_KIND_ORDER)[number];
+
+const NOT_HOME_DISPATCHABLE: ReadonlySet<TaskKind> = new Set<TaskKind>(["pipeline", "resident"]);
+
+/** Every task kind a person can start from a home session: all kinds but the ones filed by other producers. */
+export const HOME_DISPATCH_KINDS = TASK_KINDS.filter(
+  (kind): kind is HomeDispatchKind => !NOT_HOME_DISPATCHABLE.has(kind),
+);
+
 /** Whether this kind's launch is ours to give an agent, model and effort to. */
 export function taskKindLaunchesHarness(kind: TaskKind): kind is HarnessLaunchedTaskKind {
   return TASK_KIND_BEHAVIOR[kind].launch === "harness";

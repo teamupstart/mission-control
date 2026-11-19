@@ -70,9 +70,13 @@ async function fixture(
     queues: new QueueManager(registry), reviews });
   const requests: Array<{ path: string; method: string; body: unknown; actor: string | null; surface: string | null }> = [];
   const server = serve({ hostname: "127.0.0.1", port, fetch: async (req) => {
-    requests.push({ path: new URL(req.url).pathname, method: req.method,
-      body: req.method === "POST" ? await req.clone().json() : null,
-      actor: req.headers.get("x-mission-operation-actor"), surface: req.headers.get("x-mission-operation-surface") });
+    // The server's own flag probes (the startup health read and the /events stream that follows
+    // headless mode) are not calls any tool made, so they are not part of what these tests count.
+    if (!["/api/health", "/events"].includes(new URL(req.url).pathname)) {
+      requests.push({ path: new URL(req.url).pathname, method: req.method,
+        body: req.method === "POST" ? await req.clone().json() : null,
+        actor: req.headers.get("x-mission-operation-actor"), surface: req.headers.get("x-mission-operation-surface") });
+    }
     return app.fetch(req);
   } });
   const client = new Client({ name: "workflow-actions-test", version: "1" });

@@ -1,3 +1,4 @@
+import { registerHomeDispatchTools } from "./home-dispatch/index.ts";
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { requestInputReview } from "@shared/request-input.ts";
 import {
@@ -1708,4 +1709,21 @@ server.registerTool(
   },
 );
 
+// Headless mode (spec 7.10): six dispatch tools, registered disabled. They are enabled only for a
+// person's own session (never a worker) while the daemon lists `home-dispatch-v1`. Not awaited:
+// a slow or absent daemon must never delay the handshake, and flag off leaves the tool list as is.
+const homeDispatch = registerHomeDispatchTools(server, http, {
+  readHealth: async () => {
+    const res = await http("/api/health", "GET", undefined, false, AbortSignal.timeout(2000));
+    return res.ok ? await res.json() : null;
+  },
+  openEvents: (signal) => fetch(BASE_URL + "/events", { signal, headers: { accept: "text/event-stream" } }),
+});
+
 await server.connect(new StdioServerTransport());
+void homeDispatch.refresh();
+// Follow the flag for the whole session (a worker never subscribes). The open stream must not
+// keep the process alive once the client has gone.
+homeDispatch.follow();
+process.stdin.once("end", homeDispatch.stop);
+process.stdin.once("close", homeDispatch.stop);

@@ -671,3 +671,22 @@ test("later-episode secondary delivery cannot complete an earlier episode's part
   f.tasks.reconcileMergedTasks();
   assert.equal(typeof f.registry.getTask("historical-quorum-dependent")!.dependencies[0]!.satisfiedAt, "number");
 });
+
+test("a chat retains both checkouts and PR summaries after every repository merges", () => {
+  const f = fixture("chat-all-merged", { kind: "chat" });
+  primaryPr(f, PR_A);
+  extraPr(f, PR_B);
+  primaryPr(f, PR_A, NOW);
+  extraPr(f, PR_B, NOW + 1);
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, MOVED], [f.extraCwd, MOVED]]));
+  f.tasks.reconcileMergedTasks();
+  const current = f.registry.getTask(f.taskId)!;
+  assert.equal(current.status, "running");
+  assert.equal(current.sessionId, f.id);
+  assert.equal(current.worktreePath, f.cwd);
+  assert.equal(current.extraRepos[0]!.worktreePath, f.extraCwd);
+  assert.equal(current.outcome, null);
+  assert.deepEqual(f.registry.getSession(f.id)!.task!.repoPrs.map(pr => [pr.prUrl, pr.prState]), [
+    [PR_A, "merged"], [PR_B, "merged"],
+  ]);
+});

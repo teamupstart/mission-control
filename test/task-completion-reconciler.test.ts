@@ -1286,3 +1286,71 @@ else process.stdout.write(JSON.stringify([${JSON.stringify(candidate)}]));\n`, {
   assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]!), newUrl);
   assert.equal(typeof f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, "number");
 });
+
+
+for (const owned of [false, true]) {
+  for (const closeSessionAfterMerge of [false, true]) {
+    test(`chat keeps its ${owned ? "owned" : "assigned"} checkout on merge with close=${closeSessionAfterMerge}`, async () => {
+      setShippingConfig({ closeSessionAfterMerge });
+      const f = departed(`chat-${owned}-${closeSessionAfterMerge}`, {
+        kind: "chat", ...(owned ? {} : { worktreePath: null, homeName: null }),
+      });
+      const before = f.registry.getTask(f.taskId)!;
+      const dependentId = `${f.taskId}-dependent`;
+      f.registry.upsertTask(baseTask({ id: dependentId, dependencies: [{
+        type: "task", taskId: f.taskId, title: "Chat change", sessionId: f.id,
+        episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId,
+        branch: f.episode.branch, prUrl: null, selectedAt: 1, satisfiedAt: null,
+      }] }));
+      const url = "https://github.com/example/repo/pull/1525";
+      openPr(f, url);
+      await pollMerged(f.registry, url);
+      f.tasks.reconcileMergedTasks();
+      await f.tasks.settleWorktreeReturns();
+      const current = f.registry.getTask(f.taskId)!;
+      assert.equal(current.status, "running");
+      assert.equal(current.sessionId, f.id);
+      assert.equal(current.worktreePath, before.worktreePath);
+      assert.equal(current.outcome, null);
+      assert.equal(current.completedAt, null);
+      assert.equal(f.registry.getSession(f.id)?.state, "idle");
+      assert.equal(taskWorkEpisodeForTask(f.taskId)!.mergedAt, NOW);
+      assert.equal(taskWorkEpisodeForTask(f.taskId)!.prUrl, url);
+      assert.equal(typeof f.registry.getTask(dependentId)!.dependencies[0]!.satisfiedAt, "number");
+      assert.deepEqual(f.tasks.dependencyBlockers(f.registry.getTask(dependentId)!), []);
+      for (const table of ["task_session_closures", "task_worktree_returns"]) {
+        assert.equal(openDb().prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE task_id = ?`).get(f.taskId)!.n, 0);
+      }
+      await f.tasks.complete(f.taskId, "Operator ended chat");
+      assert.equal(f.registry.getTask(f.taskId)!.status, "done");
+      assert.equal(f.registry.getTask(f.taskId)!.outcome, "Operator ended chat");
+    });
+  }
+}
+
+for (const status of ["running", "dispatching", "failed", "cancelled"] as const) {
+  test(`merge recovery does not complete a ${status} chat`, () => {
+    const f = departed(`chat-recovery-${status}`, { kind: "chat" });
+    f.registry.applyDiscovery([]);
+    f.registry.emit("event", { type: "session_remove", id: f.id });
+    insertHistorical({ taskId: f.taskId, sessionId: f.id, episodeId: `${f.id}-old`,
+      prUrl: "https://github.com/example/repo/pull/1525", mergedAt: NOW });
+    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, status, sessionId: null });
+    f.tasks.reconcileMergedTasks();
+    assert.equal(f.registry.getTask(f.taskId)!.status, status);
+    assert.equal(f.registry.getTask(f.taskId)!.worktreePath, f.cwd);
+    assert.equal(f.registry.getTask(f.taskId)!.outcome, null);
+  });
+}
+
+
+test("a disappeared chat with an earlier merge retains its checkout as failed", () => {
+  const f = departed("chat-merged-then-gone", { kind: "chat" });
+  insertHistorical({ taskId: f.taskId, sessionId: f.id, episodeId: `${f.id}-old`,
+    prUrl: "https://github.com/example/repo/pull/1525", mergedAt: NOW });
+  f.registry.applyDiscovery([]);
+  f.registry.emit("event", { type: "session_remove", id: f.id });
+  assert.equal(f.registry.getTask(f.taskId)!.status, "failed");
+  assert.equal(f.registry.getTask(f.taskId)!.worktreePath, f.cwd);
+  assert.equal(f.registry.getTask(f.taskId)!.outcome, null);
+});

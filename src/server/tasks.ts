@@ -1707,7 +1707,8 @@ export class TaskManager {
     // this session ever ran", which is what the bindings are for.
     const t = this.executingTaskOn(s.id);
     if (!t) return;
-    if (providerOwnsTaskCompletion(t.kind)) return;
+    // A chat's PR can land between conversational turns without ending the conversation.
+    if (t.kind === "chat" || providerOwnsTaskCompletion(t.kind)) return;
     const binding = taskWorkEpisodeForTask(t.id);
     if (!binding) return;
     // Rolled onto new work since the merge - not ours to conclude while the agent is still
@@ -2375,7 +2376,7 @@ export class TaskManager {
         // another row through that same re-entrancy, and can evict a terminal one entirely.
         const t = this.registry.getTask(id);
         if (!t || !completableByMerge(t.status)) continue;
-        if (providerOwnsTaskCompletion(t.kind)) continue;
+        if (t.kind === "chat" || providerOwnsTaskCompletion(t.kind)) continue;
         // A reschedule mid-teardown holds a cancelled/failed row it is about to re-file as
         // backlog. `complete` throws on that, and this runs inside event listeners and the
         // PR poller's reconciliation, where a throw abandons the rest of the sweep.
@@ -2634,7 +2635,9 @@ export class TaskManager {
     // says "ended with no outcome recorded", and a merged pull request IS the outcome -
     // reporting it as a failure would strand every task declared to wait on this one
     // behind a `stopped` blocker, for work that shipped.
-    const outcome = this.mergeOutcomeFor(t);
+    // Disappearance keeps the normal failure/retention path for chats. A past PR is
+    // dependency evidence, not permission to complete the chat and return its checkout.
+    const outcome = t.kind === "chat" ? null : this.mergeOutcomeFor(t);
     if (outcome) {
       // A scout can refuse this: its pull request merged but no verified report was archived,
       // and `done` would claim a durable answer that does not exist. The agent is gone, so

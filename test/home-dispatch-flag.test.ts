@@ -51,6 +51,12 @@ const ROUTES: Array<{ name: string; method: "GET" | "POST"; path: string; body?:
   { name: "config", method: "GET", path: "/mcp/dispatch/config", owner: "WP2b" },
   { name: "jump", method: "POST", path: "/mcp/dispatch/jump", body: { target: "home" }, owner: "WP10" },
 ];
+/** Routes whose owning work package has landed, so they no longer answer the 501 stub. */
+const LANDED = new Set(["sessions"]);
+const clearDispatchRows = () => {
+  const d = openDb();
+  for (const table of ["home_dispatch_sessions", "home_dispatch_turns", "home_dispatch_receipts"]) d.exec(`DELETE FROM ${table}`);
+};
 const call = (a: ReturnType<typeof app>, r: (typeof ROUTES)[number], headers = authed()) =>
   a.request(r.path, { method: r.method, headers, body: r.body === undefined ? undefined : JSON.stringify(r.body) });
 
@@ -80,11 +86,13 @@ test("F1 routes: the registered dispatch routes are exactly the shared table, an
   assert.deepEqual(registered, Object.values(HOME_DISPATCH_ROUTES).map(homeDispatchRouteLabel).sort());
   flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
   const labels = new Set<string>();
-  for (const r of ROUTES) {
+  for (const r of ROUTES.filter((x) => !LANDED.has(x.name))) {
     const res = await call(a, r);
     labels.add(((await res.json()) as { route: string }).route);
   }
-  assert.deepEqual([...labels].sort(), Object.values(HOME_DISPATCH_ROUTES).map(homeDispatchRouteLabel).sort());
+  // The routes whose package has landed answer for real; the rest still name themselves.
+  const stubbed = Object.values(HOME_DISPATCH_ROUTES).map(homeDispatchRouteLabel).filter((l) => !l.endsWith("/sessions"));
+  assert.deepEqual([...labels].sort(), stubbed.sort());
 });
 
 test("F1 flag off: every dispatch route answers the 404 disabled body and runs no handler", async () => {
@@ -115,6 +123,13 @@ test("F1 flag on: each route validates its body (400) and otherwise answers its 
   flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
   for (const r of ROUTES) {
     const res = await call(a, r);
+    if (LANDED.has(r.name)) {
+      assert.equal(res.status, 200, `${r.name} is implemented`);
+      clearDispatchRows();
+      const bad = await a.request(r.path, { method: r.method, headers: authed(), body: JSON.stringify({}) });
+      assert.equal(bad.status, 400, `${r.name} rejects an empty body`);
+      continue;
+    }
     assert.equal(res.status, 501, r.name);
     const body = (await res.json()) as { error: string; feature: string; route: string; owner: string };
     assert.equal(body.error, "not implemented", r.name);
@@ -183,17 +198,23 @@ test("F1 health: home-dispatch-v1 is listed only while the flag is on", async ()
   assert.deepEqual(await caps(), before);
 });
 
-test("F1 hook route: flag off and on both keep today's empty 204 until WP2a adds output", async () => {
+test("F1 hook route: flag off keeps today's empty 204 and writes nothing; flag on registers the session and answers with dispatch output", async () => {
   const a = app();
-  for (const on of [false, true]) {
-    flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: on });
-    const res = await a.request("/hooks/SessionStart", {
-      method: "POST", headers: authed(), body: JSON.stringify({ sessionId: "hook-s1", cwd: "/tmp/repo" }),
-    });
-    assert.equal(res.status, 204);
-    assert.equal(await res.text(), "");
-  }
-  assert.equal(dispatchRowCount(), 0, "the stub hook output registers no home session");
+  const send = () => a.request("/hooks/SessionStart", {
+    method: "POST", headers: authed(), body: JSON.stringify({ sessionId: "hook-s1", cwd: "/tmp/repo" }),
+  });
+  flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: false });
+  const off = await send();
+  assert.equal(off.status, 204);
+  assert.equal(await off.text(), "");
+  assert.equal(dispatchRowCount(), 0, "flag off registers no home session");
+  flags.applyFeatureFlagIntent({ kind: "flag", id: FLAG, enabled: true });
+  const on = await send();
+  assert.equal(on.status, 200);
+  const body = (await on.json()) as { dispatch: { additionalContext: string } };
+  assert.match(body.dispatch.additionalContext, /mission-dispatch skill\.$/);
+  assert.equal(dispatchRowCount(), 1, "flag on registers the home session");
+  clearDispatchRows();
 });
 
 test("F1 schema 36: new tables and origin columns exist and start empty", () => {

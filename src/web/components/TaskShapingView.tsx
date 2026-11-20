@@ -86,6 +86,9 @@ export function TaskShapingView({
   };
   const busy = !ready || pending !== null || config === null;
   const groups = config ? shapingList(config) : [];
+  const listed = new Set(groups.flatMap((group) => group.rows.map((entry) => `row:${entry.id}`)));
+  const orphans = config === null ? [] : [...new Set([...Object.keys(errors), ...Object.keys(earlier)])]
+    .filter((key) => key.startsWith("row:") && !listed.has(key)).sort();
   const count = config?.shapers.length ?? 0;
 
   const row = (entry: ShapingListRow, group: ShapingListGroup, at: number): React.JSX.Element => {
@@ -230,8 +233,21 @@ export function TaskShapingView({
         {/* The dialog is the only other place an import's outcome shows. A stream frame can free it
             before the answer lands, and the operator may close it then: a refusal that arrives
             afterwards is shown here, beside the button that opens the dialog again. */}
+        {/* A row's outcome is drawn inside the row. One for a shaper no longer listed, such as a
+            removal refused because another window removed it first, would vanish with its row,
+            so it is shown here instead. */}
+        {orphans.length > 0 && (
+          <div className="shaping-list-outcome" role="group" aria-label="Shapers no longer listed">
+            {orphans.map((key) => (
+              <div key={key} className="shaping-orphan-outcome">
+                {errors[key] && <p role="alert">{errors[key]}</p>}
+                <EarlierRefusals messages={earlier[key]} />
+              </div>
+            ))}
+          </div>
+        )}
         {!importing && (errors.import || earlier.import) && (
-          <div className="shaping-import-outcome" role="group" aria-label="Last import">
+          <div className="shaping-list-outcome" role="group" aria-label="Last import">
             {errors.import && <p role="alert">{errors.import}</p>}
             <EarlierRefusals messages={earlier.import} />
           </div>

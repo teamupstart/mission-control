@@ -1239,6 +1239,8 @@ test("a settings save never clears a draft it left out of its intent", async ({ 
   await budget.fill("48");
   await putShaping(daemon, { kind: "settings", limits: { totalBytes: 48 * 1024 } });
   await expect.poll(async () => (await shapingConfig(daemon)).limits.totalBytes).toBe(48 * 1024);
+  // The browser has seen that frame once Save turns off: the draft now matches what is stored.
+  await expect(form.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   const answer = gate();
   const sent: unknown[] = [];
   await page.route("**/api/shaping", async (route) => {
@@ -1292,7 +1294,7 @@ test("a newer write keeps an earlier import's stream receipt for when that impor
   // The import's answer is lost now. The stream showed it stored, and the newer write did not erase that.
   cut.open();
   await expect(panel(page).getByRole("group", { name: "Last import" }).getByRole("alert")).toHaveText(
-    "An earlier change, importing receipt-notes, is unconfirmed: The daemon's answer did not arrive. Every window shows this change stored, but the daemon did not confirm it.",
+    "An earlier change, importing receipt-notes, is unconfirmed: The daemon's answer did not arrive. An update from the daemon showed this change stored, but no answer confirmed it. The list shows what is stored now.",
   );
   await page.unroute("**/api/shaping");
 });
@@ -1372,5 +1374,36 @@ test("saving the same manifest twice closes the dialog only on the latest save's
   secondAnswers.open();
   await expect(dialog.getByRole("alert")).toHaveText("The second save was refused.");
   await expect(manifest).toHaveValue(text);
+  await page.unroute("**/api/shaping");
+});
+
+test("a refused removal of a shaper another window removed first is shown above the list", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("gone-notes", "Gone notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(row(page, "Gone notes")).toBeVisible();
+  // This window's Remove is held before it reaches the daemon.
+  const reached = gate();
+  const goes = gate();
+  let held: import("@playwright/test").Request | undefined;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    held = route.request();
+    reached.open();
+    await goes.opened;
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "Remove Gone notes" }).click();
+  await page.getByRole("button", { name: "Confirm removing Gone notes" }).click();
+  await reached.opened;
+  // Another window removes it first, and the frame takes the row away.
+  await putShaping(daemon, { kind: "remove", id: "gone-notes" });
+  await expect(row(page, "Gone notes")).toHaveCount(0);
+  goes.open();
+  expect((await held!.response())?.status()).toBe(400);
+  // The row is gone, so the refusal is shown above the list instead of vanishing with it.
+  await expect(panel(page).getByRole("group", { name: "Shapers no longer listed" }).getByRole("alert"))
+    .toHaveText("No registered shaper has the id \"gone-notes\".");
+  await capture(page, "orphan-outcome");
   await page.unroute("**/api/shaping");
 });

@@ -259,11 +259,13 @@ export function shapingRefusalText(intent: ShapingIntent, reason: string, supers
 
 /**
  * The text for a write whose answer never arrived. Not a refusal: the daemon may have stored it.
- * `shown` is whether the event stream already showed the change stored.
+ * `shown` is whether an event stream update showed the change stored at the time. It says what
+ * that update showed, in the past tense: a later write may have changed it, and the list shows
+ * what is stored now.
  */
 export function shapingUnconfirmedText(intent: ShapingIntent, shown: boolean, superseded: boolean, cause: string): string {
   const outcome = shown
-    ? `${cause} Every window shows this change stored, but the daemon did not confirm it.`
+    ? `${cause} An update from the daemon showed this change stored, but no answer confirmed it. The list shows what is stored now.`
     : `${cause} Whether this change was stored is unknown: this shows the daemon's current settings, so make the change again if it is missing.`;
   return superseded ? `An earlier change, ${describeShapingIntent(intent)}, is unconfirmed: ${outcome}` : outcome;
 }

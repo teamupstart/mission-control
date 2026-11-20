@@ -345,7 +345,11 @@ answer never arrives, because it timed out or the connection failed, is reported
 never as refused. When the event stream already showed it stored, the panel treats it as saved,
 so an import's dialog closes. An import's outcome that arrives after its dialog was closed is shown
 beside **Import manifest…**, until the next import is sent, and in the dialog itself when it
-arrives while the dialog is open again. Only the latest save sent from a dialog closes it on success. A save of the caller identity and
+arrives while the dialog is open again. Only the latest save sent from a dialog closes it on success.
+An outcome for a shaper the list no longer shows, such as a removal refused because another
+window removed it first, is shown above the list under **Shapers no longer listed**. An
+unconfirmed write that a stream update showed stored says so in the past tense, and leaves the
+current state to the list. A save of the caller identity and
 budgets sends only the fields that differ from the stored values, and its answer clears only the
 edits it sent: a draft it left out, or one typed after it, stays.
 

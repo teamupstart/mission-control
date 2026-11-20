@@ -32,6 +32,14 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   },
+  {
+    id: "task-hibernation",
+    label: "Hibernate tasks",
+    description:
+      "Adds Hibernate to a task session's pause menu: the agent stops and frees its memory, and the task waits in the Backlog until you resume its conversation.",
+    stage: "preview",
+    keywords: ["hibernate", "resume", "memory", "pause", "sleep", "backlog"],
+  },
 ] as const satisfies readonly FeatureFlagDefinition[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */

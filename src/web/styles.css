@@ -74,6 +74,13 @@
      only cue - every paused surface also prints the two-bar glyph and the word. */
   --paused: #9aaecb;
 
+  /* A hibernated task (`Task.hibernation`): its agent stopped on purpose, its conversation kept.
+     Periwinkle, a step bluer than `--paused` slate - the two are the same family of "the
+     operator stopped this", and distinguishable because only this one has no process at all.
+     Kept off `--working` blue and `--held` purple for `--paused`'s reasons. Never the only cue:
+     every hibernated surface prints the moon and the word. */
+  --hibernated: #8f9be0;
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -28266,6 +28273,12 @@ button.sc-row:focus-visible {
   padding: 0;
   list-style: none;
 }
+/* The Backlog drawer's Hibernated section, inset to the drawer's own 14px gutter. */
+.line-drawer-body > .bl-hib {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
 /* A failed remedy, said between the header and the rows rather than inside them. Outside the
    capped body because the body scrolls: an alert in there is scrolled away by the same list
    the action was taken from. */
@@ -32859,6 +32872,165 @@ span.line-run-prov {
   line-height: 1.5;
   color: var(--dim);
   font-style: italic;
+}
+
+/* The Backlog's Hibernated section (issue #1547): tasks whose agent the operator stopped to
+   free its memory. Above the queued cards, compact, dashed - "no process" - and in the
+   hibernated tone, with Resume on every row. Not a `.bl-card`: it is neither dragged, selected
+   nor reordered, and nothing that orders the backlog may see it. */
+.bl-hib {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 4px;
+}
+.bl-hib-head,
+.bl-queued-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 2px 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.bl-hib-head {
+  color: var(--hibernated);
+}
+.bl-hib-n {
+  color: var(--dim);
+  font-weight: 600;
+}
+.bl-queued-head {
+  margin-top: 6px;
+}
+.bl-hib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bl-hib-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px 7px 12px;
+  background: color-mix(in oklab, var(--hibernated) 6%, var(--panel));
+  border: 1px dashed color-mix(in oklab, var(--hibernated) 36%, var(--border));
+  border-radius: 9px;
+}
+.bl-hib-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 9px 0 0 9px;
+  background: repeating-linear-gradient(180deg, var(--hibernated) 0 4px, transparent 4px 7px);
+}
+.bl-hib-card.is-failed {
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+}
+.bl-hib-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+.bl-hib-row > .agent-dot {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 5px;
+}
+/* Wraps, up to two lines: a narrow Backlog column must still say which task this is. */
+.bl-hib-title {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.bl-hib-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.bl-hib-resume {
+  flex: none;
+  padding: 1px 9px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--fg);
+  cursor: pointer;
+  background: color-mix(in oklab, var(--hibernated) 24%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--hibernated) 58%, var(--border));
+  border-radius: 999px;
+}
+.bl-hib-resume:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--hibernated) 34%, var(--panel));
+}
+.bl-hib-resume:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.bl-hib-blocker {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.bl-hib-blocker-kind {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+.bl-hib-blocker-reason {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.bl-hib-meta > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bl-hib-meta > .moon-glyph {
+  flex: none;
+  color: var(--hibernated);
+}
+.bl-hib-failure {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 
 /* The way OUT of a dead prerequisite - a dependency that was cancelled or failed and

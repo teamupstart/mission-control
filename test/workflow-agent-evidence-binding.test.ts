@@ -436,7 +436,8 @@ test("session evidence eligibility follows the active immutable Persona binding"
       sessionCwd: repo, sessionRepoRoot: repo, repoRoot: `${repo}-secondary`,
       triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 3, now: Date.now(),
     });
-    assert.equal(workflows.resumeNeedsEvidence({ ...session, state: "exited" }), true,
+    const exited = { ...session, state: "exited" as const };
+    assert.equal(workflows.resumeNeedsEvidence(exited), true,
       "a secondary Persona binding still requires tools after the SDK exits");
     assert.ok(workflows.archiveBinding(sibling.id).ok);
     await assert.rejects(workflows.stageAgentEvidence(session.id, { images: [] }),

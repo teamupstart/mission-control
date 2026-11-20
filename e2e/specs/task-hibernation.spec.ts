@@ -6,6 +6,8 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { HIBERNATE_OPEN_RUN_REFUSAL } from "../../src/shared/hibernation.ts";
+import type { WorkflowRunSummary } from "../../src/shared/workflow.ts";
 
 /**
  * Hibernating a task (issue #1547), end to end: the Pause menu's Hibernate reaches the route,
@@ -254,6 +256,49 @@ test("Hibernate parks a task in the Backlog across a restart, and Retry reopens 
   keptLocally("after Retry reopened the conversation");
   await expect.poll(() => fakeAgents(daemon), { message: "the agent runs again" }).toBeGreaterThan(0);
   await shoot(page, page.locator("main.board"), "board-resumed");
+});
+
+test("Hibernate is unavailable, and says why, while a workflow run is open on the session", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await setHibernationFlag(daemon, true);
+  const session = await dispatchIdle(page, daemon, "Hibernate held");
+  await putUi(daemon, { layout: "board" });
+  // The daemon's own snapshot, plus a run in progress for this session, delivered the way the
+  // event stream delivers it: the route refuses Hibernate for such a session, so the menu must too.
+  const stream = await fetch(`${daemon.baseURL}/events`);
+  expect(stream.ok).toBe(true);
+  const reader = stream.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (!text.includes("\n\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("SSE closed before its snapshot");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel();
+  }
+  const snapshot = JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6));
+  const run: WorkflowRunSummary = {
+    id: "run-open", bindingId: "binding-open", workflowId: "workflow-open", workflowName: "No-Mistakes Review",
+    workflowVersion: 1, sessionId: session.id, noteKey: session.agentSessionId!, status: "running", phase: "review",
+    round: 1, maxRepairRounds: 3, activePersonaNames: [], failedPersonaCount: 0, bypassedPersonaReview: false,
+    gate: "none", gatePrNumber: null, gateHeadShort: null, reviewPosture: null,
+    uncertainDeliveryCount: 0, refusedDeliveryCount: 0, updatedAt: Date.now(),
+  };
+  await page.route("**/events", (route) => route.fulfill({
+    contentType: "text/event-stream",
+    body: `data: ${JSON.stringify({ ...snapshot, workflowRunSummaries: [...(snapshot.workflowRunSummaries ?? []), run] })}\n\n`,
+  }));
+  await page.reload();
+  const card = boardCard(page, session.name);
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: /^Pause controls:/ }).click();
+  const hibernate = page.getByRole("menu", { name: "Pause" }).getByRole("menuitem", { name: /^Hibernate/ });
+  await expect(hibernate).toBeDisabled();
+  await expect(hibernate).toContainText(HIBERNATE_OPEN_RUN_REFUSAL);
+  await shoot(page, page.getByRole("menu", { name: "Pause" }), "pause-menu-hibernate-held");
 });
 
 test("a hibernated task's age keeps counting past its first hour", async ({ dashboard: page, daemon }) => {

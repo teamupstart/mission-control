@@ -909,7 +909,8 @@ disabled, with the reason on it, when:
 - the task is a Pipeline, resident or ensemble-member task, which keeps its own lifecycle.
 
 The priority session is not offered Hibernate at all, and the route refuses it: end priority
-first. The route also refuses a session whose workflow run is still in progress. An armed workflow
+first. A session whose workflow run is still in progress is refused too, and the menu says so
+before you click. An armed workflow
 that has not started a run is kept: it is still attached when the task resumes.
 
 **What Hibernate does.** The task is recorded as hibernated and unbound from its session first.

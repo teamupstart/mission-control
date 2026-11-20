@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { canPause, pauseAge, pauseFlagLabel, pauseFreezes, pausedAt, pendingPauseLabel, type SessionPauseMode } from "@shared/pause.ts";
-import { hibernateRefusal, TASK_HIBERNATION_FLAG } from "@shared/hibernation.ts";
+import { HIBERNATE_OPEN_RUN_REFUSAL, hibernateRefusal, TASK_HIBERNATION_FLAG } from "@shared/hibernation.ts";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { isPrioritySession, sessionCount, useFleetPause, type FleetPauseView } from "../lib/fleet-pause.ts";
+import { useHeldSessions } from "../lib/held.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { useNow } from "../useNow.ts";
 import { SessionToolbarMenu } from "./SessionToolbarMenu.tsx";
@@ -134,7 +135,12 @@ function PauseMenuRows({ session, close }: { session: Session; close: () => void
   const fleet = useFleetPause();
   const { busy, error, run } = usePauseActions(session);
   const hibernates = useFeatureFlag(TASK_HIBERNATION_FLAG);
-  const hibernateBlock = hibernates ? hibernateRefusal(session) : null;
+  // An open workflow run is a join the session does not carry, so it is read from App's fold;
+  // the route refuses the same thing in the same words.
+  const held = useHeldSessions();
+  const hibernateBlock = hibernates
+    ? hibernateRefusal(session) ?? (held.has(session.id) ? HIBERNATE_OPEN_RUN_REFUSAL : null)
+    : null;
   const at = standing(session, fleet);
   const others = fleet.pausable - (session.pause ? 0 : 1);
   const freezes = pauseFreezes(session);

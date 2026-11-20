@@ -120,7 +120,7 @@ import {
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
-import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
@@ -4527,6 +4527,7 @@ export function App(): React.JSX.Element {
     <OverlayHost value={overlays}>
       <FeatureFlagsContext.Provider value={featureFlags}>
       <FleetPauseContext.Provider value={fleetPause}>
+      <HeldSessionsContext.Provider value={heldIds}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -5407,6 +5408,7 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </HeldSessionsContext.Provider>
       </FleetPauseContext.Provider>
       </FeatureFlagsContext.Provider>
     </OverlayHost>

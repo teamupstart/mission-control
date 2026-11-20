@@ -131,6 +131,13 @@ export function hibernationPermissionMode(record: Pick<TaskHibernation, "permiss
 }
 
 /**
+ * Why Hibernate is refused while a workflow run is open on the session. A run is a JOIN the
+ * session itself does not carry (see `heldSessionIds` in the web), so `hibernateRefusal` cannot
+ * see it: the route answers with this, and the Pause menu shows it before anyone clicks.
+ */
+export const HIBERNATE_OPEN_RUN_REFUSAL = "A workflow run is in progress for it. Let the run finish first.";
+
+/**
  * Why this session cannot be hibernated right now, or null when it can.
  *
  * Every refusal names what to do instead, because the dashboard shows it on a disabled menu

@@ -186,9 +186,11 @@ export interface TaskRuleOptions {
 }
 
 /**
- * Whether a caller may read a task (7.2). A home session reads a task whose `origin_repo` is
- * its own repository, or the task of a resident run it can see. The `cli` reads any
- * home-dispatched task (origin `home-session` or `mctl`) of the repository it names.
+ * Whether a caller may read a task (7.2). A home session has three independent paths: a task it
+ * started itself (`origin_session_id` is its id), even if it has since registered from another
+ * repository; a task whose `origin_repo` is its own repository; or the task of a resident run it
+ * can see (`residentVisible`). A repository-less session matches only the first. The `cli` reads
+ * any home-dispatched task (origin `home-session` or `mctl`) of the repository it names.
  */
 export function canReadTask(
   caller: HomeDispatchCaller,

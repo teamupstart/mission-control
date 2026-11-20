@@ -293,15 +293,9 @@ export function InspectorSettingsPanel({
               <ConsoleState tone="attention">Dry run - reviewing, publishing nothing</ConsoleState>
             )}
 
-            {/* The daemon has not answered. Said out loud, because the fallbacks below are
-                `off` / `dry run` / `no repos` - the safe posture - and presenting schema
-                defaults as the daemon's answer tells the operator GitHub Inspector is quiet
-                when the stored config may well be enabled and live. Disabled inputs are
-                not a statement about what is running. */}
             {!config && (
               <p className="settings-warn inspector-unknown">
-                Can't reach the daemon, so what GitHub Inspector is actually set to is unknown. The
-                controls below are showing defaults, not its current state.
+                GitHub Inspector settings are unavailable until the daemon responds.
               </p>
             )}
 

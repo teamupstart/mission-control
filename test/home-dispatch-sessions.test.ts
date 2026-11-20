@@ -129,20 +129,23 @@ test("registration answers the 7.2 shape, offers the launcher once, and sets no 
   assert.equal(registry.snapshot().sessions.length, 0, "registering adds nothing to the session registry");
 });
 
-test("a /clear, a late registration and a non-repository cwd do not offer the launcher", async () => {
+test("a /clear, a late registration and a disabled launcher do not offer the launcher", async () => {
   const cleared = shared.HomeSessionRegistrationAnswerSchema.parse(
     await (await register(registration({ sessionId: "after-clear", source: "clear" }))).json());
   assert.equal(cleared.offerLauncher, false);
   const late = shared.HomeSessionRegistrationAnswerSchema.parse(
     await (await register(registration({ sessionId: "late", beforeFirstPrompt: false }))).json());
   assert.equal(late.offerLauncher, false);
-  const outside = shared.HomeSessionRegistrationAnswerSchema.parse(
-    await (await register(registration({ sessionId: "outside", cwd: plain }))).json());
-  assert.equal(outside.repoRoot, null);
-  assert.equal(outside.offerLauncher, true, "a launcher may be offered outside a repository");
   const disabled = shared.HomeSessionRegistrationAnswerSchema.parse(
     await (await register(registration({ sessionId: "off", launcherDisabled: true }))).json());
   assert.equal(disabled.offerLauncher, false);
+});
+
+test("a session outside a repository registers with no repoRoot and is still offered the launcher", async () => {
+  const outside = shared.HomeSessionRegistrationAnswerSchema.parse(
+    await (await register(registration({ sessionId: "outside", cwd: plain }))).json());
+  assert.equal(outside.repoRoot, null);
+  assert.equal(outside.offerLauncher, true, "7.4 has no repository condition");
 });
 
 test("a malformed registration is a 400 and writes nothing", async () => {

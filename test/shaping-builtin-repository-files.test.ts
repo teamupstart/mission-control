@@ -1,0 +1,400 @@
+// The `repository-files` built-in gatherer, against real temporary worktrees: every skip reason,
+// the cuts, the facts file, the limits, a signal between files, and the races its checks close,
+// driven through the filesystem seam the reader takes as an argument. Then the engine and the
+// `builtin` transport around it. Nothing here starts a shaper process.
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import {
+  appendFileSync, chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import {
+  ShaperSchema, ShapingConfigSchema, SHAPING_LIMITS, SHAPING_PROTOCOL, ShapingRequestSchema, ShapingResultSchema, utf8Length,
+  type Shaper, type ShapingRequest,
+} from "../src/shared/shaping.ts";
+import {
+  callRepositoryFiles, fileText, gatherRepositoryFiles, NODE_REPOSITORY_FILES_FS, readWorktreeFile, REPOSITORY_FILE_MAX_BYTES, skipNotes,
+  type RepositoryFilesFs,
+} from "../src/server/shaping/builtin/repository-files.ts";
+import { shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
+import { callBuiltin } from "../src/server/shaping/transports/builtin.ts";
+import { SHAPING_TRANSPORT_CALLS, type TransportContext } from "../src/server/shaping/transports/index.ts";
+
+const base = realpathSync(mkdtempSync(join(tmpdir(), "mission-shaping-files-")));
+after(() => rmSync(base, { recursive: true, force: true }));
+let counter = 0;
+/** A fresh worktree and a sibling directory outside it, each holding the files named. */
+function fixture(files: Record<string, string | Buffer> = {}, outsideFiles: Record<string, string> = {}) {
+  const dir = join(base, `case-${++counter}`);
+  const root = join(dir, "worktree");
+  const outside = join(dir, "outside");
+  mkdirSync(root, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  const write = (at: string, entries: Record<string, string | Buffer>) => {
+    for (const [name, body] of Object.entries(entries)) {
+      mkdirSync(join(at, name, ".."), { recursive: true });
+      writeFileSync(join(at, name), body);
+    }
+  };
+  write(root, files);
+  write(outside, outsideFiles);
+  return { root, outside };
+}
+const never = new AbortController().signal;
+const options = (patch: { include?: Array<{ path: string; maxBytes?: number }>; summary?: string; facts?: string }) => ({
+  include: (patch.include ?? []).map((entry) => ({ maxBytes: SHAPING_LIMITS.entryBytes, ...entry })),
+  ...(patch.summary ? { summary: patch.summary } : {}),
+  ...(patch.facts ? { facts: patch.facts } : {}),
+});
+const mkfifo = (at: string) => execFileSync("mkfifo", [at]);
+
+test("every skip reason, each recorded as one note, and none of them a failure", async (t) => {
+  const { root, outside } = fixture({ "AGENTS.md": "# Agents\nRead me.\n", "empty.md": "", "blank.md": " \n\t\n", "bom.md": "﻿", "dir/inner.md": "x" },
+    { "secret.md": "outside text" });
+  symlinkSync(join(outside, "secret.md"), join(root, "leaves.md"));
+  mkfifo(join(root, "pipe"));
+  writeFileSync(join(root, "huge.md"), "");
+  truncateSync(join(root, "huge.md"), REPOSITORY_FILE_MAX_BYTES + 1);
+  writeFileSync(join(root, "locked.md"), "no access");
+  chmodSync(join(root, "locked.md"), 0o000);
+  t.after(() => chmodSync(join(root, "locked.md"), 0o644));
+  const asRoot = process.getuid?.() === 0;
+
+  const cases: Array<[string, string]> = [
+    ["absent.md", "missing"],
+    ["AGENTS.md/below", "missing"],
+    ["/etc/hosts", "outside-worktree"],
+    ["../outside/secret.md", "outside-worktree"],
+    ["dir/../AGENTS.md", "outside-worktree"],
+    ["leaves.md", "outside-worktree"],
+    ["dir", "not-a-regular-file"],
+    ["pipe", "not-a-regular-file"],
+    ["huge.md", "too-large"],
+    ["empty.md", "empty"],
+    ["blank.md", "empty"],
+    ["bom.md", "empty"],
+    ...(asRoot ? [] : [["locked.md", "unreadable"] as [string, string]]),
+  ];
+  for (const [configured, skip] of cases) {
+    assert.deepEqual(await readWorktreeFile(root, configured, 1024), { ok: false, skip }, configured);
+  }
+
+  const result = await gatherRepositoryFiles(root, options({ include: [{ path: "AGENTS.md" }, ...cases.map(([path]) => ({ path }))] }), never);
+  assert.ok(result);
+  assert.deepEqual(result.guidance.map((entry) => entry.id), ["AGENTS.md"]);
+  assert.equal(result.notes?.length, cases.length);
+  cases.forEach(([configured, skip], at) => {
+    assert.equal(result.notes![at], `Skipped ${JSON.stringify(configured)} (${skip}).`);
+  });
+  assert.equal(result.degraded, undefined, "a skip never marks the reply degraded");
+  assert.ok(ShapingResultSchema.safeParse(result).success);
+  assert.doesNotMatch(JSON.stringify(result), /outside text/);
+});
+
+test("a link that stays inside the worktree is read as its target, and a file hard-linked in is a worktree file", async () => {
+  const { root, outside } = fixture({ "docs/guide.md": "the guide\n" }, { "linked.md": "hard-linked text\n" });
+  symlinkSync("docs/guide.md", join(root, "GUIDE.md"));
+  linkSync(join(outside, "linked.md"), join(root, "linked.md"));
+  assert.deepEqual(await readWorktreeFile(root, "GUIDE.md", 1024), { ok: true, text: "the guide\n", truncated: false });
+  assert.deepEqual(await readWorktreeFile(root, "./linked.md", 1024), { ok: true, text: "hard-linked text\n", truncated: false });
+});
+
+test("text is cut at the last line boundary within the cap, invalid UTF-8 is replaced and a byte order mark dropped", async () => {
+  const lines = "one\ntwo\nthree\nfour\n";
+  const { root } = fixture({
+    "lines.md": lines,
+    "bom.md": Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("after the mark\n")]),
+    "bad.md": Buffer.from([0x61, 0xff, 0x62, 0x0a]),
+    "long-line.md": "x".repeat(50),
+    "multibyte.md": "é".repeat(20),
+  });
+  assert.deepEqual(await readWorktreeFile(root, "lines.md", 10), { ok: true, text: "one\ntwo", truncated: true }, "the partial third line is dropped");
+  assert.deepEqual(await readWorktreeFile(root, "lines.md", 7), { ok: true, text: "one\ntwo", truncated: true }, "the cap lands on a line's end");
+  assert.deepEqual(await readWorktreeFile(root, "lines.md", lines.length), { ok: true, text: lines, truncated: false }, "an exact fit is whole");
+  assert.deepEqual(await readWorktreeFile(root, "bom.md", 1024), { ok: true, text: "after the mark\n", truncated: false });
+  assert.deepEqual(await readWorktreeFile(root, "bad.md", 1024), { ok: true, text: "a�b\n", truncated: false });
+  assert.deepEqual(await readWorktreeFile(root, "long-line.md", 16), { ok: true, text: "x".repeat(16), truncated: true }, "one long line still contributes");
+  const cut = await readWorktreeFile(root, "multibyte.md", 9);
+  assert.deepEqual(cut, { ok: true, text: "é".repeat(4), truncated: true }, "never ends inside a character");
+
+  // Every invalid byte decodes to three bytes of U+FFFD: the cap applies to the text, not the bytes read.
+  const decoded = fileText(Buffer.alloc(30, 0xff), 30, false);
+  assert.equal(decoded.truncated, true);
+  assert.ok(utf8Length(decoded.text) <= 30);
+});
+
+test("include entries carry their path as id and title, truncation, and their own cap", async () => {
+  const body = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+  const { root } = fixture({ "AGENTS.md": "short\n", "docs/long.md": body });
+  const result = await gatherRepositoryFiles(root, options({ include: [{ path: "AGENTS.md" }, { path: "docs/long.md", maxBytes: 20 }] }), never);
+  assert.deepEqual(result?.guidance, [
+    { id: "AGENTS.md", title: "AGENTS.md", path: "AGENTS.md", body: "short\n" },
+    { id: "docs/long.md", title: "docs/long.md", path: "docs/long.md", body: "line 0\nline 1\nline 2", truncated: true },
+  ]);
+  assert.equal(result?.notes, undefined);
+});
+
+test("the summary is cut to 4 KiB at a line boundary and returned as repo.summary", async () => {
+  const line = `${"s".repeat(99)}\n`;
+  const { root } = fixture({ "SUMMARY.md": line.repeat(60) });
+  const result = await gatherRepositoryFiles(root, options({ summary: "SUMMARY.md" }), never);
+  const summary = result?.repo?.summary ?? "";
+  assert.ok(utf8Length(summary) <= SHAPING_LIMITS.summaryBytes);
+  assert.equal(summary, line.repeat(40).slice(0, -1), "the last whole line within 4 KiB");
+  assert.deepEqual(result?.guidance, []);
+});
+
+test("a valid facts file becomes repo.facts; anything else is a note and no facts", async () => {
+  const many = Object.fromEntries(Array.from({ length: SHAPING_LIMITS.facts + 1 }, (_, i) => [`k${i}`, "v"]));
+  const { root } = fixture({
+    "facts.json": JSON.stringify({ language: "python", framework: ["django", "celery"] }),
+    "list.json": "[]",
+    "nested.json": JSON.stringify({ language: { name: "python" } }),
+    "number.json": JSON.stringify({ port: 8080 }),
+    "too-many.json": JSON.stringify(many),
+    "broken.json": "{ not json",
+    "null.json": "null",
+    "big.json": JSON.stringify({ blob: "x".repeat(70 * 1024) }),
+  });
+  const valid = await gatherRepositoryFiles(root, options({ facts: "facts.json" }), never);
+  assert.deepEqual(valid?.repo, { facts: { language: "python", framework: ["django", "celery"] } });
+  assert.equal(valid?.notes, undefined);
+  for (const name of ["list.json", "nested.json", "number.json", "too-many.json", "broken.json", "null.json", "big.json"]) {
+    const result = await gatherRepositoryFiles(root, options({ facts: name }), never);
+    assert.equal(result?.repo, undefined, name);
+    assert.equal(result?.notes?.length, 1, name);
+    const why = name === "big.json"
+      ? "larger than 64 KiB, so no facts"
+      : "not a flat JSON object of strings or string lists with at most 64 names, so no facts";
+    assert.deepEqual(result?.notes, [`Skipped the facts file "${name}" (${why}).`], name);
+  }
+  const missing = await gatherRepositoryFiles(root, options({ facts: "absent.json", summary: "absent.md" }), never);
+  assert.deepEqual(missing?.notes, ['Skipped the summary "absent.md" (missing).', 'Skipped the facts file "absent.json" (missing).']);
+});
+
+test("the limits: at most 16 includes of at most 16 KiB each, and notes stay within the reply's cap", async () => {
+  const definition = (include: unknown[]) => ShaperSchema.safeParse({
+    id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files", options: { include } },
+  });
+  assert.equal(definition(Array.from({ length: 16 }, (_, i) => ({ path: `f${i}` }))).success, true);
+  assert.equal(definition(Array.from({ length: 17 }, (_, i) => ({ path: `f${i}` }))).success, false);
+  assert.equal(definition([{ path: "a", maxBytes: SHAPING_LIMITS.entryBytes + 1 }]).success, false);
+  assert.ok(16 <= SHAPING_LIMITS.replyEntries, "a full include list can never be refused for its entry count");
+
+  const { root } = fixture({ "big.md": "y\n".repeat(20_000) });
+  const big = await readWorktreeFile(root, "big.md", SHAPING_LIMITS.entryBytes);
+  assert.ok(big.ok && big.truncated && utf8Length(big.text) <= SHAPING_LIMITS.entryBytes);
+
+  // The most a valid config can skip: 16 includes, the summary and the facts file, with paths as
+  // long as a note quotes. Every skip keeps its path and reason, and the reply stays valid.
+  // Directories of 100 characters each, so no one name passes the filesystem's limit.
+  const long = (tag: string) => `${tag}/${Array.from({ length: 3 }, () => "p".repeat(100)).join("/")}`;
+  const paths = [...Array.from({ length: 16 }, (_, i) => long(`absent-${i}`)), long("summary"), long("facts")];
+  const all = await gatherRepositoryFiles(root, options({
+    include: paths.slice(0, 16).map((path) => ({ path })), summary: paths[16], facts: paths[17],
+  }), never);
+  assert.ok(all?.notes && all.notes.length <= SHAPING_LIMITS.replyNotes);
+  assert.ok(all.notes.every((note) => note.length <= SHAPING_LIMITS.replyNoteChars));
+  const said = all.notes.join(" ");
+  for (const path of paths) {
+    assert.ok(said.includes(`${JSON.stringify(`${path.slice(0, 200)}...`)} (missing).`), path.slice(0, 12));
+  }
+  assert.equal(said.match(/Skipped /g)?.length, 18, "18 skips, none reduced to a count");
+  assert.ok(ShapingResultSchema.safeParse(all).success);
+  assert.deepEqual(skipNotes(["a", "b"]), ["a", "b"], "one note per skip while they fit the cap");
+  // Short sentences past the cap share notes in order.
+  const many = Array.from({ length: 18 }, (_, i) => `Skipped "f${i}" (missing).`);
+  assert.deepEqual(skipNotes(many), [many.join(" ")]);
+});
+
+/** The real filesystem, with a hook before or after chosen calls. */
+function seam(hooks: {
+  afterLstat?: (target: string, call: number) => void;
+  beforeOpen?: (target: string) => void;
+  afterOpen?: (target: string) => void;
+  afterFstat?: () => void;
+}): RepositoryFilesFs & { opened: string[] } {
+  let lstats = 0;
+  const opened: string[] = [];
+  return {
+    opened,
+    realpath: (target) => NODE_REPOSITORY_FILES_FS.realpath(target),
+    async lstat(target) {
+      const info = await NODE_REPOSITORY_FILES_FS.lstat(target);
+      hooks.afterLstat?.(target, ++lstats);
+      return info;
+    },
+    async open(target, flags) {
+      hooks.beforeOpen?.(target);
+      opened.push(target);
+      const handle = await NODE_REPOSITORY_FILES_FS.open(target, flags);
+      hooks.afterOpen?.(target);
+      return {
+        ...handle,
+        async stat() {
+          const info = await handle.stat();
+          hooks.afterFstat?.();
+          return info;
+        },
+      };
+    },
+  };
+}
+
+test("a file swapped for a link out of the worktree after its path was resolved is refused", async () => {
+  const { root, outside } = fixture({ "AGENTS.md": "inside\n" }, { "secret.md": "outside text\n" });
+  const target = join(root, "AGENTS.md");
+  const fs = seam({
+    afterLstat(at, call) {
+      if (call !== 1 || at !== target) return;
+      unlinkSync(target);
+      symlinkSync(join(outside, "secret.md"), target);
+    },
+  });
+  const read = await readWorktreeFile(root, "AGENTS.md", 1024, fs);
+  assert.equal(read.ok, false);
+  assert.equal(fs.opened.length, 1, "the open itself refused the link");
+});
+
+test("a directory on the way swapped for a link out of the worktree while the open runs is refused", async () => {
+  const { root, outside } = fixture({ "docs/guide.md": "inside\n" }, { "docs/guide.md": "outside text\n" });
+  const fs = seam({
+    beforeOpen() {
+      renameSync(join(root, "docs"), join(root, "docs-moved"));
+      symlinkSync(join(outside, "docs"), join(root, "docs"));
+    },
+  });
+  // The open follows the swapped directory and returns the outside file's handle: the identity
+  // check is what refuses it, before a byte is read.
+  assert.deepEqual(await readWorktreeFile(root, "docs/guide.md", 1024, fs), { ok: false, skip: "outside-worktree" });
+  assert.equal(fs.opened.length, 1);
+});
+
+test("a file that grows past the limit while it is read is cut off at the limit", async () => {
+  const { root } = fixture({ "growing.md": "a\n" });
+  const fs = seam({ afterFstat: () => appendFileSync(join(root, "growing.md"), "b\n".repeat(10_000)) });
+  const read = await readWorktreeFile(root, "growing.md", 100, fs);
+  assert.ok(read.ok);
+  assert.equal(read.truncated, true);
+  assert.ok(utf8Length(read.text) <= 100);
+});
+
+test("a named pipe with no writer is skipped at once, there from the start or swapped in after the lookup", async () => {
+  const { root } = fixture({ "notes.md": "regular\n" });
+  mkfifo(join(root, "pipe"));
+  const startedAt = performance.now();
+  const before = seam({});
+  assert.deepEqual(await readWorktreeFile(root, "pipe", 1024, before), { ok: false, skip: "not-a-regular-file" });
+  assert.equal(before.opened.length, 0, "never opened: the lookup alone skips it");
+
+  const target = join(root, "notes.md");
+  const swapped = seam({
+    afterLstat(at, call) {
+      if (call !== 1 || at !== target) return;
+      unlinkSync(target);
+      mkfifo(target);
+    },
+  });
+  assert.deepEqual(await readWorktreeFile(root, "notes.md", 1024, swapped), { ok: false, skip: "not-a-regular-file" });
+  assert.equal(swapped.opened.length, 1, "opened without blocking, then refused on the handle");
+  assert.ok(performance.now() - startedAt < 5_000, "neither case waited for a writer");
+});
+
+test("a signal stops the run between files", async () => {
+  const { root } = fixture({ "one.md": "one\n", "two.md": "two\n" });
+  const stop = new AbortController();
+  const fs = seam({ afterOpen: () => stop.abort() });
+  const options_ = options({ include: [{ path: "one.md" }, { path: "two.md" }], summary: "one.md" });
+  assert.equal(await gatherRepositoryFiles(root, options_, stop.signal, fs), null);
+  assert.deepEqual(fs.opened, [join(root, "one.md")], "the second file was never opened");
+
+  const request = gatherRequest(root);
+  const reply = await callRepositoryFiles(request, options_, { signal: AbortSignal.abort() });
+  assert.equal(reply.kind, "timed_out");
+});
+
+const filesShaper = (opts: Record<string, unknown>, extra: Record<string, unknown> = {}) => ShaperSchema.parse({
+  id: "files", label: "Repository files", stage: "gather", transport: { type: "builtin", builtin: "repository-files", options: opts }, ...extra,
+});
+function gatherRequest(path: string | undefined, stage: "gather" | "select" = "gather"): ShapingRequest {
+  return ShapingRequestSchema.parse({
+    protocol: SHAPING_PROTOCOL, stage, task: "t", repo: { name: "billing-api", ...(path ? { path } : {}) },
+    context: {
+      taskId: null, title: "t", kind: "ship", harness: null, runtime: null, afterWork: null, labels: [], priority: null,
+      repositories: [{ slot: "repo-01", name: "billing-api", role: "primary", branch: null, baseSha: null }],
+      target: "repo-01", caller: { user: null, agent: null, conversation: null },
+    },
+    limits: { maxBytes: 16384, deadlineMs: 5000 },
+  });
+}
+const ctx = (): TransportContext => ({
+  deadline: Date.now() + 5000, timeoutMs: 5000, signal: new AbortController().signal,
+  scope: { shared: new Map(), defer() {} }, root: null, trace: null,
+});
+
+test("the builtin transport dispatches by id, and answers unavailable off its stage or without a worktree", async () => {
+  const { root } = fixture({ "AGENTS.md": "agents\n" });
+  const shaper = filesShaper({ include: [{ path: "AGENTS.md" }] });
+  const reply = await callBuiltin(gatherRequest(root), shaper as Parameters<typeof callBuiltin>[1], ctx());
+  assert.equal(reply.kind, "data");
+  assert.deepEqual((reply as { data: { guidance: unknown[] } }).data.guidance.length, 1);
+
+  // The schema refuses a built-in off its stage; the transport refuses one that got past it anyway.
+  const offStage = { ...shaper, stage: "select" } as Parameters<typeof callBuiltin>[1];
+  assert.deepEqual(await callBuiltin(gatherRequest(root, "select"), offStage, ctx()), {
+    kind: "unavailable", reason: 'The built-in "repository-files" does not run at the select stage.',
+  });
+  assert.equal((await callBuiltin(gatherRequest(undefined), shaper as Parameters<typeof callBuiltin>[1], ctx())).kind, "unavailable");
+  assert.equal((await callBuiltin(gatherRequest(join(root, "AGENTS.md")), shaper as Parameters<typeof callBuiltin>[1], ctx())).kind, "unavailable",
+    "a worktree that is a file is no worktree");
+});
+
+test("the engine hands the gatherer's facts and summary to a selector, and two worktrees at one path give two entries", async () => {
+  const one = fixture({ "AGENTS.md": "rules of the first worktree\n", "SUMMARY.md": "first summary\n", "facts.json": '{"language":"python"}' });
+  const two = fixture({ "AGENTS.md": "rules of the second worktree\n", "SUMMARY.md": "second summary\n", "facts.json": '{"language":"go"}' });
+  const selector = ShaperSchema.parse({ id: "sel", label: "Selector", stage: "select", transport: { type: "command", command: "/usr/bin/true" } });
+  const files = filesShaper({ include: [{ path: "AGENTS.md" }, { path: "MISSING.md" }], summary: "SUMMARY.md", facts: "facts.json" });
+  const config = ShapingConfigSchema.parse({ shapers: [files, selector], overrides: { files: true, sel: true } });
+  const seen: ShapingRequest[] = [];
+  const input: ShapeTaskInput = {
+    task: "Retry failed charges",
+    context: {
+      taskId: "t_1", title: "Retry", kind: "ship", harness: "claude", runtime: "sdk", afterWork: null, labels: [], priority: null,
+      repositories: [
+        { name: "billing-api", role: "primary", branch: "a", baseSha: null, path: one.root },
+        { name: "billing-api", role: "additional", branch: "b", baseSha: null, path: two.root },
+      ],
+    },
+  };
+  const result = await shapeTask(input, {
+    config, discovered: [], enabled: true,
+    transports: {
+      ...SHAPING_TRANSPORT_CALLS,
+      command: async (request) => { seen.push(request); return { kind: "data", data: { guidance: [] } }; },
+    },
+  });
+  assert.deepEqual(seen.map((request) => [request.context.target, request.repo.facts, request.repo.summary]), [
+    ["repo-01", { language: "python" }, "first summary\n"],
+    ["repo-02", { language: "go" }, "second summary\n"],
+  ]);
+  assert.deepEqual(result.entries.map((entry) => [entry.shaperId, entry.id, entry.body]), [
+    ["files", "AGENTS.md", "rules of the first worktree\n"],
+    ["files", "AGENTS.md", "rules of the second worktree\n"],
+  ]);
+  const record = result.summary!.shapers.find((entry) => entry.id === "files")!;
+  assert.equal(record.outcome, "ok", "a skipped file is not a failure");
+  assert.equal(result.summary!.state, "ok");
+  assert.match(record.reason ?? "", /Skipped "MISSING\.md" \(missing\)\./, "the skip is recorded");
+});
+
+test("a registered built-in gatherer never reads a file its options do not name", async () => {
+  const { root } = fixture({ "AGENTS.md": "named\n", "secret.env": "TOKEN=unnamed\n" });
+  const opened: string[] = [];
+  const fs: RepositoryFilesFs = { ...NODE_REPOSITORY_FILES_FS, open: async (target, flags) => { opened.push(target); return NODE_REPOSITORY_FILES_FS.open(target, flags); } };
+  const shaper: Shaper = filesShaper({ include: [{ path: "AGENTS.md" }] });
+  const transport = shaper.transport as Extract<Shaper["transport"], { type: "builtin" }>;
+  await callRepositoryFiles(gatherRequest(root), transport.options, ctx(), fs);
+  assert.deepEqual(opened, [join(root, "AGENTS.md")]);
+});

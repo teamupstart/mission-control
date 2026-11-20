@@ -381,7 +381,9 @@ async function runShaping(
     return {
       record: result.degraded
         ? record("degraded", [notes || "The shaper reported that it is degraded.", dropped].filter(Boolean).join(" "), version, redacted)
-        : record("ok", dropped || null, version, redacted),
+        // A reply that is not degraded keeps its notes too, such as the files a gatherer skipped,
+        // so the record says what the shaper left out without marking the run degraded.
+        : record("ok", [notes, dropped].filter(Boolean).join(" ") || null, version, redacted),
       entries: result.guidance.map((guidance) => ({
         id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
         body: guidance.body, truncated: guidance.truncated === true,

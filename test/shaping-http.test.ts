@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
@@ -286,6 +286,52 @@ test("a dry run calls a registered command shaper at both stages, switched off a
     assert.match(run.section, /^## Task context\n/);
     assert.match(run.section, /### Fixture ok: One\nfirst entry for billing-api$/);
   }
+});
+
+test("a dry run of a registered repository-files gatherer returns the entries, summary and facts its options name", async () => {
+  writeFileSync(join(repository, "AGENTS.md"), "# Agents\nRun the tests first.\n");
+  writeFileSync(join(repository, "SUMMARY.md"), "A billing service.\n");
+  writeFileSync(join(repository, "facts.json"), JSON.stringify({ language: "python", framework: ["django"] }));
+  writeFileSync(join(repository, "unnamed.md"), "never read\n");
+  const files = {
+    id: "repo-files", label: "Repository files", stage: "gather",
+    transport: {
+      type: "builtin", builtin: "repository-files",
+      options: { include: [{ path: "AGENTS.md", maxBytes: 1024 }, { path: "MISSING.md" }], summary: "SUMMARY.md", facts: "facts.json" },
+    },
+  };
+  assert.equal((await put({ kind: "upsert", shaper: files })).status, 200);
+  const response = await dryRun({ id: "repo-files", repository, prompt: "Retry failed charges" });
+  assert.equal(response.status, 200);
+  const run = await response.json() as {
+    summary: { state: string; shapers: Array<{ id: string; outcome: string; origin: string; reason: string | null; entries: number }> };
+    section: string; entries: Array<{ id: string; title: string; body: string }>;
+  };
+  assert.equal(run.summary.state, "ok", "a missing file is a note, not a degraded run");
+  assert.deepEqual(run.summary.shapers.map((entry) => [entry.id, entry.outcome, entry.origin, entry.entries]), [["repo-files", "ok", "registered", 1]]);
+  assert.equal(run.summary.shapers[0]!.reason, 'Skipped "MISSING.md" (missing).');
+  assert.deepEqual(run.entries.map((entry) => [entry.id, entry.title, entry.body]), [["AGENTS.md", "AGENTS.md", "# Agents\nRun the tests first.\n"]]);
+  assert.match(run.section, /### Repository files: AGENTS\.md\n# Agents\nRun the tests first\.\n$/);
+  assert.doesNotMatch(run.section, /never read|A billing service|django/, "the summary and facts go to selectors, never into the section");
+
+  // The summary and facts reach a selector that runs after it, in a launch.
+  const { shapeTask } = await import("../src/server/shaping/engine.ts");
+  const { SHAPING_TRANSPORT_CALLS } = await import("../src/server/shaping/transports/index.ts");
+  await put({ kind: "upsert", shaper: fixture("selector", "select", "ok") });
+  await put({ kind: "enable", id: "repo-files", enabled: true });
+  await put({ kind: "enable", id: "selector", enabled: true });
+  const seen: Array<{ facts?: unknown; summary?: string }> = [];
+  await shapeTask({
+    task: "Retry failed charges",
+    context: {
+      taskId: null, title: "Retry", kind: "ship", harness: null, runtime: null, afterWork: null, labels: [], priority: null,
+      repositories: [{ name: "billing-api", role: "primary", branch: null, baseSha: null, path: repository }],
+    },
+  }, {
+    discovered: [], enabled: true,
+    transports: { ...SHAPING_TRANSPORT_CALLS, command: async (request) => { seen.push(request.repo); return { kind: "data", data: {} }; } },
+  });
+  assert.deepEqual(seen.map((repo) => [repo.facts, repo.summary]), [[{ language: "python", framework: ["django"] }, "A billing service.\n"]]);
 });
 
 test("a slow, failing or malformed shaper is an outcome in a 200, never an error reply", async () => {

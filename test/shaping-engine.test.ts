@@ -534,13 +534,14 @@ test("every outcome: ok, degraded, failed, timed_out, invalid and unavailable", 
   assert.equal(result.summary!.state, "degraded");
 });
 
-test("the placeholder transports answer unavailable, naming the transport", async () => {
+test("the placeholder transports answer unavailable, naming the transport, and the built-in needs a worktree", async () => {
   const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://x.test/mcp" } } });
   const http = remote("http");
   const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } });
+  // The fixture's worktree path does not exist on this machine.
   const result = await shapeTask(input(1), { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
   assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.reason]), [
-    ["files", "unavailable", "The built-in transport is not available in this build yet."],
+    ["files", "unavailable", "The repository's worktree is not available on this machine."],
     ["mcp", "unavailable", "The MCP transport is not available in this build yet."],
     ["http", "unavailable", "The HTTP transport is not available in this build yet."],
   ]);

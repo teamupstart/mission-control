@@ -134,6 +134,32 @@ test("head/target/eligibility changes during recheck abstain; disabled or remove
     await f.tick(); assert.equal(f.writes, 0);
   }
 });
+test("checks becoming pending during the final recheck prevent an update for unchanged commits", async () => {
+  const f = fixture(); let reads = 0;
+  f.deps.read = async () => {
+    const pr = snapshot();
+    if (++reads === 2) {
+      pr.commits.nodes[0]!.commit.statusCheckRollup!.contexts.nodes = [{ __typename: "StatusContext", context: "ci", state: "PENDING" }];
+    }
+    return pr;
+  };
+  await f.tick();
+  assert.equal(reads, 2, "passing checks on the first snapshot must reach the final recheck");
+  assert.equal(f.writes, 0, "pending checks on the same head and target must prevent the update");
+});
+test("a complete empty check set allows an otherwise ready PR to update after recheck", async () => {
+  const f = fixture(); let reads = 0;
+  const pr = snapshot();
+  pr.commits.nodes[0]!.commit.statusCheckRollup!.contexts.nodes = [];
+  f.deps.read = async () => { reads++; return pr; };
+  assert.equal(branchUpdateEligible(pr), true);
+  await f.tick();
+  assert.equal(reads, 2, "an empty check set must still be rechecked before updating");
+  assert.equal(f.writes, 1);
+  assert.deepEqual(f.published.at(-1), { status: "updating", reason: null });
+  await f.tick();
+  assert.equal(f.writes, 1, "an empty check set must not bypass attempt deduplication");
+});
 test("confirmed new head follows its checks and required reviews before clearing", async () => {
   const f = fixture(); await f.tick();
   const next = snapshot({ headRefOid: "d".repeat(40), mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" });
@@ -158,10 +184,12 @@ test("conflict, refusal and unknown outcomes remain visible without retries", as
   f.deps.update = async () => { writes++; throw new Error("timeout"); };
   await f.tick(); await f.tick(); assert.equal(writes, 1); assert.match(f.published.at(-1)!.reason!, /unknown/);
 });
-test("missing checks hold; accepted but unconfirmed updates become a visible blocker, never a retry", async () => {
+test("missing or incomplete checks hold; accepted but unconfirmed updates become a visible blocker, never a retry", async () => {
   const empty = snapshot(); empty.commits.nodes[0]!.commit.statusCheckRollup = null;
   assert.equal(branchUpdateEligible(empty), false);
-  empty.commits.nodes[0]!.commit.statusCheckRollup = { contexts: { pageInfo: { hasNextPage: false }, nodes: [] } };
+  empty.commits.nodes[0]!.commit.statusCheckRollup = { contexts: { pageInfo: { hasNextPage: true }, nodes: [] } };
+  assert.equal(branchUpdateEligible(empty), false);
+  empty.commits.nodes[0]!.commit.statusCheckRollup = { contexts: { pageInfo: { hasNextPage: false }, nodes: [null] } };
   assert.equal(branchUpdateEligible(empty), false);
   const f = fixture(); await f.tick();
   openDb().prepare("UPDATE pr_branch_update_attempts SET attempted_at = ?").run(Date.now() - 180_000);

@@ -48,7 +48,7 @@ function checksReady(pr: BranchSnapshot): boolean {
   if (!contexts) return pr.mergeStateStatus === "CLEAN"; // No green evidence yet on a behind head.
   if (contexts.pageInfo.hasNextPage) return false; // incomplete evidence never authorizes a write
   const checks = rollUpChecks(contexts.nodes);
-  return checks.recognized && (checks.checks === "passing" || (checks.checks === null && pr.mergeStateStatus === "CLEAN"));
+  return checks.recognized && (checks.checks === "passing" || contexts.nodes.length === 0);
 }
 export function branchUpdateEligible(pr: BranchSnapshot): boolean {
   return pr.state === "OPEN" && !pr.isDraft && pr.mergeStateStatus === "BEHIND" &&

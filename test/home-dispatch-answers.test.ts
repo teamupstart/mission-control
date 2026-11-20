@@ -17,8 +17,10 @@ const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
-const { closeDb, openDb, loadHumanResolvedReviews, loadConversationResolvedReviews, loadReviewContinuationCandidates } =
-  await import("../src/server/db.ts");
+const {
+  closeDb, openDb, loadHumanResolvedReviews, loadConversationResolvedReviews, loadReviewContinuationCandidates,
+  createReviewContinuationPendingTurn,
+} = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 const { HomeDispatchReceiptSchema } = await import("../src/shared/home-dispatch.ts");
@@ -357,6 +359,47 @@ test("a late answer reaches a worker whose wait already ended, through the conti
   assert.equal(loadReviewContinuationCandidates(review.id).length, 0, "still pending");
   assert.equal((await answer(h, { action: "answer", taskId: "t-late", reviewId: review.id, option: "Keep" })).status, 200);
   assert.deepEqual(loadReviewContinuationCandidates(review.id).map((r) => r.id), [review.id]);
+});
+
+test("a late answer from each home actor is queued as a continuation turn, once", async () => {
+  const h = await homeIn("late-turn");
+  const send = (a: Record<string, unknown>, hdrs = headers, who: { sessionId: string; dir: string } = h) => answer(who, a, hdrs);
+  const detach = (id: string) => openDb().prepare(`UPDATE reviews SET mcp_wait_detached_at = ? WHERE id = ?`).run(Date.now(), id);
+  const cases: Array<[string, string, (ids: { task: string; worker: string }) => Promise<string>]> = [
+    ["home:", `home:${h.sessionId}`, async ({ task, worker }) => {
+      const r = reviews.create(worker, "input", "Q", "Keep?", [QUESTION]);
+      detach(r.id);
+      assert.equal((await send({ action: "answer", taskId: task, reviewId: r.id, option: "Keep" })).status, 200);
+      return r.id;
+    }],
+    ["home-approval:", `home-approval:${h.sessionId}`, async ({ task, worker }) => {
+      const r = reviews.create(worker, "diff", "D", "+z", null);
+      detach(r.id);
+      const res = await send({ action: "approve_review", taskId: task, reviewId: r.id, revisionHash: revisionHashFor(r) });
+      assert.equal(res.status, 200);
+      return r.id;
+    }],
+    ["mctl", "mctl", async ({ task, worker }) => {
+      const r = reviews.create(worker, "input", "Q", "Keep?", [QUESTION]);
+      detach(r.id);
+      assert.equal((await send({ action: "answer", taskId: task, reviewId: r.id, option: "Keep" }, cliHeaders, { sessionId: "mctl", dir: h.dir })).status, 200);
+      return r.id;
+    }],
+  ];
+  for (const [label, actor, run] of cases) {
+    const task = `t-late-turn-${label.replace(/\W/g, "")}`;
+    const worker = addTask(task, h.repo, label === "mctl" ? "mctl" : "home-session");
+    const reviewId = await run({ task, worker });
+    assert.equal(row(reviewId).resolvedBy, actor);
+    const turn = createReviewContinuationPendingTurn({ reviewId, noteKey: `note-${task}`, text: "The person answered.", now: 1_000 });
+    assert.ok(turn, `${label}: the continuation turn is created for this actor`);
+    assert.equal(turn.state, "queued");
+    assert.equal(turn.noteKey, `note-${task}`);
+    assert.equal(turn.text, "The person answered.");
+    const stored = openDb().prepare(`SELECT state FROM pending_turns WHERE id = ?`).get(turn.id) as { state: string } | undefined;
+    assert.equal(stored?.state, "queued", `${label}: it is in the durable outbox`);
+    assert.equal(createReviewContinuationPendingTurn({ reviewId, noteKey: `note-${task}`, text: "again", now: 2_000 }), null, `${label}: queued once`);
+  }
 });
 
 test("the dashboard's own resolve route still settles as the human, unchanged", async () => {

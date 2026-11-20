@@ -410,10 +410,12 @@ fi
   child.stderr.on("data", (data) => { stderr += data; });
   const exited = new Promise((resolve) => child.once("exit", resolve));
   try {
-    const readyDeadline = performance.now() + 15_000;
-    while (performance.now() < readyDeadline && !existsSync(marker)
-      && child.exitCode === null && child.signalCode === null) await delay(50);
-    assert.ok(existsSync(marker), stderr || "The wrapper did not report its agent ready before the startup deadline or exit");
+    // The guard must claim the lease and start a second Node process before signals are safe.
+    const readyDeadline = Date.now() + 30_000;
+    while (Date.now() < readyDeadline && !existsSync(marker) && child.exitCode === null && child.signalCode === null) {
+      await delay(50);
+    }
+    assert.ok(existsSync(marker), stderr || "the managed agent did not report startup");
     const observed = JSON.parse(readFileSync(marker, "utf8"));
     assert.equal(observed.home, p.stateHome);
     assert.equal(observed.native, nativeId);

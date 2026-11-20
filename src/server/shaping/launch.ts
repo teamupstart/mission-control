@@ -125,8 +125,8 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
   const config = getShapingConfig();
   // Budgeted against the larger variant, so whichever one is sent fits its path.
   const largest = input.turnOnes.reduce((a, b) => (Buffer.byteLength(b) > Buffer.byteLength(a) ? b : a), "");
-  // A measurement that cannot be taken budgets the per-argument ceiling alone; it never stops
-  // the launch it was measuring.
+  // A measurement that cannot be taken never stops the launch it was measuring: the budget then
+  // withholds the section (`turnOneAllowance`), and the record says why.
   const launch = input.launch ? await input.launch().catch((error: unknown) => {
     console.warn("[shaping] could not measure the launch's arguments and environment:", error);
     return null;

@@ -96,23 +96,33 @@ export function turnOneAllowance(
       reason: `turn one travels as one launch argument, which this platform caps at ${delivery.maxBytes} bytes`,
     });
   }
-  if (launch?.argMax != null) {
-    const others = launch.otherArgs.reduce((sum, arg) => sum + execString(arg), 0);
-    const environment = Object.entries(launch.env)
-      .reduce((sum, [name, value]) => value === undefined ? sum : sum + execString(`${name}=${value}`), 0);
-    remainders.push({
-      room: launch.argMax - others - environment - execString(turnOne),
-      reason: `the launch's arguments and environment share this platform's ${launch.argMax}-byte limit`,
-    });
+  // A launch argument always shares the combined limit with the rest of the launch. When that
+  // limit, or the launch around turn one, cannot be measured, there is no safe room to promise:
+  // the section is withheld rather than guessed at, so shaping can never turn a launch that
+  // works today into an `E2BIG`. Both the per-argument and the combined check need a measure.
+  if (launch?.argMax == null) {
+    return {
+      maxSectionBytes: 0,
+      reason: "turn one travels as a launch argument and the platform's combined argument limit could not be measured, so no context was added",
+    };
   }
-  if (remainders.length === 0) return null;
+  const others = launch.otherArgs.reduce((sum, arg) => sum + execString(arg), 0);
+  const environment = Object.entries(launch.env)
+    .reduce((sum, [name, value]) => value === undefined ? sum : sum + execString(`${name}=${value}`), 0);
+  remainders.push({
+    room: launch.argMax - others - environment - execString(turnOne),
+    reason: `the launch's arguments and environment share this platform's ${launch.argMax}-byte limit`,
+  });
   const tightest = remainders.reduce((a, b) => (b.room < a.room ? b : a));
   return { maxSectionBytes: Math.max(0, tightest.room - SECTION_JOIN_MARGIN), reason: tightest.reason };
 }
 
 let argMax: Promise<number | null> | null = null;
 
-/** `ARG_MAX`, read once with `getconf`. Null when it cannot be read, which budgets nothing extra. */
+/**
+ * `ARG_MAX`, read once with `getconf`. Null when it cannot be read, and a launch argument then
+ * carries no section at all (see `turnOneAllowance`).
+ */
 export function platformArgMax(): Promise<number | null> {
   argMax ??= run(FIXED_OS_EXECUTABLES.getconf, ["ARG_MAX"], { timeoutMs: 2000 })
     .then((result) => {

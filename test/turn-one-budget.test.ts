@@ -15,14 +15,23 @@ import {
 test("a path with no ceiling budgets nothing", () => {
   assert.equal(turnOneAllowance(DRIVER_TURN_ONE, "x".repeat(1_000_000), null), null);
   assert.equal(turnOneAllowance(PASTE_TURN_ONE, "x".repeat(1_000_000), null), null);
-  // macOS has no per-argument limit, and without ARG_MAX there is nothing to budget either.
-  assert.equal(turnOneAllowance(launchArgumentTurnOne("darwin"), "x", null), null);
+});
+
+test("a launch argument whose combined limit cannot be measured carries no section", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    for (const launch of [null, { otherArgs: [], env: {}, argMax: null }]) {
+      const allowance = turnOneAllowance(launchArgumentTurnOne(platform), "x", launch);
+      assert.equal(allowance?.maxSectionBytes, 0, `${platform}: nothing is promised without the measure`);
+      assert.match(allowance?.reason ?? "", /could not be measured/);
+    }
+  }
 });
 
 test("Linux caps one argument at 32 pages including its terminator", () => {
   assert.equal(launchArgumentCeiling("linux"), 131_071);
   assert.equal(launchArgumentCeiling("darwin"), null);
-  const allowance = turnOneAllowance(launchArgumentTurnOne("linux"), "x".repeat(100_000), null);
+  const roomy = { otherArgs: [], env: {}, argMax: 2_000_000 };
+  const allowance = turnOneAllowance(launchArgumentTurnOne("linux"), "x".repeat(100_000), roomy);
   assert.deepEqual(allowance?.maxSectionBytes, 131_071 - 100_000 - SECTION_JOIN_MARGIN);
   assert.match(allowance?.reason ?? "", /one launch argument/);
 });
@@ -44,8 +53,9 @@ test("the tighter of the two remainders wins, and the allowance is never negativ
   assert.match(tightEnv?.reason ?? "", /arguments and environment/);
   const tightArg = turnOneAllowance(linux, "x".repeat(131_000), { otherArgs: [], env: {}, argMax: 2_000_000 });
   assert.match(tightArg?.reason ?? "", /one launch argument/);
-  assert.equal(turnOneAllowance(linux, "x".repeat(140_000), null)?.maxSectionBytes, 0);
+  const roomy = { otherArgs: [], env: {}, argMax: 2_000_000 };
+  assert.equal(turnOneAllowance(linux, "x".repeat(140_000), roomy)?.maxSectionBytes, 0);
   // Measured in bytes, not characters.
-  const multibyte = turnOneAllowance(linux, "é".repeat(1000), null);
+  const multibyte = turnOneAllowance(linux, "é".repeat(1000), roomy);
   assert.equal(multibyte?.maxSectionBytes, 131_071 - 2000 - SECTION_JOIN_MARGIN);
 });

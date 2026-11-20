@@ -320,7 +320,9 @@ its turn one reaches the worker (`turnOne` in `src/server/harness/index.ts`):
 On a launch argument, dispatch measures the larger turn-one variant as the argument carries it,
 and the launch's other arguments and environment, and lowers the section's total to what is
 left. The record's `limit` then says how many bytes the section had and why, and anything cut
-is recorded as truncated, never as degraded.
+is recorded as truncated, never as degraded. When `ARG_MAX` cannot be read, there is no safe room
+to promise, so a launch argument carries no section at all: the worker starts exactly as it would
+without shaping, and the record's `limit` says the combined limit could not be measured.
 
 ### While it runs
 

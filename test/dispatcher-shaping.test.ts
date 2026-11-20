@@ -646,3 +646,54 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
     for (const name of padNames) delete process.env[name];
   }
 });
+
+test("Pi's launch argument: when ARG_MAX cannot be measured near the limit, the worker still starts, with no section", async () => {
+  registerLargeShaper();
+  const repo = seedRepo("pi-argmax-unmeasured");
+  const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  setFlag(false);
+  const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-unmeasured-probe", intent: "short request" });
+  assertRunning(baseline.task);
+  setFlag(true);
+  const env = () => ({ ...process.env, ...isolatedAgentEnvironment({ cwd: baseline.task.worktreePath!, stateHome: baseline.stateHome, extraEnv: baseline.extraEnv }) });
+  const used = execBytes(["/bin/echo", ...baseline.argv], env());
+  // The same environment as the measured case: about 8 KiB left, so a 64 KiB section would not fit.
+  const padNames: string[] = [];
+  let room = argMax - used - 8 * 1024;
+  for (let n = 0; room > 64; n++) {
+    const name = `MISSION_SHAPING_UNMEASURED_PAD_${n}`;
+    const value = "p".repeat(Math.min(4000, room - name.length - 1 - 1 - 8));
+    if (value.length <= 0) break;
+    process.env[name] = value;
+    padNames.push(name);
+    room -= name.length + 1 + value.length + 1 + 8;
+  }
+  try {
+    const large: ShapeTask = (input) => shapeTask(input, {
+      config: shapingStore.getShapingConfig(), discovered: [], enabled: true,
+      transports: Object.fromEntries(["command", "mcp", "http", "builtin"].map((id) => [id, async () => ({
+        kind: "data" as const,
+        data: JSON.stringify({ guidance: [1, 2, 3, 4].map((n) => ({ id: `big/${n}`, title: `Big ${n}`, body: "line of guidance\n".repeat(900) })) }),
+      })])) as never,
+    });
+    // `getconf` failing, as `platformArgMax` reports it: no number to budget against.
+    const shaped = await terminalDispatch({ agent: "pi", repo, taskId: "pi-unmeasured", intent: "short request", argMax: async () => null, shapeTask: large });
+    assertRunning(shaped.task);
+    assert.doesNotMatch(shaped.prompt, /## Task context/, "no section is promised without the measure");
+    const record = currentShaping(shaped.task);
+    assert.equal(record?.truncated, true, "the context that was not added is recorded as cut, not as degraded");
+    assert.equal(record?.state, "ok");
+    assert.equal(record?.limit?.bytes, 0);
+    assert.match(record?.limit?.reason ?? "", /could not be measured/);
+    assert.equal(getTaskShapingText("pi-unmeasured"), null);
+    // And the kernel agrees the launch is the one that works today.
+    const launchEnv = { ...process.env, ...isolatedAgentEnvironment({ cwd: shaped.task.worktreePath!, stateHome: shaped.stateHome, extraEnv: shaped.extraEnv }) };
+    const ran = spawnSync("/bin/echo", shaped.argv, { env: launchEnv, stdio: "ignore" });
+    assert.equal(ran.error, undefined, `the launch executes (${ran.error?.message})`);
+    assert.equal(ran.status, 0);
+    const unbudgeted = [...shaped.argv.slice(0, -1), `${shaped.argv.at(-1)}${"z".repeat(64 * 1024)}`];
+    assert.ok(execBytes(["/bin/echo", ...unbudgeted], launchEnv) > argMax, "an unbudgeted 64 KiB section would have exceeded it");
+  } finally {
+    for (const name of padNames) delete process.env[name];
+  }
+});

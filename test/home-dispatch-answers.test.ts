@@ -350,6 +350,29 @@ test("the command line answers only the tasks it started, as mctl, and never app
   assert.equal(row(plan.review.id).status, "pending", "nothing was approved");
 });
 
+test("mctl retries return the receipt only for the same answer; a different command is refused", async () => {
+  const h = await homeIn("cli-retry");
+  const worker = addTask("t-cli-retry", h.repo, "mctl");
+  const review = reviews.create(worker, "input", "Q", "Keep?", [{ ...QUESTION, allowOther: true }]);
+  const cli = (extra: Record<string, unknown>) =>
+    answer({ sessionId: "mctl", dir: h.dir }, { taskId: "t-cli-retry", reviewId: review.id, ...extra }, cliHeaders);
+
+  const first = await cli({ action: "answer", option: "Keep" });
+  assert.equal(first.status, 200);
+  const receipt = await receiptOf(first);
+  const same = await cli({ action: "answer", option: "Keep" });
+  assert.equal(same.status, 200, "the same command again is a retry");
+  assert.deepEqual(await receiptOf(same), receipt);
+
+  for (const other of [{ action: "answer", option: "Delete" }, { action: "answer", text: "something else" }, { action: "reject_review", text: "no" }]) {
+    const res = await cli(other);
+    assert.equal(res.status, 409, JSON.stringify(other));
+    assert.match(await errorOf(res), /different answer; nothing was sent/);
+  }
+  assert.equal(row(review.id).response?.includes("Keep"), true, "the first answer stands");
+  assert.equal((openDb().prepare(`SELECT count(*) AS n FROM home_dispatch_receipts WHERE review_id = ?`).get(review.id) as { n: number }).n, 1);
+});
+
 test("a visible resident's request is answered by a home session; one it cannot see is 403", async () => {
   const h = await homeIn("res-a");
   const other = await homeIn("res-b");

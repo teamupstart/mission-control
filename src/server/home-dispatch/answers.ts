@@ -180,6 +180,18 @@ function settlementFor(review: ReviewItem, shape: ReviewShape, body: HomeDispatc
 const isRefusal = (v: Settlement | Refusal): v is Refusal => "status" in v;
 
 /**
+ * Whether this request would send what the stored receipt recorded: the same action, option or text
+ * (and revision), judged by building the settlement again and comparing its `sent`. When the review is
+ * no longer held (the daemon restarted since) there is nothing to rebuild it from, so the receipt is
+ * trusted: the only caller left to match is the one that answered.
+ */
+function repeatsReceipt(review: ReviewItem | undefined, body: HomeDispatchAnswerRequest, prior: ReceiptRow): boolean {
+  if (!review) return true;
+  const again = settlementFor(review, reviewShapeOf(review), body);
+  return !isRefusal(again) && again.sent === prior.sent;
+}
+
+/**
  * Everything between the request and the settled review, with no await: the status check, the
  * settle and the receipt write run in one turn of the event loop, so two calls at once from one
  * session settle once and the second reads the first's receipt.
@@ -228,7 +240,15 @@ function answer(
   const settled = !review || (review.status !== "pending" && review.status !== "snoozed");
   if (settled) {
     // A retry by the same caller returns the receipt, so a lost response never hides what was sent.
-    if (prior && prior.surface === surface && prior.session_id === resolved.sessionId) return { receipt: toReceipt(prior) };
+    if (prior && prior.surface === surface && prior.session_id === resolved.sessionId) {
+      // Every `mctl` call shares one identity (no session), so the caller alone cannot say a repeat is
+      // a retry. A retry is the same answer again: one that would send what the receipt recorded. A
+      // different command naming the review is a new answer to a settled review, and is refused.
+      if (surface === "cli" && !repeatsReceipt(review, body, prior)) {
+        return refuse(409, "this review was already answered by an earlier mctl command, with a different answer; nothing was sent");
+      }
+      return { receipt: toReceipt(prior) };
+    }
     return refuse(409, "this review was already settled");
   }
 

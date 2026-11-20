@@ -52,6 +52,7 @@ the transports' own design.
 4. **Transports.** Confirm each one, and add what is missing:
    - `http` and `mcp` over streamable HTTP: header `x-work-unit-id` on every request;
    - every `mcp` `tools/call`: `params._meta.work_unit_id`;
+   - the header and the `_meta` key always carry the same value, the run's one work unit;
    - `command`, and `mcp` over a local process: `WORK_UNIT_ID` in the environment;
    - a configured header or variable of the same name, compared without case, is removed
      first, with or without a work unit;
@@ -76,9 +77,9 @@ the transports' own design.
   none; a dry run sends none.
 - Transports, one present case and one absent case each, unless the remote transports
   phase already has them: `http` header; streamable-HTTP `mcp` header on every request of
-  a call and `_meta` on `tools/call`; stdio `mcp` environment and `_meta`; `command`
-  environment. A configured `x-work-unit-id` header is not sent when the run has no work
-  unit. A reply that echoes the id comes back unredacted and unmarked.
+  a call and `_meta` on `tools/call`, with equal values; stdio `mcp` environment and
+  `_meta`; `command` environment. A configured `x-work-unit-id` header is not sent when
+  the run has no work unit. A reply that echoes the id comes back unredacted and unmarked.
 - No browser spec: this phase has no dashboard surface.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`.
 

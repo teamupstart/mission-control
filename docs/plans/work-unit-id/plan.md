@@ -80,7 +80,8 @@ names.
   into a header, in every place an operator, a plugin or IT keeps MCP config. Mission Control
   does not need to know which servers exist.
 - `_meta.work_unit_id` can only be sent by a client Mission Control writes itself, which is
-  the shaper transports. A server should read the header first and `_meta` second.
+  the shaper transports. So a server must accept the header on its own. When Mission Control
+  sends both, they carry the same value, so a server may prefer either.
 - Trace context alone does not reliably join an MCP call to its session (see Codex above).
   That is one more reason the id is an explicit field.
 - One sharp edge. On Claude Code the reference must be written `${WORK_UNIT_ID:-}`. Without
@@ -229,7 +230,7 @@ MCP config, so its remote servers do not carry the header in this plan.
   first, and never redact the value.
 - This plan supplies the value. The shaping run's input gains `workUnitId`, beside the
   `trace` field the shaping core already defines, and the dispatch seam fills it from the
-  task.
+  task. The header and `_meta` always carry that one value.
 - A dry run from Settings has no task, so it sends none. A built-in shaper runs in the
   daemon and needs no carrier. The shaper request body (protocol 1) does not change.
 - Shaper spec 544e584d, section 5, gains a "Work unit" paragraph beside "Trace context".
@@ -246,6 +247,9 @@ fixed here so the later work has no choice left to make.
   error, not a new id to adopt.
 - Work that starts in Agent Platform and continues in Mission Control keeps its id: the
   internal create option accepts a supplied, validated id.
+- Reported on the Common Room thread on 2026-11-20 by the Agent Platform API owner's agent:
+  the API's own MCP endpoint accepts the same header and `_meta` key, and ignores a value
+  that is not a well-formed id. Mission Control only ever sends a well-formed one.
 
 ### 9. Feature flag
 

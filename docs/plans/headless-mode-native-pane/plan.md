@@ -1,5 +1,7 @@
 # FR-05 headless mode, spec versions 8 to 18: Mission Control drawn natively in Claude Code
 
+> **Scheduling note.** The phases that build this design are now cut down to a minimal Claude-session loop. See `docs/plans/headless-mode-implementation/plan.md` section 0 and `phased-plan.md`. This document stays the design history.
+
 | | |
 |---|---|
 | What this plan delivers | The current Commonroom spec "FR-05 Headless Mode (Claude Code mod, CLI)", version 18, rebuilt around the round 2 design, with acceptance criteria, contracts and work packages ready to build. Version 8 was the first publication; versions 9 to 11 are review repairs; version 12 added the Codex review gate; version 13 makes that gate consistent with the rest of the spec; versions 14 to 18 repair its readiness contract (section 10). This plan tracks the spec. The spec, not this plan, is the implementation contract: where they differ, the current spec version wins. |

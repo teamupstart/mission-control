@@ -1,5 +1,7 @@
 # Phase 4: Read-only inbox, answers and approval (WP2b)
 
+> **Status: merged on main.** Built; no work remains in this phase. See `phased-plan.md` section 1.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18.
 
 **1. Outcome.** `GET /dispatch/inbox` returns every item that needs the person, `POST /dispatch/answers` answers them with receipts, and plan and review approvals work with a revision hash.

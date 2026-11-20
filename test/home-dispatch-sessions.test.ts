@@ -159,6 +159,35 @@ test("a session outside a repository registers with no repoRoot and is still off
   assert.equal(outside.offerLauncher, true, "7.4 has no repository condition");
 });
 
+test("re-registering from another repository updates the stored metadata and never offers the launcher again", async () => {
+  const other = join(home, "other-repo");
+  mkdirSync(other);
+  execFileSync("git", ["init", "-q", other]);
+  const first = shared.HomeSessionRegistrationAnswerSchema.parse(
+    await (await register(registration({ sessionId: "moves" }))).json());
+  assert.equal(first.offerLauncher, true);
+  const before = sessions.getHomeSession("moves");
+  assert.ok(before);
+
+  const again = shared.HomeSessionRegistrationAnswerSchema.parse(
+    await (await register(registration({
+      sessionId: "moves", cwd: other, clientVersion: "2.0.0", launcherDisabled: true, source: "resume",
+    }))).json());
+  assert.equal(again.created, false);
+  assert.equal(again.offerLauncher, false, "never offered twice in one session");
+  assert.equal(again.repoRoot, realpathSync(other));
+
+  const after = sessions.getHomeSession("moves");
+  assert.ok(after);
+  assert.equal(after.cwd, other, "cwd follows the latest registration");
+  assert.equal(after.repoRoot, realpathSync(other), "repo_root follows the latest registration");
+  assert.equal(after.clientVersion, "2.0.0");
+  assert.equal(after.launcherDisabled, true);
+  assert.equal(after.launcherOfferedAt, before.launcherOfferedAt, "the first offer time is kept");
+  assert.equal(after.startedAt, before.startedAt, "the first start time is kept");
+  assert.equal(after.startSource, "startup", "the start source records how the session began");
+});
+
 // Same-process repeats only. Isolation between processes is SQLite's (`BEGIN IMMEDIATE`), and the
 // daemon is the one writer, so this test does not try to prove it.
 test("repeat registrations of one session id in one process create one row and offer the launcher once", async () => {

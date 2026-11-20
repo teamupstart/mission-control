@@ -25,7 +25,7 @@ export const FEATURE_FLAGS = [
   {
     id: "task-shaping",
     label: "Task shaping",
-    description: "Register shapers and dry-run them through the API to see the context they would add to a worker's first prompt. Dispatch does not call them yet.",
+    description: "Call registered shapers at dispatch and add the context they return to a worker's first prompt. Register and dry-run them through the API.",
     stage: "preview",
     keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
   },

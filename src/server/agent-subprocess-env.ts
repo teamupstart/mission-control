@@ -240,6 +240,18 @@ function launchAndCleanupScript(env: Record<string, string>, argv: readonly stri
 }
 
 /**
+ * The environment `isolatedAgentArgv`'s wrapper exports to the agent, for a caller that has to
+ * measure it before the launch: a launch argument shares `ARG_MAX` with every one of these.
+ * Writes the same loopback token file into `options.stateHome` the wrapper's own call writes,
+ * so `options.stateHome` should be the launch's, already created.
+ */
+export function isolatedAgentEnvironment(
+  options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
+): Record<string, string> {
+  return agentSubprocessEnv({ GOCACHE: process.env.GOCACHE }, { ...options, loopbackAccess: true });
+}
+
+/**
  * Wrap argv for terminal backends whose launch APIs do not accept an environment object.
  * The override runs inside the pane or tab, after a long-lived terminal server contributes
  * its own inherited environment.
@@ -252,7 +264,7 @@ export function isolatedAgentArgv(
   argv: readonly string[],
   options: Omit<AgentSubprocessEnvOptions, "loopbackAccess"> = {},
 ): string[] {
-  const env = agentSubprocessEnv({ GOCACHE: process.env.GOCACHE }, { ...options, loopbackAccess: true });
+  const env = isolatedAgentEnvironment(options);
   const stateHome = env.MISSION_HOME!;
   const wrapper = join(stateHome, LAUNCH_SCRIPT_FILE);
   try {

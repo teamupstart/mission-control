@@ -16,6 +16,7 @@ import { basename } from "node:path";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
+import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -307,6 +308,9 @@ import {
   type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
+  commitTaskShaping as dbCommitTaskShaping,
+  rekeyTaskShaping as dbRekeyTaskShaping,
+  taskShapingRecord as dbTaskShapingRecord,
   inTransaction,
   upsertUsageCell,
   loadInspectorInspections,
@@ -5258,7 +5262,18 @@ export class Registry extends EventEmitter {
     const episode = sessionWorkEpisodeFor(session.id);
     if (!episode || episode.awaitingAgentRebind) throw new Error("Successor work episode is not ready");
     const at = Date.now();
-    const next = { ...task, ...homeRecord(home), sessionId: session.id,
+    // The conversation moves runtimes and keeps what it was given at launch: the record that
+    // named the outgoing session now names this one, in the database before the task row.
+    const prior = taskWorkEpisodeForTask(task.id);
+    const carried = prior?.episodeId === episode.episodeId && task.shaping?.sessionId === prior.sessionId
+      && prior.sessionId !== session.id && dbRekeyTaskShaping(task.id, prior.sessionId, session.id);
+    const shaping = carried && task.shaping ? { ...task.shaping, sessionId: session.id } : null;
+    // The in-memory copy too: publishing carries the record forward from memory, never from
+    // the row a caller hands it (see `withShaping`).
+    const live = shaping ? this.tasks.get(task.id) : undefined;
+    if (live && shaping) this.tasks.set(task.id, { ...live, shaping });
+    const next = { ...task, ...(shaping ? { shaping } : {}),
+      ...homeRecord(home), sessionId: session.id,
       terminalLaunch: home.terminalResourceId?.startsWith("emulator:")
         ? { resourceId: home.terminalResourceId, sessionId: session.id } : null, updatedAt: at };
     const displaced = dbUpsertTask(next);
@@ -5286,6 +5301,7 @@ export class Registry extends EventEmitter {
     at = Date.now(),
   ): boolean {
     if (!episode || episode.awaitingAgentRebind) return false;
+    const prior = taskWorkEpisodeForTask(taskId);
     const binding: TaskWorkEpisodeBinding = {
       taskId,
       episodeId: episode.episodeId,
@@ -5299,6 +5315,11 @@ export class Registry extends EventEmitter {
       updatedAt: at,
     };
     dbBindTaskWorkEpisode(binding);
+    // The same conversation continuing in another session: the record of what it was given
+    // at launch follows it. A new episode is a new launch, whose own commit settles its record.
+    if (prior && prior.episodeId === binding.episodeId && prior.sessionId !== sessionId) {
+      this.followShapingSession(taskId, prior.sessionId, sessionId);
+    }
     this.bindPendingTaskDependencies(taskId, binding, at);
     this.cleanupDependencyProvenance();
     return true;
@@ -7563,6 +7584,95 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "task_upsert", task: next });
   }
 
+  /** Dispatches shaping context right now, by task id, with when each started. */
+  private readonly shapingStartedAt = new Map<string, number>();
+
+  /**
+   * A task with its shaping record and "Shaping context" mark applied.
+   *
+   * The record is owned by `commitTaskShaping`, never by the caller: a writer that built its
+   * row from a snapshot taken before the latest commit would otherwise publish the superseded
+   * record, and `upsertTask` does not write the column, so memory and disk would disagree. The
+   * in-memory value carries forward; a task not in memory reads the stored one. Both keys are
+   * absent when there is nothing to show, so an unshaped task's payload is unchanged.
+   */
+  private withShaping(task: Task, previous: Task | undefined): Task {
+    const shaping = previous ? previous.shaping ?? null : dbTaskShapingRecord(task.id);
+    const startedAt = task.status === "dispatching" ? this.shapingStartedAt.get(task.id) ?? null : null;
+    if (!shaping && startedAt === null && task.shaping === undefined && task.shapingContext === undefined) return task;
+    const { shaping: _record, shapingContext: _mark, ...rest } = task;
+    return {
+      ...rest,
+      ...(shaping ? { shaping } : {}),
+      ...(startedAt !== null ? { shapingContext: { startedAt } } : {}),
+    };
+  }
+
+  /**
+   * Mark a dispatching task as shaping context, or clear the mark. Never persisted: a restart
+   * drops it with the dispatch, whose own recovery reports the outcome.
+   */
+  setTaskShapingContext(taskId: string, active: boolean): void {
+    if (active) this.shapingStartedAt.set(taskId, Date.now());
+    else if (!this.shapingStartedAt.delete(taskId)) return;
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const next = this.withShaping(current, current);
+    if (JSON.stringify(next.shapingContext ?? null) === JSON.stringify(current.shapingContext ?? null)) return;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  /**
+   * Settle a launch's shaping record once its turn one reached the worker: the summary
+   * (stamped with the session it was delivered to) and the delivered text, in one transaction.
+   * A commit that fails is logged and changes nothing in memory either, so the task keeps the
+   * record that names an earlier session - which `currentShaping` then shows nowhere. It never
+   * throws: a launch that reached its worker is not failed by its own bookkeeping.
+   */
+  commitTaskShaping(taskId: string, summary: TaskShaping | null, text: string): boolean {
+    try {
+      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
+    } catch (error) {
+      console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
+      return false;
+    }
+    const current = this.tasks.get(taskId);
+    if (!current) return true;
+    if (JSON.stringify(current.shaping ?? null) === JSON.stringify(summary)) return true;
+    const { shaping: _previous, ...rest } = current;
+    const next: Task = summary ? { ...rest, shaping: summary } : rest;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+    if (next.sessionId) this.resyncSessionTask(next.sessionId);
+    return true;
+  }
+
+  /** Test seam for a commit that fails. Production always takes the database function. */
+  shapingCommitter: typeof dbCommitTaskShaping | null = null;
+
+  /**
+   * Carry a task's shaping record to the session that continues its conversation. Called where
+   * a task is bound to a successor session of the SAME work episode - a resume or a runtime
+   * transfer - so the record follows the conversation it describes and never a new launch.
+   */
+  private followShapingSession(taskId: string, fromSessionId: string, toSessionId: string): void {
+    const current = this.tasks.get(taskId);
+    const record = current ? current.shaping ?? null : dbTaskShapingRecord(taskId);
+    if (!record || record.sessionId !== fromSessionId || fromSessionId === toSessionId) return;
+    try {
+      if (!dbRekeyTaskShaping(taskId, fromSessionId, toSessionId)) return;
+    } catch (error) {
+      console.warn(`[shaping] could not carry task ${taskId}'s shaping record to its resumed session:`, error);
+      return;
+    }
+    if (!current) return;
+    const next: Task = { ...current, shaping: { ...record, sessionId: toSessionId } };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+    if (next.sessionId) this.resyncSessionTask(next.sessionId);
+  }
+
   /**
    * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
    *
@@ -7609,8 +7719,8 @@ export class Registry extends EventEmitter {
     const published: Task = written.kind === "resident"
       ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
       : written;
-    const task = this.withProvisioning(published);
-    const previous = this.tasks.get(task.id);
+    const previous = this.tasks.get(published.id);
+    const task = this.withShaping(this.withProvisioning(published), previous);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
     );
@@ -7835,6 +7945,9 @@ export class Registry extends EventEmitter {
     session: Session | undefined = this.sessions.get(sessionId),
   ): TaskSummary | null {
     const t = this.activeTaskFor(sessionId, cwd, sessionPipeline);
+    // Only the record of the launch this session received: one left by an earlier launch of
+    // the task describes a different session and is never carried to this card.
+    const shaping = t && t.sessionId === sessionId ? currentShaping(t) : null;
     const primaryPr = t && t.extraRepos.length > 0 ? primaryRepoPrForTask(t.id) : null;
     // Bindings retain merge outcomes; the matching live observation also knows closure.
     if (
@@ -7876,6 +7989,7 @@ export class Registry extends EventEmitter {
               : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
           ...(t.claimWarnings && t.claimWarnings.length > 0 ? { claimWarnings: t.claimWarnings } : {}),
+          ...(shaping ? { shaping } : {}),
         }
       : null;
   }

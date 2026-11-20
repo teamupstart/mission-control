@@ -1162,6 +1162,7 @@ export class TaskManager {
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
+      workflowName: (workflowId) => this.workflowNameFor(workflowId),
       worktrees: this.worktrees,
       legacy: this.legacyWorktrees,
       // The launch no longer waits for a model to name it, so the name can arrive on either
@@ -1635,6 +1636,13 @@ export class TaskManager {
     if (refusal) return refusal;
     const resolved = resolveTaskPersona(this.personaLookup, personaId);
     return resolved.ok ? null : resolved.error;
+  }
+
+  private workflowNameFor: (workflowId: string) => string | null = () => null;
+
+  /** Install the workflow name reader task shaping describes the after-work step with. */
+  registerWorkflowNames(resolve: (workflowId: string) => string | null): void {
+    this.workflowNameFor = resolve;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */

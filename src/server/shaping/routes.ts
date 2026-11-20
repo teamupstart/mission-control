@@ -2,7 +2,9 @@ import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Hono } from "hono";
 import { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
-import { DEFAULT_TASK_KIND } from "@shared/types.ts";
+import { currentShaping } from "@shared/shaping.ts";
+import { DEFAULT_TASK_KIND, type Task } from "@shared/types.ts";
+import { getTaskShapingText } from "../db.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { resolveRepoRoot } from "../repos.ts";
@@ -19,9 +21,20 @@ import { referenceStatus } from "./references.ts";
  * - `PUT /api/shaping` applies one intent and returns `{ config }`.
  * - `POST /api/shaping/test` dry-runs one shaper against a repository and returns what dispatch
  *   would have recorded and injected. A failing shaper is an outcome in a 200, never an error.
+ * - `GET /api/tasks/:id/shaping` returns what the task's current session received: the summary
+ *   and the delivered text, `text` null when nothing was kept. 404 when `currentShaping` shows
+ *   nothing, including a record that names an earlier session.
  */
-export function registerShapingRoutes(app: Hono): void {
+export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task | undefined = () => undefined): void {
   const gate = requireFeature("task-shaping");
+
+  app.get("/api/tasks/:id/shaping", gate, (c) => {
+    const task = taskById(c.req.param("id"));
+    if (!task) return c.json({ error: "no such task" }, 404);
+    const summary = currentShaping(task);
+    if (!summary) return c.json({ error: "no_shaping", reason: "This task's current session received no task context." }, 404);
+    return c.json({ summary, text: getTaskShapingText(task.id)?.text ?? null });
+  });
 
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();

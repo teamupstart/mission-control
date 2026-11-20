@@ -1373,8 +1373,56 @@ export const TaskShapingSchema = z.object({
   bytes: z.number().int().nonnegative(),
   truncated: z.boolean(),
   shapers: z.array(ShapingShaperSummarySchema).max(SHAPING_LIMITS.shapers * 2),
+  /**
+   * Set by dispatch when this launch's delivery path left the section less room than
+   * `limits.totalBytes`: how many bytes it allowed, and why. Absent when the configured total
+   * applied. Truncation it caused is recorded as truncation, never as degradation.
+   */
+  limit: z.object({
+    bytes: z.number().int().nonnegative(),
+    reason: z.string().max(SHAPING_LIMITS.reasonChars),
+  }).optional(),
 });
 export type TaskShaping = z.output<typeof TaskShapingSchema>;
+
+/**
+ * The one reader rule for a task's shaping record: it counts only while it names the session
+ * the task is executing on now. A record left by an earlier launch, including one whose
+ * successor's commit failed, describes a session this task no longer shows, so every reader -
+ * task reads, the shaping route, the board and rail markers, the chip and the viewer - sees
+ * nothing rather than another launch's context or `degraded`.
+ */
+export function currentShaping(task: { shaping?: TaskShaping | null; sessionId: string | null }): TaskShaping | null {
+  const record = task.shaping;
+  if (!record || !record.sessionId || !task.sessionId) return null;
+  return record.sessionId === task.sessionId ? record : null;
+}
+
+/**
+ * A task as a read returns it: `shaping` kept only while `currentShaping` shows it, and absent
+ * otherwise, so no read carries a record that describes another session.
+ */
+export function withCurrentShaping<T extends { shaping?: TaskShaping | null; sessionId: string | null }>(task: T): T {
+  if (task.shaping === undefined) return task;
+  const current = currentShaping(task);
+  if (current && current === task.shaping) return task;
+  const { shaping: _stale, ...rest } = task;
+  return (current ? { ...rest, shaping: current } : rest) as T;
+}
+
+/** What a task read carries: the state, the session it describes, and one line. */
+export interface TaskShapingRead {
+  state: TaskShaping["state"];
+  sessionId: string;
+  summary: string;
+}
+
+/** `shaping` in a task read, or null when `currentShaping` shows nothing. */
+export function taskShapingRead(task: { shaping?: TaskShaping | null; sessionId: string | null }): TaskShapingRead | null {
+  const record = currentShaping(task);
+  if (!record?.sessionId) return null;
+  return { state: record.state, sessionId: record.sessionId, summary: shapingSummaryLine(record) };
+}
 
 /** One call: one shaper, one repository. What `summariseShaping` folds per shaper. */
 export interface ShapingCallRecord {

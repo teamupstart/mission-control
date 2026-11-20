@@ -450,6 +450,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+tasks.registerWorkflowNames((workflowId) => workflows.workflowName(workflowId));
 // A task's dispatch Persona: creation, editing and launch all read the Library through this.
 tasks.registerPersonaLookup((id) => personas.store.getPersona(id));
 // Resident profiles and the one resident launch path. It creates its tasks through

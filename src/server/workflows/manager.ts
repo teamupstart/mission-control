@@ -1571,6 +1571,11 @@ export class WorkflowManager {
   }
 
   /** Whether the selected current immutable version can consume visual evidence. */
+  /** A workflow's name, for a shaper's view of the task's after-work step. Null when unknown. */
+  workflowName(workflowId: string): string | null {
+    return this.store.getWorkflow(workflowId)?.name ?? null;
+  }
+
   supportsImageEvidence(workflowId: string): boolean {
     const workflow = this.store.getWorkflow(workflowId);
     const version = workflow?.currentVersionId

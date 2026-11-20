@@ -1,4 +1,5 @@
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import type { TaskShaping } from "@shared/shaping.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -603,6 +604,17 @@ export const fetchResolvedStandingInstructions = (
 };
 
 /** What THIS session was actually sent at launch. `null` covers the route's 404. */
+/** `GET /api/tasks/:id/shaping`: what the task's current session received from task shaping. */
+export interface TaskShapingView {
+  summary: TaskShaping;
+  /** The section delivered in turn one, or null when nothing was kept. */
+  text: string | null;
+}
+
+/** Null on the route's 404, which is the ordinary answer for a task nothing shaped. */
+export const fetchTaskShaping = (taskId: string, signal?: AbortSignal) =>
+  fetchJsonWithSignal<TaskShapingView>(`/api/tasks/${encodeURIComponent(taskId)}/shaping`, signal);
+
 export const fetchSessionStandingInstructions = (id: string, signal?: AbortSignal) =>
   fetchJsonWithSignal<StandingInstructionsDelivery>(
     `/api/sessions/${encodeURIComponent(id)}/standing-instructions`,

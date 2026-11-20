@@ -6,13 +6,14 @@ at stage `select` chooses guidance for the task. How Mission Control reaches a s
 **transport**. Mission Control ships the mechanism and no shaper of its own content.
 
 **What this build does.** You register a `command` shaper through the API and dry-run it
-against a repository. Mission Control calls it at the gather and select stages, validates and
-caps what it returns, and reports the section it would add to a worker's first prompt and an
-outcome for each shaper. Nothing is called at dispatch: no worker receives shaped context yet,
-and the dashboard has no shaping surface beyond the flag's row.
+against a repository. Every dispatch then calls the enabled shapers after its worktrees are
+provisioned and before the worker starts, and adds what they return to the worker's first
+prompt as a "Task context" section. The pending tile reads "Shaping context" while that runs,
+and the session shows what it received and whether anything was degraded. A failing or slow
+shaper never stops the launch.
 
-**What comes later.** Calling shapers at dispatch, so that the section reaches the worker, and
-the other surfaces arrive in later phases. The sections marked for later below describe them.
+**What comes later.** The Settings panel, the shaper folder and the other transports arrive in
+later phases. The sections marked for later below describe them.
 
 Task shaping is a preview behind the `task-shaping` flag in **Settings > Feature flags**. With
 the flag off, the shaping API answers 404 and nothing reads the stored shapers.
@@ -21,8 +22,8 @@ The design and its decisions are in [the task shaping plan](plans/task-shaping/p
 
 ## How a run works
 
-A dry run goes through every step below for the one shaper it names. Once shaping runs at
-dispatch, a launch goes through the same steps for every enabled shaper.
+A dry run goes through every step below for the one shaper it names. A dispatch goes through
+the same steps for every enabled shaper.
 
 1. Mission Control builds the task's input: the prompt, its kind, title, labels and priority,
    the harness and runtime, the after-work workflow, and every attached repository. A dry run
@@ -148,7 +149,7 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 - A launch can lower the section's total for itself, never raise it: the engine's optional
   `maxSectionBytes` caps the section at the smaller of it and `limits.totalBytes`, and what
   does not fit is cut or dropped by the rules below. Dispatch passes it on a delivery path with
-  a byte ceiling (Phase 2).
+  a byte ceiling, as [Where the section lands](#where-the-section-lands) describes.
 - One entry is at most 16 KiB, its heading included. The budget is filled in stage order, then
   list order, then the order a shaper returned its entries. An entry that does not fit is cut at the last line
   boundary that does and marked `[truncated: N bytes omitted]`. An entry with less than 1 KiB
@@ -160,8 +161,8 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 
 ## The section a dry run reports
 
-The kept entries become one section. A dry run returns it as `section`. Once shaping runs at
-dispatch, this is the text a worker receives after the kind contract in turn one:
+The kept entries become one section. A dry run returns it as `section`. At dispatch, this is
+the text a worker receives after the kind contract in turn one:
 
 ```text
 ## Task context
@@ -250,7 +251,8 @@ All three routes are behind the flag and answer 404 while it is off.
   `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, whether
   a credential value was removed from its reply (`redacted`, set by the remote transports in
   Phase 5), the section that would be injected, and each entry in it. The summary's optional
-  `sessionId` stays unset here; dispatch stamps it when it delivers a record (Phase 2). A shaper that fails, times out or
+  `sessionId` stays unset here; dispatch stamps it when it delivers a record (see
+  [The record](#the-record)). A shaper that fails, times out or
   answers garbage is an outcome in a 200, never an error reply. A client that closes its
   connection before the reply stops the run, and with it each running shaper's process group.
 
@@ -281,7 +283,62 @@ A shaper id is lowercase kebab-case, at most 64 characters, the same rule as a f
 
 ## Seeing what was added
 
-Arrives with the dispatch seam.
+### Where the section lands
+
+Turn one is composed in one order on every harness and runtime: the claim note when a
+dependency install failed, the repository manifest and standing instructions, the operator's
+prompt, the kind contract, and then the task context section. Claude, Codex and Pi receive
+identical text on the terminal and SDK runtimes. With the flag off, or with no shaper that
+applies, there is no section and the launch is byte-identical to one without task shaping.
+
+The section never makes a task that launches today fail to launch. Each harness declares how
+its turn one reaches the worker (`turnOne` in `src/server/harness/index.ts`):
+
+| Path | Used by | Ceiling |
+| --- | --- | --- |
+| Embedded driver | Every SDK runtime | None |
+| Pane paste | Claude and Codex in a terminal | None |
+| Launch argument | Pi in a terminal | One argument (128 KiB on Linux, none on macOS) and `ARG_MAX` shared with every other argument and environment variable of the launch |
+
+On a launch argument, dispatch measures the larger turn-one variant as the argument carries it,
+and the launch's other arguments and environment, and lowers the section's total to what is
+left. The record's `limit` then says how many bytes the section had and why, and anything cut
+is recorded as truncated, never as degraded.
+
+### While it runs
+
+The pending tile reads "Shaping context" between "Provisioning its worktree" and "Launching".
+A task cancelled during the step stops there. The step's own deadline bounds it; a step that
+somehow does not finish within the deadline and two more seconds is recorded as `timed_out`
+and the worker launches without a section.
+
+### On the session
+
+A chip in the session header reads "Context: N entries", or an amber "Context degraded" when a
+shaper failed, timed out, returned an invalid reply, was unavailable or reported itself
+degraded. It opens "Context this session received": each shaper's stage, origin, outcome,
+reason, duration and version, every entry that was delivered, a note when the section was
+truncated, and a note for a shaper whose reply had a credential value removed. A degraded
+launch also shows a marker on its board card and its rail row.
+
+### The record
+
+The task keeps one record: the latest launch that reached a worker. It is written once turn
+one has been handed over (after the embedded driver started, or after the pane paste was
+acknowledged, or for Pi with its launch), in one transaction with the delivered text. A launch
+that fails before that point changes nothing. A launch that no shaper applied to, or that ran
+with the flag off, clears an earlier record. A launch whose only shaper failed keeps its
+degraded summary and has no text.
+
+Each record names the session it was delivered to, and follows that conversation when it is
+resumed or moves runtimes. Every reader shows a record only while it names the task's current
+session, so a redispatch never shows the previous launch's context or `degraded`.
+
+| Reader | What it returns |
+| --- | --- |
+| `GET /api/tasks` | Each task's `shaping` summary, when it describes the current session |
+| `GET /api/tasks/:id/shaping` | `{ summary, text }` for the current session, `text` null when nothing was kept; 404 otherwise. Behind the flag. |
+| `get_task`, `list_tasks` (Mission Control MCP) | `shaping: { state, sessionId, summary }`, such as `degraded: acme-guidance timed out; 0 entries` |
 
 ## Settings
 

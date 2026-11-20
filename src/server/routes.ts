@@ -1,6 +1,7 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
+import { withCurrentShaping } from "@shared/shaping.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -4380,7 +4381,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
-  app.get("/api/tasks", (c) => c.json(tasks.list()));
+  // Every task read applies the one shaping reader rule: a record left by an earlier launch
+  // describes another session and is not returned.
+  app.get("/api/tasks", (c) => c.json(tasks.list().map(withCurrentShaping)));
   app.get("/api/tasks/:id/plan-dependencies", (c) => {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
@@ -8893,7 +8896,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // Task shaping, behind its preview flag. See docs/task-shaping.md.
-  registerShapingRoutes(app);
+  registerShapingRoutes(app, (id) => tasks.get(id) ?? tasks.getDurable(id));
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

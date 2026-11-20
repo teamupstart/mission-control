@@ -495,8 +495,12 @@ per entry, per shaper and in total, and placed in its own labelled section, whic
 cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
 or returns something else is recorded as an outcome, never an error reply.
 
-This build only dry-runs shapers through the API: no worker receives their text yet. Calling
-them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
-later phase. The `mcp` and `http` transports, the shapers folder and the built-in gatherer are
-declared but not yet reachable: each answers `unavailable` until its phase lands, and its
-egress and folder ownership rules are documented with it.
+Every dispatch calls the enabled shapers after its worktrees are provisioned and before the
+worker starts, and the section is appended to the worker's first prompt after the kind
+contract. Nothing a shaper does can stop the launch: a shaper that fails, times out or answers
+something else is recorded as `degraded` and the worker starts without its text, and the
+section is cut to what the delivery path can carry, so it never makes a launch that works today
+fail. What each session received is recorded on the task and shown only for that session. The
+`mcp` and `http` transports, the shapers folder and the built-in gatherer are declared but not
+yet reachable: each answers `unavailable` until its phase lands, and its egress and folder
+ownership rules are documented with it.

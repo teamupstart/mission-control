@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { z } from "zod";
+import { TaskShapingSchema, type TaskShaping } from "@shared/shaping.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { createHash } from "node:crypto";
@@ -547,6 +548,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
       -- when they were leased. NULL when none failed, which is nearly every task.
       claim_warnings TEXT,
+      -- JSON TaskShaping (@shared/shaping.ts): what task shaping added to the latest launch
+      -- that reached a worker, naming its session. Written only by commitTaskShaping().
+      shaping       TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -4030,6 +4034,18 @@ function migrate(d: DatabaseSync): void {
   // The dependency claims that failed in a task's worktrees, as the task card shows them.
   // Nullable with no backfill: no task leased a claimed slot before this column existed.
   addColumn(d, "tasks", "claim_warnings", "TEXT");
+  // Task shaping's record of the latest launch that reached a worker, and the section that
+  // launch delivered. Nullable with no backfill: no launch was shaped before this column. The
+  // text has its own table so a task read never carries up to 64 KiB of prompt it did not ask
+  // for; it is replaced or deleted in the same transaction as the summary.
+  addColumn(d, "tasks", "shaping", "TEXT");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS task_shaping_text (
+      task_id    TEXT PRIMARY KEY,
+      text       TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -6287,6 +6303,7 @@ interface TaskRow {
   terminal_launch: string | null;
   session_id: string | null;
   claim_warnings?: string | null;
+  shaping?: string | null;
   schedule_id: string | null;
   schedule_occurrence_id: string | null;
   scheduled_for: number | null;
@@ -6470,6 +6487,21 @@ function readTaskClaimWarnings(raw: string | null): Pick<Task, "claimWarnings"> 
   try {
     const parsed = TaskClaimWarningsSchema.safeParse(JSON.parse(raw));
     return parsed.success && parsed.data.length > 0 ? { claimWarnings: parsed.data } : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * `tasks.shaping` read back, as the key `rowToTask` spreads: absent when there is no record,
+ * so an unshaped task reads exactly as it did before the column. An unreadable blob is no
+ * record, because one bad row must not take out `listTasks`.
+ */
+function readTaskShaping(raw: string | null): Pick<Task, "shaping"> {
+  if (!raw) return {};
+  try {
+    const parsed = TaskShapingSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? { shaping: parsed.data } : {};
   } catch {
     return {};
   }
@@ -6767,6 +6799,7 @@ function rowToTask(
     automaticCleanup,
     residentRestart,
     ...readTaskClaimWarnings(r.claim_warnings ?? null),
+    ...readTaskShaping(r.shaping ?? null),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -8082,12 +8115,88 @@ export function deleteTask(id: string): void {
     // cleaning up after this function forever instead of after genuine surprises.
     d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_source_sync WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
     if (ownsTransaction) d.exec("COMMIT");
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+// ---- task shaping record ----
+
+/**
+ * Settle one launch's shaping record: the summary and the delivered text, in ONE transaction.
+ *
+ * The only writer of `tasks.shaping` besides `rekeyTaskShaping`; `upsertTask` never names
+ * the column, so a task written from an older snapshot cannot bring a superseded record back.
+ * Called once turn one has been handed to the worker, whether or not shaping ran:
+ *
+ * - `summary` replaces the record, or clears it when null (no shaper applied, or the flag
+ *   was off).
+ * - `text` replaces the delivered section, or deletes it when empty. A launch whose only
+ *   shaper failed keeps its degraded summary and has no text.
+ *
+ * A task with no record and no text, settled with neither, is not written to at all, so an
+ * unshaped launch never touches either table. Returns whether anything changed.
+ */
+export function commitTaskShaping(taskId: string, summary: TaskShaping | null, text: string, at = Date.now()): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    let changes = 0;
+    if (summary) {
+      const record = TaskShapingSchema.parse(summary);
+      changes += Number(d.prepare(`UPDATE tasks SET shaping = ? WHERE id = ?`).run(JSON.stringify(record), taskId).changes);
+    } else {
+      changes += Number(d.prepare(`UPDATE tasks SET shaping = NULL WHERE id = ? AND shaping IS NOT NULL`).run(taskId).changes);
+    }
+    if (text) {
+      changes += Number(d.prepare(
+        `INSERT INTO task_shaping_text (task_id, text, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET text = excluded.text, created_at = excluded.created_at`,
+      ).run(taskId, text, at).changes);
+    } else {
+      changes += Number(d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(taskId).changes);
+    }
+    if (ownsTransaction) d.exec("COMMIT");
+    return changes > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Carry a task's record from one session to its successor in the same work episode, such as a
+ * resumed or transferred conversation. Only a record that names `fromSessionId` moves, so a
+ * record left by an earlier launch never attaches to a later one. Returns whether it moved.
+ */
+export function rekeyTaskShaping(taskId: string, fromSessionId: string, toSessionId: string): boolean {
+  if (fromSessionId === toSessionId) return false;
+  const r = openDb()
+    .prepare(
+      `UPDATE tasks SET shaping = json_set(shaping, '$.sessionId', ?)
+         WHERE id = ? AND shaping IS NOT NULL AND json_extract(shaping, '$.sessionId') = ?`,
+    )
+    .run(toSessionId, taskId, fromSessionId);
+  return Number(r.changes) > 0;
+}
+
+/** The stored record alone, for a task that is not in memory. */
+export function taskShapingRecord(taskId: string): TaskShaping | null {
+  const row = openDb().prepare(`SELECT shaping FROM tasks WHERE id = ?`).get(taskId) as { shaping: string | null } | undefined;
+  return readTaskShaping(row?.shaping ?? null).shaping ?? null;
+}
+
+/** The section the task's latest shaped launch delivered, when it delivered one. */
+export function getTaskShapingText(taskId: string): { text: string; createdAt: number } | null {
+  const row = openDb()
+    .prepare(`SELECT text, created_at FROM task_shaping_text WHERE task_id = ?`)
+    .get(taskId) as { text: string; created_at: number } | undefined;
+  return row ? { text: row.text, createdAt: row.created_at } : null;
 }
 
 export function listTasks(): Task[] {

@@ -13,6 +13,7 @@ import type { MissionSchedule } from "./schedules.ts";
 import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
+import type { TaskShaping } from "./shaping.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -2716,6 +2717,18 @@ export interface Task {
    * failures. Missing or empty when every claim succeeded or none ran; a new dispatch clears it.
    */
   claimWarnings?: TaskClaimWarning[];
+  /**
+   * What task shaping added to the latest launch of this task that reached a worker, naming
+   * the session it was delivered to. Absent or null when no shaper applied to that launch, the
+   * `task-shaping` flag was off, or the task has never launched. Read it only through
+   * `currentShaping`, which shows it while it names the task's current session.
+   */
+  shaping?: TaskShaping | null;
+  /**
+   * Set while this task's dispatch is shaping context, never persisted: the pending tile reads
+   * "Shaping context". A projection like `provisioning`, derived on every publish.
+   */
+  shapingContext?: { startedAt: number } | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2819,6 +2832,12 @@ export interface TaskSummary {
    * failed, so every other card's payload is what it was before claims existed.
    */
   claimWarnings?: TaskClaimWarning[];
+  /**
+   * `Task.shaping`, carried to the session card only while `currentShaping` shows it. Absent
+   * otherwise, so every unshaped card's payload is what it was before shaping existed. Readers
+   * still compare its `sessionId` with the session they draw.
+   */
+  shaping?: TaskShaping;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */

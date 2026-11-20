@@ -1,5 +1,7 @@
 # Phase 5: Dispatch options, drafts and banner (WP3)
 
+> **Status: in review (#1582).** Treated as built by the minimal plan. See `phased-plan.md` section 1.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18.
 
 **1. Outcome.** The daemon builds the dispatch dialog pages from shared registries, keeps the person's picks in a draft, and builds the banner text, so the mod never invents a list.

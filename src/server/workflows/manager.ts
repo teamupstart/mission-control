@@ -7772,10 +7772,15 @@ export class WorkflowManager {
    * compatibility `reattach` asks for. Each secondary repository's binding (`ensureRepoBinding`)
    * reviews its own worktree rather than the session's, so it moves with the session and keeps
    * that worktree: its `sessionCwd` never equals the session's, and requiring it to would leave
-   * it on the stopped session where no review could find a live one. A session in another
-   * checkout takes none of them.
+   * it on the stopped session where no review could find a live one.
    *
-   * Writes only, and answers the bindings it moved: Resume makes these moves in the same
+   * A conversation armed in another checkout than the one it reopened in (the session changed
+   * directory after its workflow was armed) carries none of them into a checkout they were not
+   * armed for. Nor are they left active on the stopped session: they are orphaned, as any
+   * binding whose session leaves is, so the workflow reads as detached and the operator can
+   * reattach it.
+   *
+   * Writes only, and answers the bindings it moved or orphaned: Resume makes these moves in the same
    * transaction as the task's own row, and publishes them with `announceBindings` once it has
    * committed.
    */
@@ -7784,7 +7789,12 @@ export class WorkflowManager {
       binding.sessionId === priorSessionId && binding.state === "active" && binding.noteKey === noteKey
       && !(binding.sessionAgent && binding.sessionAgent !== session.agent));
     const own = held.filter((binding) => !binding.repoRoot);
-    if (own.some((binding) => binding.sessionCwd !== session.cwd)) return [];
+    if (own.some((binding) => binding.sessionCwd !== session.cwd)) {
+      return held.flatMap((binding) => {
+        const orphaned = this.store.orphanBinding(binding.id, "session_disappeared", now);
+        return orphaned ? [orphaned.id] : [];
+      });
+    }
     const moved: string[] = [];
     for (const binding of held) {
       const secondary = Boolean(binding.repoRoot);

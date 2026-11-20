@@ -1207,18 +1207,15 @@ test("a hibernated task's armed binding survives its session leaving and a resta
   assert.equal(again.store.getBinding(binding.id)?.state, "active");
   assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-hib");
 
-  // A terminal Resume reopens the conversation as a new process: the bindings follow it, only
-  // into the same checkout, and keep the conversation's key.
+  // A terminal Resume reopens the conversation as a new process: the bindings follow it, into
+  // the same checkout, and keep the conversation's key.
   restarted.applyDiscovery([
-    discovered({ syntheticId: "session-elsewhere", tty: "ttys23", cwd: "/other", gitRoot: "/other", repoRoot: "/other", terminals: [mkMuxHandle({ paneId: "%else" })] }),
     discovered({ syntheticId: "session-resumed", tty: "ttys22", terminals: [mkMuxHandle({ paneId: "%resumed" })] }),
   ]);
   onConversation(restarted, "%resumed");
   assert.equal(restarted.getSession("session-resumed")?.agentSessionId, conversation);
-  again.followResumedConversation("session-hib", noteKey, restarted.getSession("session-elsewhere")!);
-  assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-hib", "another checkout does not take it");
-  assert.equal(again.store.getBinding(secondary.id)?.sessionId, "session-hib", "nor the secondary repository's");
-  again.followResumedConversation("session-hib", noteKey, restarted.getSession("session-resumed")!);
+  const movedIds = again.followResumedConversation("session-hib", noteKey, restarted.getSession("session-resumed")!);
+  assert.deepEqual([...movedIds].sort(), [binding.id, secondary.id].sort(), "it answers what it moved, for announcing after commit");
   const moved = again.store.getBinding(binding.id);
   assert.equal(moved?.state, "active");
   assert.equal(moved?.sessionId, "session-resumed");
@@ -1232,6 +1229,43 @@ test("a hibernated task's armed binding survives its session leaving and a resta
   assert.equal(again.store.getBinding(other.id)?.state, "orphaned", "and Resume does not carry another conversation's");
   assert.notEqual(again.store.getBinding(other.id)?.sessionId, "session-resumed");
   await again.stop();
+});
+
+test("a Resume into another checkout than the workflow was armed in detaches the binding instead of leaving it active", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered({ syntheticId: "session-armed", tty: "ttys31", terminals: [mkMuxHandle({ paneId: "%armed" })] })]);
+  registry.applyHook({ agent: "claude", event: "PostToolUse", sessionId: "conv-armed", cwd: "/repo", transcriptPath: null, env: { tmuxPane: "%armed" } });
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  workflows.start();
+  const app = buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+    personas,
+    workflows,
+  });
+  const created = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-armed" });
+  assert.equal(created.status, 201);
+  const binding = await created.json() as { id: string };
+  registry.upsertTask(mkTask({
+    id: "hibernated-moved-checkout",
+    status: "hibernated",
+    hibernation: { sessionId: "session-armed", runtime: "terminal" as const, permissionMode: null, checkout: null, agentSessionId: "conv-armed", noteKey: "conv-armed", hibernatedAt: 1, blocker: null, failure: null },
+  }));
+  registry.emit("event", { type: "session_remove", id: "session-armed" });
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "active", "held while the task sleeps");
+
+  // The conversation reopens in /other: the session had changed directory after the workflow
+  // was armed in /repo.
+  registry.applyDiscovery([discovered({ syntheticId: "session-moved", tty: "ttys32", cwd: "/other", gitRoot: "/other", repoRoot: "/other", terminals: [mkMuxHandle({ paneId: "%moved" })] })]);
+  const changed = workflows.followResumedConversation("session-armed", "conv-armed", registry.getSession("session-moved")!);
+  assert.deepEqual(changed, [binding.id]);
+  const detached = workflows.store.getBinding(binding.id);
+  assert.equal(detached?.state, "orphaned", "detached, so the workflow reads as needing reattachment");
+  assert.equal(detached?.sessionId, null, "and no longer claims the stopped session");
+  await workflows.stop();
 });
 
 test("resubmit fingerprints are durable, unchanged confirmation reuses its trigger, and Persona fails cannot use infrastructure retry", async () => {

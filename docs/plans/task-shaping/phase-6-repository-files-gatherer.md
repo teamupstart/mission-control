@@ -68,7 +68,8 @@ is not a built-in at all (see Handoff).
 
    A skip has one reason: `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`,
    `unreadable` or `empty`.
-3. **`include`.** At most 16 paths. Each readable file becomes one entry whose id and title are
+3. **`include`.** At most 10 paths, the shared result's cap on entries, so a reply can never
+   be rejected for having too many. Each readable file becomes one entry whose id and title are
    its path, with `truncated` set when it was cut. The per-file cap is its `maxBytes`, at most
    16 KiB.
 4. **`summary`.** One path, read the same way and cut to 4 KiB, returned as `repo.summary`.
@@ -96,7 +97,8 @@ is not a built-in at all (see Handoff).
   both refused, and a file that grows past the limit while it is read, which is cut off. A
   named pipe with no writer is skipped at once, as `not-a-regular-file`, whether it was there
   from the start or swapped in after the `lstat`.
-- An engine test: the facts and summary this gatherer returns reach a selector's request.
+- An engine test: the facts and summary this gatherer returns reach a selector's request,
+  and two worktrees with different files at the same path give two entries.
 - `test/shaping-http.test.ts` gains a dry-run of a registered `repository-files` gatherer.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` and `npm run smoke`.
 

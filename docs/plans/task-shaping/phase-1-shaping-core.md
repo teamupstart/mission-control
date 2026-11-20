@@ -88,7 +88,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 6. **`src/server/shaping/engine.ts`.** `shapeTask(input)`: resolve shapers, run gather then
    select, one call per shaper per repository in parallel, merge facts and summary for the
    selectors, cut a summary to 4 KiB, validate every reply with `ShapingResultSchema`, map
-   every failure to an outcome, allocate the budget, compose the section, build the summary.
+   every failure to an outcome, de-duplicate entries per repository, allocate the budget,
+   compose the section, build the summary.
    A transport reply of any kind may carry `redacted: true`, which Phase 5 sets when it
    removed a credential value from the data or from a failure reason, and the summary records
    it for that shaper.
@@ -149,7 +150,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   `node:` import in the shared
   modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
-  timeouts and the deadline, partial results, each outcome, and a `redacted` mark carried
+  timeouts and the deadline, partial results, each outcome, two repositories whose entries
+  share an id but differ, which both reach the section, and a `redacted` mark carried
   into the summary from a data reply and from a failed one, and a `maxSectionBytes` below
   `limits.totalBytes` that cuts the section and records it as truncated, and `input.trace`
   reaching every call of a run as `ctx.trace` unchanged while appearing in no summary or

@@ -181,8 +181,9 @@ list wins. The summary comes from the last gatherer that returns one. Mission Co
 summary at a line boundary to stay within 4 KiB, because FR-02 rejects a longer one.
 
 **Select.** A selector is called once per attached repository with that repository's merged
-facts and summary. Entries are de-duplicated: the same entry `id` from the same shaper is
-injected once, and so is an identical body from two shapers.
+facts and summary. Entries are de-duplicated per repository: the same entry `id` from the
+same shaper for the same repository is injected once, and so is an identical body from two
+shapers for that repository. The same path read from two worktrees stays two entries.
 
 **Route.** Reserved. See Skill routing.
 
@@ -529,8 +530,10 @@ cannot relax their authorization, plan or workflow rules.
   before that point writes nothing. A launch whose shapers all failed therefore keeps its
   `degraded` summary and has no text, and a retry never shows an earlier launch's context.
   Each record names the session it was delivered to, `sessionId`, and follows that session
-  across a resume. The chip and the viewer show a record only for the session it names, so
-  if a commit fails, the new session shows no context rather than the previous launch's.
+  across a resume. Every reader shows a record only while it names the task's current
+  session: the chip, the viewer, the board and rail markers, task reads and the shaping
+  route. So if a commit fails, the new launch shows no context and no `degraded` from the
+  previous one.
 - **In the dashboard.** A chip in the session header beside the standing-instructions chip:
   "Context: 3 entries", or an amber "Context degraded". It opens a viewer, "Context this
   session received", listing each shaper's origin, outcome, reason, duration and version,

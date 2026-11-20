@@ -81,6 +81,11 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    shaper failed or timed out keeps its degraded summary and its reason and has no text row,
    and a launch that no shaper applied to has neither. A task that has no record is not
    written to. `GET /api/tasks/:id/shaping` returns the summary and the text that exist.
+   Every reader goes through one shared predicate, `currentShaping(task)` in
+   `src/shared/shaping.ts`: the record counts only while its `sessionId` is the task's
+   current `sessionId`. Task reads, this route, the board and rail markers, the chip and the
+   viewer all use it, so a redispatch whose commit failed shows no earlier context or
+   `degraded` anywhere.
 3. **Progress.** A derived, unpersisted mark in the manner of `Task.provisioning`.
    `phaseCopy` reads "Shaping context" while it is set.
 4. **Chip and viewer.** A `ShapingChip` beside the standing-instructions chip, shown only
@@ -89,9 +94,10 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    lists each shaper's origin, outcome, reason, duration and version, each entry, a
    "truncated" note, and a "credential value removed" note for a shaper whose record is
    marked `redacted`. It follows the modal inset rule in the repository instructions.
-5. **Marker.** A small degraded marker on the board card and rail row, beside claim warnings.
+5. **Marker.** A small degraded marker on the board card and rail row, beside claim warnings,
+   from `currentShaping(task)`.
 6. **Task reads.** The JSON record gains `shaping` with `state`, the `sessionId` it
-   describes, and a one-line `summary`.
+   describes, and a one-line `summary`, present only when `currentShaping(task)` returns it.
 7. **Docs.** Fill "Seeing what was added" in `docs/task-shaping.md`. Add the turn-one order to
    `docs/dispatch-and-runtimes.md`.
 
@@ -130,7 +136,9 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   that settles the summary and the text in one transaction, in each of the four combinations,
   and for re-keying the session stamp when a session resumes under a new id.
 - `renderToStaticMarkup` tests for the chip's states, including a record that names another
-  session, which renders no chip.
+  session, which renders no chip, and the same record on a board card and rail row, which
+  render no marker. Unit tests for `currentShaping`, and an HTTP test that task reads and
+  the shaping route omit such a record.
 - `e2e/specs/task-shaping.spec.ts` with fake agents and `e2e/fixtures/fake-shaper.mjs` (modes
   ok, degraded, slow, garbage): "Shaping context" appears, the chip reads "Context: 2
   entries", the viewer lists them, a slow shaper still launches and shows "Context degraded"
@@ -148,8 +156,7 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 - A launch shows only its own record: never a summary, text or chip from an earlier launch
   of the same task. A launch whose only shaper failed still shows `degraded` with its reason.
 - A dispatch that fails before turn one is handed to the worker changes no record.
-- A session never shows a record that names another session, including after a failed
-  commit.
+- No reader shows a record that names another session, including after a failed commit.
 - No model tokens are spent by any test.
 
 ## Handoff

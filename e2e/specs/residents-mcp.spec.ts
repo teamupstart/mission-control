@@ -665,7 +665,7 @@ test("editing a saved pinned profile into all native sources is confirmed, saved
   await capture(dialog, "all-sources-edited-dispatch-summary");
 });
 
-test("changing the harness of an all-native profile requires destination consent", async ({ dashboard: page, daemon }) => {
+test("changing the harness of an all-native profile requires destination consent", async ({ dashboard: page, context, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
   await page.getByRole("button", { name: "Codex resident native MCP: off" }).click();
   await expect(page.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
@@ -688,12 +688,21 @@ test("changing the harness of an all-native profile requires destination consent
   await harness.selectOption("codex");
   await expect(confirm).toContainText("everything Codex loads", { timeout: 5_000 });
   await expectContentClearsBorder(confirm);
-  await capture(confirm, "codex-harness-change-confirm");
+  await capture(confirm, "codex-harness-change-preview-on");
+  const settings = await context.newPage();
+  await settings.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  await settings.getByRole("button", { name: "Codex resident native MCP: on" }).click();
+  await expect(confirm.getByRole("button", { name: "Import all sources" })).toBeDisabled({ timeout: 5_000 });
+  await expect(confirm.getByRole("alert")).toContainText("The Codex resident native MCP preview is off.");
+  await capture(confirm, "codex-harness-change-preview-off");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(harness).toHaveValue("claude");
   await expect(saved.getByRole("radio", allSources)).toBeChecked();
   await expect(saved).not.toContainText("unsaved changes");
 
+  await settings.getByRole("button", { name: "Codex resident native MCP: off" }).click();
+  await expect(settings.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
+  await settings.close();
   await harness.selectOption("codex");
   await expect(confirm).toContainText("everything Codex loads");
   await confirm.getByRole("button", { name: "Import all sources" }).click();

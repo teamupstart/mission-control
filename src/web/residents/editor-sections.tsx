@@ -2,6 +2,7 @@ import { useContext, useEffect, useState } from "react";
 import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.tsx";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { resolveFeatureFlag, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import {
@@ -172,6 +173,8 @@ function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavail
   const flags = useContext(FeatureFlagsContext);
   const [pendingHarness, setPendingHarness] = useState<ResidentAgent | null>(null);
   const pendingSources = pendingHarness && capabilitiesFor(pendingHarness).mcpSelection?.allNativeSources;
+  const pendingAvailable = pendingHarness && residentNativeMcpSources(pendingHarness, flags);
+  const pendingFlag = FEATURE_FLAGS.find((flag) => flag.id === pendingSources?.previewFlag);
   const chooseHarness = (next: ResidentAgent): void => {
     if (next === agent) return;
     if (draft.mcp.nativeSources === "all" && residentNativeMcpSources(next, flags)) {
@@ -241,9 +244,12 @@ function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavail
           harness={AGENT_IDENTITY[pendingHarness].label}
           sources={pendingSources.sources}
           changingHarness
+          unavailableReason={pendingAvailable ? undefined
+            : `The ${pendingFlag?.label ?? "native MCP"} preview is off. Enable it in Settings > Feature flags to continue.`}
           onClose={() => setPendingHarness(null)}
           onConfirm={() => {
-            if (!disabled && residentNativeMcpSources(pendingHarness, flags)) changeHarness(pendingHarness, "all");
+            if (disabled || !pendingAvailable) return;
+            changeHarness(pendingHarness, "all");
             setPendingHarness(null);
           }}
         />

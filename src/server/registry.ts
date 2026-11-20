@@ -1,6 +1,6 @@
 import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { getFeatureFlagsConfig } from "./feature-flags/index.ts";
-import { taskHasRepository } from "@shared/task.ts";
+import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
@@ -449,6 +449,15 @@ export interface SdkSessionRegistration {
    * requiring a harness to manufacture an idle frame.
    */
   initialState?: "starting" | "idle";
+  /**
+   * The task this runtime was launched for, from its durable `sdk_sessions` row.
+   *
+   * Carried because the session registers BEFORE the task's `sessionId` points at it, so
+   * the card's task chip can still be empty on the first frame. The Foreman invite is
+   * policy that has to be right on that frame: a resident must never publish the implicit
+   * `"sdk"` grant even briefly (see `foremanInviteFor`).
+   */
+  taskId?: string | null;
   pid?: number;
   permissionMode?: PermissionMode | null;
   gitBranch?: string | null;
@@ -1006,6 +1015,12 @@ export class Registry extends EventEmitter {
    * tombstones included - resolution, not storage, is where the tombstone becomes null.
    */
   private invites = new Map<string, ForemanInviteRow>();
+  /**
+   * The task each SDK runtime was launched for, keyed by session id, from
+   * `SdkSessionRegistration.taskId`. Read only by `foremanInviteFor` while the card has no
+   * task chip yet; forgotten when the session row goes.
+   */
+  private sdkLaunchTasks = new Map<string, string>();
   /**
    * The cwd of every session the last completed sweep refused (`discoveryAdmission`). A
    * hidden session has no card, but it still runs hooks, so `findSessionByEnv`'s unique-cwd
@@ -3060,6 +3075,8 @@ export class Registry extends EventEmitter {
     if (refusal) throw new Error(refusal);
     const now = input.now ?? Date.now();
     this.driverDialogs.delete(input.id);
+    if (input.taskId) this.sdkLaunchTasks.set(input.id, input.taskId);
+    else this.sdkLaunchTasks.delete(input.id);
     const s: Session = {
       id: input.id,
       agent: input.agent,
@@ -7066,6 +7083,7 @@ export class Registry extends EventEmitter {
     // Held until the ROW goes, not until the agent stopped - see `retroCorrections`. This is
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);
+    this.sdkLaunchTasks.delete(id);
     if (!this.sessions.delete(id)) return;
     this.sessionControlGrants.delete(id);
     this.emitEvent({ type: "session_remove", id });
@@ -8286,14 +8304,18 @@ export class Registry extends EventEmitter {
     const summary = this.taskSummaryFor(id, s.cwd);
     const workspace = this.workspaceFor(id, s.cwd, s.runtime);
     const name = this.emulatorDisplayName(s);
+    // The invite depends on the task's kind (see `foremanInviteFor`), so a chip that just
+    // arrived or moved re-resolves it in the same frame.
+    const foremanInvite = this.foremanInviteFor({ ...s, task: summary });
     if (
       terminalsEqual(observed.terminals, s.terminals) &&
       s.name === name &&
       JSON.stringify(s.task) === JSON.stringify(summary) &&
+      s.foremanInvite === foremanInvite &&
       s.workspaceRoot === workspace.root &&
       JSON.stringify(s.workspace ?? null) === JSON.stringify(workspace.view)
     ) return;
-    const next = { ...s, name, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
+    const next = { ...s, name, task: summary, foremanInvite, workspaceRoot: workspace.root, workspace: workspace.view };
     this.sessions.set(id, next);
     this.emitSession(next);
   }
@@ -9607,11 +9629,20 @@ export class Registry extends EventEmitter {
    * Resolve a session's invite state: a `'withdrawn'` row means `null` (the tombstone
    * beats even the implicit grant); any other row speaks for itself; no row means the
    * runtime decides - an SDK session is invited by construction, everything else is not.
+   * The one exception to the implicit grant is a task kind that launches uninvited
+   * (`TASK_KIND_BEHAVIOR[kind].foremanInvite`, false for residents): its SDK session
+   * resolves to `null` until the operator invites Foreman, which writes `'operator'`.
+   * The kind comes from the session's task chip, and until that chip exists from the task
+   * the runtime was launched for - so the first frame of a resident is already uninvited.
+   * `resyncSessionTask` re-resolves it whenever the chip moves.
    */
   private foremanInviteFor(s: Session): ForemanInvite | null {
     const row = this.invites.get(noteKeyFor(s));
     if (row) return row.source === "withdrawn" ? null : row.source;
-    return s.runtime === "sdk" ? "sdk" : null;
+    if (s.runtime !== "sdk") return null;
+    const launchTaskId = this.sdkLaunchTasks.get(s.id);
+    const kind = s.task?.kind ?? (launchTaskId ? this.tasks.get(launchTaskId)?.kind : undefined);
+    return kind && !TASK_KIND_BEHAVIOR[kind].foremanInvite ? null : "sdk";
   }
 
   /**

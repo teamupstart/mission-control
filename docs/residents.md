@@ -412,7 +412,9 @@ messages, and never clears a blocker without evidence that its `resumeWhen` cond
 ## Lifecycle
 
 After each completed turn a resident waits for its next wake. Foreman never completes it
-automatically. It ends when you choose **Complete & close** on its session,
+automatically, and it is not invited into resident sessions: a resident launches with Foreman
+out of the session, so Foreman writes no Purpose note, queue tick, wrap-up prompt or
+pull-request follow-through there. Invite it from the session's Foreman rail if you want it. It ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. The
 Complete dialog first offers a [retro](#retro-before-completing) that turns your steering into
 proposed instruction changes. A

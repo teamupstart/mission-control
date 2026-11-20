@@ -1,5 +1,7 @@
 # Phase 6: Repository task skills (WP8)
 
+> **Status: in flight on its own (#1565).** Not in the minimal chain and not needed for the E2E. Merges independently.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18.
 
 **1. Outcome.** A repository can add `.claude/skills/{kind}/SKILL.md`, and its text is added, when `headless-mode` is on, to a worker's first prompt for every origin, never replacing Mission Control's own.

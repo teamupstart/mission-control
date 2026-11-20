@@ -439,6 +439,36 @@ test("an Agent SDK Resume binds the task only once its driver reports reopening 
   assert.equal(g.registry.getTask("sdk-silent")?.sessionId, null);
 });
 
+test("a driver that opens the wrong conversation does not repoint the row, and Retry reopens the saved one", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const id = "sdk-wrong-then-right";
+  const sessionId = await hibernated(f, t, id, checkout(id));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const wrong = boundTo(fakeHandle(), "conv-elsewhere");
+  const first = withFakeDriver(async () => wrong);
+  const refused = await f.hibernation.resume(id);
+  first.restore();
+  assert.match(refused.ok ? "" : refused.error, /its driver opened conversation conv-elsewhere instead of conv-sdk-wrong-then-right/);
+  assert.equal(first.calls[0]?.resume, `conv-${id}`, "it was asked for the saved conversation");
+  await drain();
+  // Its report reached the row, and the refusal put the saved conversation back.
+  assert.equal(getSdkSession(sessionId)?.agentSessionId, `conv-${id}`);
+  assert.equal(getSdkSession(sessionId)?.status, "hibernated");
+  t.mock.timers.tick(9_000);
+  await drain();
+  t.mock.timers.reset();
+
+  const right = boundTo(fakeHandle(), `conv-${id}`);
+  const second = withFakeDriver(async () => right);
+  const retried = await f.hibernation.resume(id);
+  second.restore();
+  assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
+  assert.equal(second.calls[0]?.resume, `conv-${id}`, "Retry reopens the saved conversation");
+  assert.equal(f.registry.getTask(id)?.status, "running");
+  assert.equal(f.registry.getTask(id)?.sessionId, sessionId);
+});
+
 test("a failed resume says why, keeps the task hibernated, and a retry succeeds", async (t) => {
   const f = fleet();
   t.after(() => f.tasks.stopMissionSessionClosures());

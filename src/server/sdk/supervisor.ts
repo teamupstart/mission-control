@@ -61,6 +61,7 @@ import {
   getSdkSession,
   listSdkSessions,
   recordSdkSessionBinding,
+  setSdkSessionConversation,
   recordSdkSessionProcess,
   sdkSessionIsLive,
   setSdkSessionEffort,
@@ -1221,6 +1222,16 @@ export class SdkSupervisor {
   }
 
   /**
+   * Point a hibernated row back at `conversation`, the task's saved one. A woken driver reports
+   * the conversation it opened (`bound`), and that report is written to the row whether or not
+   * Resume accepts it, so one Resume refuses must not leave the next one reopening it.
+   */
+  keepConversation(id: string, conversation: string): void {
+    const row = getSdkSession(id);
+    if (row && row.agentSessionId !== conversation) setSdkSessionConversation(id, conversation);
+  }
+
+  /**
    * Reopen a hibernated session: relaunch its driver under the SAME id with its conversation,
    * exactly as a daemon restart does (`resume`), on the operator's Resume.
    *
@@ -1228,7 +1239,7 @@ export class SdkSupervisor {
    * `hibernated` so the operator can retry. On success the session is registered idle and the
    * row is live again; binding it back to its task is the caller's.
    */
-  async wake(id: string): Promise<Session> {
+  async wake(id: string, conversation: string): Promise<Session> {
     if (this.shuttingDown) throw new Error("Mission Control is shutting down");
     if (this.handles.has(id)) throw new Error("its agent is already running");
     if (this.waking.has(id)) throw new Error("it is already resuming");
@@ -1243,12 +1254,14 @@ export class SdkSupervisor {
     }
     // Asked here rather than left to the harness, whose refusal would not name the checkout.
     if (!existsSync(row.cwd)) throw new Error(`its checkout ${row.cwd} no longer exists`);
+    // The task's saved conversation, never whatever an earlier refused wake left on the row.
+    this.keepConversation(id, conversation);
     this.waking.add(id);
     // Before the driver starts, so not even an immediate exit can write its row `exited`.
     this.unboundWakes.add(id);
     try {
       // No continuation turn is owed: only an idle session is hibernated.
-      await this.resume({ ...row, turnInProgress: false });
+      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false });
     } catch (error) {
       // Adopted, then something after the adoption threw: the conversation IS open again and
       // its pump owns it from here, so this is a resume, not a failure to report.

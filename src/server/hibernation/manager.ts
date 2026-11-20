@@ -334,7 +334,7 @@ export class HibernationManager {
     if (mismatch) return this.resumeFailed(taskId, mismatch);
     let session: Session;
     try {
-      session = await this.supervisor.wake(record.sessionId);
+      session = await this.supervisor.wake(record.sessionId, record.agentSessionId);
     } catch (error) {
       return this.resumeFailed(taskId, error instanceof Error ? error.message : String(error));
     }
@@ -343,7 +343,7 @@ export class HibernationManager {
     if (!this.stillHibernated(taskId, record)) return this.taskChangedWhileResuming(session);
     // Read again now the driver is up: the checkout may have been replaced while it started.
     const replaced = checkoutMismatch(record.checkout);
-    if (replaced) return this.putBackToSleep(taskId, session, replaced);
+    if (replaced) return this.putBackToSleep(taskId, session, record, replaced);
     // The id the relaunch was handed is what was ASKED for. Only the driver's own report says
     // which conversation it actually opened, so the task waits for that before it is bound.
     const confirmMs = this.options.confirmMs ?? CONVERSATION_CONFIRM_MS;
@@ -352,6 +352,7 @@ export class HibernationManager {
       return this.putBackToSleep(
         taskId,
         session,
+        record,
         reported
           ? `its driver opened conversation ${reported} instead of ${record.agentSessionId}`
           : `its driver did not report reopening the conversation within ${Math.round(confirmMs / 1000)} seconds`,
@@ -360,9 +361,9 @@ export class HibernationManager {
     // The wait above is long enough for the checkout to be replaced in, so its identity is
     // read again at the last moment before the task is bound, as the terminal path does.
     const replacedWhileWaiting = checkoutMismatch(record.checkout);
-    if (replacedWhileWaiting) return this.putBackToSleep(taskId, session, replacedWhileWaiting);
+    if (replacedWhileWaiting) return this.putBackToSleep(taskId, session, record, replacedWhileWaiting);
     const rival = this.rivalFor(session, record);
-    if (rival) return this.putBackToSleep(taskId, session, `its conversation was opened in "${rival.name}" while it was resuming`);
+    if (rival) return this.putBackToSleep(taskId, session, record, `its conversation was opened in "${rival.name}" while it was resuming`);
     // And the task itself, read after that wait rather than before it: binding a copy taken
     // earlier would recreate a task deleted meanwhile, or overwrite whatever it became.
     const current = this.stillHibernated(taskId, record);
@@ -380,6 +381,7 @@ export class HibernationManager {
       return this.putBackToSleep(
         taskId,
         live,
+        record,
         `its driver moved to conversation ${live.agentSessionId ?? "(none)"} before the task could be bound to it`,
       );
     }
@@ -424,9 +426,12 @@ export class HibernationManager {
    * later Resume can reopen it - rather than run unowned. A driver that will not stop is said
    * so, and the next Resume stops it before it launches anything (see `resume`).
    */
-  private async putBackToSleep(taskId: string, session: Session, reason: string): Promise<HibernationResult> {
+  private async putBackToSleep(taskId: string, session: Session, record: TaskHibernation, reason: string): Promise<HibernationResult> {
     // Already ended on its own: nothing to stop, and its row stayed `hibernated`.
-    if (!this.supervisor!.handleFor(session.id)) return this.resumeFailed(taskId, reason);
+    if (!this.supervisor!.handleFor(session.id)) {
+      this.supervisor!.keepConversation(session.id, record.agentSessionId);
+      return this.resumeFailed(taskId, reason);
+    }
     try {
       await this.supervisor!.hibernate(session.id);
     } catch (error) {
@@ -436,6 +441,9 @@ export class HibernationManager {
           `(${error instanceof Error ? error.message : String(error)}). It may still be running: Retry stops it first`,
       );
     }
+    // Stopped, so nothing reports over it now: the row reopens the task's saved conversation,
+    // not whatever this driver reported. (`wake` restores it too, for a driver that would not stop.)
+    this.supervisor!.keepConversation(session.id, record.agentSessionId);
     return this.resumeFailed(taskId, reason);
   }
 

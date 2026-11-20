@@ -297,6 +297,17 @@ export function recordSdkSessionBinding(
     .run(agentSessionId, modelId, "running" satisfies SdkSessionStatus, now, id);
 }
 
+/**
+ * Put back the conversation a hibernated row reopens. A woken driver that reported another one
+ * wrote it here through `recordSdkSessionBinding`; the task's saved conversation is the one Resume
+ * owes it, so a refused Resume restores it rather than leave the next one to reopen the wrong one.
+ */
+export function setSdkSessionConversation(id: string, agentSessionId: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET agent_session_id = ?, updated_at = ? WHERE id = ?`)
+    .run(agentSessionId, now, id);
+}
+
 export function setSdkSessionStatus(
   id: string,
   status: SdkSessionStatus,

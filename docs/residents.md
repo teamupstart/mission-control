@@ -746,8 +746,9 @@ is refused. Codex also checks for collisions in active workspace and managed con
 starting the thread. Codex's user `[mcp_servers.mission-control]` table may keep what Mission
 Control's own setup writes there: the `command`, `args` and `env.ELECTRON_RUN_AS_NODE = "1"` from
 installing the integration, and `default_tools_approval_mode = "approve"` from the Setup trust
-action. Any other field in that table, or the server defined in another layer, refuses the start
-and names the key to remove. To use **Pinned at launch** while a Codex OAuth server is configured globally,
+action. An `env` key the launch flags also set, such as `MISSION_PORT`, is accepted because the
+launch replaces its value. Any other field or `env` key in that table, or the server defined in
+another layer, refuses the start and names the key to remove. To use **Pinned at launch** while a Codex OAuth server is configured globally,
 turn off **Inherit harness defaults** and select the servers the resident needs.
 
 If plugin MCP tools disappear when the account has a claude.ai connector for the same server,

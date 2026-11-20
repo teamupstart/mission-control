@@ -124,24 +124,39 @@ export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly 
   return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Whether `char` is an ASCII letter or digit: the edge a short value's whole-token match needs. */
+function alphanumeric(char: string | undefined): boolean {
+  return char !== undefined && /[A-Za-z0-9]/.test(char);
 }
 
 /**
  * Every start offset of `value` in `text`, overlapping occurrences included: a search that
  * resumed after each match would step over a second copy that begins inside the first.
+ *
+ * Knuth-Morris-Pratt, so the scan is linear in the text and the value whatever they hold. A
+ * search that restarted at each match, such as `indexOf` from the next offset, compares a long
+ * value against the same characters again for every overlapping copy: a 100 KiB value of one
+ * repeated character over a 256 KiB diagnostic is billions of comparisons on the event loop.
+ * A whole-token match is the same scan with the characters on either side checked afterwards.
  */
 function occurrences(text: string, value: string, wholeToken: boolean): number[] {
   const starts: number[] = [];
-  if (!wholeToken) {
-    for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) starts.push(at);
-    return starts;
+  if (value.length === 0 || value.length > text.length) return starts;
+  // fallback[i]: the length of the longest proper prefix of value[0..i] that is also its suffix.
+  const fallback = new Int32Array(value.length);
+  for (let i = 1, k = 0; i < value.length; i++) {
+    while (k > 0 && value[i] !== value[k]) k = fallback[k - 1]!;
+    if (value[i] === value[k]) k++;
+    fallback[i] = k;
   }
-  const pattern = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(value)}(?![A-Za-z0-9])`, "g");
-  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    starts.push(match.index);
-    pattern.lastIndex = match.index + 1;
+  for (let i = 0, k = 0; i < text.length; i++) {
+    while (k > 0 && text[i] !== value[k]) k = fallback[k - 1]!;
+    if (text[i] === value[k]) k++;
+    if (k === value.length) {
+      const start = i - value.length + 1;
+      if (!wholeToken || (!alphanumeric(text[start - 1]) && !alphanumeric(text[i + 1]))) starts.push(start);
+      k = fallback[k - 1]!;
+    }
   }
   return starts;
 }

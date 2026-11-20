@@ -30,7 +30,8 @@ dispatch, a launch goes through the same steps for every enabled shaper.
    (otherwise `ship`). The title is empty, there are no labels, and the rest is null.
 2. **Gather.** Each enabled gatherer is called once per repository, all in parallel. Facts the
    gatherers return merge by name, the later gatherer in the list winning, and the repository's
-   summary comes from the last gatherer that returned one, cut at a line boundary to 4 KiB.
+   summary comes from the last gatherer that returned one, cut at a line boundary to 4 KiB. An
+   empty summary counts as returned and clears an earlier one; an omitted one does not.
 3. **Select.** Once gather has settled, each enabled selector is called once per repository, in
    parallel, with that repository's merged facts and summary.
 4. Every reply is validated against one result shape. Anything else becomes an outcome with a

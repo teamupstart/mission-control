@@ -69,6 +69,24 @@ test("with no shaper that applies the run is empty and nothing is called", async
   assert.equal(calls, 0);
 });
 
+test("an empty summary from a later gatherer replaces an earlier one; an omitted one does not", async () => {
+  const seen: ShapingRequest[] = [];
+  const config = configWith([shaper("g1", "gather"), shaper("g2", "gather"), shaper("g3", "gather"), shaper("s1", "select")]);
+  await run(config, (request, entry) => {
+    seen.push(request);
+    if (entry.id === "g1") return data({ repo: { summary: `stale summary of ${request.repo.name}` } });
+    // g2 clears it for billing-api only; g3 returns no summary at all.
+    if (entry.id === "g2") return data(request.repo.name === "billing-api" ? { repo: { summary: "" } } : {});
+    if (entry.id === "g3") return data({ repo: { facts: { language: "go" } } });
+    return data({ guidance: [] });
+  });
+  const select = seen.filter((request) => request.stage === "select");
+  assert.deepEqual(select.map((request) => [request.repo.name, request.repo.summary]), [
+    ["billing-api", undefined],
+    ["ledger", "stale summary of ledger"],
+  ]);
+});
+
 test("gather settles before select starts, and selectors receive merged facts and the last summary", async () => {
   const events: string[] = [];
   const seen: ShapingRequest[] = [];

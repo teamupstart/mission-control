@@ -345,7 +345,9 @@ async function runShaping(
         if (result.facts) {
           facts[index] = Object.fromEntries(Object.entries({ ...facts[index], ...result.facts }).slice(0, SHAPING_LIMITS.facts));
         }
-        if (result.summary) summaries[index] = cutAtLineBoundary(result.summary, SHAPING_LIMITS.summaryBytes);
+        // A presence check: an empty summary a later gatherer returns replaces an earlier one,
+        // and only an omitted one leaves it standing.
+        if (result.summary !== null) summaries[index] = cutAtLineBoundary(result.summary, SHAPING_LIMITS.summaryBytes);
       });
     }
   } finally {

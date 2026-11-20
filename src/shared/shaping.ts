@@ -388,22 +388,39 @@ const COOKIE_FLAGS = new Set(["b", "cookie"]);
 /** Short flags that may carry their value attached, as in `-HAuthorization: x` or `-dtoken=x`. */
 const ATTACHED_FLAGS = new Set(["H", "u", "U", "d", "F"]);
 /**
- * For curl, `-b` attaches its cookie and `-x` its proxy URL as well: `-bsession=x`,
- * `-xsocks5://user:pass@host`. Only for curl, because for any other
- * program `-backup=x` is a flag of its own and reading it as a cookie would refuse it wrongly.
+ * curl's short options that take a value. curl reads a single-dash argument as a group of
+ * short options: switches such as `-s` or `-v` come first, and the first option that takes a
+ * value takes the rest of the argument, or the next argument when nothing is left. So
+ * `-sH "Authorization: x"`, `-svuname:pass`, `-bsession=x` and `-xsocks5://user:pass@host` all
+ * hand over a value. Only for curl, because for any other program `-backup=x` or `-sH` may be a
+ * flag of its own, and reading it the way curl does would refuse it wrongly.
  */
-const CURL_ATTACHED_FLAGS = new Set([...ATTACHED_FLAGS, "b", "x"]);
+const CURL_VALUE_SHORT_FLAGS = new Set("AbcCdDeEFHKmoPQrtTuUwxXyYz");
 
 /** Whether a command names curl, by its file name, wherever it is installed. */
 function isCurl(command: unknown): boolean {
   return typeof command === "string" && /(?:^|\/)curl$/.test(command);
 }
 
+/** A single-dash argument read the way curl reads it: a group of short options, see above. */
+function curlShortGroup(args: readonly string[], index: number): { name: string; value?: string; at: number } {
+  const body = args[index]!.slice(1);
+  for (let at = 0; at < body.length; at++) {
+    const letter = body[at]!;
+    if (!CURL_VALUE_SHORT_FLAGS.has(letter)) continue;
+    const rest = body.slice(at + 1);
+    // curl takes the next argument as the value whatever it looks like, a leading dash included.
+    return rest !== "" ? { name: letter, value: rest, at: index } : { name: letter, value: args[index + 1], at: index + 1 };
+  }
+  return { name: body, at: index };
+}
+
 /** One argument read as a flag: its name, and the value it carries and where, if any. */
 function argumentParts(
-  args: readonly string[], index: number, attached: ReadonlySet<string> = ATTACHED_FLAGS,
+  args: readonly string[], index: number, curl = false,
 ): { name: string; value?: string; at: number } | null {
   const arg = args[index]!;
+  if (curl && arg.length > 1 && arg.startsWith("-") && !arg.startsWith("--")) return curlShortGroup(args, index);
   const next = args[index + 1];
   const following = next !== undefined && !next.startsWith("-") ? next : undefined;
   if (arg.startsWith("--")) {
@@ -418,7 +435,7 @@ function argumentParts(
     const body = arg.slice(1);
     // An attached short value comes first: `-HAuthorization: x`, `-uuser:pass`, `-dtoken=x`.
     // The letter is followed by text with a colon, an equals sign or a space.
-    if (body.length > 1 && attached.has(body[0]!) && /[:=\s]/.test(body.slice(1))) {
+    if (body.length > 1 && ATTACHED_FLAGS.has(body[0]!) && /[:=\s]/.test(body.slice(1))) {
       return { name: body[0]!, value: body.slice(1), at: index };
     }
     const equals = body.indexOf("=");
@@ -493,15 +510,17 @@ function urlCarriesCredential(value: string): boolean {
  * - a credential flag such as `--user name:pass` or `--oauth2-bearer x`, and `-u name:pass`;
  * - a data or form field named as a credential, `-d token=x`, `--form password=x`, and a JSON
  *   body, or a field holding one, that names one, `--json '{"token":"x"}'`;
- * - a cookie, `-b session=x`, and attached as `-bsession=x` when the command is curl;
+ * - a cookie, `-b session=x`;
+ * - for curl, any of these as a short option grouped after switches, `-sH "Authorization: x"`,
+ *   `-svuname:pass`, `-bsession=x`, `-xsocks5://user:pass@host`, read as curl reads them;
  * - a URL with a user name, a password or a credential query parameter, alone or as a value.
  */
 function literalCredentialArguments(args: readonly string[], command?: unknown): number[] {
   const found = new Set<number>();
-  const attached = isCurl(command) ? CURL_ATTACHED_FLAGS : ATTACHED_FLAGS;
+  const curl = isCurl(command);
   args.forEach((arg, index) => {
     if (urlCarriesCredential(arg)) found.add(index);
-    const parts = argumentParts(args, index, attached);
+    const parts = argumentParts(args, index, curl);
     if (!parts || parts.value === undefined || parts.value === "") return;
     const name = parts.name;
     if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name)) return;

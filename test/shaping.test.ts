@@ -283,6 +283,16 @@ test("curl's attached cookie is refused and stripped, and -b stays an ordinary f
     assert.equal(run(command, ["-bcookies.txt"]).success, true, `${command}, a cookie file holds no secret inline`);
   }
   assert.equal(run("/usr/local/bin/backup-tool", ["-backup=x"]).success, true, "another program's -backup=x is its own flag");
+  // Grouped after switches, as curl reads a single-dash argument: the first option that takes a
+  // value takes the rest of the argument, or the next one.
+  for (const args of [["-sH", "Authorization: Bearer sk-g1"], ["-sHAuthorization: Bearer sk-g2"], ["-svuname:pass"], ["-su", "name:pass"],
+    ["-sSLd", "token=sk-g3"], ["-sb", "session=sk-g4"], ["-sxsocks5://u:p@proxy.example"], ["-kU", "proxy:pass"], ["-sH", "-X-Api-Key: sk-g5"]]) {
+    assert.equal(run("/usr/bin/curl", args).success, false, `grouped ${args.join(" ")}`);
+  }
+  for (const args of [["-sSL", "https://context.example/x"], ["-sH", "Accept: application/json"], ["-sb", "cookies.txt"], ["-so", "out.json"]]) {
+    assert.equal(run("/usr/bin/curl", args).success, true, `grouped ${args.join(" ")}`);
+  }
+  assert.equal(run("/usr/local/bin/shaper", ["-sH", "x"]).success, true, "another program's -sH is its own flag");
   // A proxy URL of any scheme, alone, as a flag's value, or attached to curl's -x.
   for (const args of [["--proxy", "socks5://u:p@proxy.example:1080"], ["--proxy=socks5h://u:p@proxy.example"], ["-x", "socks4a://u@proxy.example"],
     ["socks5://u:p@proxy.example"], ["--preproxy", "ftp://u:p@files.example"]]) {

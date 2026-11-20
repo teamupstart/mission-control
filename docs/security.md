@@ -404,8 +404,10 @@ into a fragment the redactor no longer recognises. A value is replaced anywhere 
 four characters or longer, and as a whole token when it is shorter, so `LANG=C` does not blank
 every "C" in the message. A value of a variable the operator named in `env` is a credential it
 chose to pass, so it is replaced anywhere whatever its length, inside a word included. Overlapping or adjacent matches, including two values that overlap,
-are replaced as one span, so no part of either survives. Marking the matches is linear in the
-text for each value, so a reply at the 256 KiB cap cannot stall the daemon. Entry bodies are
+are replaced as one span, so no part of either survives. Each value is found with a
+Knuth-Morris-Pratt scan and its matches are marked in a difference array, so the work is linear
+in the text and the value however many copies overlap, and a reply at the 256 KiB cap cannot
+stall the daemon. Entry bodies are
 the shaper's content and are not rewritten.
 
 stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
@@ -439,8 +441,9 @@ as literal text: a credential-named flag (`--token=…`, `--api-key …`), a hea
 credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
 `--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
 field named as a credential (`-d token=…`, `--form password=…`), a JSON body that names one at
-any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), a cookie (`-b`, `--cookie`,
-and for curl `-bname=value` attached), or
+any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), a cookie (`-b`, `--cookie`), any of
+these as a curl short option grouped after switches, read the way curl reads it (`-sH "Authorization: …"`,
+`-svuname:pass`, `-bname=value`), or
 a URL of any scheme, including a proxy such as `socks5://`, with userinfo or a credential
 query parameter, alone or as a flag's value (for curl also attached to `-x`). Arguments are never resolved, so name the variable in
 `env` instead.

@@ -275,6 +275,21 @@ test("redacting 256 KiB of shaper output with thousands of matches stays linear"
   assert.ok(Date.now() - started < 5_000, `took ${Date.now() - started} ms`);
 });
 
+test("a long value with many overlapping copies is found in linear time", () => {
+  // 128 KiB of one character over 256 KiB of the same, the worst case for a search that
+  // restarts at each match: every offset starts a copy, and each restart compared the whole
+  // value again. That took about 4 s here, all of it on the event loop; this takes milliseconds.
+  const value = "a".repeat(128 * 1024);
+  const text = `x${"a".repeat(256 * 1024)}y`;
+  const started = Date.now();
+  assert.equal(redactReceived(text, inheritedOnly(value)), "x[redacted]y");
+  assert.equal(redactReceived(`${value.slice(1)}b`, inheritedOnly(value)), `${value.slice(1)}b`, "one short of a copy is not a match");
+  assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started} ms`);
+  // Overlap and whole-token edges, as before.
+  assert.equal(redactReceived("<abXabXab>", inheritedOnly("abXab")), "<[redacted]>", "copies at 1 and 4 overlap");
+  assert.equal(redactReceived("C1 C, xC", inheritedOnly("C")), "C1 [redacted], xC");
+});
+
 test("a value cut at the front of a long stderr tail never survives as a fragment", async () => {
   const saved = process.env.SHAPER_FIXTURE_LONG;
   process.env.SHAPER_FIXTURE_LONG = `long-${"v".repeat(400)}-value`;

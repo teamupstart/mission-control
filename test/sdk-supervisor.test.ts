@@ -257,6 +257,53 @@ test("a resident's measured native limit is persisted and replayed by a fresh su
   assert.equal(residents.getResidentRun("native-run")?.run.endedAt, null);
 });
 
+test("a restart restores residents with the Foreman invite each one had", async t => {
+  // One resident Foreman was never invited into, and one the operator invited explicitly.
+  // Across a daemon restart the first must not regain the implicit SDK grant - on any frame -
+  // and the second must keep its persisted operator invite.
+  const launched = [fakeHandle(), fakeHandle(), fakeHandle(), fakeHandle()];
+  const queue = [...launched];
+  const fake = withFakeDriver(async () => queue.shift()!);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const ids = { quiet: "restart-resident-quiet", invited: "restart-resident-invited" };
+  for (const id of Object.values(ids)) {
+    registry.upsertTask(mkTask({ id, kind: "resident", workspaceKind: "resident-workspace", status: "running",
+      repoRoot: `/residents/runs/${id}/workspace`, worktreePath: null, provider: null, homeName: null }));
+  }
+  const original = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  const quiet = await original.start({ ...START, cwd: `/residents/runs/${ids.quiet}/workspace`, taskId: ids.quiet });
+  const invited = await original.start({ ...START, cwd: `/residents/runs/${ids.invited}/workspace`, taskId: ids.invited });
+  registry.upsertTask({ ...registry.getTask(ids.quiet)!, sessionId: quiet.id });
+  registry.upsertTask({ ...registry.getTask(ids.invited)!, sessionId: invited.id });
+  launched[0]!.push({ kind: "bound", agentSessionId: "restart-quiet-thread", transcriptPath: null, modelId: null, pid: null });
+  launched[1]!.push({ kind: "bound", agentSessionId: "restart-invited-thread", transcriptPath: null, modelId: null, pid: null });
+  await drain();
+  assert.equal(registry.getSession(quiet.id)?.foremanInvite, null);
+  assert.equal(registry.inviteForeman(invited.id), "operator");
+  await original.stopAll();
+
+  // The restart: a fresh registry over the same database, and a fresh supervisor restoring
+  // every live row through `resume`.
+  const after = new Registry();
+  const frames = new Map<string, (string | null)[]>();
+  after.subscribe((event: ServerEvent) => {
+    if (event.type !== "session_upsert") return;
+    frames.set(event.session.id, [...(frames.get(event.session.id) ?? []), event.session.foremanInvite]);
+  });
+  const restored = new SdkSupervisor(after, MISSION_TEST_MCP_DEPS);
+  t.after(() => restored.stopAll());
+  await restored.restore();
+  await drain();
+  assert.ok(after.getSession(quiet.id), "the uninvited resident was restored");
+  assert.ok(after.getSession(invited.id), "the invited resident was restored");
+  assert.equal(after.getSession(quiet.id)?.foremanInvite, null, "no stored invite: still uninvited");
+  assert.equal(after.getSession(invited.id)?.foremanInvite, "operator", "the persisted operator invite survives");
+  assert.ok((frames.get(quiet.id) ?? []).length > 0, "the restored resident was published");
+  assert.deepEqual((frames.get(quiet.id) ?? []).filter((v) => v !== null), [], "no restored frame carried an invite");
+  assert.deepEqual([...new Set(frames.get(invited.id))], ["operator"], "and the invited one never lost it");
+});
+
 test("a task's advisor pin is kept on the driver row and replayed by a restore", async t => {
   const first = fakeHandle();
   const handles = [first, fakeHandle()];

@@ -200,50 +200,65 @@ export interface TaskKindBehavior {
   launch: "harness" | "pipeline" | "resident";
   /** Whether Foreman's backlog loop may pick this kind unattended. */
   autopilot: boolean;
+  /**
+   * Whether a session Mission Control launches for this kind invites Foreman by
+   * construction - the implicit `"sdk"` grant of an embedded session and the `"dispatch"`
+   * row a confirmed terminal spawn writes. `false` launches the session uninvited, exactly
+   * like a merely discovered one: Foreman stays out until the operator invites it from the
+   * session's Foreman rail. A resident holds a standing role with its own instructions, so
+   * Foreman triage, wrap-up and follow-through there would compete with the profile.
+   */
+  foremanInvite: boolean;
   /** A short, operator-facing explanation of non-default launch constraints. */
   constraint: string | null;
 }
 
 /**
  * Behaviour stays registry-driven so every picker and autonomous path gains a new kind only
- * after answering the same three questions: where it is available, who launches it, and
- * whether Foreman may schedule it.
+ * after answering the same questions: where it is available, who launches it, whether
+ * Foreman may schedule it, and whether Foreman is invited into the sessions it launches.
  */
 export const TASK_KIND_BEHAVIOR = {
   document: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   ship: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   bugfix: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   scout: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   plan: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   pipeline: {
     repoAvailability: "pipeline-enabled",
     launch: "pipeline",
     autopilot: false,
+    foremanInvite: true,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   },
@@ -251,18 +266,20 @@ export const TASK_KIND_BEHAVIOR = {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: false,
+    foremanInvite: true,
     constraint: null,
   },
   resident: {
     repoAvailability: "optional",
     launch: "resident",
     autopilot: false,
+    foremanInvite: false,
     constraint:
       "Resident tasks launch only from a resident profile, in the Agent SDK, with the profile's harness, model and effort.",
   },
   // `as const satisfies` rather than a plain annotation: `satisfies` keeps the
   // exhaustiveness gate exactly as it was - a new kind still does not compile until it has
-  // answered all four questions - while `as const` keeps each answer's LITERAL type, which
+  // answered every question - while `as const` keeps each answer's LITERAL type, which
   // is what lets `HarnessLaunchedTaskKind` below be derived from this record instead of
   // being a second, hand-maintained list that can silently disagree with it.
 } as const satisfies Record<TaskKind, TaskKindBehavior>;

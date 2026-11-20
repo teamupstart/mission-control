@@ -592,3 +592,11 @@ Mission Control is licensed under the [Apache License 2.0](LICENSE). See [NOTICE
 attribution information. Third-party dependencies remain subject to their own license terms,
 including the `@anthropic-ai/claude-agent-sdk` dependency and
 [Anthropic's applicable commercial terms](https://code.claude.com/docs/en/legal-and-compliance).
+
+### Automatic PR branch updates (preview)
+
+Settings > Feature flags > **Automatic PR branch updates** lets Mission Control update
+otherwise ready PR branches when GitHub requires them to catch up with their target. The
+PR link follows update progress, fresh checks and reviews, and offers conflict recovery.
+This works for manual merging and grants no permission to merge. See
+[Inspector and shipping](docs/inspector-and-shipping.md#automatic-pr-branch-updates-preview).

@@ -380,6 +380,15 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
   d.exec(`
+    CREATE TABLE IF NOT EXISTS pr_branch_update_attempts (
+      pr_url TEXT NOT NULL,
+      head_sha TEXT NOT NULL,
+      base_sha TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      attempted_at INTEGER NOT NULL,
+      PRIMARY KEY (pr_url, head_sha, base_sha)
+    );
     CREATE TABLE IF NOT EXISTS reviews (
       id                     TEXT PRIMARY KEY,
       session_id             TEXT NOT NULL,

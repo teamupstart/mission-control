@@ -410,8 +410,12 @@ fi
   child.stderr.on("data", (data) => { stderr += data; });
   const exited = new Promise((resolve) => child.once("exit", resolve));
   try {
-    for (let i = 0; i < 100 && !existsSync(marker) && child.exitCode === null; i++) await delay(50);
-    assert.ok(existsSync(marker), stderr);
+    // The guard must claim the lease and start a second Node process before signals are safe.
+    const readyDeadline = Date.now() + 30_000;
+    while (Date.now() < readyDeadline && !existsSync(marker) && child.exitCode === null && child.signalCode === null) {
+      await delay(50);
+    }
+    assert.ok(existsSync(marker), stderr || "the managed agent did not report startup");
     const observed = JSON.parse(readFileSync(marker, "utf8"));
     assert.equal(observed.home, p.stateHome);
     assert.equal(observed.native, nativeId);

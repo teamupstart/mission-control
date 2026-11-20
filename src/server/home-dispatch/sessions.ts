@@ -185,6 +185,7 @@ export function canReadTask(
     return sameRepo(caller.repoRoot, task.originRepo) ? null : deny("the task belongs to a different repository");
   }
   if (options.residentVisible) return null;
+  if (task.originSurface === null) return deny("a dashboard task is not readable from a home session");
   return sameRepo(caller.repoRoot, task.originRepo)
     ? null
     : deny("the task belongs to a different repository than this session");

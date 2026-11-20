@@ -238,6 +238,8 @@ test("task rules: a home session sees its repository, the cli names one and answ
   assert.equal(sessions.canReadTask(home1, mctl), null);
   assert.equal(sessions.canReadTask(home1, other)?.status, 403);
   assert.equal(sessions.canReadTask(home1, dashboard)?.status, 403);
+  assert.match(sessions.canReadTask(home1, dashboard)?.reason ?? "", /dashboard task/, "no misleading repository reason");
+  assert.match(sessions.canReadTask(home1, other)?.reason ?? "", /different repository/);
   assert.equal(sessions.canReadTask(home1, other, { residentVisible: true }), null, "a resident run the session can see");
   assert.equal(sessions.canAnswerTask(home1, own), null);
 

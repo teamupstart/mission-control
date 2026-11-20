@@ -4,7 +4,7 @@ adds diagnostic outputs of App's `featureFlags`, `connected` and `hasSnapshot` v
 consumer of the real `useFeatureFlag` hook beneath App's provider. It does not replace the
 hook, routes or SSE transport. Two open windows assert both config and the resolved answer
 from a seeded snapshot, live master changes and a reconnect snapshot after missing a change,
-without navigation. The shipped registry stays empty and the probe adds no product controls.
+without navigation. The probe adds no product controls.
 `MC_E2E_FEATURE_FLAGS_DROP=snapshot` or `live` omits that handler's state update only in the
 private build; `hook` forces the hook's answer to false. Each negative control must fail.
 `MC_E2E_EVIDENCE=1` captures the peer window after reconnection under

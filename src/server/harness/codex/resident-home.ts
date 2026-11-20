@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import type { MissionMcpDescriptor } from "../../mission-mcp.ts";
 import type { ResidentMcpEntry } from "../types.ts";
 
 // A resident run's private `CODEX_HOME`: the measured Codex control that starts exactly the
@@ -220,28 +221,42 @@ function inlineTable(values: Record<string, string>): string {
  * Never string interpolation of a name into a dotted path.
  */
 export function residentMcpToml(entries: readonly ResidentMcpEntry[], disabled: readonly string[] = []): string {
-  const blocks = entries.map((entry) => {
-    const lines = [`[mcp_servers.${str(entry.name)}]`];
-    if (entry.shape === "http") {
-      lines.push(`url = ${str(entry.url)}`);
-      if (Object.keys(entry.headers).length > 0) lines.push(`http_headers = ${inlineTable(entry.headers)}`);
-    } else {
-      lines.push(`command = ${str(entry.command)}`);
-      lines.push(`args = [${entry.args.map(str).join(", ")}]`);
-      lines.push(`env = ${inlineTable(entry.env)}`);
-    }
-    const codex = entry.options.codex;
-    if (codex?.startupTimeoutSec !== undefined) lines.push(`startup_timeout_sec = ${num(codex.startupTimeoutSec)}`);
-    if (codex?.toolTimeoutSec !== undefined) lines.push(`tool_timeout_sec = ${num(codex.toolTimeoutSec)}`);
-    if (codex?.enabledTools) lines.push(`enabled_tools = [${codex.enabledTools.map(str).join(", ")}]`);
-    if (codex?.disabledTools) lines.push(`disabled_tools = [${codex.disabledTools.map(str).join(", ")}]`);
-    return lines.join("\n");
-  });
+  const blocks = entries.map((entry) => [`[mcp_servers.${str(entry.name)}]`, ...residentMcpFields(entry)].join("\n"));
   // A server another configuration layer defines, switched off from this layer. Codex merges
   // layers field by field, so this holds unless that layer sets `enabled` itself, which the
   // verification after it refuses.
   for (const name of disabled) blocks.push(`[mcp_servers.${str(name)}]\nenabled = false`);
   return blocks.length > 0 ? `${blocks.join("\n\n")}\n` : "";
+}
+
+function residentMcpFields(entry: ResidentMcpEntry): string[] {
+  const fields: string[] = [];
+  if (entry.shape === "http") {
+    fields.push(`url = ${str(entry.url)}`);
+    if (Object.keys(entry.headers).length > 0) fields.push(`http_headers = ${inlineTable(entry.headers)}`);
+  } else {
+    fields.push(`command = ${str(entry.command)}`);
+    fields.push(`args = [${entry.args.map(str).join(", ")}]`);
+    fields.push(`env = ${inlineTable(entry.env)}`);
+  }
+  const codex = entry.options.codex;
+  if (codex?.startupTimeoutSec !== undefined) fields.push(`startup_timeout_sec = ${num(codex.startupTimeoutSec)}`);
+  if (codex?.toolTimeoutSec !== undefined) fields.push(`tool_timeout_sec = ${num(codex.toolTimeoutSec)}`);
+  if (codex?.enabledTools) fields.push(`enabled_tools = [${codex.enabledTools.map(str).join(", ")}]`);
+  if (codex?.disabledTools) fields.push(`disabled_tools = [${codex.disabledTools.map(str).join(", ")}]`);
+  return fields;
+}
+
+/** Codex merges this table into the native configuration. Quoted keys preserve dotted names. */
+export function codexNativeResidentMcpArgs(entries: readonly ResidentMcpEntry[], mission: MissionMcpDescriptor | null): string[] {
+  // A table override replaces earlier dotted flags in the same CLI layer. Render every
+  // launch-owned server together so the native Setup entry cannot supply Mission's argv.
+  const managed: ResidentMcpEntry[] = mission
+    ? [{ ...mission, name: mission.serverName, shape: "stdio", options: {} }, ...entries]
+    : [...entries];
+  if (managed.length === 0) return [];
+  const servers = managed.map((entry) => `${str(entry.name)} = { ${residentMcpFields(entry).join(", ")}, required = true }`);
+  return ["-c", `mcp_servers={ ${servers.join(", ")} }`];
 }
 
 // ---- the overlay directory ----
@@ -364,6 +379,51 @@ function layerLabel(name: unknown): string {
   if (!plain(name)) return "a configuration layer";
   const where = typeof name.file === "string" ? name.file : typeof name.dotCodexFolder === "string" ? name.dotCodexFolder : null;
   return where ? `the ${String(name.type)} configuration ${where}` : `the ${String(name.type)} configuration`;
+}
+
+/** Validate our own registrations before Codex starts a thread in native mode. */
+export function codexNativeResidentMcpProblem(
+  result: unknown,
+  customNames: readonly string[],
+  mission: MissionMcpDescriptor | null,
+): string | null {
+  if (!plain(result) || !plain(result.config) || !Array.isArray(result.layers)) {
+    return "Codex did not report its configuration layers";
+  }
+  const custom = new Set(customNames.map((name) => name.toLowerCase()));
+  let overrides: Record<string, unknown> = {};
+  for (const layer of result.layers) {
+    if (!plain(layer) || !plain(layer.name)) continue;
+    if (typeof layer.disabledReason === "string" && layer.disabledReason.length > 0) continue;
+    if (!plain(layer.config) || !plain(layer.config.mcp_servers)) continue;
+    if (layer.name.type === "sessionFlags") {
+      overrides = layer.config.mcp_servers;
+      continue;
+    }
+    for (const [name, server] of Object.entries(layer.config.mcp_servers)) {
+      if (custom.has(name.toLowerCase())) {
+        return `${layerLabel(layer.name)} already defines the custom MCP server ${name}; rename one of them`;
+      }
+      if (name !== mission?.serverName) continue;
+      // Setup's user registration can coexist. The launch flags supply its command and
+      // args. Codex merges maps, so a native env key not provided by the flags would leak
+      // through, as would any additional transport or options field.
+      if (layer.name.type !== "user" || !plain(server)
+        || Object.keys(server).some((key) => key !== "command" && key !== "args" && key !== "env")
+        || (server.env !== undefined && (!plain(server.env) || Object.keys(server.env).some((key) => !Object.hasOwn(mission.env, key))))) {
+        return `${layerLabel(layer.name)} conflicts with Mission Control's own MCP server ${name}`;
+      }
+    }
+  }
+  const effective = plain(result.config.mcp_servers) ? result.config.mcp_servers : {};
+  for (const name of mission ? [...customNames, mission.serverName] : customNames) {
+    const server = effective[name];
+    const override = overrides[name];
+    if (!plain(override) || override.required !== true || !plain(server) || server.enabled === false) {
+      return `Codex did not load the launch registration for MCP server ${name}`;
+    }
+  }
+  return null;
 }
 
 /**

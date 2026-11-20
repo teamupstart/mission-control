@@ -55,12 +55,12 @@ export function McpAllSourcesConfirm({
               reaches the resident at its next start or resume.
             </li>
             <li>
-              <strong>Not checked.</strong> Only Mission Control's server and your custom servers must
-              connect before it starts. A native server that fails or needs a login does not stop it.
+              <strong>Not checked.</strong> Mission Control requires its own server and your custom
+              servers. {harness} handles native server connection failures and sign-in.
             </li>
             <li>
-              <strong>Broader reach.</strong> An autonomous, looping resident can use every connector's
-              account-level access, such as sending Slack messages as you.
+              <strong>Broader reach.</strong> A looping resident can act with the permissions of each
+              native server's saved login.
             </li>
             <li>
               <strong>Not isolated.</strong> Native servers and connectors use {harness}'s own

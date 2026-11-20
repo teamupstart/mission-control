@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.tsx";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
 import {
   RESIDENT_AGENTS,
   RESIDENT_LIMITS,
@@ -23,6 +24,7 @@ import { AttachedRepoChips } from "../components/AttachedRepoChips.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { residentAccentStyle } from "./marker.ts";
 import { McpAllSourcesConfirm } from "./McpAllSourcesConfirm.tsx";
 import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } from "./mcp-catalog.ts";
@@ -393,7 +395,11 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
   const selectable = residentMcpSelectable(catalog, agent);
   // Whether this harness can start a resident on everything it loads natively. A profile that
   // chose it on another harness still shows the choice, so the operator can see and undo it.
-  const allSources = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
+  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
+  const flags = useContext(FeatureFlagsContext);
+  const previewOff = capability?.previewFlag && !resolveFeatureFlag(capability.previewFlag, flags);
+  const allSources = previewOff ? null : capability;
+  const claudeConnectors = allSources?.mechanism === "lift-strict-mcp-config";
   const importsAll = mcp.nativeSources === "all";
   const chosen = new Set(mcp.selected.map(residentMcpRefKey));
   const harness = catalog?.harnesses.find((row) => row.agent === agent) ?? null;
@@ -459,7 +465,7 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
           </label>
         </fieldset>
       )}
-      {importsAll && allSources && (
+      {importsAll && claudeConnectors && (
         <div>
           <label className="alert-row">
             <Tooltip label="Keep plugin MCP servers enabled while disabling all claude.ai connectors for this resident">
@@ -482,16 +488,16 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
       {importsAll ? (
         allSources ? (
           <p className="field-hint">
-            {label} loads its native MCP configuration at every start, with the connector preference above, so
-            the global servers it configures need no inheriting or selecting. Mission Control's own
-            server and the custom servers below are always attached, and only they must connect
-            before the resident starts. The set is not pinned: a native change reaches a running
-            resident at its next start or resume.
+            {label} loads native MCP servers and their saved logins at every start.
+            {claudeConnectors && " The connector preference above applies."} Mission Control's server
+            and the custom servers below are required. The set is not pinned: native changes reach
+            the resident at its next start or resume.
           </p>
         ) : (
           <p role="alert" className="field-hint resident-problem resident-mcp-unavailable">
-            {label} cannot start a resident on all of its native MCP sources. Choose Pinned at launch
-            to save this profile.
+            {previewOff
+              ? "Enable Codex resident native MCP in Settings > Feature flags, or choose Pinned at launch."
+              : `${label} cannot start a resident on all of its native MCP sources. Choose Pinned at launch to save this profile.`}
           </p>
         )
       ) : (
@@ -514,6 +520,13 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
             Mission Control's own server is always attached. A running resident keeps the set it
             launched with.
           </p>
+          {capability?.mechanism === "codex-native-home" && (
+            <p className="field-hint">
+              {previewOff
+                ? "Enable Codex resident native MCP in Settings > Feature flags to use Codex's saved MCP logins."
+                : "Choose All native sources to use Codex's saved MCP logins."}
+            </p>
+          )}
         </>
       )}
       <ul className="resident-mcp-selected" aria-label="Selected MCP servers">

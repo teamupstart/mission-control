@@ -13,6 +13,7 @@ import {
 } from "@shared/resident-mcp.ts";
 import type { ResidentMcpNativeSources, ResidentProfileRevision } from "@shared/residents.ts";
 import { STATE_DIR, residentMcpLauncherPath } from "../config.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 import type { ResidentMcpEntry, ResidentMcpLaunch } from "../harness/types.ts";
 import { resolveMissionMcpRuntime } from "../mission-mcp.ts";
 import type { GlobalMcpDefinition, GlobalMcpRead } from "./mcp-catalog.ts";
@@ -65,6 +66,17 @@ export interface ResidentMcpResolveDeps {
 export type ResidentMcpResolution =
   | { ok: true; servers: ResidentMcpResolvedServer[] | null }
   | { ok: false; error: string };
+
+export function residentNativeMcpProblem(settings: ResidentProfileRevision): string | null {
+  if (settings.mcp.nativeSources !== "all") return null;
+  const agent = settings.execution.agent;
+  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources;
+  if (!capability) return `${AGENT_IDENTITY[agent].label} cannot start a resident on all of its native MCP sources`;
+  if (capability.previewFlag && !featureEnabled(capability.previewFlag)) {
+    return "Enable Codex resident native MCP in Settings > Feature flags, or choose Pinned at launch";
+  }
+  return null;
+}
 
 /**
  * A global server as a launch snapshots it. Its whole definition is private, so it starts through
@@ -167,9 +179,8 @@ export async function resolveResidentMcpSet(
   const label = AGENT_IDENTITY[agent].label;
   const control = capabilitiesFor(agent).mcpSelection;
   const importsAll = settings.mcp.nativeSources === "all";
-  if (importsAll && !control?.allNativeSources) {
-    return { ok: false, error: `${label} cannot start a resident on all of its native MCP sources, so this profile's MCP setting cannot launch` };
-  }
+  const nativeProblem = residentNativeMcpProblem(settings);
+  if (nativeProblem) return { ok: false, error: nativeProblem };
   if (control === null) {
     return settings.mcp.selected.length > 0 || !settings.mcp.inheritDefaults
       ? { ok: false, error: `${label} cannot pin a resident's MCP servers, so this profile's MCP selection cannot launch` }
@@ -178,7 +189,11 @@ export async function resolveResidentMcpSet(
   const inheritDefaults = settings.mcp.inheritDefaults && !importsAll;
   const selected = importsAll ? settings.mcp.selected.filter((ref) => ref.source === "custom") : settings.mcp.selected;
   let globals: GlobalMcpRead | null = null;
-  if (inheritDefaults || selected.length > 0) {
+  // Codex native launches check custom names against the app-server's active layers in
+  // the real workspace. Reading the pinned catalog here would repeat the OAuth lookup and
+  // would miss project and managed collisions.
+  const checksNativeLayers = importsAll && control.allNativeSources?.mechanism === "codex-native-home";
+  if (inheritDefaults || (selected.length > 0 && !checksNativeLayers)) {
     globals = await deps.globals(agent);
     if (globals.problem) return { ok: false, error: `could not read ${label}'s global MCP servers: ${globals.problem}` };
   }
@@ -225,6 +240,9 @@ export async function resolveResidentMcpSet(
     }
     const resolved = resolvedCustom(server, deps.customSecrets(server.id));
     if (typeof resolved === "string") return { ok: false, error: resolved };
+    // Native Codex carries its additions in argv. Keep custom definitions behind the
+    // launcher so a profile can use the full supported argument and field sizes.
+    if (checksNativeLayers) resolved.launcher = true;
     chosen.set(`custom:${server.name}`, resolved);
   }
   const names = new Set<string>();

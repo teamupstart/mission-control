@@ -26,7 +26,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills, and any repositories **+ Add another repo** attaches beside it | none |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
-| MCP servers | A pinned set or, on Claude Code, all native sources; whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | pinned, inherit on, none selected |
+| MCP servers | A pinned set or [all native sources](#all-native-sources), plus any selected [custom servers](#custom-mcp-servers) | pinned, inherit on, none selected |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
 Each section is a card. When the editor has room, the cards form two columns: identity, Persona,
@@ -663,32 +663,31 @@ Dispatch's launch summary says what the launch carries, such as `MCP: defaults +
 
 ### All native sources
 
-**All native sources (not pinned)** starts a Claude Code resident with everything Claude Code
-loads on its own, as a terminal `claude` session on this machine and account would: user, local
-and project MCP servers, plugin servers and claude.ai connectors (such as
-`mcp__claude_ai_Slack__*`), beside Mission Control's own server and any custom server the profile
-selects. Choosing it asks for confirmation first, because it gives up what the pinned set
-guarantees:
+**All native sources (not pinned)** lets the harness load its own servers and saved logins beside
+Mission Control's server and any custom server the profile selects.
 
-- **Not frozen.** Claude Code reads its configuration and fetches the account's connectors at
-  every start, so a server or connector added, changed or removed natively, or in claude.ai's
-  settings, reaches a running resident at its next start or resume. Only the custom servers are
-  snapshotted at launch.
-- **Not checked.** Only Mission Control's own server and the profile's custom servers must connect
-  before the resident starts, as in [What a run starts](#what-a-run-starts). A native server or
-  connector that fails, is switched off or needs a login does not refuse the start; Claude Code
-  reports it the way a terminal session does.
-- **Broader reach.** An autonomous, looping resident can use every connector's account-level
-  access, such as sending Slack messages as you.
-- **Not isolated.** Native servers and connectors start from Claude Code's own configuration with
-  its own stored logins, not through Mission Control's [scoped launcher](#custom-mcp-servers).
+- **Claude Code** loads user, local, project and plugin servers and claude.ai connectors.
+- **Codex** loads its normal Codex home, trusted workspace configuration, system and managed
+  configuration, and enabled plugins. Enable **Codex resident native MCP** in **Settings >
+  Feature flags** to expose the option. For a server signed into through Codex OAuth, such as
+  Glean, select **All native sources (not pinned)** under **MCP servers**, confirm, save and
+  launch. If the login has expired, sign in again through Codex, for example with
+  `codex mcp login glean` when the server is named `glean`.
+
+Confirmation covers the change in access. Native configuration is read again at each start or
+resume, and the resident can use the permissions of the harness's saved logins. Mission Control
+requires its own server and the selected custom servers. The harness handles native startup and
+sign-in according to its own configuration. Custom servers are snapshotted at launch, with their
+secret values handled by the [scoped launcher](#custom-mcp-servers).
 
 With it chosen, **Inherit harness defaults** and the global servers in **Add an MCP server** are
-hidden: Claude Code loads its global servers itself. A global server already selected stays in the
+hidden because the harness loads its global servers itself. A global server already selected stays in the
 profile, marked *loads natively*, and comes back into the set if you switch to **Pinned at
 launch**. A global server residents cannot carry no longer refuses the launch, because Mission
-Control does not resolve it. A custom server named like one of Claude Code's global servers is
-still refused, because both would load under one name.
+Control leaves it to the native client. A custom server that shares a name with a global server
+is refused. Codex also checks for collisions in active workspace and managed configuration before
+starting the thread. To use **Pinned at launch** while a Codex OAuth server is configured globally,
+turn off **Inherit harness defaults** and select the servers the resident needs.
 
 If plugin MCP tools disappear when the account has a claude.ai connector for the same server,
 enable **Disable claude.ai connectors** under **MCP servers**. Claude Code can suppress both

@@ -3,12 +3,13 @@
  * (`HARNESS_CAPABILITIES[agent].mcpSelection`). Run:
  *
  *   npm run build:resident-mcp-launcher && node --import tsx scripts/probe-resident-mcp.ts
+ * Add `--codex-native` to exercise just Codex's all-native launch and resume paths.
  *
  * Drives the PRODUCTION drivers (`claudeSdkSpec`, `codexSdkSpec`) against the real `claude` and
  * `codex` binaries, with every home, configuration and state directory disposable and both model
- * APIs answered by loopback mocks, so no model token is spent and no operator configuration is
- * read or written. Every agent environment is built from scratch here; nothing inherits the
- * operator's.
+ * APIs answered by loopback mocks. The probe uses no model tokens or operator user
+ * configuration. Agent environments are built from scratch. Machine-managed CLI policy
+ * still applies, so run on a test host or in a container whose policy permits the fixtures.
  *
  * What it measures, per harness, at launch and again on resume:
  *
@@ -19,6 +20,9 @@
  *   server's native entry, never reach the resume.
  * - Codex refusals: a project layer that adds a field to a snapshot server, or forces a server
  *   on, refuses the launch before any thread loads a server.
+ * - Native Codex OAuth: a separate Codex process saves a synthetic loopback login in the
+ *   fixture home. New resident processes must use it for MCP initialize and tools/list on
+ *   both launch and resume.
  * - Secret scope: sentinel secrets on a stdio and an HTTP server, both through the scoped
  *   launcher, and the launch tickets themselves. Each secret must reach only its own server;
  *   neither kind may appear in any process argument of this probe's own descendants, the agent's
@@ -32,7 +36,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,10 +70,13 @@ const say = (fact: Record<string, unknown>): void => {
 
 const { initializeExecutableEnvironment, locateExecutable } = await import("../src/server/executables/locator.ts");
 await initializeExecutableEnvironment();
-const claude = await locateExecutable("claude");
+const nativeOnly = process.argv.includes("--codex-native");
+const claude = nativeOnly ? null : await locateExecutable("claude");
 const codex = await locateExecutable("codex");
-if (!claude || !codex) throw new Error("This probe requires real Claude Code and Codex installations.");
-for (const [harness, executable] of [["claude", claude.path], ["codex", codex.path]] as const) {
+if ((!nativeOnly && !claude) || !codex) throw new Error("This probe requires real harness installations.");
+for (const [harness, installation] of [["claude", claude], ["codex", codex]] as const) {
+  if (!installation) continue;
+  const executable = installation.path;
   const versionHome = join(root, `version-${harness}`);
   mkdirSync(join(versionHome, ".codex"), { recursive: true });
   say({
@@ -92,6 +99,7 @@ const { claudeSdkSpec } = await import("../src/server/harness/claude/sdk.ts");
 const { defaultClaudeSdkDeps } = await import("../src/server/harness/claude/sdk-deps.ts");
 const { codexSdkSpec } = await import("../src/server/harness/codex/sdk.ts");
 const { spawnAppServer } = await import("../src/server/harness/codex/sdk-deps.ts");
+const { AppServerClient } = await import("../src/server/harness/codex/app-server/client.ts");
 type Launch = NonNullable<ReturnType<typeof residentMcpLaunchForRun>>;
 type Handle = Awaited<ReturnType<ReturnType<typeof claudeSdkSpec>["launch"]>>;
 
@@ -122,6 +130,19 @@ process.stdin.on("data", (chunk) => {
 });
 `);
 
+function respondFixtureMcp(res: ServerResponse, raw: string, name: string): string | undefined {
+  const msg = JSON.parse(raw || "{}") as { id?: number | string; method?: string; params?: { protocolVersion?: string } };
+  if (msg.id === undefined) {
+    res.writeHead(202).end();
+    return;
+  }
+  const result = msg.method === "initialize"
+    ? { protocolVersion: msg.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name, version: "1" } }
+    : msg.method === "tools/list" ? { tools: [] } : {};
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+  return msg.method;
+}
+
 /** A streamable-HTTP MCP fixture recording the URL and headers of every request it receives. */
 const httpFixture: Server = createServer(async (req: IncomingMessage, res) => {
   let raw = "";
@@ -131,15 +152,7 @@ const httpFixture: Server = createServer(async (req: IncomingMessage, res) => {
     res.writeHead(405).end();
     return;
   }
-  const msg = JSON.parse(raw || "{}") as { id?: number | string; method?: string; params?: { protocolVersion?: string } };
-  if (msg.id === undefined) {
-    res.writeHead(202).end();
-    return;
-  }
-  const result = msg.method === "initialize"
-    ? { protocolVersion: msg.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "http-fixture", version: "1" } }
-    : msg.method === "tools/list" ? { tools: [] } : {};
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+  respondFixtureMcp(res, raw, "http-fixture");
 });
 await new Promise<void>((resolve) => httpFixture.listen(0, "127.0.0.1", resolve));
 const httpPort = (httpFixture.address() as { port: number }).port;
@@ -163,15 +176,25 @@ const redeemServer: Server = createServer(async (req, res) => {
 });
 await new Promise<void>((resolve) => redeemServer.listen(freePort, "127.0.0.1", resolve));
 
+const sentinel = (label: string): string => `mcp-probe-${label}-${randomBytes(12).toString("hex")}`;
+const secrets = {
+  stdio: sentinel("stdio-env"),
+  header: sentinel("http-header"),
+  query: sentinel("http-query"),
+  global: sentinel("global-env"),
+  oauth: sentinel("oauth-access"),
+};
+const oauthMcpMethods = new Set<string>();
+const oauthFixtureCode = "resident-probe-authorization";
+const tickets: string[] = [];
+
 /**
- * A remote MCP endpoint behind an OAuth login: it publishes its protected-resource and
- * authorization-server metadata, and answers every other request 401 with a Bearer challenge
- * naming that metadata, as an OAuth-protected server does to a client without a token. Claude
- * Code reports a server like this `needs-auth`; one that publishes no metadata fails its client
- * registration and is reported `failed` instead.
+ * The OAuth fixture challenges a client without the synthetic bearer and serves MCP only to
+ * the client presenting it. Record successful methods without recording the header.
  */
 const oauthFixture: Server = createServer(async (req, res) => {
-  for await (const _chunk of req) { /* drained */ }
+  let raw = "";
+  for await (const chunk of req) raw += chunk;
   writeFileSync(oauthLog, `${JSON.stringify({ method: req.method })}\n`, { flag: "a" });
   const origin = `http://127.0.0.1:${(oauthFixture.address() as { port: number }).port}`;
   const json = (body: unknown): void => { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body)); };
@@ -180,21 +203,76 @@ const oauthFixture: Server = createServer(async (req, res) => {
     return json({
       issuer: origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
       response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
     });
+  }
+  if (req.method === "POST" && req.url === "/register") {
+    return json({ ...JSON.parse(raw), client_id: "resident-mcp-probe", token_endpoint_auth_method: "none" });
+  }
+  if (req.method === "POST" && req.url === "/token") {
+    const form = new URLSearchParams(raw);
+    if (form.get("grant_type") !== "authorization_code" || form.get("code") !== oauthFixtureCode || !form.get("code_verifier")) {
+      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "invalid_grant" }));
+      return;
+    }
+    return json({ access_token: secrets.oauth, token_type: "Bearer", expires_in: 3600 });
+  }
+  if (req.url === "/mcp" && req.headers.authorization === `Bearer ${secrets.oauth}`) {
+    if (req.method !== "POST") {
+      res.writeHead(405).end();
+      return;
+    }
+    const method = respondFixtureMcp(res, raw, "oauth-fixture");
+    if (method) oauthMcpMethods.add(method);
+    return;
   }
   res.writeHead(401, { "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"` }).end();
 });
 await new Promise<void>((resolve) => oauthFixture.listen(0, "127.0.0.1", resolve));
 const oauthPort = (oauthFixture.address() as { port: number }).port;
 
-const sentinel = (label: string): string => `mcp-probe-${label}-${randomBytes(12).toString("hex")}`;
-const secrets = {
-  stdio: sentinel("stdio-env"),
-  header: sentinel("http-header"),
-  query: sentinel("http-query"),
-  global: sentinel("global-env"),
-};
-const tickets: string[] = [];
+/** Use a separate real Codex process to save a loopback OAuth login before the resident starts. */
+async function saveCodexFixtureLogin(home: string, codexHome: string, cwd: string, oauthUrl: string): Promise<void> {
+  const transport = spawnAppServer(codex!.path, [], cwd, { PATH: process.env.PATH, HOME: home, CODEX_HOME: codexHome });
+  let completed: boolean | undefined;
+  const client = new AppServerClient(transport, {
+    request: () => {},
+    notification: (method, params) => {
+      if (method === "mcpServer/oauthLogin/completed") {
+        const result = params as { name: string; success: boolean };
+        if (result.name === "oauth-remote") completed = result.success;
+      }
+    },
+  });
+  const pump = client.pump().catch(() => {});
+  const timeout = setTimeout(() => { void client.close().catch(() => {}); }, 15_000);
+  try {
+    await client.request("initialize", { clientInfo: { name: "resident_mcp_probe", version: "1" }, capabilities: { experimentalApi: true } });
+    const { config } = await client.request<{ config?: { mcp_oauth_credentials_store?: string } }>("config/read", { cwd });
+    assert.equal(config?.mcp_oauth_credentials_store, "file", "the fixture requires Codex's private file store for MCP OAuth");
+    const { authorizationUrl } = await client.request<{ authorizationUrl: string }>("mcpServer/oauth/login", { name: "oauth-remote", timeoutSecs: 10 });
+    const authorization = new URL(authorizationUrl);
+    assert.equal(authorization.origin, new URL(oauthUrl).origin, "the fixture must authorize on its loopback server");
+    assert.equal(authorization.pathname, "/authorize");
+    const redirect = authorization.searchParams.get("redirect_uri");
+    const state = authorization.searchParams.get("state");
+    assert.ok(redirect && state, "the fixture login must supply a callback and state");
+    const callback = new URL(redirect);
+    assert.ok(callback.protocol === "http:" && callback.hostname === "127.0.0.1" && callback.port, "the fixture callback must stay on loopback");
+    callback.searchParams.set("code", oauthFixtureCode);
+    callback.searchParams.set("state", state);
+    const response = await fetch(callback, { redirect: "error", signal: AbortSignal.timeout(5_000) });
+    assert.equal(response.status, 200, "the synthetic OAuth callback must succeed");
+    await until(() => completed !== undefined, 5_000, "Codex to finish saving the fixture login");
+    assert.equal(completed, true, "Codex must report a successful fixture login");
+    assert.ok(existsSync(join(codexHome, ".credentials.json")), "Codex must persist the fixture login in its private file store");
+    say({ harness: "codex", check: "a separate Codex app-server obtained and saved a synthetic OAuth login", pass: true });
+  } finally {
+    clearTimeout(timeout);
+    await client.close().catch(() => {});
+    await pump;
+  }
+}
 
 const fixture = (name: string) => ({ command: process.execPath, args: [stdioFixture, startsLog, name] });
 const starts = (): Array<{ name: string; env: Record<string, string> }> =>
@@ -216,13 +294,13 @@ function seedRunRow(runId: string): void {
   ).run(runId, `task-${runId}`, `req-${runId}`, Date.now());
 }
 
-function seedRun(runId: string): void {
+function seedRun(runId: string, nativeSources: Launch["nativeSources"] = "pinned"): void {
   seedRunRow(runId);
   const plain = fixture("snap");
   const dotted = fixture("foo.bar");
   const secretStdio = fixture("secret-stdio");
   const global = fixture("global-stdio");
-  store.writeRunMcpSnapshot(runId, [
+  const snapshot: Parameters<typeof store.writeRunMcpSnapshot>[1] = [
     { source: "custom", name: "snap", transport: { type: "stdio", ...plain, env: { PLAIN: "visible" }, secretEnv: [], cwd: null }, launcher: false, options: {}, secrets: new Map() },
     { source: "custom", name: "foo.bar", transport: { type: "stdio", ...dotted, env: {}, secretEnv: [], cwd: null }, launcher: false, options: {}, secrets: new Map() },
     {
@@ -240,12 +318,16 @@ function seedRun(runId: string): void {
       transport: { type: "stdio", ...global, env: {}, secretEnv: ["GLOBAL_SECRET"], cwd: null },
       launcher: true, options: {}, secrets: new Map([["env:GLOBAL_SECRET", secrets.global]]),
     },
-  ], Date.now());
+  ];
+  const servers = nativeSources === "all"
+    ? snapshot.filter((server) => server.source === "custom").map((server) => ({ ...server, launcher: true }))
+    : snapshot;
+  store.writeRunMcpSnapshot(runId, servers, Date.now());
 }
 
 /** The run's launch, recording each start's tickets so their reach can be checked too. */
-function observedLaunch(runId: string): Launch {
-  const launch = residentMcpLaunchForRun(runId);
+function observedLaunch(runId: string, nativeSources: Launch["nativeSources"] = "pinned"): Launch {
+  const launch = residentMcpLaunchForRun(runId, nativeSources);
   assert.ok(launch, "the run has a snapshot");
   return {
     ...launch,
@@ -540,7 +622,6 @@ async function probeCodex(): Promise<void> {
   let bodies: string[] = [];
   let shellTool: string | null = null;
   let phaseName = "launch";
-  let toolSent = false;
   const model = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
@@ -552,13 +633,14 @@ async function probeCodex(): Promise<void> {
     bodies.push(raw);
     const body = JSON.parse(raw) as { tools?: Array<{ name?: string; type?: string }>; input?: unknown };
     const names = (body.tools ?? []).map((tool) => tool.name ?? tool.type ?? "");
-    shellTool ??= ["exec_command", "shell_command", "shell"].find((name) => names.includes(name)) ?? null;
-    const call = !toolSent && shellTool;
-    if (call) toolSent = true;
+    // Resume can send a request with no tools before the actual turn. Wait for a
+    // request that advertises a shell tool before sending the fixture's one call.
+    const call = shellTool === null ? ["exec_command", "shell_command", "shell"].find((name) => names.includes(name)) : undefined;
+    if (call) shellTool = call;
     const command = shellCommand(phaseName);
-    const args = shellTool === "exec_command" ? { cmd: command } : shellTool === "shell_command" ? { command } : { command: ["/bin/sh", "-c", command] };
+    const args = call === "exec_command" ? { cmd: command } : call === "shell_command" ? { command } : { command: ["/bin/sh", "-c", command] };
     const item = call
-      ? { id: "fc-probe", type: "function_call", status: "completed", call_id: `call-${phaseName}-${bodies.length}`, name: shellTool, arguments: JSON.stringify(args) }
+      ? { id: "fc-probe", type: "function_call", status: "completed", call_id: `call-${phaseName}-${bodies.length}`, name: call, arguments: JSON.stringify(args) }
       : { id: "msg-probe", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "PROBE_DONE", annotations: [] }] };
     res.setHeader("content-type", "text/event-stream");
     const emit = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -573,6 +655,8 @@ async function probeCodex(): Promise<void> {
   const nativeConfig = (extra = ""): string => [
     `model = "gpt-5.4"`,
     `model_provider = "probe"`,
+    `cli_auth_credentials_store = "file"`,
+    `mcp_oauth_credentials_store = "file"`,
     `approval_policy = "never"`,
     `sandbox_mode = "danger-full-access"`,
     `[model_providers.probe]`,
@@ -620,11 +704,66 @@ async function probeCodex(): Promise<void> {
   });
   let threadId: string | null = null;
   try {
+    if (nativeOnly) {
+      const nativeRun = "00000000-0000-4000-8000-00000000a110";
+      seedRun(nativeRun, "all");
+      const configPath = join(nativeHome, "config.toml");
+      const oauthUrl = `http://127.0.0.1:${oauthPort}/mcp`;
+      const anonymous = await fetch(oauthUrl, { method: "POST", signal: AbortSignal.timeout(5_000) });
+      assert.equal(anonymous.status, 401, "the OAuth fixture must reject a client without the bearer");
+      say({ harness: "codex", check: "the OAuth-protected MCP fixture rejected an anonymous request", pass: true });
+      const nativeMcpConfig = nativeConfig(`[mcp_servers.mission-control]\n${toml("native-mission")}\n[mcp_servers.oauth-remote]\nurl = ${JSON.stringify(oauthUrl)}\nstartup_timeout_sec = 3\n`)
+        .replace(`[mcp_servers.snap]\n${toml("snap")}`, `[mcp_servers.native-extra]\n${toml("native-extra")}`);
+      writeFileSync(join(repo, ".codex/config.toml"), `[mcp_servers."native.project"]\n${toml("native.project")}`);
+      writeFileSync(configPath, nativeMcpConfig);
+      await saveCodexFixtureLogin(home, nativeHome, repo, oauthUrl);
+      let nativeThreadId: string | null = null;
+      for (const phase of ["native-launch", "native-resume"] as const) {
+        reset();
+        oauthMcpMethods.clear();
+        bodies = [];
+        phaseName = phase;
+        shellTool = null;
+        const resumed = phase === "native-resume";
+        const config = nativeMcpConfig + (resumed ? `\n[mcp_servers.native-added]\n${toml("native-added")}` : "");
+        writeFileSync(configPath, config);
+        const launch = observedLaunch(nativeRun, "all");
+        const handle = await spec.launch({ ...options(resumed ? nativeThreadId : null), residentMcp: launch });
+        try {
+          if (resumed) await handle.send({ text: "Run the probe again." });
+          nativeThreadId = await nextTurnDone(handle);
+          assert.ok(nativeThreadId);
+          const expected = ["foo.bar", "mission-control", "native-extra", "native-user", "native.project", "secret-stdio", "snap"];
+          if (resumed) expected.push("native-added");
+          await until(() => new Set(starts().map((row) => row.name)).size >= expected.length && httpRequests().length > 0, 20_000, "native and custom servers to start");
+          const started = [...new Set(starts().map((row) => row.name))].sort();
+          assert.deepEqual(started, expected.sort());
+          assert.equal(agentEnvs.at(-1)?.CODEX_HOME, nativeHome);
+          assert.equal(readFileSync(configPath, "utf8"), config);
+          assert.equal(existsSync(join(launch.privateDir, "codex-home")), false);
+          say({ harness: "codex", phase, check: "native user and workspace servers, Mission Control, and custom servers loaded from the normal home and launch flags", started, pass: true });
+          await until(() => oauthMcpMethods.has("initialize") && oauthMcpMethods.has("tools/list"), 5_000, "authenticated MCP initialization and tool listing using the saved Codex OAuth credential");
+          say({ harness: "codex", phase, check: "the OAuth fixture accepted the saved Codex bearer on MCP initialize and tools/list", pass: true });
+          serverEnvChecks(`codex ${phase}`);
+          leaks(`codex ${phase}`, {
+            "process arguments": descendantArgs(`codex ${phase}`).join("\n"),
+            "the agent environment": JSON.stringify(agentEnvs),
+            "the native configuration": config,
+            "model requests": bodies.join("\n"),
+            transcripts: filesUnder(join(nativeHome, "sessions")).map((path) => readFileSync(path, "utf8")).join("\n"),
+            logs: logs.join("\n"),
+          });
+        } finally {
+          await handle.stop();
+        }
+      }
+      return;
+    }
     for (const phase of ["launch", "resume"] as const) {
       reset();
       bodies = [];
       phaseName = phase;
-      toolSent = false;
+      shellTool = null;
       const handle = await spec.launch(options(phase === "resume" ? threadId : null));
       if (phase === "resume") await handle.send({ text: "Run the probe again." });
       const bound = await nextTurnDone(handle);
@@ -693,6 +832,7 @@ async function probeCodex(): Promise<void> {
       say({ harness: "codex", check: `a project layer that ${label} refuses the launch before any server starts`, pass: refused !== null && nothing });
       assert.ok(refused && nothing, label);
     }
+
   } finally {
     model.closeAllConnections();
     await new Promise<void>((resolve) => model.close(() => resolve()));
@@ -700,9 +840,9 @@ async function probeCodex(): Promise<void> {
 }
 
 try {
-  await probeClaude();
+  if (!nativeOnly) await probeClaude();
   await probeCodex();
-  say({ result: "pass", note: "Both harnesses started exactly their snapshot plus Mission's server, at launch and on resume, and every secret reached only its own server." });
+  say({ result: "pass", note: nativeOnly ? "Codex native MCP composition passed at launch and on resume." : "Pinned isolation passed for both harnesses at launch and on resume." });
 } finally {
   httpFixture.closeAllConnections();
   redeemServer.closeAllConnections();

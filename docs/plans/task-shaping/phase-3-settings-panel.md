@@ -121,6 +121,8 @@ registered rows behave.
   and D6's identity setting.
 - Reconciled with Phase 4: the row takes `origin` and an optional `problem` from the start, so
   that phase adds data, not a second row type.
+- Phase 7: the list groups by `SHAPING_STAGES`, so a router appears under `route` with no
+  change here. Whichever of the two merges second adds a router row to this phase's spec.
 - Reconciled with Phase 5: the references note moved here, read from Phase 1's reply shape, so
   Phase 5 has no dashboard work and the two can merge in either order.
 - Review history: plan validation and the review of pull request #1546 changed this phase

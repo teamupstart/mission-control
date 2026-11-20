@@ -1,4 +1,4 @@
-import { hibernationHoldsSession } from "@shared/hibernation.ts";
+import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
@@ -7616,10 +7616,11 @@ export class WorkflowManager {
    * A hibernated task's binding is not orphaned by its session leaving: Resume reopens the same
    * conversation (`@shared/hibernation.ts`) - under the same session id for an Agent SDK session,
    * and through `followResumedConversation` for a terminal one - so the armed workflow is still
-   * the one that will judge its work.
+   * the one that will judge its work. Only the binding for THAT conversation is held: one the
+   * session held for another conversation is orphaned as usual, since no Resume carries it.
    */
   private hibernationHoldsBinding(binding: WorkflowBinding): boolean {
-    return hibernationHoldsSession(this.registry.listTasks(), binding.sessionId);
+    return hibernationHoldsConversation(this.registry.listTasks(), binding.sessionId, binding.noteKey);
   }
 
   private localPlanOwnsBinding(binding: WorkflowBinding): boolean {

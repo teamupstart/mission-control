@@ -28,7 +28,7 @@ const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/ind
 const {
   hibernateRefusal,
   hibernatedTasks,
-  hibernationHoldsSession,
+  hibernationHoldsConversation,
   parseTaskHibernation,
 } = await import("../src/shared/hibernation.ts");
 const { mkSession, mkTask } = await import("./helpers/session-fixture.ts");
@@ -241,7 +241,7 @@ test("the record persists only while the task is hibernated, and hibernated task
   assert.equal(db.getTask("persist")?.hibernation, null);
 });
 
-test("hibernated tasks list longest-asleep last, and only a hibernated task holds its session", () => {
+test("hibernated tasks list longest-asleep last, and only a hibernated task holds its session's conversation", () => {
   const rec = (sessionId: string, at: number) => ({ sessionId, runtime: "sdk" as const, permissionMode: null, checkout: null, agentSessionId: "c", noteKey: "c", hibernatedAt: at, blocker: null, failure: null });
   const tasks = [
     mkTask({ id: "old", status: "hibernated", hibernation: rec("sdk:old", 1) }),
@@ -249,9 +249,10 @@ test("hibernated tasks list longest-asleep last, and only a hibernated task hold
     mkTask({ id: "new", status: "hibernated", hibernation: rec("sdk:new", 2) }),
   ];
   assert.deepEqual(hibernatedTasks(tasks).map((t) => t.id), ["new", "old"]);
-  assert.equal(hibernationHoldsSession(tasks, "sdk:old"), true);
-  assert.equal(hibernationHoldsSession(tasks, "sdk:run"), false);
-  assert.equal(hibernationHoldsSession(tasks, null), false);
+  assert.equal(hibernationHoldsConversation(tasks, "sdk:old", "c"), true);
+  assert.equal(hibernationHoldsConversation(tasks, "sdk:old", "another-conversation"), false, "only the hibernated conversation");
+  assert.equal(hibernationHoldsConversation(tasks, "sdk:run", "c"), false);
+  assert.equal(hibernationHoldsConversation(tasks, null, "c"), false);
 });
 
 // ---- hibernate ----------------------------------------------------------------------------

@@ -1140,7 +1140,7 @@ test("a hibernated task's armed binding survives its session leaving and a resta
     workflows,
   });
   // A binding the same session holds for ANOTHER conversation: Resume reopens only the
-  // hibernated one, so this one must never follow it. (The route arms one binding per
+  // hibernated one, so this one is neither held while the task sleeps nor carried by Resume. (The route arms one binding per
   // conversation, so it is armed first and then moved to the other conversation's key.)
   const second = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-hib" });
   assert.equal(second.status, 201);
@@ -1166,6 +1166,7 @@ test("a hibernated task's armed binding survives its session leaving and a resta
   registry.emit("event", { type: "session_remove", id: "session-hib" });
   assert.equal(workflows.store.getBinding(binding.id)?.state, "active");
   assert.equal(workflows.store.getBinding(binding.id)?.sessionId, "session-hib");
+  assert.equal(workflows.store.getBinding(other.id)?.state, "orphaned", "another conversation's binding is orphaned as usual");
   await workflows.stop();
 
   // A restart: the task reloads from SQLite and the first discovery finds no such session.
@@ -1187,8 +1188,8 @@ test("a hibernated task's armed binding survives its session leaving and a resta
   again.followResumedConversation("session-hib", noteKey, restarted.getSession("session-resumed")!);
   assert.equal(again.store.getBinding(binding.id)?.state, "active");
   assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-resumed");
-  assert.equal(again.store.getBinding(other.id)?.sessionId, "session-hib", "another conversation's binding stays put");
-  assert.equal(again.store.getBinding(other.id)?.noteKey, "conv-other");
+  assert.equal(again.store.getBinding(other.id)?.state, "orphaned", "and Resume does not carry it");
+  assert.notEqual(again.store.getBinding(other.id)?.sessionId, "session-resumed");
   await again.stop();
 });
 

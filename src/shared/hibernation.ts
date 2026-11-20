@@ -184,11 +184,16 @@ export function hibernatedTasks(tasks: readonly Task[]): Task[] {
     .sort((a, b) => (b.hibernation?.hibernatedAt ?? b.updatedAt) - (a.hibernation?.hibernatedAt ?? a.updatedAt));
 }
 
-/** Whether a hibernated task is the one holding this embedded session id. */
-export function hibernationHoldsSession(tasks: Iterable<Task>, sessionId: string | null): boolean {
+/**
+ * Whether a hibernated task holds this conversation of this stopped session: the session id it
+ * was hibernated from AND its conversation's note key. Resume reopens only that conversation, so
+ * anything else the session held is not waiting for it.
+ */
+export function hibernationHoldsConversation(tasks: Iterable<Task>, sessionId: string | null, noteKey: string): boolean {
   if (!sessionId) return false;
   for (const task of tasks) {
-    if (task.status === "hibernated" && task.hibernation?.sessionId === sessionId) return true;
+    const held = task.status === "hibernated" ? task.hibernation : null;
+    if (held?.sessionId === sessionId && held.noteKey === noteKey) return true;
   }
   return false;
 }

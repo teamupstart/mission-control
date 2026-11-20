@@ -267,6 +267,32 @@ function mkTaskSdk(
   return { session, frames };
 }
 
+test("a directory-matched task never outranks a resident's launch task before the binding", () => {
+  const registry = new Registry();
+  const n = ++seq;
+  const cwd = `/shared/checkout-${n}`;
+  const id = `sdk:resident-shared-${n}`;
+  const frames = upserts(registry, id);
+  // Another kind's task, unbound, whose directory is exactly the resident's cwd: before the
+  // resident binds, the card's task chip falls back to it by working directory.
+  registry.upsertTask(mkTask({
+    id: `chat-shared-${n}`, kind: "chat", status: "running", repoRoot: "/repo", worktreePath: cwd,
+    provider: null, homeName: null, sessionId: null,
+  }));
+  const resident = mkTask({
+    id: `resident-shared-${n}`, kind: "resident", workspaceKind: "resident-workspace", status: "running",
+    repoRoot: `/residents/runs/r${n}/workspace`, worktreePath: null, provider: null, homeName: null, sessionId: null,
+  });
+  registry.upsertTask(resident);
+  registry.registerSdkSession({ id, agent: "claude", name: "resident", cwd, taskId: resident.id });
+  assert.equal(registry.getSession(id)?.task?.kind, "chat", "the pre-binding chip came from the shared directory");
+  assert.equal(registry.getSession(id)?.foremanInvite, null, "the launch task, not the directory match, decides");
+  registry.upsertTask({ ...resident, sessionId: id });
+  assert.equal(registry.getSession(id)?.task?.kind, "resident");
+  assert.equal(registry.getSession(id)?.foremanInvite, null);
+  assert.deepEqual(frames.map((f) => f.foremanInvite).filter((v) => v !== null), [], "no frame ever carried an invite");
+});
+
 test("a resident's SDK session launches uninvited, whichever of task or session lands first", () => {
   const registry = new Registry();
   for (const order of ["task-first", "session-first"] as const) {

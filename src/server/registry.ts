@@ -9632,17 +9632,28 @@ export class Registry extends EventEmitter {
    * The one exception to the implicit grant is a task kind that launches uninvited
    * (`TASK_KIND_BEHAVIOR[kind].foremanInvite`, false for residents): its SDK session
    * resolves to `null` until the operator invites Foreman, which writes `'operator'`.
-   * The kind comes from the session's task chip, and until that chip exists from the task
-   * the runtime was launched for - so the first frame of a resident is already uninvited.
-   * `resyncSessionTask` re-resolves it whenever the chip moves.
+   * The kind comes from, in order: a task explicitly bound to this session (its
+   * `sessionId` names it), then the task the runtime was launched for, then whatever the
+   * card's task chip shows. The chip alone is not enough: before the launch task binds it
+   * can fall back to a DIFFERENT task by working directory, and a resident must not
+   * inherit that task's implicit grant on its first frame. `resyncSessionTask` re-resolves
+   * it whenever the chip moves.
    */
   private foremanInviteFor(s: Session): ForemanInvite | null {
     const row = this.invites.get(noteKeyFor(s));
     if (row) return row.source === "withdrawn" ? null : row.source;
     if (s.runtime !== "sdk") return null;
-    const launchTaskId = this.sdkLaunchTasks.get(s.id);
-    const kind = s.task?.kind ?? (launchTaskId ? this.tasks.get(launchTaskId)?.kind : undefined);
+    const kind = this.inviteTaskKindFor(s);
     return kind && !TASK_KIND_BEHAVIOR[kind].foremanInvite ? null : "sdk";
+  }
+
+  /** The task kind whose `foremanInvite` decides an SDK session's implicit grant. */
+  private inviteTaskKindFor(s: Session): Task["kind"] | undefined {
+    const chip = s.task ? this.tasks.get(s.task.id) : undefined;
+    if (chip?.sessionId === s.id) return chip.kind;
+    const launchTaskId = this.sdkLaunchTasks.get(s.id);
+    const launched = launchTaskId ? this.tasks.get(launchTaskId) : undefined;
+    return launched?.kind ?? s.task?.kind;
   }
 
   /**

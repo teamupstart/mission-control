@@ -11,6 +11,7 @@ import {
   SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
   readToken,
 } from "@shared/harness-runtime.mjs";
+import { trimUrlText } from "@shared/shaping.ts";
 import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subprocess-env.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
@@ -131,12 +132,21 @@ export function credentialBearingValues(env: NodeJS.ProcessEnv): ResolvedValue[]
   const out: ResolvedValue[] = [];
   for (const [name, value] of Object.entries(env)) {
     if (typeof value !== "string" || traceContextName(name)) continue;
-    const userinfo = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#@\s]+)@/.exec(value)?.[1];
-    if (!userinfo) continue;
-    const password = userinfo.includes(":") ? userinfo.slice(userinfo.indexOf(":") + 1) : "";
-    // A URL holds userinfo percent-encoded, while a tool may print it decoded: both forms count.
-    for (const form of new Set([value, userinfo, password, decoded(userinfo), decoded(password)])) {
-      if (form.length > 0) out.push({ name, value: form });
+    const trimmed = trimUrlText(value);
+    if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) continue;
+    let url: URL;
+    try { url = new URL(trimmed); } catch { continue; }
+    if (!url.username && !url.password) continue;
+    // The userinfo as written runs to the authority's LAST "@", which is where the URL parser
+    // ends it, so an unescaped "@" inside the password does not cut it short.
+    const authority = trimmed.slice(trimmed.indexOf("//") + 2).split(/[/?#]/, 1)[0]!;
+    const written = authority.slice(0, authority.lastIndexOf("@"));
+    const writtenPassword = written.includes(":") ? written.slice(written.indexOf(":") + 1) : "";
+    // Each form a tool might print: as written, as the parser normalised it, and decoded.
+    const forms = [value, trimmed, written, writtenPassword, url.password, `${url.username}:${url.password}`,
+      decoded(written), decoded(writtenPassword), decoded(url.password), decoded(`${url.username}:${url.password}`)];
+    for (const form of new Set(forms)) {
+      if (form.length > 0 && form !== ":") out.push({ name, value: form });
     }
   }
   return out;
@@ -396,6 +406,9 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     // Runs from child-process callbacks, where a throw would escape every handler and could stop
     // the daemon: whatever goes wrong while building the answer settles the call as failed.
     const complete = (code: number | null, signal: NodeJS.Signals | null): void => {
+      // The drain may already have answered; the pipes' `close` that follows must not parse and
+      // redact the reply a second time.
+      if (settled) return;
       try {
         answer(code, signal);
       } catch (error) {

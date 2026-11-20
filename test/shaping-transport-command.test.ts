@@ -491,6 +491,23 @@ test("an authenticated proxy URL the shaper inherited is scrubbed from its reply
 });
 
 
+test("a proxy password holding an unescaped @ is read as the URL parser reads it, in full", async () => {
+  const saved = process.env.HTTPS_PROXY;
+  // The parser ends the userinfo at the LAST "@": the password is "pr0xy@pass".
+  process.env.HTTPS_PROXY = "http://proxyuser:pr0xy@pass@proxy.example:8080";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
+    assert.equal(reply.kind, "data");
+    const text = JSON.stringify(decoded(reply));
+    assert.equal(text.includes("pr0xy") || text.includes("@pass"), false, "no prefix or suffix of the password survives");
+    assert.deepEqual(decoded(reply).guidance.map((entry: { body: string }) => entry.body),
+      ["reached through [HTTPS_PROXY redacted]", "password [HTTPS_PROXY redacted]", "decoded [HTTPS_PROXY redacted]"]);
+  } finally {
+    if (saved === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = saved;
+  }
+});
+
 test("a reply holding no named value is returned byte for byte", async () => {
   const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx());
   assert.equal(reply.kind, "data");

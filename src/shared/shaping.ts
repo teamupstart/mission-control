@@ -580,11 +580,24 @@ function hasQueryString(raw: string): boolean {
 }
 
 /** Whether `value` is a URL, of any scheme, that carries userinfo or a credential query parameter. */
+/**
+ * `value` without the leading and trailing C0 controls and spaces the URL parser strips, so a check
+ * that inspects a URL's text sees what the parser will: "  https://user:pass@host" is a URL.
+ */
+export function trimUrlText(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) start++;
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) end--;
+  return value.slice(start, end);
+}
+
 function urlCarriesCredential(value: string): boolean {
+  const trimmed = trimUrlText(value);
   // Any scheme: a proxy URL such as socks5://user:pass@host carries credentials as well as http.
-  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return false;
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) return false;
   try {
-    const url = new URL(value);
+    const url = new URL(trimmed);
     return Boolean(url.username || url.password) || Array.from(url.searchParams.keys()).some(credentialBearingName);
   } catch {
     return false;
@@ -1482,7 +1495,13 @@ export function summariseShaping(input: {
   }
   const shapers = ids.map((id): ShapingShaperSummary => {
     const calls = byShaper.get(id)!;
-    const worst = calls.reduce((a, b) => (OUTCOME_SEVERITY.indexOf(b.outcome) < OUTCOME_SEVERITY.indexOf(a.outcome) ? b : a));
+    // The worst outcome; on a tie, the first call that gives a reason, so a redaction note from one
+    // repository is never hidden behind another's silent success.
+    const worst = calls.reduce((a, b) => {
+      const order = OUTCOME_SEVERITY.indexOf(b.outcome) - OUTCOME_SEVERITY.indexOf(a.outcome);
+      if (order !== 0) return order < 0 ? b : a;
+      return a.reason === null && b.reason !== null ? b : a;
+    });
     const kept = input.kept.filter((entry) => entry.shaperId === id);
     const reason = worst.reason === null ? null
       : (input.multiRepo ? `${worst.repo}: ${worst.reason}` : worst.reason).slice(0, SHAPING_LIMITS.reasonChars);

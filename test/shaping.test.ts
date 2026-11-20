@@ -682,6 +682,28 @@ test("a request's context names each repository's slot and the call's target", (
     repositories: [{ name: "r", role: "primary", branch: null, baseSha: null }] } }).success, false, "so is each slot");
 });
 
+test("a URL argument with leading whitespace is still checked for credentials, at registration and in storage", () => {
+  const run = (args: string[]) => ShaperSchema.safeParse({ id: "w", label: "W", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args } });
+  for (const arg of ["  https://user:pw@context.example/x", "\thttps://user:pw@context.example/x", "https://user:pw@context.example/x \n"]) {
+    assert.equal(run([arg]).success, false, JSON.stringify(arg));
+  }
+  const stored = ShapingConfigSchema.parse({ shapers: [{ id: "w", label: "W", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args: ["  https://user:pw-in-storage@context.example/x"] } }] });
+  assert.equal(JSON.stringify(stored).includes("pw-in-storage"), false, "stripped from a stored definition too");
+});
+
+test("a reason survives an outcome tie, so a redaction note in one repository is never hidden", () => {
+  const call = (repo: string, reason: string | null) => ({
+    shaper: { id: "s", label: "S", stage: "select" }, origin: "registered" as const, sha256: null, repo, outcome: "ok" as const,
+    reason, durationMs: 1, version: null, redacted: reason !== null,
+  });
+  const summary = summariseShaping({ calls: [call("billing-api", null), call("ledger", "An entry was dropped because its id contained the value of TOKEN.")],
+    kept: [], truncatedShapers: new Set(), at: 1, durationMs: 1, multiRepo: true })!;
+  assert.deepEqual([summary.shapers[0]!.outcome, summary.shapers[0]!.redacted], ["ok", true]);
+  assert.equal(summary.shapers[0]!.reason, "ledger: An entry was dropped because its id contained the value of TOKEN.");
+});
+
 test("a build that knows a later stage reads the same entry as known", () => {
   const later = { stages: ["gather", "select", "route"], shaper: shaperSchemaForStages(["gather", "select", "route"]) };
   const entry = StoredShaperSchema.parse({ ...command("router"), stage: "route" });

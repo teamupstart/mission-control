@@ -378,7 +378,7 @@ export interface WorkflowManagerOptions {
    * observation is signalled. The daemon wires `reobserveInspectorPr`; a seam rather than an
    * import because it shells out to `gh` and lives with the Inspector worker.
    *
-   * Closed-PR rechecks and session return for prepared Inspector feedback call it so recovery
+   * Recovery rechecks and session return for prepared Inspector feedback call it so recovery
    * can use current remote facts instead of relying on a cached ledger observation.
    */
   reobservePullRequest?: (
@@ -3392,9 +3392,10 @@ export class WorkflowManager {
         message: "This GitHub Inspector gate is already terminal",
       };
     }
+    const refreshPreparedFeedback = this.store.recoverableInspectorFeedback(run) !== null;
     const canEvaluate = inspectorRecoveryCanRecheck({
       status: run.status, phase: run.currentPhase,
-      recoverableInspectorFeedback: this.store.recoverableInspectorFeedback(run) !== null,
+      recoverableInspectorFeedback: refreshPreparedFeedback,
     });
     if (!canEvaluate) {
       return {
@@ -3404,10 +3405,9 @@ export class WorkflowManager {
       };
     }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
-    this.scheduleGateEvaluation(run.id, null);
+    this.scheduleGateEvaluation(run.id, null, refreshPreparedFeedback);
     const prKey = this.gateState(run)?.prKey ?? null;
-    if (run.status === "blocked"
-        && ["inspector_pr_closed", "delivery_blocked"].includes(run.currentPhase) && prKey) {
+    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
       void this.reobserveGatePullRequest(run.id, prKey);
     }
     return { ok: true, value: run };
@@ -4363,7 +4363,10 @@ export class WorkflowManager {
       if (binding.sessionId !== sessionId) continue;
       const run = this.store.activeRunForBinding(binding.id);
       if (run && this.gateState(run)) {
-        this.scheduleGateEvaluation(run.id, null, this.store.recoverableInspectorFeedback(run) !== null);
+        const delivery = this.store.recoverableInspectorFeedback(run);
+        const canResume = delivery !== null && !this.deliveryBlock(delivery)
+          && !this.registry.getSession(delivery.sessionId)?.pause;
+        this.scheduleGateEvaluation(run.id, null, canResume);
       }
     }
   }
@@ -4383,8 +4386,7 @@ export class WorkflowManager {
           const run = this.store.getRun(runId);
           const delivery = run ? this.store.recoverableInspectorFeedback(run) : null;
           const prKey = run ? this.gateState(run)?.prKey : null;
-          if (delivery && prKey && !this.deliveryBlock(delivery)
-              && !this.registry.getSession(delivery.sessionId)?.pause) {
+          if (delivery && prKey) {
             // Inspector's read publishes an observation whose evaluation queues behind
             // this lock. Revalidate delivery eligibility there after the read completes.
             await this.reobserveGatePullRequest(runId, prKey);
@@ -4496,7 +4498,7 @@ export class WorkflowManager {
     state: WorkflowInspectorGateState,
     observation: InspectionUpdated | null,
   ): Promise<boolean> {
-    // Session return must finish its fresh read before even an already-queued signal can send.
+    // A recovery request must finish its fresh read before even an already-queued signal can send.
     if (this.pendingInspectorFeedbackRefreshes.has(run.id)) return false;
     if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked"
         || state.waitReason !== "findings" || !state.targetHeadSha

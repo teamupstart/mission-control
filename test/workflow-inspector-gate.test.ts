@@ -2549,6 +2549,81 @@ test("session return refreshes unsent Inspector feedback once and holds queued s
 });
 
 for (const policy of ["inspector_only", "restart_workflow"] as const) {
+  for (const answer of ["unchanged", "clean", "pending", "outage"] as const) {
+    test(`explicit feedback recheck waits for fresh facts: ${policy}, ${answer}`, async () => {
+      let release!: () => void;
+      const reading = new Promise<void>((resolve) => { release = resolve; });
+      let reads = 0;
+      let captureHead = "explicit-recheck-old-head";
+      const seeded = await seed({ policy, deliveryMode: "live", head: captureHead,
+        captureHead: () => captureHead,
+        reobservePullRequest: async (prKey) => {
+          reads += 1;
+          await reading;
+          return reobserveInspectorPr(seeded.registry, prKey);
+        },
+      });
+      try {
+        const { packet, session } = await blockUnsentFeedback(seeded);
+        captureHead = answer === "unchanged" ? seeded.head : "explicit-recheck-new-head";
+        if (answer === "clean") {
+          db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+        }
+        updateInspectorPr(seeded.key, {
+          observedHeadSha: seeded.head, observedState: "OPEN", observedAt: Date.now(),
+          headSha: answer === "clean" ? captureHead : seeded.head,
+          cleanReviewHeadSha: answer === "clean" ? captureHead : null,
+        }, Date.now());
+        scriptGitHub(answer === "outage" ? null : "OPEN", captureHead);
+        // Reachable already, with no session-upsert wakeup: Check again owns this recovery.
+        session.state = "idle";
+        recheck(seeded, "fresh-feedback");
+        await waitFor(() => reads === 1, "explicit recheck did not begin its observation");
+        assert.equal(seeded.store.getDelivery(packet.id)!.state, "prepared");
+        assert.deepEqual(seeded.injected, []);
+        // Repeated clicks share the read and never release the cached old-head bytes.
+        recheck(seeded, "fresh-feedback-again");
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(seeded.store.getDelivery(packet.id)!.state, "prepared");
+        assert.deepEqual(seeded.injected, []);
+        release();
+        await settleGate(seeded);
+        assert.equal(reads, 1);
+        const recovered = seeded.store.getDelivery(packet.id)!;
+        if (answer === "unchanged") {
+          assert.equal(recovered.state, "delivered");
+          assert.deepEqual(seeded.injected, [packet.payload]);
+        } else if (answer === "outage") {
+          assert.equal(recovered.state, "prepared");
+          assert.equal(recovered.deliveredAt, null);
+          assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+          assert.deepEqual(seeded.injected, []);
+        } else {
+          assert.equal(recovered.state, "cancelled");
+          assert.equal(recovered.deliveredAt, null);
+          assert.deepEqual(seeded.injected, []);
+          const latest = seeded.store.latestSubmission(seeded.ids.run)!;
+          if (policy === "restart_workflow") {
+            assert.equal(latest.mode, "full_workflow");
+            assert.equal((latest.context as unknown as WorkflowContextSnapshot).evidence.headSha, captureHead);
+            assert.equal(inspectorOnlyRounds(seeded), 0);
+            assert.notEqual(seeded.store.getRun(seeded.ids.run)!.status, "completed");
+          } else {
+            assert.equal(latest.prHeadSha, captureHead);
+            assert.equal(phaseOf(seeded), answer === "clean"
+              ? "completed/complete" : "waiting_for_inspector/inspector_review");
+          }
+        }
+      } finally {
+        release();
+        scriptGitHub(null);
+        await seeded.manager.stop();
+      }
+    });
+  }
+}
+
+for (const policy of ["inspector_only", "restart_workflow"] as const) {
   for (const newerHead of [false, true]) {
     test(`unsent Inspector feedback recovers after session return: ${policy}, newer=${newerHead}`, async () => {
       let captureHead = "initial-head";

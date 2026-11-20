@@ -316,7 +316,8 @@ test("a run blocked as closed offers Check again, which lifts the block only for
 
 // Issue #1549: seed the historical unsent delivery block, then let a real session
 // resume event reconcile the current Inspector ledger and repaint the open run page.
-test("session return releases unsent feedback for a superseded clean Inspector head", async ({ dashboard, daemon }) => {
+for (const trigger of ["session return", "Check again"] as const) {
+test(`${trigger} releases unsent feedback for a superseded clean Inspector head`, async ({ dashboard, daemon }) => {
   const runId = await seedRun(dashboard, daemon, "E2E Inspector feedback recovery");
   const sessionId = (await api<Array<{ id: string }>>(daemon, "/api/sessions"))[0]!.id;
   await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/pause`, { mode: "now" });
@@ -378,15 +379,28 @@ test("session return releases unsent feedback for a superseded clean Inspector h
   await checkAgain.hover();
   await dashboard.mouse.move(800, 600);
   await expect(dashboard.locator(".tooltip")).toHaveCount(0);
-  await shoot(dashboard, header, "03-unsent-feedback-blocked");
-  // The earlier read is no longer fresh enough for this gate. Only session return may
-  // request the current head now: the Inspector poll is an hour away and no recheck follows.
+  await shoot(dashboard, header, trigger === "session return"
+    ? "03-unsent-feedback-blocked" : "06-explicit-recheck-blocked");
+  // The earlier read is no longer fresh enough for this gate. The Inspector poll is an
+  // hour away, so each recovery entry point must request its own current observation.
   withDaemonDb(daemon, (db) => db.prepare(`UPDATE inspector_prs SET state = 'open',
     observed_state = 'OPEN', observed_head_sha = ?, observed_at = 0 WHERE key = ?`)
     .run(FAILED_HEAD, PR_KEY));
-  scriptGitHub(daemon, "OPEN", head);
+  scriptGitHub(daemon, trigger === "session return" ? "OPEN" : "CLOSED", head);
   await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/resume`, {});
+  if (trigger === "Check again") {
+    // Session return cannot recover a remotely closed PR. Once reachable, a cached A
+    // observation must not let Check again send before its own read discovers B.
+    await expect.poll(() => ledgerRow(daemon).observed_state).toBe("CLOSED");
+    withDaemonDb(daemon, (db) => db.prepare(`UPDATE inspector_prs SET state = 'open',
+      observed_state = 'OPEN', observed_head_sha = ?, observed_at = ? WHERE key = ?`)
+      .run(FAILED_HEAD, Date.now(), PR_KEY));
+    scriptGitHub(daemon, "OPEN", head);
+    await checkAgain.click();
+  }
   await expect.poll(async () => (await probe(daemon, runId)).run.status).toBe("completed");
+  expect(await eventCount(daemon, runId, "inspector_recheck_requested"))
+    .toBe(trigger === "session return" ? 1 : 2);
   expect(ledgerRow(daemon).observed_at).toBeGreaterThan(0);
   await expect(header.getByText("Completed", { exact: true })).toBeVisible();
   const packet = withDaemonDb(daemon, (db) => db.prepare(
@@ -398,5 +412,7 @@ test("session return releases unsent feedback for a superseded clean Inspector h
   await header.getByRole("button", { name: "Run this review again" }).hover();
   await dashboard.mouse.move(800, 600);
   await expect(dashboard.locator(".tooltip")).toHaveCount(0);
-  await shoot(dashboard, header, "04-unsent-feedback-recovered");
+  await shoot(dashboard, header, trigger === "session return"
+    ? "04-unsent-feedback-recovered" : "07-explicit-recheck-recovered");
 });
+}

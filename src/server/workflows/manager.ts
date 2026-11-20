@@ -4510,12 +4510,15 @@ export class WorkflowManager {
   ): Promise<void> {
     let run = this.store.getRun(runId);
     let state = run ? this.gateState(run) : null;
-    if (run?.status === "blocked" && run.currentPhase === "delivery_blocked" && state?.prKey) {
+    const tiedObservation = observation && state?.lastObservedAt != null
+      && observation.prKey === state.prKey && observation.observedAt === state.lastObservedAt;
+    if (state?.prKey && ((run?.status === "blocked" && run.currentPhase === "delivery_blocked")
+        || tiedObservation)) {
       const prKey = state.prKey;
       const ledger = loadInspectorInspection(prKey);
       // A queued signal carries a historical ledger snapshot. Prefer the newer durable
-      // remote observation (including ties), and carry it through BOTH packet recovery
-      // and gate evaluation so the old signal cannot put the failed head back afterward.
+      // remote observation (including ties), even after packet recovery has lifted the
+      // block, so a queued signal cannot put the failed head or closed state back afterward.
       if (ledger?.observedState != null && ledger.observedAt !== null
           && ledger.observedAt >= state.enteredAt
           && (observation?.prKey !== state.prKey || observation.observedState === null
@@ -4524,6 +4527,13 @@ export class WorkflowManager {
           prKey: ledger.key, observedHeadSha: ledger.observedHeadSha,
           observedState: ledger.observedState, observedAt: ledger.observedAt, ledger,
         };
+      } else if (observation && tiedObservation) {
+        // Without current durable facts a conflicting tie cannot supersede the gate.
+        // Same-head review/publication updates still proceed at the accepted timestamp.
+        const signalledClosed = inspectorStateSaysClosed(observation.observedState)
+          || observation.ledger.state === "closed";
+        if ((observation.observedState !== null && observation.observedHeadSha !== state.observedHeadSha)
+            || signalledClosed !== (state.waitReason === "pr_closed")) return;
       }
     }
     // Once a gate has observed a newer remote state, a queued older snapshot must not

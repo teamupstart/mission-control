@@ -13,7 +13,7 @@ import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
 // module the mod imports, so the daemon only gathers what the pages depend on.
 
 /** Every active published Workflow, as the dashboard's After work picker lists them. */
-function publishedWorkflows(deps: HomeDispatchDeps): Array<{ id: string; name: string }> {
+export function publishedWorkflows(deps: HomeDispatchDeps): Array<{ id: string; name: string }> {
   return (deps.workflows?.list() ?? [])
     .filter((workflow) => workflow.archivedAt === null && workflow.currentVersionId !== null)
     .map((workflow) => ({ id: workflow.id, name: workflow.name }));

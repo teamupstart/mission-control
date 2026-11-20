@@ -26,7 +26,7 @@ import { listRepos, resolveRepoRoot } from "../repos.ts";
 import { prepareTaskRepositories } from "../task-repository-preparation.ts";
 import { TaskDependencyError, TaskEffortUnsupportedError, TaskPersonaError } from "../tasks.ts";
 import { getWorkflowPolicy } from "../workflows/config.ts";
-import { defaultPlanStorage } from "./options.ts";
+import { defaultPlanStorage, publishedWorkflows } from "./options.ts";
 import { requireHomeSession, type HomeSessionRow } from "./sessions.ts";
 import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
 
@@ -147,7 +147,7 @@ function summarize(deps: HomeDispatchDeps, draft: Draft): HomeDispatchDraftSumma
     ? kindAfterWork(draft.kind, getWorkflowPolicy().kindWorkflowDefaults, defaultPlanStorage())
     : draft.workflowId;
   const applies = hasReviewableDiff(draft.kind);
-  const named = effective ? deps.workflows?.list().find((workflow) => workflow.id === effective)?.name : undefined;
+  const named = effective ? publishedWorkflows(deps).find((workflow) => workflow.id === effective)?.name : undefined;
   const afterWork = effective ? (named ?? UNAVAILABLE_WORKFLOW_LABEL) : applies ? "None" : "None (no diff)";
   const kindLabel = TASK_KIND_INFO[draft.kind].label;
   const repoRoot = draft.repoRoot ?? "";

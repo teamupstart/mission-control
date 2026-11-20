@@ -613,3 +613,14 @@ test("an earlier create stays rejected after the newer draft was confirmed", asy
   assert.equal(older.res.status, 409);
   assert.equal((await post("/dispatch/drafts/" + older.body.draftId, { sessionId: "s1", words: "x" })).status, 404, "no draft came back");
 });
+
+test("the draft summary names only published workflows, as the options page does", async () => {
+  await register("s1", repo);
+  const live = { id: "builtin-workflow:no-mistakes-review", name: "Live Name", archivedAt: null, currentVersionId: "v1" };
+  mock.method(workflows, "list", () => [live] as never);
+  assert.equal((await createDraft({ kind: "ship", words: "x" })).body.afterWork, "Live Name");
+  mock.method(workflows, "list", () => [{ ...live, archivedAt: 5 }] as never);
+  assert.equal((await createDraft({ kind: "ship", words: "x" })).body.afterWork, "Unavailable workflow", "archived");
+  mock.method(workflows, "list", () => [{ ...live, currentVersionId: null }] as never);
+  assert.equal((await createDraft({ kind: "ship", words: "x" })).body.afterWork, "Unavailable workflow", "unpublished");
+});

@@ -2315,11 +2315,6 @@ export class Dispatcher {
   }
 
   /**
-   * Checkpoint between dispatch steps: if a cancel/complete settled the task in
-   * flight, tear down whatever this dispatch already created (it may have run
-   * before those resources existed and so couldn't clean them up) and stop.
-   */
-  /**
    * The shaping step of one launch: what it tells the engine, and what it budgets against.
    *
    * Every turn-one variant this launch may send is measured as its path carries it - Pi's
@@ -2395,6 +2390,11 @@ export class Dispatcher {
     this.registry.commitTaskShaping(taskId, shaping.summary ? { ...shaping.summary, sessionId } : null, shaping.section);
   }
 
+  /**
+   * Checkpoint between dispatch steps: if a cancel/complete settled the task in
+   * flight, tear down whatever this dispatch already created (it may have run
+   * before those resources existed and so couldn't clean them up) and stop.
+   */
   private async abortIfSettled(taskId: string): Promise<boolean> {
     if (this.stillDispatching(taskId)) return false;
     // A cancel wants resources gone; a mid-flight complete ("done") explicitly wants

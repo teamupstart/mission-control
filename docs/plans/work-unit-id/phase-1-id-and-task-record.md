@@ -76,8 +76,8 @@ Nothing in this phase is gated.
    their source task. For a best-of-N run, the first member task mints, and every later
    member, retry and replacement inherits from a member task of the same run. If a run's
    `source_*` fields can name a task, inherit from that task instead.
-9. **Older rows.** `TaskManager.dispatch` gives a task with no id one before it launches,
-   unless its kind has no work unit.
+9. **Older rows.** `TaskManager.dispatch` and `TaskManager.assign` give a task with no id one
+   before it is handed to an agent, unless its kind has no work unit.
 10. **Reads.** Add `workUnitId` to `taskConfiguration` in `src/mcp/server.ts`. Add a
     `workUnitId` filter to the `list_tasks` tool, `/mcp/tasks/list` and `readTaskPage`: an
     exact match, refused when the value is not a well-formed id. `GET /api/tasks` already
@@ -107,7 +107,7 @@ Nothing in this phase is gated.
   inherits; a ship session's does not; `"inherit"` from a ship session does; `"inherit"`
   with no task is refused; `"new"` from a plan session mints; a plan created by a plan and
   its own child all share one; retro follow-up; chat retry; ensemble members are equal; a
-  parent with no id gets one when a child inherits; dispatch gives an older row an id;
+  parent with no id gets one when a child inherits; dispatch and assign each give an older row an id;
   requeue keeps it; a recovered creation keeps it; a resident run's task has none, at
   creation and after dispatch; a task created from a resident's session gets a new one, and
   `"inherit"` from it is refused.
@@ -124,14 +124,14 @@ Nothing in this phase is gated.
   members, their retries and a replacement share one for the run; a caller that passed
   `"inherit"` gets its own task's; and a resident run has none.
 - No write changes an id once set.
-- An existing database upgrades and its tasks read `workUnitId: null` until dispatched.
+- An existing database upgrades and its tasks read `workUnitId: null` until dispatched or assigned.
 - No launch environment, exported payload or dashboard markup differs from before.
 
 ## Handoff
 
 Later phases may rely on:
 
-- `Task.workUnitId`, set for every task created or dispatched after this phase, except a
+- `Task.workUnitId`, set for every task created, dispatched or assigned after this phase, except a
   resident run's, which is always null.
 - The constants and `isWorkUnitId` in `src/shared/work-unit.ts`.
 - `src/server/work-unit.ts` as the home for server-side work unit helpers.
@@ -141,10 +141,14 @@ add a way for a request body to choose an id.
 
 ## Cross-phase audit
 
-- Phase 2: adds `activeWorkUnitId` to `src/server/work-unit.ts` and `workUnitId` to
-  `TaskSummary`. This phase leaves both alone, so there is no overlap.
-- Phase 3: reads the id at capture through the task record. Nothing here writes telemetry.
+- Phase 2: adds `launchWorkUnitId` and `sessionWorkUnitId` to `src/server/work-unit.ts` and
+  `workUnitId` to `TaskSummary`. This phase leaves them alone, so there is no overlap.
+- Phase 3: reads the id at capture through Phase 2's launch record. Nothing here writes
+  telemetry.
 - Phase 4: reads `task.workUnitId` at the dispatch seam. No change needed here.
 - Source plan: owns R1, D1, D3 and the record half of D6, and defines the names for R2.
-- Plan validation repair, round 1: the exit criterion now lists every automatic inheritor,
-  and a resident run has no work unit.
+- Plan validation repair, round 1: the exit criterion now lists every automatic inheritor, and
+  a resident run has no work unit.
+- Inspector review of the plan's pull request: an older row gets its id at assign as well as
+  at dispatch, because Phase 2's reuse guard compares it with the work unit an agent was
+  started with.

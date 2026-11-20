@@ -2,14 +2,16 @@
 
 ## Outcome
 
-With the preview on, every span Mission Control exports for a session whose task has a work
-unit carries the attribute `work_unit_id`, unhashed and identical in every lane. One query on it returns
-the session spans of a plan and all its phases. The exception to hashing is named in one
-list, checked by the catalog lint and stated in the privacy documentation.
+Every span Mission Control exports for a session that emits a work unit carries the
+attribute `work_unit_id`, unhashed and identical in every lane. A session emits the work
+unit its agent was started with (Phase 2), so a span never carries an id that the agent's
+own MCP calls do not carry. One query on the attribute returns the session spans of a plan
+and all its phases. The exception to hashing is named in one list, checked by the catalog
+lint and stated in the privacy documentation.
 
 ## Entry criteria and dependencies
 
-- Phase 2 is merged (it provides the flag and `activeWorkUnitId`).
+- Phase 2 is merged (it provides the flag, the launch record and `sessionWorkUnitId`).
 
 ## Scope
 
@@ -19,7 +21,7 @@ list, checked by the catalog lint and stated in the privacy documentation.
 - The privacy contract in the documentation.
 
 Not here: metrics (the id is never a metric dimension), the agents' own spans, a span for
-the shaping run, any launch path.
+the shaping run, any launch path, any read of the flag.
 
 ## Repository findings
 
@@ -37,9 +39,12 @@ the shaping run, any launch path.
 - Only `mission.session.start` is in the session's trace. The others are roots of their
   own traces, so each needs the attribute itself.
 - Capture sites are in `src/server/telemetry/sessions.ts`. They build refs with `refsOf`
-  from a `SessionTrack`, which has `taskId`. The module has `host.getTask`. Effort selected
-  and session operation do not declare `task_id`, but their track is in scope.
-  `workflowAuthorContext` and `pr-observations.ts` build refs too.
+  from a `SessionTrack`, which has `taskId`. Effort selected and session operation do not
+  declare `task_id`, but their track is in scope. `workflowAuthorContext` and
+  `pr-observations.ts` build refs too.
+- The module's host (`SessionTelemetryHost`) offers `subscribe` and `getTask`. The session
+  events it subscribes to carry the session's `TaskSummary`, where Phase 2 puts the work
+  unit the session emits.
 - `telemetryCatalogProblems()` is the lint, run by `test/telemetry-contract.test.ts`.
   `FORBIDDEN_METRIC_DIMENSIONS` lists ids that may not be metric dimensions.
 - `TELEMETRY_LIMITS.maxRefs` is 64. The workflow events declare 19 refs.
@@ -65,12 +70,24 @@ the shaping run, any launch path.
    `Collector.span`, write `attributes["work_unit_id"]` only when the key is on the list
    and the value passes `isWorkUnitId`. Otherwise drop it. Never write
    `mission.ref.work_unit_id`.
-6. **Capture.** One helper in `sessions.ts` returns `activeWorkUnitId(host.getTask(taskId))`.
-   Add its result to the refs at every site: start, segment, turn, end, kill, effort
-   selected and session operation (from the track's task), dispatch finished, restore,
-   task outcome, `workflowAuthorContext`, and PR observations. With the flag off, for a
-   session with no task, or for a resident's session (its task has no id, decision D6), the
-   ref is absent, so nothing is stored or exported.
+6. **Capture.** One helper in `sessions.ts` returns the work unit a track's session emits:
+   `sessionWorkUnitId(session, task)` from Phase 2, which is the id the session's agent was
+   started with while its task has that id. Capture never reads the flag.
+   - The track keeps the value as it keeps `taskId`, from the `TaskSummary` of the session
+     events it already receives. Add a read to the host only for a site that has no session
+     in hand.
+   - Add the helper's result to the refs at every site with a track: start, restore,
+     segment, turn, end, kill, effort selected, session operation and
+     `workflowAuthorContext`.
+   - Dispatch finished uses the id of the session that took the task: the launch's
+     decision for a new agent, and `sessionWorkUnitId` for an agent that was already
+     running.
+   - Task outcome and PR observations have no track. They read the record of the session
+     the task points to (`Task.sessionId`), and carry no ref when the task points to no
+     session.
+   - The ref is absent for a session with no task, for a resident's session (its task has
+     no id, decision D6), and for a session whose agent was started without the variable.
+     Nothing is stored or exported for them.
 7. **Docs.**
    - `docs/observability.md`: amend "What travels, and what never does" to name the one
      exception, and add a "Work unit id" subsection after "Trace context for embedded
@@ -88,7 +105,12 @@ the shaping run, any launch path.
   retention.
 - Additive on the wire: one more span attribute. No existing attribute changes.
 - Every lane that exports traces carries it (D4): local, user and product.
-- Flag off: no ref is captured, so the exported payloads are unchanged.
+- A session whose agent was started with the flag off has no launch record, so no ref is
+  captured and its exported payloads are unchanged. With the flag never switched on, no
+  payload changes at all.
+- Work in flight. A session whose agent was started with the flag on keeps the ref after
+  the flag is switched off, until its next start, exactly as its agent keeps the variable.
+  One started with the flag off gains the ref only at its next start.
 - The id is not a metric dimension, so metric cardinality does not change.
 
 ## Tests and verification
@@ -99,9 +121,14 @@ the shaping run, any launch path.
 - Projection: the same event projected for two lanes has the same `work_unit_id` and
   different `mission.ref.task_id`; there is no `mission.ref.work_unit_id`; a malformed
   value is dropped; an event without the ref is unchanged.
-- Capture: start, turn and end for a task-bound session carry the ref; a discovered
-  session and a resident's session carry none; with the flag off none do; effort selected and session operation
-  carry it from the track.
+- Capture: start, turn and end for a session that emits a work unit carry the ref; a
+  discovered session, a resident's session and a session whose agent was started without
+  the variable carry none; effort selected and session operation carry it from the track;
+  a task outcome carries it while its task points to a session that emits it.
+- A switch in flight: a session whose agent was started with the flag on keeps the ref
+  after the flag is switched off and loses it at its next start; one started with the flag
+  off has none after the flag is switched on and gains it at its next start.
+- A reused agent: a task typed into an agent that has no launch record carries no ref.
 - `test/telemetry-stack.integration.ts`: the exported span has the attribute with the raw
   id.
 - No browser spec: this phase has no dashboard surface.
@@ -109,9 +136,12 @@ the shaping run, any launch path.
 
 ## Merge and exit criteria
 
-- Flag on: every exported span for a session whose task has a work unit has `work_unit_id`
-  equal to the task's id, in every lane, and never in hashed form. A resident's spans have
-  none.
+- Every exported span for a session that emits a work unit has `work_unit_id` equal to that
+  id, which is its task's, in every lane, and never in hashed form. A resident's spans have
+  none, and neither have the spans of a session whose agent was started without the
+  variable.
+- A span never carries a work unit that the session's agent does not carry in its
+  environment, across a switch of the flag and across a reused agent.
 - Only a well-formed `wu_` id can be exported unhashed. The lint fails a second unscoped
   key that is not on the list.
 - A new span-bearing event with a session or task ref cannot be added without the
@@ -126,8 +156,12 @@ inherits the rule from the lint.
 ## Cross-phase audit
 
 - Phase 1: reads `Task.workUnitId` and `isWorkUnitId`. No change there.
-- Phase 2: uses `activeWorkUnitId`, so the flag has one gate. This phase touches no launch
-  path.
+- Phase 2: reads the launch record through `sessionWorkUnitId`, so capture and the launch
+  environment follow one decision and this phase never reads the flag. This phase touches
+  no launch path.
 - Phase 4: no shared file except `docs/work-units.md`, where the two sections sit apart.
 - Source plan: owns R3 and D4.
 - Plan validation repair, round 1: a resident's session carries no ref (D6).
+- Inspector review of the plan's pull request: capture follows what the agent was started
+  with instead of the flag and the task record, so a switch of the flag or a reused agent
+  cannot put an id on a span that the agent's MCP calls do not carry.

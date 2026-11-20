@@ -2,8 +2,8 @@
 
 ## Outcome
 
-When Mission Control shapes a task at dispatch, every shaper call carries the task's work
-unit, in the carrier its transport has:
+When Mission Control shapes a task at dispatch, every shaper call carries the work
+unit the task's agent carries, in the carrier its transport has:
 
 | Transport | Carrier |
 |---|---|
@@ -14,7 +14,8 @@ unit, in the carrier its transport has:
 | `builtin` | None. It runs in the daemon. |
 
 A `get_guidance` call that Mission Control makes is then found by the same query as the
-worker's own calls.
+worker's own calls. A shaper call carries an id only when the task's agent carries it too
+(Phase 2), so the two never disagree.
 
 ## Entry criteria and dependencies
 
@@ -56,8 +57,10 @@ the transports' own design.
    run input beside `trace`, and hand it unchanged to every call of the run as
    `ctx.workUnitId`. If the remote transports phase added the field under another name,
    keep that name.
-3. **Dispatch seam.** Where dispatch starts the shaping run for a task, pass
-   `activeWorkUnitId(task)`.
+3. **Dispatch seam.** Where dispatch starts the shaping run for a task, pass the id the task's
+   agent carries: `launchWorkUnitId(task)` when the dispatch starts a new agent, and
+   `sessionWorkUnitId(session, task)` when the task goes to an agent that is already
+   running. Do not read the flag here.
 4. **Transports.** Confirm each one, and add what is missing:
    - `http` and `mcp` over streamable HTTP: header `x-work-unit-id` on every request;
    - every `mcp` `tools/call`, on both kinds of server: `params._meta.work_unit_id`;
@@ -81,14 +84,18 @@ the transports' own design.
   a `get_guidance` call keeps its arguments, and an `http` shaper, which has no envelope,
   gets the header only.
 - A shaper that ignores the header, `_meta` key or variable is unaffected.
-- Flag off, or a task with no id: nothing is added to any call.
+- When the task's agent carries no work unit, nothing is added to any call. That is the case
+  when the flag was off as the agent started, when the task has no id, and for an agent that
+  was started without the variable.
 
 ## Tests and verification
 
 - Engine: a run given a work unit hands the same value to every call, across two
   repositories; a run given none hands null.
-- Dispatch seam: flag on, the fixture shaper receives the task's id; flag off, it receives
-  none; a dry run sends none.
+- Dispatch seam: for a new agent started with the flag on, the fixture shaper receives the
+  task's id; with the flag off, it receives none; for a task that goes to an agent that is
+  already running, it receives the id only when that agent was started with it; a dry run
+  sends none.
 - Transports, one present case and one absent case each, unless the remote transports
   phase already has them: `http` header, with no work unit anywhere in its request body; streamable-HTTP `mcp` header on every request of
   a call and `_meta` on `tools/call`, with equal values; stdio `mcp` environment and
@@ -103,7 +110,8 @@ the transports' own design.
   says: a fixture `get_guidance` shaper on an `mcp` server over streamable HTTP receives it
   in the header and in `_meta`; an `http` shaper in the header only; a local `mcp` server in
   its environment and in `_meta`; a `command` shaper in its environment.
-- Flag off, a dry run, or no id: no call carries one.
+- Flag off at dispatch, a dry run, no id, or an agent that was started without the variable:
+  no call carries one.
 - Only the launch's own value is ever sent, never a configured one.
 
 ## Handoff
@@ -114,8 +122,9 @@ carries the work unit with no further change.
 ## Cross-phase audit
 
 - Phase 1: reads `task.workUnitId` and the shared constants.
-- Phase 2: uses `activeWorkUnitId`. The worker's `WORK_UNIT_ID` and a shaper process's
-  `WORK_UNIT_ID` are set by different code and carry the same value.
+- Phase 2: uses `launchWorkUnitId` and `sessionWorkUnitId`, and never reads the flag. The
+  worker's `WORK_UNIT_ID` and a shaper process's `WORK_UNIT_ID` are set by different code
+  and carry the same value.
 - Phase 3: shares no file except `docs/work-units.md`, in a different place.
 - Task shaping: this phase adds an input and one call site. It reshapes neither the engine
   nor a transport.
@@ -123,3 +132,5 @@ carries the work unit with no further change.
 - Plan validation repair, round 3: the outcome, the steps, the compatibility notes and the
   exit criteria name the same carrier for each transport. An `http` shaper gets the header
   only.
+- Inspector review of the plan's pull request: the seam passes the id the task's agent
+  carries, so a shaper call never carries an id that the worker's own calls do not.

@@ -1,7 +1,7 @@
 # Work unit id: phased implementation plan
 
 Source plan: `docs/plans/work-unit-id/plan.md`. Its requirements R1 to R5 and adopted
-decisions D1 to D5 are requirements here. This file is the implementation index. Each phase
+decisions D1 to D8 are requirements here. This file is the implementation index. Each phase
 file stands on its own for an agent that arrives with only its path.
 
 ## Decisions incorporated
@@ -14,6 +14,8 @@ file stands on its own for an agent that arrives with only its path.
 | D4 | Every lane that exports traces carries the unhashed id. | Phase 3 |
 | D5 | Phase the plan and schedule its tasks. | This file |
 | D6 | A resident run gets no work unit. Jordan chose this in the plan validation repair, over covering pinned residents with a fifth phase. It narrows R3 and R5. | Phase 1 (no id), Phase 2 (the resident catalog) |
+| D7 | An agent that was started with one work unit is not handed a task of another. Jordan chose this after the Inspector's review of the plan's pull request, over restarting the agent. | Phase 2 (the launch record and the reuse guard), Phase 3 (capture follows the record) |
+| D8 | Phase 2 starts with a check against a local OAuth fixture, and the config guide follows it. Jordan chose this after the Inspector's review, over documenting the limit only. | Phase 2 |
 
 ## What the repository showed
 
@@ -43,8 +45,25 @@ file stands on its own for an agent that arrives with only its path.
   run's private copy then keeps. The second finds a server that uses `env_http_headers`
   unusable, and `resolveResidentMcpSet` (`src/server/residents/mcp-launch.ts`) refuses a
   launch whose set includes one. So the config lines this plan recommends would mislabel or
-  block pinned residents unless the catalog learns the reference, and a run launched
-  earlier needs the empty header left out when it starts. Phase 2 owns both.
+  block pinned residents unless the catalog learns the reference, and a run launched earlier
+  needs the empty header left out when it starts. Phase 2 owns both.
+- **Reused agents.** `TaskManager.assign` (`src/server/tasks.ts`) hands a backlog task to an
+  agent that is already running, after a reset, and `agentIsFree` is the same choice when
+  the backlog makes it. No process starts, so the agent keeps the environment of its launch.
+  A variable set for one task would be sent on the MCP calls of the next.
+- **What a launch delivered.** `Registry.recordStandingInstructions`
+  (`src/server/registry.ts`) records, per session, something a launch installed on the
+  process, and `moveStandingInstructionsKey` carries that row across every note-key
+  rotation, because a `/clear` does not end the process. The work unit an agent was started
+  with needs the same lifetime, so Phase 2 records it the same way.
+- **Flags are live.** `docs/feature-flags.md` has `featureEnabled(id)` checked for each new
+  operation, and asks each feature to document what it does with work already in flight. An
+  agent's environment cannot follow a live flag, so the flag is read once, when an agent is
+  started.
+- **Claude Code and OAuth.** Read in Claude Code 2.1.329's program text, not run: a server's
+  sign-in is stored under its name and a hash of its type, URL and headers, with header
+  references already filled in. The comment in `parseClaudeServer` says the same. Phase 2
+  checks it against a fixture first.
 - **Telemetry.** `Collector.span` hashes every ref, and a fact is exported with a `mission.`
   prefix. Neither yields the plain attribute `work_unit_id`, so Phase 3 adds a named list of
   unscoped refs. `TELEMETRY_LIMITS.maxRefs` is 64 and the workflow events declare 19 refs,
@@ -70,8 +89,12 @@ file stands on its own for an agent that arrives with only its path.
    that does not depend on the flag. D6 is recorded as Jordan's choice.
 7. Plan validation, round 3: Phase 2 covers a resident run launched before it, and Phase 4
    names the carrier of each transport.
-8. Plan validation, round 4: the resident header rule is about the reference. Phase 2 says
-   what it covers once, and every statement of it uses the same two facts.
+8. Plan validation, round 4: the resident header rule is about the reference. Phase 2 says what
+   it covers once, and every statement of it uses the same two facts.
+9. The Inspector's review of the plan's pull request: everything Mission Control emits
+   follows a record of what each agent was started with, so a switch of the flag or a reused
+   agent cannot split spans from MCP calls (D7). The resident sign-in decision is made on
+   the headers that remain. Phase 2 starts with an OAuth check (D8).
 
 ## Sizing
 
@@ -80,21 +103,24 @@ Gross non-test production lines, added or materially changed.
 | Phase | Estimate | Main cost |
 |---|---|---|
 | 1 | 270 to 330 | Creation rules across six creating paths, the migration, MCP schemas and serializers |
-| 2 | 180 to 230 | Eight launch paths over three harnesses and two runtimes, the flag, the row, the resident catalog |
+| 2 | 270 to 350 | Eight launch paths over three harnesses and two runtimes, the flag, the launch record and its rotation, the reuse guard, the row, the resident catalog |
 | 3 | 130 to 170 | Catalog entries for about twelve events, the lint, the projection exception |
 | 4 | 20 to 40 | One input field and one call site |
-| Total | 600 to 770 | |
+| Total | 690 to 890 | |
 
-Assumptions: no new dependency, no new table, documentation not counted.
+Assumptions: no new dependency, one new table (the launch record in Phase 2), documentation
+not counted. The OAuth check in Phase 2 is fixture and test work, so it is not in these
+numbers.
 
 Why more than one phase:
 
 - **1 apart from 2 and 3.** Phase 1 is durable storage and the rules every consumer reads.
   With the launch paths and telemetry it would be one change of about 600 lines across the
   database, task creation, three harness adapters and the export pipeline.
-- **2 apart from 3.** They share only the flag. Phase 2 changes what every launched agent
-  receives. Phase 3 changes the telemetry privacy contract, which deserves a pull request a
-  reviewer can read for that alone.
+- **2 apart from 3.** Phase 3 reads what Phase 2 records and writes none of it. Phase 2
+  changes what every launched agent receives and when an agent may be reused. Phase 3
+  changes the telemetry privacy contract, which deserves a pull request a reviewer can read
+  for that alone.
 - **4 on its own.** It is small, but it cannot start until two task-shaping phases have
   merged. Folding it into Phase 2 or 3 would hold those behind work this plan does not own.
 
@@ -103,7 +129,7 @@ Why more than one phase:
 | Phase | File | Delivers | Direct prerequisites |
 |---|---|---|---|
 | 1. Id and task record | `phase-1-id-and-task-record.md` | The id helper, `tasks.work_unit_id`, creation and inheritance rules, the read field and filter | The planning pull request |
-| 2. Flag, launch environment and dashboard row | `phase-2-flag-launch-environment-and-dashboard.md` | The `work-unit-id` preview flag, `WORK_UNIT_ID` on every launch path, the "Work unit" row, the config guide, the resident catalog's handling of the reference | Phase 1 |
+| 2. Flag, launch environment and dashboard row | `phase-2-flag-launch-environment-and-dashboard.md` | The OAuth check, the `work-unit-id` preview flag, `WORK_UNIT_ID` on every launch path, the launch record and the reuse guard, the "Work unit" row, the config guide, the resident catalog's handling of the reference | Phase 1 |
 | 3. Telemetry attribute | `phase-3-telemetry-attribute.md` | The unhashed span attribute, its capture, lint and privacy contract | Phase 2 |
 | 4. Shaping hand-off | `phase-4-shaping-hand-off.md` | `workUnitId` on the shaping run, filled at dispatch | Phase 2, "Task shaping - Phase 2: Dispatch seam and visibility", "Task shaping - Phase 5: Remote transports" |
 
@@ -131,13 +157,17 @@ flowchart LR
 - **The record.** `Task.workUnitId` is `string | null`. It is null for a resident run (D6),
   and for a row that predates the column and has not been dispatched since. Only
   `TaskManager` mints or copies. Later phases read.
-- **The gate.** Phase 2 adds the flag id `work-unit-id` and one function,
-  `activeWorkUnitId(task)`, which returns the task's id when the flag is on and the id is
-  well formed, and null otherwise. Phases 2, 3 and 4 all emit through it, so there is one
-  gate.
-- **What is not gated.** Phase 1's behaviour (minting, inheritance, reads) and Phase 2's
-  resident catalog rule are the same with the flag on or off. Everything Mission Control
-  emits is gated.
+- **The gate.** Phase 2 adds the flag id `work-unit-id` and reads it in one place:
+  `launchWorkUnitId(task)`, called when a launch is built. It returns the task's id when the
+  flag is on and the id is well formed, and null otherwise.
+- **The launch record.** Phase 2 records, per session, the work unit its agent was started
+  with, and adds `sessionWorkUnitId(session, task)`: the recorded id while the task has that
+  same id, and null otherwise. Phases 2, 3 and 4 emit only through these two functions and
+  never read the flag themselves. So a switch of the flag, or a reused agent, cannot make
+  spans, shaper calls and the agent's own MCP calls disagree.
+- **What is not gated.** Phase 1's behaviour (minting, inheritance, reads), Phase 2's resident
+  catalog rule and Phase 2's reuse guard are the same with the flag on or off. Everything
+  Mission Control emits follows the decision made when the agent was started.
 - **Docs.** Phase 1 creates `docs/work-units.md`. Phase 2 adds the launch and MCP sections.
   Phase 3 adds a "Telemetry" section directly after "Reading a work unit". Phase 4 adds a
   "Task shaping" section at the end of the file.
@@ -150,8 +180,10 @@ flowchart LR
 | R2 the four names | 1 defines them; 2, 3 and 4 use them |
 | R3 unhashed on every session span | 3 |
 | R4 explicit fields, no baggage | 2 (environment), 4 (header and `_meta` to shapers) |
-| R5 the worker's own MCP calls | 2 |
+| R5 the worker's own MCP calls | 2. Not yet for a server Claude Code signs in to with OAuth: the check in Phase 2 decides (D8). |
 | D6 a resident run has no work unit | 1 (the record), 2 (the catalog) |
+| D7 a reused agent is not handed another work unit's task | 2 (the record and the guard), 3 (capture) |
+| D8 the OAuth check | 2 |
 | Plan section 8, the Agent Platform handoff | Not scheduled. Phase 1 keeps the supplied-id option it needs. |
 
 ## Final verification
@@ -166,14 +198,23 @@ After all four phases, with the flag on:
   and no `mission.ref.work_unit_id`.
 - A fixture `get_guidance` shaper on an `mcp` server over streamable HTTP receives the
   header and the `_meta` value. An `http` shaper receives the header only.
-- A resident run's task has no `workUnitId`, its launch has no variable and its spans have
-  no attribute. For a pinned resident the reference gets no launch refused and no header
-  in a new snapshot. A run launched before Phase 2 stops sending the empty header at its
-  next start. A non-empty value an operator wrote themselves is still sent as configured.
-- With the flag off, emission stops: no launch has the variable, no span has the attribute,
-  no shaper call carries the id and the dashboard shows no row. Task ids do not depend on
-  the flag: tasks still get them, and a plan task and its phase tasks still share one. The
-  resident catalog rule does not depend on the flag either.
+- A resident run's task has no `workUnitId`, its launch has no variable and its spans have no
+  attribute. For a pinned resident the reference gets no launch refused and no header in a
+  new snapshot. A run launched before Phase 2 stops sending the empty header at its next
+  start. A non-empty value an operator wrote themselves is still sent as configured. A
+  server whose only header was the reference keeps its harness sign-in.
+- The OAuth check's answers are recorded in `docs/work-units.md`, and the config guide
+  follows them.
+- With the flag off from the start, nothing is emitted: no launch has the variable, no span
+  has the attribute, no shaper call carries the id and the dashboard shows no row. Task ids
+  do not depend on the flag: tasks still get them, and a plan task and its phase tasks still
+  share one. The resident catalog rule and the reuse guard do not depend on the flag either.
+- A switch of the flag while agents run: an agent started with it on keeps the variable, the
+  span attribute and the shaper carrier until its next start, and one started with it off
+  gains none until then. At no moment do an agent's spans carry an id that its environment
+  does not.
+- A reused agent: assign refuses an agent that was started for another work unit, and a task
+  on an agent started with none emits nothing.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e` pass.
 
@@ -183,8 +224,8 @@ After all four phases, with the flag on:
   Nothing in it is gated, which Phase 2 relies on.
 - After Phase 2: the gate function lives in `src/server/work-unit.ts`, the file Phase 1
   creates. Phase 1 exports only `mintWorkUnitId` from it, so Phase 2 adds without changing.
-- After Phase 3: it reads the id through `activeWorkUnitId` and touches no launch path.
-  Phase 2 touches no telemetry file. They can merge in either order once Phase 2 is in.
+- After Phase 3: it reads the id through `sessionWorkUnitId` and touches no launch path. Phase
+  2 touches no telemetry file. They can merge in either order once Phase 2 is in.
 - After Phase 4: it changes only shaping files and the dispatch seam. Phase 3 does not
   touch either. The complete set covers R1 to R5 and D1 to D4 once each.
 - Plan validation repair, round 1: D6 touches Phase 1 (no id for a resident run), Phase 2
@@ -199,6 +240,13 @@ After all four phases, with the flag on:
 - Plan validation repair, round 3: Phase 2 states what happens to a resident run launched
   before it and tests that path. Phase 4's outcome, steps, compatibility notes and exit
   criteria name the same carrier for each transport. Phases 1 and 3 are unchanged.
-- Plan validation repair, round 4: Phase 2's step 9 states what the resident header rule
-  covers, and its outcome, tests and exit criterion state the same two facts. The root
-  plan and this index follow. No behaviour changed. Phases 1, 3 and 4 are unchanged.
+- Plan validation repair, round 4: Phase 2's resident catalog step states what the resident
+  header rule covers, and its outcome, tests and exit criterion state the same two facts.
+  The root plan and this index follow. No behaviour changed. Phases 1, 3 and 4 are
+  unchanged.
+- Inspector review of the plan's pull request: Phase 2 gains the OAuth check, the launch
+  record and the reuse guard, and its resident sign-in rule changes. Phase 3 captures from
+  the launch record. Phase 4 takes its value from the same two functions. Phase 1 gives an
+  older row its id at assign as well as at dispatch. Every statement about the flag being
+  off now says whether it means off when an agent is started, or switched off while one
+  runs.

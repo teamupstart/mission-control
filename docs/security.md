@@ -416,8 +416,15 @@ chose to pass, so it is replaced anywhere whatever its length, inside a word inc
 are replaced as one span, so no part of either survives. Each value is found with a
 Knuth-Morris-Pratt scan and its matches are marked in a difference array, so the work is linear
 in the text and the value however many copies overlap, and a reply at the 256 KiB cap cannot
-stall the daemon. Entry bodies are
-the shaper's content and are not rewritten.
+stall the daemon.
+
+A value the operator named in `env` is also removed from the reply's own content before the
+engine reads it: every occurrence in an entry's path, title or body, the summary, a fact's value,
+the notes, the version and an error becomes `[NAME redacted]`. Keys the result schema defines are
+never changed. An entry whose id, or a fact whose name, contains the value is dropped with a
+note rather than renamed, so redaction never merges two of them. The shaper's record is marked
+`redacted`, and its outcome does not change. Inherited values are not rewritten in content, which
+legitimately holds paths and ordinary words.
 
 stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
 whole and a non-ASCII value still matches exactly when it is redacted.

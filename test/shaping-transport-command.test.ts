@@ -195,7 +195,8 @@ test("credentials and Mission Control state are scrubbed, ordinary variables kep
       env: ["SHAPER_FIXTURE_NAMED", "MISSION_API_TOKEN", "MISSION_HOME"],
     });
     const seen = echoed(await callCommand(request(), transport, ctx()));
-    assert.equal(seen.env.SHAPER_FIXTURE_NAMED, "named-value", "a named variable is passed through");
+    // The child received it and echoed it, and the echo is scrubbed from the reply under its name.
+    assert.equal(seen.env.SHAPER_FIXTURE_NAMED, "[SHAPER_FIXTURE_NAMED redacted]", "a named variable is passed through");
     assert.equal(seen.env.SHAPER_FIXTURE_PLAIN, "plain-value", "an ordinary variable survives the scrub");
     assert.equal(seen.env.SHAPER_FIXTURE_TOKEN, null, "a credential-shaped name is dropped unless named");
     assert.equal(seen.env.MISSION_API_TOKEN, null, "the daemon's token never reaches a shaper, even by name");
@@ -229,7 +230,8 @@ test("a value the shaper was passed is redacted from its failure reason", async 
   process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "leak", "SHAPER_FIXTURE_SECRET"], { env: ["SHAPER_FIXTURE_SECRET"] }), ctx());
-    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]" });
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]", redacted: true },
+      "a named value removed from the reason marks the reply redacted");
     assert.equal(JSON.stringify(reply).includes("s3cret-passed-value"), false);
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
@@ -242,7 +244,7 @@ test("a non-ASCII value split across two stderr chunks is still redacted whole",
   process.env.SHAPER_FIXTURE_UNICODE = "sécret-ŵert-値値値";
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "leak-split", "SHAPER_FIXTURE_UNICODE"], { env: ["SHAPER_FIXTURE_UNICODE"] }), ctx());
-    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]" });
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]", redacted: true });
     const reason = (reply as { reason: string }).reason;
     assert.equal(reason.includes("値") || reason.includes("�"), false, "no piece of the value, and no broken character, survives");
   } finally {
@@ -259,9 +261,10 @@ test("an inherited value and a short named value are redacted from a failure rea
   process.env.SHAPER_FIXTURE_SHORT = "x9";
   try {
     const inherited = await callCommand(request(), shaper([FIXTURE, "leak", "SHAPER_FIXTURE_INHERITED"]), ctx());
-    assert.deepEqual(inherited, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]" });
+    assert.deepEqual(inherited, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]" },
+      "an inherited value is redacted, but only a named one is a credential the reply is marked for");
     const short = await callCommand(request(), shaper([FIXTURE, "leak", "SHAPER_FIXTURE_SHORT"], { env: ["SHAPER_FIXTURE_SHORT"] }), ctx());
-    assert.deepEqual(short, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]" });
+    assert.deepEqual(short, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]", redacted: true });
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name];
@@ -308,12 +311,43 @@ test("a reply's redactor treats a version as an identifier: named values go, sho
   }
 });
 
+test("a named credential the shaper echoes in its reply's content is scrubbed before the engine sees it", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SECRET;
+  process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "guidance-leak", "SHAPER_FIXTURE_SECRET"], { env: ["SHAPER_FIXTURE_SECRET"] }), ctx());
+    assert.equal(reply.kind, "data");
+    assert.equal((reply as { redacted?: boolean }).redacted, true);
+    const data = (reply as { data: string }).data;
+    assert.equal(data.includes("s3cret-passed-value"), false, "no copy survives anywhere in the reply");
+    const parsed = JSON.parse(data) as { guidance: Array<{ id: string; title: string; body: string; path: string }>; repo: { facts: Record<string, string>; summary: string }; notes: string[] };
+    assert.deepEqual(parsed.guidance.map((entry) => entry.id), ["kept"], "an entry whose id held the value is dropped, never renamed");
+    assert.deepEqual(parsed.guidance[0], { id: "kept", title: "token [SHAPER_FIXTURE_SECRET redacted]",
+      body: "use [SHAPER_FIXTURE_SECRET redacted] to sign in", path: "docs/[SHAPER_FIXTURE_SECRET redacted].md" });
+    assert.deepEqual(parsed.repo.facts, { language: "typescript", owner: "team [SHAPER_FIXTURE_SECRET redacted]" },
+      "a fact named after the value is dropped; one holding it is scrubbed");
+    assert.equal(parsed.repo.summary, "summary with [SHAPER_FIXTURE_SECRET redacted]");
+    assert.equal(parsed.notes.length, 2, "each drop leaves a note");
+    assert.match(parsed.notes.join(" "), /dropped because its id contained the value of SHAPER_FIXTURE_SECRET/);
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
+    else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("a reply holding no named value is returned byte for byte", async () => {
+  const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx());
+  assert.equal(reply.kind, "data");
+  assert.equal((reply as { redacted?: boolean }).redacted, undefined);
+  assert.equal(typeof (reply as { data: unknown }).data, "string");
+});
+
 test("a short named credential printed inside a word is still redacted", async () => {
   const saved = process.env.SHAPER_FIXTURE_SHORT;
   process.env.SHAPER_FIXTURE_SHORT = "x9";
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "leak-glued", "SHAPER_FIXTURE_SHORT"], { env: ["SHAPER_FIXTURE_SHORT"] }), ctx());
-    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: login failed for user[redacted]x" });
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: login failed for user[redacted]x", redacted: true });
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SHORT;
     else process.env.SHAPER_FIXTURE_SHORT = saved;

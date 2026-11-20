@@ -94,6 +94,19 @@ switch (mode) {
     // A structured error on stdout, exit 0, that repeats the value it was handed.
     reply({ error: { code: "denied", message: `rejected credential ${process.env[rest[0]] ?? "<unset>"}` } });
     break;
+  case "guidance-leak": {
+    // A good reply that repeats the value it was handed in every kind of content, and as an
+    // entry id and a fact name, which cannot be scrubbed without merging two of them.
+    const value = process.env[rest[0]] ?? "<unset>";
+    reply({
+      guidance: [
+        { id: "kept", title: `token ${value}`, body: `use ${value} to sign in`, path: `docs/${value}.md` },
+        { id: `entry-${value}`, body: "an entry keyed by the value" },
+      ],
+      repo: { facts: { language: "typescript", owner: `team ${value}`, [`by-${value}`]: "x" }, summary: `summary with ${value}` },
+    });
+    break;
+  }
   case "version-leak":
     // A version string that repeats the value it was handed, on an otherwise good reply.
     reply({ version: `v2-${process.env[rest[0]] ?? "<unset>"}`, guidance: [{ id: "v", body: "versioned entry" }] });

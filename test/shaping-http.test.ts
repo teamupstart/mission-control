@@ -86,14 +86,20 @@ test("each intent persists, notifies and is reflected by GET", async () => {
     assert.equal(settings.status, 200);
     const { config } = await settings.json() as { config: typeof SHAPING_CONFIG_DEFAULTS };
     assert.deepEqual(config.shapers.map((entry) => entry.id), ["gather-one", "select-one"]);
-    assert.deepEqual(config.overrides, { "gather-one": true });
+    assert.deepEqual(config.overrides, { "gather-one": true, "select-one": false }, "an upsert stores an explicit off");
     assert.deepEqual(config.order, ["select-one", "gather-one"]);
     assert.deepEqual([config.caller.user, config.limits.deadlineMs], ["declared-user", 20_000]);
     assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), config);
     assert.deepEqual(((await (await get()).json()) as { config: unknown }).config, config);
+    // Replacing a shaper that is on stores an explicit off, in the reply and in storage.
+    const replaced = await put({ kind: "upsert", shaper: fixture("gather-one", "gather", "degraded") });
+    assert.equal(replaced.status, 200);
+    assert.equal(((await replaced.json()) as { config: typeof SHAPING_CONFIG_DEFAULTS }).config.overrides["gather-one"], false);
+    assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).overrides["gather-one"], false);
     assert.equal((await put({ kind: "remove", id: "select-one" })).status, 200);
     assert.deepEqual(shaping.getShapingConfig().order, ["gather-one"]);
-    assert.equal(seen.length, 6);
+    assert.equal(shaping.getShapingConfig().overrides["select-one"], undefined, "remove still clears the choice");
+    assert.equal(seen.length, 7);
   } finally { off(); }
 });
 
@@ -233,8 +239,9 @@ test("a structured error, a degraded note or a version that repeats a passed val
     await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
     const named = { transport: { type: "command", command: process.execPath, env: ["SHAPER_FIXTURE_SECRET"] } };
     for (const [id, mode, outcome, reason] of [
-      ["error-leak", "reply-error-leak", "failed", "denied: rejected credential [redacted]"],
-      ["notes-leak", "reply-notes-leak", "degraded", "fell back after [redacted] was refused"],
+      // Scrubbed from the reply's content before the engine reads it, under the variable's name.
+      ["error-leak", "reply-error-leak", "failed", "denied: rejected credential [SHAPER_FIXTURE_SECRET redacted]"],
+      ["notes-leak", "reply-notes-leak", "degraded", "fell back after [SHAPER_FIXTURE_SECRET redacted] was refused"],
       ["version-leak", "version-leak", "ok", null],
     ] as const) {
       const shaper = fixture(id, "select", mode);
@@ -243,10 +250,32 @@ test("a structured error, a degraded note or a version that repeats a passed val
       assert.equal(response.status, 200);
       const text = await response.text();
       assert.equal(text.includes("s3cret-passed-value"), false, `${id}: the value appears nowhere in the reply`);
-      const run = JSON.parse(text) as { summary: { shapers: Array<{ outcome: string; reason: string; version: string | null }> } };
+      const run = JSON.parse(text) as { summary: { shapers: Array<{ outcome: string; reason: string; version: string | null; redacted: boolean }> } };
       assert.deepEqual([run.summary.shapers[0]!.outcome, run.summary.shapers[0]!.reason], [outcome, reason]);
-      if (id === "version-leak") assert.equal(run.summary.shapers[0]!.version, "v2-[redacted]", "the recorded version is scrubbed");
+      assert.equal(run.summary.shapers[0]!.redacted, true, `${id}: the record says a credential value was removed`);
+      if (id === "version-leak") assert.equal(run.summary.shapers[0]!.version, "v2-[SHAPER_FIXTURE_SECRET redacted]", "the recorded version is scrubbed");
     }
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
+    else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("a dry run never returns a named credential the shaper echoed in its guidance", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SECRET;
+  process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
+  try {
+    await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+    await put({ kind: "upsert", shaper: { ...fixture("guidance-leak", "gather", "guidance-leak"),
+      transport: { type: "command", command: process.execPath, args: [FIXTURE, "guidance-leak", "SHAPER_FIXTURE_SECRET"], env: ["SHAPER_FIXTURE_SECRET"] } } });
+    const response = await dryRun({ id: "guidance-leak", repository });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.equal(text.includes("s3cret-passed-value"), false, "neither entries nor section nor summary carry it");
+    const run = JSON.parse(text) as { section: string; entries: Array<{ id: string; body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean }> } };
+    assert.deepEqual(run.entries.map((entry) => [entry.id, entry.body]), [["kept", "use [SHAPER_FIXTURE_SECRET redacted] to sign in"]]);
+    assert.match(run.section, /use \[SHAPER_FIXTURE_SECRET redacted\] to sign in/);
+    assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]], "redaction is not degradation");
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;

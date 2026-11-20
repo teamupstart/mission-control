@@ -205,6 +205,9 @@ A `command` shaper is any program. Mission Control runs it once per call:
 - **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
   reason drawn from your reply, such as an `error` or degraded `notes`.
+  A variable you named in `env` is also removed from your reply's content: each occurrence in an
+  entry, the summary, a fact, the notes or the version becomes `[NAME redacted]`, and an entry
+  or fact keyed by it is dropped with a note. The record says `redacted`.
 - **Timeout.** The program runs in its own process group, and the whole group is killed at the
   timeout. Whatever is left of the group is also killed when the call ends, so a helper your
   program starts does not outlive it.
@@ -232,7 +235,7 @@ All three routes are behind the flag and answer 404 while it is off.
   `discovered` and `references` are empty until the folder and the remote transports land.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
-    way it is stored off: a choice to run it applies to the definition the operator reviewed,
+    way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
     so a replacement is switched on again with `enable` after it has been dry-run.
   - `{ "kind": "remove", "id": "..." }`.
   - `{ "kind": "enable", "id": "...", "enabled": true }` stores the operator's choice.

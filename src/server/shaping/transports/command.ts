@@ -15,6 +15,7 @@ import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subproces
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
+import { scrubResolved, type ResolvedValue } from "../references.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
 /**
@@ -331,6 +332,10 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
 
   // What the child is spawned with, which is what its output may repeat.
   const received = receivedValues(executable.env, transport.env);
+  // The named variables' values, each under its own name, for the reply's content.
+  const namedValues: ResolvedValue[] = transport.env
+    .filter((name) => !traceContextName(name))
+    .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; });
   const longestValue = received.values[0]?.length ?? 0;
   // For identifiers: everything but the short inherited values only whole-token rules apply to.
   const identifierValues: ReceivedValues = {
@@ -421,9 +426,17 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       if (ending === "timed_out") return finish({ kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` });
       if (ending === "overflow") return finish({ kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
       if (code === 0) {
+        const text = Buffer.concat(out).toString("utf8");
+        // A value the operator named in `env` is a credential the shaper may echo. It is removed
+        // from the reply's own content, entries and facts included, before the engine sees it.
+        let decoded: unknown = text;
+        try { decoded = JSON.parse(text); } catch { /* The engine refuses it without its text. */ }
+        const scrubbed = scrubResolved(decoded, namedValues);
         return finish({
           kind: "data",
-          data: Buffer.concat(out).toString("utf8"),
+          // The bytes as written when nothing was removed, otherwise the scrubbed reply.
+          data: scrubbed.redacted ? JSON.stringify(scrubbed.data) : text,
+          ...(scrubbed.redacted ? { redacted: true } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
           redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),
         });
@@ -432,7 +445,11 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       stderr += stderrDecoder.end();
       const tail = stderrTail();
       const detail = tail ? `: ${tail}` : "";
-      finish({ kind: "failed", reason: signal ? `The command was killed by ${signal}${detail}` : `The command exited with code ${code}${detail}` });
+      const named = namedValues.some(({ value }) => stderr.includes(value));
+      finish({
+        kind: "failed", reason: signal ? `The command was killed by ${signal}${detail}` : `The command exited with code ${code}${detail}`,
+        ...(named ? { redacted: true } : {}),
+      });
     };
     // The shaper itself has exited. A helper still in its group could hold the pipes open, and
     // `close` would then wait for it until the timeout discarded a perfectly good reply. So the

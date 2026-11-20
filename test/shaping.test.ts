@@ -288,7 +288,7 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
   assert.equal(replaced.ok, true, "a valid replacement is accepted");
   const after = (replaced as { config: ShapingConfig }).config;
   assert.equal(classifyShaper(after.shapers.find((entry) => entry.id === "cmd")!).kind, "known");
-  assert.equal(Object.hasOwn(after.overrides, "cmd"), false, "and stored off, like a new definition");
+  assert.equal(after.overrides.cmd, false, "and stored off, like a new definition");
   assert.equal(ShapingConfigSchema.parse(JSON.parse(JSON.stringify(stored))).shapers.filter(credentialsWereRemoved).length, 2,
     "the mark survives a round trip");
 });
@@ -607,6 +607,19 @@ test("a positional argument holding a well-known credential is refused, and stri
   assert.equal(credentialsWereRemoved(entry), true);
 });
 
+test("a discovered manifest naming a ./ command resolves and can be dry-run; a registered one cannot", () => {
+  const manifest = ShaperManifestSchema.parse({ id: "folder-run", label: "Folder run", stage: "gather", transport: { type: "command", command: "./run" } });
+  const found: DiscoveredShaper = { id: "folder-run", path: "/shapers/folder-run", state: "ok", problem: null, sha256: "a".repeat(64), shaper: manifest };
+  const resolved = resolveShapers(config(), [found], task);
+  assert.deepEqual(resolved.map((entry) => [entry.shaper.id, entry.origin, entry.root, entry.shaper.transport.type === "command" && entry.shaper.transport.command]),
+    [["folder-run", "discovered", "/shapers/folder-run", "./run"]], "resolved against its folder");
+  assert.equal(resolveShaperById(config(), [found], "folder-run", task).ok, true, "and found for a dry run");
+  // A build modelled with its own stages keeps the same split.
+  const later = { stages: ["gather", "select"], shaper: shaperSchemaForStages(["gather", "select"]),
+    discovered: shaperSchemaForStages(["gather", "select"], { discovered: true }) };
+  assert.equal(resolveShapers(config(), [found], task, later).length, 1);
+});
+
 test("a built-in is registered only at a stage its registry entry declares", () => {
   const builtin = (stage: string) => ({ id: "files", label: "Files", stage, transport: { type: "builtin", builtin: "repository-files", options: {} } });
   assert.equal(ShaperSchema.safeParse(builtin("gather")).success, true);
@@ -651,19 +664,19 @@ test("a repeated stored id is unsupported; the first entry owns it", () => {
 
 test("upsert stores a new shaper off, replaces an existing one in place and off, and is bounded", () => {
   let stored = apply(config({ overrides: { fresh: true } }), { kind: "upsert", shaper: command("fresh") });
-  assert.deepEqual(stored.overrides, {}, "a new registered shaper is off whatever an old choice said");
+  assert.deepEqual(stored.overrides, { fresh: false }, "a new registered shaper is stored off whatever an old choice said");
   assert.deepEqual(resolveShapers(stored, [], task), []);
   stored = apply(stored, { kind: "upsert", shaper: command("second") });
   stored = apply(stored, { kind: "enable", id: "fresh", enabled: true });
   stored = apply(stored, { kind: "upsert", shaper: command("fresh", "select") });
   assert.deepEqual(stored.shapers.map((entry) => [entry.id, entry.stage]), [["fresh", "select"], ["second", "gather"]]);
-  assert.equal(Object.hasOwn(stored.overrides, "fresh"), false, "a replacement is stored off: the choice was for the old definition");
+  assert.equal(stored.overrides.fresh, false, "a replacement is stored off, explicitly: the choice was for the old definition");
   assert.deepEqual(resolveShapers(stored, [], task).map((entry) => entry.shaper.id), [], "and does not run until switched on again");
   // A replacement that changes only the executable is still a definition nobody switched on.
   stored = apply(stored, { kind: "enable", id: "second", enabled: true });
   stored = apply(stored, { kind: "enable", id: "fresh", enabled: true });
   stored = apply(stored, { kind: "upsert", shaper: command("second", "gather", { transport: { type: "command", command: "/usr/local/bin/other" } }) });
-  assert.equal(Object.hasOwn(stored.overrides, "second"), false);
+  assert.equal(stored.overrides.second, false);
   assert.equal(stored.overrides.fresh, true, "and another id's choice is untouched by it");
   const full = config({ shapers: Array.from({ length: SHAPING_LIMITS.shapers }, (_, i) => command(`s-${i}`)) });
   const refused = applyShapingIntent(full, { kind: "upsert", shaper: command("one-more") });

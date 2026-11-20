@@ -789,21 +789,38 @@ export const ShaperManifestSchema = ShaperObjectSchema
   .superRefine(builtinStageDeclared);
 export type ShaperManifest = z.output<typeof ShaperManifestSchema>;
 
-/** The strict definition over a different stage tuple, so a test can model another build. */
-export function shaperSchemaForStages(stages: readonly [string, ...string[]]): z.ZodType<Shaper> {
-  return z.strictObject(shaperFields(stages))
+/**
+ * A discovered shaper's definition, as the resolver reads a manifest once its own fields are
+ * stripped: the strict definition, where a `./` command resolves against the manifest's folder.
+ */
+export const DiscoveredDefinitionSchema = ShaperObjectSchema
+  .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
+  .superRefine(credentialsAreReferences)
+  .superRefine(builtinStageDeclared);
+
+/**
+ * The strict definition over a different stage tuple, so a test can model another build. The
+ * discovered variant leaves out the registered-only `./` rule, as `DiscoveredDefinitionSchema` does.
+ */
+export function shaperSchemaForStages(stages: readonly [string, ...string[]], options: { discovered?: boolean } = {}): z.ZodType<Shaper> {
+  const schema = z.strictObject(shaperFields(stages))
     .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
     .superRefine(credentialsAreReferences)
-    .superRefine(builtinStageDeclared)
-    .superRefine(registeredCommandResolvable) as unknown as z.ZodType<Shaper>;
+    .superRefine(builtinStageDeclared);
+  return (options.discovered ? schema : schema.superRefine(registeredCommandResolvable)) as unknown as z.ZodType<Shaper>;
 }
 
 /** What a pure function reads from the registry. Tests pass their own. */
 export interface ShapingDefinitions {
   readonly stages: readonly string[];
+  /** A registered shaper's definition. */
   readonly shaper: z.ZodType<Shaper>;
+  /** A discovered shaper's definition. Absent, the registered one is used. */
+  readonly discovered?: z.ZodType<Shaper>;
 }
-export const SHAPING_DEFINITIONS: ShapingDefinitions = Object.freeze({ stages: SHAPING_STAGES, shaper: ShaperSchema });
+export const SHAPING_DEFINITIONS: ShapingDefinitions = Object.freeze({
+  stages: SHAPING_STAGES, shaper: ShaperSchema, discovered: DiscoveredDefinitionSchema as unknown as z.ZodType<Shaper>,
+});
 
 /** Bounded JSON, for the fields of a stored entry this build may not understand. */
 export const ShapingJsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
@@ -1045,6 +1062,12 @@ export function applyShapingIntent(
   const overrides = { ...config.overrides };
   let order = [...config.order];
   const index = (id: string) => shapers.findIndex((entry) => entry.id === id);
+  /** Choices for ids that no longer exist make room before a live one is stored. */
+  const makeRoomForChoice = (id: string): void => {
+    if (Object.hasOwn(overrides, id) || Object.keys(overrides).length < SHAPING_LIMITS.choices) return;
+    const live = new Set([...shapers.map((entry) => entry.id), ...discovered.map((entry) => entry.id)]);
+    for (const key of Object.keys(overrides)) if (!live.has(key)) delete overrides[key];
+  };
   switch (intent.kind) {
     case "upsert": {
       const parsed = definitions.shaper.safeParse(intent.shaper);
@@ -1064,11 +1087,12 @@ export function applyShapingIntent(
         }
         shapers[at] = stored.data;
       }
-      // Every upsert stores off for its id, a replacement as much as a new definition: a choice
-      // to run applies to the definition the operator reviewed, not to whatever is written over
-      // it later with a different command, arguments or transport, nor to a discovered shaper
-      // that happened to hold the id.
-      delete overrides[parsed.data.id];
+      // Every upsert stores off for its id, an explicit `false`, a replacement as much as a new
+      // definition: a choice to run applies to the definition the operator reviewed, not to
+      // whatever is written over it later with a different command, arguments or transport, nor
+      // to a discovered shaper that happened to hold the id.
+      makeRoomForChoice(parsed.data.id);
+      overrides[parsed.data.id] = false;
       break;
     }
     case "remove": {
@@ -1090,11 +1114,7 @@ export function applyShapingIntent(
           return refuse("unsupported_shaper", found.problem ?? `The shaper "${intent.id}" cannot run.`);
         }
       }
-      if (!Object.hasOwn(overrides, intent.id) && Object.keys(overrides).length >= SHAPING_LIMITS.choices) {
-        // Choices for ids that no longer exist make room before a live one is refused.
-        const live = new Set([...shapers.map((entry) => entry.id), ...discovered.map((entry) => entry.id)]);
-        for (const id of Object.keys(overrides)) if (!live.has(id)) delete overrides[id];
-      }
+      makeRoomForChoice(intent.id);
       overrides[intent.id] = intent.enabled;
       break;
     }
@@ -1159,7 +1179,8 @@ function candidates(
     // A registered shaper wins an id clash, whatever the scan reported.
     if (entry.state !== "ok" || !entry.shaper || registered.has(entry.id) || entry.shaper.id !== entry.id) continue;
     if (out.some((candidate) => candidate.shaper.id === entry.id)) continue;
-    const parsed = definitions.shaper.safeParse(stripManifestFields(entry.shaper));
+    // A manifest's definition, which may name a `./` command resolved against its folder.
+    const parsed = (definitions.discovered ?? definitions.shaper).safeParse(stripManifestFields(entry.shaper));
     if (!parsed.success) continue;
     out.push({
       shaper: parsed.data, origin: "discovered", stored: null, sha256: entry.sha256, root: entry.path,

@@ -12,7 +12,7 @@ Each phase document cites the findings it depends on. The ones that shaped the s
   (`src/server/dispatcher.ts:721-731`), called at lines 732 and 743, after three awaits. One
   more await fits between lines 720 and 721. `withTaskKindContract` only appends.
 - `TaskManager.assign` and `dispatchPipeline` compose their own first prompts. `assign` is
-  shaped too (decision 16); pipelines are not.
+  shaped too (decision 21); pipelines are not.
 - Dispatch is fire-and-forget, so a result can only live on the task record.
 - The feature-flag registry ships empty, and a test asserts it.
 - `test/settings-backup-coverage.test.ts` requires every `settings`-surface backup domain to
@@ -86,11 +86,6 @@ Each phase document cites the findings it depends on. The ones that shaped the s
 15. **A credential is never literal in config.** Phase 1's strict schema requires
     `{env:NAME}` references for credential-looking headers and refuses credentials in a URL,
     for the API, a Settings import and a folder manifest alike.
-16. **Every launch is shaped, through `Dispatcher.dispatch` or `TaskManager.assign`.** The
-    operator decided on 2026-11-20 to shape autopilot's handover of a backlog task to a running
-    agent as well. Phase 2 owns both call sites, which share one input builder, one section
-    helper and the one commit, under the receiving session's id once the inject succeeds.
-    `shapingView(task)` beside `currentShaping(task)` reports `shaping` while either step runs.
 
 16. **Phase 7 was added on 2026-11-20**, when FR-04 published `route_skills` (D12). It is one
     phase: the route record, the section and the after-work prompt are one proof, and the
@@ -105,6 +100,11 @@ Each phase document cites the findings it depends on. The ones that shaped the s
     line.
 20. **The after-work prompt uses the daemon's existing outbox**, not a new delivery path. It
     waits for an idle session, is recorded as daemon-written, and survives a restart.
+21. **Every launch is shaped, through `Dispatcher.dispatch` or `TaskManager.assign`.** The
+    operator decided on 2026-11-20 to shape autopilot's handover of a backlog task to a running
+    agent as well. Phase 2 owns both call sites, which share one input builder, one section
+    helper and the one commit, under the receiving session's id once the inject succeeds.
+    `shapingView(task)` beside `currentShaping(task)` reports `shaping` while either step runs.
 
 ## Size and phase count
 

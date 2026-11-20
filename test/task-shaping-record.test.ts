@@ -87,7 +87,7 @@ test("a schema 38 database upgrades to 39 with the column and the table, and a s
   assert.equal(db.getTask("before-39")?.status, "backlog");
 });
 
-test("the one commit settles the summary and the text together, in each of the four combinations", () => {
+test("the one commit settles the summary and the text together, across every transition a launch can make", () => {
   db.upsertTask(mkTask({ id: "combo", status: "running", sessionId: "s1" }));
   // A summary and text: a launch that delivered context.
   assert.equal(db.commitTaskShaping("combo", record("s1"), "## Task context\n\nbody", 10), true);
@@ -98,11 +98,11 @@ test("the one commit settles the summary and the text together, in each of the f
   assert.equal(db.getTask("combo")?.shaping?.state, "degraded");
   assert.equal(db.getTask("combo")?.shaping?.shapers[0]?.reason, "Timed out after 5 s.");
   assert.equal(db.getTaskShapingText("combo"), null);
-  // Text and no summary cannot come from the engine, and the function still settles both.
-  assert.equal(db.commitTaskShaping("combo", null, "orphan text", 30), true);
-  assert.equal(db.getTask("combo")?.shaping, undefined);
-  assert.equal(db.getTaskShapingText("combo")?.text, "orphan text");
-  // Neither: a launch nothing shaped clears what an earlier one left.
+  // A later launch that delivered context again: both are replaced, the text row recreated.
+  assert.equal(db.commitTaskShaping("combo", record("s3"), "third text", 30), true);
+  assert.deepEqual(db.getTask("combo")?.shaping, record("s3"));
+  assert.deepEqual(db.getTaskShapingText("combo"), { text: "third text", createdAt: 30 });
+  // Neither: a launch nothing shaped clears both the summary and the text an earlier one left.
   assert.equal(db.commitTaskShaping("combo", null, "", 40), true);
   assert.equal(db.getTask("combo")?.shaping, undefined);
   assert.equal(db.getTaskShapingText("combo"), null);

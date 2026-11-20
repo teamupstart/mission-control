@@ -18,7 +18,7 @@ never stops the launch. With Phase 1 this completes the first slice (D3).
 - "Shaping context" in the pending tile, the chip, the viewer, the board and rail marker.
 - The `shaping` field in task reads, including the MCP tools.
 
-Also here: the second call site in `TaskManager.assign` (decision 16 in `phased-plan.md`).
+Also here: the second call site in `TaskManager.assign` (decision 21 in `phased-plan.md`).
 
 Not here: pipelines (a non-goal), Settings (Phase 3).
 

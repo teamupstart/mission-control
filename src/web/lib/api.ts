@@ -604,7 +604,6 @@ export const fetchResolvedStandingInstructions = (
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
 
-/** What THIS session was actually sent at launch. `null` covers the route's 404. */
 /** `GET /api/tasks/:id/shaping`: what the task's current session received from task shaping. */
 export interface TaskShapingView {
   summary: TaskShaping;
@@ -616,6 +615,7 @@ export interface TaskShapingView {
 export const fetchTaskShaping = (taskId: string, signal?: AbortSignal) =>
   fetchJsonWithSignal<TaskShapingView>(`/api/tasks/${encodeURIComponent(taskId)}/shaping`, signal);
 
+/** What THIS session was actually sent at launch. `null` covers the route's 404. */
 export const fetchSessionStandingInstructions = (id: string, signal?: AbortSignal) =>
   fetchJsonWithSignal<StandingInstructionsDelivery>(
     `/api/sessions/${encodeURIComponent(id)}/standing-instructions`,

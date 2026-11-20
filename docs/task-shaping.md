@@ -14,8 +14,8 @@ same way, after the handover resets the agent and before its first turn is typed
 reads "Shaping context" while that runs, and the session shows what it received and whether
 anything was degraded. A failing or slow shaper never stops the launch.
 
-**What comes later.** The Settings panel, the shaper folder and the other transports arrive in
-later phases. The sections marked for later below describe them.
+**What comes later.** The shaper folder and the other transports arrive in later phases. The
+sections marked for later below describe them.
 
 Task shaping is a preview behind the `task-shaping` flag in **Settings > Feature flags**. With
 the flag off, the shaping API answers 404, Settings has no Task shaping category, no window is

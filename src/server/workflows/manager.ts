@@ -1576,12 +1576,12 @@ export class WorkflowManager {
       : { ok: false, reason: "not_found", message: "No such workflow binding" };
   }
 
-  /** Whether the selected current immutable version can consume visual evidence. */
   /** A workflow's name, for a shaper's view of the task's after-work step. Null when unknown. */
   workflowName(workflowId: string): string | null {
     return this.store.getWorkflow(workflowId)?.name ?? null;
   }
 
+  /** Whether the selected current immutable version can consume visual evidence. */
   supportsImageEvidence(workflowId: string): boolean {
     const workflow = this.store.getWorkflow(workflowId);
     const version = workflow?.currentVersionId

@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
+import { serve } from "@hono/node-server";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +16,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-shaping-http-"));
 process.env.MISSION_HOME = home;
 const { openDb, closeDb, setAppConfig, getAppConfig } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
-const { SHAPING_CONFIG_DEFAULTS } = await import("../src/shared/shaping.ts");
+const { SHAPING_CONFIG_DEFAULTS, credentialsWereRemoved } = await import("../src/shared/shaping.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -188,6 +191,41 @@ test("a slow, failing or malformed shaper is an outcome in a 200, never an error
   }
 });
 
+test("a client that disconnects from a dry run stops the shaper's process group", { timeout: 60_000 }, async () => {
+  await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+  const pidFile = join(home, "disconnect-grandchild.pid");
+  rmSync(pidFile, { force: true });
+  // A gatherer whose descendant sleeps for a minute: only a cancellation ends it in time.
+  await put({ kind: "upsert", shaper: { ...fixture("hangs", "gather", "grandchild"),
+    transport: { type: "command", command: process.execPath, args: [FIXTURE, "grandchild", pidFile] } } });
+  const server = serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch });
+  try {
+    await new Promise<void>((resolve) => server.listening ? resolve() : server.once("listening", resolve));
+    const address = server.address();
+    assert(address && typeof address !== "string");
+    const body = JSON.stringify({ id: "hangs", repository });
+    const client = httpRequest({ host: "127.0.0.1", port: address.port, path: "/api/shaping/test", method: "POST",
+      headers: { ...headers, "content-length": Buffer.byteLength(body) } });
+    client.on("error", () => { /* The test closes it. */ });
+    client.end(body);
+    const started = Date.now();
+    while (!existsSync(pidFile) || readFileSync(pidFile, "utf8") === "") {
+      assert.ok(Date.now() - started < 30_000, "the shaper started");
+      await sleep(25);
+    }
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    client.destroy();
+    let alive = true;
+    const left = Date.now();
+    while (alive && Date.now() - left < 10_000) {
+      try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
+    }
+    assert.equal(alive, false, "the descendant is gone well before the 30 s call timeout");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("a structured error or a degraded note that repeats a passed value is redacted in the dry run", async () => {
   const saved = process.env.SHAPER_FIXTURE_SECRET;
   process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
@@ -311,6 +349,34 @@ test("a JSON body that carries a credential is refused, and a stored one never r
   const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
   assert.equal(snapshot.includes("pw-json-stored") || snapshot.includes("sk-live-json"), false, "no snapshot carries the body's secret");
   assert.equal(snapshot.includes('"stored-json"'), true, "the entry itself is kept, marked as stripped");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
+});
+
+test("a stored entry at the size limit stays within it once a credential is stripped, and the config still saves", async () => {
+  const limit = 16 * 1024;
+  const entry = (padding: string) => ({ id: "at-limit", label: "At limit", stage: "select",
+    transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer sk-live-at-limit" } },
+    notes: padding });
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  const atLimit = entry("x".repeat(limit - bytes(entry(""))));
+  assert.equal(bytes(atLimit), limit, "the fixture sits exactly at the limit");
+  // Stored past the API, as a restore or another build could: valid, and exactly 16 KiB.
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [atLimit] });
+  shaping.reloadShaping();
+  const read = await get();
+  assert.equal(read.status, 200);
+  assert.equal((await read.text()).includes("sk-live-at-limit"), false, "the credential is gone from the read");
+  // A change that keeps the entry reparses it: it must save, not answer 500.
+  const saved = await put({ kind: "settings", limits: { timeoutMs: 7_000 } });
+  assert.equal(saved.status, 200, await saved.text());
+  const held = shaping.getShapingConfig().shapers.find((stored) => stored.id === "at-limit")!;
+  assert.ok(bytes(held) <= limit, `the stripped entry is ${bytes(held)} bytes`);
+  assert.equal(credentialsWereRemoved(held), true, "and marked, so it stays unsupported");
+  const row = getAppConfig(APP_CONFIG_ENTRIES.shaping) as { shapers: unknown[] };
+  assert.equal(row.shapers.length, 1, "the entry is kept");
+  assert.ok(bytes(row.shapers[0]) <= limit);
+  assert.equal(JSON.stringify(row).includes("sk-live-at-limit"), false);
   setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
   shaping.reloadShaping();
 });

@@ -455,7 +455,9 @@ entry handed over another way, such as a foreign snapshot, still cannot carry se
 into the daemon or into a snapshot. A stored entry may nest at most 32 levels deep, checked
 without recursion before anything recursive reads it, so a crafted entry is a validation
 error that takes the unreadable-config path rather than a stack overflow. An entry it emptied anything in is marked
-`credentialsRemoved` and is unsupported. It never runs, dry-runs or switches on with its
+`credentialsRemoved` and is unsupported. When that mark would take an entry past the 16 KiB
+entry limit, only its id, label, stage and transport type are kept, so the config still parses
+and saves. It never runs, dry-runs or switches on with its
 changed arguments or headers, until the operator registers a valid replacement for its id,
 which is stored off. An argument is judged by its name, split at the first `=`, so a value
 with line breaks in it is recognised as well.

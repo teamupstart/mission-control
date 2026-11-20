@@ -62,6 +62,9 @@ export function registerShapingRoutes(app: Hono): void {
         afterWork: null, labels: [], priority: null,
         repositories: [{ name: basename(repoRoot), role: "primary", branch: null, baseSha: null, path: checkout }],
       },
+      // Aborted when the client's connection closes before the reply, so a dry run nobody is
+      // waiting for stops its shapers' process groups instead of running to their timeout.
+      signal: c.req.raw.signal,
     });
     if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unknown_shaper" ? 404 : 400);
     return c.json(result.run);

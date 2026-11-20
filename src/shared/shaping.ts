@@ -540,7 +540,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * argument. A definition this build writes can hold none of these, because the strict schema
  * refuses them. This covers everything else the config may be handed - a settings restore, or
  * an entry a newer build stored - so no path leaves secret text in `app_config.shaping` or in
- * the `shaping` domain of a snapshot. Every other field is kept exactly as written.
+ * the `shaping` domain of a snapshot. Every other field is kept exactly as written, unless the
+ * marked entry would no longer fit `SHAPING_LIMITS.entryJsonBytes`: then only its id, label,
+ * stage and transport type are kept, so the result always parses again.
  */
 export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
   const transport = stored.transport as Record<string, unknown>;
@@ -586,7 +588,15 @@ export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
   const nextTransport = fromServer ? { ...transport, server: holder } : { ...transport, ...holder };
   // Marked, because the definition no longer says what its author wrote: an emptied argument or
   // header would otherwise run with changed meaning. It stays unsupported until replaced.
-  return { ...stored, transport: nextTransport as StoredShaper["transport"], [CREDENTIALS_REMOVED]: true };
+  const stripped = { ...stored, transport: nextTransport as StoredShaper["transport"], [CREDENTIALS_REMOVED]: true };
+  if (utf8Length(JSON.stringify(stripped)) <= SHAPING_LIMITS.entryJsonBytes) return stripped;
+  // The mark, or a URL this build re-serialised, pushed an entry that was at the limit past it,
+  // and the next parse of the config would refuse it. Keep only what identifies the entry: it
+  // is unsupported either way, and its replacement is a whole new definition.
+  return {
+    id: stored.id, label: stored.label, stage: stored.stage,
+    transport: { type: stored.transport.type } as StoredShaper["transport"], [CREDENTIALS_REMOVED]: true,
+  } as StoredShaper;
 }
 
 /** The credential rule over a whole definition's headers, URLs and arguments. */

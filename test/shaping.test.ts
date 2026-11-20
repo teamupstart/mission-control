@@ -248,6 +248,27 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
     "the mark survives a round trip");
 });
 
+test("stripping a credential never pushes a stored entry past the size limit, so the config parses again", () => {
+  const limit = 16 * 1024;
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  // Userinfo to strip, and a path the URL parser re-encodes: each "é" grows from 2 bytes to 6.
+  const entry = (padding: string) => ({ id: "grows", label: "Grows", stage: "select",
+    transport: { type: "http", url: `https://user:pw@context.example/${"é".repeat(400)}` }, notes: padding });
+  const atLimit = entry("x".repeat(limit - bytes(entry(""))));
+  assert.equal(bytes(atLimit), limit);
+  const once = ShapingConfigSchema.parse({ shapers: [atLimit] });
+  const stored = once.shapers[0]!;
+  assert.ok(bytes(stored) <= limit, `${bytes(stored)} bytes`);
+  assert.equal(credentialsWereRemoved(stored), true);
+  assert.deepEqual([stored.id, stored.label, stored.stage, stored.transport.type], ["grows", "Grows", "select", "http"], "it is still identifiable");
+  assert.equal(JSON.stringify(stored).includes("pw@"), false);
+  const again = ShapingConfigSchema.parse(JSON.parse(JSON.stringify(once)));
+  assert.deepEqual(again.shapers, once.shapers, "and a second parse keeps it as it is");
+  // An entry with room to spare keeps every other field.
+  const small = ShapingConfigSchema.parse({ shapers: [entry("short")] }).shapers[0] as unknown as { notes: string };
+  assert.equal(small.notes, "short");
+});
+
 function shaperEntry() {
   return ShaperSchema.parse({ id: "clean", label: "Clean", stage: "select",
     transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer {env:ACME_TOKEN}" } } });

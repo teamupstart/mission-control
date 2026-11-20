@@ -227,7 +227,8 @@ All three routes are behind the flag and answer 404 while it is off.
   repository that owns it when the path is a linked worktree. It answers
   `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, the
   section that would be injected, and each entry in it. A shaper that fails, times out or
-  answers garbage is an outcome in a 200, never an error reply.
+  answers garbage is an outcome in a 200, never an error reply. A client that closes its
+  connection before the reply stops the run, and with it each running shaper's process group.
 
 ### Which shapers run
 

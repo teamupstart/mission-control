@@ -165,3 +165,83 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   await expect(alpha).toBeChecked();
   expect(writes).toBe(3);
 });
+
+test("an Enable all write the daemon never answers times out and frees Retry", async ({ dashboard: page, context, daemon }) => {
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const peerMaster = peer.getByRole("checkbox", { name: /Enable all feature flags/ });
+  await expect(peerMaster).toBeEnabled();
+  // The first write is held open past the panel's bound; the retry goes through.
+  let writes = 0;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/feature-flags", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    writes++;
+    if (writes === 1) {
+      await held;
+      return route.abort().catch(() => {});
+    }
+    return route.continue();
+  });
+  await page.addInitScript(fakeAlphaBridge);
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await page.reload();
+  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  const updates = page.getByRole("region", { name: "Application updates" });
+  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  await alpha.check();
+  await expect(alert).toContainText("Mission Control did not answer within 10 seconds", { timeout: 20_000 });
+  const retry = updates.getByRole("button", { name: "Retry" });
+  await expect(retry).toBeEnabled();
+  await expect(peerMaster).not.toBeChecked();
+  await retry.click();
+  await expect(alert).toHaveCount(0);
+  await expect(peerMaster).toBeChecked();
+  expect(writes).toBe(2);
+  release();
+});
+
+test("a failure that lands after another window switched Enable all on never comes back", async ({ dashboard: page, context, daemon }) => {
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const peerMaster = peer.getByRole("checkbox", { name: /Enable all feature flags/ });
+  await expect(peerMaster).toBeEnabled();
+  // The alpha opt-in's write is held, then refused once the peer has switched Enable all on.
+  let writes = 0;
+  let settled = false;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/feature-flags", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    writes++;
+    await held;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "flag store unavailable" }) }).catch(() => {});
+    settled = true;
+  });
+  await page.addInitScript(fakeAlphaBridge);
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await page.reload();
+  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  const updates = page.getByRole("region", { name: "Application updates" });
+  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
+  await alpha.check();
+  await expect.poll(() => writes).toBe(1);
+  await peerMaster.check();
+  // This window has seen the peer's Enable all before its own write settles.
+  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await expect(master).toBeChecked();
+  await page.getByRole("tab", { name: /Setup/ }).click();
+  release();
+  await expect.poll(() => settled).toBe(true);
+  await expect(alert).toHaveCount(0);
+  // Switching Enable all off again must not resurface the superseded failure.
+  await peerMaster.uncheck();
+  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await expect(master).not.toBeChecked();
+  await page.getByRole("tab", { name: /Setup/ }).click();
+  await expect(alpha).toBeChecked();
+  await expect(alert).toHaveCount(0);
+  await expect(updates.getByRole("button", { name: "Retry" })).toHaveCount(0);
+});

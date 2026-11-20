@@ -1224,12 +1224,14 @@ async function request<T extends ActionResult = ActionResult>(
   method: string,
   path: string,
   body?: unknown,
+  options: { signal?: AbortSignal } = {},
 ): Promise<T> {
   try {
     const res = await actionFetch(path, {
       method,
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
+      signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
     if (!res.ok) {
@@ -1245,8 +1247,8 @@ async function request<T extends ActionResult = ActionResult>(
 
 const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
   request<T>("POST", path, body);
-const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("PUT", path, body);
+const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+  request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
 
@@ -2349,8 +2351,9 @@ export const api = {
     put<ActionResult & { message?: string }>(`/api/storage/backups/config`, request),
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
-  setFeatureFlags: (intent: FeatureFlagIntent) =>
-    put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent),
+  /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
+  setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
+    put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   setStorageLimits: (patch: StorageLimitsConfigPatch) =>
     put<ActionResult & { message?: string }>(`/api/storage/limits`, patch),
   /** Start measuring the state directory. It finishes in the background. */

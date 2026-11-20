@@ -17,6 +17,7 @@ import { BINARY_RECOVERY_URL, BINARY_UPDATE_UNAVAILABLE, type BinaryEnrollment }
  * leaving Setup and coming back. It is independent of the desktop save: a daemon request that
  * stalls never locks the alpha switch.
  */
+const ENABLE_ALL_TIMEOUT_MS = 10_000;
 type EnableAllWrite = { pending: boolean; error: string | null };
 let enableAllWrite: EnableAllWrite = { pending: false, error: null };
 const enableAllListeners = new Set<() => void>();
@@ -33,8 +34,13 @@ async function switchOnEnableAll(): Promise<void> {
   if (enableAllWrite.pending) return;
   // A retry keeps showing the last failure, with Retry disabled, until this one settles.
   setEnableAllWrite({ pending: true, error: enableAllWrite.error });
-  const result = await api.setFeatureFlags({ kind: "master", enabled: true });
-  setEnableAllWrite({ pending: false, error: result.ok ? null : result.error ?? "unknown error" });
+  // Bounded, so a daemon that accepts the request and never answers still frees Retry.
+  const signal = AbortSignal.timeout(ENABLE_ALL_TIMEOUT_MS);
+  const result = await api.setFeatureFlags({ kind: "master", enabled: true }, { signal });
+  const error = result.ok ? null
+    : signal.aborted ? `Mission Control did not answer within ${ENABLE_ALL_TIMEOUT_MS / 1000} seconds`
+    : result.error ?? "unknown error";
+  setEnableAllWrite({ pending: false, error });
 }
 function forgetEnableAllFailure(): void {
   if (enableAllWrite.error && !enableAllWrite.pending) setEnableAllWrite({ pending: false, error: null });
@@ -61,7 +67,9 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
     return subscribeToDesktopUpdates(updates, setSnapshot);
   }, [updates]);
   // Enable all came on some other way, such as the Feature flags panel: nothing is left to retry.
-  useEffect(() => { if (enableAllOn) forgetEnableAllFailure(); }, [enableAllOn]);
+  // Also checked whenever the write settles, so a failure that lands after another window
+  // already switched Enable all on is dropped instead of resurfacing when it goes off again.
+  useEffect(() => { if (enableAllOn) forgetEnableAllFailure(); }, [enableAllOn, flagWrite]);
   if (!updates?.setAlpha) return null;
   const binary = !!enrollment || (snapshot?.phase === "disabled" && snapshot.reason === BINARY_UPDATE_UNAVAILABLE);
   const busy = saving || !snapshot || ["checking", "preparing", "ready", "applying"].includes(snapshot.phase);

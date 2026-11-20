@@ -647,11 +647,16 @@ test("a timeout kills the step's whole process group and counts as a failed clai
     assert.equal(runs(result.lease.path, "after").length, 0);
     assert.equal(onlySlot(m).depsState, "failed");
     const pidFile = join(result.lease.path, "deps", "grandchild.pid");
-    if (!existsSync(pidFile)) {
+    // The kill can also land between the file's creation and its write, leaving it empty. That
+    // reads as PID 0, which `process.kill(0, 0)` answers for this test's own process group, so
+    // only a complete positive PID counts as ready. An incomplete marker is removed so the next
+    // attempt cannot read it.
+    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : NaN;
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      rmSync(pidFile, { force: true });
       await m.release(result.lease);
       continue;
     }
-    const pid = Number(readFileSync(pidFile, "utf8"));
     await waitFor(() => !alive(pid), "the grandchild to die with its group");
     await m.release(result.lease);
     return;

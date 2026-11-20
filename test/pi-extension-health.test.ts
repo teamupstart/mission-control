@@ -226,6 +226,10 @@ test("dispatch cache expires when an unchanged bridge stops providing tools", as
   writeFileSync(flag, ""); assert.equal((await missionToolsAvailability("pi")).available, true);
   clock += 30_001; assert.equal((await missionToolsAvailability("pi")).available, false);
 });
+// How long a fixture bridge may take to start. An upper bound, not a window: each wait returns
+// as soon as the bridge appears, so it costs nothing when healthy. A cold `node` child under
+// full-suite contention has taken longer than 5 seconds just to start.
+const BRIDGE_START_MS = 30_000;
 test("a slower earlier dispatch probe cannot overwrite a newer completed health reading", async () => {
   // Warm runtime environment setup so it cannot independently invalidate the older probe.
   await loadPiExtensionMetadata(realpathSync(installed));
@@ -250,7 +254,7 @@ test("a slower earlier dispatch probe cannot overwrite a newer completed health 
   symlinkSync(installed, link);
   const older = missionToolsAvailability("pi");
   try {
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + BRIDGE_START_MS;
     while (!existsSync(started) && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
     assert.ok(existsSync(started), "the older probe reached its bridge before the newer one starts");
     assert.equal((await missionToolsAvailability("pi")).available, true);
@@ -283,7 +287,7 @@ test("completed health can serve continued arrivals while a newer probe is pendi
     });`);
   symlinkSync(installed, link);
   const waitForProbes = async (count: number) => {
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + BRIDGE_START_MS;
     while (readFileSync(probes, "utf8").length < count && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
     assert.equal(readFileSync(probes, "utf8").length, count);
   };
@@ -291,12 +295,18 @@ test("completed health can serve continued arrivals while a newer probe is pendi
   let second: ReturnType<typeof missionToolsAvailability> | undefined;
   try {
     await waitForProbes(1);
+    // The newer probe takes its sequence synchronously inside this call, so it is pending from
+    // here on whether or not its bridge has started. Waiting for that start before releasing the
+    // first probe would only stretch the first one's handshake budget across a second cold
+    // `node` start, which under full-suite contention outlasts it.
     second = missionToolsAvailability("pi");
-    await waitForProbes(2);
     writeFileSync(firstRelease, "released");
     assert.equal((await first).available, true);
     const arrivals = await Promise.all(Array.from({ length: 4 }, () => missionToolsAvailability("pi")));
     assert.ok(arrivals.every(result => result.available));
+    // An arrival that probed would have logged its bridge before it resolved, so once the newer
+    // probe's own bridge is in, exactly two means no arrival probed.
+    await waitForProbes(2);
     assert.equal(readFileSync(probes, "utf8"), "xx", "continued arrivals reuse the completed result while the newer probe is pending");
   } finally {
     writeFileSync(firstRelease, "released"); writeFileSync(secondRelease, "released");

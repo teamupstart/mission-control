@@ -60,14 +60,15 @@ async function holdWithWorkflow(daemon: DaemonHandle, sessionId: string) {
   return submitted.run.id;
 }
 
-test("the independent default-off toggle persists and unreadable settings remain unknown", async ({ dashboard, daemon }) => {
+test("the independent toggle ships on, an opt-out persists across a restart, and unreadable settings remain unknown", async ({ dashboard, daemon }) => {
   await api(daemon, "/api/foreman/config", { enabled: false }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   const toggle = dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" });
   await expect(toggle).toHaveAccessibleDescription("Prompt the eligible owning session to assess CodeRabbit review threads and pre-merge checks");
   await expect(dashboard.getByText(/Prompts the owning session to assess CodeRabbit review threads and pre-merge check errors and warnings/)).toBeVisible();
-  await expect(toggle).not.toBeChecked(); await toggle.locator("..").click();
-  await expect.poll(() => api(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: true, autoMerge: false });
+  await expect(toggle).toBeChecked();
+  await expect(dashboard.getByText("On - follow up through Foreman")).toBeVisible();
+  expect(await api(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: true, autoMerge: false });
   await expect(dashboard.getByText("Foreman is disabled.")).toBeVisible();
   const foremanControls = dashboard.getByRole("button", { name: "Open Foreman controls" });
   await expect(foremanControls).toHaveAccessibleDescription("Open Foreman settings to enable Live follow-up");
@@ -79,11 +80,43 @@ test("the independent default-off toggle persists and unreadable settings remain
   await foremanControls.click();
   await expect(dashboard).toHaveURL(/#\/settings\/foreman/);
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
-  await dashboard.reload(); await expect(toggle).toBeChecked(); await shoot(dashboard, "enabled-prerequisite");
+  await expect(toggle).toBeChecked(); await shoot(dashboard, "enabled-by-default");
+
+  await toggle.locator("..").click();
+  await expect.poll(() => api(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: false, autoMerge: false });
+  await expect(dashboard.getByText("Off - CodeRabbit follow-up is disabled")).toBeVisible();
+  await expect(dashboard.getByText("Foreman is disabled.")).toHaveCount(0);
+  await daemon.shutdown(); await daemon.restart();
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  await dashboard.reload(); await expect(toggle).not.toBeChecked();
+  await expect(dashboard.getByText("Off - CodeRabbit follow-up is disabled")).toBeVisible();
+  await shoot(dashboard, "opt-out-persists");
   await dashboard.route("**/api/shipping/config", (route) => route.fulfill({ status: 503, body: "unavailable" }));
+  await dashboard.reload();
   await expect(toggle).toBeDisabled();
   await expect(dashboard.getByText("Unknown - Shipping configuration is unavailable")).toBeVisible();
   await shoot(dashboard, "unknown-config");
+});
+
+test("upgrading an install that stored the old default-off value turns follow-up on once", async ({ dashboard, daemon }) => {
+  await api(daemon, "/api/shipping/config", { codeRabbitAutoResolve: false, soakMinutes: 3 }, "PUT");
+  await daemon.shutdown();
+  // The state a pre-upgrade build left behind: the old default written into the blob, at the
+  // schema version before the rollout.
+  withDaemonDb(daemon, (db) => db.exec("PRAGMA user_version = 35;"));
+  await daemon.restart();
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  await dashboard.reload();
+  const toggle = dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" });
+  await expect(toggle).toBeChecked();
+  expect(await api(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: true, soakMinutes: 3 });
+  await shoot(dashboard, "enabled-on-upgrade");
+
+  await toggle.locator("..").click();
+  await expect.poll(() => api(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: false });
+  await daemon.shutdown(); await daemon.restart();
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  await dashboard.reload(); await expect(toggle).not.toBeChecked();
 });
 
 test("fake GitHub drives unresolved, zero and unknown in Shipping without Inspector or GitHub writes", async ({ dashboard, daemon }) => {
@@ -95,7 +128,7 @@ test("fake GitHub drives unresolved, zero and unknown in Shipping without Inspec
     VALUES ('acme/mission-e2e#27',?,'acme','mission-e2e',27,?,?,'hook','open',0,?,?)`)
     .run(pr.url, daemon.repo, daemon.repo, Date.now(), Date.now()));
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
-  await dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" }).locator("..").click();
+  await expect(dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" })).toBeChecked();
   const row = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#27" });
   await expect(row).toContainText("CodeRabbit: 1 unresolved");
   await expect(row).toContainText("Waiting for an eligible owning session"); await shoot(dashboard, "unresolved-owner-held");
@@ -137,7 +170,7 @@ test(`workflow ownership holds Foreman for ${source}, then one same-PR prompt is
     expect(res.status).toBe(204);
   }
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
-  await dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" }).locator("..").click();
+  await expect(dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" })).toBeChecked();
   const row = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#27" });
   await expect(row).toContainText(`CodeRabbit: ${source === "review threads" ? 1 : 3} unresolved`);
   await api(daemon, "/api/foreman/config", { enabled: true, mode: "live", repoAllowlist: [daemon.repo],

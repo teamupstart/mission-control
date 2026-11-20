@@ -254,7 +254,9 @@ let db: DatabaseSync | undefined;
 //     no question offered or used a snooze before these existed.
 // 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
 //     '[]' with no backfill: no run attached a repository before this existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
+// 36: enable CodeRabbit follow-up (`shipping.codeRabbitAutoResolve`) once, preserving every
+//     other Shipping setting and any later opt-out.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3427,6 +3429,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   migrateTelemetry(d);
   migrate(d);
   migrateMockupsSkill(d);
+  migrateCodeRabbitFollowUp(d);
   markDatabaseSchemaCurrent(d);
 }
 
@@ -3448,6 +3451,33 @@ function migrateMockupsSkill(d: DatabaseSync): void {
   // Preserve all other values, including sparse-map policy and reload generation.
   // Startup reconciliation owns symlinks and advances the generation if they change.
   d.prepare("UPDATE app_config SET value = json_set(value, '$.skills.mockups', json('true')) WHERE key = ?")
+    .run(entry.key);
+}
+
+/**
+ * One rollout of CodeRabbit follow-up's default-on, not a default applied again on every
+ * upgrade. Every Shipping save wrote the old schema default, so a stored `false` from before
+ * schema 36 cannot be told apart from "never chose" and is switched on. A stored `false`
+ * written after this upgrade is an opt-out and survives every later start.
+ */
+function migrateCodeRabbitFollowUp(d: DatabaseSync): void {
+  // Keep this boundary fixed when CURRENT_DATABASE_SCHEMA_VERSION advances.
+  if (databaseSchemaVersion(d) >= 36) return;
+  const entry = APP_CONFIG_ENTRIES.shipping;
+  const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(entry.key) as
+    | { value: string }
+    | undefined;
+  // Missing settings already default on. Corrupt settings must still fail closed.
+  if (!row) return;
+  try {
+    if (!entry.schema.safeParse(JSON.parse(row.value)).success) return;
+  } catch {
+    return;
+  }
+  // Only an explicit stored `false` changes. An absent key already reads as the new default,
+  // and writing it would rewrite a row that holds nothing to migrate.
+  d.prepare(`UPDATE app_config SET value = json_set(value, '$.codeRabbitAutoResolve', json('true'))
+    WHERE key = ? AND json_type(value, '$.codeRabbitAutoResolve') = 'false'`)
     .run(entry.key);
 }
 

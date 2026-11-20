@@ -403,8 +403,9 @@ It ships **off**, trusting **no repositories**, with a **10 minute** soak.
 
 ### CodeRabbit follow-up
 
-**Follow up on CodeRabbit comments** is a separate Shipping setting, off by default and
-included in settings snapshots. It works while Inspector reviews and YOLO are off. The existing
+**Follow up on CodeRabbit comments** is a separate Shipping setting, on by default and
+included in settings snapshots. Upgrading turns it on once for an install that had it off; an
+operator who turns it off afterwards keeps that choice. It works while Inspector reviews and YOLO are off. The existing
 daemon poll observes only adopted PRs, including attached repositories, normally every 90 seconds.
 It reads GitHub but neither calls a review model nor replies to or resolves threads itself.
 

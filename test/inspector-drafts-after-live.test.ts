@@ -276,7 +276,7 @@ beforeEach(() => {
   resetAuthenticatedLogin();
   delete process.env.FAKE_FIRST_FINDINGS;
   writeFileSync(reviewCountPath, "0");
-  setShippingConfig({ autoMerge: false });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
 });
 
 after(() => {

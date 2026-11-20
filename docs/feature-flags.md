@@ -1,14 +1,23 @@
 # Feature flags
 
-The flag core stores one set of operator choices for this machine. Settings > Feature flags
-controls these choices. The ai-conductor integration switch is unchanged.
+The flag core stores one set of operator choices for this machine. The registry includes
+**Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
+[Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview)
+and [Task shaping](task-shaping.md) as previews.
+Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
 searchable list; filter by name, description, keyword or id. Every click applies immediately
 in every open window, with no Save button or restart. A refused write rolls back and shows an
-inline error. When the registry declares no preview, the panel shows its empty state instead.
+inline error. Preview features are off until enabled individually or through the master switch.
+With no preview declared the panel shows its empty state instead of a list.
+
+**Codex resident native MCP** exposes [All native sources](residents.md#all-native-sources) in
+Codex resident profiles. Turning it off prevents new saves and launches in that mode. Existing
+runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
+**Pinned at launch** when the preview is off.
 
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
@@ -25,8 +34,7 @@ update channel.
 Declare flags in `src/shared/feature-flag-registry.ts`. It exports only `FEATURE_FLAGS` and
 `RETIRED_FEATURE_FLAG_IDS`, so a test build can substitute the data without replacing logic.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
-at most 64 characters. `FeatureFlagId` is derived from the tuple; an empty registry means
-there are no valid ids for production gates.
+at most 64 characters. `FeatureFlagId` is derived from the tuple.
 
 The `featureFlags` app_config entry stores `{ enableAll, overrides }`, defaulting to
 `{ enableAll: false, overrides: {} }`, with at most 512 boolean overrides. There is no database
@@ -118,8 +126,12 @@ gates, not by resolving an unknown id as on.
 
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
+| `codex-resident-native-mcp` | preview | Codex residents' native MCP sources | [Residents](residents.md#all-native-sources) |
+| `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
+| `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, and the shaping engine | [Task shaping](task-shaping.md) |
 
-`test/feature-flags.test.ts` checks every shipped definition against the id rules, and
-`e2e/specs/task-shaping-flag.spec.ts` is the first real flag's browser assertion: its row
-appears and a toggle reaches a second window without a reload.
+`test/feature-flags.test.ts` checks every shipped definition against the id rules.
+`e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
+`e2e/specs/task-shaping-flag.spec.ts` is Task shaping's own browser assertion: its row appears,
+a toggle reaches a second window without a reload, and the `/api/shaping` gate follows it.

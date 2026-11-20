@@ -9,6 +9,7 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, isConversationResolvedReview, reviewToolResult } from "@shared/review-item.ts";
+import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
   snoozedContinuationLead,
@@ -281,9 +282,12 @@ export class ReviewManager {
     kind: ReviewKind,
     title: string,
     body: string,
-    decisions: PlanDecision[] | null = null,
+    incomingDecisions: PlanDecision[] | null = null,
     options: { snoozable?: boolean; now?: number } = {},
   ): ReviewItem {
+    // An MCP process may still be running a previous build. Compare retries using the form
+    // the operator will see, regardless of which version produced the request.
+    const decisions = restoreRequestInputText(kind, incomingDecisions);
     // A SNOOZED twin is the same question too. Its agent was told not to ask again, and one that
     // does anyway is handed the parked row back, whose wait returns at once with the same
     // "carry on" it already got, rather than putting a second card in front of the operator.

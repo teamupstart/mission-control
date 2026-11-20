@@ -218,7 +218,6 @@ export function residentInstructionTargetLabel(
 export function residentInstructionQuestion(input: ResidentInstructionQuestionInput): RequestInputAsk & {
   options: Array<{ label: string; detail: string }>;
   multiSelect: true;
-  allowOther: true;
 } {
   const touchesPersona = input.changes.some((change) => change.target === "persona");
   const lines: string[] = [`Which of these changes to ${input.profileName}'s standing instructions should Mission Control apply?`];
@@ -249,7 +248,6 @@ export function residentInstructionQuestion(input: ResidentInstructionQuestionIn
       detail: residentInstructionTargetLabel(change.target, input.personaName),
     })),
     multiSelect: true,
-    allowOther: true,
   };
 }
 

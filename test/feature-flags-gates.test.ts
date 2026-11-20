@@ -19,8 +19,7 @@ const { closeDb } = await import("../src/server/db.ts");
 after(() => { closeDb(); hooks.deregister(); });
 
 test("declared preview flag changes both the daemon answer and route access after choices", async () => {
-  // The production type names the shipped flags only. Runtime imports above see the
-  // fixture registry, exactly as a build with that declared flag would.
+  // Runtime imports above see the fixture registry instead of the shipped ids.
   const id = "fixture-preview" as FeatureFlagId;
   let handlerCalls = 0;
   const app = new Hono();

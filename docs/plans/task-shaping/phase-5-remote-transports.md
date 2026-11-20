@@ -192,43 +192,12 @@ The FR-06 promotion registry (D10) may reuse `references.ts` and the egress help
 free of shaping-specific assumptions where that is cheap.
 
 ## Cross-phase audit
-
 - Phase 1: uses the transport reply's `unavailable`, the `ctx` scope and the declared config
   shapes. Owns the `mcp` and `http` parts of D2 and the resolution half of D6.
 - Phase 3: renders `references` and lists environment names at import. This phase supplies
   the data only.
 - Phase 4: a discovered manifest with an `mcp` or `http` transport works with no change here.
-- Plan validation repair, 2026-11-19: the mode that sent no context was removed, and `folded`
-  now carries the whole collected input instead of three fields. An `mcp` shaper can no
-  longer be configured to receive less than constraint C2 requires. Phase 1's schema was
-  changed to match.
-- Plan validation repair 3, 2026-11-19: step 4 gave one three-argument shape and then a mode
-  that adds a fourth. Each mode now states its own shape: three in `folded`, four in
-  `argument`. `plan.md` and `phased-plan.md` say the same.
-- Review of the plan pull request, 2026-11-19, the operator's choice: step 1 scrubbed failure
-  reasons only, so a shaper that echoed a resolved value in a valid reply could have put it in
-  a worker's prompt, in the stored text and in a dry-run reply. Every reply is now scrubbed
-  before it reaches the engine, and the shaper is marked `redacted`. Phase 1's transport
-  reply and summary carry that mark, and Phase 2's viewer shows it.
-- Review of the plan pull request, round 2, 2026-11-19: a failure reply can carry the mark
-  too, so a scrubbed tool error is reported like a scrubbed data reply.
-- Review of the plan pull request, round 3, 2026-11-19, the operator's direction: `plan.md`
-  said a credential header is never sent over plain HTTP, while this phase reused the
-  resident MCP helpers, which allow plain HTTP to loopback. The operator chose the resident
-  rule. `plan.md` now states it, and step 3, the HTTP test and an exit criterion pin it.
-- Review of the plan pull request, round 4, 2026-11-19: the `folded` block listed some
-  fields of `context` and left out others, such as each repository's base commit and the
-  after-work workflow id. It now renders every field except local paths, a schema-walking
-  test keeps it complete, and the MCP test tells apart two repositories on one branch name.
-- Review of the plan pull request, round 5, 2026-11-19: the `http` body had a 256 KiB cap and
-  MCP messages had none. Step 4 now caps every MCP message while it is received, on both
-  server types, and an oversized reply is `failed`.
-- Review of the plan pull request, round 6, 2026-11-19: scrubbing every key could rename a
-  schema field, or make two fact names identical and drop one silently. Schema keys are now
-  never changed, and a fact name or entry id that contains a value is dropped, not renamed.
-- Trace context, 2026-11-19, the operator's choice: step 5 carries the launch's W3C trace
-  context on every `http` and `mcp` call, so a server such as a `get_guidance` tool can
-  join the session's trace. It is not a credential and never redacted.
-- Review of the plan pull request, round 7, 2026-11-19: a configured `traceparent` or
-  `tracestate` survived when the launch had no trace context, or had no `tracestate`. Both
-  are now always removed first, and the tests cover both cases.
+- Review history: plan validation and the review of pull request #1546 changed this phase
+  in several rounds. The rules they produced are stated in the steps above and in
+  `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each
+  finding and its change.

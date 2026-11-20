@@ -660,7 +660,8 @@ test("a Pull Request skill action with session-turn completion receives the crea
   }
 });
 
-test("scripted skill and workflow sessions create PRs from the live draft policy", { timeout: 30_000 }, async (t) => {
+// Allow the real MCP startup and all eight CLI subprocesses to finish under full-suite load.
+test("scripted skill and workflow sessions create PRs from the live draft policy", { timeout: 90_000 }, async (t) => {
   const h = await harness("draft-pr-creation", {
     actions: [{ id: "act", prompt: "# Create a pull request\n", skillId: "pull-request" }],
     pullRequest: true,

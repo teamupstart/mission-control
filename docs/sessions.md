@@ -2600,11 +2600,11 @@ The MCP tools are:
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
 - `request_input(question, context?, options?)` - ask a question and **block** for an answer or
-  dismissal. With `options` the human gets clickable choices (radios, or checkboxes with
-  `multiSelect`, plus an optional free-text "Other"); without them, a text box. `question` is
-  the card's heading and should be the decision itself; `context` (up to 4000 characters) is
-  printed beneath it, line breaks kept, for what the human needs to decide without the agent's
-  context - what is being decided, why it came up, what the agent found and the tradeoffs.
+  dismissal. The human can always type an answer. With `options` the card also shows radios
+  (or checkboxes with `multiSelect`), and text sent alongside a choice is included as context.
+  Use `question` for the decision itself, which becomes the card's heading. The card prints
+  `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
+  needs to decide on their own, including why the decision came up, what the agent found, and the tradeoffs.
   Each option's `detail` states that option's tradeoff, and `recommended` marks the agent's
   pick. The tool description carries this rule for every harness (`src/shared/decision-asks.ts`),
   and the dispatch-scoped Claude and Codex prompts repeat it in the same words. Either shape

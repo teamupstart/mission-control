@@ -53,9 +53,14 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    the seam, so compose both turn-one variants without the section first and measure the
    larger. Each harness entry in `src/server/harness/` declares its delivery path's byte
    ceiling for turn one, null when the path has none, as measured by the delivery test below.
-   For example, a launch argument on Linux is capped at 128 KiB by the kernel. When the
-   launch's path has a ceiling, pass `maxSectionBytes`: the ceiling, less the larger
-   variant, less a fixed margin for the section heading, and never below 0. Shaping then
+   For example, a launch argument on Linux is capped at 128 KiB by the kernel. A launch
+   argument also shares the platform's combined limit for all arguments and the environment
+   (`ARG_MAX`, read once with `getconf`), so for that path the allowance is the smaller of
+   two remainders: the per-argument ceiling less the larger variant, and the combined limit
+   less every other argument and every environment string of this launch, each counted with
+   its terminator and pointer. Measure the actual argv and environment the launch will use.
+   Pass `maxSectionBytes`: that allowance, less a fixed margin for the section heading, and
+   never below 0. Shaping then
    never makes a task that launches today fail to launch. The section is cut instead, and
    the record says it was truncated and why.
 2. **Record.** `Task.shaping` and `TaskSummary.shaping`, column `tasks.shaping`, and table
@@ -76,6 +81,11 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    shaper failed or timed out keeps its degraded summary and its reason and has no text row,
    and a launch that no shaper applied to has neither. A task that has no record is not
    written to. `GET /api/tasks/:id/shaping` returns the summary and the text that exist.
+   Every reader goes through one shared predicate, `currentShaping(task)` in
+   `src/shared/shaping.ts`: the record counts only while its `sessionId` is the task's
+   current `sessionId`. Task reads, this route, the board and rail markers, the chip and the
+   viewer all use it, so a redispatch whose commit failed shows no earlier context or
+   `degraded` anywhere.
 3. **Progress.** A derived, unpersisted mark in the manner of `Task.provisioning`.
    `phaseCopy` reads "Shaping context" while it is set.
 4. **Chip and viewer.** A `ShapingChip` beside the standing-instructions chip, shown only
@@ -84,9 +94,10 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    lists each shaper's origin, outcome, reason, duration and version, each entry, a
    "truncated" note, and a "credential value removed" note for a shaper whose record is
    marked `redacted`. It follows the modal inset rule in the repository instructions.
-5. **Marker.** A small degraded marker on the board card and rail row, beside claim warnings.
+5. **Marker.** A small degraded marker on the board card and rail row, beside claim warnings,
+   from `currentShaping(task)`.
 6. **Task reads.** The JSON record gains `shaping` with `state`, the `sessionId` it
-   describes, and a one-line `summary`.
+   describes, and a one-line `summary`, present only when `currentShaping(task)` returns it.
 7. **Docs.** Fill "Seeing what was added" in `docs/task-shaping.md`. Add the turn-one order to
    `docs/dispatch-and-runtimes.md`.
 
@@ -117,12 +128,17 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   finds the path's byte ceiling, which that harness entry declares, and delivers a 64 KiB
   section with a short prompt. It then takes a turn one that launches today within 1 KiB of
   the path's ceiling, adds a shaper that returns 64 KiB, and checks that the launch still
-  succeeds, with the section cut to what fits and recorded as truncated.
+  succeeds, with the section cut to what fits and recorded as truncated. For Pi it also
+  takes a launch whose turn one is well under the per-argument limit but whose environment
+  leaves little room under the combined limit, and checks the same, so neither limit can
+  produce `E2BIG`.
 - Database tests for the column and table on an upgraded database, and for the one function
   that settles the summary and the text in one transaction, in each of the four combinations,
   and for re-keying the session stamp when a session resumes under a new id.
 - `renderToStaticMarkup` tests for the chip's states, including a record that names another
-  session, which renders no chip.
+  session, which renders no chip, and the same record on a board card and rail row, which
+  render no marker. Unit tests for `currentShaping`, and an HTTP test that task reads and
+  the shaping route omit such a record.
 - `e2e/specs/task-shaping.spec.ts` with fake agents and `e2e/fixtures/fake-shaper.mjs` (modes
   ok, degraded, slow, garbage): "Shaping context" appears, the chip reads "Context: 2
   entries", the viewer lists them, a slow shaper still launches and shows "Context degraded"
@@ -140,8 +156,7 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 - A launch shows only its own record: never a summary, text or chip from an earlier launch
   of the same task. A launch whose only shaper failed still shows `degraded` with its reason.
 - A dispatch that fails before turn one is handed to the worker changes no record.
-- A session never shows a record that names another session, including after a failed
-  commit.
+- No reader shows a record that names another session, including after a failed commit.
 - No model tokens are spent by any test.
 
 ## Handoff
@@ -151,33 +166,13 @@ including the `origin` and `sha256` that Phase 4 fills. They must not add a seco
 `tasks.shaping`.
 
 ## Cross-phase audit
-
 - Uses only Phase 1's `shapeTask` contract. No change to Phase 1 was needed. Owns D7, D11 and
   the dispatch half of D3.
 - Checked against Phase 4: the viewer already renders `origin`, so that phase adds no session
   surface.
-- Review of the plan pull request, 2026-11-19, the operator's choice: every launch settles
-  the record, so nothing an earlier launch of the task left can outlive it. Before, step 2
-  replaced the text only when a launch was shaped and wrote nothing otherwise, so a retry
-  that no shaper applied to kept showing the earlier launch's summary and text. The viewer
-  also gained the note for a `redacted` shaper, which Phase 5 sets.
-- Review of the plan pull request, round 2, 2026-11-19: the first wording of that rule
-  cleared the summary whenever the section was empty, which would have dropped the degraded
-  marker of a launch whose only shaper failed. The summary now follows whether a shaper
-  applied, and the text row follows whether the section is empty.
-- Review of the plan pull request, round 3, 2026-11-19, the operator's choice: the record
-  was written at the seam, before the launch, so a dispatch whose worker failed to start
-  replaced the previous launch's record with context no worker received. It is now held in
-  memory and committed once turn one has been handed to the worker.
-- Review of the plan pull request, round 4, 2026-11-19, the operator's choice: a commit that
-  failed after the worker started would have left the previous launch's record showing as
-  this session's. Each record now names the session it was delivered to, and readers show it
-  only for that session.
-- Review of the plan pull request, round 6, 2026-11-19: the delivery test sent a 64 KiB
-  section with a short prompt, so a prompt that already sat near a path's ceiling could have
-  stopped launching once shaping added to it. Each launch is now budgeted against the whole
-  turn one on a path with a ceiling, and the test covers a prompt near the ceiling.
-- Checked against Phase 4, round 6: that phase now depends on this one, because its browser
-  spec dispatches a task and reads the viewer this phase adds.
-- Trace context, 2026-11-19, the operator's choice: the seam passes the session's trace
-  context into `shapeTask`, so every shaper call can join the session's trace.
+- Phase 4 depends on this phase, because its browser spec dispatches a task and reads
+  the viewer this phase adds.
+- Review history: plan validation and the review of pull request #1546 changed this phase
+  in several rounds. The rules they produced are stated in the steps above and in
+  `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each
+  finding and its change.

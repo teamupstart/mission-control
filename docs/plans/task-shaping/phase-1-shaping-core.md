@@ -88,7 +88,8 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 6. **`src/server/shaping/engine.ts`.** `shapeTask(input)`: resolve shapers, run gather then
    select, one call per shaper per repository in parallel, merge facts and summary for the
    selectors, cut a summary to 4 KiB, validate every reply with `ShapingResultSchema`, map
-   every failure to an outcome, allocate the budget, compose the section, build the summary.
+   every failure to an outcome, de-duplicate entries per repository, allocate the budget,
+   compose the section, build the summary.
    A transport reply of any kind may carry `redacted: true`, which Phase 5 sets when it
    removed a credential value from the data or from a failure reason, and the summary records
    it for that shaper.
@@ -115,6 +116,11 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    returning an empty object, so the route reply already has its final shape.
 8. **Routes.** One `requireFeature("task-shaping")` group. The test route takes a shaper id, a
    repository path and an optional prompt, and returns the engine's result for that one shaper.
+   `GET /api/shaping` returns the config view, `shapingConfigView(config)` in
+   `src/shared/shaping.ts`: known shapers in full, and each unsupported entry only as
+   `{ id, label, unsupported: reason }`, where the reason names the failing field and never a
+   value. The raw envelope stays in the daemon's storage and its settings backup, and never
+   leaves the daemon otherwise. Phase 3's snapshot field and event carry the same view.
 9. **Docs.** `docs/task-shaping.md` with the contract for authors and these headings for later
    phases: "Seeing what was added", "Settings", "The shaper folder", "Remote shapers", "The
    built-in gatherer". Update `docs/README.md`, `docs/feature-flags.md`, `docs/security.md`
@@ -138,11 +144,14 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   discovered shaper, which leaves it off; a literal credential in a credential-looking
   header, and a URL with a username, password or query string, refused by `upsert` and by
   `ShaperManifestSchema` before anything is stored, with a reason that does not contain the
-  value; `Bearer {env:NAME}` and a static non-secret header accepted; the id rules; no
+  value; `Bearer {env:NAME}` and a static non-secret header accepted; an unsupported entry
+  whose envelope holds a literal token, which `shapingConfigView` reduces to its id, label
+  and a reason without the token; the id rules; no
   `node:` import in the shared
   modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
-  timeouts and the deadline, partial results, each outcome, and a `redacted` mark carried
+  timeouts and the deadline, partial results, each outcome, two repositories whose entries
+  share an id but differ, which both reach the section, and a `redacted` mark carried
   into the summary from a data reply and from a failed one, and a `maxSectionBytes` below
   `limits.totalBytes` that cuts the section and records it as truncated, and `input.trace`
   reaching every call of a run as `ctx.trace` unchanged while appearing in no summary or
@@ -174,7 +183,6 @@ reshape them. They replace the contents of their own transport file, `discovery.
 `references.ts`, and fill their own section of the guide.
 
 ## Cross-phase audit
-
 - Written first, then revised after each later phase was written.
 - For Phase 4: the summary carries `origin` and `sha256`, the reply carries `discovered`, and
   the enablement and ordering rule for discovered shapers moved here, into `resolveShapers`,
@@ -183,37 +191,9 @@ reshape them. They replace the contents of their own transport file, `discovery.
   reference that fails closed, `ctx` gained the per-run scope for one MCP connection per run,
   and `shaperIsLocal` keeps local paths out of remote requests.
 - For Phase 6: the built-in id and its options are declared here.
-- Plan validation repair, 2026-11-19: `contextDelivery` lost its third value. Every shaper
-  receives the complete collected input (constraint C2), so the schema must not offer a way
-  to withhold it.
-- Plan validation repair 2, 2026-11-19. The enablement rule here contradicted `plan.md`: it
-  kept a discovered shaper off when its manifest said `"enabled": false` even with a stored
-  on. A stored choice now always wins, here, in `plan.md`, in `phased-plan.md` and in
-  Phase 4. And the single strict schema could not have preserved an entry with an unknown
-  stage or transport id, so the stored envelope, `classifyShaper` and the write rule were
-  added.
-- Plan validation repair 4, 2026-11-19: step 3 now says `allocateBudget` takes its total as
-  an argument. That is how FR-06's lesson step, which runs after shaping and is not a shaper,
-  is allocated last from the one context budget. Nothing else in this phase changed.
-- Review of the plan pull request, 2026-11-19: the transport's data reply gained an optional
-  `redacted` mark and the per-shaper summary a `redacted` field, so Phase 5 can report a
-  removed credential value without reshaping a Phase 1 contract afterwards.
-- Review of the plan pull request, round 2, 2026-11-19: the mark is allowed on a failure
-  reply too. A scrubbed failure reason could not otherwise be reported.
-- Review of the plan pull request, round 4, 2026-11-19: `TaskShaping` declares an optional
-  `sessionId` now, so Phase 2 can stamp each record with its session without reshaping a
-  Phase 1 type afterwards.
-- Review of the plan pull request, round 5, 2026-11-19: an `upsert` now also stores off for
-  its id. Overrides are keyed by id, so a registered definition imported over the id of a
-  discovered shaper the operator had switched on would otherwise have inherited that on.
-- Review of the plan pull request, round 6, 2026-11-19: `shapeTask` takes an optional
-  `maxSectionBytes`, so Phase 2 can budget a launch against its delivery path's ceiling
-  without reshaping the engine contract afterwards.
-- Trace context, 2026-11-19, the operator's choice: `input.trace`, `ctx.trace` and the
-  `command` carrier are here, so every `command` shaper, registered or found on disk, gets
-  the launch's trace context, and Phases 4 and 5 add only what their transports need.
-- Review of the plan pull request, round 7, 2026-11-19, the operator's choice: the strict
-  schema now requires references for credential-looking headers and refuses credentials in
-  a URL, so a literal credential can never be stored or broadcast to a dashboard.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.
+- Review history: plan validation and the review of pull request #1546 changed this phase
+  in several rounds. The rules they produced are stated in the steps above and in
+  `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each
+  finding and its change.

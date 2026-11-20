@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-// The first real flag's browser assertion, against the shipped registry: its row appears in
+// Task shaping's browser assertion, against the shipped registry: its row appears in
 // Settings > Feature flags, and switching it in one window reaches a second one without a
 // reload. The daemon's gate follows the same choice, so the shaping API opens and closes with it.
 test("the Task shaping row appears and its toggle reaches a second window without a reload", async ({ dashboard: page, context, daemon }) => {

@@ -91,13 +91,13 @@ test("each repo line says which repo it is and what its pull request is doing", 
 });
 
 test("the shared Console and Board detail draws the common leaf", () => {
-  const leaf = renderToStaticMarkup(createElement(TaskRepoPrs, { repoPrs: REPO_PRS }));
+  const leaf = renderToStaticMarkup(createElement(TaskRepoPrs, { repoPrs: REPO_PRS, session: mkSession() }));
   assert.ok(containsMarkup(detail(REPO_PRS), leaf), "the detail renders the shared leaf");
 });
 
 test("a single-repo task keeps the multi-repo row absent", () => {
   assert.equal(detail([]).includes("task-repo-pr"), false);
-  assert.equal(renderToStaticMarkup(createElement(TaskRepoPrs, { repoPrs: [] })), "");
+  assert.equal(renderToStaticMarkup(createElement(TaskRepoPrs, { repoPrs: [], session: mkSession() })), "");
 });
 
 

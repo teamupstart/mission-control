@@ -61,6 +61,7 @@ export type AppConfigCaptureKind =
   | "away"
   | "harnesses"
   | "foreman"
+  | "inspector"
   | "ui"
   | "standing";
 
@@ -395,7 +396,7 @@ export const APP_CONFIG_ENTRIES = {
     standingFields,
     "standing",
   ),
-  inspector: fieldsEntry("inspector", InspectorConfigSchema, "inspector", inspectorFields),
+  inspector: fieldsEntry("inspector", InspectorConfigSchema, "inspector", inspectorFields, "inspector"),
   shipping: fieldsEntry("shipping", ShippingConfigSchema, "shipping", shippingFields),
   pipelines: fieldsEntry("pipelines", PipelinesConfigSchema, "pipelines", pipelinesFields),
   ui: fieldsEntry("ui", UiConfigSchema, "ui", uiFields, "ui"),

@@ -68,7 +68,8 @@ is not a built-in at all (see Handoff).
 
    A skip has one reason: `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`,
    `unreadable` or `empty`.
-3. **`include`.** At most 16 paths. Each readable file becomes one entry whose id and title are
+3. **`include`.** At most 10 paths, the shared result's cap on entries, so a reply can never
+   be rejected for having too many. Each readable file becomes one entry whose id and title are
    its path, with `truncated` set when it was cut. The per-file cap is its `maxBytes`, at most
    16 KiB.
 4. **`summary`.** One path, read the same way and cut to 4 KiB, returned as `repo.summary`.
@@ -96,7 +97,8 @@ is not a built-in at all (see Handoff).
   both refused, and a file that grows past the limit while it is read, which is cut off. A
   named pipe with no writer is skipped at once, as `not-a-regular-file`, whether it was there
   from the start or swapped in after the `lstat`.
-- An engine test: the facts and summary this gatherer returns reach a selector's request.
+- An engine test: the facts and summary this gatherer returns reach a selector's request,
+  and two worktrees with different files at the same path give two entries.
 - `test/shaping-http.test.ts` gains a dry-run of a registered `repository-files` gatherer.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` and `npm run smoke`.
 
@@ -118,25 +120,10 @@ FR-06 lesson selection is not one. It is a step of its own after the last shapin
 the same budget. Do not add it to `SHAPING_BUILTINS` or serve it through this transport.
 
 ## Cross-phase audit
-
 - Phase 1: uses the declared id, options and transport reply. Owns the `builtin` part of D2.
 - Phase 4: a discovered manifest may use this built-in.
 - Phases 2, 3 and 5: no shared files.
-- Plan validation repair 4, 2026-11-19: the scope line and the handoff named an "FR-06 lessons
-  selector" as a later built-in, while `plan.md` also called lesson selection a later stage.
-  It has one placement now, a step after the shaping stages that is not a shaper, and this
-  file says so.
-- Review of the plan pull request, round 2, 2026-11-19, the operator's choice: step 2 checked
-  a path's real location and size and then read it by path, so a file swapped in between
-  could have been read from outside the worktree or past the limit. The checks now run on the
-  opened handle, and the read has a hard limit.
-- Review of the plan pull request, round 3, 2026-11-19: opening a named pipe with no writer
-  would have waited indefinitely, before `fstat` could reject it. The open is non-blocking.
-  The reviewer also kept the containment finding open, because `O_NOFOLLOW` covers only the
-  last path component. Step 2 now states that the check after the open is an identity check
-  on the handle, which a swapped directory cannot pass, and the tests add that case.
-- Review of the plan pull request, round 4, 2026-11-19, the operator's choice: the reviewer
-  showed that a directory can also be swapped between the lookup and the identity check, so
-  round 3's claim that a swapped directory cannot pass was too strong. Step 2 and the exit
-  criterion now state the guarantee the portable checks give, and why the remaining race is
-  outside the threat model. No native open is added.
+- Review history: plan validation and the review of pull request #1546 changed this phase
+  in several rounds. The rules they produced are stated in the steps above and in
+  `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each
+  finding and its change.

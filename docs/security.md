@@ -289,6 +289,8 @@ the run, the server's name and a credential file:
   private directory: owner-only, created exclusively, holding a single-use ticket bound to that
   run, that server and that start, which expires 30 seconds later. The daemon removes any file left
   unredeemed once its ticket expires, and every such file at startup.
+- Native Codex launch flags name each start's credential path. The daemon issues those tickets
+  after the app-server handshake and configuration checks, immediately before opening the thread.
 - The launcher reads its file, removes it, and redeems the ticket over the loopback API
   (`POST /api/residents/mcp/redeem`). The ticket is the whole credential and is spent on first
   presentation, whatever the outcome. The answer is that one server's definition and values.
@@ -324,7 +326,7 @@ Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
 `env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
 the agent itself inherits, so a global server that uses one is not available to residents: its
 value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or a Codex
-server whose OAuth login Codex holds. A Claude Code server behind an OAuth login is handed to
+server whose OAuth login Codex holds in pinned mode. A Claude Code server behind an OAuth login is handed to
 Claude Code itself, as above; when Claude Code has no usable login for it, the start is refused,
 naming it. A custom server's argument in a credential
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
@@ -341,7 +343,13 @@ claude.ai connectors - Claude Code loads itself, at every start, from its own
 configuration and with its own stored logins, so each carries its full account-level access into
 an autonomous, looping run. Mission Control holds no copy of those definitions, does not decide
 which of their values reach the agent, and does not refuse a start when one of them fails or
-needs a login. Codex offers no such choice.
+needs a login.
+
+For Codex, the same opt-in launches app-server on the normal Codex home, so Codex loads native
+MCP definitions and presents any OAuth logins it holds. Mission Control's server and custom
+servers are added through session flags. Before starting a thread, Mission Control refuses a
+custom name collision in the active layers or an external field that would alter its own
+registration. The native source permissions and connections are owned by Codex.
 
 **A value belongs to its connection.** An edit that changes a custom server's command, arguments,
 URL, or a plain environment variable or header refuses to keep a secret left blank, naming each

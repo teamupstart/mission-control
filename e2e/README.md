@@ -4,7 +4,7 @@ adds diagnostic outputs of App's `featureFlags`, `connected` and `hasSnapshot` v
 consumer of the real `useFeatureFlag` hook beneath App's provider. It does not replace the
 hook, routes or SSE transport. Two open windows assert both config and the resolved answer
 from a seeded snapshot, live master changes and a reconnect snapshot after missing a change,
-without navigation. The shipped registry stays empty and the probe adds no product controls.
+without navigation. The probe build replaces the shipped registry and adds no product controls.
 `MC_E2E_FEATURE_FLAGS_DROP=snapshot` or `live` omits that handler's state update only in the
 private build; `hook` forces the hook's answer to false. Each negative control must fail.
 `MC_E2E_EVIDENCE=1` captures the peer window after reconnection under
@@ -2275,12 +2275,30 @@ Pi's isolated extensions directory to the installer's isolated directory, proves
 symlink discovery, and tears down only that task's tmux session. Screenshots are written to
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
 
-`feature-flags.spec.ts` covers the shipped registry, and `task-shaping-flag.spec.ts` is the
-first real flag's assertion that its row appears and a toggle reaches a second window without a
-reload, with the daemon's `/api/shaping` gate following it. `feature-flags-populated.spec.ts`
+`feature-flags.spec.ts` covers the shipped registry: the **Codex resident native MCP**,
+**Resident active hours** and **Task shaping** rows appear, and toggling each of the first two in
+one window changes a second window without a reload. `task-shaping-flag.spec.ts` asserts that
+the Task shaping row's toggle reaches a second window without a reload, with the daemon's
+`/api/shaping` gate following it. `feature-flags-populated.spec.ts`
 uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
 `feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
 Use this build when a spec needs populated flag controls, search, palette or daemon writes.
 The spec owns and cleans up its private bundles. Both flag build helpers restore `NODE_ENV`
 after Vite builds, so reused workers still launch real development dashboards. `MC_E2E_EVIDENCE=1` retains panel screenshots
 under `e2e/.artifacts/feature-flags/`. No product module contains a fixture switch.
+
+### Resident active hours
+
+`specs/residents-active-hours.spec.ts` covers the `resident-active-hours` preview. The editor
+draws the **Active hours** card while the flag is on, and a Settings toggle in another window adds
+or removes it live. The one exception: a draft whose schedule cannot be saved, such as one with
+no day chosen, keeps the card on screen after the flag is turned off, so the error stays
+reachable; once it is fixed the card goes away and the profile saves. Turning hours on fills the
+zone picker with the browser's zone. Days, times and zone chosen in the card are saved with the
+profile. In the dock, a launched resident outside its window reads as **asleep**, with the time
+its held wake goes out, or the wake's own time when it is already due inside the next window,
+and reads as waiting again once the flag is off. Inside its window, a resident whose next wake
+falls after the window closes reads as **waiting** with the held wake's time.
+`MC_E2E_EVIDENCE=1` writes `01-active-hours-card.png`, `02-dock-asleep.png`,
+`03-dock-awake-held.png` and `04-dock-asleep-due-inside.png` under
+`e2e/.artifacts/residents-active-hours/`; attach them to the pull request, never commit them.

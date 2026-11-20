@@ -11632,6 +11632,9 @@ span.task-outcome:hover {
 /* PR chip - lives in the card header, just left of the status badge. Color and
    glyph encode the PR's state: green pull-request for open, purple merge for
    merged. A merged chip lingers until the session leaves the PR's branch. */
+.detail-pr-update { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 22px; border-bottom: 1px solid var(--border); }
+.pr-branch-update { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.pr-branch-update-reason { max-width: 28em; overflow-wrap: anywhere; }
 .pr-chip {
   flex: none;
   display: inline-flex;
@@ -17922,6 +17925,24 @@ select.ensemble-judge-persona {
   .resident-loop .resident-loop-limits {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  /* Active hours is a preview section: it takes its full-width band under the loop only while
+     its flag draws it, so a profile without it keeps the original grid and no empty row. */
+  .resident-cards:has(> .resident-editor-card-schedule) {
+    grid-template-areas:
+      "identity board"
+      "persona board"
+      "instructions execution"
+      "instructions workspace"
+      "loop loop"
+      "schedule schedule"
+      "mcp authority"
+      "mcp state";
+  }
+  .resident-cards > .resident-editor-card-schedule { grid-area: schedule; }
+  .resident-schedule .resident-schedule-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 16px;
+  }
 }
 /* The board card's label and pin each take a line: its three-column row is the runtime card's. */
 .resident-editor-card-board .resident-fields-row {
@@ -18004,6 +18025,105 @@ select.ensemble-judge-persona {
 }
 .resident-loop-spend {
   grid-column: 1 / -1;
+}
+
+/* Active hours: the controls on the left, a week strip of the awake spans on the right. With
+   the toggle off the controls read as dormant, and the strip shows what turning it on would do. */
+.resident-schedule-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+.resident-schedule-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.resident-schedule-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.resident-schedule-day {
+  min-width: 46px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.resident-schedule-day.active {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--idle) 16%, var(--bg));
+  border-color: color-mix(in oklab, var(--idle) 60%, var(--border));
+}
+.resident-schedule-day:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+.resident-schedule-day:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.resident-schedule-presets {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.resident-schedule-hours {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.resident-schedule-week {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-self: start;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.resident-schedule.is-off .resident-schedule-week {
+  opacity: 0.55;
+}
+.resident-schedule-week-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.resident-schedule-week-day {
+  font-size: 11px;
+  color: var(--dim);
+}
+.resident-schedule-week-track {
+  position: relative;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.resident-schedule-week-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in oklab, var(--idle) 70%, transparent);
+}
+.resident-schedule-week-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+.resident-schedule-now {
+  margin: 0;
+  color: var(--fg);
 }
 
 /* Authority widens what the resident can reach, so the granted state reads as a warning. */
@@ -41304,6 +41424,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-tag-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .resident-loop-tag { font-size: 10.5px; line-height: 16px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
 .resident-loop-tag.is-paused { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+.resident-loop-tag.is-asleep { color: var(--purple); border-color: color-mix(in oklab, var(--purple) 40%, var(--border)); }
 .resident-loop-tag.is-queued { color: var(--working); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); }
 .resident-loop-reason { color: var(--muted); }
 .resident-loop-tags > .resident-compaction-layers { margin-top: 0; color: var(--dim); }

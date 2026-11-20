@@ -14,6 +14,7 @@ import {
   inputReviewBodyText,
 } from "../src/shared/decision-asks.ts";
 import { titleLine } from "../src/shared/title.ts";
+import type { PlanDecision } from "../src/shared/types.ts";
 
 // What is at stake: a decision that reaches the operator without the context to make it.
 //
@@ -26,7 +27,7 @@ import { titleLine } from "../src/shared/title.ts";
 // request and refuses it, so an accepted call returns at once instead of waiting on a human.
 
 const home = mkdtempSync(join(tmpdir(), "request-input-context-"));
-const received: { path: string; body: { title?: string; body?: string; decisions?: { question: string; options: { detail?: string }[] }[] } }[] = [];
+const received: { path: string; body: { title?: string; body?: string; decisions?: PlanDecision[] } }[] = [];
 const daemon = createServer((req: IncomingMessage, res) => {
   let raw = "";
   req.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
@@ -97,15 +98,17 @@ test("context reads beneath the decision without displacing it from the heading"
   assert.equal(sent.title, question, "the heading is the decision, not the first line of context");
   assert.equal(sent.body, `${question}\n\n${context}`);
   assert.equal(sent.decisions![0]!.question, question, "the form's question carries no context");
+  assert.equal(sent.decisions![0]!.allowOther, true);
   assert.equal(sent.decisions![0]!.options[1]!.detail, "type-aware rules; slower, more config");
   assert.equal(inputReviewBodyText(sent.title!, sent.body!), context, "the card prints the context once");
 });
 
-test("without context the review is exactly what request_input always sent", async () => {
-  const outcome = await ask({ question: "Pick one", options: [{ label: "a" }, { label: "b" }] });
+test("a legacy allowOther false still sends a text-enabled decision without extra context", async () => {
+  const outcome = await ask({ question: "Pick one", options: [{ label: "a" }, { label: "b" }], allowOther: false });
   const sent = outcome.requests[0]!.body;
   assert.equal(sent.title, "Pick one");
   assert.equal(sent.body, "Pick one", "no trailing separator, no empty paragraph");
+  assert.equal(sent.decisions![0]!.allowOther, true);
 });
 
 test("context at exactly its bound reaches the daemon whole", async () => {

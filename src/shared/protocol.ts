@@ -2784,11 +2784,9 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 /**
  * The Inspector's consent model, in one object.
  *
- * Every default here is the OFF position, and that is not caution theatre: this is the
- * only subsystem that writes to a public place under the operator's GitHub identity.
- * `enabled: false` means it never runs; `mode: "dry-run"` means it computes findings
- * and posts none; an empty `repoAllowlist` means it acts nowhere. Turning it on is
- * three deliberate acts, and the first two are reversible without anyone else seeing.
+ * Field defaults preserve the posture of older saved configs and backups with missing keys.
+ * New databases record the enabled, Live posture when initialized.
+ * An empty `repoAllowlist` grants no permission to post under the operator's GitHub identity.
  */
 export const InspectorConfigSchema = z.object({
   /**

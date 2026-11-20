@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type { Handler } from "hono";
 import { HOST, PORT } from "../config.ts";
 import { inTransaction, openDb } from "../db.ts";
@@ -56,16 +56,26 @@ export interface HomeSessionRow {
 
 /**
  * The real path of `p`, or null when it cannot be resolved. A path that does not exist yet
- * (ENOENT, ENOTDIR) falls back to its absolute spelling, since there is nothing to follow. Any
- * other failure (a symlink loop, a denied segment) returns null: a containment or repository
- * check that cannot resolve a path must not fall back to comparing the unresolved spelling.
+ * (ENOENT, ENOTDIR) resolves through its deepest existing ancestor, with the missing tail
+ * appended, so a symlinked ancestor of a missing path is still followed. Any other failure (a
+ * symlink loop, a denied segment) returns null: a containment or repository check that cannot
+ * resolve a path must not fall back to comparing the unresolved spelling.
  */
 function realPath(p: string): string | null {
-  try {
-    return realpathSync(p);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    return code === "ENOENT" || code === "ENOTDIR" ? resolve(p) : null;
+  const absolute = resolve(p);
+  const missing: string[] = [];
+  let current = absolute;
+  for (;;) {
+    try {
+      return missing.length === 0 ? realpathSync(current) : resolve(realpathSync(current), ...missing);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") return null;
+      const parent = dirname(current);
+      if (parent === current) return null;
+      missing.unshift(basename(current));
+      current = parent;
+    }
   }
 }
 

@@ -274,6 +274,26 @@ test("registration from a symlink into a live task worktree is a 403 and leaves 
   }
 });
 
+test("a missing cwd under a symlinked ancestor is resolved through the ancestor, so it is refused inside a live worktree", async () => {
+  const tree = join(home, "trees-missing", "live");
+  mkdirSync(join(tree, "src"), { recursive: true });
+  const link = join(home, "ancestor-link");
+  symlinkSync(join(tree, "src"), link);
+  const missingCwd = join(link, "not", "created", "yet");
+  const original = registry.listTasks;
+  registry.listTasks = (() => [{ sessionId: null, status: "running", worktreePath: tree, extraRepos: [] }]) as unknown as typeof registry.listTasks;
+  try {
+    const res = await register(registration({ sessionId: "missing-under-link", cwd: missingCwd }));
+    assert.equal(res.status, 403);
+    assert.match(((await res.json()) as { error: string }).error, /inside the worktree/);
+    assert.equal(sessions.getHomeSession("missing-under-link"), null);
+    // A missing path under an ordinary directory outside every worktree is still allowed.
+    assert.equal((await register(registration({ sessionId: "missing-elsewhere", cwd: join(plain, "nope", "nada") }))).status, 200);
+  } finally {
+    registry.listTasks = original;
+  }
+});
+
 test("a cwd that cannot be resolved (a symlink loop) fails closed instead of comparing its spelling", async () => {
   const a = join(home, "loop-a");
   const b = join(home, "loop-b");

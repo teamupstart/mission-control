@@ -536,9 +536,11 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   once. Nothing over the cap is parsed. A successful event stream is counted per event, every
   byte on the wire including both bytes of each CRLF, up to and including the blank line that
   ends it; any other response, an error labelled as an event stream included, is counted as a
-  whole body, because the client reads it whole. A lost event stream is not reconnected. A
-  request whose own response stream ends before its reply fails that call at once and leaves
-  the shared connection, and its other calls, alone.
+  whole body, because the client reads it whole. A request whose own response stream ends
+  before its reply fails that call at once and leaves the shared connection, and its other
+  calls, alone, unless the stream carried an event id: the server may close such a stream before
+  replying, as MCP allows, and the client resumes it from that id, at most twice and within the
+  call's own budget.
 - **Writes and dry runs take loopback JSON only.** `PUT /api/shaping` and
   `POST /api/shaping/test` answer 403 unless the body is `application/json` and any `Origin` is
   this machine's loopback over http. A cross-site page can send a `text/plain` POST with no
@@ -564,7 +566,14 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   sent, and in its JSON-escaped form inside a reply's text. Text quoted into a failure reason is
   scrubbed as written, again with every JSON escape decoded, and again after whitespace is
   collapsed, so a `\u0061` spelling or a spacing variant of a value cannot survive, and the
-  engine scrubs a shaper's notes and errors before and after collapsing them the same way.
+  engine scrubs a shaper's notes and errors before and after collapsing them the same way. A
+  value with inner whitespace is also found written with other whitespace there (`Jane   Doe`
+  for `Jane Doe`), in every field, because a section heading or a recorded reason collapses
+  whitespace and would turn that spelling back into the value.
+- **One spelling per header.** A shaper that configures one header name twice in different
+  letter case, such as `Authorization` and `authorization`, is not called: which value is sent
+  would depend on their order, and two shapers sharing a connection could send each other's
+  credential.
 - **Trace context and work unit id.** The launch's `traceparent`, `tracestate` and the run's
   `x-work-unit-id` are the only Mission Control values a remote shaper receives besides the
   request and its own configured headers. A configured header of one of those names is

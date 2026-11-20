@@ -219,12 +219,41 @@ export interface ResolvedValue {
   value: string;
 }
 
-function holdsOne(text: string, resolved: ResolvedValue): boolean {
-  return resolved.value.length > 0 && text.includes(resolved.value);
+/**
+ * The pattern that finds a value written with other whitespace where it has some, such as
+ * `Jane   Doe` or `Jane\nDoe` for `Jane Doe`, or null when the value has no inner whitespace.
+ * Collapsing whitespace, as a section heading and a recorded reason do, turns such a spelling
+ * back into the value, so it is a copy of the value and is found as one.
+ */
+function spacingPattern(value: string): RegExp | null {
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  return new RegExp(parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "g");
 }
 
-function targets(resolved: readonly ResolvedValue[]) {
-  return resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name }));
+/** Every spacing variant of a resolved value that `text` holds, as a literal value under its name. */
+function spacingVariants(text: string, resolved: readonly ResolvedValue[]): ResolvedValue[] {
+  const out: ResolvedValue[] = [];
+  for (const entry of resolved) {
+    const pattern = spacingPattern(entry.value);
+    if (!pattern) continue;
+    for (const match of text.matchAll(pattern)) {
+      if (match[0] !== entry.value) out.push({ name: entry.name, value: match[0] });
+    }
+  }
+  return out;
+}
+
+function holdsOne(text: string, resolved: ResolvedValue): boolean {
+  if (resolved.value.length === 0) return false;
+  if (text.includes(resolved.value)) return true;
+  const pattern = spacingPattern(resolved.value);
+  return pattern !== null && pattern.test(text);
+}
+
+/** What to remove from `text`: every value, and every spacing variant of one that `text` holds. */
+function targets(resolved: readonly ResolvedValue[], text: string) {
+  return [...resolved, ...spacingVariants(text, resolved)].map(({ name, value }) => ({ value, wholeToken: false, label: name }));
 }
 
 /** What `scrubResolved` returns: the reply with every resolved value gone, and what it removed. */
@@ -265,7 +294,7 @@ function markerFor(values: readonly ResolvedValue[]): Marker {
  * it stays just over it, for the schema to refuse, without growing further.
  */
 function replaceResolved(text: string, resolved: readonly ResolvedValue[], limit: number, marker: Marker): string {
-  return redactSpans(text, targets(resolved), marker.render, 0, text.length <= limit ? limit : limit + 1);
+  return redactSpans(text, targets(resolved, text), marker.render, 0, text.length <= limit ? limit : limit + 1);
 }
 
 function holdsResolved(text: string, resolved: readonly ResolvedValue[]): ResolvedValue | undefined {
@@ -368,7 +397,7 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
 export function redactResolved(text: string, resolved: readonly ResolvedValue[]): string {
   const values = resolved.filter(({ value }) => value.length > 0);
   if (values.length === 0) return text;
-  return redactSpans(text, targets(values), markerFor(values).render);
+  return redactSpans(text, targets(values, text), markerFor(values).render);
 }
 
 /** Whether `text` holds any resolved value, which `redactResolved` would remove. */

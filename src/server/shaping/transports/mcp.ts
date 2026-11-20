@@ -96,6 +96,8 @@ interface Connection {
   readonly lost: Promise<never>;
   /** Why the connection was lost, once it was. */
   readonly failure: string | null;
+  /** Whether a named value was scrubbed from that reason before it was kept. */
+  readonly failureRedacted: boolean;
   /** Values the server was handed, scrubbed from whatever it sends back. */
   readonly resolved: readonly ResolvedValue[];
 }
@@ -118,19 +120,22 @@ function stdioOverflow(error: unknown): boolean {
 }
 
 /** A lost-connection latch: `fail` settles `lost` once, and every later call sees the first reason. */
-function latch(): { lost: Promise<never>; fail(reason: string): void; readonly failure: string | null } {
+function latch(): { lost: Promise<never>; fail(reason: string, redacted?: boolean): void; readonly failure: string | null; readonly redacted: boolean } {
   let failure: string | null = null;
+  let marked = false;
   let reject!: (error: Error) => void;
   const lost = new Promise<never>((_resolve, rejectLost) => { reject = rejectLost; });
   lost.catch(() => {});
   return {
     lost,
-    fail(reason) {
+    fail(reason, redacted = false) {
       if (failure !== null) return;
       failure = reason;
+      marked = redacted;
       reject(new Error(reason));
     },
     get failure() { return failure; },
+    get redacted() { return marked; },
   };
 }
 
@@ -187,8 +192,14 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
     if (request === null || !stream || !response.body) return response;
     const { id, method } = request;
     const source = response.body.getReader();
+    // A stream that carried an event id is resumable: the server may close it before replying
+    // and the client resumes it from that id (MCP 2025-11-25), so its end is left to the client
+    // and the call's own budget. Only a stream with no id fails its call when it ends early.
+    const decoder = new TextDecoder();
+    let carry = "\n";
+    let resumable = false;
     const ended = () => setTimeout(() => {
-      if (answered(id)) return;
+      if (answered(id) || resumable) return;
       if (method === "initialize") handshakeInterrupted();
       else call?.interrupted();
     }, REPLY_SETTLE_MS);
@@ -197,6 +208,11 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
         let read: ReadableStreamReadResult<Uint8Array>;
         try { read = await source.read(); } catch (error) { ended(); controller.error(error); return; }
         if (read.done) { ended(); controller.close(); return; }
+        if (!resumable) {
+          const text = carry + decoder.decode(read.value, { stream: true });
+          if (/[\r\n]id(?::|[\r\n])/.test(text)) resumable = true;
+          carry = text.slice(-3);
+        }
         controller.enqueue(read.value);
       },
       cancel(reason) { return source.cancel(reason); },
@@ -318,7 +334,11 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     // Stopped now, not when the run ends: a server that overflowed stays useless.
     void client.close().catch(() => {});
   };
-  transport.onclose = () => state.fail(`The MCP server exited${tail()}`);
+  const stderrNamed = () => {
+    const flat = stderr.replace(/\s+/g, " ");
+    return named.some(({ value }) => stderr.includes(value) || flat.includes(value));
+  };
+  transport.onclose = () => state.fail(`The MCP server exited${tail()}`, stderrNamed());
   ctx.scope.defer(async () => {
     try { await client.close(); } finally { await removeScratch(scratch, (text) => redactReceived(text, received)); }
   });
@@ -326,14 +346,14 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     // Raced against the latch: an overflow or an exit during the handshake answers at once.
     await Promise.race([client.connect(transport, { timeout: handshakeMs(ctx) }), state.lost]);
   } catch (error) {
-    if (state.failure) throw new Error(state.failure);
+    if (state.failure) throw new ConnectError(state.failure, state.redacted);
     // The SDK's message can carry what the server wrote, which can repeat anything in its
     // environment, so the whole sentence is scrubbed of every value the child received.
     const said = `The MCP server did not complete its handshake: ${requestFailure(error)}`;
     const marked = named.some(({ value }) => said.includes(value) || stderr.includes(value));
     throw new ConnectError(`${redactReceived(said, received)}${tail()}`, marked);
   }
-  return { client, lost: state.lost, get failure() { return state.failure; }, resolved: named };
+  return { client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved: named };
 }
 
 async function openHttp(
@@ -374,8 +394,9 @@ async function openHttp(
   const transport = new StreamableHTTPClientTransport(url, {
     fetch: watchReplyStreams(capped, (id) => answered.has(id), interrupted),
     requestInit: { headers: carriedHeaders(ctx.trace, ctx.workUnitId) },
-    // A lost stream is not retried: the call it belonged to answers, and the run moves on.
-    reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1_000, maxReconnectionDelay: 1_000, reconnectionDelayGrowFactor: 1 },
+    // A resumable stream gets two short attempts to resume, within its call's budget; a stream
+    // that is not resumable is never retried, and its call answers at once.
+    reconnectionOptions: { maxRetries: 2, initialReconnectionDelay: 250, maxReconnectionDelay: 1_000, reconnectionDelayGrowFactor: 2 },
   });
   transport.onclose = () => state.fail("The MCP server closed the connection.");
   observeReplies(transport, answered);
@@ -392,7 +413,7 @@ async function openHttp(
     if (state.failure) throw new Error(state.failure);
     throw new Error(`The MCP server did not complete its handshake: ${requestFailure(error)}`);
   }
-  return { client, lost: state.lost, get failure() { return state.failure; }, resolved };
+  return { client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved };
 }
 
 /** A connection that could not be opened because of the shaper's own config, not the server. */
@@ -492,13 +513,13 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
       interrupted,
     ]);
   } catch (error) {
-    if (connection.failure) return failure("failed", connection.failure, resolved);
+    if (connection.failure) return failure("failed", connection.failure, resolved, connection.failureRedacted);
     if (stop.signal.aborted && !signal.aborted) return failure("failed", INTERRUPTED_REASON, resolved);
     if (signal.aborted || (error as { code?: unknown } | null)?.code === -32001) return timedOut();
     const detail = quoted(requestFailure(error), resolved);
     return failure("failed", `The MCP call failed: ${detail.text}`, resolved, detail.redacted);
   }
-  if (connection.failure) return failure("failed", connection.failure, resolved);
+  if (connection.failure) return failure("failed", connection.failure, resolved, connection.failureRedacted);
   if (result.isError === true) {
     const detail = quoted(contentText(result.content).join(" "), resolved);
     return failure("failed", `The tool returned an error${detail.text ? `: ${detail.text}` : "."}`, resolved, detail.redacted);

@@ -147,6 +147,17 @@ test("a resolved caller value is redacted anywhere it appears, however short, in
     { reason: "denied for [caller.user redacted] via [caller.agent redacted]pe [caller.agent redacted]", redacted: true });
 });
 
+test("a value written with other whitespace where it has some is found as the value", () => {
+  const spaced = [{ name: "caller.user", value: "Jane Doe" }];
+  const scrubbed = scrubResolved({ guidance: [{ id: "a", title: "for Jane   Doe", body: "Jane\nDoe and JaneDoe" }] }, spaced);
+  assert.equal(scrubbed.redacted, true);
+  assert.deepEqual(scrubbed.data, { guidance: [{ id: "a", title: "for [caller.user redacted]", body: "[caller.user redacted] and JaneDoe" }] },
+    "a spacing variant is a copy, a run-together spelling is not");
+  const dropped = scrubResolved({ guidance: [{ id: "Jane\tDoe", body: "x" }, { id: "kept", body: "y" }] }, spaced);
+  assert.deepEqual(dropped.data, { guidance: [{ id: "kept", body: "y" }] }, "an id holding a variant is dropped, as one holding the value is");
+  assert.deepEqual(scrubReason("denied for Jane  Doe", spaced), { reason: "denied for [caller.user redacted]", redacted: true });
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

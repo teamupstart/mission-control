@@ -54,6 +54,10 @@ before(async () => {
         const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
         return res.writeHead(500, { "content-type": "application/json" }).end(`{"error":"denied for ${echoed}"}`);
       }
+      case "/spaced-title": {
+        const value = String(req.headers["x-caller"] ?? "");
+        return json(200, { guidance: [{ id: "entry", title: `notes for ${value.replace(" ", "\t\t")}`, body: "the body" }] });
+      }
       case "/spaced-note": {
         const value = String(req.headers["x-caller"] ?? "");
         return json(200, { degraded: true, notes: [`no guidance for ${value.replace(" ", "   ")}`], guidance: [] });
@@ -313,6 +317,30 @@ test("a degraded note that spaces a resolved value out is redacted in the record
   assert.equal(row.redacted, true, JSON.stringify(row));
   assert.equal(JSON.stringify(result.summary).includes("Jane Doe"), false, row.reason ?? "");
   assert.match(row.reason ?? "", /no guidance for \[caller\.user redacted\]/);
+});
+
+test("a title that spaces a resolved value out cannot recreate it in the section's heading", async () => {
+  const remote = shaper("/spaced-title", { "x-caller": "{caller.user}" });
+  const result = await shapeTask({
+    task: "Retry",
+    context: {
+      taskId: "t_1", title: "Retry", kind: "ship", harness: "claude", runtime: "sdk", afterWork: null, labels: [], priority: null,
+      repositories: [{ name: "billing-api", role: "primary", branch: null, baseSha: null, path: null }],
+    },
+  }, {
+    config: { ...SHAPING_CONFIG_DEFAULTS, caller: { user: "Jane Doe" }, shapers: [remote], overrides: { remote: true } },
+    discovered: [], enabled: true,
+  });
+  assert.ok(result.section.includes("notes for [caller.user redacted]"), result.section);
+  assert.equal(result.section.includes("Jane Doe"), false);
+  assert.equal(result.summary!.shapers[0]!.redacted, true);
+});
+
+test("a header named twice in different letter case is refused before any request", async () => {
+  const count = seen.length;
+  const reply = await withKey(KEY, () => callHttp(request(), shaper("/ok", { Authorization: `Bearer {env:${KEY_ENV}}`, authorization: "Bearer {env:OTHER_KEY}" }), ctx()));
+  assert.deepEqual(reply, { kind: "unavailable", reason: 'The shaper configures the header "Authorization" twice, also as "authorization", so it was not called. Keep one spelling.' });
+  assert.equal(seen.length, count, "no request was sent");
 });
 
 test("an echoed caller value resolved into a header comes back redacted and marked", async () => {

@@ -55,6 +55,18 @@ export function callHeaders(
   // Only headers that will be sent are resolved: one the transport owns and replaces, such as a
   // configured `Accept`, cannot block a call by naming a reference that is not set.
   const sent = withoutOwnedHeaders(withoutCarriedHeaders(configured), owned);
+  // A header name is one name in any letter case. Two spellings of one name would leave which
+  // value is sent to insertion order, while a shared connection is keyed by sorted names, so
+  // two shapers could share a connection and send each other's credential: refused, not guessed.
+  const seen = new Map<string, string>();
+  for (const name of Object.keys(sent)) {
+    const lower = name.toLowerCase();
+    const earlier = seen.get(lower);
+    if (earlier !== undefined) {
+      return { ok: false, reason: `The shaper configures the header "${earlier}" twice, also as "${name}", so it was not called. Keep one spelling.` };
+    }
+    seen.set(lower, name);
+  }
   const resolution = resolveReferenceMap(sent, { caller: request.context.caller });
   if (!resolution.ok) return { ok: false, reason: missingReferenceReason(resolution.missing) };
   return {

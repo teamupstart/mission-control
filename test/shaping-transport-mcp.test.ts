@@ -444,6 +444,59 @@ test("a response stream that ends before its reply fails that call at once, and 
   } finally { await raw.close(); }
 });
 
+test("a resumable response stream that closes before its reply is resumed, not failed", async () => {
+  // The server primes the stream with an event id, closes it, and answers when it is resumed.
+  let resumedFrom: string | undefined;
+  let pendingId: number | undefined;
+  let initializes = 0;
+  const server = createServer(async (req, res) => {
+    if (req.method === "GET") {
+      const last = req.headers["last-event-id"];
+      if (!last || pendingId === undefined) { res.writeHead(405).end(); return; }
+      resumedFrom = String(last);
+      res.writeHead(200, { "content-type": "text/event-stream" })
+        .end(`id: e2\nevent: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: pendingId, result: OK_RESULT })}\n\n`);
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    if (message.method === "initialize") {
+      initializes += 1;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "resumable", version: "1.0.0" } },
+      }));
+      return;
+    }
+    pendingId = message.id;
+    res.writeHead(200, { "content-type": "text/event-stream" }).end("id: e1\ndata: \n\n");
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+    const reply = await callMcp(request(false), shaper({ type: "http", url }), ctx({}, 10_000));
+    assert.deepEqual(data(reply), { guidance: [{ id: "raw", body: "raw reply" }] });
+    assert.equal(resumedFrom, "e1", "resumed from the priming event's id");
+    assert.equal(initializes, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+test("a stdio server that exits during the handshake after echoing a passed value is scrubbed and marked", async () => {
+  const value = "exit-secret-a41b";
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "stderr-exit", KEY_ENV, "1"], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  assert.equal(reply.redacted, true, JSON.stringify(reply));
+  assert.equal((reply as { reason: string }).reason.includes(value), false);
+  assert.match((reply as { reason: string }).reason, /\[redacted\]/);
+});
+
 test("one call's interrupted response stream fails only that call, never another call on the same connection", async () => {
   const raw = await startRawMcpServer((res, id, index) => {
     if (index === 0) {
@@ -612,6 +665,17 @@ test("header references resolve at call time, and a missing one sends no request
       assert.deepEqual(reply, { kind: "unavailable", reason: `The reference {env:${KEY_ENV}} did not resolve to a value, so the shaper was not called.` });
     }
     assert.equal(http.requests.length, before, "no request at all");
+  } finally { await http.close(); }
+});
+
+test("an MCP server header named twice in different letter case is refused before connecting", async () => {
+  const http = await startGuidanceHttp({ mode: "ok" });
+  try {
+    const headers = { "X-Api-Key": `{env:${KEY_ENV}}`, "x-api-key": "{env:SHAPING_MCP_OTHER_KEY}" };
+    const reply = await withEnv({ [KEY_ENV]: KEY, SHAPING_MCP_OTHER_KEY: "other" }, () => callMcp(request(false), shaper({ type: "http", url: http.url, headers }), ctx()));
+    assert.equal(reply.kind, "unavailable");
+    assert.match((reply as { reason: string }).reason, /configures the header "X-Api-Key" twice, also as "x-api-key"/);
+    assert.equal(http.requests.length, 0, "no connection was opened");
   } finally { await http.close(); }
 });
 

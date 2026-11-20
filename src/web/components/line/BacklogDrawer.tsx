@@ -31,6 +31,8 @@ import { relativeTime } from "../../lib/format.ts";
 import { BacklogTaskNotice, DeadBlockerButton, ScheduleSwitch } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
+import { HibernatedSection } from "../HibernatedTasks.tsx";
+import { hibernatedTasks } from "@shared/hibernation.ts";
 import { NextUpPlanner } from "./NextUpPlanner.tsx";
 import {
   BacklogFilterButtons,
@@ -394,6 +396,9 @@ export function BacklogDrawer({
     return { rows: partition(tasks, backlogPlan, built, stackShipping), index: built };
   }, [tasks, backlogPlan, stackShipping]);
   const ready = rows.filter((r) => r.band === "ready");
+  // The same Hibernated section the board's Backlog column draws, so a hibernated task can be
+  // resumed from the Console layout too, where this drawer is the Backlog.
+  const sleeping = useMemo(() => hibernatedTasks(tasks), [tasks]);
   /**
    * Search and filters hide rows and nothing else. `ready` above stays the whole band, so the
    * next-up mark still sits on the row autopilot takes next, or on no row if that one is
@@ -577,8 +582,9 @@ export function BacklogDrawer({
         </>
       )}
     >
+      <HibernatedSection tasks={sleeping} />
       {rows.length === 0 ? (
-        <LineDrawerEmpty>
+        sleeping.length > 0 ? null : <LineDrawerEmpty>
           Nothing is queued. Dispatch files a task here when you shelve it instead of launching
           it, and Intake's sources and recurring missions file their own.
         </LineDrawerEmpty>

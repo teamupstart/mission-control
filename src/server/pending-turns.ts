@@ -55,6 +55,13 @@ export interface IdleSdkSender {
   ): Promise<"started" | null>;
   send(id: string, turn: SdkTurn, beforeSend?: () => string | null): Promise<SdkSendDisposition>;
   interruptForDelivery(id: string, beforeInterrupt: () => string | null): Promise<void>;
+  /**
+   * Whether this session's driver must not be handed a turn yet: a hibernated task's woken
+   * driver before Resume binds the task to it (`SdkSupervisor.wakeBound`). Rows stay queued,
+   * and the `session_upsert` the binding emits re-arms their delivery. Optional, because only
+   * the supervisor has woken drivers.
+   */
+  holdsDelivery?(id: string): boolean;
 }
 
 export interface PendingTurnSubmitResult {
@@ -660,6 +667,8 @@ export class PendingTurnManager {
       // Paused: hold every row where it is. Lifting the pause emits a `session_upsert`, and
       // that is what re-arms the drain - so a message typed while paused is delivered on resume.
       !session.pause &&
+      // Woken and not yet bound to its task: held the same way, and re-armed by the binding.
+      !this.sdk.holdsDelivery?.(session.id) &&
       canMessage(session)
     );
   }
@@ -680,7 +689,7 @@ export class PendingTurnManager {
   /** Shared safety gates; only steering is allowed to relax the idle requirement. */
   private canDeliver(session: Session): boolean {
     return !this.stopped && !this.interruptHolds.has(session.id) && session.stateConfirmed &&
-      !session.pause &&
+      !session.pause && !this.sdk.holdsDelivery?.(session.id) &&
       (session.state === "idle" || session.state === "working") &&
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) && canMessage(session) &&

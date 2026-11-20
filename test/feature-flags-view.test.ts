@@ -8,7 +8,7 @@ import { FEATURE_FLAGS } from "../e2e/fixtures/feature-flag-registry.ts";
 test("empty registry retains master and explains alpha without a filter or Advanced", () => {
   const html = renderToStaticMarkup(createElement(FeatureFlagsView, { definitions: [], config: { enableAll: false, overrides: {} }, onSet() {} }));
   assert.match(html, /No preview features right now. New ones appear here./);
-  assert.match(html, /Updating to an alpha build does not turn this on, or any flag./);
+  assert.match(html, /Switching on Alpha updates also switches this on./);
   assert.match(html, /data-anchor="feature-flags\/enable-all"/);
   assert.doesNotMatch(html, /Filter feature flags|aria-expanded/);
 });

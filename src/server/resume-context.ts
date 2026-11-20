@@ -1,11 +1,11 @@
 import type { Session, Task } from "@shared/types.ts";
 import { kindMissionMcpRequirement, type MissionMcpTool } from "./mission-mcp.ts";
-import type { ResumeContext } from "./harness/resume.ts";
+import type { ResumeContext, ResumeSource } from "./harness/resume.ts";
 import { resolveDispatchAdvisor, resolveDispatchModel } from "./harnesses.ts";
 
 /** Owners resolve durable facts; harness adapters receive only these plain values. */
 export function resumeContext(
-  session: Session,
+  session: ResumeSource,
   task: Task | null,
   evidence: boolean,
   ensembleMember: boolean,

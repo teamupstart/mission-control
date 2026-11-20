@@ -41,6 +41,7 @@ import {
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LaunchFailureNotice } from "../LaunchFailures.tsx";
+import { HibernatedSection } from "../HibernatedTasks.tsx";
 import {
   BacklogFilterButtons,
   BacklogFilterEmpty,
@@ -111,6 +112,7 @@ import { backlogFacetCounts, matchesBacklogFilter } from "../../lib/backlog-filt
  */
 export function BacklogColumn({
   tasks,
+  hibernated = [],
   allTasks,
   plan,
   width,
@@ -128,6 +130,12 @@ export function BacklogColumn({
   stackShipping,
 }: {
   tasks: Task[];
+  /**
+   * Hibernated tasks, drawn as their own section above the queued work (`HibernatedSection`).
+   * Not part of `tasks`: they are not backlog work, so nothing that orders, selects, filters
+   * or schedules the backlog may see them.
+   */
+  hibernated?: Task[];
   /** Every task, not just the backlog - dependencies point at tasks that already left it. */
   allTasks: Task[];
   /** Foreman's reading of the backlog, or null when it has none. */
@@ -247,7 +255,7 @@ export function BacklogColumn({
   const startMarquee = (e: React.PointerEvent<HTMLDivElement>): void => {
     // A control in the body (the filter's "Clear") keeps its own click: capturing the pointer
     // here would swallow it.
-    if (e.button !== 0 || (e.target as Element).closest(".bl-card, button")) return;
+    if (e.button !== 0 || (e.target as Element).closest(".bl-card, .bl-hib, button")) return;
     const el = body.current;
     if (!el) return;
     // A press on the column's own scrollbar is a scroll, not a marquee. `clientWidth` stops
@@ -418,7 +426,7 @@ export function BacklogColumn({
       <section className="board-col board-backlog is-collapsed" inert={inert}>
         <CollapsedColumnStrip
           label="Backlog"
-          count={tasks.length}
+          count={tasks.length + hibernated.length}
           onRestore={() => onWidthChange("normal")}
         />
       </section>
@@ -464,7 +472,8 @@ export function BacklogColumn({
           <ColumnWidthControl width={width} label="Backlog" onChange={onWidthChange} />
         )}
         <span className="board-col-n">
-          {backlogShownCount(shown.length, tasks.length, filtering.active)}
+          {/* Hibernated tasks are in this column too, so the head counts them with the queue. */}
+          {backlogShownCount(shown.length + hibernated.length, tasks.length + hibernated.length, filtering.active)}
         </span>
         {/* Last, so on a column too narrow for one line they are what wraps, never the count. */}
         {tasks.length > 0 && <BacklogFilterButtons state={filtering} counts={facetCounts} />}
@@ -485,6 +494,8 @@ export function BacklogColumn({
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverGap(null);
         }}
       >
+        <HibernatedSection tasks={hibernated} />
+        {hibernated.length > 0 && tasks.length > 0 && <h3 className="bl-queued-head">Queued</h3>}
         {tasks.length === 0 ? (
           // The message IS the target when there is nothing to drop between, so the first
           // card of an empty backlog has somewhere to land. `bottom` and `top` mean the

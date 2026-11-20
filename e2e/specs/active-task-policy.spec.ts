@@ -28,6 +28,8 @@ test("Sitrep offers completion and cancellation only for active task statuses", 
   const snapshot = JSON.parse(data.slice(6));
   const expected = {
     backlog: false, dispatching: true, running: true, done: false, cancelled: false, failed: false,
+    // Asleep, not active: its session is stopped, and only Resume wakes it.
+    hibernated: false,
   } satisfies Record<TaskStatus, boolean>;
   expect(Object.keys(expected).sort()).toEqual([...TASK_STATUSES].sort());
   const sessions = TASK_STATUSES.map((status) => mkSession({

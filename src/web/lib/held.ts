@@ -1,3 +1,4 @@
+import { createContext, useContext } from "react";
 import type { Session } from "@shared/types.ts";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
@@ -231,4 +232,15 @@ export function workflowCompletionStall(
 ): string | null {
   const reason = workflowCompletionStallReason(...args);
   return reason && `${reason} Click for ways to proceed.`;
+}
+
+/**
+ * `heldSessionIds` as App folds it, for a control deep in a session placement that needs to
+ * know without every placement threading it down: the Pause menu's Hibernate row, which the
+ * route refuses while a run is open (`HIBERNATE_OPEN_RUN_REFUSAL`).
+ */
+export const HeldSessionsContext = createContext<ReadonlySet<string>>(new Set());
+
+export function useHeldSessions(): ReadonlySet<string> {
+  return useContext(HeldSessionsContext);
 }

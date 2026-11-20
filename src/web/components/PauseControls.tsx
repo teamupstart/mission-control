@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { canPause, pauseAge, pauseFlagLabel, pauseFreezes, pausedAt, pendingPauseLabel, type SessionPauseMode } from "@shared/pause.ts";
+import { HIBERNATE_OPEN_RUN_REFUSAL, hibernateRefusal, TASK_HIBERNATION_FLAG } from "@shared/hibernation.ts";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { isPrioritySession, sessionCount, useFleetPause, type FleetPauseView } from "../lib/fleet-pause.ts";
+import { useHeldSessions } from "../lib/held.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { useNow } from "../useNow.ts";
 import { SessionToolbarMenu } from "./SessionToolbarMenu.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -14,7 +17,7 @@ import { Tooltip } from "./Tooltip.tsx";
  * placements cannot drift on wording or on which action a click sends.
  */
 
-type GlyphKind = "pause" | "play" | "star" | "star-outline" | "after-turn" | "resume-all";
+type GlyphKind = "pause" | "play" | "star" | "star-outline" | "after-turn" | "resume-all" | "moon";
 
 export function PauseGlyph({ kind, size = 11 }: { kind: GlyphKind; size?: number }): React.JSX.Element {
   return (
@@ -48,6 +51,7 @@ export function PauseGlyph({ kind, size = 11 }: { kind: GlyphKind; size?: number
         </>
       )}
       {kind === "resume-all" && <path d="M1.6 2.2v7.6l5-3.8zM6.4 2.2v7.6l5-3.8z" fill="currentColor" />}
+      {kind === "moon" && <path d="M7.4 1.1a4.95 4.95 0 1 0 3.5 7.2A4.1 4.1 0 0 1 7.4 1.1z" fill="currentColor" />}
     </svg>
   );
 }
@@ -66,7 +70,8 @@ type PauseAction =
   | { kind: "pause"; mode: SessionPauseMode }
   | { kind: "resume" }
   | { kind: "priority" }
-  | { kind: "end-priority" };
+  | { kind: "end-priority" }
+  | { kind: "hibernate" };
 
 /**
  * One action at a time, with the daemon's refusal kept to say. Every control routes through
@@ -86,7 +91,8 @@ export function usePauseActions(session: Session): {
       action.kind === "pause" ? await api.pauseSession(session.id, action.mode)
         : action.kind === "resume" ? await api.resumeSession(session.id)
           : action.kind === "priority" ? await api.setPriority(session.id)
-            : await api.endPriority();
+            : action.kind === "hibernate" ? await api.hibernateSession(session.id)
+              : await api.endPriority();
     setBusy(false);
     if (!result.ok) setError(result.error ?? "Mission Control could not change this session's pause");
     return result.ok;
@@ -128,6 +134,13 @@ function lowerFirst(text: string): string {
 function PauseMenuRows({ session, close }: { session: Session; close: () => void }): React.JSX.Element {
   const fleet = useFleetPause();
   const { busy, error, run } = usePauseActions(session);
+  const hibernates = useFeatureFlag(TASK_HIBERNATION_FLAG);
+  // An open workflow run is a join the session does not carry, so it is read from App's fold;
+  // the route refuses the same thing in the same words.
+  const held = useHeldSessions();
+  const hibernateBlock = hibernates
+    ? hibernateRefusal(session) ?? (held.has(session.id) ? HIBERNATE_OPEN_RUN_REFUSAL : null)
+    : null;
   const at = standing(session, fleet);
   const others = fleet.pausable - (session.pause ? 0 : 1);
   const freezes = pauseFreezes(session);
@@ -186,8 +199,21 @@ function PauseMenuRows({ session, close }: { session: Session; close: () => void
           { kind: "priority" },
           fleetPaused ? "Everything is paused. Resume all before choosing a priority session." : null,
         )}
+      {/* Last: the deepest stop, and the only one that ends the process. Never offered to the
+          priority session, whose priority would otherwise outlive it. */}
+      {hibernates && at !== "priority" &&
+        row(
+          "hibernate",
+          "moon",
+          "Hibernate",
+          // A refusal takes the sub-line, so why it cannot be hibernated is read, not hovered for.
+          hibernateBlock ?? "Stops the agent and frees its memory. Keeps the conversation, worktree and blocker; the task waits in the Backlog until you resume it.",
+          { kind: "hibernate" },
+          hibernateBlock,
+        )}
       <p className="session-toolbar-note session-toolbar-foot">
         A paused session keeps its place and resumes exactly where it stopped.
+        {hibernates && " A hibernated one frees its memory and survives a restart."}
       </p>
       {error && <p className="session-toolbar-error" role="alert">{error}</p>}
     </>

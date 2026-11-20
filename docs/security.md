@@ -413,7 +413,9 @@ whole and a non-ASCII value still matches exactly when it is redacted.
 When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
 started outside its process group cannot keep them open after the group is killed. It also
 kills what is left of the shaper's own process group, even after a successful reply, so a
-helper the shaper started in its group cannot outlive the call. A
+helper the shaper started in its group cannot outlive the call. That happens as soon as the
+shaper exits, so a helper holding its pipes cannot turn a complete reply into a timeout; a
+bounded drain then answers with what was read. A
 selector's scratch directory is removed in the background after the call has answered, never
 before it. A large tree left behind costs disk work, not the dry run's latency or the event
 loop's. A removal that fails is logged through the call's redactor, because a path in the tree
@@ -433,8 +435,9 @@ literal secret text and is refused. So is a value that names only a caller refer
 a password or a credential-shaped query parameter. An argument may not hand over a credential
 as literal text: a credential-named flag (`--token=…`, `--api-key …`), a header flag naming a
 credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
-`--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, or a URL with
-userinfo or a credential query parameter. Arguments are never resolved, so name the variable in
+`--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
+field named as a credential (`-d token=…`, `--form password=…`), a cookie (`-b`, `--cookie`), or
+a URL with userinfo or a credential query parameter, alone or as a flag's value. Arguments are never resolved, so name the variable in
 `env` instead.
 Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
 definition that breaks these rules is
@@ -444,7 +447,9 @@ also empties any literal credential it finds in an entry, including one this bui
 run: a header value, a URL's userinfo or credential query parameter, or a credential
 argument. Every read, settings restore and backup capture goes through that schema, so an
 entry handed over another way, such as a foreign snapshot, still cannot carry secret text
-into the daemon or into a snapshot. An entry it emptied anything in is marked
+into the daemon or into a snapshot. A stored entry may nest at most 32 levels deep, checked
+without recursion before anything recursive reads it, so a crafted entry is a validation
+error that takes the unreadable-config path rather than a stack overflow. An entry it emptied anything in is marked
 `credentialsRemoved` and is unsupported. It never runs, dry-runs or switches on with its
 changed arguments or headers, until the operator registers a valid replacement for its id,
 which is stored off. An argument is judged by its name, split at the first `=`, so a value

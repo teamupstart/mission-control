@@ -128,6 +128,20 @@ test("an entry this build does not understand survives writes, is never enabled,
   assert.equal(((await test.json()) as { error: string }).error, "unsupported_shaper");
 });
 
+test("a deeply nested stored entry takes the unreadable path instead of throwing", async (t) => {
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
+  // The row as a corrupt or foreign store would hold it: raw JSON, about 14 KiB, 7,000 levels deep.
+  const note = `${"[".repeat(7_000)}"leaf"${"]".repeat(7_000)}`;
+  openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key,
+    `{"shapers":[{"id":"deep","label":"Deep","stage":"route","transport":{"type":"grpc"},"note":${note}}]}`);
+  assert.doesNotThrow(() => shaping.reloadShaping());
+  assert.deepEqual(shaping.getShapingConfig(), SHAPING_CONFIG_DEFAULTS, "reads fall back to the defaults");
+  const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
+  assert.equal(response.status, 409, "and writes are refused rather than overwriting it");
+  assert.equal(warnings.length >= 1, true);
+});
+
 test("a stored config this build cannot read is never overwritten", async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));

@@ -32,6 +32,8 @@ export const COMMAND_OUTPUT_BYTES = 256 * 1024;
 const STDERR_TAIL_CHARS = 2_000;
 /** How long to wait for the pipes to close after the group was killed. */
 const DRAIN_MS = 1_000;
+/** After the shaper exits, how long its pipes get to deliver the rest of its output. */
+const EXIT_DRAIN_MS = 500;
 
 /** Variables a shaper can never receive, even by naming them. */
 const NEVER_PASSED = new Set<string>([
@@ -353,7 +355,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     child.once("error", (error) => {
       if (child.pid === undefined) finish({ kind: "unavailable", reason: `The command could not start: ${error.message}` });
     });
-    child.once("close", (code, signal) => {
+    const complete = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (ending === "timed_out") return finish({ kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` });
       if (ending === "overflow") return finish({ kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
       if (code === 0) {
@@ -369,7 +371,17 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       const tail = stderrTail();
       const detail = tail ? `: ${tail}` : "";
       finish({ kind: "failed", reason: signal ? `The command was killed by ${signal}${detail}` : `The command exited with code ${code}${detail}` });
+    };
+    // The shaper itself has exited. A helper still in its group could hold the pipes open, and
+    // `close` would then wait for it until the timeout discarded a perfectly good reply. So the
+    // group is stopped now, which normally lets `close` follow at once, and a bounded drain
+    // answers with what was read if something outside the group still holds a pipe.
+    child.once("exit", (code, signal) => {
+      if (ending || settled) return;
+      reapGroup(child);
+      timers.push(setTimeout(() => complete(code, signal), EXIT_DRAIN_MS));
     });
+    child.once("close", (code, signal) => complete(code, signal));
     timers.push(setTimeout(() => end("timed_out"), remaining));
     if (ctx.signal.aborted) end("timed_out");
     else ctx.signal.addEventListener("abort", onAbort, { once: true });

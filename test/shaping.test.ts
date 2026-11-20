@@ -30,6 +30,8 @@ import {
   ShapingConfigSchema,
   ShapingIntentSchema,
   ShapingResultSchema,
+  SHAPING_MAX_NESTING,
+  nestsWithin,
   SHAPING_REFERENCE_SPELLINGS,
   shapingEntryHeading,
   shapingReferences,
@@ -262,7 +264,11 @@ test("an argument never hands over a credential as literal text; it is named in 
     ["-H", "Authorization: Bearer sk-live-4"], ["--header", "X-Api-Key: sk-live-5"], ["--header=Authorization: Bearer sk-6"],
     ["-HAuthorization: Bearer sk-7"], ["-H", "authorization: Bearer {env:ACME_TOKEN}"], ["--proxy-header", "Proxy-Authorization: Basic x"],
     ["--user", "name:pass"], ["--user=name:pass"], ["-u", "name:pass"], ["-uname:pass"], ["-U", "proxy:pass"],
-    ["--oauth2-bearer", "sk-live-8"], ["https://name:pass@context.example/x"], ["https://context.example/x?api_key=sk-9"]]) {
+    ["--oauth2-bearer", "sk-live-8"], ["https://name:pass@context.example/x"], ["https://context.example/x?api_key=sk-9"],
+    // Data and form fields, cookies, and a URL given as a flag's value.
+    ["-d", "token=sk-10"], ["--data", "q=1&password=hunter2"], ["-dapi_key=sk-11"], ["--form", "client_secret=sk-12"],
+    ["--data-urlencode=access_token=sk-13"], ["-b", "session=abc"], ["--cookie=sid=1"],
+    ["--proxy", "https://u:p@proxy.example"], ["--proxy=https://u:p@proxy.example"]]) {
     const refused = command(args);
     assert.equal(refused.success, false, args.join(" "));
     assert.match(refused.error!.issues[0]!.message, /Name the variable in env instead/);
@@ -272,7 +278,8 @@ test("an argument never hands over a credential as literal text; it is named in 
   for (const args of [["--json"], ["--token-file", "/etc/acme/token"], ["--key-path=/secrets/key"], ["--api-key-env=ACME_TOKEN"],
     ["--token", "--verbose"], ["--repo", "billing-api"], ["--monkey=1"],
     ["-H", "Accept: application/json"], ["--header", "X-Request-Id: 42"], ["--user-agent", "shaper/1"], ["-u", "1000"],
-    ["sort", "-u"], ["https://context.example/x?page=2"], ["-v"]]) {
+    ["sort", "-u"], ["https://context.example/x?page=2"], ["-v"],
+    ["-d", "name=value"], ["--data", "{\"q\":1}"], ["-debug=1"], ["-backup=x"], ["-b", "cookies.txt"], ["--proxy", "https://proxy.example"]]) {
     assert.equal(command(args).success, true, args.join(" "));
   }
 });
@@ -302,6 +309,28 @@ test("header and environment references are checked for syntax, never resolved",
   assert.equal(headers("two\nlines"), false);
   assert.equal(ShaperSchema.safeParse({ ...command("x"), transport: { type: "command", command: "x", env: ["BAD-NAME"] } }).success, false);
   assert.equal(ShaperSchema.safeParse({ id: "u", label: "U", stage: "select", transport: { type: "http", url: "file:///etc/passwd" } }).success, false);
+});
+
+test("a stored entry's nesting is checked before any recursive parse", () => {
+  const nested = (depth: number) => {
+    let value: unknown = "leaf";
+    for (let level = 0; level < depth; level++) value = [value];
+    return value;
+  };
+  const entry = (note: unknown) => ({ id: "deep", label: "Deep", stage: "select", transport: { type: "grpc" }, note });
+  assert.equal(nestsWithin(nested(10), SHAPING_MAX_NESTING), true);
+  assert.equal(StoredShaperSchema.safeParse(entry(nested(10))).success, true, "ordinary nesting is kept");
+  const deep = StoredShaperSchema.safeParse(entry(nested(SHAPING_MAX_NESTING + 5)));
+  assert.equal(deep.success, false);
+  assert.match(deep.error!.issues[0]!.message, /nests at most 32 levels/);
+  // About 14 KiB of JSON, and deep enough that a recursive validator would exhaust the stack. It
+  // is built the way a stored row arrives, by JSON.parse, which is not recursive.
+  const raw = `{"shapers":[{"id":"deep","label":"Deep","stage":"select","transport":{"type":"grpc"},"note":${"[".repeat(7_000)}"leaf"${"]".repeat(7_000)}}]}`;
+  assert.ok(raw.length < 16 * 1024);
+  const crafted = JSON.parse(raw) as unknown;
+  assert.doesNotThrow(() => ShapingConfigSchema.safeParse(crafted));
+  assert.equal(ShapingConfigSchema.safeParse(crafted).success, false, "a validation error, not a thrown stack overflow");
+  assert.equal(nestsWithin(nested(100_000), SHAPING_MAX_NESTING), false, "the check itself never recurses");
 });
 
 test("a definition is at most 16 KiB of JSON, as an envelope and as a strict shaper", () => {

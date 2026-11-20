@@ -373,6 +373,15 @@ const HEADER_FLAGS = new Set(["H", "header", "proxy-header"]);
 const CREDENTIAL_VALUE_FLAGS = new Set(["user", "proxy-user", "oauth2-bearer", "basic-auth"]);
 /** Short flags that take `user:password` (curl's `-u`, `-U`). Only a value with a colon counts. */
 const USERINFO_FLAGS = new Set(["u", "U"]);
+/** Flags whose value is `name=value` fields (curl's `-d`, `--data*`, `-F`, `--form`). */
+const FIELD_FLAGS = new Set(["d", "data", "data-raw", "data-binary", "data-urlencode", "data-ascii", "F", "form", "form-string"]);
+/** Flags whose value is a cookie, which is a session credential (curl's `-b`, `--cookie`). */
+const COOKIE_FLAGS = new Set(["b", "cookie"]);
+/**
+ * Short flags that may carry their value attached, as in `-HAuthorization: x` or `-dtoken=x`.
+ * Not `-b`: `-backup=x` would read as a cookie, so a cookie counts as `-b value` or `--cookie`.
+ */
+const ATTACHED_FLAGS = new Set(["H", "u", "U", "d", "F"]);
 
 /** One argument read as a flag: its name, and the value it carries and where, if any. */
 function argumentParts(args: readonly string[], index: number): { name: string; value?: string; at: number } | null {
@@ -389,13 +398,13 @@ function argumentParts(args: readonly string[], index: number): { name: string; 
   }
   if (arg.startsWith("-") && arg.length > 1) {
     const body = arg.slice(1);
-    const equals = body.indexOf("=");
-    if (equals > 0) return { name: body.slice(0, equals), value: body.slice(equals + 1), at: index };
-    // An attached short value, as in `-HAuthorization: Bearer x` or `-uuser:pass`: the letter,
-    // then text with a colon or a space, which no flag name contains.
-    if (body.length > 1 && (HEADER_FLAGS.has(body[0]!) || USERINFO_FLAGS.has(body[0]!)) && /[:\s]/.test(body.slice(1))) {
+    // An attached short value comes first: `-HAuthorization: x`, `-uuser:pass`, `-dtoken=x`.
+    // The letter is followed by text with a colon, an equals sign or a space.
+    if (body.length > 1 && ATTACHED_FLAGS.has(body[0]!) && /[:=\s]/.test(body.slice(1))) {
       return { name: body[0]!, value: body.slice(1), at: index };
     }
+    const equals = body.indexOf("=");
+    if (equals > 0) return { name: body.slice(0, equals), value: body.slice(equals + 1), at: index };
     return { name: body, value: following, at: index + 1 };
   }
   const equals = arg.indexOf("=");
@@ -421,7 +430,9 @@ function urlCarriesCredential(value: string): boolean {
  * - a header flag whose header carries a credential, `-H "Authorization: Bearer x"`, refused
  *   whatever the value, since an argument's `{env:NAME}` would never be resolved;
  * - a credential flag such as `--user name:pass` or `--oauth2-bearer x`, and `-u name:pass`;
- * - a URL with a user name, a password or a credential query parameter.
+ * - a data or form field named as a credential, `-d token=x`, `--form password=x`;
+ * - a cookie, `-b session=x`;
+ * - a URL with a user name, a password or a credential query parameter, alone or as a value.
  */
 function literalCredentialArguments(args: readonly string[]): number[] {
   const found = new Set<number>();
@@ -431,6 +442,13 @@ function literalCredentialArguments(args: readonly string[]): number[] {
     if (!parts || parts.value === undefined || parts.value === "") return;
     const name = parts.name;
     if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name)) return;
+    if (urlCarriesCredential(parts.value)) { found.add(parts.at); return; }
+    if (FIELD_FLAGS.has(name)) {
+      const fields = parts.value.split("&").map((field) => field.split("=")[0]!.trim());
+      if (fields.some((field) => field !== "" && credentialArgumentName(field))) found.add(parts.at);
+      return;
+    }
+    if (COOKIE_FLAGS.has(name)) { if (parts.value.includes("=")) found.add(parts.at); return; }
     if (HEADER_FLAGS.has(name)) {
       const header = parts.value.split(":")[0]!.trim();
       if (header && credentialBearingName(header)) found.add(parts.at);
@@ -580,17 +598,45 @@ export const ShapingJsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
   boundedRecord(z.string().max(256), ShapingJsonValueSchema, 256),
 ]));
 
+/** How deeply a stored entry may nest, checked before anything recursive reads it. */
+export const SHAPING_MAX_NESTING = 32;
+
 /**
- * The envelope `app_config.shaping` stores. A stage or transport id this build has never heard
- * of is valid here, so one such entry invalidates neither the config nor any other shaper.
- * Every field beyond the four named ones is kept exactly as it was written.
+ * Whether `value` nests no deeper than `max`, walked with an explicit stack: the point is to
+ * answer before a recursive validator could exhaust the call stack on a crafted entry.
  */
-export const StoredShaperSchema = z.object({
+export function nestsWithin(value: unknown, max: number): boolean {
+  const stack: Array<[unknown, number]> = [[value, 0]];
+  while (stack.length > 0) {
+    const [current, depth] = stack.pop()!;
+    if (current === null || typeof current !== "object") continue;
+    if (depth >= max) return false;
+    for (const child of Array.isArray(current) ? current : Object.values(current)) stack.push([child, depth + 1]);
+  }
+  return true;
+}
+
+const StoredShaperObjectSchema = z.object({
   id: z.string().min(1).max(64),
   label: z.string().max(200),
   stage: z.string().min(1).max(64),
   transport: z.object({ type: z.string().min(1).max(64) }).catchall(ShapingJsonValueSchema),
 }).catchall(ShapingJsonValueSchema).superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes));
+
+/**
+ * The envelope `app_config.shaping` stores. A stage or transport id this build has never heard
+ * of is valid here, so one such entry invalidates neither the config nor any other shaper.
+ * Every field beyond the four named ones is kept exactly as it was written.
+ *
+ * Its nesting is checked first: a deeply nested field that fits in 16 KiB is refused as a
+ * validation error, so a config read takes the store's unreadable-config path instead of
+ * throwing out of a recursive parse.
+ */
+export const StoredShaperSchema = z.unknown().superRefine((value, ctx) => {
+  if (!nestsWithin(value, SHAPING_MAX_NESTING)) {
+    ctx.addIssue({ code: "custom", message: `A shaper definition nests at most ${SHAPING_MAX_NESTING} levels deep.` });
+  }
+}).pipe(StoredShaperObjectSchema);
 export type StoredShaper = z.output<typeof StoredShaperSchema>;
 
 export type ClassifiedShaper =

@@ -319,6 +319,29 @@ test("a helper left in the group after a successful reply is reaped when the cal
   }
 });
 
+test("a successful reply is kept when a helper in the group still holds the pipes", async () => {
+  const pidFile = join(scratch, "pipe-helper.pid");
+  rmSync(pidFile, { force: true });
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  let pid = 0;
+  try {
+    const started = Date.now();
+    // A generous timeout: the reply must come from the shaper's exit, not from the timeout.
+    const reply = await callCommand(request(), shaper([FIXTURE, "pipe-helper", pidFile]), ctx(60_000));
+    assert.equal(reply.kind, "data", JSON.stringify(reply).slice(0, 200));
+    assert.match((reply as { data: string }).data, /answered while a helper held the pipes/);
+    assert.ok(Date.now() - started < 30_000, `answered on exit, not at the timeout (${Date.now() - started} ms)`);
+    pid = Number(readFileSync(pidFile, "utf8"));
+    let alive = true;
+    for (let attempt = 0; attempt < 200 && alive; attempt++) {
+      try { process.kill(pid, 0); await sleep(25); } catch { alive = false; }
+    }
+    assert.equal(alive, false, "the helper holding the pipes was stopped");
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+  }
+});
+
 test("a cleanup failure is logged through the call's redactor", async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));

@@ -49,7 +49,15 @@ function deepFreeze<T>(value: T): T {
 function readConfig(): { config: ShapingConfig; readable: boolean } {
   const stored = getAppConfig(APP_CONFIG_ENTRIES.shaping);
   if (stored === undefined || stored === null) return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: true };
-  const parsed = ShapingConfigSchema.safeParse(stored);
+  let parsed: ReturnType<typeof ShapingConfigSchema.safeParse>;
+  try {
+    parsed = ShapingConfigSchema.safeParse(stored);
+  } catch (error) {
+    // The schema refuses deep nesting before it recurses; this is the second line, so nothing a
+    // stored value holds can throw out of a read.
+    console.warn("[shaping] stored config could not be read; using defaults and refusing writes:", error instanceof Error ? error.message : String(error));
+    return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: false };
+  }
   if (parsed.success) return { config: freeze(parsed.data), readable: true };
   console.warn("[shaping] stored config does not parse; using defaults and refusing writes:", parsed.error.issues[0]?.message);
   return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: false };

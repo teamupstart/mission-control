@@ -3,21 +3,14 @@ import { mkdtempSync, promises as fsp, realpathSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import {
-  MISSION_API_TOKEN_ENV,
-  MISSION_API_TOKEN_FILE_ENV,
-  SCOUT_SESSION_LOCATOR_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
-  readToken,
-} from "@shared/harness-runtime.mjs";
+import { readToken } from "@shared/harness-runtime.mjs";
 import { trimUrlText } from "@shared/shaping.ts";
-import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subprocess-env.ts";
-import { withAgentTraceContext } from "../../agent-trace-context.ts";
+import { dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
 import { redactSpans } from "../redaction.ts";
-import { scrubResolved, type ResolvedValue } from "../references.ts";
+import { NEVER_PASSED_ENV_NAMES, scrubResolved, type ResolvedValue } from "../references.ts";
+import { carriedEnvName, withCarriedEnv } from "./carriers.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
 /**
@@ -39,35 +32,27 @@ const EXIT_DRAIN_MS = 500;
 /** How far before the call's deadline a drain ends, so its reply still counts as on time. */
 const EXIT_DEADLINE_MARGIN_MS = 50;
 
-/** Variables a shaper can never receive, even by naming them. */
-const NEVER_PASSED = new Set<string>([
-  ...STATE_HOME_ENV_NAMES,
-  MISSION_API_TOKEN_ENV,
-  MISSION_API_TOKEN_FILE_ENV,
-  SCOUT_SESSION_LOCATOR_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_ENV,
-  SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
-]);
-
-/** `traceparent` and `tracestate` in any spelling: only the launch's own values are ever sent. */
-function traceContextName(name: string): boolean {
-  return /^trace(?:parent|state)$/i.test(name);
-}
+/** Variables a shaper can never receive, even by naming them. No reference resolves them either. */
+const NEVER_PASSED = NEVER_PASSED_ENV_NAMES;
+// `carriedEnvName`: `TRACEPARENT`, `TRACESTATE` and `WORK_UNIT_ID` in any spelling. Only the
+// launch's own values are ever sent, and none of them is ever redacted.
 
 /**
  * The child environment: the locator's child environment (its PATH snapshot), without what an
  * agent subprocess never inherits, without credential-shaped names and without any value that
  * carries the daemon's token - then exactly the variables the shaper named, from `base`.
  *
- * Then the launch's trace context, through the one carrier agents use: a `TRACEPARENT` or
- * `TRACESTATE` inherited from the daemon or named by the shaper, in any case, is removed first,
- * and the launch's own are set exactly when it has one.
+ * Then the launch's trace context, through the one carrier agents use, and the run's work unit
+ * id as `WORK_UNIT_ID`: a `TRACEPARENT`, `TRACESTATE` or `WORK_UNIT_ID` inherited from the daemon
+ * or named by the shaper, in any case, is removed first, and the launch's own are set exactly
+ * when it has them.
  */
 export function shaperCommandEnv(
   base: NodeJS.ProcessEnv,
   names: readonly string[],
   daemonToken: string,
   trace: ShapingTraceContext | null = null,
+  workUnitId: string | null = null,
 ): NodeJS.ProcessEnv {
   const token = daemonToken.trim();
   const carriesToken = (value: string) => token.length > 0 && value.includes(token);
@@ -75,16 +60,16 @@ export function shaperCommandEnv(
   for (const [name, value] of Object.entries(executableChildEnv(base))) {
     if (value === undefined || NEVER_PASSED.has(name)) continue;
     if ((MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)) continue;
-    if (credentialShapedName(name) || carriesToken(value) || traceContextName(name)) continue;
+    if (credentialShapedName(name) || carriesToken(value) || carriedEnvName(name)) continue;
     env[name] = value;
   }
   dropPaneIdentityEnv(env);
   for (const name of names) {
     const value = base[name];
-    if (NEVER_PASSED.has(name) || traceContextName(name) || value === undefined || value === "" || carriesToken(value)) continue;
+    if (NEVER_PASSED.has(name) || carriedEnvName(name) || value === undefined || value === "" || carriesToken(value)) continue;
     env[name] = value;
   }
-  return withAgentTraceContext(env, trace);
+  return withCarriedEnv(env, trace, workUnitId);
 }
 
 function killGroup(child: ChildProcess): void {
@@ -131,7 +116,7 @@ function decoded(text: string): string {
 export function credentialBearingValues(env: NodeJS.ProcessEnv): ResolvedValue[] {
   const out: ResolvedValue[] = [];
   for (const [name, value] of Object.entries(env)) {
-    if (typeof value !== "string" || traceContextName(name)) continue;
+    if (typeof value !== "string" || carriedEnvName(name)) continue;
     const trimmed = trimUrlText(value);
     if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) continue;
     let url: URL;
@@ -166,10 +151,10 @@ export interface ReceivedValues {
 
 /** Every distinct, non-empty value in the environment the child was actually spawned with. */
 export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly string[] = []): ReceivedValues {
-  // The trace context is neither a credential nor a reference, so it is never redacted.
-  const values = Object.entries(env).filter(([name]) => !traceContextName(name)).map(([, value]) => value)
+  // The trace context and the work unit id are neither credentials nor references, so neither is ever redacted.
+  const values = Object.entries(env).filter(([name]) => !carriedEnvName(name)).map(([, value]) => value)
     .filter((value): value is string => typeof value === "string" && value.length > 0);
-  const named = namedVariables.filter((name) => !traceContextName(name)).map((name) => env[name]).filter((value): value is string => typeof value === "string" && value.length > 0);
+  const named = namedVariables.filter((name) => !carriedEnvName(name)).map((name) => env[name]).filter((value): value is string => typeof value === "string" && value.length > 0);
   return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
 }
 
@@ -228,7 +213,7 @@ function isDirectory(path: string): boolean {
 }
 
 /** A `./` command, resolved against the shaper's own folder and kept inside it. */
-function folderCommand(command: string, root: string | null): { path: string } | { problem: string } {
+export function folderCommand(command: string, root: string | null): { path: string } | { problem: string } {
   if (!root) return { problem: `"${command}" is a ./ path, which only a shaper found in the shapers folder may use.` };
   try {
     const folder = realpathSync(root);
@@ -240,7 +225,7 @@ function folderCommand(command: string, root: string | null): { path: string } |
   }
 }
 
-async function withTimeout<T>(pending: Promise<T>, ms: number, signal: AbortSignal): Promise<T | "late"> {
+export async function withTimeout<T>(pending: Promise<T>, ms: number, signal: AbortSignal): Promise<T | "late"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   try {
@@ -263,7 +248,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   // Monotonic, like the engine's budget: a wall-clock correction must not end a call early.
   const started = performance.now();
   const transport = shaper.transport;
-  const env = shaperCommandEnv(process.env, transport.env, readToken(), ctx.trace);
+  const env = shaperCommandEnv(process.env, transport.env, readToken(), ctx.trace, ctx.workUnitId);
 
   let cwd: string;
   let scratch: string | null = null;
@@ -315,7 +300,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   // The named variables' values, each under its own name, for the reply's content.
   const namedValues: ResolvedValue[] = [
     ...transport.env
-      .filter((name) => !traceContextName(name))
+      .filter((name) => !carriedEnvName(name))
       .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; }),
     ...credentials,
   ];

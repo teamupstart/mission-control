@@ -79,8 +79,10 @@ export function registerShapingRoutes(app: Hono): void {
 
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
+    const discovered = await discoverShapers();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
-    return c.json({ config: shapingConfigView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
+    // `references` says whether each `{env:NAME}` resolves, set or unset, never a value.
+    return c.json({ config: shapingConfigView(config), discovered, references: referenceStatus(config, discovered) });
   });
 
   app.put("/api/shaping", gate, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {

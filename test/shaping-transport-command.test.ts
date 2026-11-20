@@ -45,7 +45,7 @@ function request(stage: "gather" | "select" = "gather"): ShapingRequest {
 function ctx(timeoutMs = 10_000, extra: Partial<TransportContext> = {}): TransportContext {
   return {
     deadline: Date.now() + timeoutMs, timeoutMs, signal: new AbortController().signal,
-    scope: { shared: new Map(), defer() {} }, root: null, trace: null, ...extra,
+    scope: { shared: new Map(), defer() {} }, root: null, trace: null, workUnitId: null, ...extra,
   } as TransportContext;
 }
 /** A data reply decoded: the text as written, or the value a scrubbed reply already is. */
@@ -87,6 +87,32 @@ test("a command shaper gets the launch's trace context, and never one inherited 
       else process.env[name] = value;
     }
   }
+});
+
+test("a command shaper gets the run's work unit id as WORK_UNIT_ID when there is one, and never one inherited or configured", async () => {
+  const names = ["WORK_UNIT_ID", "work_unit_id"] as const;
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  process.env.WORK_UNIT_ID = "wu-from-the-daemon";
+  process.env.work_unit_id = "wu-lower-case";
+  try {
+    const named = { env: ["WORK_UNIT_ID", "work_unit_id"] };
+    const args = [FIXTURE, "echo", "env=WORK_UNIT_ID", "env=work_unit_id"];
+    const present = echoed(await callCommand(request(), shaper(args, named), ctx(10_000, { workUnitId: "wu_01JD5Z" })));
+    assert.deepEqual(present.env, { WORK_UNIT_ID: "wu_01JD5Z", work_unit_id: null });
+    const absent = echoed(await callCommand(request(), shaper(args, named), ctx()));
+    assert.deepEqual(absent.env, { WORK_UNIT_ID: null, work_unit_id: null }, "with none, nothing at all");
+    assert.equal(absent.envKeys.some((key) => /^work_unit_id$/i.test(key)), false);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("a work unit id is never redacted: it is an opaque id, not a credential", async () => {
+  const reply = await callCommand(request(), shaper([FIXTURE, "leak", "WORK_UNIT_ID"]), ctx(10_000, { workUnitId: "wu_01JD5Z" }));
+  assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with wu_01JD5Z" });
 });
 
 test("a trace value is never redacted: it is neither a credential nor a reference", async () => {

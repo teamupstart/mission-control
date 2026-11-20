@@ -276,6 +276,22 @@ test("input.trace reaches every call of a run as ctx.trace unchanged, and appear
   assert.deepEqual(none, [null, null], "no context is null, not undefined");
 });
 
+test("input.workUnitId reaches every call of a run as ctx.workUnitId, appears in no record, and an unsendable one is absent", async () => {
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
+  const seen: unknown[] = [];
+  const result = await run(config, (_request, _entry, ctx) => {
+    seen.push(ctx.workUnitId);
+    return data({ guidance: [{ id: "a", body: "b" }] });
+  }, input(2, { workUnitId: "wu_01JD5Z" }));
+  assert.deepEqual(seen, ["wu_01JD5Z", "wu_01JD5Z", "wu_01JD5Z", "wu_01JD5Z"], "two shapers, two repositories");
+  assert.equal(JSON.stringify(result).includes("wu_01JD5Z"), false);
+  for (const absent of [undefined, null, "", "two words", "line\nbreak", "x".repeat(257)]) {
+    const none: unknown[] = [];
+    await run(config, (_request, _entry, ctx) => { none.push(ctx.workUnitId); return data({ guidance: [] }); }, input(1, { workUnitId: absent }));
+    assert.deepEqual(none, [null, null], `${JSON.stringify(absent)} is absent`);
+  }
+});
+
 test("no NUL from a shaper reply reaches an entry, the section or a selector's request", async () => {
   const seen: ShapingRequest[] = [];
   const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
@@ -534,15 +550,18 @@ test("every outcome: ok, degraded, failed, timed_out, invalid and unavailable", 
   assert.equal(result.summary!.state, "degraded");
 });
 
-test("the placeholder transports answer unavailable, naming the transport", async () => {
-  const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://x.test/mcp" } } });
-  const http = remote("http");
+test("the placeholder transport answers unavailable, and the remote ones are reached through the real transports", async () => {
+  // Plain http to a host that is not loopback: the real transports refuse it before sending anything,
+  // so this reaches no network while still proving the registry routes to them.
+  const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "http://x.test/mcp" } } });
+  const http = ShaperSchema.parse({ id: "http", label: "HTTP", stage: "select", transport: { type: "http", url: "http://example.test/shape" } });
   const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } });
   const result = await shapeTask(input(1), { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
+  const refused = "The shaper's URL is plain http to a host that is not this machine, so no request was sent. Use https.";
   assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.reason]), [
     ["files", "unavailable", "The built-in transport is not available in this build yet."],
-    ["mcp", "unavailable", "The MCP transport is not available in this build yet."],
-    ["http", "unavailable", "The HTTP transport is not available in this build yet."],
+    ["mcp", "unavailable", refused],
+    ["http", "unavailable", refused],
   ]);
 });
 

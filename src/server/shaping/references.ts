@@ -1,13 +1,174 @@
-import { SHAPING_LIMITS, ShapingResultSchema, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import {
+  MISSION_API_TOKEN_ENV,
+  MISSION_API_TOKEN_FILE_ENV,
+  SCOUT_SESSION_LOCATOR_ENV,
+  SCOUT_SUBMISSION_CREDENTIAL_ENV,
+  SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
+  readToken,
+} from "@shared/harness-runtime.mjs";
+import {
+  classifyShapers,
+  SHAPING_LIMITS,
+  shapingReferences,
+  ShapingResultSchema,
+  type DiscoveredShaper,
+  type Shaper,
+  type ShapingConfig,
+  type ShapingContext,
+  type ShapingReferenceStatus,
+} from "@shared/shaping.ts";
+import { STATE_HOME_ENV_NAMES } from "../agent-subprocess-env.ts";
 import { redactSpans } from "./redaction.ts";
+
+// ---------------------------------------------------------------------------------------------
+// Resolution
+//
+// A shaper's config holds references, never secrets, and a reference is resolved when the call is
+// made. Nothing here logs, stores or returns a resolved value: a resolution hands the values back
+// to its caller, which sends them and then scrubs them from whatever came back (`scrubResolved`).
+// Kept free of shaping's request types beyond the caller identity, so another adapter, such as
+// FR-06 lesson promotion, can resolve its own headers the same way.
+
+/**
+ * Variables no reference resolves, whatever a shaper names: Mission Control's own API token and
+ * its file, its scout credentials and session locator, and its state directory under every name.
+ * The `command` transport refuses to pass the same names. A reference to one fails closed.
+ */
+export const NEVER_PASSED_ENV_NAMES: ReadonlySet<string> = new Set<string>([
+  ...STATE_HOME_ENV_NAMES,
+  MISSION_API_TOKEN_ENV,
+  MISSION_API_TOKEN_FILE_ENV,
+  SCOUT_SESSION_LOCATOR_ENV,
+  SCOUT_SUBMISSION_CREDENTIAL_ENV,
+  SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
+]);
+
+/** Who a call is made for, as `{caller.*}` resolves it. Null or empty is unresolved. */
+export type ReferenceCaller = ShapingContext["caller"];
+
+export interface ReferenceContext {
+  caller: ReferenceCaller;
+  /** The daemon's environment at call time. */
+  env?: NodeJS.ProcessEnv;
+  /** The daemon's own API token: a value that carries it never resolves. Read from its file when absent. */
+  daemonToken?: string;
+}
+
+/**
+ * What one resolution came to. `resolved` lists every value it put into the text, `{caller.*}` and
+ * `{env:NAME}` alike, so the caller can scrub each one from whatever comes back: no resolved
+ * header value is ever exposed in a reply, a log or a record.
+ */
+export type ResolvedReferences<T> =
+  | { ok: true; value: T; resolved: ResolvedValue[] }
+  | { ok: false; missing: string[] };
+
+/** One reference as written, `{caller.user}` or `{env:NAME}`, for a reason. Never a value. */
+function spelled(reference: string): string {
+  return `{${reference}}`;
+}
+
+/** The value one reference resolves to, or null. An empty value is unresolved. */
+function resolveOne(reference: string, ctx: ReferenceContext, token: string): string | null {
+  switch (reference) {
+    case "caller.user": return ctx.caller.user || null;
+    case "caller.agent": return ctx.caller.agent || null;
+    case "caller.conversation": return ctx.caller.conversation || null;
+  }
+  if (!reference.startsWith("env:")) return null;
+  const name = reference.slice(4);
+  if (NEVER_PASSED_ENV_NAMES.has(name)) return null;
+  const value = (ctx.env ?? process.env)[name];
+  if (!value) return null;
+  if (token.length > 0 && value.includes(token)) return null;
+  return value;
+}
+
+/**
+ * `text` with every `{caller.user}`, `{caller.agent}`, `{caller.conversation}` and `{env:NAME}`
+ * replaced by its value. Every reference that resolves to nothing, an empty value included, is
+ * reported by its spelling, and then nothing is returned: a caller that cannot resolve a
+ * reference makes no call. Text that names a reference this build does not know is unresolved
+ * too, so a newer config never sends a literal `{...}` by mistake.
+ */
+export function resolveReferences(text: string, ctx: ReferenceContext): ResolvedReferences<string> {
+  const result = resolveReferenceMap({ text }, ctx);
+  return result.ok ? { ok: true, value: result.value.text!, resolved: result.resolved } : result;
+}
+
+/**
+ * Every value of `values` resolved, such as a shaper's headers, or every reference that could
+ * not be, each named once in the order it first appears.
+ */
+export function resolveReferenceMap(values: Readonly<Record<string, string>>, ctx: ReferenceContext): ResolvedReferences<Record<string, string>> {
+  const token = (ctx.daemonToken ?? readToken()).trim();
+  const missing: string[] = [];
+  const resolved = new Map<string, string>();
+  const out: Record<string, string> = {};
+  for (const [key, text] of Object.entries(values)) {
+    out[key] = text.replace(/\{([^{}]*)\}/g, (_whole, inner: string) => {
+      const value = resolveOne(inner, ctx, token);
+      if (value === null) {
+        if (!missing.includes(spelled(inner))) missing.push(spelled(inner));
+        return "";
+      }
+      // An environment value is reported under its variable's name, a caller value under its own.
+      resolved.set(inner.startsWith("env:") ? inner.slice(4) : inner, value);
+      return value;
+    });
+  }
+  if (missing.length > 0) return { ok: false, missing };
+  // Every value is scrubbed wherever it appears, however short, a caller value as much as a
+  // credential: a short one such as the harness `pi` inside a longer word is redacted too, for a
+  // shaper that sends that reference. Over-redaction is the accepted cost of never echoing one.
+  return { ok: true, value: out, resolved: [...resolved].map(([name, value]) => ({ name, value })) };
+}
+
+/** The reason a shaper was not called because a reference did not resolve. Names, never values. */
+export function missingReferenceReason(missing: readonly string[]): string {
+  const list = missing.join(", ");
+  return missing.length === 1
+    ? `The reference ${list} did not resolve to a value, so the shaper was not called.`
+    : `The references ${list} did not resolve to values, so the shaper was not called.`;
+}
+
+/** Every `{env:NAME}` a shaper's definition references, in the order they appear. */
+export function shaperEnvReferences(shaper: Shaper): string[] {
+  const transport = shaper.transport;
+  const headers = transport.type === "http"
+    ? transport.headers
+    : transport.type === "mcp" && transport.server.type === "http" ? transport.server.headers : {};
+  const names: string[] = [];
+  for (const value of Object.values(headers)) {
+    for (const reference of shapingReferences(value) ?? []) {
+      if (reference.startsWith("env:") && !names.includes(reference.slice(4))) names.push(reference.slice(4));
+    }
+  }
+  return names;
+}
 
 /**
  * Whether each `{env:NAME}` a shaper references is set in the daemon's environment, never its
- * value. Resolution arrives with the remote transports; until then nothing is reported, and
- * `GET /api/shaping` already carries the field.
+ * value: every registered shaper this build understands and every discovered one that can run.
+ * A name no reference may resolve, such as Mission Control's own token, is always `unset`, as a
+ * call would find it.
  */
-export function referenceStatus(_config: ShapingConfig): ShapingReferenceStatus {
-  return {};
+export function referenceStatus(
+  config: ShapingConfig,
+  discovered: readonly DiscoveredShaper[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+  daemonToken: string = readToken(),
+): ShapingReferenceStatus {
+  const shapers = [
+    ...classifyShapers(config).flatMap((entry) => entry.kind === "known" ? [entry.shaper] : []),
+    ...discovered.flatMap((entry) => entry.state === "ok" && entry.shaper ? [entry.shaper] : []),
+  ];
+  const token = daemonToken.trim();
+  const status: ShapingReferenceStatus = {};
+  for (const name of shapers.flatMap(shaperEnvReferences).sort()) {
+    status[name] = resolveOne(`env:${name}`, { caller: { user: null, agent: null, conversation: null }, env }, token) === null ? "unset" : "set";
+  }
+  return status;
 }
 
 /**
@@ -34,10 +195,18 @@ export function withoutNul(value: unknown): void {
   }
 }
 
-/** A secret a transport handed a shaper, and the name it is reported under. */
+/** A value a transport handed a shaper, and the name it is reported under. Matched anywhere. */
 export interface ResolvedValue {
   name: string;
   value: string;
+}
+
+function holdsOne(text: string, resolved: ResolvedValue): boolean {
+  return resolved.value.length > 0 && text.includes(resolved.value);
+}
+
+function targets(resolved: readonly ResolvedValue[]) {
+  return resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name }));
 }
 
 /** What `scrubResolved` returns: the reply with every resolved value gone, and what it removed. */
@@ -78,12 +247,11 @@ function markerFor(values: readonly ResolvedValue[]): Marker {
  * it stays just over it, for the schema to refuse, without growing further.
  */
 function replaceResolved(text: string, resolved: readonly ResolvedValue[], limit: number, marker: Marker): string {
-  return redactSpans(text, resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name })),
-    marker.render, 0, text.length <= limit ? limit : limit + 1);
+  return redactSpans(text, targets(resolved), marker.render, 0, text.length <= limit ? limit : limit + 1);
 }
 
 function holdsResolved(text: string, resolved: readonly ResolvedValue[]): ResolvedValue | undefined {
-  return resolved.find(({ value }) => text.includes(value));
+  return resolved.find((value) => holdsOne(text, value));
 }
 
 /**
@@ -170,4 +338,29 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
   // The reply's own notes are left as written: a reply that was valid stays valid. The drops are
   // returned beside it for the engine to record.
   return { data: root, redacted, notes };
+}
+
+/**
+ * `text` with every occurrence of every resolved value replaced by `[NAME redacted]`, found on
+ * the original text first so overlapping values are removed over their combined span. For a
+ * failure reason or any diagnostic built from what a shaper wrote. Not bounded: redact the
+ * whole text first and only then cut it, so a cut cannot split a value into a fragment no
+ * search recognises.
+ */
+export function redactResolved(text: string, resolved: readonly ResolvedValue[]): string {
+  const values = resolved.filter(({ value }) => value.length > 0);
+  if (values.length === 0) return text;
+  return redactSpans(text, targets(values), markerFor(values).render);
+}
+
+/** Whether `text` holds any resolved value, which `redactResolved` would remove. */
+export function holdsResolvedValue(text: string, resolved: readonly ResolvedValue[]): boolean {
+  return resolved.some((value) => holdsOne(text, value));
+}
+
+/** A failure reason scrubbed of every resolved value, and whether anything was removed. */
+export function scrubReason(reason: string, resolved: readonly ResolvedValue[]): { reason: string; redacted: boolean } {
+  return holdsResolvedValue(reason, resolved)
+    ? { reason: redactResolved(reason, resolved), redacted: true }
+    : { reason, redacted: false };
 }

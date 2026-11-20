@@ -36,6 +36,7 @@ import { getShapingConfig } from "./index.ts";
 import {
   callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTraceContext, type ShapingTransportCalls, type TransportReply,
 } from "./transports/index.ts";
+import { carriedWorkUnitId } from "./transports/carriers.ts";
 
 /**
  * `shapeTask`: the only caller of the transports. It decides nothing about which shapers exist
@@ -75,6 +76,15 @@ export interface ShapeTaskInput {
    * It is never logged or recorded. Phase 2 passes it in.
    */
   trace?: ShapingTraceContext | null;
+  /**
+   * The shaping run's work unit id, when the task has one. Every call of the run carries it
+   * unchanged as `ctx.workUnitId`: a header on `http` and streamable-HTTP `mcp` calls,
+   * `params._meta.work_unit_id` on every `tools/call`, and `WORK_UNIT_ID` for a local process.
+   * Opaque and not a credential, so it is never redacted, and never logged or recorded. Absent
+   * until the task that mints it lands; a value that could not travel as a header is treated
+   * as absent.
+   */
+  workUnitId?: string | null;
 }
 
 /** One entry as it would be injected, for the record, the viewer and the dry run. */
@@ -252,6 +262,7 @@ async function runShaping(
   input.signal?.addEventListener("abort", onCancel, { once: true });
   if (input.signal?.aborted) run.abort();
   const scope = runScope();
+  const workUnitId = carriedWorkUnitId(input.workUnitId);
   const repositories = orderRepositories(input.context.repositories);
   const multiRepo = repositories.length > 1;
   const hashes = new Map(resolved.map((entry) => [entry.shaper.id, shaperSha256(entry)]));
@@ -336,7 +347,7 @@ async function runShaping(
       reply = await Promise.race([
         // The parsed request, so a transport receives only the fields the wire contract declares.
         callTransport(wire.data, entry.shaper, {
-          deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null,
+          deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null, workUnitId,
         }, transports),
         new Promise<"abandoned">((done) => {
           abandon = setTimeout(() => done("abandoned"), timeoutMs + 50);

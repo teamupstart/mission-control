@@ -508,15 +508,60 @@ with line breaks in it is recognised as well.
 harness, runtime and after-work workflow, the attached repositories' names, roles, branches and
 base commits, the declared caller identity, and the facts and summary a gatherer produced. Local
 worktree paths go only to local shapers (`command`, `builtin`, and an `mcp` server started as a
-local process). A remote shaper never receives a local path.
+local process). A remote shaper never receives a local path. When the launch has a trace
+context or the shaping run a work unit id, every shaper also receives those.
 
 **What comes back is untrusted.** A shaper's text is validated against one result shape, capped
 per entry, per shaper and in total, and placed in its own labelled section, which states that it
 cannot relax the authorization, plan or workflow rules above it. A shaper that fails, times out
 or returns something else is recorded as an outcome, never an error reply.
 
+**Remote shapers.** An `mcp` shaper reached over streamable HTTP and an `http` shaper send the
+request off the machine, so they follow the egress rule resident MCP servers follow, through
+the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
+
+- **HTTPS only, except plain HTTP to loopback.** It is decided from the configured URL before
+  anything is sent, whether or not the shaper has a credential header. A plain `http` URL to
+  any other host gets no request at all and answers `unavailable`. A credential header may
+  therefore travel over plain HTTP only to `localhost`, `127.0.0.0/8` or `::1`, where the
+  request never leaves the machine.
+- **Redirects stay on the origin.** They are followed by hand, at most five, with the headers
+  reattached on each hop. A redirect to another origin is refused before any request reaches
+  it, so no other host ever receives the headers. There is no cookie jar: a cookie a server sets is
+  never kept or sent back.
+- **Bounded replies.** An `http` body is read to at most 256 KiB, and every MCP message, over
+  stdio or streamable HTTP, is capped at 256 KiB while it is received. Reading stops at the byte
+  that passes the cap, the request is aborted or the server closed, and the call is `failed` at
+  once. Nothing over the cap is parsed. A lost event stream is not reconnected.
+- **Secrets are references, resolved at call time.** A header's `{env:NAME}` is read from the
+  daemon's environment when the call is made, held only in that call's memory, and never
+  logged, stored or returned. It never resolves Mission Control's own token, credentials or
+  state directory, or a value that carries the daemon's token. A reference that resolves to
+  nothing sends no request. Every value resolved into a header, `{env:NAME}` and `{caller.*}`
+  alike, is replaced with `[NAME redacted]` (or `[caller.user redacted]` and so on) in whatever
+  comes back, data and failure reasons alike, before the engine sees it, and the shaper is
+  marked `redacted`. So no resolved header value reaches a dry-run reply, a recorded reason or
+  the daemon's log. Every value is matched anywhere it appears, whatever its length, a caller
+  value as much as a credential. That over-redacts on purpose: for a shaper whose headers send
+  `{caller.agent}` as `pi`, "pipeline" in its reply becomes `[caller.agent redacted]peline`, an
+  entry or fact whose id or name holds `pi` is dropped with a note, and the shaper is marked
+  `redacted` though no credential was involved. A shaper that does not send a caller reference
+  is not affected by it. When a variable's name itself contains a resolved value, the marker and
+  notes are neutral, so naming it cannot repeat the credential.
+- **Trace context and work unit id.** The launch's `traceparent`, `tracestate` and the run's
+  `x-work-unit-id` are the only Mission Control values a remote shaper receives besides the
+  request and its own configured headers. A configured header of one of those names is
+  removed first, so a shaper's config cannot impersonate the launch's own.
+
+An `mcp` server started on this machine runs as you, like a `command` shaper: its command is
+resolved through the executable locator, or inside its own folder for a discovered shaper,
+spawned without a shell in an empty working directory of its own, with the same scrubbed
+environment plus only the variables its `env` names, and a value named there is removed from
+its replies and diagnostics. It is one process per shaping run, closed when the run ends. The
+SDK starts it outside a process group of its own, so a helper the server starts can outlive it.
+
 This build only dry-runs shapers through the API: no worker receives their text yet. Calling
 them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a
-later phase. The `mcp` and `http` transports, the shapers folder and the built-in gatherer are
-declared but not yet reachable: each answers `unavailable` until its phase lands, and its
-egress and folder ownership rules are documented with it.
+later phase. The shapers folder and the built-in gatherer are declared but not yet reachable:
+each answers `unavailable` until its phase lands, and its ownership rules are documented with
+it.

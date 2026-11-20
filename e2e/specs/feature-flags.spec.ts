@@ -10,7 +10,11 @@ function fakeAlphaBridge(): void {
     isDesktop: true, version: async () => "1.2.3", onOpenSettings: () => () => {},
     updates: { getState: async () => snapshot,
       setAlpha: async (alpha: boolean) => {
-        const bridge = window as unknown as { refuseNextAlphaSave?: string };
+        const bridge = window as unknown as { refuseNextAlphaSave?: string; holdNextAlphaSave?: boolean; releaseAlphaSave?: () => void };
+        if (bridge.holdNextAlphaSave) {
+          delete bridge.holdNextAlphaSave;
+          await new Promise<void>(resolve => { bridge.releaseAlphaSave = resolve; });
+        }
         const refusal = bridge.refuseNextAlphaSave;
         if (refusal) { delete bridge.refuseNextAlphaSave; throw new Error(refusal); }
         snapshot = { ...snapshot, alpha };
@@ -127,9 +131,13 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   await expect(alert).toContainText("Alpha updates are on, but Enable all feature flags could not be switched on: flag store unavailable");
   await expect(alpha).toBeChecked();
   await expect(peerMaster).not.toBeChecked();
-  // A refused opt-out leaves alpha on, so its failure and Retry stay too.
-  await page.evaluate(() => { (window as unknown as { refuseNextAlphaSave?: string }).refuseNextAlphaSave = "update preferences are read-only"; });
+  // While an opt-out saves, Retry waits; a refused opt-out leaves alpha on, so its failure and
+  // Retry stay too.
+  await page.evaluate(() => Object.assign(window, { refuseNextAlphaSave: "update preferences are read-only", holdNextAlphaSave: true }));
   await alpha.click();
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseAlphaSave?: () => void }).releaseAlphaSave)).toBe("function");
+  await expect(retry).toBeDisabled();
+  await page.evaluate(() => (window as unknown as { releaseAlphaSave(): void }).releaseAlphaSave());
   await expect(updates.getByRole("alert").filter({ hasText: "update preferences are read-only" })).toBeVisible();
   await expect(alpha).toBeChecked();
   await expect(alert).toContainText("flag store unavailable");
@@ -244,4 +252,75 @@ test("a failure that lands after another window switched Enable all on never com
   await expect(alpha).toBeChecked();
   await expect(alert).toHaveCount(0);
   await expect(updates.getByRole("button", { name: "Retry" })).toHaveCount(0);
+});
+
+test("a failure landing after Enable all went on and off elsewhere offers no Retry", async ({ dashboard: page, context, daemon }) => {
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const peerMaster = peer.getByRole("checkbox", { name: /Enable all feature flags/ });
+  await expect(peerMaster).toBeEnabled();
+  let writes = 0;
+  let settled = false;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/feature-flags", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    writes++;
+    await held;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "flag store unavailable" }) }).catch(() => {});
+    settled = true;
+  });
+  await page.addInitScript(fakeAlphaBridge);
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await page.reload();
+  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  const updates = page.getByRole("region", { name: "Application updates" });
+  const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
+  const setup = page.getByRole("tab", { name: /Setup/ });
+  await alpha.check();
+  await expect.poll(() => writes).toBe(1);
+  // Enable all goes on, and this window sees it while its own write is still pending...
+  await peerMaster.check();
+  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await expect(master).toBeChecked();
+  await setup.click();
+  await expect(alpha).toBeChecked();
+  // ...then the operator switches it off again before that write fails.
+  await peerMaster.uncheck();
+  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await expect(master).not.toBeChecked();
+  await setup.click();
+  release();
+  await expect.poll(() => settled).toBe(true);
+  await expect(alpha).toBeChecked();
+  await expect(updates.getByRole("alert")).toHaveCount(0);
+  await expect(updates.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(peerMaster).not.toBeChecked();
+});
+
+test("opting in to alpha with Enable all already on sends no flag write", async ({ dashboard: page, context, daemon }) => {
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const peerMaster = peer.getByRole("checkbox", { name: /Enable all feature flags/ });
+  await expect(peerMaster).toBeEnabled();
+  await peerMaster.check();
+  const intents: unknown[] = [];
+  await page.route("**/api/feature-flags", async route => {
+    if (route.request().method() === "PUT") intents.push(route.request().postDataJSON());
+    return route.continue();
+  });
+  await page.addInitScript(fakeAlphaBridge);
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  await page.reload();
+  const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
+  await expect(master).toBeChecked();
+  await page.getByRole("tab", { name: /Setup/ }).click();
+  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  await alpha.check();
+  await expect(alpha).toBeChecked();
+  // The operator's own later choice is the only write this window sends.
+  await page.getByRole("region", { name: "Application updates" }).getByRole("link", { name: "Feature flags" }).click();
+  await master.uncheck();
+  await expect(peerMaster).not.toBeChecked();
+  expect(intents).toEqual([{ kind: "master", enabled: false }]);
 });

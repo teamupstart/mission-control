@@ -18,8 +18,13 @@ import { BINARY_RECOVERY_URL, BINARY_UPDATE_UNAVAILABLE, type BinaryEnrollment }
  * stalls never locks the alpha switch.
  */
 const ENABLE_ALL_TIMEOUT_MS = 10_000;
-type EnableAllWrite = { pending: boolean; error: string | null };
-let enableAllWrite: EnableAllWrite = { pending: false, error: null };
+/**
+ * `superseded`: Enable all was seen on while this write was pending, so the operator's flags no
+ * longer depend on it and its failure, if any, is dropped rather than offered as a Retry that
+ * could undo a later choice to switch previews off.
+ */
+type EnableAllWrite = { pending: boolean; error: string | null; superseded: boolean };
+let enableAllWrite: EnableAllWrite = { pending: false, error: null, superseded: false };
 const enableAllListeners = new Set<() => void>();
 function setEnableAllWrite(next: EnableAllWrite): void {
   enableAllWrite = next;
@@ -33,17 +38,22 @@ const readEnableAllWrite = () => enableAllWrite;
 async function switchOnEnableAll(): Promise<void> {
   if (enableAllWrite.pending) return;
   // A retry keeps showing the last failure, with Retry disabled, until this one settles.
-  setEnableAllWrite({ pending: true, error: enableAllWrite.error });
+  setEnableAllWrite({ pending: true, error: enableAllWrite.error, superseded: false });
   // Bounded, so a daemon that accepts the request and never answers still frees Retry.
   const signal = AbortSignal.timeout(ENABLE_ALL_TIMEOUT_MS);
   const result = await api.setFeatureFlags({ kind: "master", enabled: true }, { signal });
-  const error = result.ok ? null
+  const error = result.ok || enableAllWrite.superseded ? null
     : signal.aborted ? `Mission Control did not answer within ${ENABLE_ALL_TIMEOUT_MS / 1000} seconds`
     : result.error ?? "unknown error";
-  setEnableAllWrite({ pending: false, error });
+  setEnableAllWrite({ pending: false, error, superseded: false });
 }
 function forgetEnableAllFailure(): void {
-  if (enableAllWrite.error && !enableAllWrite.pending) setEnableAllWrite({ pending: false, error: null });
+  if (enableAllWrite.error && !enableAllWrite.pending) setEnableAllWrite({ pending: false, error: null, superseded: false });
+}
+function noteEnableAllOn(): void {
+  if (enableAllWrite.pending) {
+    if (!enableAllWrite.superseded) setEnableAllWrite({ ...enableAllWrite, superseded: true });
+  } else forgetEnableAllFailure();
 }
 
 /** The desktop updater owns this setting, even when the daemon cannot start. */
@@ -67,9 +77,9 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
     return subscribeToDesktopUpdates(updates, setSnapshot);
   }, [updates]);
   // Enable all came on some other way, such as the Feature flags panel: nothing is left to retry.
-  // Also checked whenever the write settles, so a failure that lands after another window
-  // already switched Enable all on is dropped instead of resurfacing when it goes off again.
-  useEffect(() => { if (enableAllOn) forgetEnableAllFailure(); }, [enableAllOn, flagWrite]);
+  // Seen while the write is pending, it marks that write superseded, so a failure landing after
+  // Enable all went on, and even off again, never comes back as a Retry.
+  useEffect(() => { if (enableAllOn) noteEnableAllOn(); }, [enableAllOn, flagWrite]);
   if (!updates?.setAlpha) return null;
   const binary = !!enrollment || (snapshot?.phase === "disabled" && snapshot.reason === BINARY_UPDATE_UNAVAILABLE);
   const busy = saving || !snapshot || ["checking", "preparing", "ready", "applying"].includes(snapshot.phase);
@@ -86,7 +96,9 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
     }
     // Only once the desktop confirms alpha is off: a refused opt-out leaves alpha on, and its
     // Retry with it.
-    if (alpha) void switchOnEnableAll();
+    // Enable all already on needs no write, and sending one anyway could land after the operator
+    // switches it off elsewhere and undo that.
+    if (alpha) { if (!enableAllOn) void switchOnEnableAll(); }
     else forgetEnableAllFailure();
   };
   const enableAllError = snapshot?.alpha && !enableAllOn ? flagWrite.error : null;
@@ -147,7 +159,7 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
       {enableAllError && <div role="alert">
         <p>Alpha updates are on, but Enable all feature flags could not be switched on: {enableAllError}</p>
         <Tooltip label="Try switching on Enable all feature flags again.">
-          <button type="button" className="btn btn-ghost" disabled={flagWrite.pending} onClick={() => { void switchOnEnableAll(); }}>Retry</button>
+          <button type="button" className="btn btn-ghost" disabled={flagWrite.pending || saving} onClick={() => { void switchOnEnableAll(); }}>Retry</button>
         </Tooltip>
       </div>}
       {error && <p role="alert">{error}</p>}

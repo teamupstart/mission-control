@@ -1,16 +1,16 @@
 import type { HomeSessionRegistration } from "@shared/home-dispatch.ts";
+import { launcherPromptEnabled } from "./config.ts";
 
 // Owner: P3. The launcher decision (spec 7.4): whether a registration answer sets
 // `offerLauncher`. It has no route of its own; `sessions.ts` calls it and records
 // `launcher_offered_at` when the answer is yes.
 
 /**
- * The setting `dispatch.launcher.prompt` (7.4). P4 owns `GET /dispatch/config` and the setting
- * itself; until it lands the launcher prompt is on, which is the setting's default. `sessions.ts`
- * reads it through this seam so P4 swaps one function body and no caller.
+ * The setting `dispatch.launcher.prompt` (7.4). P4 owns the setting and `GET /dispatch/config`
+ * (`config.ts`); `sessions.ts` reads it through this seam, and it is on unless someone set it off.
  */
 export function launcherPromptSetting(): boolean {
-  return true;
+  return launcherPromptEnabled();
 }
 
 export interface LauncherFacts {

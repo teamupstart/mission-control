@@ -60,7 +60,7 @@ test("flag off: every route answers the disabled 404, even with a token, and the
 });
 
 // Routes a later phase has filled; they no longer answer 501. Add a path when its phase lands.
-const FILLED = new Set(["/dispatch/sessions"]);
+const FILLED = new Set(["/dispatch/sessions", "/dispatch/inbox", "/dispatch/answers", "/dispatch/config"]);
 
 test("flag on: every unfilled route is 501 with a token, 401 without one and 403 off loopback", async () => {
   setFlag(true);

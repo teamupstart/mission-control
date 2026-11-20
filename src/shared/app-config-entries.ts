@@ -397,6 +397,12 @@ export const APP_CONFIG_ENTRIES = {
   // This records what one operator has already seen about this machine. Restoring it from
   // another installation could suppress a new break or resurrect a reminder already handled.
   setupBanner: wholeEntry("setup.banner", SetupBannerDismissalSchema, "operational", null),
+  /**
+   * Headless mode's `dispatch.launcher.prompt` (spec 7.4): whether a new Claude session is offered
+   * the launcher. Absent means on. `operational` with no backup domain, so the settings backup
+   * contract is unchanged; `GET /dispatch/config` is its only reader.
+   */
+  dispatchLauncherPrompt: wholeEntry("dispatch.launcher.prompt", z.boolean(), "operational", null),
   backlogPlan: wholeEntry("backlog.plan", StoredBacklogPlanSchema, "derived", null),
   /**
    * Paused sessions, Pause all and the priority session (`src/server/pause/`). `operational`

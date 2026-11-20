@@ -3003,7 +3003,7 @@ export const ShippingConfigSchema = z.object({
    * Prompt the eligible owner about CodeRabbit threads, independently of merge consent.
    *
    * On by default. An install that stored the old default-off value is switched on exactly
-   * once by the schema 36 upgrade (`migrateCodeRabbitFollowUp` in `src/server/db.ts`); a later
+   * once by the schema 37 upgrade (`migrateCodeRabbitFollowUp` in `src/server/db.ts`); a later
    * opt-out is an ordinary stored `false` and is kept.
    */
   codeRabbitAutoResolve: z.boolean().default(true),

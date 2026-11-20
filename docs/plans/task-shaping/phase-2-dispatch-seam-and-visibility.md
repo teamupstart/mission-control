@@ -50,10 +50,13 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
    carry it. An empty section changes nothing.
 2. **Record.** `Task.shaping` and `TaskSummary.shaping`, column `tasks.shaping`, and table
    `task_shaping_text (task_id primary key, text, created_at)` for the delivered section.
-   The record describes the task's latest launch and nothing older. Every dispatch settles it
-   at the seam, whether or not shaping ran, through one database function in one transaction,
-   and the task patch carries the result. The summary and the text are settled separately,
-   each from what `shapeTask` returned for this launch. `tasks.shaping` is set to the
+   The record describes the latest launch that reached a worker, and nothing else. What
+   `shapeTask` returned is held in memory during the dispatch and committed only when turn
+   one has been handed to the worker: after `dispatchEmbedded` returns on the SDK arm, and
+   after `deliverIntent` on the terminal arm. A dispatch that fails before that point writes
+   nothing, so the previous launch's record stays as it was. The commit is one database
+   function in one transaction, whether or not shaping ran, and the task patch carries the
+   result. A commit that fails is logged and never fails the launch. The summary and the text are settled separately. `tasks.shaping` is set to the
    summary, or to null when no shaper applied or the flag is off. The `task_shaping_text` row
    is replaced when the section is not empty and deleted when it is. So a launch whose only
    shaper failed or timed out keeps its degraded summary and its reason and has no text row,
@@ -76,7 +79,7 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 - One additive column and one new table, each beside its upgrade path in `db.ts`.
 - With the flag off, or with no shaper that applies, turn one, argv and process count are
   byte-identical to today, and no record is written. A record left by an earlier launch of
-  the same task is cleared (step 2).
+  the same task is cleared when this launch reaches its worker (step 2).
 - Order with FR-05 repository task skills when both exist: kind contract, task context,
   repository task skill.
 
@@ -88,7 +91,8 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   degraded; identical text for Claude, Codex and Pi on both runtimes; a shaped launch followed
   by a second dispatch of the same task, once with its shaper switched off and once with the
   flag off, leaves no summary and no text; a shaped launch followed by one whose only shaper
-  times out leaves that launch's degraded summary with its reason, and no text.
+  times out leaves that launch's degraded summary with its reason, and no text; a dispatch
+  whose launch fails after shaping leaves the previous launch's record exactly as it was.
 - A test that composes a 64 KiB section and delivers it through the SDK, paste and Pi
   launch-argument paths. If one path cannot carry it, lower the maximum and record that here.
 - Database tests for the column and table on an upgraded database, and for the one function
@@ -108,6 +112,7 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 - The byte-identical tests pass.
 - A launch shows only its own record: never a summary, text or chip from an earlier launch
   of the same task. A launch whose only shaper failed still shows `degraded` with its reason.
+- A dispatch that fails before turn one is handed to the worker changes no record.
 - No model tokens are spent by any test.
 
 ## Handoff
@@ -131,3 +136,7 @@ including the `origin` and `sha256` that Phase 4 fills. They must not add a seco
   cleared the summary whenever the section was empty, which would have dropped the degraded
   marker of a launch whose only shaper failed. The summary now follows whether a shaper
   applied, and the text row follows whether the section is empty.
+- Review of the plan pull request, round 3, 2026-11-19, the operator's choice: the record
+  was written at the seam, before the launch, so a dispatch whose worker failed to start
+  replaced the previous launch's record with context no worker received. It is now held in
+  memory and committed once turn one has been handed to the worker.

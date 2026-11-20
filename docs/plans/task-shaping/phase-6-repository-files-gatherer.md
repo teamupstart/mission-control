@@ -31,23 +31,36 @@ is not a built-in at all (see Handoff).
   handle and stops at a byte limit.
 - **Byte handling.** `src/server/util/utf8.ts` has `utf8Bytes` and `clipUtf8Bytes`.
 - **In-process.** A built-in shares the daemon's event loop, so it must be bounded by
-  construction: `fstat` on the opened handle before every read, a read that stops at its
-  limit, fixed limits, and the `ctx` signal checked between files.
+  construction: an open that cannot block, `fstat` on the opened handle before every read, a
+  read that stops at its limit, fixed limits, and the `ctx` signal checked between files.
 
 ## Steps
 
 1. **`builtin.ts`.** An exhaustive `Record` from built-in id to implementation. A shaper whose
    built-in does not serve its stage answers `unavailable`.
 2. **Read one file.** Every check is made on the file that is read, never on a path that is
-   read afterwards, because a worktree file can be replaced while shaping runs. Refuse a
-   configured path that is absolute or has a `..` segment. Resolve its real path, which must
-   lie inside the worktree's real path, and open that real path with `O_NOFOLLOW`. Then verify
-   the handle: `fstat` must report a regular file of at most 4 MiB, and the same real path,
-   looked up again after the open, must still lie inside the worktree and name the same
-   device and inode as the handle. Read from the handle with a hard limit, so a file that
-   grows meanwhile is still cut off. Replace invalid
-   UTF-8, drop a byte order mark, and cut at the last line boundary within the cap. A skip
-   has one reason: `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`,
+   read afterwards, because a worktree file can be replaced while shaping runs.
+   - **Path.** Refuse a configured path that is absolute or has a `..` segment. Resolve its
+     real path, which must lie inside the worktree's real path. `lstat` it, and skip anything
+     that is not a regular file without opening it.
+   - **Open.** Open that real path with `O_NOFOLLOW` and `O_NONBLOCK`. The open then returns
+     at once for a named pipe with no writer or for a device, instead of waiting past the
+     deadline where no abort check could release it.
+   - **Identity.** Verify the handle, which is the file that will be read. `fstat` must
+     report a regular file of at most 4 MiB. Then look the real path up again: it must still
+     be free of symbolic links and inside the worktree, and it must name the same device and
+     inode as the handle. This is an identity check, not a second path check. If a directory
+     on the way was swapped while the open ran, the handle is some other file, its inode
+     differs from the one inside the worktree, and the read is refused. The two can agree
+     only when the handle is the file that sits inside the worktree. Node has no `openat`,
+     so this is how containment is tied to the opened file on every platform, and it is
+     stricter than the daemon's other worktree readers. A file that is moved or hard-linked
+     into the worktree is a worktree file.
+   - **Read.** Read from the handle with a hard limit, so a file that grows meanwhile is
+     still cut off. Replace invalid UTF-8, drop a byte order mark, and cut at the last line
+     boundary within the cap.
+
+   A skip has one reason: `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`,
    `unreadable` or `empty`.
 3. **`include`.** At most 16 paths. Each readable file becomes one entry whose id and title are
    its path, with `truncated` set when it was cut. The per-file cap is its `maxBytes`, at most
@@ -71,9 +84,12 @@ is not a built-in at all (see Handoff).
 - `test/shaping-builtin-repository-files.test.ts`, in a temporary worktree: every skip reason
   (including a symlink that leaves the worktree and a directory), the line-boundary cut, the
   summary cut, a valid and an invalid facts file, the limits, and a signal that stops the run
-  between files. Two cases drive the helper through a filesystem seam it takes as an argument:
-  a file swapped for a symlink out of the worktree after its path was resolved, which is
-  refused, and a file that grows past the limit while it is read, which is cut off.
+  between files. Three cases drive the helper through a filesystem seam it takes as an argument:
+  a file swapped for a symlink out of the worktree after its path was resolved, and a
+  directory on the way to it swapped for a symlink out of the worktree while the open runs,
+  both refused, and a file that grows past the limit while it is read, which is cut off. A
+  named pipe with no writer is skipped at once, as `not-a-regular-file`, whether it was there
+  from the start or swapped in after the `lstat`.
 - An engine test: the facts and summary this gatherer returns reach a selector's request.
 - `test/shaping-http.test.ts` gains a dry-run of a registered `repository-files` gatherer.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` and `npm run smoke`.
@@ -107,3 +123,8 @@ the same budget. Do not add it to `SHAPING_BUILTINS` or serve it through this tr
   a path's real location and size and then read it by path, so a file swapped in between
   could have been read from outside the worktree or past the limit. The checks now run on the
   opened handle, and the read has a hard limit.
+- Review of the plan pull request, round 3, 2026-11-19: opening a named pipe with no writer
+  would have waited indefinitely, before `fstat` could reject it. The open is non-blocking.
+  The reviewer also kept the containment finding open, because `O_NOFOLLOW` covers only the
+  last path component. Step 2 now states that the check after the open is an identity check
+  on the handle, which a swapped directory cannot pass, and the tests add that case.

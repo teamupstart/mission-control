@@ -58,7 +58,11 @@ identity, stored secrets.
 2. **Fail closed.** A transport that cannot resolve a reference makes no call and answers
    `unavailable`, naming the reference.
 3. **`http`.** `POST` the request as JSON with the resolved headers. HTTPS unless the host is
-   loopback. Redirects by hand, same origin only. Read at most 256 KiB. A status outside 2xx is
+   loopback, decided by `plaintextCredentialProblem` before anything is sent: a plain HTTP URL
+   to another host gets no request and answers `unavailable`. This is the rule resident MCP
+   servers follow, and both transports here apply it unchanged. A credential header may
+   therefore travel over plain HTTP to loopback, where the request never leaves the machine,
+   and never to another host. Redirects by hand, same origin only. Read at most 256 KiB. A status outside 2xx is
    `failed`, with the status. The deadline aborts the request.
 4. **`mcp`.** Connect, call the configured tool once per repository, close at the end of the
    run. The arguments depend on `contextDelivery`, as `plan.md` defines. Either way the
@@ -98,7 +102,9 @@ identity, stored secrets.
   in an entry body, a title, the summary, a fact name, a fact value and a note, one value
   inside another, and a reply with no value, which comes back unchanged and unmarked.
 - `test/shaping-transport-http.test.ts`, against a loopback server: success, a non-2xx
-  status, a redirect off the origin, the HTTPS rule, the body cap, a timeout, resolved headers,
+  status, a redirect off the origin, the HTTPS rule (a plain HTTP URL to a host that is not
+  loopback gets no request, with or without a credential header, and a loopback one is
+  called), the body cap, a timeout, resolved headers,
   a reply that echoes a resolved header value, which comes back redacted and marked, and no
   request when a reference is missing.
 - `test/shaping-transport-mcp.test.ts`, against `test/fixtures/fake-guidance-mcp.mjs` (a local
@@ -121,6 +127,7 @@ identity, stored secrets.
 
 - Registering the fixture `get_guidance` tool through the API and dry-running it returns its
   guidance, with no code beyond configuration.
+- Neither transport sends a request over plain HTTP to a host that is not loopback.
 - No value of an environment reference appears in any reply, log or record. That includes a
   successful reply that echoes one: the fixture's echoed value is absent from the engine's
   section and summary and from the dry-run reply, and the shaper is marked `redacted`.
@@ -155,3 +162,7 @@ free of shaping-specific assumptions where that is cheap.
   reply and summary carry that mark, and Phase 2's viewer shows it.
 - Review of the plan pull request, round 2, 2026-11-19: a failure reply can carry the mark
   too, so a scrubbed tool error is reported like a scrubbed data reply.
+- Review of the plan pull request, round 3, 2026-11-19, the operator's direction: `plan.md`
+  said a credential header is never sent over plain HTTP, while this phase reused the
+  resident MCP helpers, which allow plain HTTP to loopback. The operator chose the resident
+  rule. `plan.md` now states it, and step 3, the HTTP test and an exit criterion pin it.

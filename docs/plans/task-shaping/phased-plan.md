@@ -71,15 +71,17 @@ Each phase document cites the findings it depends on. The ones that shaped the s
     allocated last: it is given `limits.totalBytes` less the `bytes` the shaping summary
     records, and lessons are fitted into that remainder by `allocateBudget`. `plan.md` states
     the rule under "Lesson selection at dispatch (FR-06)".
-13. **Four rules from the review of the plan pull request.** The operator chose each on
-    2026-11-19. The task record describes the latest launch only: a launch that no shaper
-    applied to clears the summary and the text an earlier launch left, and a launch whose
-    shapers all failed keeps its own degraded summary with no text (Phase 2). A resolved
-    `{env:NAME}` value is redacted from every reply, data or failure, before it reaches the
-    engine, and the shaper is marked `redacted` (Phases 1 and 5). Every folder scan reads and
-    hashes every manifest instead of trusting its size and modification time (Phase 4). The
-    built-in gatherer verifies containment and size on the file it opened, not on a path
-    checked beforehand (Phase 6).
+13. **Rules from the review of the plan pull request.** The operator chose each on
+    2026-11-19. The task record describes the latest launch that reached a worker: it is
+    committed when turn one has been handed over, a launch that no shaper applied to clears
+    what an earlier launch left, and a launch whose shapers all failed keeps its own degraded
+    summary with no text (Phase 2). A resolved `{env:NAME}` value is redacted from every
+    reply, data or failure, before it reaches the engine, and the shaper is marked `redacted`
+    (Phases 1 and 5). Every folder scan reads and hashes every manifest instead of trusting
+    its size and modification time (Phase 4). The built-in gatherer verifies containment and
+    size on the file it opened, through a non-blocking open, not on a path checked beforehand
+    (Phase 6). Egress follows the rule resident MCP servers already use: HTTPS, except plain
+    HTTP to loopback (Phase 5).
 
 ## Size and phase count
 
@@ -140,7 +142,7 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Context budget | 1 | One total, `limits.totalBytes`, filled in pipeline order by `allocateBudget`, which takes the total it may fill as an argument and reads no config. The summary's `bytes` is what the shaping stages used. A later step outside shaping, which is FR-06 lesson selection, is allocated last, from the remainder. |
 | Unknown ids | 1 | The config stores `StoredShaperSchema` envelopes. An entry that fails the strict `ShaperSchema` is unsupported: never resolved or called, never switched on, and carried through every write unchanged. `upsert` accepts only a strict definition. |
 | HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
-| Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping`. The record describes the task's latest launch. In one transaction each dispatch sets the summary, null when no shaper applied, and replaces the text, deleted when the section is empty. |
+| Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping`. The record describes the latest launch that reached a worker. It is committed in one transaction when turn one has been handed to the worker: the summary is set, null when no shaper applied, and the text replaced, deleted when the section is empty. A dispatch that fails earlier writes nothing. |
 | Event | 3 | `shaping_config`, and the snapshot field `shaping` |
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
 | Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts`. Every scan reads and hashes every manifest, and only parsing is cached. |

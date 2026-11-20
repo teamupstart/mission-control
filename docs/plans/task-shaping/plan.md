@@ -376,8 +376,11 @@ refused or shadowed entry never runs, whatever is stored for its id.
   and the facts and summary a gatherer produced. No local paths, no other file contents, and
   no tokens other than the header references in its config. Settings states this list beside
   every remote shaper.
-- **Egress.** HTTPS only, except loopback. A header that carries a credential reference is
-  never sent over plain HTTP. Redirects stay on the origin. No cookies.
+- **Egress.** The rule resident MCP servers already follow, through the same helpers: HTTPS
+  only, except plain HTTP to a loopback address. A header that carries a credential reference
+  is therefore never sent over plain HTTP to another host. It may be sent to loopback, as it
+  may for a resident MCP server, because that request never leaves the machine. Redirects
+  stay on the origin. No cookies.
 - **What comes back.** Returned text goes into a worker's prompt, so it is treated as
   untrusted content: it sits in its own labelled section, which says it cannot relax
   authorization, plan or workflow rules, it is capped, and the operator can read exactly what
@@ -474,11 +477,12 @@ cannot relax their authorization, plan or workflow rules.
   `{ state, at, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, redacted, version }] }`.
   `state` is `ok` or `degraded`. `origin` is `registered` or `discovered`. `outcome` is one of
   `ok`, `degraded`, `failed`, `timed_out`, `invalid`, `unavailable`. The field is absent when
-  no shaper applied. The record describes the task's latest launch and nothing older. In one
-  transaction each dispatch sets the summary to this launch's own, or clears it when no
-  shaper applied, and replaces the delivered text, or deletes it when this launch's section
-  is empty. A launch whose shapers all failed therefore keeps its `degraded` summary and has
-  no text, and a retry never shows an earlier launch's context.
+  no shaper applied. The record describes the latest launch that reached a worker, and nothing
+  else. It is committed when turn one has been handed to the worker, in one transaction: the
+  summary is set to this launch's own, or cleared when no shaper applied, and the delivered
+  text is replaced, or deleted when this launch's section is empty. A dispatch that fails
+  before that point writes nothing. A launch whose shapers all failed therefore keeps its
+  `degraded` summary and has no text, and a retry never shows an earlier launch's context.
 - **In the dashboard.** A chip in the session header beside the standing-instructions chip:
   "Context: 3 entries", or an amber "Context degraded". It opens a viewer, "Context this
   session received", listing each shaper's origin, outcome, reason, duration and version,

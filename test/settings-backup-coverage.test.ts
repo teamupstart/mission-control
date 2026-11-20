@@ -106,6 +106,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "cost",
       "costOtelLastSeen",
       "costTelemetryEnabledAt",
+      // Headless mode's launcher prompt. `operational` with NO backup domain, so a restore never
+      // changes it and the settings backup contract stays as it was.
+      "dispatch.launcher.prompt",
       "featureFlags",
       "foreman",
       "foreman.instructions",

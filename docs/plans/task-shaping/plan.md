@@ -22,7 +22,7 @@ interface" and were not reopened.
 | # | Constraint |
 | --- | --- |
 | C1 | Mission Control is open source. No company-specific repositories, MCP servers or content in its code. Company behaviour arrives as shapers. |
-| C2 | Shaping runs after Mission Control has collected all task input (prompt, kind, repositories, harness, after-work step) and before dispatch. The order is: gather context, select guidance, (later) route skills, `composeTurnOne`, dispatch. Shapers receive the complete collected input, not only the prompt. |
+| C2 | Shaping runs after Mission Control has collected all task input (prompt, kind, repositories, harness, after-work step) and before dispatch. The order is: gather context, select guidance, route skills, `composeTurnOne`, dispatch. Shapers receive the complete collected input, not only the prompt. |
 | C3 | A visible "Shaping context" step of a few seconds at dispatch is fine. When a shaper is degraded, fails or times out, Mission Control dispatches anyway and shows `degraded`. It never blocks and never asks first. |
 | C4 | Everything sits behind one flag in the feature-flag registry and follows its three-pull-request lifecycle. |
 | C5 | Dashboard, `mctl` and headless dispatch are served by the same path, because they share `composeTurnOne`. |
@@ -48,19 +48,32 @@ follow-up question that D4's answer raised.
 | D11 | The generic call site | Built by this plan. The reference implementer only registers shapers. This replaces the call-site ownership recorded in FR-02 question 8. |
 | Follow-up | After this plan | A phased implementation plan, with one scheduled task per phase |
 
+The operator added these on 2026-11-20, after FR-04 published `route_skills`. Phase 7 builds
+them, except D17, which Phases 1 and 5 own.
+
+| # | Decision | Choice |
+| --- | --- | --- |
+| D12 | How a routed skill reaches a worker (FR-04 question 2) | A "Skills for this task" section in turn one, and Mission Control itself prompts the skills routed for after the work. Built now, as Phase 7. |
+| D13 | Guidance ids for the router (FR-04 question 6) | Passed as `context.guidance`, on every transport |
+| D14 | A routed skill and a repository task skill for one kind (FR-04 question 4) | The repository's skill wins |
+| D15 | Which routed skill names are announced | A skill from Mission Control's catalog, checked. Any other name as given, marked not verified. |
+| D16 | When the after-work prompt is sent | When the after-work step starts, or when Foreman judges the work complete on a task with no after-work workflow, after Foreman's wrap-up. Once per launch. |
+| D17 | Telling attached repositories apart | Each has a `slot`, and `context.target` names the one a call is about |
+| Proof | That routing took effect | The route record, and a browser test with a fake router and a fake agent |
+
 ## Design
 
 ### Names
 
 The feature is **task shaping**, and the dispatch step reads "Shaping context". The pluggable
 unit is a **shaper**: a **gatherer** at stage `gather`, a **selector** at stage `select`,
-later a **router** at stage `route`. How Mission Control reaches one is its **transport**.
+a **router** at stage `route`. How Mission Control reaches one is its **transport**.
 What it returns are context entries. The flag id is `task-shaping`.
 
 ### The model
 
-- A **stage** is a fixed, ordered step that Mission Control defines: `gather`, then `select`.
-  `route` is added when FR-04 publishes its contract.
+- A **stage** is a fixed, ordered step that Mission Control defines: `gather`, then `select`,
+  then `route`.
 - A **shaper** is one configured entry: an id, a label, the stage it serves, the transport
   that reaches it, its limits and its scope.
 - A **transport** is how Mission Control reaches a shaper: `command`, `mcp`, `http` or `builtin`.
@@ -71,12 +84,13 @@ flowchart LR
   B --> C[Standing instructions and plan inputs]
   C --> S1[Gather: repository gatherers]
   S1 --> S2[Select: guidance selectors]
-  S2 --> S3[Route skills, later]
+  S2 --> S3[Route: skill routers]
   S3 --> L[Select lessons, later: FR-06 step, not a shaper]
   L --> D[composeTurnOne]
   D --> E[Worker launched]
   S1 -. failure or timeout: continue, degraded .-> D
   S2 -. failure or timeout: continue, degraded .-> D
+  S3 -. failure or timeout: continue, degraded .-> D
 ```
 
 Today the flow goes from "Standing instructions and plan inputs" straight to `composeTurnOne`.
@@ -88,8 +102,9 @@ the last shaping stage. "Lesson selection at dispatch (FR-06)" describes it.
 
 ### One contract
 
-Mission Control builds one request for every shaper and reads one result shape back, on every
-transport. `command` and `http` shapers are sent the request as it is, and a `builtin`
+Mission Control builds one request for every shaper and reads one result shape back from
+gatherers and selectors, on every transport. A router answers in its own shape, under Skill
+routing. `command` and `http` shapers are sent the request as it is, and a `builtin`
 receives it in-process. The `mcp` transport maps it onto a tool's arguments, as Transports
 sets out. The select stage is the FR-02 `get_guidance` contract plus fields an implementation
 may ignore.
@@ -113,7 +128,8 @@ Request, one per attached repository:
     "harness": "claude", "runtime": "sdk",
     "afterWork": { "workflowId": "wf_1", "name": "Review and merge" },
     "labels": ["payments"], "priority": "high",
-    "repositories": [{ "name": "billing-api", "role": "primary", "branch": "task/retry", "baseSha": "abc123" }],
+    "repositories": [{ "slot": "repo-01", "name": "billing-api", "role": "primary", "branch": "task/retry", "baseSha": "abc123" }],
+    "target": "repo-01",
     "caller": { "user": "declared-user", "agent": "claude", "conversation": "t_123" }
   },
   "limits": { "maxBytes": 16384, "deadlineMs": 5000 }
@@ -143,14 +159,18 @@ Rules:
   C2's "complete collected input", and every shaper receives all of it on every transport. No
   setting withholds any of it. The `mcp` transport, whose tool may take only FR-02's three
   arguments, has its own rule for carrying it, under Transports.
+- Each `context.repositories` entry has its `slot`: `repo-01` for the primary, then `repo-02`
+  onward in attachment order. `context.target` is the slot of the repository this call is
+  about, so a shaper can tell two attached worktrees of one repository apart on every
+  transport (D17).
 - Local paths go to local shapers only. `command` and `builtin` shapers receive `repo.path`
   and the paths in `context.repositories`. An `mcp` tool's `repo` argument never carries a
   path: a server started as a local process that needs one runs in `argument` mode, where
   `context.repositories` carries it. A remote shaper never gets a local path.
 - `repo.facts` and `repo.summary` are absent in a gather request, because producing them is
   the gatherer's job, and present in a select request when a gatherer supplied them.
-- The result key is `guidance` at every stage, so every shaper answers in one shape and an
-  existing `get_guidance` tool is a valid selector unchanged. A gatherer's entries are
+- The result key is `guidance` at the gather and select stages, so those shapers answer in
+  one shape and an existing `get_guidance` tool is a valid selector unchanged. A gatherer's entries are
   repository context. Its `repo.facts` and `repo.summary` are handed to the selectors and are
   not injected by themselves.
 - `version` in the request is an optional content pin from the shaper's config. `version` in
@@ -185,7 +205,8 @@ facts and summary. Entries are de-duplicated per repository: the same entry `id`
 same shaper for the same repository is injected once, and so is an identical body from two
 shapers for that repository. The same path read from two worktrees stays two entries.
 
-**Route.** Reserved. See Skill routing.
+**Route.** A router is called once per attached repository, after the selectors have settled,
+and returns skills instead of entries. See Skill routing.
 
 ### Transports
 
@@ -198,7 +219,7 @@ shapers for that repository. The same path read from two worktrees stays two ent
 
 How they share one contract: a transport only moves bytes. It takes the validated request
 and returns raw data. The engine owns everything else in one place: which shapers apply,
-deadlines, validation against the single result schema, caps, de-duplication, the `degraded`
+deadlines, validation against the stage's result schema, caps, de-duplication, the `degraded`
 mapping and the record. A new transport cannot change those semantics.
 
 - **`command`.** Config is `{ command, args, env }`. `command` is an absolute path, a name
@@ -218,8 +239,9 @@ mapping and the record. A new transport cannot change those semantics.
     input, so an existing tool is called unchanged. `task` is the operator's prompt followed
     by one fixed, labelled block that states every field of the request's `context` except
     local paths: the task id, title, kind, harness and runtime, the after-work step with its
-    workflow id, labels, priority, the caller, and each attached repository with its role,
-    branch and base commit. One pure function renders it from the `context` object, and a
+    workflow id, labels, priority, the caller, the slot of the repository the call is about, and
+    each attached repository with its slot, role, branch and base commit. One pure function
+    renders it from the `context` object, and a
     test that walks the context schema fails when a field has no line in the block. This is
     the folding FR-02 section 5a proposes, applied to the whole input instead of three fields.
   - `argument`. The tool is called with four arguments,
@@ -259,7 +281,8 @@ Task context from Mission Control:
 - Labels: payments
 - Priority: high
 - Caller: declared-user (agent claude, conversation t_123)
-- Repositories: billing-api (primary, branch task/retry, base abc123), ledger (additional, branch task/retry, base def456)
+- This call is about: repo-01
+- Repositories: repo-01 billing-api (primary, branch task/retry, base abc123), repo-02 ledger (additional, branch task/retry, base def456)
 ```
 
 ### Registry, config and wire
@@ -425,8 +448,9 @@ refused or shadowed entry never runs, whatever is stored for its id.
 
 - Each call has a timeout: the shaper's `timeoutMs` (default 5 s, at most 30 s) or the time
   left in the step, whichever is smaller.
-- The whole step has a deadline, `limits.deadlineMs` (default 10 s, at most 60 s). Both
-  stages run their calls in parallel, so the worst case is the deadline.
+- The whole step has a deadline, `limits.deadlineMs` (default 10 s, at most 60 s). Each
+  stage runs its calls in parallel and the stages share the deadline, so the worst case is
+  the deadline. A later stage has the time the earlier ones left.
 - When the deadline passes, calls still running are abandoned and recorded as `timed_out`.
   Entries from shapers that already answered are kept.
 - A task cancelled during shaping stops there. The existing settled check runs after the step.
@@ -448,8 +472,9 @@ refused or shadowed entry never runs, whatever is stored for its id.
   `degraded` is reserved for a shaper that failed or said it was degraded.
 - There is one budget and one allocator. `limits.totalBytes` bounds everything this pipeline
   adds to turn one, and `allocateBudget`, one pure function, fills it in pipeline order:
-  gather, select, later the routed skills of stage `route`, and last the repository lessons
-  that FR-06 selects in its own step after shaping. "Lesson selection at dispatch (FR-06)"
+  gather, select, then the routed skills, and last the repository lessons that FR-06 selects
+  in its own step after shaping. While a router applies, 3 KiB is set aside for the skills
+  before entries are allocated, so guidance cannot crowd them out. "Lesson selection at dispatch (FR-06)"
   states that step's place and its share.
 
 ### Caller identity and credentials
@@ -512,8 +537,8 @@ cannot relax their authorization, plan or workflow rules.
 - `composeTurnOne` gains one helper call that appends the section, so both call sites (the
   normal turn one and the standing-instructions fallback) carry identical text. The closure
   stays synchronous, because shaping is awaited before it is built.
-- Order with FR-05 repository task skills, once both exist: kind contract, then task context,
-  then the repository's task skill.
+- Order: kind contract, task context, skills for this task, repository lessons (FR-06, when
+  built), and FR-05's repository task skill last.
 - With no entries there is no section and no heading.
 
 ### Progress and `degraded`
@@ -544,8 +569,11 @@ cannot relax their authorization, plan or workflow rules.
   row, where claim warnings show today.
 - **Headless and `mctl`.** The summary is part of every task read: `GET /api/tasks`, and the
   Mission Control MCP tools `get_task` and `list_tasks`, whose records gain a `shaping` field
-  with the `sessionId` it describes and a one-line `summary` such as `degraded: acme-guidance timed out after 5 s`. FR-05
-  surfaces read the task record and need no shaping-specific endpoint.
+  with the `sessionId` it describes and a one-line `summary` such as `degraded: acme-guidance timed out after 5 s`. FR-05's
+  dispatch inbox item carries an optional `shaping {state, summary}` built from the same
+  `currentShaping(task)`, which stays an exported, stable helper.
+- **Routed skills.** The summary lists each routed skill with what happened to it, the
+  one-line `summary` names them, and the chip reads "Context: 3 entries, 2 skills".
 - **Never.** No dialog, no confirmation, no attention item, no blocked launch.
 
 ### Feature flag
@@ -628,13 +656,34 @@ Selects guidance for the task from an external source.
 
 ## Skill routing
 
-FR-04 `route_skills` runs after `get_guidance` and returns skills, not guidance, and FR-02
-section 3.8 keeps the two calls apart. Routing is therefore a third stage, `route`, in this
-mechanism (D5). It reuses the registry, the transports, references, the time budget,
-`degraded` handling and Settings. It has its own result schema and its own consumer, because
-a routed skill becomes an invocation line or a skill link, not a context entry. It is added
-when FR-04 publishes a contract, as an append to the stage tuple and one result schema. The
-engine and the transports do not change.
+FR-04 `route_skills` runs after `get_guidance` and returns skills, not guidance. Routing is
+the third stage, `route` (D5), built by Phase 7. It reuses the registry, the transports,
+references, the time budget, `degraded` handling and Settings. Its result and its consumer are
+its own, because a routed skill becomes an invocation line, not a context entry.
+
+- **Result.** `{ version, skills: [{ name, lifecycle_point, reason_id }], truncated, degraded }`,
+  FR-04 section 4. `lifecycle_point` is `task-start`, `during` or `after-work`. A skill with a
+  point this build does not know is recorded and not used.
+- **Request.** The select request, plus `context.guidance`: the ids of the entries the
+  selectors put into the section for that repository (D13). Both `mcp` modes carry it as they
+  carry the rest of `context`, so `route_skills` keeps its three arguments.
+- **Names.** A name from Mission Control's own skill catalog is checked and gets its installed
+  invocation. Any other name is announced as given and marked not verified (D15). A catalog
+  skill the operator switched off is never announced.
+- **Turn one.** A "Skills for this task" section after the task context names each skill and
+  when to use it. The wording is Mission Control's, and a router supplies only a validated
+  name.
+- **A repository's own skill wins.** A routed skill named for the task's kind is not announced
+  for a repository whose own task skill for that kind is in the launch (D14). Both can answer
+  to the same invocation, so announcing the routed one there would be ambiguous.
+- **After the work.** Mission Control itself prompts the session to run the skills routed for
+  after the work: when the after-work step starts, or when Foreman judges the work complete on
+  a task with no after-work workflow (D16). Once per launch, delivered when the session is
+  idle, never holding the review. With no workflow it is held until Foreman's wrap-up has
+  been sent, so the wrap-up always goes first.
+- **Record.** Routed skills and the prompt are part of the task's `shaping` record.
+
+`phase-7-route-stage.md` states the rules.
 
 ## Lesson promotion (FR-06)
 
@@ -652,7 +701,7 @@ does not build it. This plan fixes two things about it: where it runs, and how i
 context budget.
 
 - **Where it runs.** In a step of its own, after the last shaping stage and before
-  `composeTurnOne`. The order is gather, select, later route, then lesson selection, which
+  `composeTurnOne`. The order is gather, select, route, then lesson selection, which
   FR-06 calls stage 4 of the post-shaping pipeline. It has to follow `select` and `route`:
   under FR-06, promoted lessons arrive as guidance from a selector, lessons attached to a
   skill arrive with routed skills, and this step selects only from the lessons that are left.
@@ -682,13 +731,13 @@ throws. Tests and browser specs use fake agents and fixture shapers and spend no
 
 ## Phases
 
-Six phases, each one pull request: 1 the shaping core, 2 the dispatch seam and visibility,
+Seven phases, each one pull request: 1 the shaping core, 2 the dispatch seam and visibility,
 3 the Settings panel, 4 the shaper folder, 5 the remote transports, 6 the repository-files
-gatherer. `phased-plan.md` has the table, the dependencies and the contracts between them,
+gatherer, 7 the route stage. `phased-plan.md` has the table, the dependencies and the contracts between them,
 and each `phase-<n>-*.md` file is that phase's guide. Phases 1 and 2 are the first slice
 (D3): both stages over the `command` transport with `degraded` visible, proven with two
-fixture scripts and no external service. Phases 2, 3, 5 and 6 can run at the same time, and
-Phase 4 follows Phases 2 and 3. The
+fixture scripts and no external service. Phases 2, 3, 5 and 6 can run at the same time,
+Phase 4 follows Phases 2 and 3, and Phase 7 follows Phases 1, 2 and 5. The
 reference implementer can register a `command` selector after phase 2 and needs no code
 after phase 5.
 
@@ -704,8 +753,10 @@ after phase 5.
 - Third-party code loaded into the daemon, and an operating-system sandbox for local shapers.
 - Shapers declared by a repository's own files.
 - Stored secrets. v1 has references only.
-- The `route` stage and the lesson promotion registry. Each is designed here and built when
-  its upstream contract exists.
+- The lesson promotion registry. It is designed here and built when its upstream contract
+  exists.
+- A shipped router or skill, native skill preload by a harness, and routing for work that
+  never goes through dispatch.
 - FR-06 lesson selection at dispatch. This plan fixes only its place after the shaping
   stages and its share of the context budget.
 - A nudge or a task that hydrates missing repository facts (FR-02 section 5).
@@ -732,6 +783,12 @@ after phase 5.
 - **Latency under autopilot.** Several dispatches at once each run their own shaping, and
   local shapers are processes. v1 has no global concurrency cap. Phase 1 records per-shaper
   durations so the need for one is measured.
+- **Routed skill names.** A router can name any skill installed for the worker's harness, and
+  Mission Control can check only its own catalog (D15). The limits: a strict name pattern,
+  Mission Control's own wording around it, a stored off that always wins for a catalog skill,
+  and a record of every routed skill.
+- **Three stages, one deadline.** A router has only the time gather and select left. A slow
+  selector can therefore cost the router its call, and the launch then shows `degraded`.
 - **Slow selectors.** A model-backed selector may need more than 5 s. The operator raises that
   shaper's timeout, and the step deadline still bounds the wait.
 
@@ -741,8 +798,8 @@ after phase 5.
 | --- | --- |
 | MC context plugin interface (placeholder) | Replaced by this design. Its open questions are answered by D4 to D8 and the sections above. |
 | FR-02, section 5a and question 8 | The generic call site ships with this plan (D11). The FR-02 owner registers a selector shaper for `get_guidance` instead of writing a call site. Registered in `folded` mode, the tool keeps exactly its three arguments and the complete collected input reaches it inside `task`, which is section 5a's proposal applied to the whole input. Question 12 is answered by D6, D7 and D8. |
-| FR-04 | `route_skills` becomes the `route` stage when its contract is published (D5). |
-| FR-05, section 12.2 | `degraded` reaches headless surfaces through the task record. No headless change. |
+| FR-04 | `route_skills` is the `route` stage, built by Phase 7 (D5). Questions 2, 4 and 6 are answered by D12, D14 and D13. |
+| FR-05, section 12.2 | `degraded` reaches headless surfaces through the task record, and the dispatch inbox item builds its `shaping {state, summary}` from `currentShaping(task)`. FR-05's repository task skill stays last in turn one. |
 | FR-06 | The promotion adapter gets its own registry on this foundation (D10). Step 7, lesson selection at dispatch, is not a shaper or a built-in. It is FR-06's own step after the shaping stages, allocated last from the one context budget. |
 
 ## Dependencies outside this plan
@@ -751,6 +808,6 @@ after phase 5.
 | --- | --- | --- |
 | A deployed `get_guidance` server | FR-01 and FR-02 | None on this plan. The fixture server stands in. |
 | The facts file format | FR-03 setup skill | The built-in gatherer reads flat JSON until it is known. |
-| The `route_skills` contract | FR-04 | The `route` stage waits. |
+| A deployed `route_skills` tool | FR-04 | None on this plan. A fixture router stands in. FR-04 section 4 is still proposed, so a change there changes Phase 7's result schema. |
 | Verified caller identity | Undecided upstream | Declared identity until then, then a new reference kind. |
 | `mctl` and headless surfaces showing `degraded` | FR-05 | They read the task record this plan populates. |

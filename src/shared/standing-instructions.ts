@@ -10,6 +10,41 @@
 // a settings panel that wanted to preview a match reads the same function the launch does
 // rather than reimplementing longest-path-match in the browser.
 
+import type { TaskKind } from "./types.ts";
+
+/** Why a repository's task skill file was not added to a first prompt (spec 7.15). Append-only. */
+export type RepoTaskSkillSkipReason =
+  | "outside-worktree"
+  | "not-a-regular-file"
+  | "too-large"
+  | "unreadable"
+  | "empty";
+
+export interface RepoTaskSkillIncluded {
+  repo: string;
+  kind: TaskKind;
+  path: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface RepoTaskSkillSkipped {
+  repo: string;
+  kind: TaskKind;
+  path: string;
+  reason: RepoTaskSkillSkipReason;
+}
+
+/**
+ * What one launch did with repository task skills. Stored in
+ * session_standing_instructions.repo_task_skills and returned as repoTaskSkills by
+ * GET /api/sessions/:id/standing-instructions.
+ */
+export interface RepoTaskSkillRecord {
+  included: RepoTaskSkillIncluded[];
+  skipped: RepoTaskSkillSkipped[];
+}
+
 /** Semantic ceiling for one repository's block, and for the machine-wide default. */
 export const STANDING_INSTRUCTIONS_MAX_LENGTH = 8_000;
 

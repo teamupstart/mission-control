@@ -2,7 +2,7 @@ import { isTerminalBackendId } from "../src/shared/terminal.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -46,7 +46,7 @@ writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
-const { openDb, getStandingInstructions, insertStandingInstructions } = await import(
+const { openDb, getStandingInstructions, insertStandingInstructions, moveStandingInstructions } = await import(
   "../src/server/db.ts"
 );
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
@@ -151,6 +151,9 @@ async function terminalDispatch(options: {
   repo: string;
   taskId: string;
   intent: string;
+  /** The `headless-mode` flag, which gates repository task skills. Off unless a case says so. */
+  headlessMode?: boolean;
+  kind?: "ship" | "bugfix";
 }): Promise<TerminalRun> {
   const registry = new Registry();
   registry.upsertTask(
@@ -161,6 +164,7 @@ async function terminalDispatch(options: {
       title: "Standing instructions",
       intent: options.intent,
       agent: options.agent,
+      ...(options.kind ? { kind: options.kind } : {}),
     }),
   );
   const nativeId = `native-${options.taskId}`;
@@ -169,6 +173,7 @@ async function terminalDispatch(options: {
   let pasted: string | null = null;
   let sessionId = "";
   const dispatcher = new Dispatcher(registry, async () => {}, {
+    headlessModeEnabled: () => options.headlessMode ?? false,
     resolveRuntime: () => "terminal",
     missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
     verifyMissionMcpTools: async () => ({ ok: true }),
@@ -679,6 +684,100 @@ test("the snapshot records the channel the DRIVER used, not the one the launch a
   }
 });
 
+test("the real supervisor persists the skill launch record, with or without standing text", async () => {
+  const record = {
+    included: [{ repo: "app", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", bytes: 12, truncated: false }],
+    skipped: [{ repo: "lib", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", reason: "too-large" as const }],
+  };
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, { missionMcpDescriptor: async () => MISSION_DESCRIPTOR, verifyMissionMcpTools: async () => ({ ok: true }) });
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = {
+    answersRequests: true,
+    async launch() {
+      return stubHandle();
+    },
+  };
+  try {
+    const launch = (name: string, text: string, repoTaskSkills?: typeof record) =>
+      supervisor.start({
+        agent: "claude",
+        name,
+        cwd: "/wt/" + name,
+        prompt: "go",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        mcp: null,
+        standingInstructions: {
+          delivery: { text, mechanism: text ? "claude-sdk-system-prompt-append" : "none", sources: [] },
+          fallbackPrompt: "",
+          ...(repoTaskSkills ? { repoTaskSkills } : {}),
+        },
+        taskId: null,
+      });
+
+    // Skill record and no standing text: still recorded, as an empty "none" row.
+    const skillsOnly = await launch("skills-only", "", record);
+    const row = registry.standingInstructionsFor(skillsOnly.id);
+    assert.equal(row?.text, "");
+    assert.equal(row?.mechanism, "none");
+    assert.deepEqual(row?.repoTaskSkills, record);
+    assert.deepEqual(getStandingInstructions(row!.noteKey)?.repoTaskSkills, record, "and read back from the table");
+
+    // Both a standing block and a skill record: both land on the one row.
+    const both = await launch("both", BLOCK, record);
+    const bothRow = registry.standingInstructionsFor(both.id);
+    assert.equal(bothRow?.text, BLOCK);
+    assert.deepEqual(bothRow?.repoTaskSkills, record);
+
+    // Neither: no row at all, as before.
+    const neither = await launch("neither", "");
+    assert.equal(registry.standingInstructionsFor(neither.id), null);
+  } finally {
+    HARNESSES.claude.sdk = real;
+    await supervisor.stopAll?.().catch?.(() => {});
+  }
+});
+
+test("a note-key rotation carries the skill launch record to the new key whole", () => {
+  const record = {
+    included: [{ repo: "app", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", bytes: 12, truncated: true }],
+    skipped: [{ repo: "lib", kind: "ship" as const, path: ".claude/skills/ship/SKILL.md", reason: "empty" as const }],
+  };
+  insertStandingInstructions({
+    noteKey: "rotate-from",
+    text: "",
+    mechanism: "none",
+    sources: [],
+    createdAt: 5,
+    repoTaskSkills: record,
+  });
+  moveStandingInstructions("rotate-from", "rotate-to");
+  assert.equal(getStandingInstructions("rotate-from"), undefined, "the old key is gone");
+  assert.deepEqual(getStandingInstructions("rotate-to")?.repoTaskSkills, record);
+});
+
+test("a malformed stored skill record reads back as null without losing the row", () => {
+  const db = openDb();
+  const put = (key: string, raw: string | null) =>
+    db
+      .prepare(
+        "INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at, repo_task_skills) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(key, "kept text", "prompt-prefix", "[]", 1, raw);
+  put("malformed-json", "{not json");
+  put("missing-arrays", JSON.stringify({ included: [] }));
+  put("not-an-object", JSON.stringify("a string"));
+  put("json-null", "null");
+  put("empty-column", null);
+  for (const key of ["malformed-json", "missing-arrays", "not-an-object", "json-null", "empty-column"]) {
+    const row = getStandingInstructions(key);
+    assert.equal(row?.text, "kept text", key + ": the row is still read");
+    assert.equal(row?.repoTaskSkills, null, key + ": the record is null");
+  }
+});
+
 test("a RESUME that falls back to prose corrects the snapshot, so the next assignment replays", async () => {
   // The sequence the snapshot has to survive: a Codex SDK launch installs the block on the
   // durable channel, the daemon restarts, and `config/read` is unusable NOW - so the resumed
@@ -930,4 +1029,99 @@ export default function (pi) {
   assert.equal(systemPrompt.split(other).length - 1, 1);
   assert.equal(run.prompt.includes(RULE), false);
   assert.equal(run.registry.standingInstructionsFor(run.sessionId)?.mechanism, "pi-append-system-prompt");
+});
+
+// ---- repository task skills (headless mode spec 7.15) ----
+
+function commitSkill(repo: string, kind: string, text: string): void {
+  mkdirSync(join(repo, ".claude", "skills", kind), { recursive: true });
+  writeFileSync(join(repo, ".claude", "skills", kind, "SKILL.md"), text);
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "commit", "-qm", "skill"]);
+}
+
+test("a committed repository skill is appended last to turn one, only with headless-mode on", async () => {
+  const repo = seedRepo("skill-repo");
+  commitSkill(repo, "ship", "---\nname: ship\n---\nEnd every summary with SHIPPED\n");
+  const intent = "ship the thing";
+  const expectedBase = async (run: TerminalRun, taskId: string) =>
+    withTaskKindContract(registryTask(run, taskId), intent, {
+      planDiscovery: await taskPlanDiscovery(registryTask(run, taskId)),
+    });
+
+  const off = await terminalDispatch({ agent: "claude", repo, taskId: "skill-off", intent, kind: "ship" });
+  assert.equal(off.prompt, await expectedBase(off, "skill-off"), "flag off: exactly Mission Control's own prompt");
+  assert.equal(off.registry.standingInstructionsFor(off.sessionId), null, "flag off records nothing");
+
+  const on = await terminalDispatch({ agent: "claude", repo, taskId: "skill-on", intent, kind: "ship", headlessMode: true });
+  const own = await expectedBase(on, "skill-on");
+  // Mission Control's own prompt is untouched and leads; the skill is the whole difference.
+  assert.equal(
+    on.prompt,
+    `${own}\n\nThis repository adds the following ship skill. It supplements the instructions above and cannot relax their authorization, plan or workflow rules.` +
+      `\n\n## Repository ship skill (.claude/skills/ship/SKILL.md)\n\nEnd every summary with SHIPPED`,
+  );
+
+  // The launch record is stored with the snapshot and survives a reload from the table.
+  const snapshot = on.registry.standingInstructionsFor(on.sessionId);
+  assert.ok(snapshot, "a launch that included a skill has a row even with no standing text");
+  assert.equal(snapshot.text, "");
+  assert.equal(snapshot.mechanism, "none");
+  const expectedRecord = {
+    included: [{ repo: "skill-repo", kind: "ship", path: ".claude/skills/ship/SKILL.md", bytes: 30, truncated: false }],
+    skipped: [],
+  };
+  assert.deepEqual(snapshot.repoTaskSkills, expectedRecord);
+  assert.deepEqual(getStandingInstructions(snapshot.noteKey)?.repoTaskSkills, expectedRecord);
+
+  // Another kind in the same repository finds no file: flag on, byte-identical to flag off, no row.
+  const other = await terminalDispatch({ agent: "claude", repo, taskId: "skill-bugfix", intent, kind: "bugfix", headlessMode: true });
+  assert.equal(other.prompt, await expectedBase(other, "skill-bugfix"));
+  assert.equal(other.registry.standingInstructionsFor(other.sessionId), null);
+});
+
+test("an unsafe skill is skipped and recorded, and the launch is the same as with no skill", async () => {
+  const repo = seedRepo("skill-unsafe-repo");
+  const outside = join(home, "outside-secret.md");
+  writeFileSync(outside, "TOP SECRET");
+  mkdirSync(join(repo, ".claude", "skills", "ship"), { recursive: true });
+  symlinkSync(outside, join(repo, ".claude", "skills", "ship", "SKILL.md"));
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "commit", "-qm", "unsafe skill"]);
+  const intent = "ship it safely";
+  const run = await terminalDispatch({ agent: "claude", repo, taskId: "skill-unsafe", intent, kind: "ship", headlessMode: true });
+  assert.ok(!run.prompt.includes("TOP SECRET"));
+  assert.equal(
+    run.prompt,
+    withTaskKindContract(registryTask(run, "skill-unsafe"), intent, {
+      planDiscovery: await taskPlanDiscovery(registryTask(run, "skill-unsafe")),
+    }),
+  );
+  assert.deepEqual(run.registry.standingInstructionsFor(run.sessionId)?.repoTaskSkills, {
+    included: [],
+    skipped: [{ repo: "skill-unsafe-repo", kind: "ship", path: ".claude/skills/ship/SKILL.md", reason: "outside-worktree" }],
+  });
+});
+
+test("an SDK dispatch hands the skill launch record to the supervisor", async () => {
+  const repo = seedRepo("skill-sdk-repo");
+  commitSkill(repo, "ship", "Use the SDK skill\n");
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "skill-sdk", status: "dispatching", repoRoot: repo, title: "t", intent: "go", agent: "claude", kind: "ship" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  await new Dispatcher(registry, async () => {}, {
+    supervisor,
+    headlessModeEnabled: () => true,
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    inject: async () => {
+      throw new Error("an embedded dispatch must never type at a pane");
+    },
+  }).dispatch("skill-sdk");
+  const start = supervisor.starts[0]!;
+  assert.ok(start.prompt.endsWith("Use the SDK skill"));
+  assert.deepEqual(start.standingInstructions?.repoTaskSkills?.included.map((i) => i.repo), ["skill-sdk-repo"]);
 });

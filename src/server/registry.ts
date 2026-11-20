@@ -329,7 +329,7 @@ import {
   launchTextFingerprint,
   type LaunchTurnMarker,
 } from "./launch-presentation.ts";
-import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { RepoTaskSkillRecord, StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
@@ -8742,15 +8742,27 @@ export class Registry extends EventEmitter {
    * rotation move below carries the row to the native key when the binding arrives, and to
    * every key after that.
    */
-  recordStandingInstructions(sessionId: string, delivery: StandingInstructionsDelivery): void {
+  recordStandingInstructions(
+    sessionId: string,
+    delivery: StandingInstructionsDelivery,
+    repoTaskSkills?: RepoTaskSkillRecord | null,
+  ): void {
     const s = this.sessions.get(sessionId);
-    if (!s || !delivery.text) return;
+    // A launch that included or skipped a repository task skill is recorded even with no
+    // standing text, as a row of empty text on the "none" channel, which every reader of the
+    // mechanism already treats as "nothing to replay". A launch with neither has no row.
+    const skills =
+      repoTaskSkills && (repoTaskSkills.included.length > 0 || repoTaskSkills.skipped.length > 0)
+        ? repoTaskSkills
+        : null;
+    if (!s || (!delivery.text && !skills)) return;
     const snapshot: StandingInstructionsSnapshot = {
       noteKey: noteKeyFor(s),
       text: delivery.text,
-      mechanism: delivery.mechanism,
+      mechanism: delivery.text ? delivery.mechanism : "none",
       sources: delivery.sources,
       createdAt: Date.now(),
+      repoTaskSkills: skills,
     };
     insertStandingInstructions(snapshot);
     this.standingInstructions.set(snapshot.noteKey, snapshot);

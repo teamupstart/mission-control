@@ -93,7 +93,7 @@ if (argv[0] === "plugin") {
     process.exit(0);
   }
   if (sub === "list") {
-    if (fail("list")) process.exit(1);
+    fail("list");
     if (argv.includes("--json")) {
       process.stdout.write(JSON.stringify(state.plugins.map((p) => ({ id: p.id, version: p.version, scope: p.scope, enabled: p.enabled }))) + "\\n");
     } else {
@@ -102,7 +102,7 @@ if (argv[0] === "plugin") {
     process.exit(0);
   }
   if (sub === "marketplace" && argv[2] === "add") {
-    if (fail("marketplace add")) process.exit(1);
+    fail("marketplace add");
     const source = firstArg(3);
     if (source && !state.marketplaces.includes(source)) state.marketplaces.push(source);
     save();
@@ -110,7 +110,7 @@ if (argv[0] === "plugin") {
     process.exit(0);
   }
   if (sub === "install") {
-    if (fail("install")) process.exit(1);
+    fail("install");
     const id = firstArg(2);
     const scope = flag("--scope") ?? "user";
     state.plugins = state.plugins.filter((p) => p.id !== id);
@@ -120,7 +120,7 @@ if (argv[0] === "plugin") {
     process.exit(0);
   }
   if (sub === "uninstall") {
-    if (fail("uninstall")) process.exit(1);
+    fail("uninstall");
     const id = firstArg(2);
     state.plugins = state.plugins.filter((p) => p.id !== id);
     save();
@@ -128,7 +128,7 @@ if (argv[0] === "plugin") {
     process.exit(0);
   }
   if (sub === "validate" || sub === "test") {
-    if (fail(sub)) process.exit(1);
+    fail(sub);
     process.stdout.write("Validation passed\\n");
     process.exit(0);
   }

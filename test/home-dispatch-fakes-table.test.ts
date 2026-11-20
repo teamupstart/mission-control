@@ -5,6 +5,7 @@
 //   fake claude  every scripted reply and every failure key
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import test, { after } from "node:test";
 import type { ModAskAnswer } from "../src/mod/host.ts";
 import {
@@ -279,6 +280,8 @@ test("fake claude table: state, update, setInstalledVersion, staged version, fai
   fake.update({ version: "4.0.0" });
   assert.equal(run(fake, "--version").stdout, "4.0.0 (Claude Code)\n");
   run(fake, "--dangerously-skip-permissions");
-  assert.deepEqual(fake.launches().map((l) => l.argv), [["--dangerously-skip-permissions"]]);
+  const launches = fake.launches();
+  assert.deepEqual(launches.map((l) => l.argv), [["--dangerously-skip-permissions"]]);
+  assert.equal(launches[0]!.cwd, realpathSync("/"));
   assert.ok(fake.invocations().every((i) => i.cwd.length > 0 && i.at > 0));
 });

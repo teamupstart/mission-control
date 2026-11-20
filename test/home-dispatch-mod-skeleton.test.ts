@@ -54,68 +54,6 @@ test("each pane tab draws not implemented for every placement, and the fake reco
   assert.equal(fake.views.length, tabs.length * placements.length);
 });
 
-test("the fake host records dialogs, notices, toasts, status, band, prompt, pane, link and model writes", async () => {
-  const fake = createFakeModHost({
-    answers: [{ kind: "pick", label: "Ship" }],
-    env: { MISSION_PORT: "7317" },
-    initialState: { paneTab: "tasks" },
-  });
-  const h = fake.host;
-  assert.deepEqual(await h.ask({ header: "Kind", question: "Which?", options: [{ label: "Ship" }] }), { kind: "pick", label: "Ship" });
-  assert.deepEqual(await h.ask({ header: "Kind", question: "Again?", options: [] }), { kind: "dismissed" });
-  h.notice("n"); h.toast("t"); h.status("s"); h.status(undefined); h.fillPrompt("/mission-dispatch ");
-  h.band({ text: "mission-control: 1 need you", tone: "warning", button: { label: "open inbox", hotkey: "1" } });
-  h.band(undefined);
-  h.modelWrite({ source: "tool-result", text: "ok" });
-  h.link("http://127.0.0.1:7317/");
-  assert.deepEqual(await h.paneOpen({ tab: "needs-you", focus: true }), { isPlaced: true });
-  h.paneClose();
-  assert.equal(h.env("MISSION_PORT"), "7317");
-  assert.equal(h.env("NOPE"), undefined);
-  assert.equal(await h.paneState.get("paneTab"), "tasks");
-  await h.paneState.set("paneView", "item");
-  await h.paneState.update("chatSince", (n) => (n ?? 0) + 5);
-  assert.deepEqual(fake.state, { paneTab: "tasks", paneView: "item", chatSince: 5 });
-  assert.equal(fake.dialogs.length, 2);
-  assert.deepEqual(fake.notices, ["n"]);
-  assert.deepEqual(fake.toasts, ["t"]);
-  assert.deepEqual(fake.statuses, ["s", undefined]);
-  assert.equal(fake.bands.length, 2);
-  assert.deepEqual(fake.prompts, ["/mission-dispatch "]);
-  assert.deepEqual(fake.modelWrites, [{ source: "tool-result", text: "ok" }]);
-  assert.deepEqual(fake.paneOpens, [{ tab: "needs-you", focus: true }]);
-  assert.equal(fake.paneCloses, 1);
-  assert.deepEqual(fake.links, ["http://127.0.0.1:7317/"]);
-  await assert.rejects(h.fetch("/dispatch/inbox"), /no daemon/);
-});
-
-test("the fake host presses a drawn button, ticks its clocks and stops them", async () => {
-  const fake = createFakeModHost();
-  let presses = 0;
-  let ticks = 0;
-  const stop = fake.host.clockEvery(5000, () => { ticks += 1; });
-  await fake.tick();
-  stop();
-  await fake.tick();
-  assert.equal(ticks, 1);
-  assert.equal(fake.activeClocks(), 0);
-  await assert.rejects(fake.press("Back"), /no button "Back"/);
-  fake.views.push({
-    props: { tab: "tasks", placement: "dock", bodyColumns: 40 },
-    view: { tab: "tasks", placement: "dock", lines: [], buttons: [{ label: "Back", press: () => { presses += 1; } }] },
-  });
-  await fake.press("Back");
-  assert.equal(presses, 1);
-  assert.deepEqual(fake.calls.at(-1), { type: "press", label: "Back" });
-});
-
-test("the fake host reports an unplaced pane as isPlaced false and still records the open", async () => {
-  const fake = createFakeModHost({ placed: false });
-  assert.deepEqual(await fake.host.paneOpen({ tab: "tasks" }), { isPlaced: false });
-  assert.deepEqual(fake.paneOpens, [{ tab: "tasks" }]);
-  assert.deepEqual(fake.calls.map((c) => c.type), ["paneOpen"]);
-});
-
 test("the skeleton registers no hook, so an installed P2 build changes nothing in a session", () => {
   const on = (event: unknown) => assert.fail(`the P2 skeleton hooked ${String(event)}`);
   register(on, {});

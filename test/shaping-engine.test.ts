@@ -389,6 +389,26 @@ test("an invalid reply holding a named value is refused, and nothing of it reach
   assert.equal(JSON.stringify(result).includes("sk-secret-"), false);
 });
 
+test("a resident launch runs only shapers that list it, and a wake turn calls nothing", async () => {
+  let calls = 0;
+  const handler = () => { calls++; return data({ guidance: [] }); };
+  const resident = (turn?: "launch" | "iteration") => {
+    const launch = input(1, turn ? { turn } : {});
+    launch.context.kind = "resident";
+    return launch;
+  };
+  // A shaper with no kinds serves harness launches only.
+  const unlisted = await run(configWith([shaper("unlisted", "select")]), handler, resident());
+  assert.deepEqual([unlisted.summary, calls], [null, 0], "no shaper applied to the resident launch");
+  // One that lists the resident kind serves its launch.
+  const listed = await run(configWith([shaper("listed", "select", { kinds: ["resident"] })]), handler, resident("launch"));
+  assert.equal(calls, 1);
+  assert.equal(listed.summary!.shapers[0]!.id, "listed");
+  // And no shaper serves a wake turn.
+  const wake = await run(configWith([shaper("listed", "select", { kinds: ["resident"] })]), handler, resident("iteration"));
+  assert.deepEqual([wake.summary, calls], [null, 1], "the wake turn called nothing");
+});
+
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {
   // 33 attached repositories, one more than a request's context may name.
   const many = input(1);

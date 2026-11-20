@@ -62,6 +62,8 @@ export interface ShapeTaskInput {
   context: Omit<ShapingContext, "repositories" | "caller" | "target"> & { repositories: readonly ShapeTaskRepository[] };
   /** Aborted when the task is cancelled while it is being shaped. */
   signal?: AbortSignal;
+  /** The turn being launched. An `iteration`, a resident's wake turn, is never shaped. */
+  turn?: "launch" | "iteration";
   /**
    * Lowers the section's total for this one launch: the section never exceeds the smaller of
    * this and `limits.totalBytes`, and what does not fit is cut and recorded by the allocator's
@@ -120,7 +122,7 @@ export async function shapeTask(input: ShapeTaskInput, deps: ShapeTaskDeps = {})
     const config = deps.config ?? getShapingConfig();
     const discovered = deps.discovered ?? await discoverShapers();
     const resolved = resolveShapers(config, discovered, {
-      kind: input.context.kind, repositories: input.context.repositories,
+      kind: input.context.kind, repositories: input.context.repositories, ...(input.turn ? { turn: input.turn } : {}),
     });
     if (resolved.length === 0) return emptyRun();
     return await runShaping(resolved, input, config, deps.transports ?? SHAPING_TRANSPORT_CALLS);

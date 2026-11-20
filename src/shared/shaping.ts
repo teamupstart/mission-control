@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { holdsSecretShape } from "./secret-shapes.ts";
+import { taskKindLaunchesHarness } from "./task.ts";
+import { TASK_KINDS, type TaskKind } from "./types.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import {
   SHAPING_BUILTINS,
@@ -302,7 +304,11 @@ function shaperFields<const Stages extends readonly [string, ...string[]]>(stage
     stage: z.enum(stages),
     protocol: z.literal(SHAPING_PROTOCOL).default(SHAPING_PROTOCOL),
     transport: ShaperTransportSchema,
-    /** Task kinds this shaper serves. Empty means every kind. */
+    /**
+     * Task kinds this shaper serves. Empty means every kind Mission Control launches a harness
+     * worker for (`TASK_KIND_BEHAVIOR.launch` is `harness`). A resident launch is shaped only
+     * when a shaper lists the resident kind explicitly.
+     */
     kinds: z.array(z.string().min(1).max(64)).max(32).default([]),
     /** Repository names this shaper serves. Empty means every repository. */
     repositories: z.array(z.string().min(1).max(256)).max(64).default([]),
@@ -1194,6 +1200,20 @@ export interface ResolvedShaper {
 export interface ShapingResolveInput {
   kind: string;
   repositories: readonly { name: string }[];
+  /**
+   * Which turn is being launched. A launch is shaped; an `iteration`, a resident's wake turn, is
+   * never shaped, whatever a shaper lists. Absent means a launch.
+   */
+  turn?: "launch" | "iteration";
+}
+
+/**
+ * Whether a shaper with no `kinds` serves `kind`: every kind whose launch is `harness`, read from
+ * the task-kind registry, so a future harness-launched kind joins without a second list. A
+ * resident or pipeline kind, and any kind this build does not know, is served only when listed.
+ */
+export function shapedByDefault(kind: string): boolean {
+  return (TASK_KINDS as readonly string[]).includes(kind) && taskKindLaunchesHarness(kind as TaskKind);
 }
 
 type Candidate = Omit<ResolvedShaper, "repositories"> & { enabled: boolean; position: number };
@@ -1268,9 +1288,11 @@ export function resolveShapers(
   input: ShapingResolveInput,
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ResolvedShaper[] {
+  // A resident's wake turn is never shaped.
+  if (input.turn === "iteration") return [];
   return candidates(config, discovered, definitions)
     .filter((candidate) => candidate.enabled)
-    .filter((candidate) => candidate.shaper.kinds.length === 0 || candidate.shaper.kinds.includes(input.kind))
+    .filter((candidate) => (candidate.shaper.kinds.length === 0 ? shapedByDefault(input.kind) : candidate.shaper.kinds.includes(input.kind)))
     .sort(compareCandidates(config.order, definitions.stages))
     .map(({ enabled: _enabled, position: _position, ...candidate }) => ({
       ...candidate, repositories: applicableRepositories(candidate.shaper, input),

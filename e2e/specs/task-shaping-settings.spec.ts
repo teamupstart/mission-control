@@ -908,6 +908,7 @@ test("an imported row is not offered a dry run until the daemon has answered for
 
 test("a save that answers late closes only the import dialog that sent it", async ({ dashboard: page, daemon }) => {
   await setFlag(daemon, true);
+  await countReadWrites(page);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   // The import reaches the daemon at once; only its answer is held, so the frame frees the dialog.
   const answer = gate();
@@ -929,10 +930,9 @@ test("a save that answers late closes only the import dialog that sent it", asyn
   await panel(page).getByRole("button", { name: "Import manifest…" }).click();
   const second = JSON.stringify(commandShaper("second-notes", "Second notes"));
   await manifest.fill(second);
-  const answered = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
   answer.open();
-  await (await answered).finished();
-  await page.evaluate(() => new Promise<void>((done) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => done())), 50)));
+  // The app has read and handled the first save's answer before anything is checked.
+  await writesHandled(page, 1);
   await expect(dialog).toBeVisible();
   await expect(manifest).toHaveValue(second);
   await page.unroute("**/api/shaping");
@@ -1260,5 +1260,39 @@ test("a settings save never clears a draft it left out of its intent", async ({ 
   // The budget draft was never sent, so the identity save's answer leaves it as typed.
   await expect(budget).toHaveValue("48");
   await expect(identity).toHaveValue("identity-only");
+  await page.unroute("**/api/shaping");
+});
+
+test("a newer write keeps an earlier import's stream receipt for when that import's answer is lost", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // The import is stored and its answer held; the test later cuts that answer off. Every other
+  // write goes straight through.
+  const cut = gate();
+  let puts = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT" || ++puts !== 1) return route.fallback();
+    await route.fetch();
+    await cut.opened;
+    await route.abort("connectionreset");
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(commandShaper("receipt-notes", "Receipt notes")));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  // The frame shows it stored and frees the dialog, which is closed; then a settings save goes out.
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  await form.getByRole("textbox", { name: "Caller identity" }).fill("newer-write");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("newer-write");
+  await expect(form.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  // The import's answer is lost now. The stream showed it stored, and the newer write did not erase that.
+  cut.open();
+  await expect(panel(page).getByRole("group", { name: "Last import" }).getByRole("alert")).toHaveText(
+    "An earlier change, importing receipt-notes, is unconfirmed: The daemon's answer did not arrive. Every window shows this change stored, but the daemon did not confirm it.",
+  );
   await page.unroute("**/api/shaping");
 });

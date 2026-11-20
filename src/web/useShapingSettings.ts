@@ -36,14 +36,17 @@ export function useShapingSettings(
   const latest = useRef<ShapingIntent | null>(null);
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
-  /** The last request a stream frame showed stored, for a reply that never arrives. */
-  const observed = useRef<ShapingIntent | null>(null);
+  /**
+   * Every request a stream frame showed stored, kept per request until its HTTP result settles:
+   * a newer write must not erase an earlier one's receipt before that one's reply is lost.
+   */
+  const observed = useRef(new WeakSet<ShapingIntent>());
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
     // Keep the receipt even when a peer's later write replaces this config in the same render.
     if (shapingIntentReflected(config, request)) {
-      observed.current = request;
+      observed.current.add(request);
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
     }
   }), [subscribe]);
@@ -59,7 +62,7 @@ export function useShapingSettings(
       writing.current = null;
       setPending(null);
     } else if (reflected) {
-      observed.current = pending.intent;
+      observed.current.add(pending.intent);
       setPending((current) => current?.intent === pending.intent ? { ...current, observed: true } : current);
     }
   }, [pending, reflected, live]);
@@ -95,7 +98,7 @@ export function useShapingSettings(
         // No answer at all: the request timed out or the connection failed. That is not the daemon
         // refusing it, so it is never reported as a refusal. When the stream already showed the
         // change stored, the window treats it as saved and says the answer was lost.
-        const shown = observed.current === request;
+        const shown = observed.current.has(request);
         const cause = timeout.aborted
           ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds.`
           : "The daemon's answer did not arrive.";

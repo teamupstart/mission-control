@@ -5,6 +5,8 @@ import { ensureResidentState, readResidentStateFile } from "./residents/state.ts
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
 import { registerPauseRoutes } from "./pause/routes.ts";
+import { HibernationManager } from "./hibernation/manager.ts";
+import { registerHibernationRoutes } from "./hibernation/routes.ts";
 import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
@@ -2231,6 +2233,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Pausing sessions: one session, Pause all, and the priority session ---
   registerPauseRoutes(app, pauses);
+
+  // --- Hibernating a task's Agent SDK session, and resuming its conversation ---
+  registerHibernationRoutes(
+    app,
+    new HibernationManager(registry, sdkSessions ?? null, {
+      workflows,
+      pause: pauses,
+      ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
+    }),
+  );
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //

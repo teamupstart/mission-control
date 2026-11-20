@@ -907,6 +907,14 @@ The fetch budget remains 30 seconds. Timeouts, signals, and ordinary remote refu
 automatically retried; only the existing bounded retry for a remote-tracking ref update race
 applies. A failed base freeze still provisions nothing and can be retried manually.
 
+### Hibernated tasks wait at the top of the backlog
+
+A task whose agent you [hibernated](sessions.md#hibernate-a-task-and-resume-it-later) leaves the
+board and waits in a **Hibernated** section above the queued cards, in the Board's Backlog column
+and in the Line's **Backlog** drawer. Each row has **Resume**. These rows are not backlog work:
+they are never ordered, selected, filtered by the column's own search or taken by the backlog
+autopilot. The column's count includes them, and the fleet filter narrows them like any card.
+
 ### Search and filter the backlog
 
 The Board's Backlog column and the Line's **Backlog** drawer both carry a search button and a

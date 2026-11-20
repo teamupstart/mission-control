@@ -4,7 +4,7 @@ import test from "node:test";
 import { CURRENT_DATABASE_SCHEMA_VERSION, upgradeDatabaseToCurrentSchema } from "../src/server/db.ts";
 import { ShippingConfigSchema } from "../src/shared/protocol.ts";
 
-function legacyDatabase(value?: string, version = 36): DatabaseSync {
+function legacyDatabase(value?: string, version = 37): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   db.exec(`CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version = ${version};`);
   if (value !== undefined) db.prepare("INSERT INTO app_config VALUES ('shipping', ?)").run(value);
@@ -56,7 +56,7 @@ test("the CodeRabbit upgrade enables a stored off value once and keeps every oth
 
 test("the CodeRabbit upgrade never reruns on a database already past it", () => {
   const optedOut = JSON.stringify({ autoMerge: false, codeRabbitAutoResolve: false });
-  const db = legacyDatabase(optedOut, 37);
+  const db = legacyDatabase(optedOut, 38);
   try {
     upgradeDatabaseToCurrentSchema(db);
     assert.equal(storedShipping(db), optedOut);

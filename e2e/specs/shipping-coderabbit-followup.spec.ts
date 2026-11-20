@@ -103,7 +103,7 @@ test("upgrading an install that stored the old default-off value turns follow-up
   await daemon.shutdown();
   // The state a pre-upgrade build left behind: the old default written into the blob, at the
   // schema version before the rollout.
-  withDaemonDb(daemon, (db) => db.exec("PRAGMA user_version = 36;"));
+  withDaemonDb(daemon, (db) => db.exec("PRAGMA user_version = 37;"));
   await daemon.restart();
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   await dashboard.reload();

@@ -405,7 +405,7 @@ for installer options, recovery behavior, and qualification limits.
 
 
 Shipping stores `codeRabbitAutoResolve` as a default-true boolean in its existing config blob.
-Upgrading an install to database schema 37 switches it on once, even if it had stored the old
+Upgrading an install to database schema 38 switches it on once, even if it had stored the old
 default-off value, and every other Shipping setting is kept. Turning it off afterwards is an
 ordinary stored choice that survives restarts and later upgrades. Settings snapshots include it;
 restoring a snapshot applies the value it recorded, and one taken before the setting existed

@@ -17,7 +17,8 @@ const dbPath = join(home, "harness.db");
 const columns = (d: DatabaseSync, table: string) =>
   (d.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
 
-test("a schema 35 database upgrades to 36 additively and keeps its rows", () => {
+test("a schema 35 database upgrades through 36 additively and keeps its rows", () => {
+  // Later schemas build on 36; a 35 file goes all the way to the current one.
   assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 36);
   // Build the current schema, then take schema 36 away again: what a 35 file looked like.
   openDb();

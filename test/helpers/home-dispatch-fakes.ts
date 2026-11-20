@@ -50,7 +50,7 @@ import {
   type HomeDispatchTranscript,
   type HomeSessionRegistrationAnswer,
 } from "../../src/shared/home-dispatch.ts";
-import { DAEMON_PROTOCOL_CAPABILITIES } from "../../src/shared/daemon-protocol.ts";
+import { advertisedDaemonCapabilities } from "../../src/shared/daemon-protocol.ts";
 import type {
   ModAskAnswer,
   ModAskQuestion,
@@ -348,10 +348,7 @@ const HEALTH: FakeRoute = (request) => ({
     service: "mission-control",
     version: CANNED_REGISTRATION.daemonVersion,
     pid: 0,
-    capabilities: [
-      ...Object.values(DAEMON_PROTOCOL_CAPABILITIES).filter((c) => c !== DAEMON_PROTOCOL_CAPABILITIES.homeDispatch),
-      ...(request.headers["x-fake-flag"] === "on" ? [DAEMON_PROTOCOL_CAPABILITIES.homeDispatch] : []),
-    ],
+    capabilities: advertisedDaemonCapabilities({ headlessMode: request.headers["x-fake-flag"] === "on" }),
   },
 });
 

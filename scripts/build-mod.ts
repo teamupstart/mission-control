@@ -84,6 +84,8 @@ await writeFile(
       description: DESCRIPTION,
       author: { name: "Mission Control" },
       modApi: MOD_API,
+      // Relative to the plugin root, not to .claude-plugin/: `claude plugin validate` requires a "./"
+      // prefix and rejects "..", so "../types/index.d.ts" is invalid.
       types: "./types/index.d.ts",
     },
     null,

@@ -33,7 +33,8 @@ Switching alpha off changes no flag, and you can still switch Enable all or any 
 on alpha. Alpha is saved first and stays on if that write fails, because the alpha
 switch must keep working while the daemon is down; the Application updates section then says
 Enable all could not be switched on and offers **Retry**. That failure survives moving between
-Settings categories, and a pending write never locks the alpha switch.
+Settings categories, and a pending write never locks the alpha switch. A write that gets no
+answer within 10 seconds counts as failed, so Retry is never stuck behind a stalled request.
 
 ## Definition and resolution
 

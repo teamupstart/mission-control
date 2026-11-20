@@ -231,6 +231,18 @@ mapping and the record. A new transport cannot change those semantics.
 - **`http`.** Config is `{ url, headers }`. HTTPS only, except to loopback. Redirects are not
   followed off the origin. The response body is capped at 256 KiB.
 - **`builtin`.** Config is `{ builtin, options }`. v1 ships one, `repository-files`.
+- **Trace context.** When the launch a shaping run belongs to has a W3C trace context, every
+  shaper call carries it, so a shaper's own spans join that session's trace. It is the
+  context Mission Control already gives the session's agent, from `sessionTraceContext` in
+  `src/server/telemetry/session-trace.ts`. With none, nothing is added. `http` and
+  streamable-HTTP `mcp` calls carry the `traceparent` header, and `tracestate` when the
+  context has one. A `command` shaper, and an `mcp` server started as a local process, get
+  `TRACEPARENT` and `TRACESTATE` in their environment, the variables agents already get, and
+  never a value inherited from the daemon. Every `mcp` `tools/call` also carries the two
+  values in `params._meta`. A `builtin` runs in the daemon and needs no carrier. These
+  values replace a configured header or variable of the same name. A trace value is not a
+  credential and not a reference, so it is never redacted. Nothing about it is configured
+  per shaper or per company.
 
 The block that `folded` appends to the prompt, for a task with two repositories:
 
@@ -383,7 +395,8 @@ refused or shadowed entry never runs, whatever is stored for its id.
   argv without a shell, a scrubbed environment plus only the variables the shaper names, a
   bounded working directory, bounded output and a hard timeout.
 - **What a remote shaper receives.** The prompt, the task context above, repository names,
-  and the facts and summary a gatherer produced. No local paths, no other file contents, and
+  and the facts and summary a gatherer produced, plus the launch's trace context when it has
+  one. No local paths, no other file contents, and
   no tokens other than the header references in its config. Settings states this list beside
   every remote shaper.
 - **Egress.** The rule resident MCP servers already follow, through the same helpers: HTTPS
@@ -412,7 +425,10 @@ refused or shadowed entry never runs, whatever is stored for its id.
 ### Context budget and truncation
 
 - One entry is at most 16 KiB. One shaper contributes at most its `maxBytes` (default 16 KiB).
-  The whole section is at most `limits.totalBytes` (default 32 KiB, at most 64 KiB).
+  The whole section is at most `limits.totalBytes` (default 32 KiB, at most 64 KiB). On a
+  delivery path with a byte ceiling, such as a launch argument, it is also at most what the
+  rest of turn one leaves under that ceiling, so shaping never makes a task that launches
+  today fail to launch. What does not fit is cut and recorded, as below.
 - The budget is filled in one order: stage order, then the list order, then the order the
   shaper returned. An entry that does not fit is cut at the last line boundary that does,
   followed by `[truncated: N bytes omitted]`. An entry with less than 1 KiB left is dropped.
@@ -442,8 +458,11 @@ reference is resolved at call time.
   as `unavailable`, with a reason that names the missing reference.
 - A shaper cannot hand a value back. Before a reply reaches the engine, the transport
   replaces every occurrence of a value it resolved for an `{env:NAME}` reference with
-  `[NAME redacted]`. That covers every string of a successful reply (entries, summary, facts,
-  notes and version) as well as a failure reason. The shaper's record is marked `redacted`,
+  `[NAME redacted]`. That covers every string value of a successful reply (entry paths,
+  titles and bodies, the summary, fact values, notes and version) as well as a failure
+  reason. Keys the result schema defines are never changed. A fact name or an entry id that
+  contains such a value is dropped with a note instead of renamed, so redaction can never
+  merge two facts or two entries. The shaper's record is marked `redacted`,
   and the viewer and a dry-run say that a credential value was removed. Redaction is not
   degradation: the outcome does not change and the rest of the reply is used.
 - A `command` shaper may also rely on its own program's sign-in, as the GitHub and Jira task
@@ -540,8 +559,9 @@ Shaping runs in the daemon before any harness is involved, and the section is pa
 composed prompt, so Claude, Codex and Pi, on the SDK and terminal runtimes, receive identical
 text. `context.harness` and `context.runtime` let a shaper tailor its answer. Pi receives turn
 one as a launch argument and terminal sessions receive it as a paste, so the phase that adds
-the seam pins the largest composed prompt through all three delivery paths. That is why the
-total budget is capped at 64 KiB.
+the seam finds each delivery path's byte ceiling and budgets every launch against the whole
+composed turn one, not only the section. That is also why the total budget is capped at
+64 KiB.
 
 ### Versioning
 
@@ -646,7 +666,8 @@ Six phases, each one pull request: 1 the shaping core, 2 the dispatch seam and v
 gatherer. `phased-plan.md` has the table, the dependencies and the contracts between them,
 and each `phase-<n>-*.md` file is that phase's guide. Phases 1 and 2 are the first slice
 (D3): both stages over the `command` transport with `degraded` visible, proven with two
-fixture scripts and no external service. Phases 2, 3, 5 and 6 can run at the same time. The
+fixture scripts and no external service. Phases 2, 3, 5 and 6 can run at the same time, and
+Phase 4 follows Phases 2 and 3. The
 reference implementer can register a `command` selector after phase 2 and needs no code
 after phase 5.
 
@@ -667,6 +688,8 @@ after phase 5.
 - FR-06 lesson selection at dispatch. This plan fixes only its place after the shaping
   stages and its share of the context budget.
 - A nudge or a task that hydrates missing repository facts (FR-02 section 5).
+- A Mission Control span for the shaping run. In v1 a shaper's spans join the session's
+  trace directly, and a span that groups one run's calls is later work.
 
 ## Risks
 
@@ -680,7 +703,8 @@ after phase 5.
 - **Two first flags.** `task-shaping` and FR-05's `headless-mode` both expect an empty
   registry. The second to merge updates the registry test instead of replacing it.
 - **Prompt size on delivery paths.** A 32 KiB section is four times the largest block injected
-  today. Phase 2 measures paste and launch-argument delivery before the default is fixed.
+  today. Phase 2 measures paste and launch-argument delivery before the default is fixed,
+  and budgets each launch against its path's ceiling.
 - **Prompt injection through a shaper.** A compromised or careless shaper can put text in
   front of a worker. The mitigations are a labelled section that cannot relax the contract,
   caps, and a viewer that shows exactly what was injected and from where.

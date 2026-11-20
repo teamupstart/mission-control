@@ -41,6 +41,10 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   `maxBuffer`, and never throws. A direct `node:child_process` call must be registered in
   `test/executable-contracts.test.ts` as `operator-command`. The child environment starts from
   `executableChildEnv` and drops what `src/server/agent-subprocess-env.ts` drops.
+- **Trace context.** `src/server/agent-trace-context.ts` already hands agents a W3C trace
+  context as `TRACEPARENT`, through `withAgentTraceContext`, which also strips one inherited
+  from the daemon. `src/server/telemetry/session-trace.ts` decides each session's context.
+  Reuse both rather than add a second source.
 
 ## Steps
 
@@ -87,12 +91,20 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    put in a request only when `shaperIsLocal`. The summary records each shaper's origin and
    the SHA-256 of its definition, taken over canonical JSON for a registered shaper. The
    `TaskShaping` type also declares an optional `sessionId`, which the engine leaves unset
-   and Phase 2 sets when it commits the record.
+   and Phase 2 sets when it commits the record. An optional `input.maxSectionBytes` lowers
+   the total for one launch: the section never exceeds the smaller of it and
+   `limits.totalBytes`, and what does not fit is cut and recorded by the allocator's usual
+   rules. Phase 2 passes it on a delivery path with a byte ceiling. An optional `input.trace`
+   is the launch's W3C trace context, `{ traceparent, tracestate? }`, the shape of
+   `AgentTraceContext` plus an optional `tracestate`. The engine hands it to every call
+   unchanged as `ctx.trace`, and never logs or records it.
 7. **Transports.** `transports/index.ts` holds the exhaustive `Record`. Every `call` receives a
    `ctx` with the deadline, an abort signal, and a per-run scope (a `shared` map and `defer`)
    so a transport can reuse one connection during a run and close it afterwards. `command.ts` runs argv
    with the request on stdin and a 256 KiB output cap, in the repository for a gatherer and in
-   an empty directory for a selector. `mcp.ts`, `http.ts` and `builtin.ts` each answer
+   an empty directory for a selector. Its child environment goes through `withAgentTraceContext`,
+   so it carries `TRACEPARENT`, and `TRACESTATE` when present, exactly when `ctx.trace` is set,
+   and never one inherited from the daemon. `mcp.ts`, `http.ts` and `builtin.ts` each answer
    `unavailable` with a sentence naming the transport. `discovery.ts` exports
    `discoverShapers()` returning an empty list, and `references.ts` exports `referenceStatus()`
    returning an empty object, so the route reply already has its final shape.
@@ -122,9 +134,15 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
   timeouts and the deadline, partial results, each outcome, and a `redacted` mark carried
-  into the summary from a data reply and from a failed one.
+  into the summary from a data reply and from a failed one, and a `maxSectionBytes` below
+  `limits.totalBytes` that cuts the section and records it as truncated, and `input.trace`
+  reaching every call of a run as `ctx.trace` unchanged while appearing in no summary or
+  record.
 - `test/shaping-transport-command.test.ts` with a fixture script under `test/fixtures/`: argv
-  without a shell, the scrubbed environment, stdin and stdout, the cap, a timeout.
+  without a shell, the scrubbed environment, stdin and stdout, the cap, a timeout, and trace
+  context: with `ctx.trace` set, `TRACEPARENT` is present and well-formed (`00-`, 32 hex,
+  `-`, 16 hex, `-`, 2 hex) and `TRACESTATE` is present when the context has one; with none,
+  both are absent, even when the daemon's own environment has a `TRACEPARENT`.
 - `test/shaping-http.test.ts`: the three routes, each intent, 404 with the flag off, reload
   after a restore.
 - The exhaustive tests that gain entries: feature flags, settings backup coverage, telemetry
@@ -179,5 +197,11 @@ reshape them. They replace the contents of their own transport file, `discovery.
 - Review of the plan pull request, round 5, 2026-11-19: an `upsert` now also stores off for
   its id. Overrides are keyed by id, so a registered definition imported over the id of a
   discovered shaper the operator had switched on would otherwise have inherited that on.
+- Review of the plan pull request, round 6, 2026-11-19: `shapeTask` takes an optional
+  `maxSectionBytes`, so Phase 2 can budget a launch against its delivery path's ceiling
+  without reshaping the engine contract afterwards.
+- Trace context, 2026-11-19, the operator's choice: `input.trace`, `ctx.trace` and the
+  `command` carrier are here, so every `command` shaper, registered or found on disk, gets
+  the launch's trace context, and Phases 4 and 5 add only what their transports need.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

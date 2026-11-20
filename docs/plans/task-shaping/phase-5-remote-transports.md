@@ -46,9 +46,14 @@ identity, stored secrets.
    references, as set or unset. No resolved value is ever logged, stored or returned.
    - **Scrubbing.** `scrubResolved` enforces that for whatever a shaper sends back. Before a
      transport hands anything to the engine, it replaces every whole occurrence of a value it
-     resolved for an `{env:NAME}` reference with `[NAME redacted]`. That covers every string
-     in a successful reply, keys included (entry ids, paths, titles and bodies,
-     `repo.summary`, `repo.facts`, `notes`, `version`), and a failure reason. Follow
+     resolved for an `{env:NAME}` reference with `[NAME redacted]`, in every string value of
+     a successful reply (entry paths, titles and bodies, `repo.summary`, fact values,
+     `notes`, `version`) and in a failure reason. Keys the result schema defines are never
+     changed, so a value that happens to appear in a field name such as `guidance` cannot
+     invalidate a reply. Two kinds of string are identities, not text: a fact name and an
+     entry `id`. One that contains a resolved value is dropped with its fact or entry and a
+     note, never renamed, so redaction cannot make two facts or two entries collide and
+     silently merge. Unknown fields are stripped by the result schema and are not kept. Follow
      `redactClaimValues` in `src/server/worktrees/claim.ts`: find every match in the original
      text first, so a value inside or overlapping another is still covered.
    - **Mark.** A reply that was changed is returned with `redacted: true`, whether it is a
@@ -91,8 +96,17 @@ identity, stored secrets.
    Either way the overflow reaches `onerror`, and the call answers `failed` at once, with a
    reason that names the cap, instead of waiting for the deadline. The server is closed, and
    nothing over the cap is parsed.
-5. **Reply field.** `GET /api/shaping` returns `references` from `referenceStatus`.
-6. **Docs.** Fill "Remote shapers" in `docs/task-shaping.md`, with a worked example that
+5. **Trace context.** With `ctx.trace` set every call carries it, and with none nothing is
+   added. `http` sends `traceparent`, and `tracestate` when present, as request headers.
+   `mcp` over streamable HTTP sends them on every request of the call, through the
+   transport's `requestInit` headers, created once per run with the run's context. `mcp`
+   over stdio starts the server with `TRACEPARENT` and `TRACESTATE` in its environment,
+   through `withAgentTraceContext`. For both server types each `tools/call` also carries the
+   two values in `params._meta`. They replace a configured header of the same name, compared
+   without case. They are not references: `resolveReferences` and `referenceStatus` never
+   see them, `scrubResolved` never redacts them, and a reply that echoes one keeps it.
+6. **Reply field.** `GET /api/shaping` returns `references` from `referenceStatus`.
+7. **Docs.** Fill "Remote shapers" in `docs/task-shaping.md`, with a worked example that
    registers a `get_guidance` tool under placeholder names. Add references and the daemon's
    environment to `docs/configuration.md`, and the egress rules to `docs/security.md`.
 
@@ -111,8 +125,12 @@ identity, stored secrets.
 
 - `test/shaping-references.test.ts`: each reference kind, a missing and an empty value, the
   status list, that no value appears in a reason, and `scrubResolved` over a reply: a value
-  in an entry body, a title, the summary, a fact name, a fact value and a note, one value
-  inside another, and a reply with no value, which comes back unchanged and unmarked.
+  in an entry body, a title, the summary, a fact value and a note, which is redacted; a fact
+  name and an entry id that contain it, which are dropped with a note; two fact names that
+  differ only in their credential value, which are both dropped while every other fact is
+  kept; a value that is part of a schema key such as `guidance`, which leaves the keys
+  unchanged and the reply valid; one value inside another; and a reply with no value, which
+  comes back unchanged and unmarked.
 - `test/shaping-transport-http.test.ts`, against a loopback server: success, a non-2xx
   status, a redirect off the origin, the HTTPS rule (a plain HTTP URL to a host that is not
   loopback gets no request, with or without a credential header, and a loopback one is
@@ -133,6 +151,12 @@ identity, stored secrets.
   header value it received inside a guidance body, and the transport redacts and marks it. A tool
   error whose text echoes that value comes back `failed`, with the reason scrubbed and the
   reply marked.
+- Trace context, in both transport tests. With a trace set: `http` sends a well-formed
+  `traceparent` header, and `tracestate` only when the context has one; streamable-HTTP `mcp`
+  sends it on every request of a call; stdio `mcp` starts the server with `TRACEPARENT`, and
+  each `tools/call` carries `params._meta.traceparent`. With none, no call carries either
+  value. A configured `traceparent` header is replaced, and a reply that echoes the trace
+  value comes back unredacted and unmarked.
 - `test/shaping-http.test.ts` gains the `references` field and a dry-run of the fixture
   selector, including one in echo mode whose reply carries `[NAME redacted]` and never the
   value.
@@ -145,6 +169,8 @@ identity, stored secrets.
 - Neither transport sends a request over plain HTTP to a host that is not loopback.
 - No MCP message over 256 KiB is parsed, on either server type, and such a reply is
   `failed`.
+- With a trace context set every `http` and `mcp` call carries a well-formed `traceparent`,
+  and with none no call carries one.
 - No value of an environment reference appears in any reply, log or record. That includes a
   successful reply that echoes one: the fixture's echoed value is absent from the engine's
   section and summary and from the dry-run reply, and the shaper is marked `redacted`.
@@ -190,3 +216,9 @@ free of shaping-specific assumptions where that is cheap.
 - Review of the plan pull request, round 5, 2026-11-19: the `http` body had a 256 KiB cap and
   MCP messages had none. Step 4 now caps every MCP message while it is received, on both
   server types, and an oversized reply is `failed`.
+- Review of the plan pull request, round 6, 2026-11-19: scrubbing every key could rename a
+  schema field, or make two fact names identical and drop one silently. Schema keys are now
+  never changed, and a fact name or entry id that contains a value is dropped, not renamed.
+- Trace context, 2026-11-19, the operator's choice: step 5 carries the launch's W3C trace
+  context on every `http` and `mcp` call, so a server such as a `get_guidance` tool can
+  join the session's trace. It is not a credential and never redacted.

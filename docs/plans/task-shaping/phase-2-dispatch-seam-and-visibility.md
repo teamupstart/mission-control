@@ -44,10 +44,20 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 
 1. **Seam.** Add `shapeTask` to the dispatcher's injected dependencies. After
    `taskPlanDiscovery`, when `featureEnabled("task-shaping")`, build the input from
-   `provisioned`, the worktree paths, the runtime and the after-work workflow, mark shaping in
-   progress, await `shapeTask`, clear the mark, and run the existing settled check. Append
+   `provisioned`, the worktree paths, the runtime, the after-work workflow and `trace`: the
+   trace context the session's agent is launched with (`sessionTraceContext` for its session
+   id), or null when it is launched with none. Then mark shaping in progress, await `shapeTask`, clear the mark, and run the existing settled check. Append
    `section` through one helper, after `withTaskKindContract`, so both `composeTurnOne` calls
    carry it. An empty section changes nothing.
+   **Budget against the whole turn one.** Everything `composeTurnOne` needs is known before
+   the seam, so compose both turn-one variants without the section first and measure the
+   larger. Each harness entry in `src/server/harness/` declares its delivery path's byte
+   ceiling for turn one, null when the path has none, as measured by the delivery test below.
+   For example, a launch argument on Linux is capped at 128 KiB by the kernel. When the
+   launch's path has a ceiling, pass `maxSectionBytes`: the ceiling, less the larger
+   variant, less a fixed margin for the section heading, and never below 0. Shaping then
+   never makes a task that launches today fail to launch. The section is cut instead, and
+   the record says it was truncated and why.
 2. **Record.** `Task.shaping` and `TaskSummary.shaping`, column `tasks.shaping`, and table
    `task_shaping_text (task_id primary key, text, created_at)` for the delivered section.
    The record describes the latest launch that reached a worker, and nothing else. What
@@ -101,8 +111,13 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
   whose launch fails after shaping leaves the previous launch's record exactly as it was; a
   launch whose commit fails after it reached its worker leaves a record that names the
   previous session, which the new session does not show.
-- A test that composes a 64 KiB section and delivers it through the SDK, paste and Pi
-  launch-argument paths. If one path cannot carry it, lower the maximum and record that here.
+- The shaping input carries exactly the trace context the session's agent is launched with,
+  and none when the agent gets none.
+- A delivery test for each path: the SDK, the terminal paste and Pi's launch argument. It
+  finds the path's byte ceiling, which that harness entry declares, and delivers a 64 KiB
+  section with a short prompt. It then takes a turn one that launches today within 1 KiB of
+  the path's ceiling, adds a shaper that returns 64 KiB, and checks that the launch still
+  succeeds, with the section cut to what fits and recorded as truncated.
 - Database tests for the column and table on an upgraded database, and for the one function
   that settles the summary and the text in one transaction, in each of the four combinations,
   and for re-keying the session stamp when a session resumes under a new id.
@@ -120,6 +135,8 @@ Not here: assignment into a live session and pipelines (non-goals), Settings (Ph
 
 - Every item in the Outcome is demonstrated by a test or spec.
 - The byte-identical tests pass.
+- A task whose turn one launches without shaping still launches with it, on every delivery
+  path.
 - A launch shows only its own record: never a summary, text or chip from an earlier launch
   of the same task. A launch whose only shaper failed still shows `degraded` with its reason.
 - A dispatch that fails before turn one is handed to the worker changes no record.
@@ -156,3 +173,11 @@ including the `origin` and `sha256` that Phase 4 fills. They must not add a seco
   failed after the worker started would have left the previous launch's record showing as
   this session's. Each record now names the session it was delivered to, and readers show it
   only for that session.
+- Review of the plan pull request, round 6, 2026-11-19: the delivery test sent a 64 KiB
+  section with a short prompt, so a prompt that already sat near a path's ceiling could have
+  stopped launching once shaping added to it. Each launch is now budgeted against the whole
+  turn one on a path with a ceiling, and the test covers a prompt near the ceiling.
+- Checked against Phase 4, round 6: that phase now depends on this one, because its browser
+  spec dispatches a task and reads the viewer this phase adds.
+- Trace context, 2026-11-19, the operator's choice: the seam passes the session's trace
+  context into `shapeTask`, so every shaper call can join the session's trace.

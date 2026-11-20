@@ -9,7 +9,8 @@ switch it off there. Every launch records which definition ran.
 
 ## Entry criteria and dependencies
 
-- Phase 3 is merged, for the list its rows join. Phase 1's contracts are unchanged.
+- Phases 2 and 3 are merged. Phase 3 for the list its rows join, and Phase 2 for the dispatch
+  seam and the viewer that the browser spec drives. Phase 1's contracts are unchanged.
 
 ## Scope
 
@@ -114,10 +115,15 @@ rule that a repository's own files never register a shaper.
 - Phase 2: the viewer already shows `origin`. No session surface is added here.
 - Phase 3: rows reuse its component.
 - Phases 5 and 6: a discovered manifest may name any transport, and gets that transport's
-  behaviour unchanged.
+  behaviour unchanged. That includes trace context: a folder `command` shaper gets
+  `TRACEPARENT` from Phase 1's `command` transport, so this phase adds nothing for it.
 - Plan validation repair 3, 2026-11-19: a manifest's size cap is 16 KiB, the same as a stored
   entry, and the scan at daemon start that `plan.md` lists is now stated in step 9.
 - Review of the plan pull request, 2026-11-19, the operator's choice: step 4 trusted a
   manifest's size and modification time, so a file replaced with one of the same size and a
   preserved timestamp would have kept running as its old definition under its old hash.
   Every scan now reads and hashes every manifest, and only parsing is cached.
+- Review of the plan pull request, round 6, 2026-11-19, the operator's choice: this phase
+  depended on Phase 3 alone, but its browser spec dispatches a task and reads the viewer,
+  which Phase 2 adds. It now depends on Phases 2 and 3, so the spec keeps its end-to-end
+  check. The scheduled task depends on both.

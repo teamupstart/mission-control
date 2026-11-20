@@ -119,7 +119,8 @@ switch (mode) {
     // An inherited proxy URL, nobody named it, echoed whole and as its bare password.
     const url = process.env[rest[0]] ?? "<unset>";
     const password = /:\/\/[^:@]*:([^@]*)@/.exec(url)?.[1] ?? "<none>";
-    reply({ guidance: [{ id: "proxy", body: `reached through ${url}` }, { id: "pass", body: `password ${password}` }] });
+    reply({ guidance: [{ id: "proxy", body: `reached through ${url}` }, { id: "pass", body: `password ${password}` },
+      { id: "decoded", body: `decoded ${decodeURIComponent(password)}` }] });
     break;
   }
   case "version-leak":

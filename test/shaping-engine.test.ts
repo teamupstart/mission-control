@@ -376,6 +376,19 @@ test("calls within a stage are bounded in flight, and keep their order", async (
   assert.deepEqual(result.entries.map((entry) => entry.body), expected, "in call order, whatever finished first");
 });
 
+test("an invalid reply holding a named value is refused, and nothing of it reaches the run", async () => {
+  const result = await run(configWith([shaper("s", "select")]), () => ({
+    kind: "data",
+    data: { guidance: [{ id: "e", body: "b", title: `${"t".repeat(500)}${"sk-secret-".repeat(4)}` }] },
+    redact: (text: string) => text.replaceAll("sk-secret-", "[redacted]"),
+    holdsNamed: (text: string) => text.includes("sk-secret-"),
+  }), input(1));
+  const row = result.summary!.shapers[0]!;
+  assert.equal(row.outcome, "invalid", "the title is over its limit as sent");
+  assert.deepEqual(result.entries, []);
+  assert.equal(JSON.stringify(result).includes("sk-secret-"), false);
+});
+
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {
   // 33 attached repositories, one more than a request's context may name.
   const many = input(1);

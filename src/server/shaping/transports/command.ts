@@ -120,17 +120,24 @@ const SHORT_VALUE_CHARS = 4;
  * Inherited values that carry a credential although nobody named them: a URL with userinfo, as an
  * authenticated proxy setting such as `HTTPS_PROXY=http://user:pass@proxy:8080` is. Each one is
  * reported under its variable's name as the whole URL, its `user:password` part and the
- * password, so a shaper echoing any of them is caught.
+ * password, each as written and percent-decoded, so a shaper echoing any of them is caught.
  */
+/** `text` percent-decoded, or as written when it is not valid percent-encoding. */
+function decoded(text: string): string {
+  try { return decodeURIComponent(text); } catch { return text; }
+}
+
 export function credentialBearingValues(env: NodeJS.ProcessEnv): ResolvedValue[] {
   const out: ResolvedValue[] = [];
   for (const [name, value] of Object.entries(env)) {
     if (typeof value !== "string" || traceContextName(name)) continue;
     const userinfo = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#@\s]+)@/.exec(value)?.[1];
     if (!userinfo) continue;
-    out.push({ name, value }, { name, value: userinfo });
-    const password = userinfo.slice(userinfo.indexOf(":") + 1);
-    if (userinfo.includes(":") && password.length > 0) out.push({ name, value: password });
+    const password = userinfo.includes(":") ? userinfo.slice(userinfo.indexOf(":") + 1) : "";
+    // A URL holds userinfo percent-encoded, while a tool may print it decoded: both forms count.
+    for (const form of new Set([value, userinfo, password, decoded(userinfo), decoded(password)])) {
+      if (form.length > 0) out.push({ name, value: form });
+    }
   }
   return out;
 }

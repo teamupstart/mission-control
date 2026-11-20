@@ -447,26 +447,38 @@ test("redaction is bounded as it is built, and skips fields the engine discards"
   assert.ok(Date.now() - started < 1_000);
 });
 
-test("an invalid entry is kept, scrubbed, so the engine still refuses the reply rather than reporting it clean", () => {
-  const reply = { guidance: [{ id: "by-s3cret-value" }, { id: "fine", body: "ok" }] };
-  const scrubbed = scrubResolved(reply, [{ name: "TOKEN", value: "s3cret-value" }]);
-  const data = scrubbed.data as { guidance: Array<{ id: string }> };
-  assert.deepEqual(data.guidance.map((entry) => entry.id), ["by-[TOKEN redacted]", "fine"], "not dropped: it has no body");
-  assert.deepEqual(scrubbed.notes, []);
-  assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so validation still sees the malformed entry");
+test("a reply invalid as sent is left exactly as sent, so no rewrite can make it pass", () => {
+  const resolved = [{ name: "TOKEN", value: "s3cret-value" }];
+  const cases = {
+    "an entry with no body": { guidance: [{ id: "by-s3cret-value" }, { id: "fine", body: "ok" }] },
+    "one entry over the bound": { guidance: Array.from({ length: SHAPING_LIMITS.replyEntries + 1 }, (_, i) => ({ id: i === 0 ? "by-s3cret-value" : `e${i}`, body: "b" })) },
+    // A long value inside an oversized title: replacing it with a short marker would bring the
+    // title within its limit, and the engine would accept a reply the protocol refuses.
+    "an oversized title a replacement would shorten": { guidance: [{ id: "e", body: "b", title: `${"t".repeat(500)}${"s3cret-value".repeat(4)}` }] },
+  };
+  const long = [{ name: "TOKEN", value: "s3cret-value".repeat(4) }];
+  for (const [label, reply] of Object.entries(cases)) {
+    const before = structuredClone(reply);
+    assert.equal(ShapingResultSchema.safeParse(reply).success, false, `${label}: invalid as sent`);
+    const scrubbed = scrubResolved(reply, label.startsWith("an oversized") ? long : resolved);
+    assert.deepEqual(scrubbed.data, before, `${label}: left as sent`);
+    assert.deepEqual([scrubbed.redacted, scrubbed.notes], [false, []]);
+    assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, `${label}: so the engine refuses it`);
+  }
 });
 
-test("an authenticated proxy URL the shaper inherited is scrubbed from its reply, whole and in part", async () => {
+test("an authenticated proxy URL the shaper inherited is scrubbed from its reply, whole, in part and decoded", async () => {
   const saved = process.env.HTTPS_PROXY;
-  process.env.HTTPS_PROXY = "http://proxyuser:pr0xy-pass@proxy.example:8080";
+  // Percent-encoded in the URL, as it must be: a tool can print the decoded `pr0xy@pass!`.
+  process.env.HTTPS_PROXY = "http://proxyuser:pr0xy%40pass%21@proxy.example:8080";
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
     assert.equal(reply.kind, "data");
     assert.equal((reply as { redacted?: boolean }).redacted, true);
     const text = JSON.stringify(decoded(reply));
-    assert.equal(text.includes("pr0xy-pass") || text.includes("proxyuser:"), false, "neither the URL nor the password survives");
+    assert.equal(text.includes("pr0xy") || text.includes("proxyuser:"), false, "neither the URL nor the password, in any form, survives");
     assert.deepEqual(decoded(reply).guidance.map((entry: { body: string }) => entry.body),
-      ["reached through [HTTPS_PROXY redacted]", "password [HTTPS_PROXY redacted]"]);
+      ["reached through [HTTPS_PROXY redacted]", "password [HTTPS_PROXY redacted]", "decoded [HTTPS_PROXY redacted]"]);
     // A proxy without credentials is ordinary configuration, passed and echoed as written.
     process.env.HTTPS_PROXY = "http://proxy.example:8080";
     const plain = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
@@ -478,16 +490,6 @@ test("an authenticated proxy URL the shaper inherited is scrubbed from its reply
   }
 });
 
-test("a reply over its entry bound stays invalid: redaction never drops it into validity", () => {
-  const entries = Array.from({ length: SHAPING_LIMITS.replyEntries + 1 }, (_, i) => ({ id: i === 0 ? "by-s3cret-value" : `e${i}`, body: "b" }));
-  const reply = { guidance: entries };
-  assert.equal(ShapingResultSchema.safeParse(reply).success, false, "33 entries, one over the bound");
-  const scrubbed = scrubResolved(reply, [{ name: "TOKEN", value: "s3cret-value" }]);
-  const data = scrubbed.data as typeof reply;
-  assert.equal(data.guidance.length, SHAPING_LIMITS.replyEntries + 1, "nothing is dropped from an invalid reply");
-  assert.equal(data.guidance[0]!.id, "by-[TOKEN redacted]", "but the credential is still removed");
-  assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so the engine refuses it");
-});
 
 test("a reply holding no named value is returned byte for byte", async () => {
   const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx());

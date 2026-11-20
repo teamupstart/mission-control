@@ -18,8 +18,9 @@ const dbPath = join(home, "harness.db");
 const columns = (d: DatabaseSync, table: string) =>
   (d.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
 
-test("a schema 36 database upgrades to 37 with the hibernation column and keeps its tasks", () => {
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 37);
+test("a schema 36 database upgrades through 37 with the hibernation column and keeps its tasks", () => {
+  // Later schemas build on 37; a 36 file goes all the way to the current one.
+  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 37);
   // Build the current schema with a task in it, then take schema 37 away again: what a 36 file
   // looked like.
   openDb();
@@ -31,7 +32,7 @@ test("a schema 36 database upgrades to 37 with the hibernation column and keeps 
   old.close();
 
   const upgraded = openDb();
-  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 37);
+  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
   assert.ok(columns(upgraded, "tasks").includes("hibernation"));
   const kept = getTask("kept");
   assert.equal(kept?.title, "Kept task");

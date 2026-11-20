@@ -334,6 +334,7 @@ function armConsent(): void {
   });
   setShippingConfig({
     autoMerge: true,
+    codeRabbitAutoResolve: false,
     soakMinutes: 0,
     repoAllowlist: [project],
   });
@@ -357,7 +358,7 @@ for (const reason of ["over-cap", "off-diff"] as const) {
       : [{ ...finding, path: "outside-the-diff.ts" }]);
     writeGithubState({});
     setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 1 });
-    setShippingConfig({ autoMerge: false });
+    setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
     const key = adopt(601);
     await runOneSweep();
     assert.equal(getInspectorPr(key)?.reviewComplete, false, "the first verdict really loses a finding");
@@ -397,7 +398,7 @@ test("an unreviewable live diff reports a bounded recovery wait instead of pendi
   writeGithubState({});
   process.env.FAKE_EMPTY_DIFF = "1";
   setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project] });
-  setShippingConfig({ autoMerge: false });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
   const key = adopt(603);
   await runOneSweep();
   assert.match(getInspectorPr(key)?.lastError ?? "", /no reviewable.*diff/i);
@@ -594,7 +595,7 @@ for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "reply-on
     writeGithubState({ headSha: "head-fixed", threadBody: marker, threadResolved: authorResolved, threadComments: comments,
       failResolves: scenario.endsWith("retry") ? 1 : 0 });
     setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
-    setShippingConfig({ autoMerge: false });
+    setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
     const key = adopt(501);
     seedReviewedPr(key, fingerprint);
     updateInspectorPr(key, { reviewComplete: true }, Date.now());
@@ -641,7 +642,7 @@ for (const scenario of ["disagrees", "no-reply", "already-answered", "already-re
     });
     writeGithubState({ threadBody: marker, threadResolved: true, threadComments: comments });
     setInspectorConfig({ enabled: true, mode: scenario === "dry-run" ? "dry-run" : "live", repoAllowlist: [project] });
-    setShippingConfig({ autoMerge: false });
+    setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
     const key = adopt(502);
     seedReviewedPr(key, fingerprint, {
       status: scenario === "already-resolved" ? "resolved" : "open",
@@ -678,7 +679,7 @@ test("an accepted live review stamps posted_at on every row it carried", async (
   ]);
   writeGithubState({});
   setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
-  setShippingConfig({ autoMerge: false });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
   const key = adopt(610);
   const before = Date.now();
   await runOneSweep();
@@ -721,7 +722,7 @@ test("posting reconciliation stamps a row it finds published, and only that row"
     ],
   });
   setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
-  setShippingConfig({ autoMerge: false });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
   const key = adopt(611);
   // A round whose response was lost: both rows were written in `posting` ahead of a POST,
   // on a head the next push has moved past.
@@ -763,7 +764,7 @@ test("a finding raised again carries its earlier post until a new one is confirm
   writeGithubState({});
   // Dry run, so the re-raise is drafted rather than posted, and nothing re-stamps it.
   setInspectorConfig({ enabled: true, mode: "dry-run", repoAllowlist: [project], maxCommentsPerRound: 8 });
-  setShippingConfig({ autoMerge: false });
+  setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
   const key = adopt(612);
   upsertInspectorComment({
     id: "finding-1", prKey: key, fingerprint: fp, path: "src/example.ts", line: 1, title,

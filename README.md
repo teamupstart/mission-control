@@ -363,7 +363,7 @@ Trust. It comments inline, answers replies in its own threads, re-reviews every 
 resolves findings when the code fixes them. Dry run records what it would say without publishing
 anything.
 
-Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, on by default (an upgrade turns it on once; a later opt-out is kept). It prompts
 eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
 attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
 invitation and repository trust, and waits while a workflow owns the session.

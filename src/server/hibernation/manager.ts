@@ -13,6 +13,7 @@ import { workflowRunIsOpen } from "@shared/workflow.ts";
 import { kill } from "../actions.ts";
 import { sessionLabel, spawnManagedResume } from "../dispatcher.ts";
 import { listProcesses } from "../discovery/processes.ts";
+import { inTransaction } from "../db.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { prepareTerminalResume, type PreparedResume, type ResumeSource } from "../harness/resume.ts";
 import { resolveDispatchTerminalBackend } from "../harnesses.ts";
@@ -754,17 +755,18 @@ export class HibernationManager {
   /**
    * The task, its work episode and its armed workflow follow the session that reopened it.
    *
-   * The workflow bindings' moves and the task's own row commit in ONE transaction, the task
-   * last: a write that fails leaves every binding where it was and the task still hibernated,
-   * so Retry can try again, rather than a running task with a binding left on the stopped
-   * session. The moved bindings are announced only once that has committed. Throws when the
-   * transaction does, for the caller to undo the launch it is binding.
+   * The workflow bindings' moves, the task's own row and its work-episode binding commit in ONE
+   * transaction (`Registry.persistResumedTask`): a write that fails leaves every binding where it
+   * was and the task still hibernated, so Retry can try again, rather than a running task with
+   * a binding left on the stopped session. Throws when the transaction does, for the caller to
+   * undo the launch it is binding.
    *
-   * The commit is the point of no return: from then on the task runs on this session, so the
-   * follow-ups after it (announcing the bindings, linking the work episode, whose dependency
-   * bookkeeping broadcasts other tasks and so cannot run inside the transaction) are best
-   * effort. One that fails is reported, never turned into a failed Resume that would stop an
-   * agent its task is already running on.
+   * The commit is the point of no return: from then on the task runs on this session, so
+   * everything after it (broadcasting the task, announcing the moved bindings, the work
+   * episode's dependency bookkeeping, which broadcasts other tasks and so cannot run inside the
+   * transaction) is best effort. One that fails - a listener that throws included - is
+   * reported, never turned into a failed Resume that would stop an agent its task already runs
+   * on.
    */
   private bindResumed(
     current: Task,
@@ -775,12 +777,18 @@ export class HibernationManager {
     const at = this.now();
     const running: Task = { ...current, ...home, status: "running", sessionId: session.id, hibernation: null, updatedAt: at };
     const workflows = this.options.workflows;
-    const moved = this.registry.upsertTasks([running], () =>
-      session.id !== record.sessionId && workflows
+    let moved: string[] = [];
+    let displaced: string[] = [];
+    inTransaction(() => {
+      moved = session.id !== record.sessionId && workflows
         ? workflows.followResumedConversation(record.sessionId, record.noteKey, session, at)
-        : []) ?? [];
+        : [];
+      displaced = this.registry.persistResumedTask(running, session.id, at);
+    });
+    // Committed. Each step below is separate, so one failing never skips the next.
+    this.afterCommit(current.id, "publish it", () => this.registry.publishPersistedTask(running, displaced));
     this.afterCommit(current.id, "announce its moved workflow bindings", () => workflows?.announceBindings(moved));
-    this.afterCommit(current.id, "link its work episode", () => this.registry.bindTaskToWorkEpisode(current.id, session.id));
+    this.afterCommit(current.id, "settle its work episode", () => this.registry.bindTaskToWorkEpisode(current.id, session.id));
     return { ok: true, task: this.registry.getTask(current.id) ?? running };
   }
 

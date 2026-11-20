@@ -1050,27 +1050,6 @@ test("a recorded launch that ended before Retry does not block it through its st
   assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
 });
 
-test("Registry.upsertTasks commits another owner's writes with its rows, or neither, and broadcasts only after", () => {
-  const registry = new Registry();
-  const broadcast: string[] = [];
-  registry.subscribe((e: ServerEvent) => {
-    if (e.type === "task_upsert") broadcast.push(e.task.id);
-  });
-  assert.throws(() => registry.upsertTasks([mkTask({ id: "atomic-row", status: "running" })], () => {
-    // Another owner's write, then its failure: nothing of either may land.
-    db.upsertTask(mkTask({ id: "atomic-companion", status: "backlog" }));
-    throw new Error("binding move failed");
-  }), /binding move failed/);
-  assert.equal(db.getTask("atomic-row"), undefined, "the row was not written");
-  assert.equal(db.getTask("atomic-companion"), undefined, "and the companion write rolled back");
-  assert.deepEqual(broadcast, [], "and nothing was broadcast");
-
-  const answer = registry.upsertTasks([mkTask({ id: "atomic-row", status: "running" })], () => ["moved"]);
-  assert.deepEqual(answer, ["moved"], "the companion's answer is handed back after the commit");
-  assert.equal(db.getTask("atomic-row")?.status, "running");
-  assert.deepEqual(broadcast, ["atomic-row"]);
-});
-
 test("a terminal Resume whose workflow bindings cannot move is undone, and the task stays hibernated for Retry", async (t) => {
   const announced: string[][] = [];
   const workflows = (fail: boolean) => ({
@@ -1118,21 +1097,47 @@ test("a follow-up that fails after the bind commits is reported, and never stops
   const f = terminalFleet(checkout("terminal-after-commit"), { workflows });
   t.after(() => f.tasks.stopMissionSessionClosures());
   assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
-  // Linking the work episode fails too.
+  // The dependency bookkeeping after the work-episode binding fails too, and so does a listener
+  // to the task's own broadcast.
   f.registry.bindTaskToWorkEpisode = () => {
-    throw new Error("episode write failed");
+    throw new Error("dependency bookkeeping failed");
   };
+  f.registry.subscribe((e: ServerEvent) => {
+    if (e.type === "task_upsert" && e.task.id === "term" && e.task.status === "running") throw new Error("listener failed");
+  });
   const errors: unknown[][] = [];
   t.mock.method(console, "error", (...args: unknown[]) => errors.push(args));
 
   const resumed = await f.hibernation.resume("term");
   assert.equal(resumed.ok, true, resumed.ok ? "" : resumed.error);
-  assert.equal(f.registry.getTask("term")?.status, "running", "the committed bind stands");
-  assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
+  assert.equal(db.getTask("term")?.status, "running", "the committed bind stands");
+  assert.equal(db.getTask("term")?.sessionId, f.fresh);
   assert.deepEqual(f.closed, [], "and the agent it runs on is not stopped");
-  assert.equal(errors.length, 2, "each failed follow-up is reported");
-  assert.match(String(errors[0]?.[0]), /could not announce its moved workflow bindings/);
-  assert.match(String(errors[1]?.[0]), /could not link its work episode/);
+  const reported = errors.map((args) => String(args[0]));
+  assert.ok(reported.some((line) => /could not announce its moved workflow bindings/.test(line)), reported.join("\n"));
+  assert.ok(reported.some((line) => /could not settle its work episode/.test(line)), reported.join("\n"));
+});
+
+test("a resumed task's work-episode binding is written with its row, before anything after the commit runs", () => {
+  // `Registry.persistResumedTask` inside a transaction: the row and the binding to the resumed
+  // session's recorded episode land together, and nothing is broadcast until the caller does.
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("proc-episode", checkout("episode"), "%3", 3)]);
+  started(registry, checkout("episode"), "%3", "conv-episode");
+  const episode = registry.workEpisodeForSession("proc-episode");
+  assert.ok(episode, "the resumed session has a recorded work episode");
+  const broadcast: string[] = [];
+  registry.subscribe((e: ServerEvent) => {
+    if (e.type === "task_upsert") broadcast.push(e.task.id);
+  });
+  const task = mkTask({ id: "episode-task", status: "running", sessionId: "proc-episode" });
+  const displaced = db.inTransaction(() => registry.persistResumedTask(task, "proc-episode"));
+  assert.equal(db.getTask("episode-task")?.sessionId, "proc-episode");
+  assert.equal(registry.workEpisodeForTask("episode-task")?.episodeId, episode.episodeId, "bound to the resumed session's episode");
+  assert.equal(registry.workEpisodeForTask("episode-task")?.sessionId, "proc-episode");
+  assert.deepEqual(broadcast, [], "and nothing was broadcast yet");
+  registry.publishPersistedTask(task, displaced);
+  assert.deepEqual(broadcast, ["episode-task"]);
 });
 
 test("a task or checkout that changes while the resume is prepared launches nothing", async (t) => {

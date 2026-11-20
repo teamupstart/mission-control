@@ -5268,6 +5268,25 @@ export class Registry extends EventEmitter {
     return { task: next, displaced };
   }
 
+  /**
+   * The durable half of binding a resumed hibernated task (`HibernationManager`), inside the
+   * caller's transaction: its row and, when the session's work episode is recorded, the
+   * work-episode binding - so a failure after the commit cannot leave the task pointing at the
+   * stopped session's episode. Publishes nothing and touches no other task: the caller
+   * publishes with `publishPersistedTask` after the commit, then runs `bindTaskToWorkEpisode`
+   * for the dependency bookkeeping, which may upsert and broadcast other tasks.
+   */
+  persistResumedTask(task: Task, sessionId: string, at = Date.now()): string[] {
+    const displaced = dbUpsertTask(task);
+    const episode = sessionWorkEpisodeFor(sessionId);
+    if (episode && !episode.awaitingAgentRebind) {
+      dbBindTaskWorkEpisode({ taskId: task.id, sessionId, episodeId: episode.episodeId,
+        agentSessionId: episode.agentSessionId, branch: episode.branch, prUrl: episode.prUrl,
+        prHeadSha: episode.prHeadSha, mergedAt: episode.mergedAt, boundAt: at, updatedAt: at });
+    }
+    return displaced;
+  }
+
   publishRuntimeTransferSession(sessionId: string, home: SpawnedHome): void {
     if (home.terminalResourceId) this.verifiedLaunchesSinceDiscovery.add(home.terminalResourceId);
     this.resyncSessionTask(sessionId);
@@ -7499,20 +7518,10 @@ export class Registry extends EventEmitter {
    * The bulk edit's write. Every row lands or none does, so a failure halfway through a
    * selection cannot leave some cards edited and the rest not. Broadcasting waits until
    * the commit, so no dashboard is shown a row that was then rolled back.
-   *
-   * `alongside` is another owner's writes that must land with these rows or not at all - a
-   * resumed task's workflow bindings moving to its new session - run first, inside the same
-   * transaction. Its answer is returned once everything has committed, for that owner to
-   * announce its own changes.
    */
-  upsertTasks<T = undefined>(tasks: readonly Task[], alongside?: () => T): T | undefined {
-    let companion: T | undefined;
-    const displaced = inTransaction(() => {
-      companion = alongside?.();
-      return tasks.map((task) => dbUpsertTask(task));
-    });
+  upsertTasks(tasks: readonly Task[]): void {
+    const displaced = inTransaction(() => tasks.map((task) => dbUpsertTask(task)));
     tasks.forEach((task, i) => this.publishTask(task, displaced[i] ?? [], false));
-    return companion;
   }
 
   /**

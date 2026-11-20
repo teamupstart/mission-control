@@ -138,6 +138,71 @@ function connectionKey(shaper: ShaperOf<"mcp">, ctx: TransportContext, headers: 
   return `mcp\u0000${canonicalJson(shaper.transport.server)}\u0000${ctx.root ?? ""}\u0000${headers ? canonicalJson(headers) : ""}`;
 }
 
+/** How long after a reply stream ends its reply may still be on its way through the client's parser. */
+const REPLY_SETTLE_MS = 100;
+
+type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/** The JSON-RPC id of the request a POST body carries, when it is one. */
+function requestId(body: unknown): string | number | null {
+  if (typeof body !== "string") return null;
+  try {
+    const message = JSON.parse(body) as { id?: unknown; method?: unknown };
+    return typeof message.method === "string" && (typeof message.id === "string" || typeof message.id === "number") ? message.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A `fetch` that tells `interrupted` when a request's own successful event stream ends, or
+ * breaks, and its reply has not arrived shortly after: `answered` says whether it did. Only a
+ * POST that carries a request and is answered with an event stream is watched; a JSON reply
+ * that breaks already fails its request where the client reads it.
+ */
+function watchReplyStreams(base: FetchLike, answered: (id: string | number) => boolean, interrupted: () => void): FetchLike {
+  return async (input, init) => {
+    const response = await base(input, init);
+    const id = requestId(init?.body);
+    const stream = response.ok && (response.headers.get("content-type") ?? "").toLowerCase().startsWith("text/event-stream");
+    if (id === null || !stream || !response.body) return response;
+    const source = response.body.getReader();
+    const ended = () => setTimeout(() => { if (!answered(id)) interrupted(); }, REPLY_SETTLE_MS);
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        let read: ReadableStreamReadResult<Uint8Array>;
+        try { read = await source.read(); } catch (error) { ended(); controller.error(error); return; }
+        if (read.done) { ended(); controller.close(); return; }
+        controller.enqueue(read.value);
+      },
+      cancel(reason) { return source.cancel(reason); },
+    });
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+}
+
+/**
+ * Record the id of every reply the transport delivers. Set before the client connects: the client
+ * keeps a handler already on the transport and calls it before its own for every message.
+ */
+function observeReplies<Message>(transport: { onmessage?: (message: Message) => void }, answered: Set<string | number>): void {
+  transport.onmessage = (message: Message) => {
+    const reply = message as { id?: unknown; method?: unknown } | null;
+    if (reply && reply.method === undefined && (typeof reply.id === "string" || typeof reply.id === "number")) answered.add(reply.id);
+  };
+}
+
+/** Every value in `lists`, each name and value once. */
+function mergeResolved(...lists: ReadonlyArray<readonly ResolvedValue[]>): ResolvedValue[] {
+  const seen = new Set<string>();
+  return lists.flat().filter(({ name, value }) => {
+    const key = `${name}\u0000${value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** How long the handshake may take: what is left of the whole step, never more. */
 function handshakeMs(ctx: TransportContext): number {
   return Math.max(1, ctx.deadline - Date.now());
@@ -195,17 +260,27 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     const text = redactReceived(stderr, received).replace(/\s+/g, " ").trim().slice(-500);
     return text ? `: ${text}` : ".";
   };
-  transport.onerror = (error) => { if (stdioOverflow(error)) state.fail(capReason()); };
-  transport.onclose = () => state.fail(`The MCP server exited${tail()}`);
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });
+  transport.onerror = (error) => {
+    if (!stdioOverflow(error)) return;
+    state.fail(capReason());
+    // Stopped now, not when the run ends: a server that overflowed stays useless.
+    void client.close().catch(() => {});
+  };
+  transport.onclose = () => state.fail(`The MCP server exited${tail()}`);
   ctx.scope.defer(async () => {
     try { await client.close(); } finally { await removeScratch(scratch, (text) => redactReceived(text, received)); }
   });
   try {
-    await client.connect(transport, { timeout: handshakeMs(ctx) });
+    // Raced against the latch: an overflow or an exit during the handshake answers at once.
+    await Promise.race([client.connect(transport, { timeout: handshakeMs(ctx) }), state.lost]);
   } catch (error) {
     if (state.failure) throw new Error(state.failure);
-    throw new Error(`The MCP server did not complete its handshake: ${requestFailure(error)}${tail()}`);
+    // The SDK's message can carry what the server wrote, which can repeat anything in its
+    // environment, so the whole sentence is scrubbed of every value the child received.
+    const said = `The MCP server did not complete its handshake: ${requestFailure(error)}`;
+    const marked = named.some(({ value }) => said.includes(value) || stderr.includes(value));
+    throw new ConnectError(`${redactReceived(said, received)}${tail()}`, marked);
   }
   return { client, lost: state.lost, get failure() { return state.failure; }, resolved: named };
 }
@@ -230,16 +305,27 @@ async function openHttp(
   // They are set over the client's own on every request, so any the client owns are left out.
   const configured = withoutOwnedHeaders(withoutCarriedHeaders(headers), MCP_OWNED_HEADERS);
   const onOrigin = (input: string | URL | Request, init?: RequestInit) => fetchOnOrigin(url.origin, configured, input, { ...init, credentials: "omit" });
+  const capped = cappedFetch(onOrigin, REMOTE_REPLY_BYTES, (_error: ResponseCapError) => {
+    state.fail(capReason());
+    void client.close().catch(() => {});
+  });
+  // A request's reply can arrive on its own response stream. One that ends, or breaks, before
+  // the reply came leaves the call waiting for an answer that will never come, while the
+  // transport itself stays open: the connection is failed at once, so the call answers and the
+  // next call of the run connects again.
+  const answered = new Set<string | number>();
+  const interrupted = () => {
+    state.fail("The MCP server's response stream ended before the reply arrived.");
+    void client.close().catch(() => {});
+  };
   const transport = new StreamableHTTPClientTransport(url, {
-    fetch: cappedFetch(onOrigin, REMOTE_REPLY_BYTES, (_error: ResponseCapError) => {
-      state.fail(capReason());
-      void client.close().catch(() => {});
-    }),
+    fetch: watchReplyStreams(capped, (id) => answered.has(id), interrupted),
     requestInit: { headers: carriedHeaders(ctx.trace, ctx.workUnitId) },
     // A lost stream is not retried: the call it belonged to answers, and the run moves on.
     reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1_000, maxReconnectionDelay: 1_000, reconnectionDelayGrowFactor: 1 },
   });
   transport.onclose = () => state.fail("The MCP server closed the connection.");
+  observeReplies(transport, answered);
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });
   ctx.scope.defer(async () => {
     if (state.failure === null) {
@@ -248,7 +334,7 @@ async function openHttp(
     await client.close();
   });
   try {
-    await client.connect(transport, { timeout: handshakeMs(ctx) });
+    await Promise.race([client.connect(transport, { timeout: handshakeMs(ctx) }), state.lost]);
   } catch (error) {
     if (state.failure) throw new Error(state.failure);
     throw new Error(`The MCP server did not complete its handshake: ${requestFailure(error)}`);
@@ -258,6 +344,13 @@ async function openHttp(
 
 /** A connection that could not be opened because of the shaper's own config, not the server. */
 class UnavailableError extends Error {}
+
+/** A connection that failed, with a reason already scrubbed and whether a named value was removed from it. */
+class ConnectError extends Error {
+  constructor(message: string, readonly redacted: boolean) {
+    super(message);
+  }
+}
 
 /**
  * The run's connection to this shaper's server, opened by the first call that needs it and shared
@@ -319,10 +412,14 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
     connection = await untilAborted(connectionFor(shaper, ctx, http), signal);
   } catch (error) {
     if (error instanceof UnavailableError) return { kind: "unavailable", reason: error.message };
+    if (error instanceof ConnectError) return failure("failed", error.message, http?.resolved ?? [], error.redacted);
     if (signal.aborted) return timedOut();
     return failure("failed", error instanceof Error ? error.message : String(error), http?.resolved ?? []);
   }
-  const resolved = connection.resolved;
+  // This call's own resolved values as well as the connection's: two shapers can reach one
+  // connection with the same header text built from different references, and each call scrubs
+  // what it resolved itself.
+  const resolved = mergeResolved(http?.resolved ?? [], connection.resolved);
   const meta = carriedMeta(ctx.trace, ctx.workUnitId);
   let result: Awaited<ReturnType<Client["callTool"]>>;
   try {

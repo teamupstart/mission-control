@@ -22,6 +22,7 @@ import type { Shaper, ShapingContext, ShapingRequest } from "../src/shared/shapi
 import type { ShaperOf, TransportContext, TransportReply } from "../src/server/shaping/transports/types.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-guidance-mcp.mjs", import.meta.url));
+const RAW_STDIO = fileURLToPath(new URL("./fixtures/raw-stdio-mcp.mjs", import.meta.url));
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const TRACE = { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", tracestate: "mc=launch" };
@@ -374,6 +375,101 @@ test("one event of many short CRLF lines is capped by its bytes on the wire, bot
     assert.ok(under.wireBytes() < 256 * 1024);
     assert.deepEqual(data(reply), { guidance: [{ id: "crlf", body: "one event" }] });
   } finally { await under.close(); }
+});
+
+/**
+ * A bare streamable-HTTP MCP endpoint on loopback: it answers the handshake as JSON and hands each
+ * `tools/call` to `onCall`, with the call's zero-based index, to write whatever response the test needs.
+ */
+async function startRawMcpServer(onCall: (res: import("node:http").ServerResponse, id: number, index: number) => void) {
+  let initializes = 0;
+  let calls = 0;
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    if (message.method === "initialize") {
+      initializes += 1;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "raw-fixture", version: "1.0.0" } },
+      }));
+      return;
+    }
+    onCall(res, message.id, calls++);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    initializes: () => initializes,
+    close: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+  };
+}
+
+const OK_RESULT = { structuredContent: { guidance: [{ id: "raw", body: "raw reply" }] }, content: [] };
+
+test("a failed response labelled as an event stream is capped as a whole body, as the client reads it", async () => {
+  // 40,000 events of 10 bytes each: every event is tiny, the body is about 400 KB.
+  const raw = await startRawMcpServer((res) => res.writeHead(500, { "content-type": "text/event-stream" }).end("data: x\n\n".repeat(40_000)));
+  try {
+    const started = Date.now();
+    const reply = await callMcp(request(false), shaper({ type: "http", url: raw.url }), ctx());
+    assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
+    assert.match((reply as { reason: string }).reason, /larger than 256 KiB/);
+    assert.ok(Date.now() - started < 10_000);
+  } finally { await raw.close(); }
+});
+
+test("a response stream that ends before its reply fails the call at once, and the next call connects again", async () => {
+  const raw = await startRawMcpServer((res, id, index) => {
+    if (index === 0) {
+      // An event, then the end of the stream, and never the reply.
+      res.writeHead(200, { "content-type": "text/event-stream" })
+        .end(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "working" } })}\n\n`);
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: OK_RESULT }));
+  });
+  try {
+    const run = ctx();
+    const started = Date.now();
+    const first = await callMcp(request(false), shaper({ type: "http", url: raw.url }), run);
+    assert.deepEqual(first, { kind: "failed", reason: "The MCP server's response stream ended before the reply arrived." });
+    assert.ok(Date.now() - started < 5_000, "at once, not at the call's 30 s budget");
+    const second = await callMcp(request(false), shaper({ type: "http", url: raw.url }), run);
+    assert.deepEqual(data(second), { guidance: [{ id: "raw", body: "raw reply" }] });
+    assert.equal(raw.initializes(), 2, "the lost connection was forgotten and a fresh one opened");
+  } finally { await raw.close(); }
+});
+
+test("a stdio server that overflows during the handshake fails at once and is stopped", async () => {
+  const pidFile = join(home, `raw-stdio-${Date.now()}.pid`);
+  const started = Date.now();
+  const reply = await callMcp(request(), shaper({ type: "stdio", mode: "overflow-init", args: [String(300 * 1024), pidFile] }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "overflow-init", String(300 * 1024), pidFile] } },
+  }), ctx());
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  assert.match((reply as { reason: string }).reason, /larger than 256 KiB/);
+  // The fixture ignores SIGTERM, so waiting for the client's own close would take over four seconds.
+  assert.ok(Date.now() - started < 3_000, `answered in ${Date.now() - started} ms, not after the close escalated`);
+  const { readFileSync } = await import("node:fs");
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (let waited = 0; alive() && waited < 15_000; waited += 200) await new Promise((done) => setTimeout(done, 200));
+  assert.equal(alive(), false, "the server was stopped without waiting for the run to end");
+});
+
+test("a stdio handshake error that repeats a passed-through value is scrubbed and marked", async () => {
+  const reply = await withEnv({ [KEY_ENV]: KEY }, () => callMcp(request(), shaper({ type: "stdio", mode: "error-init" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "error-init", KEY_ENV], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed");
+  assert.equal(reply.redacted, true);
+  const reason = (reply as { reason: string }).reason;
+  assert.equal(reason.includes(KEY), false, reason);
+  assert.match(reason, /^The MCP server did not complete its handshake: .*denied for \[redacted\]/);
 });
 
 test("a run over two repositories starts one server process and closes it when the run ends", async () => {

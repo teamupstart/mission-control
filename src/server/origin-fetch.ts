@@ -93,9 +93,9 @@ function isEventStream(contentType: string | null): boolean {
 }
 
 /**
- * A `fetch` whose every response body is capped while it is received: a JSON body at
- * `capBytes` in total, and an event stream at `capBytes` per event, counted from the blank line
- * that ends the one before it. At the byte that passes the cap the request is aborted, the body
+ * A `fetch` whose every response body is capped while it is received: a JSON body, and any
+ * response that is not a success, at `capBytes` in total, and a successful event stream at
+ * `capBytes` per event, counted from the blank line that ends the one before it. At the byte that passes the cap the request is aborted, the body
  * errors with `ResponseCapError`, and `onOverflow` is told at once, so a caller waiting on a reply
  * that will never come does not wait for its deadline. Nothing past the cap reaches the reader.
  */
@@ -110,7 +110,10 @@ export function cappedFetch(
     const response = await base(input, { ...init, signal: AbortSignal.any(signals) });
     // A status that has no body by definition cannot be rebuilt with one.
     if (!response.body || [101, 204, 205, 304].includes(response.status)) return response;
-    const perEvent = isEventStream(response.headers.get("content-type"));
+    // Per event only for a successful event stream, which a reader consumes event by event. Any
+    // other response, an error labelled as an event stream included, is read whole as text by
+    // its reader, so its whole body is what must stay within the cap.
+    const perEvent = response.ok && isEventStream(response.headers.get("content-type"));
     const source = response.body.getReader();
     let counted = 0;
     // An event ends at a blank line: two line ends in a row, where a line end is LF, CR or CRLF.

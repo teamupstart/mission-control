@@ -2275,8 +2275,9 @@ Pi's isolated extensions directory to the installer's isolated directory, proves
 symlink discovery, and tears down only that task's tmux session. Screenshots are written to
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
 
-`feature-flags.spec.ts` covers the shipped registry: the **Resident active hours** row appears,
-and toggling it in one window changes a second window without a reload. `feature-flags-populated.spec.ts`
+`feature-flags.spec.ts` covers the shipped registry: the **Codex resident native MCP** and
+**Resident active hours** rows appear, and toggling each in one window changes a second window
+without a reload. `feature-flags-populated.spec.ts`
 uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
 `feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
 Use this build when a spec needs populated flag controls, search, palette or daemon writes.

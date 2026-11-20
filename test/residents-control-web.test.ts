@@ -52,6 +52,7 @@ test("Control other sessions is off by default, and a revision from before it re
   const html = renderToStaticMarkup(createElement(section.Body, {
     draft: revision(),
     update: () => {},
+    changeHarness: () => {},
     personas: [],
     disabled: false,
   }));

@@ -60,7 +60,7 @@ test("the Active hours section is a preview section with day toggles, times and 
   assert.ok(section);
   assert.equal(section.featureFlag, "resident-active-hours");
   const workday = ResidentProfileRevisionSchema.parse({ identity: { name: "Day" }, persona: { personaId: "p" }, schedule: { enabled: true } });
-  const html = renderToStaticMarkup(createElement(section.Body, { draft: workday, update: () => {}, personas: [], disabled: false }));
+  const html = renderToStaticMarkup(createElement(section.Body, { draft: workday, update: () => {}, changeHarness: () => {}, personas: [], disabled: false }));
   assert.match(html, /Sleep outside active hours/);
   for (const day of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) assert.match(html, new RegExp(`aria-pressed="true" aria-label="${day}"`));
   for (const day of ["Saturday", "Sunday"]) assert.match(html, new RegExp(`aria-pressed="false" aria-label="${day}"`));
@@ -90,7 +90,7 @@ test("turning active hours on names the browser's zone, and a stored null zone n
   assert.deepEqual(residentScheduleToggled({ ...chosen, enabled: true }, false, "America/Chicago"), { ...chosen, enabled: false });
 
   const nullZone = ResidentProfileRevisionSchema.parse({ identity: { name: "Api" }, persona: { personaId: "p" }, schedule: { enabled: true } });
-  const html = renderToStaticMarkup(createElement(section.Body, { draft: nullZone, update: () => {}, personas: [], disabled: false }));
+  const html = renderToStaticMarkup(createElement(section.Body, { draft: nullZone, update: () => {}, changeHarness: () => {}, personas: [], disabled: false }));
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   assert.match(html, /<option value="" selected="">The Mission Control daemon&#x27;s time zone<\/option>/);
   assert.doesNotMatch(html, new RegExp(`<option value=""[^>]*>[^<]*${browserZone.replace("/", "\\/")}`), "no browser-derived zone is claimed for null");

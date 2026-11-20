@@ -335,6 +335,11 @@ if (process.argv[2] === "exec") {
   process.exit(process.exitCode ?? 0);
 }
 
+if (process.env.MC_E2E_CODEX_OAUTH_MCP === "1" && process.argv.slice(2).join(" ") === "mcp list --json") {
+  process.stdout.write(JSON.stringify([{ name: "glean", auth_status: "o_auth" }]));
+  process.exit(0);
+}
+
 // `spawnAppServer` is the only caller and it always leads with this word. Failing loudly
 // here is what stops a future launch-path change from being absorbed as a silent no-op.
 if (process.argv[2] !== "app-server") {
@@ -825,6 +830,7 @@ const ASK_QUESTIONS = [
     ],
   },
 ];
+let configuredResidentMcp = null;
 /** Server requests this app-server sent and is waiting on, by request id: what to do on the answer. */
 const asked = new Map();
 
@@ -889,10 +895,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       if (user.node_repl && text.includes('env_vars = ["MC_E2E_NODE_REPL_TOKEN"]')) {
         user.node_repl = { command: "native-repl", env_vars: ["MC_E2E_NODE_REPL_TOKEN"] };
       }
+      if (Object.hasOwn(user, "glean") && process.env.MC_E2E_CODEX_OAUTH_MCP === "1") {
+        user.glean = { url: "https://glean.example.test/mcp" };
+      }
       const flags = {};
       for (const arg of process.argv) {
         const flag = /^mcp_servers\.([A-Za-z0-9_-]+)\.command=/.exec(arg);
         if (flag) flags[flag[1]] = {};
+        if (arg.startsWith("mcp_servers={")) {
+          for (const match of arg.matchAll(/("(?:[^"\\]|\\.)*")\s*=\s*\{/g)) flags[JSON.parse(match[1])] = { required: true };
+        }
       }
       // Native Codex searches ancestors unless project_root_markers=[] bounds discovery
       // to cwd. The operator home is excluded only when it is the actual CODEX_HOME.
@@ -901,14 +913,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         && !process.argv.includes("project_root_markers=[]")
         ? { "mission-control": { command: "native-mission" }, node_repl: { command: "native-repl", env_vars: ["NATIVE_TOKEN"] } }
         : null;
+      const configured = { ...user, ...homeProject, ...flags };
+      if (process.env.MC_E2E_CODEX_OAUTH_MCP === "1") {
+        configuredResidentMcp = { file, names: Object.keys(configured).sort() };
+      }
       respond(id, {
-        config: { mcp_servers: { ...user, ...homeProject, ...flags } },
+        config: { mcp_servers: configured },
         origins: {},
         layers: [
-          { name: { type: "sessionFlags" }, config: { mcp_servers: flags } },
-          { name: { type: "user", file, profile: null }, config: { mcp_servers: user } },
+          { name: { type: "sessionFlags" }, version: "flags", config: { mcp_servers: flags } },
+          { name: { type: "user", file, profile: null }, version: createHash("sha256").update(text).digest("hex"), config: { mcp_servers: user } },
           ...(homeProject ? [{
             name: { type: "project", dotCodexFolder: join(process.env.HOME, ".codex") },
+            version: "home-project",
             config: { mcp_servers: homeProject },
           }] : []),
         ],
@@ -916,6 +933,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     case "thread/start":
+      if (recordDir && configuredResidentMcp) {
+        writeFileSync(join(recordDir, "codex", `resident-mcp-${process.pid}.json`), JSON.stringify(configuredResidentMcp));
+      }
       respond(id, {
         thread: thread({ type: "idle" }),
         // The model the thread was started on, as the real app-server answers: the requested

@@ -262,8 +262,7 @@ export function residentMcpRefKey(ref: ResidentMcpServerRef): string {
  * carries.
  *
  * - `pinned`: the exact set a launch resolves and snapshots, which every start and resume reads.
- * - `all`: everything the harness loads natively - on Claude Code its user, local, project and
- *   plugin servers and claude.ai connectors - read afresh at every start, plus Mission Control's
+ * - `all`: everything the harness loads natively, read afresh at every start, plus Mission Control's
  *   server and the profile's custom servers. Not pinned, and offered only where
  *   `HARNESS_CAPABILITIES[agent].mcpSelection.allNativeSources` is set.
  */
@@ -792,10 +791,10 @@ export type ResidentLaunchResult =
  * otherwise it is counted. Importing all native sources says plainly that the set is not pinned,
  * and names only the custom servers, because a selected global server loads natively anyway.
  */
-export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[]): string {
+export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[], agent?: ResidentAgent): string {
   const resolved = labels && labels.length === mcp.selected.length ? labels : null;
   if (mcp.nativeSources === "all") {
-    const base = `MCP: all native sources (not pinned)${mcp.disableClaudeAiConnectors ? ", claude.ai connectors off" : ""}`;
+    const base = `MCP: all native sources (not pinned)${agent === "claude" && mcp.disableClaudeAiConnectors ? ", claude.ai connectors off" : ""}`;
     const custom = mcp.selected.flatMap((ref, at) => (ref.source === "custom" ? [at] : []));
     if (custom.length === 0) return base;
     return `${base} + ${resolved ? custom.map((at) => resolved[at]).join(", ") : `${custom.length} custom`}`;
@@ -822,7 +821,7 @@ export function residentLaunchSummary(
     agentLabel,
     settings.execution.model ?? "default model",
     settings.execution.effort ? `${settings.execution.effort} effort` : "default effort",
-    residentMcpSummary(settings.mcp, mcpLabels),
+    residentMcpSummary(settings.mcp, mcpLabels, settings.execution.agent),
     settings.authority.controlOtherSessions ? "control: on" : "control: off",
   ];
   return parts.join(" · ");

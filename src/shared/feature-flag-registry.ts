@@ -2,6 +2,13 @@ import type { FeatureFlagDefinition } from "./feature-flags.ts";
 
 export const FEATURE_FLAGS = [
   {
+    id: "codex-resident-native-mcp",
+    label: "Codex resident native MCP",
+    description: "Let Codex residents use their native MCP configuration and saved logins.",
+    stage: "preview",
+    keywords: ["residents", "oauth", "global servers"],
+  },
+  {
     id: "resident-active-hours",
     label: "Resident active hours",
     description: "Choose the days and hours a resident's loop may wake it. Outside them the resident keeps running but sleeps: no loop prompt and no tokens until the next window opens.",

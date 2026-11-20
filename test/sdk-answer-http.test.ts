@@ -1556,6 +1556,8 @@ test("a question answered twice is refused, not last-write-wins", async () => {
 test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing", async () => {
   const registry = new Registry();
   const session = seed(registry, null, "sdk:race");
+  const { managedResumeRoot, resumeConversation } = await import("../src/server/harness/resume.ts");
+  const { beginResumeLaunch, createResumeLease, revokeResumeLease } = await import("../src/server/terminal/resume-lease.ts");
   registry.upsertTask(
     mkTask({
       id: "task-race",
@@ -1568,34 +1570,56 @@ test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing"
   );
   const supervisor = fakeSupervisor();
   const spawned: string[] = [];
-  let release = (): void => {};
-  const held = new Promise<void>((r) => (release = r));
+  let markPreparing!: () => void;
+  let releasePreparation!: () => void;
+  const preparing = new Promise<void>((resolve) => { markPreparing = resolve; });
+  const held = new Promise<void>((resolve) => { releasePreparation = resolve; });
+  let preparations = 0;
 
   const app = mkApp(registry, supervisor, {
-    // Hold the first request inside the spawn so the second one overlaps it - which is the
-    // only window where two callers can both see a live driver.
-    spawn: async ({ name }) => {
-      spawned.push(name);
+    prepare: async (source) => {
+      assert.equal(++preparations, 1, "the second handoff cannot start preparation");
+      // Overlap before the durable reservation, while both requests can see a live driver.
+      // The other handoff cases exercise the real guard and MCP subprocess checks.
+      markPreparing();
       await held;
+      const lease = createResumeLease(managedResumeRoot(), resumeConversation(source), new Set(), source.id);
+      return {
+        cwd: source.cwd!, argv: [], wrappedArgv: [], stateHome: lease.home, lease,
+        descriptor: null, requiredTools: [], instrumented: false,
+        beginLaunch: () => beginResumeLaunch(lease),
+        dispose: () => revokeResumeLease(lease),
+      };
+    },
+    spawn: async ({ name, prepared }) => {
+      spawned.push(name);
+      prepared.beginLaunch();
       return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: null };
     },
-    waitForSessionAtCwd: async () => ({ ...session, id: "proc:tty:1:2" }) as Session,
+    waitForSessionAtCwd: async () => null,
     settleTask: () => assert.fail("a successful handoff settles nothing"),
   });
   const post = () =>
     app.request("/api/sessions/sdk:race/handoff", { method: "POST", headers: HEADERS });
 
   const first = post();
-  await new Promise((r) => setImmediate(r));
-  const second = await post();
-  release();
+  try {
+    const premature = await Promise.race([preparing, first]);
+    if (premature) assert.fail(`first handoff finished before preparation: ${await premature.text()}`);
+    const second = await post();
+    assert.equal(second.status, 409);
+    assert.match(((await second.json()) as { error: string }).error, /already being handed over/);
+    assert.equal(registry.getTask("task-race")?.sessionId, session.id);
+    assert.deepEqual(supervisor.stopped, []);
+    assert.deepEqual(spawned, []);
+  } finally {
+    releasePreparation();
+  }
   const firstRes = await first;
 
   // Two agents continuing ONE conversation in one checkout is the outcome this prevents,
   // and only one of them could ever hold the task binding.
-  assert.equal(second.status, 409);
-  assert.match(((await second.json()) as { error: string }).error, /already being handed over/);
-  assert.equal(firstRes.status, 200);
+  assert.equal(firstRes.status, 200, await firstRes.text());
   assert.deepEqual(spawned, ["Add a toggle"], "exactly one terminal was opened");
   assert.deepEqual(supervisor.stopped, ["sdk:race"], "the driver was stopped once");
 });

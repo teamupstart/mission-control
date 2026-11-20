@@ -464,7 +464,19 @@ export class HibernationManager {
     if (mismatch) return this.resumeFailed(task.id, mismatch);
     const cwd = record.checkout!.path;
     const stranded = record.failure?.launch ?? null;
-    if (stranded && this.terminal.launchLive(stranded)) {
+    const strandedLive = stranded !== null && this.terminal.launchLive(stranded);
+    let strandedHomeOpen = false;
+    if (stranded && !strandedLive && stranded.homeName !== null && stranded.homeBackend !== null) {
+      // Its lease says no agent runs there or can start, so at most an empty terminal is left.
+      // Closed again now; one that still will not close stays on the record (below), but it
+      // holds no agent, so it never keeps the conversation from reopening.
+      const closed = await this.terminal.closeHome({
+        homeName: stranded.homeName,
+        homeBackend: stranded.homeBackend,
+        terminalResourceId: stranded.terminalResourceId,
+      });
+      strandedHomeOpen = !closed.ok;
+    } else if (stranded && strandedLive) {
       if (stranded.homeName === null || stranded.homeBackend === null) {
         // Its launcher failed before naming a home, so there is no terminal to close: only the
         // lease being released says that agent has ended.
@@ -488,8 +500,8 @@ export class HibernationManager {
       }
     }
     // Confirmed gone or closed: the only place a recorded launch is let go of. Every failure
-    // before this point kept it (see `resumeFailed`).
-    if (stranded) this.forgetLaunch(task.id);
+    // before this point kept it (see `resumeFailed`), and so does a terminal still open.
+    if (stranded && !strandedHomeOpen) this.forgetLaunch(task.id);
     const source: ResumeSource = {
       id: record.sessionId,
       agent: task.agent,
@@ -625,7 +637,17 @@ export class HibernationManager {
       leaseId: prepared.lease.id,
     };
     const closed = await this.terminal.closeHome(home);
-    if (revoked || (closed.ok && await this.launchEnded(launch))) return { ok: true };
+    if (closed.ok && (revoked || await this.launchEnded(launch))) return { ok: true };
+    if (revoked) {
+      // No agent can start in it, but the terminal is still open: recorded all the same, so the
+      // operator is told and Retry closes it again (`resumeTerminal`).
+      return {
+        ok: false,
+        launch,
+        detail: `${home.homeName} could not be closed (${closed.error ?? "no reason given"}), though no agent ` +
+          "started in it. Close that terminal",
+      };
+    }
     return {
       ok: false,
       launch,

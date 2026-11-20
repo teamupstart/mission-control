@@ -992,7 +992,9 @@ it closed, the row says so and records it. So does a launch that failed to open 
 after its agent may already have started: with no terminal to close, Retry refuses until that
 agent has ended. Retry first closes it (or finds it gone) and refuses to
 launch another agent while it may still be running, and the record is kept through any other
-failure in between.
+failure in between. A launch that never started its agent but whose terminal would not close is
+recorded too: Retry closes that terminal again, and since no agent is in it, reopens the
+conversation either way.
 
 Turning the preview off hides Hibernate. Tasks already hibernated stay in the Backlog and can
 still be resumed, so switching the preview off never strands a conversation.

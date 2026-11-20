@@ -991,3 +991,25 @@ test("in a UTC+13 zone too, a wake held for a skipped start goes out at the jump
     assert.equal(f.calls.length, 1, "the held wake goes out at 03:00 NZDT");
   } finally { activeHours(false); }
 });
+
+test("a sleeping resident whose context is over the threshold does not compact until its window opens", async (t) => {
+  activeHours(true);
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+    const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC);
+    const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+    f.loop(); await settle();
+    // 80% is over the profile's 70% threshold: an awake wake would compact before it sends.
+    f.patch({ meta: meta({ contextPct: 80 }) }); await settle();
+    assert.equal(f.run().nextWakeAt, FRIDAY_0800_UTC + 300_000, "the wake is due at 08:05, outside the 09:00-17:00 window");
+    await elapse(HOUR - 1);
+    assert.deepEqual(f.calls, [], "asleep: no compaction and no loop prompt, though compaction is due");
+    assert.deepEqual(f.focuses, [], "the harness was never asked to compact");
+    assert.equal(f.run().loopState, "waiting", "never entered compacting while asleep");
+    await elapse(1);
+    assert.equal(f.calls[0], "compact", "the window opens: compaction first, as for any wake over the threshold");
+    assert.match(f.calls[1]!, /mission-resident:run:2/, "then the held wake goes out");
+    assert.equal(f.calls.length, 2);
+  } finally { activeHours(false); }
+});

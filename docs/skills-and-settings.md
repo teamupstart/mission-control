@@ -496,14 +496,22 @@ absent from the rail, search, the palette and the router, and `#/settings/conduc
 Display. The rest of this section describes it as it returns.
 
 **Conductor** is the one category whose subject is somebody else's software. It is
-**not** conditional on runtime state, and that is the rule for every category:
-[change contracts](agent-guides/change-contracts.md#registries) states that categories are
-unconditional destinations, so the rail, the arrow-key walk, the valid routes, the palette and
-the render tests all read one registry with no runtime availability filter. The one exception
-is the build-time `CONDUCTOR_INTEGRATION_ENABLED` switch above: while it is off,
-`settingsCategoryAvailable` withholds Conductor from every one of those readers at once, so none
-of them can disagree. A category behind a preview flag, such as Task shaping, goes through the
-same function with the live flags. Engine presence, consent and probes never add or remove it. A destination for software
+**not** conditional on runtime state such as whether an engine is installed, and that holds
+for every category: [change contracts](agent-guides/change-contracts.md#registries) allow a
+category to be withheld only by a build-time switch or a registered feature flag, never by a
+probe of installed software. Both go through one availability gate, `settingsCategoryAvailable`,
+which the rail, the arrow-key walk, the page, settings search, the palette and the render tests
+all read, so none of them can disagree:
+
+- **Build-time switch.** While `CONDUCTOR_INTEGRATION_ENABLED` above is off, Conductor is
+  withheld from every reader at once, and the router does not route to it.
+- **Feature flag.** A category that declares a preview flag, such as Task shaping's
+  `task-shaping`, is drawn only while that flag resolves on. The gate reads the live flags the
+  event stream holds, so the category appears and disappears in every open window the moment
+  the flag changes. The router keeps its link, because the flags are not known until the first
+  snapshot; the page shows Display while the flag is off.
+
+Engine presence, consent and probes never add or remove Conductor. A destination for software
 that is not installed explains that inside its own panel; a local visibility check is how a
 panel becomes reachable from search but absent from the rail, or how a valid deep link
 unexpectedly falls back to Display. It is the consent surface for observing an external SDLC

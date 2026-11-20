@@ -1,5 +1,6 @@
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView, ShapingIntent, ShapingReply, ShapingRun, ShapingTestRequest } from "@shared/shaping.ts";
+import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -2377,9 +2378,16 @@ export const api = {
       const res = await actionFetch("/api/shaping/test", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal,
       });
-      const data = (await res.json().catch(() => ({}))) as Partial<ShapingRun> & { error?: string; reason?: string };
-      if (!res.ok) return { ok: false, aborted: false, reason: data.reason ?? data.error ?? `HTTP ${res.status}` };
-      return { ok: true, run: { summary: data.summary ?? null, section: data.section ?? "", entries: data.entries ?? [] } };
+      const data = (await res.json().catch(() => undefined)) as unknown;
+      if (!res.ok) {
+        const failure = (data ?? {}) as { error?: string; reason?: string };
+        return { ok: false, aborted: false, reason: failure.reason ?? failure.error ?? `HTTP ${res.status}` };
+      }
+      // A success reply is read against the run's own shape, never padded out: a reply missing a
+      // field must not draw as a run that would add nothing.
+      const run = readShapingRun(data);
+      if (!run) return { ok: false, aborted: false, reason: "The daemon's dry-run reply was incomplete, so its result cannot be shown." };
+      return { ok: true, run };
     } catch (error) {
       return { ok: false, aborted: signal?.aborted === true, reason: error instanceof Error ? error.message : String(error) };
     }

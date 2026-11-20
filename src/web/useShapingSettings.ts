@@ -77,14 +77,6 @@ export function useShapingSettings(
     }
   };
 
-  const clearError = (key: string): void => {
-    setErrors((current) => {
-      if (!Object.hasOwn(current, key)) return current;
-      const { [key]: _gone, ...rest } = current;
-      return rest;
-    });
-  };
-
   return {
     config: pending && !pending.observed && optimistic ? optimistic : confirmed,
     pending: pending?.intent ?? null,
@@ -92,7 +84,6 @@ export function useShapingSettings(
     errors,
     ready: live,
     set,
-    clearError,
   };
 }
 export type ShapingSettings = ReturnType<typeof useShapingSettings>;

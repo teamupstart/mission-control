@@ -6,6 +6,7 @@
 // daemon's resolver runs, so the list can never disagree with a launch. What a write does is
 // the daemon's: `previewShapingIntent` only draws a click before its answer arrives.
 
+import { z } from "zod";
 import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import {
   canonicalJson,
@@ -16,10 +17,12 @@ import {
   shaperIsLocal,
   shaperSwitchedOn,
   shapingReferences,
+  TaskShapingSchema,
   type Shaper,
   type ShapingConfigView,
   type ShapingIntent,
   type ShapingReferenceStatus,
+  type ShapingRun,
   type ShapingStage,
   type UnsupportedShaperView,
 } from "@shared/shaping.ts";
@@ -357,4 +360,38 @@ export function readShaperManifest(text: string): ManifestReading {
   const shaper = ShaperSchema.safeParse(definition);
   if (!shaper.success) return { ok: false, reason: issueText(shaper.error.issues[0]) };
   return { ok: true, shaper: shaper.data, ignoredEnabled: enabled !== undefined };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reading a dry run's reply
+
+/** One injected entry, as `POST /api/shaping/test` answers it (`ShapingInjectedEntry`). */
+const ShapingInjectedEntryReplySchema = z.object({
+  shaperId: z.string(),
+  label: z.string(),
+  stage: z.string(),
+  repo: z.string(),
+  id: z.string(),
+  title: z.string().nullable(),
+  path: z.string().nullable(),
+  body: z.string(),
+  truncated: z.boolean(),
+  omittedBytes: z.number().int().nonnegative(),
+});
+
+/** The dry run's whole reply, `ShapingRun`: every field present, none supplied by the reader. */
+const ShapingRunReplySchema = z.object({
+  summary: TaskShapingSchema.nullable(),
+  section: z.string(),
+  entries: z.array(ShapingInjectedEntryReplySchema),
+});
+
+/**
+ * A dry run's success reply, or null when it is not a complete run. Nothing is filled in: a
+ * reply missing its summary, section or entries is a broken contract, and drawing it as a run
+ * that adds nothing would hide that.
+ */
+export function readShapingRun(data: unknown): ShapingRun | null {
+  const parsed = ShapingRunReplySchema.safeParse(data);
+  return parsed.success ? parsed.data : null;
 }

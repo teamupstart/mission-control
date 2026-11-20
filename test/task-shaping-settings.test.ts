@@ -20,6 +20,7 @@ import {
   moveShaper,
   previewShapingIntent,
   readShaperManifest,
+  readShapingRun,
   shaperEnvironmentNames,
   shaperReach,
   shaperReceives,
@@ -323,3 +324,34 @@ for (const row of TRANSPORT_REVIEWS) {
     if (row.remote) assert.match(html, /Never sent: local paths/);
   });
 }
+
+test("a dry run's reply is read whole, and an incomplete one is refused rather than padded out", () => {
+  const entry = {
+    shaperId: "notes", label: "Notes", stage: "gather", repo: "billing-api", id: "gather/one",
+    title: "One", path: null, body: "first entry", truncated: false, omittedBytes: 0,
+  };
+  const summary = {
+    state: "ok", at: 1, durationMs: 12, entries: 1, bytes: 11, truncated: false,
+    shapers: [{
+      id: "notes", label: "Notes", stage: "gather", origin: "registered", sha256: null, outcome: "ok",
+      reason: null, durationMs: 12, entries: 1, bytes: 11, truncated: false, redacted: false, version: null,
+    }],
+  };
+  const complete = { summary, section: "## Task context\n\nfirst entry", entries: [entry] };
+  assert.deepEqual(readShapingRun(complete), complete);
+  // A run where no shaper applied is a complete answer: null summary, empty section, no entries.
+  assert.deepEqual(readShapingRun({ summary: null, section: "", entries: [] }), { summary: null, section: "", entries: [] });
+  // Anything missing, or of the wrong shape, is not a run.
+  for (const broken of [
+    {},
+    null,
+    "not json",
+    { summary, entries: [entry] },
+    { summary, section: "x" },
+    { section: "x", entries: [entry] },
+    { summary, section: "x", entries: [{ ...entry, body: undefined }] },
+    { summary: { state: "ok" }, section: "x", entries: [] },
+  ]) {
+    assert.equal(readShapingRun(broken), null, JSON.stringify(broken));
+  }
+});

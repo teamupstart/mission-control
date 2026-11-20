@@ -43,7 +43,6 @@ const SHAPING: ShapingSettings = {
   errors: {},
   ready: true,
   set: async () => true,
-  clearError: () => {},
 };
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";

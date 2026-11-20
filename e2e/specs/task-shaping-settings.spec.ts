@@ -388,6 +388,18 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   await dialog.getByRole("button", { name: "Close" }).click();
   await page.unroute("**/api/shaping/test");
 
+  // A success reply missing its fields is an error, never drawn as a run that would add nothing.
+  await page.route("**/api/shaping/test", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ summary: null }),
+  }));
+  dialog = await openDryRun("On notes");
+  await dialog.getByRole("button", { name: "Run", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("The daemon's dry-run reply was incomplete, so its result cannot be shown.");
+  await expect(dialog.getByRole("region", { name: "Dry-run result" })).toHaveCount(0);
+  await expect(dialog.getByText("Nothing would be added.")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await page.unroute("**/api/shaping/test");
+
   // A shaper that fails is an outcome in a successful reply, not a request error.
   dialog = await openDryRun("Broken notes");
   await dialog.getByRole("button", { name: "Run", exact: true }).click();

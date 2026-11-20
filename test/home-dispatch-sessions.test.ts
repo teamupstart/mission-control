@@ -2,7 +2,7 @@
 // /dispatch route calls, the launcher decision and the dispatch-intent detector.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
@@ -196,6 +196,27 @@ test("worker rule: a cwd inside a live task worktree is refused by real path, a 
   assert.equal(sessions.workerRefusal(live, "s", sibling), null, "a name prefix is not containment");
   for (const status of ["done", "failed", "cancelled"]) {
     assert.equal(sessions.workerRefusal(depsWith({ tasks: [task(status, tree)] }), "s", tree), null, status);
+  }
+});
+
+test("registration from a symlink into a live task worktree is a 403 and leaves no row", async () => {
+  const tree = join(home, "trees-link", "live");
+  mkdirSync(join(tree, "src"), { recursive: true });
+  const link = join(home, "innocent-looking-link");
+  symlinkSync(join(tree, "src"), link);
+  const liveTask = { sessionId: null, status: "running", worktreePath: tree, extraRepos: [] };
+  const original = registry.listTasks;
+  registry.listTasks = (() => [liveTask]) as unknown as typeof registry.listTasks;
+  try {
+    const res = await register(registration({ sessionId: "via-symlink", cwd: link }));
+    assert.equal(res.status, 403);
+    assert.match(((await res.json()) as { error: string }).error, /inside the worktree/);
+    assert.equal(sessions.getHomeSession("via-symlink"), null);
+    // The same task no longer holds the path once it is finished.
+    liveTask.status = "done";
+    assert.equal((await register(registration({ sessionId: "via-symlink", cwd: link }))).status, 200);
+  } finally {
+    registry.listTasks = original;
   }
 });
 

@@ -1,10 +1,10 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 12). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 13). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
-- Jordan's constraint: dropping WP10 leaves the existing Focus feature untouched; three guards live in P1 and P18; the owner clarifies D50 in the spec.
+- Jordan's constraint: dropping WP10 leaves the existing Focus feature untouched; guards 2 and 3 live in P1, guard 1 in P5, and all three in P18; the owner clarifies D50 in the spec.
 - WP1 is two pull requests, P1 and P2.
 - The "mods can load" checks are folded into P14 (WP7) and P8 (the `mod-calls` smoke check), as plan-local requirements without spec ids.
 - S28 (FR-06 ledger and retro trigger) runs in two stages as two scout tasks that open no pull request; they are not phases.
@@ -17,6 +17,7 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 12). Spec: C
 - Review repairs (revision 10): a sweep by class. Named paths: routes use their spec 2.3 paths and per-task subagent data is the `subagents` field on inbox items (P4) and the transcript response (P9), formatted by P15's `subagentLines`. Gates: one hard rule and one soft rule, repeated. Conditionals: both branches of each spike-dependent outcome in each downstream phase.
 - Review repairs (revision 11): S4 has a mergeable fallback; P14 uses one confirmation threshold (documentation alone never permits fail); P5 merges after P3 and P8 after P5; the plan carries a producer to consumer audit table.
 - Review repairs (revision 12): plan 6.8 holds script-derived producer to consumer and spike tables; every unordered pair has a stated reason; P7's `codex` step has a defined interim before P14's commands exist.
+- Review repairs (revision 13): the chat poll interval is stated once (1.5 s, or 3 s under S23); the runtime and Focus test (guard 1) is P5's, with guards 2 and 3 in P1 and all three repeated in P18.
 - Review repairs (revision 8): a sweep of every file for stub, slot, optional-field and interim wording; P1 and P2 now name the owner of every route stub, CLI command, setup step, mod flow and pane; P12 names the fields its header and rows read; P15 names the source of the subagent events.
 
 ## 2. Findings from the repository

@@ -18,6 +18,6 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **8. Merge and exit.** Routes real behind the flag; no `/api/*` route changed; S16 answer quoted. Tests cover the direct path and the `chat_first` path.
 
-**9. Handoff.** P12 reads transcripts every 1.5 s and sends through these routes; P10 uses the read and stream routes for `mctl logs`.
+**9. Handoff.** P12 reads transcripts at its chat poll interval (1.5 s by default, 3 s under the S23 fallback) and sends through these routes; P10 uses the read and stream routes for `mctl logs`.
 
 **10. Cross-phase audit.** Reuses P3's predicate and P4's inbox item; no overlap with P4's answers. S28b runs after this phase and P4.

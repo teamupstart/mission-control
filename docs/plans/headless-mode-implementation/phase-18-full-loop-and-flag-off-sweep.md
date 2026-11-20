@@ -10,7 +10,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **4. Findings.** CI runs eighty-seven checks; the mod adapter's `claude plugin test` output is local only (Q17). The walkthrough needs a person at a terminal, on a build packaged by P16.
 
-**5. Steps.** Read spec section 6 and F10, F12, F18. Build the loop test on the fakes and the real daemon routes. Assert no `tmux` or `herdr` process or binary is required. Sweep every `/dispatch/*` route, health capability and mod surface with the flag off. Re-run the Focus guards: unchanged Focus route entries, no terminal imports, and a home-dispatched terminal task still focusable from the dashboard. Include an upgrade pass in the walkthrough: install one build, stage a newer one, run `mctl setup`, and confirm in a fresh session that `claude plugin list` shows the newer version. Do the walkthrough and attach its record to the pull request, not the repository.
+**5. Steps.** Read spec section 6 and F10, F12, F18. Build the loop test on the fakes and the real daemon routes. Assert no `tmux` or `herdr` process or binary is required. Sweep every `/dispatch/*` route, health capability and mod surface with the flag off. Re-run the Focus guards: unchanged Focus route entries, no terminal imports, and a home-dispatched terminal task still focusable from the dashboard, with the task started through `mctl run` and through the mod's dispatch flow. Include an upgrade pass in the walkthrough: install one build, stage a newer one, run `mctl setup`, and confirm in a fresh session that `claude plugin list` shows the newer version. Do the walkthrough and attach its record to the pull request, not the repository.
 
 **6. Data and API.** None.
 

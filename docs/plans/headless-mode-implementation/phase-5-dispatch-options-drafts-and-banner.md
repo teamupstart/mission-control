@@ -14,9 +14,9 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **6. Data and API.** Fill the P1 stubs for options and drafts. Start-now uses the dashboard create path with no runtime override (Focus guard 1). Routes: `POST /dispatch/dispatch-options`, `POST /dispatch/drafts`, `POST /dispatch/drafts/{id}` and `POST /dispatch/drafts/{id}/confirm`.
 
-**7. Tests.** Page contents per kind, draft state transitions, banner text, a dashboard modal regression (unit and the existing e2e still pass), and a Playwright check if the modal's visible behavior changes.
+**7. Tests.** Page contents per kind, draft state transitions, banner text, a dashboard modal regression (unit and the existing e2e still pass), and a Playwright check if the modal's visible behavior changes. The runtime and Focus test (guard 1 of plan 4.2): a task started from a confirmed draft, of a kind whose default runtime is a terminal, gets a terminal pane, and `POST /api/sessions/:id/focus` on it returns what it returns for a dashboard task; it uses the existing fake agent helpers and spends no model tokens.
 
-**8. Merge and exit.** Dashboard dispatch unchanged; daemon options match the dashboard's; tests pass.
+**8. Merge and exit.** Dashboard dispatch unchanged; daemon options match the dashboard's; tests pass. Guard 1 passes.
 
 **9. Handoff.** P11 renders these pages and drafts; P13 reuses `kindAfterWork` and drafts for `mctl run`. Do not change page shape without a `contract:` commit.
 

@@ -6,7 +6,7 @@
 | Spec | Commonroom, workspace Meta Harness, spec `d2cdf331-4f03-4c77-957d-246cfde0017c`, **version 18**, 236,444 characters, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`. The spec, not this plan, is the contract: where they differ, the current spec version wins. |
 | Base | `main` at `c2b873f6f`. It has no `src/mod/`, `src/cli/` or `src/server/home-dispatch/`, no preview flag in `src/shared/feature-flag-registry.ts`, and database schema 35 (`CURRENT_DATABASE_SCHEMA_VERSION`). |
 | Not done here | No code, no edit to the spec, no post to Commonroom. Phase tasks go to the backlog and are not started. |
-| Revision | 12. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. Revision 7 closes the fourth round: P15 also owns the producer of each task's subagent lines, and P14 owns the edit that makes `mctl claude` use the shared `claude` detection. Revision 8 sweeps all files for the same class of gap and names the owner, field and later phase for every stub, slot and optional field. Revision 9 names the one read path for subagent lines, gives P14 one merge rule for the soft spikes, and makes P13's launcher outcome conditional on the S10/S11 gate. Revision 10 replaces the invented subagent field with the spec's own `subagents` fields and `subagentLines` function, names every route by its spec path, states the hard and soft gate rules once and repeats them, and states both branches of every spike-dependent outcome. Revision 11 gives S4 a mergeable fallback, uses one confirmation threshold for P14's checks, orders P5 after P3 and P8 after P5, and adds a producer to consumer audit. Revision 12 replaces that audit with script-derived tables in 6.8 (producer to consumer, and spikes), splits the grouped spike rows, makes P8 name S14, S18 and S19, and defines the interim for P7's steps before P14's commands exist. |
+| Revision | 13. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. Revision 7 closes the fourth round: P15 also owns the producer of each task's subagent lines, and P14 owns the edit that makes `mctl claude` use the shared `claude` detection. Revision 8 sweeps all files for the same class of gap and names the owner, field and later phase for every stub, slot and optional field. Revision 9 names the one read path for subagent lines, gives P14 one merge rule for the soft spikes, and makes P13's launcher outcome conditional on the S10/S11 gate. Revision 10 replaces the invented subagent field with the spec's own `subagents` fields and `subagentLines` function, names every route by its spec path, states the hard and soft gate rules once and repeats them, and states both branches of every spike-dependent outcome. Revision 11 gives S4 a mergeable fallback, uses one confirmation threshold for P14's checks, orders P5 after P3 and P8 after P5, and adds a producer to consumer audit. Revision 12 replaces that audit with script-derived tables in 6.8 (producer to consumer, and spikes), splits the grouped spike rows, makes P8 name S14, S18 and S19, and defines the interim for P7's steps before P14's commands exist. Revision 13 states the chat poll interval once (1.5 s, or 3 s under the S23 fallback), moves the runtime and Focus test to P5, where the first task is started, and adds constants and fixture-source tables to 6.8. |
 
 ## 1. Read this first: the brief and the spec disagree on the version
 
@@ -63,9 +63,9 @@ D50 withdraws the right-hand column. The words "the jump route" in D50 mean the 
 
 ### 4.2 Verdict
 
-**D50 does not affect the existing Focus feature.** It adds nothing to, and removes nothing from, any path Focus uses. Three things could still break it indirectly, and the plan closes each with a test rather than an assumption:
+**D50 does not affect the existing Focus feature.** It adds nothing to, and removes nothing from, any path Focus uses. Three things could still break it indirectly, and the plan closes each with a test rather than an assumption (guard 1 is tested in P5, the first phase that starts a real task through the dashboard path; guards 2 and 3 in P1; P18 repeats all three):
 
-1. **Runtime resolution.** D50 says home-dispatched tasks keep the runtime a dashboard task of their kind gets. If a home-dispatched task ever passes a runtime override, it could land on a runtime Focus cannot raise. WP2a and WP6b must create tasks through the same path as the dashboard and pass no runtime. Test: a home-dispatched task of a kind whose default runtime is a terminal gets a pane, and `POST /api/sessions/:id/focus` on it returns what it returns for a dashboard task.
+1. **Runtime resolution.** D50 says home-dispatched tasks keep the runtime a dashboard task of their kind gets. If a home-dispatched task ever passes a runtime override, it could land on a runtime Focus cannot raise. WP2a and WP6b must create tasks through the same path as the dashboard and pass no runtime. Test: a home-dispatched task of a kind whose default runtime is a terminal gets a pane, and `POST /api/sessions/:id/focus` on it returns what it returns for a dashboard task. The test is P5's and uses the existing fake agent helpers, so it spends no model tokens; P18 repeats it with the task started through `mctl run` and through the mod's dispatch flow.
 2. **The route-surface oracle.** WP1 regenerates the committed route-surface oracle (`test/route-surface-oracle.test.ts`). The regenerated diff must add `/dispatch/*` entries and change no existing `/api/*` entry. Test: a guard that fails if any `/api/sessions/:id/focus` or terminal route entry differs from `main`.
 3. **Controlled paths.** `src/server/terminal/` and `src/server/actions.ts` are owned by no work package. Test: a guard that fails if any file under `src/mod/`, `src/cli/` or `src/server/home-dispatch/` imports from them, and the pull request template for every phase states that those paths are untouched.
 
@@ -166,11 +166,11 @@ One pull request each, to `main`, behind `headless-mode`; P0 opens none. Work pa
 | Phase | Work package | Goal | Starts after | Merges after | Gates |
 |---|---|---|---|---|---|
 | P0 | WP0 | Person-run spikes S4 to S27, with no pull request and no scheduled task (6.7); S28a is a scout task; each answer is posted to Commonroom by the owner | none | none | none |
-| P1 | WP1a | The preview flag, shared contracts, schema 36, route stubs (501 while on), regenerated route oracle, flag-off tests, the Settings row browser assertion, and the Focus guard tests of 4.2 | none | none | none |
+| P1 | WP1a | The preview flag, shared contracts, schema 36, route stubs (501 while on), regenerated route oracle, flag-off tests, the Settings row browser assertion, and the route-surface and import guards of 4.2 (guards 2 and 3) | none | none | none |
 | P2 | WP1b | The CLI command registry, the mod and pane skeleton, `npm run build:mod`, the `PluginState` contract, and the fakes in `test/helpers/home-dispatch-fakes.ts` | P1 | P1 | none |
 | P3 | WP2a | Home sessions, the registration answer, the launcher decision, the intent detector | P2 | P2 | none |
 | P4 | WP2b | The read-only inbox, `blocked` state, `needsYouOrder`, `workflowStages`, `residentLoopLabel`, answers and receipts, plan approval, config view, reviewer rows, the inbox `subagents` counts and the shared `subagent-state.ts` module. Calls P3's home-session predicate, so it merges after P3. | P2 | P3 | none |
-| P5 | WP3 | Dialog pages, drafts, the banner builder, the shared `kindAfterWork`. Calls P3's home-session predicate, so it merges after P3. | P2 | P3 | none |
+| P5 | WP3 | Dialog pages, drafts, the banner builder, the shared `kindAfterWork`, and the runtime and Focus test of 4.2 (guard 1). Calls P3's home-session predicate, so it merges after P3. | P2 | P3 | none |
 | P6 | WP8 | Repository task skills in `composeTurnOne` | P2 | P2 | none |
 | P7 | WP18 | Codex readiness, `GET /dispatch/readiness`, the Codex setup step and doctor checks, the flag-gated fail-fast reviewer gate. Applies P3's home-session rules, so it merges after P3. | P2 | P3 | **S27 recorded** (hard); S24 to S26 (soft) |
 | P8 | WP13 | Mod core: adapter, `ModHost`, poll, toasts, the band and its `1` button, the status entry, the banner, the real `paneOpen` and `paneClose` host calls with a placeholder pane view until P12, and the `mod-calls` smoke check (6.5) | P2 | P3, P4, P5 | S14, S18, S19 (all soft) |
@@ -268,7 +268,7 @@ The producer to consumer audit and the spike table are derived from the Markdown
 - **P12.** The pane is drawn inside Claude Code, so Playwright cannot drive it. Its proof is the fake-host `node:test` files named in 7.22 and `claude plugin test` run locally, with output attached to the pull request (Q17). A Playwright spec is required only for a dashboard UI change, which is P1's Settings row.
 - **Subagent lines, one path.** Per-task subagent data has one path: `subagents` counts (`{running, finished}`) on each item of the `GET /dispatch/inbox` response (P4's route) and the per-subagent `subagents` lines in the `GET /dispatch/tasks/{taskId}/transcript` response (P9's route). There is no separate tasks route in v1: the Tasks tab and item views read tasks through the inbox response. `subagentLines` is not a field: it is the pure function in `src/shared/subagent-lines.ts` (spec 7.17) that P15 owns. P1 declares both fields from spec 7.7 and 7.23. P4 creates `src/server/home-dispatch/subagent-state.ts` (from the session registry's subagent state, or the smallest in-memory tracking in the daemon's existing hook-event handler, never in the owned hook wrapper) and fills the inbox counts; P9 reuses it for the transcript lines. P12 reserves two slots in `src/mod/pane/header.tsx` (the Tasks row text and the follow view's header lines) and renders nothing in them while the fields are empty. P15 creates `src/shared/subagent-lines.ts`, fills both slots and edits nothing else in the pane. Tests: P4 and P9 prove the fields from recorded events; P15 renders the pane at 40, 71 and 120 columns with and without lines and proves recorded events reach the rendered row and follow view end to end; P12's tests must still pass.
 - **P17.** Docs list the pane, its keys, the `1` first-key note and residents, and say the pane's cost leaves out review calls (Q26). They also carry the mods troubleshooting section of 6.5.
-- **P18.** The no-multiplexer check asserts nothing in headless mode requires tmux or herdr, and the Focus checks of 4.2 run again against the whole stack.
+- **P18.** The no-multiplexer check asserts nothing in headless mode requires tmux or herdr, and the three Focus guards of 4.2 run again against the whole stack, guard 1 with the task started through `mctl run` and through the mod's dispatch flow.
 
 ### 6.4 Gate recording, with no results file
 
@@ -367,7 +367,22 @@ The hard rule and the soft rule of 5.1 apply to every row. In every phase file t
 | S8, S12, S15 | Soft | P11 | The phase merges using the fallback | Per spec 11.2 |
 | S24, S25, S26 | Soft | P7 | The phase merges using the fallback | Per spec 11.2 |
 
-Rerun the derivation and update both tables whenever a phase file adds a Scope artifact or a spike. A pair that is not ordered and has no stated reason is a plan error.
+**C. Constants that appear in more than one file**
+
+Derived by the same script: every duration, row cap and column width that two or more files state. Each has one default, at most one fallback, and one owning phase.
+
+| Constant | Default | Fallback and trigger | Owner | Stated in |
+|---|---|---|---|---|
+| Inbox poll | 5 s | none | P8 | plan 5.1 and 5.2 (S23), phase 8 |
+| Chat poll | 1.5 s | 3 s when S23 records the default as too costly | P12 | plan 5.1 and 5.2, phase 9 handoff, phase 12 (outcome, scope, tests) |
+| Tasks tab rows | all | capped at 30 when S23 records the default as too costly | P12 | plan 5.1 and R10, phase 12 |
+| Pane widths tested | 40, 71 and 120 columns | none | P12, and P15 for its slots | plan 6.3, phases 12 and 15 |
+
+**D. Where tests get their fixtures**
+
+Tests in phases before P5 use planted database rows or the P2 fakes. P5 is the first phase that starts a real task through the dashboard path, so the runtime and Focus test (guard 1 of 4.2) is P5's, and P18 repeats it through `mctl run` and the mod's dispatch flow.
+
+Rerun the derivation and update tables A to C whenever a phase file adds a Scope artifact or a spike. A pair that is not ordered and has no stated reason is a plan error.
 
 ## 7. Risks
 
@@ -380,7 +395,7 @@ Rerun the derivation and update both tables whenever a phase file adds a Scope a
 | R5 | P1 is large and sits on the critical path | High. Every phase waits for it. | Split into P1 and P2; P1 is server seams only. |
 | R6 | Parallel pull requests collide on hot files (`db.ts`, `routes.ts`, the route oracle, `register.ts`, `engine.ts`) | High with six agents at once. | Spec 8.1 hot-file owners; P1 stubs every route so later phases change values, not rows; each pull request rebases before merging. |
 | R7 | The Codex fail-fast gate changes dashboard behavior | Medium. It sits in the shared workflow engine. | Flag-gated; a flag-off test proves today's retries; Q25 keeps dashboard tasks out of FR-05. |
-| R8 | Existing Focus breaks indirectly (constraint 1) | Low, and the cost is high. | The three guards in 4.2, repeated in P18. |
+| R8 | Existing Focus breaks indirectly (constraint 1) | Low, and the cost is high. | The three guards in 4.2 (guards 2 and 3 in P1, guard 1 in P5), repeated in P18. |
 | R9 | Headless-only users never reach a retro because pane answers are not "corrections" | Medium. FR-06's learning loop starves for home-dispatched work. | S28a on `main` now and S28b once the routes exist; later findings are additive contract changes; findings go to the FR-06 owner. |
 | R10 | Poll cost with many items or several sessions (S23) | Low to medium. | The 3 s and 30-row fallbacks. |
 | R11 | A worker's text reaches the model or forges an inbox line | Low if the renderer is shared. | One renderer with fences (7.18, L15); P12 and P18 test the context check (F18). |
@@ -396,14 +411,14 @@ Rerun the derivation and update both tables whenever a phase file adds a Scope a
 
 Asked as selectable decisions on revision 1, and recorded here. Choices that differed from the plan's recommendation are marked, and revision 2 applies them.
 
-1. **Jordan's constraint and D50 wording.** Adopted: add the three Focus guards to P1 and P18, and ask the owner to clarify D50 in the spec ("the new `/dispatch/jump` route, not `/api/sessions/:id/focus`"). The owner applies the clarification; this plan does not edit the spec.
+1. **Jordan's constraint and D50 wording.** Adopted: add the three Focus guards (guards 2 and 3 in P1, guard 1 in P5, all three repeated in P18), and ask the owner to clarify D50 in the spec ("the new `/dispatch/jump` route, not `/api/sessions/:id/focus`"). The owner applies the clarification; this plan does not edit the spec.
 2. **WP1 as two pull requests.** Adopted: P1 contracts and server seams, then P2 CLI, mod and pane skeleton and fakes.
 3. **The "mods can load" plan.** Adopted, **differing from the recommendation**: fold its checks into WP7 and spike S17 now (6.5), with no spec ids until the owner renumbers them.
 4. **S28 scope.** Adopted: two stages, S28a now on `main` and S28b after the inbox and chat routes merge (5.3).
 5. **Where spike answers live.** Adopted, **differing from the recommendation**: task reports and Commonroom only, with no results file in the repository (5 and 6.4).
 6. **Phased follow-up.** Adopted: create the phased implementation plan, once this revision is approved.
 
-## 9. Repairs after the Plan Validation review (revisions 4 to 12)
+## 9. Repairs after the Plan Validation review (revisions 4 to 13)
 
 Revision 4:
 
@@ -480,5 +495,12 @@ Revision 12, after the operator's Shepherd asked for a mechanical audit:
 | Validators keep sampling different ordering edges | Tables A and B in 6.8 are derived by script from the 20 files; every unordered pair has a stated reason; the hand-written audit table is removed | 6.2, 6.8 |
 | The audit found P7's `codex` step consumed P14's commands with no stated interim | P7's step runs under its own tests until P14 merges, then from P2's step list; P14 skips a stub step with `step not available in this build` and tests it | 6.8, phases 7 and 14 |
 | Spike rows were grouped, and P8's gate cell omitted S18 and S19 | Rows split (S14, S17; S4, S5, S8, S12, S15); P8 gates are S14, S18 and S19 in plan 6.1, the phased plan and phase 8 | 5.1, 6.1 |
+
+Revision 13, after the seventh review round:
+
+| Finding | Repair | Where |
+|---|---|---|
+| P9 promised a 1.5 s chat poll while P12 allows 3 s under S23 | One statement everywhere: 1.5 s by default, 3 s under the S23 fallback; table C in 6.8 lists every constant stated in more than one file | 6.8, phases 9 and 12 |
+| The home-dispatched Focus test sat in P1 and P3 before any task could be started | Guard 1 is P5's test (the first phase that starts a task), with guards 2 and 3 in P1; P3 only checks that no runtime is set; P18 repeats guard 1 through `mctl run` and the mod flow; table D in 6.8 says where tests get their fixtures | 4.2, 6.1, 6.8, phases 1, 3, 5, 18 |
 
 No recorded human decision changed. Decision 5 (spike answers in task reports and Commonroom) is kept: reports are task reports where an agent ran the spike, and Commonroom posts everywhere.

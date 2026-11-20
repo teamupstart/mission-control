@@ -113,6 +113,8 @@ test("inboxStateFor maps task facts to the seven states and drops what has aged 
   assert.equal(f({ taskStatus: "backlog" }), "queued");
   assert.equal(f({ taskStatus: "backlog", enabled: false }), "shelved");
   assert.equal(f({ taskStatus: "done" }), "ready");
+  assert.equal(f({ taskStatus: "done", hasPending: true }), "waiting", "a finished task with an open request needs the person");
+  assert.equal(f({ taskStatus: "done", hasPending: true, runStatus: "blocked" }), "waiting");
   assert.equal(f({ taskStatus: "done", runStatus: "running" }), "running", "its after-work run is still going");
   assert.equal(f({ taskStatus: "done", runStatus: "blocked" }), "blocked");
   assert.equal(f({ taskStatus: "done", runStatus: "completed" }), "ready");

@@ -167,11 +167,23 @@ export function pendingFor(review: ReviewItem, resident: boolean): InboxPending 
 export function taskOwningSession(
   deps: Pick<HomeDispatchDeps, "registry">,
   sessionId: string,
-): { task: Task } | { ambiguous: true } | undefined {
+  /** When the review was created. A task that started after it cannot be the one that asked. */
+  reviewCreatedAt?: number,
+): { task: Task } | { ambiguous: true } | { unestablished: true } | undefined {
   const active = deps.registry.listTasks().filter((t) => t.sessionId === sessionId && isActiveTask(t.status));
   if (active.length > 1) return { ambiguous: true };
   const task = active[0] ?? deps.registry.taskForSession(sessionId, null);
-  return task ? { task } : undefined;
+  if (!task) return undefined;
+  // A review records only its session, not its task. When another task took the session over after
+  // the review was created, the review was asked by the task that held the session then, which is
+  // no longer knowable, so it is refused rather than attributed to the new holder.
+  if (reviewCreatedAt !== undefined && !reviewBelongsTo(task, reviewCreatedAt)) return { unestablished: true };
+  return { task };
+}
+
+/** Whether a review created at `createdAt` could have been asked by `task`: it was running by then. */
+export function reviewBelongsTo(task: Pick<Task, "dispatchedAt" | "createdAt">, createdAt: number): boolean {
+  return createdAt >= (task.dispatchedAt ?? task.createdAt);
 }
 
 /** The text a refused action on a `dashboard-only` item carries (7.8). */

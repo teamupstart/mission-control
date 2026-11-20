@@ -67,12 +67,12 @@ function taskOfReview(
   deps: Pick<HomeDispatchDeps, "registry">,
   review: ReviewItem | undefined,
   receipt: ReceiptRow | undefined,
-): { task: Task } | { ambiguous: true } | undefined {
+): ReturnType<typeof taskOwningSession> {
   if (receipt) {
     const task = deps.registry.getTask(receipt.task_id);
     return task ? { task } : undefined;
   }
-  return review ? taskOwningSession(deps, review.sessionId) : undefined;
+  return review ? taskOwningSession(deps, review.sessionId, review.createdAt) : undefined;
 }
 
 function actorFor(resolved: ResolvedCaller, approving: boolean): ReviewActor {
@@ -208,6 +208,7 @@ function answer(
   const owner = taskOfReview(deps, review, prior);
   if (!owner) return refuse(404, "no such review");
   if ("ambiguous" in owner) return refuse(409, "more than one active task shares this review's session, so it cannot be answered from here; answer it in the dashboard");
+  if ("unestablished" in owner) return refuse(409, "another task took over this review's session after it was asked, so which task asked it cannot be established; answer it in the dashboard");
   const { task } = owner;
 
   const origin = taskOriginOf(task.id);

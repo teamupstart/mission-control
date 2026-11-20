@@ -14,7 +14,7 @@ import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { activeAgentCount } from "../foreman/backlog-machine.ts";
-import { pendingFor, taskOwningSession } from "./approval.ts";
+import { pendingFor, reviewBelongsTo, taskOwningSession } from "./approval.ts";
 import { resolveCaller, taskOrigins, type ResolvedCaller } from "./caller.ts";
 import { reviewerRowsFor, runChecksFor } from "./reviewers.ts";
 import { canReadTask, type TaskOrigin } from "./sessions.ts";
@@ -80,9 +80,13 @@ export function visibleResidents(
 }
 
 /** The first pending review of a session, oldest first: what the item asks. */
-function firstPending(deps: Pick<HomeDispatchDeps, "registry">, sessionId: string | null): ReviewItem | undefined {
+function firstPending(deps: Pick<HomeDispatchDeps, "registry">, sessionId: string | null, task: Task): ReviewItem | undefined {
   if (!sessionId) return undefined;
-  return [...deps.registry.pendingReviews(sessionId)].sort((a, b) => a.createdAt - b.createdAt)[0];
+  // Only a review the task could have asked: one created before it started belongs to a task that
+  // held the session earlier (`reviewBelongsTo`), and is not attributed to this one.
+  return deps.registry.pendingReviews(sessionId)
+    .filter((r) => reviewBelongsTo(task, r.createdAt))
+    .sort((a, b) => a.createdAt - b.createdAt)[0];
 }
 
 /** The task's most relevant workflow run: the most recently updated one its session owns. */
@@ -170,7 +174,7 @@ export function buildInbox(
     // A review belongs to the one task that owns its session; a task that merely shares the session
     // (an earlier one) never shows the question, and an ambiguous session shows it on neither.
     const owner = task.sessionId ? taskOwningSession(deps, task.sessionId) : undefined;
-    const pending = owner && "task" in owner && owner.task.id === task.id ? firstPending(deps, task.sessionId) : undefined;
+    const pending = owner && "task" in owner && owner.task.id === task.id ? firstPending(deps, task.sessionId, task) : undefined;
     // A resident run is in the inbox only while it has a request; the Residents tab lists the rest.
     if (resident && !pending) continue;
     const run = task.sessionId ? runs.get(task.sessionId) : undefined;

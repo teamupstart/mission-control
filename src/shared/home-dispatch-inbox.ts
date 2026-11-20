@@ -54,6 +54,8 @@ export function inboxStateFor(facts: InboxStateFacts): InboxState | null {
       if (facts.hasPending) return "waiting";
       return runBlocked ? "blocked" : "running";
     case "done":
+      // A request still pending on a finished task needs the person, whatever the task's status says.
+      if (facts.hasPending) return "waiting";
       // The after-work run belongs to the task: it can still be reviewing, or stuck.
       if (runBlocked) return "blocked";
       if (runOpen) return "running";

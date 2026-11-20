@@ -17,7 +17,6 @@ import { getForemanConfig } from "../foreman/config.ts";
 import { activeAgentCount } from "../foreman/backlog-machine.ts";
 import { pendingFor, reviewBelongsTo, taskOwningSession } from "./approval.ts";
 import { resolveCaller, taskOrigins, type ResolvedCaller } from "./caller.ts";
-import { openDb } from "../db.ts";
 import { reviewerRowsFor, runChecksFor } from "./reviewers.ts";
 import { canReadTask, type TaskOrigin } from "./sessions.ts";
 import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
@@ -97,12 +96,6 @@ function pendingOf(deps: Pick<HomeDispatchDeps, "registry">, sessionId: string |
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
-/** When a workflow run started, from its own row; null when there is no row to read. */
-function runStartedAt(runId: string): number | null {
-  const row = openDb().prepare(`SELECT started_at FROM workflow_runs WHERE id = ?`).get(runId) as { started_at: number } | undefined;
-  return row?.started_at ?? null;
-}
-
 /**
  * How much a run matters to the person: one stopped for them first, then one still going, then one
  * that ended. A session has one run per repository it changed, so the task shows the most pressing.
@@ -133,8 +126,8 @@ function runForTask(task: Task, summaries: readonly WorkflowRunSummary[] | undef
   const taskStart = task.dispatchedAt ?? task.createdAt;
   let best: WorkflowRunSummary | undefined;
   for (const summary of summaries ?? []) {
-    const startedAt = runStartedAt(summary.id);
-    if (startedAt !== null && startedAt < taskStart) continue;
+    // A summary without a start (an older daemon's) cannot be placed, so it is kept, as before.
+    if (summary.startedAt !== undefined && summary.startedAt < taskStart) continue;
     const better = !best
       || runPriority(summary) > runPriority(best)
       || (runPriority(summary) === runPriority(best) && summary.updatedAt > best.updatedAt);

@@ -230,6 +230,14 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
     planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] }), /originating.*episode/);
 });
 
+test("a run summary carries when its run started, for headless mode's inbox to tell a task's own run from an earlier one", async () => {
+  const f = await fixture(true); await f.review();
+  const { runId } = frozenValidation(f);
+  const summary = f.workflows.store.runSummary(runId)!;
+  assert.equal(typeof summary.startedAt, "number");
+  assert.equal(summary.startedAt, f.workflows.store.getRun(runId)!.startedAt, "the same value the run row holds");
+});
+
 // Headless mode (7.9): only `home-approval:` approves from a home session; a later plain `home:` or
 // `mctl` request for changes beats it, and a plain `home:` or `mctl` approval is never an approval.
 test("a home-approval approves publication, and a later home or mctl refusal revokes it", async () => {

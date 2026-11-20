@@ -352,14 +352,9 @@ test("a run that started before a task took over the session is not attached to 
   const mine = { surface: "home-session" as const, repo: h.repo, session: h.sessionId };
   // Task B took the session at 5 000; the run below is task A's, from before.
   addTask({ id: "t-run-owner", status: "running", sessionId: sid, dispatchedAt: 5_000, updatedAt: Date.now() }, mine);
-  const db = openDb();
-  const row = (id: string, status: string, startedAt: number) => {
-    db.prepare(
-      `INSERT INTO workflow_runs (id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds, trigger_source, trigger_key, started_at, updated_at)
-       VALUES (?, 'b', 'v', ?, 'p', 1, 'manual', ?, ?, ?)`,
-    ).run(id, status, `key-${id}`, startedAt, startedAt);
-    return { id, sessionId: sid, workflowId: "wf", workflowName: "General Review", workflowVersion: 1, status, phase: "p", round: 1, actionWait: null, updatedAt: startedAt };
-  };
+  // A fake run list is enough: the run summary carries its own `startedAt`, so no table is read.
+  const row = (id: string, status: string, startedAt: number) =>
+    ({ id, sessionId: sid, workflowId: "wf", workflowName: "General Review", workflowVersion: 1, status, phase: "p", round: 1, actionWait: null, startedAt, updatedAt: startedAt });
   fakeRuns = [row("run-of-a", "blocked", 1_000)];
   const before = (await inboxFor(h)).items.find((i) => i.taskId === "t-run-owner")!;
   assert.equal(before.run, undefined, "an earlier task's run is not this task's");

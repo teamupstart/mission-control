@@ -285,12 +285,24 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   await expect(deadline).toHaveValue("10000");
   await expect(budget).toHaveValue("32");
   await expect(save).toBeDisabled();
-  for (const [deadlineMs, kib] of [["100", "1"], ["60000", "64"]] as const) {
+  // Each bound saves, stores the exact byte count, and reaches the other window. The last pair
+  // puts back the defaults the checks below start from.
+  const peerDeadline = panel(peer).getByRole("spinbutton", { name: "Step deadline (ms)" });
+  const peerBudget = panel(peer).getByRole("spinbutton", { name: "Context budget (KiB)" });
+  for (const [deadlineMs, kib, totalBytes] of [["100", "1", 1024], ["60000", "64", 65_536], ["10000", "32", 32_768]] as const) {
     await deadline.fill(deadlineMs);
     await budget.fill(kib);
     await expect(deadlineProblem).toHaveCount(0);
     await expect(budgetProblem).toHaveCount(0);
     await expect(save).toBeEnabled();
+    await save.click();
+    await expect.poll(async () => (await shapingConfig(daemon)).limits)
+      .toMatchObject({ deadlineMs: Number(deadlineMs), totalBytes });
+    await expect(peerDeadline).toHaveValue(deadlineMs);
+    await expect(peerBudget).toHaveValue(kib);
+    await expect(deadline).toHaveValue(deadlineMs);
+    await expect(budget).toHaveValue(kib);
+    await expect(save).toBeDisabled();
   }
   for (const bad of ["99", "60001", "", "150.5"]) {
     await deadline.fill(bad);

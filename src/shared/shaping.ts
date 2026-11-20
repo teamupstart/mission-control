@@ -1030,6 +1030,13 @@ export type DiscoveredShaper = z.output<typeof DiscoveredShaperSchema>;
 /** Set or not set, per `{env:NAME}` any shaper references. Never a value. */
 export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 
+/** What `GET /api/shaping` answers. */
+export interface ShapingReply {
+  config: ShapingConfigView;
+  discovered: DiscoveredShaper[];
+  references: ShapingReferenceStatus;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Intents
 
@@ -1183,7 +1190,7 @@ function candidates(
     if (entry.kind !== "known") return;
     out.push({
       shaper: entry.shaper, origin: "registered", stored: entry.stored, sha256: null, root: null, position,
-      enabled: Object.hasOwn(config.overrides, entry.shaper.id) ? config.overrides[entry.shaper.id]! : false,
+      enabled: shaperSwitchedOn(config, entry.shaper.id, "registered"),
     });
   });
   for (const entry of discovered) {
@@ -1196,7 +1203,7 @@ function candidates(
     out.push({
       shaper: parsed.data, origin: "discovered", stored: null, sha256: entry.sha256, root: entry.path,
       position: Number.MAX_SAFE_INTEGER,
-      enabled: Object.hasOwn(config.overrides, entry.id) ? config.overrides[entry.id]! : entry.shaper.enabled !== false,
+      enabled: shaperSwitchedOn(config, entry.id, "discovered", entry.shaper.enabled),
     });
   }
   return out;
@@ -1208,20 +1215,53 @@ function stripManifestFields(manifest: ShaperManifest): unknown {
 }
 
 /**
- * The ordering rule: stage order, then the stored `order`, then unlisted registered shapers in
- * stored order, then unlisted discovered shapers by id.
+ * Whether a shaper is switched on, before its filters: the enablement rule's one statement. A
+ * stored choice in `overrides`, on or off, always wins. With none, a registered shaper is off
+ * and a discovered one is on unless its manifest says `"enabled": false`. Settings reads the
+ * same answer for its pills, so the list and a launch never disagree about a shaper.
  */
-function compareCandidates(order: readonly string[], stages: readonly string[]) {
+export function shaperSwitchedOn(
+  config: Pick<ShapingConfig, "overrides">,
+  id: string,
+  origin: ShapingOrigin,
+  manifestEnabled?: boolean,
+): boolean {
+  if (Object.hasOwn(config.overrides, id)) return config.overrides[id]!;
+  return origin === "discovered" && manifestEnabled !== false;
+}
+
+/** What the ordering rule reads about one shaper: its id, its stage, and where it is stored. */
+export interface ShapingOrderKey {
+  id: string;
+  stage: string;
+  /** Its index in the stored list. A discovered shaper has none and sorts after every stored one. */
+  position: number;
+}
+
+/**
+ * The ordering rule: stage order, then the stored `order`, then unlisted registered shapers in
+ * stored order, then unlisted discovered shapers by id. The resolver and the Settings list both
+ * sort with it, so the list shows exactly the order a launch runs in.
+ */
+export function compareShapingOrder(order: readonly string[], stages: readonly string[] = SHAPING_STAGES) {
   const rank = new Map(order.map((id, at) => [id, at]));
-  return (a: Candidate, b: Candidate): number => {
-    const stage = stages.indexOf(a.shaper.stage) - stages.indexOf(b.shaper.stage);
+  return (a: ShapingOrderKey, b: ShapingOrderKey): number => {
+    const stage = stages.indexOf(a.stage) - stages.indexOf(b.stage);
     if (stage !== 0) return stage;
-    const ra = rank.get(a.shaper.id) ?? Number.MAX_SAFE_INTEGER;
-    const rb = rank.get(b.shaper.id) ?? Number.MAX_SAFE_INTEGER;
+    const ra = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const rb = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
     if (ra !== rb) return ra - rb;
     if (a.position !== b.position) return a.position - b.position;
-    return a.shaper.id < b.shaper.id ? -1 : a.shaper.id > b.shaper.id ? 1 : 0;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   };
+}
+
+function compareCandidates(order: readonly string[], stages: readonly string[]) {
+  const compare = compareShapingOrder(order, stages);
+  return (a: Candidate, b: Candidate): number => compare(
+    { id: a.shaper.id, stage: a.shaper.stage, position: a.position },
+    { id: b.shaper.id, stage: b.shaper.stage, position: b.position },
+  );
 }
 
 function applicableRepositories(shaper: Shaper, input: ShapingResolveInput): string[] {
@@ -1407,6 +1447,29 @@ export const TaskShapingSchema = z.object({
   shapers: z.array(ShapingShaperSummarySchema).max(SHAPING_LIMITS.shapers * 2),
 });
 export type TaskShaping = z.output<typeof TaskShapingSchema>;
+
+/** One entry as it would be injected, for the record, the viewer and the dry run. */
+export interface ShapingInjectedEntry {
+  shaperId: string;
+  label: string;
+  stage: string;
+  repo: string;
+  id: string;
+  title: string | null;
+  path: string | null;
+  body: string;
+  truncated: boolean;
+  omittedBytes: number;
+}
+
+/** What one run comes to, and what `POST /api/shaping/test` answers. */
+export interface ShapingRun {
+  /** Null when no shaper applied. */
+  summary: TaskShaping | null;
+  /** The section for turn one. Empty when nothing was kept. */
+  section: string;
+  entries: ShapingInjectedEntry[];
+}
 
 /** One call: one shaper, one repository. What `summariseShaping` folds per shaper. */
 export interface ShapingCallRecord {

@@ -320,7 +320,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Task shaping** (preview, while its flag is on), **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (temporarily unavailable), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -355,6 +355,13 @@ tool inspection with persisted settings. See [alpha updates](desktop-and-packagi
 **Feature flags** sits directly after Setup under Sessions, scoped to this machine. It offers
 searchable preview toggles, Enable all, and Advanced for default-on features. Alpha builds
 do not enable previews. See [Feature flags](feature-flags.md).
+
+**Task shaping** (`#/settings/task-shaping`) sits after Tasks and exists only while the
+`task-shaping` preview flag is on. It appears and disappears in the rail, the panel, settings
+search and the palette of every open window the moment the flag changes, with no reload. It
+lists the registered shapers by stage, imports a reviewed manifest switched off, switches each
+on or off, orders, dry-runs and removes them, and holds the caller identity and the two shaping
+budgets. Its settings are the `shaping` backup domain. See [Task shaping](task-shaping.md#settings).
 
 Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
 (today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**
@@ -495,7 +502,8 @@ unconditional destinations, so the rail, the arrow-key walk, the valid routes, t
 the render tests all read one registry with no runtime availability filter. The one exception
 is the build-time `CONDUCTOR_INTEGRATION_ENABLED` switch above: while it is off,
 `settingsCategoryAvailable` withholds Conductor from every one of those readers at once, so none
-of them can disagree. Engine presence, consent and probes never add or remove it. A destination for software
+of them can disagree. A category behind a preview flag, such as Task shaping, goes through the
+same function with the live flags. Engine presence, consent and probes never add or remove it. A destination for software
 that is not installed explains that inside its own panel; a local visibility check is how a
 panel becomes reachable from search but absent from the rail, or how a valid deep link
 unexpectedly falls back to Display. It is the consent surface for observing an external SDLC

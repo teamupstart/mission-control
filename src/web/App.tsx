@@ -1,4 +1,5 @@
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
+import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -370,6 +371,8 @@ export function App(): React.JSX.Element {
     lineSummary,
     featureFlags,
     subscribeFeatureFlags,
+    shaping,
+    subscribeShaping,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -1147,6 +1150,8 @@ export function App(): React.JSX.Element {
    * palette opens.
    */
   const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected, subscribeFeatureFlags);
+  // Owned here beside the flags' settings: its confirmed state is the event stream's, which App holds.
+  const shapingSettings = useShapingSettings(shaping, hasSnapshot && connected, subscribeShaping);
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
@@ -1213,8 +1218,10 @@ export function App(): React.JSX.Element {
       sessionNames,
       residents: paletteResidents,
       settingsBindings: paletteBindings,
+      featureFlags,
     }),
     [
+      featureFlags,
       paletteResidents,
       workflowSummaries,
       workflowRuns,
@@ -4822,6 +4829,7 @@ export function App(): React.JSX.Element {
           settings={(
             <SettingsPage
               featureFlagsSettings={featureFlagsSettings}
+              shapingSettings={shapingSettings}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:

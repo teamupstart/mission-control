@@ -1,5 +1,5 @@
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
-import { resolveFeatureFlag, type FeatureFlagDefinition } from "@shared/feature-flags.ts";
+import { resolveFeatureFlag, type FeatureFlagDefinition, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 // The settings search index: one flat, control-level list of everything the settings
 // page can be told to do.
@@ -19,7 +19,7 @@ import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 // rule - deterministic substring, registry order, no fuzzy ranking - and this file kept the
 // list and the toggle bindings, so there is still exactly one of each.
 
-import { settingsCategoryAvailable, type SettingsCategoryId } from "./settings-registry.ts";
+import { settingsCategoryAvailable, settingsCategoryInBuild, type SettingsCategoryId } from "./settings-registry.ts";
 import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { ACTIONS } from "./keybindings.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
@@ -110,7 +110,7 @@ const KEYBOARD_CONTROLS: SettingsControl[] = ACTIONS.map((a) => ({
 /**
  * Every control this registry knows, including those on a category the build withholds.
  * Registry-level checks (backup ownership) read this; search and the palette read
- * `SETTINGS_CONTROLS`.
+ * `settingsControls`.
  */
 export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
@@ -529,6 +529,46 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["default", "dispatch", "after work", "workflow", "agent", "task", "task kind", "per kind"],
     kind: "jump",
     backup: backupDomains("workflow-policy"),
+  },
+  {
+    id: "task-shaping-shapers",
+    label: "Shapers",
+    description: "The registered shapers in run order: switch one on or off, move it, dry-run it, or remove it.",
+    category: "task-shaping",
+    anchor: "task-shaping/shapers",
+    keywords: ["shaper", "gatherer", "selector", "enable", "order", "dry run", "test", "remove", "context", "guidance"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-import",
+    label: "Import a shaper manifest",
+    description: "Paste or choose a shaper manifest, review what it runs or calls, and save it switched off.",
+    category: "task-shaping",
+    anchor: "task-shaping/import",
+    keywords: ["import", "manifest", "register", "add shaper", "json", "command", "mcp", "http"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-identity",
+    label: "Shaping caller identity",
+    description: "The identity a shaper receives as {caller.user}. Declared, not verified, and not a secret.",
+    category: "task-shaping",
+    anchor: "task-shaping/identity",
+    keywords: ["caller", "identity", "user", "caller.user", "who"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-limits",
+    label: "Shaping budgets",
+    description: "How long one shaping step may take, and how much context it may add to a worker's first prompt.",
+    category: "task-shaping",
+    anchor: "task-shaping/limits",
+    keywords: ["deadline", "timeout", "budget", "bytes", "limit", "context size"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
   },
   {
     id: "grill-first-defaults",
@@ -1229,23 +1269,25 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
 ];
 
 /**
- * The indexed controls this build offers. A control on a category the build does not draw -
- * Conductor's, while the ai-conductor integration is hidden - would be a search hit that
- * leads nowhere, so it is not indexed at all.
+ * The indexed controls drawn under these flags. A control on a category that is not drawn -
+ * Conductor's, while the ai-conductor integration is hidden, or Task shaping's while its flag
+ * is off - would be a search hit that leads nowhere, so it is not offered. Read through the
+ * category gate, live, never frozen at module load.
  */
-export const SETTINGS_CONTROLS: readonly SettingsControl[] = ALL_SETTINGS_CONTROLS.filter(
-  (control) => settingsCategoryAvailable(control.category),
-);
+export function settingsControls(flags: FeatureFlagsConfig): readonly SettingsControl[] {
+  return ALL_SETTINGS_CONTROLS.filter((control) => settingsCategoryAvailable(control.category, flags));
+}
 
 /**
  * The control ids the page is expected to wire a boolean binding for: every `"toggle"`
- * that is not risky. The page builds its `Map<controlId, ToggleBinding>` for exactly these
- * (see `SettingsPage`), so a risky control can never receive a binding and can never flip
- * from a search result - it degrades to a jump. Exported so the test can pin that without
- * reaching into the page's runtime wiring.
+ * that is not risky, on a category this build offers. The page builds its
+ * `Map<controlId, ToggleBinding>` for exactly these (see `SettingsPage`), so a risky control
+ * can never receive a binding and can never flip from a search result - it degrades to a
+ * jump. Exported so the test can pin that without reaching into the page's runtime wiring.
+ * Whether a control can be bound is a fact about the control, so no flag changes it.
  */
-export const BINDABLE_CONTROL_IDS: readonly string[] = SETTINGS_CONTROLS.filter(
-  (c) => c.kind === "toggle" && !c.risky,
+export const BINDABLE_CONTROL_IDS: readonly string[] = ALL_SETTINGS_CONTROLS.filter(
+  (c) => settingsCategoryInBuild(c.category) && c.kind === "toggle" && !c.risky,
 ).map((c) => c.id);
 
 /** A runtime get/set pair for one boolean control, supplied by the page. */

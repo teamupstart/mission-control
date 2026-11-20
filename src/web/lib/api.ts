@@ -1,4 +1,5 @@
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import type { ShapingConfigView, ShapingIntent, ShapingReply, ShapingRun, ShapingTestRequest } from "@shared/shaping.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -2351,6 +2352,31 @@ export const api = {
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
   setFeatureFlags: (intent: FeatureFlagIntent) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent),
+  // --- Task shaping, behind its preview flag (404 while it is off) ---
+  /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
+  getShaping: () =>
+    request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
+  /** Apply one intent. A refusal carries the daemon's `reason`. */
+  setShaping: (intent: ShapingIntent) =>
+    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent),
+  /**
+   * Dry-run one shaper against a checkout. A shaper that fails is an outcome in the reply, not an
+   * error. Aborting `signal` closes the request, and the daemon stops the shaper with it.
+   */
+  testShaper: async (body: ShapingTestRequest, signal?: AbortSignal): Promise<
+    { ok: true; run: ShapingRun } | { ok: false; aborted: boolean; reason: string }
+  > => {
+    try {
+      const res = await actionFetch("/api/shaping/test", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal,
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<ShapingRun> & { error?: string; reason?: string };
+      if (!res.ok) return { ok: false, aborted: false, reason: data.reason ?? data.error ?? `HTTP ${res.status}` };
+      return { ok: true, run: { summary: data.summary ?? null, section: data.section ?? "", entries: data.entries ?? [] } };
+    } catch (error) {
+      return { ok: false, aborted: signal?.aborted === true, reason: error instanceof Error ? error.message : String(error) };
+    }
+  },
   setStorageLimits: (patch: StorageLimitsConfigPatch) =>
     put<ActionResult & { message?: string }>(`/api/storage/limits`, patch),
   /** Start measuring the state directory. It finishes in the background. */

@@ -147,3 +147,20 @@ when serialized even at the maximum. Identical frames are suppressed by comparin
 and every override, independent of key order. It is not a `LINE_INPUT_EVENTS` member: no Line
 stage consumes flags. Writes and settings restores publish after persistence, without polling.
 See [Feature flags](feature-flags.md).
+
+## Task shaping
+
+`shaping_config` carries `{ config }`, Task shaping's config view: `caller`, `limits`, `shapers`,
+`overrides` and `order`, where each shaper this build understands appears in full and an entry it
+cannot run appears only as `{ id, label, unsupported }`. Its raw stored envelope never leaves the
+daemon. The event and the reconnect snapshot's `shaping` field are both behind the `task-shaping`
+flag: while it is off the snapshot has no `shaping` field, no frame is sent, and nothing reads the
+stored shapers. Turning the flag on sends the current config, so an open window fills Settings >
+Task shaping with no reload, and turning it off sends `{ config: null }`, which clears it.
+`MissionState.shaping` is the only browser owner, null before the snapshot and while the flag is
+off. `wireShapingConfigEvents` in `src/server/shaping/events.ts` is the one bridge, wired once at
+daemon start, so every write through the shaping store and every settings restore reaches open
+windows through it. Identical frames are suppressed by canonical JSON. The config is bounded by
+`SHAPING_LIMITS`, 32 shapers of at most 16 KiB and 128 choices, below 560 KiB serialized at the
+maximum. It is not a `LINE_INPUT_EVENTS` member: shapers are read at dispatch, and no Line stage
+folds them. See [Task shaping](task-shaping.md#settings).

@@ -41704,3 +41704,65 @@ body.foreman-sidecar-open .modal-backdrop {
 .feature-flag-empty { padding: 12px; margin: 0; }
 .feature-flag-row .settings-grant { flex: none; }
 .feature-flag-advanced { width: 100%; flex-direction: row; justify-content: space-between; cursor: pointer; border: 0; text-align: left; }
+
+/* Settings > Task shaping. The list borrows Feature flags' bordered list and pane head; rows
+   add the facts a shaper needs stated beside it: what it runs or calls, and what it names. */
+.task-shaping { display: flex; flex-direction: column; gap: 16px; }
+.task-shaping > .settings-hint { margin: 0; }
+.shaping-settings { display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; border: 1px solid var(--border-soft); border-radius: 11px; background: var(--bg); }
+.shaping-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.shaping-field > label, .shaping-field > span { font-size: 12px; font-weight: 600; color: var(--fg); }
+.shaping-field .settings-hint { margin: 0; }
+.shaping-field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 14px; }
+.shaping-field-problem, .shaping-settings [role="alert"] { margin: 0; font-size: 11.5px; color: var(--attention); }
+.shaping-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.shaping-list-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.shaping-stage + .shaping-stage { border-top: 1px solid var(--border-soft); }
+.shaping-stage-head { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 4px; }
+.shaping-stage-head h4 { margin: 0; font-size: 12px; font-weight: 640; }
+.shaping-stage-head p { margin: 0; font-size: 11.5px; color: var(--dim); }
+.shaping-stage .feature-flag-empty { padding: 4px 12px 12px; }
+.shaping-row { display: flex; align-items: flex-start; gap: 16px; padding: 12px; border-top: 1px solid var(--border-soft); }
+.shaping-stage-head + .shaping-row { border-top: 0; }
+.shaping-row-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 4px; }
+.shaping-row-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
+.shaping-row-title strong { font-size: 13px; font-weight: 600; }
+.shaping-row-id { font-size: 11.5px; color: var(--dim); }
+.shaping-chip { font-size: 10.5px; line-height: 1; padding: 3px 6px; border-radius: 999px; border: 1px solid var(--border-soft); color: var(--dim); background: var(--panel-2); }
+.shaping-row-reach, .shaping-row-path { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--dim); }
+.shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-env { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
+.shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
+.shaping-env li.is-set span { color: var(--idle); }
+.shaping-env li.is-unset span { color: var(--attention); }
+.shaping-row-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.shaping-row-actions .btn { padding: 5px 9px; font-size: 12px; }
+.shaping-move { min-width: 30px; }
+.shaping-dialog { width: min(720px, 100%); }
+.shaping-dialog .modal-head h3 { margin: 0; font-size: 14px; }
+.shaping-dialog .modal-body { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; }
+.shaping-dialog-lede { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--dim); }
+.shaping-manifest { font-family: var(--mono); font-size: 12px; }
+.shaping-file { align-self: flex-start; cursor: pointer; }
+.shaping-refusal { margin: 0; font-size: 12px; color: var(--attention); overflow-wrap: anywhere; }
+.shaping-note { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-review { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg); }
+.shaping-review dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.shaping-review-line { display: contents; }
+.shaping-review dt { font-size: 11.5px; color: var(--dim); }
+.shaping-review dd { margin: 0; font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 6px; }
+.shaping-receives h4 { margin: 0 0 4px; font-size: 12px; font-weight: 640; }
+.shaping-receives ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }
+.shaping-receives p { margin: 6px 0 0; font-size: 12px; color: var(--dim); }
+.shaping-result { display: flex; flex-direction: column; gap: 8px; }
+.shaping-result h4 { margin: 4px 0 0; font-size: 12.5px; font-weight: 640; }
+.shaping-outcome { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-outcome strong { color: var(--fg); }
+.shaping-outcome.is-ok strong { color: var(--idle); }
+.shaping-outcome:not(.is-ok) strong { color: var(--attention); }
+.shaping-reason { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.shaping-entry { border: 1px solid var(--border-soft); border-radius: 9px; overflow: hidden; }
+.shaping-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 8px 10px; background: var(--panel-2); font-size: 12px; }
+.shaping-entry header code, .shaping-entry header span { color: var(--dim); font-size: 11.5px; }
+.shaping-entry pre { margin: 0; padding: 10px; max-height: 220px; overflow: auto; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }

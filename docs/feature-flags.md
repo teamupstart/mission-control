@@ -129,9 +129,15 @@ gates, not by resolving an unknown id as on.
 | `codex-resident-native-mcp` | preview | Codex residents' native MCP sources | [Residents](residents.md#all-native-sources) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
-| `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, and the shaping engine | [Task shaping](task-shaping.md) |
+| `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
 `e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
 `e2e/specs/task-shaping-flag.spec.ts` is Task shaping's own browser assertion: its row appears,
 a toggle reaches a second window without a reload, and the `/api/shaping` gate follows it.
+`e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
+in every open window.
+
+A Settings category behind a flag declares it as `flag` in `SETTINGS_CATEGORIES`, and
+`settingsCategoryAvailable(id, flags)` is its one gate for the rail, the page, settings search
+and the palette.

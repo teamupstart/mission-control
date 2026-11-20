@@ -15,14 +15,36 @@ import {
 } from "./helpers/storage-fixtures.ts";
 import {
   BINDABLE_CONTROL_IDS,
-  SETTINGS_CONTROLS,
   buildSettingsBindings,
+  settingsControls,
 } from "../src/web/lib/settings-search.ts";
 import {
   SETTINGS_CATEGORIES,
-  VISIBLE_SETTINGS_CATEGORIES,
+  visibleSettingsCategories,
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
+import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
+import { SHAPING_CONFIG_DEFAULTS, shapingConfigView } from "../src/shared/shaping.ts";
+import type { ShapingSettings } from "../src/web/useShapingSettings.ts";
+
+/**
+ * Every preview on, so a category behind a flag is swept like any other: this file asks whether
+ * each control's panel renders its anchor, and a panel withheld by its flag would pass for the
+ * wrong reason. Availability under each flag is pinned below and in the sidebar render test.
+ */
+const FLAGS_ON = { enableAll: true, overrides: {} };
+const FLAGS_OFF = { enableAll: false, overrides: {} };
+const SETTINGS_CONTROLS = settingsControls(FLAGS_ON);
+const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FLAGS_ON);
+const SHAPING: ShapingSettings = {
+  config: shapingConfigView(SHAPING_CONFIG_DEFAULTS),
+  pending: null,
+  pendingKey: null,
+  errors: {},
+  ready: true,
+  set: async () => true,
+  clearError: () => {},
+};
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
@@ -91,8 +113,9 @@ const EVERY_CATEGORY: SettingsStatus = {
 
 function renderCategory(category: SettingsCategoryId): string {
   return renderToStaticMarkup(
-    createElement(SettingsPage, {
+    createElement(FeatureFlagsContext.Provider, { value: FLAGS_ON }, createElement(SettingsPage, {
       category,
+      shapingSettings: SHAPING,
       onNavigate: () => {},
       onLeave: () => {},
       foreman: FOREMAN,
@@ -104,7 +127,7 @@ function renderCategory(category: SettingsCategoryId): string {
       settingsStatus: EVERY_CATEGORY,
       onStartTour: () => {},
       onBrowseTours: () => {},
-    }),
+    })),
   );
 }
 
@@ -182,6 +205,23 @@ test("every category has at least one control indexed", () => {
   // Every category this build draws; a withheld one (Conductor) indexes nothing on purpose.
   for (const c of VISIBLE_SETTINGS_CATEGORIES) {
     assert.ok(covered.has(c.id), `category "${c.id}" has no searchable control`);
+  }
+});
+
+test("Task shaping's category and controls are offered exactly while its flag is on", () => {
+  const shapingIds = ["task-shaping-shapers", "task-shaping-import", "task-shaping-identity", "task-shaping-limits"];
+  const offered = (flags: typeof FLAGS_ON) => settingsControls(flags).filter((c) => c.category === "task-shaping").map((c) => c.id);
+  assert.deepEqual(offered(FLAGS_OFF), []);
+  assert.ok(!visibleSettingsCategories(FLAGS_OFF).some((c) => c.id === "task-shaping"));
+  const on = { enableAll: false, overrides: { "task-shaping": true } };
+  assert.deepEqual(offered(on), shapingIds);
+  assert.ok(visibleSettingsCategories(on).some((c) => c.id === "task-shaping"));
+  // A stored off wins over Enable all, as it does for the flag itself.
+  assert.deepEqual(offered({ enableAll: true, overrides: { "task-shaping": false } }), []);
+  for (const id of shapingIds) {
+    const control = SETTINGS_CONTROLS.find((c) => c.id === id)!;
+    assert.match(control.anchor, /^task-shaping\//);
+    assert.deepEqual(control.backup, { kind: "domain", domains: ["shaping"] });
   }
 });
 

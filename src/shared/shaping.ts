@@ -357,9 +357,14 @@ export function credentialValueIsReferenced(name: string, value: string): boolea
 /** Name segments that say an argument names where a credential lives, not the credential itself. */
 const CREDENTIAL_LOCATOR_SEGMENTS = new Set(["file", "path", "dir", "name", "id", "url", "type", "env"]);
 
-function credentialArgumentName(name: string): boolean {
+/** Whether a name says it locates a credential, such as `token_file` or `type`, not holds one. */
+function credentialLocatorName(name: string): boolean {
   const segments = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  return credentialBearingName(name) && !segments.some((segment) => CREDENTIAL_LOCATOR_SEGMENTS.has(segment));
+  return segments.some((segment) => CREDENTIAL_LOCATOR_SEGMENTS.has(segment));
+}
+
+function credentialArgumentName(name: string): boolean {
+  return credentialBearingName(name) && !credentialLocatorName(name);
 }
 
 /**
@@ -373,8 +378,11 @@ const HEADER_FLAGS = new Set(["H", "header", "proxy-header"]);
 const CREDENTIAL_VALUE_FLAGS = new Set(["user", "proxy-user", "oauth2-bearer", "basic-auth"]);
 /** Short flags that take `user:password` (curl's `-u`, `-U`). Only a value with a colon counts. */
 const USERINFO_FLAGS = new Set(["u", "U"]);
-/** Flags whose value is `name=value` fields (curl's `-d`, `--data*`, `-F`, `--form`). */
-const FIELD_FLAGS = new Set(["d", "data", "data-raw", "data-binary", "data-urlencode", "data-ascii", "F", "form", "form-string"]);
+/**
+ * Flags whose value is a request body: `name=value` fields or a JSON document (curl's `-d`,
+ * `--data*`, `-F`, `--form`, `--json`).
+ */
+const FIELD_FLAGS = new Set(["d", "data", "data-raw", "data-binary", "data-urlencode", "data-ascii", "F", "form", "form-string", "json"]);
 /** Flags whose value is a cookie, which is a session credential (curl's `-b`, `--cookie`). */
 const COOKIE_FLAGS = new Set(["b", "cookie"]);
 /** Short flags that may carry their value attached, as in `-HAuthorization: x` or `-dtoken=x`. */
@@ -422,6 +430,48 @@ function argumentParts(
   return null;
 }
 
+/** Whether a body is a JSON document, judged as one rather than as `name=value` fields. */
+function looksLikeJson(text: string): boolean {
+  const body = text.trim();
+  return body.startsWith("{") || body.startsWith("[");
+}
+
+/**
+ * Whether a JSON document names a credential field with a value, at any depth: `{"token":"x"}`,
+ * `{"auth":{"password":"x"}}`, `[{"api_key":1}]`, `{"token":{"value":"x"}}`. An empty string,
+ * null or a boolean is no secret.
+ * Text shaped like JSON that does not parse is judged by its quoted keys instead, so a body curl
+ * would still send cannot slip past by being slightly malformed.
+ */
+function jsonCarriesCredential(text: string): boolean {
+  const body = text.trim();
+  if (!looksLikeJson(body)) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    const keys = body.matchAll(/(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*:\s*(?!""|''|null\b|true\b|false\b)[^\s,}\]]/g);
+    return Array.from(keys).some((match) => credentialArgumentName(match[2]!));
+  }
+  // Walked with a stack, not recursion, so no nesting depth can overflow it. Everything under a
+  // credential-named key is credential, `{"password":{"value":"x"}}`, except what a locator name
+  // such as `type` or `env` holds: `{"auth":{"type":"bearer"}}` hands over nothing.
+  const pending: Array<{ value: unknown; credential: boolean }> = [{ value: parsed, credential: false }];
+  while (pending.length > 0) {
+    const { value, credential } = pending.pop()!;
+    if (typeof value === "number" || (typeof value === "string" && value.trim() !== "")) {
+      if (credential) return true;
+      continue;
+    }
+    if (Array.isArray(value)) { for (const item of value) pending.push({ value: item, credential }); continue; }
+    if (!isRecord(value)) continue;
+    for (const [key, inner] of Object.entries(value)) {
+      pending.push({ value: inner, credential: credentialArgumentName(key) || (credential && !credentialLocatorName(key)) });
+    }
+  }
+  return false;
+}
+
 /** Whether `value` is a URL, of any scheme, that carries userinfo or a credential query parameter. */
 function urlCarriesCredential(value: string): boolean {
   // Any scheme: a proxy URL such as socks5://user:pass@host carries credentials as well as http.
@@ -441,7 +491,8 @@ function urlCarriesCredential(value: string): boolean {
  * - a header flag whose header carries a credential, `-H "Authorization: Bearer x"`, refused
  *   whatever the value, since an argument's `{env:NAME}` would never be resolved;
  * - a credential flag such as `--user name:pass` or `--oauth2-bearer x`, and `-u name:pass`;
- * - a data or form field named as a credential, `-d token=x`, `--form password=x`;
+ * - a data or form field named as a credential, `-d token=x`, `--form password=x`, and a JSON
+ *   body, or a field holding one, that names one, `--json '{"token":"x"}'`;
  * - a cookie, `-b session=x`, and attached as `-bsession=x` when the command is curl;
  * - a URL with a user name, a password or a credential query parameter, alone or as a value.
  */
@@ -456,8 +507,14 @@ function literalCredentialArguments(args: readonly string[], command?: unknown):
     if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name)) return;
     if (urlCarriesCredential(parts.value)) { found.add(parts.at); return; }
     if (FIELD_FLAGS.has(name)) {
-      const fields = parts.value.split("&").map((field) => field.split("=")[0]!.trim());
-      if (fields.some((field) => field !== "" && credentialArgumentName(field))) found.add(parts.at);
+      if (looksLikeJson(parts.value)) { if (jsonCarriesCredential(parts.value)) found.add(parts.at); return; }
+      const fields = parts.value.split("&").map((field) => {
+        const equals = field.indexOf("=");
+        return equals < 0 ? { name: field.trim(), value: "" } : { name: field.slice(0, equals).trim(), value: field.slice(equals + 1) };
+      });
+      if (fields.some((field) => (field.name !== "" && credentialArgumentName(field.name)) || jsonCarriesCredential(field.value))) {
+        found.add(parts.at);
+      }
       return;
     }
     if (COOKIE_FLAGS.has(name)) { if (parts.value.includes("=")) found.add(parts.at); return; }

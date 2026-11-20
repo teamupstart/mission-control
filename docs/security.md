@@ -402,7 +402,8 @@ degraded `notes`, and a validation failure, whose path can hold a key the shaper
 is redacted whole and only then cut to its recorded length, so a cut cannot split a value
 into a fragment the redactor no longer recognises. A value is replaced anywhere it appears when it is
 four characters or longer, and as a whole token when it is shorter, so `LANG=C` does not blank
-every "C" in the message. Overlapping or adjacent matches, including two values that overlap,
+every "C" in the message. A value of a variable the operator named in `env` is a credential it
+chose to pass, so it is replaced anywhere whatever its length, inside a word included. Overlapping or adjacent matches, including two values that overlap,
 are replaced as one span, so no part of either survives. Marking the matches is linear in the
 text for each value, so a reply at the 256 KiB cap cannot stall the daemon. Entry bodies are
 the shaper's content and are not rewritten.
@@ -437,7 +438,8 @@ a password or a credential-shaped query parameter. An argument may not hand over
 as literal text: a credential-named flag (`--token=…`, `--api-key …`), a header flag naming a
 credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
 `--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
-field named as a credential (`-d token=…`, `--form password=…`), a cookie (`-b`, `--cookie`,
+field named as a credential (`-d token=…`, `--form password=…`), a JSON body that names one at
+any depth (`--json '{"token":"…"}'`, `-d '{"auth":{"password":"…"}}'`), a cookie (`-b`, `--cookie`,
 and for curl `-bname=value` attached), or
 a URL of any scheme, including a proxy such as `socks5://`, with userinfo or a credential
 query parameter, alone or as a flag's value (for curl also attached to `-x`). Arguments are never resolved, so name the variable in

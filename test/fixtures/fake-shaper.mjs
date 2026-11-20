@@ -58,6 +58,11 @@ switch (mode) {
     process.stderr.write(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`);
     process.exit(4);
     break;
+  case "leak-glued":
+    // The value printed with letters on both sides, as part of a larger word.
+    process.stderr.write(`login failed for user${process.env[rest[0]] ?? "<unset>"}x`);
+    process.exit(4);
+    break;
   case "leak-split": {
     // Repeats a non-ASCII value on stderr in two writes, split inside one of its multi-byte
     // characters, so the pipe delivers it as two chunks with the character cut between them.

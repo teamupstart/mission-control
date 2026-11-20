@@ -105,10 +105,23 @@ function seconds(ms: number): string {
 /** Below this length a value is redacted only where it stands as a whole token. */
 const SHORT_VALUE_CHARS = 4;
 
+/** What a child's output is redacted against: every value it received, and which were named. */
+export interface ReceivedValues {
+  /** Every distinct, non-empty value in the environment the child was spawned with, longest first. */
+  values: readonly string[];
+  /**
+   * The values of the variables the operator named in the shaper's `env`. Those are the
+   * credentials it was configured to hand over, so they are redacted wherever they appear,
+   * however short, rather than only as whole tokens.
+   */
+  named: ReadonlySet<string>;
+}
+
 /** Every distinct, non-empty value in the environment the child was actually spawned with. */
-export function receivedValues(env: NodeJS.ProcessEnv): string[] {
+export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly string[] = []): ReceivedValues {
   const values = Object.values(env).filter((value): value is string => typeof value === "string" && value.length > 0);
-  return [...new Set(values)].sort((a, b) => b.length - a.length);
+  const named = namedVariables.map((name) => env[name]).filter((value): value is string => typeof value === "string" && value.length > 0);
+  return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
 }
 
 function escapeRegExp(value: string): string {
@@ -135,9 +148,11 @@ function occurrences(text: string, value: string, wholeToken: boolean): number[]
 
 /**
  * Remove every value the child received from text it printed, before it is recorded. A value of
- * four characters or more is replaced wherever it appears. A shorter one is replaced only as a
- * whole token, between non-alphanumerics: `LANG=C` or `SHLVL=1` matched as substrings would blank
- * every "C" or "1" in the message and leave nothing to diagnose.
+ * four characters or more is replaced wherever it appears. A shorter inherited one is replaced
+ * only as a whole token, between non-alphanumerics: `LANG=C` or `SHLVL=1` matched as substrings
+ * would blank every "C" or "1" in the message and leave nothing to diagnose. A value the operator
+ * named is a credential it chose to pass, so it is replaced wherever it appears whatever its
+ * length: `tokenab1` must not keep a three-character `ab1` just because letters surround it.
  *
  * Every occurrence of every value is marked on the original text, and overlapping or touching
  * marks merge into one span, so two values that overlap are redacted over their combined extent
@@ -145,11 +160,12 @@ function occurrences(text: string, value: string, wholeToken: boolean): number[]
  * the text for each value, however many matches it has: up to 256 KiB of shaper output never
  * costs the event loop more than that.
  */
-export function redactReceived(text: string, values: readonly string[], dropBefore = 0): string {
+export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0): string {
   const depth = new Int32Array(text.length + 1);
   let marked = false;
-  for (const value of values) {
-    for (const start of occurrences(text, value, value.length < SHORT_VALUE_CHARS)) {
+  for (const value of received.values) {
+    const wholeToken = value.length < SHORT_VALUE_CHARS && !received.named.has(value);
+    for (const start of occurrences(text, value, wholeToken)) {
       depth[start]! += 1;
       depth[start + value.length]! -= 1;
       marked = true;
@@ -285,8 +301,8 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   }
 
   // What the child is spawned with, which is what its output may repeat.
-  const received = receivedValues(executable.env);
-  const longestValue = received[0]?.length ?? 0;
+  const received = receivedValues(executable.env, transport.env);
+  const longestValue = received.values[0]?.length ?? 0;
   return await new Promise<TransportReply>((settle) => {
     const out: Buffer[] = [];
     let outBytes = 0;

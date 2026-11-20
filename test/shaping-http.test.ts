@@ -287,6 +287,34 @@ test("an entry stored by another path cannot carry a literal credential into a s
   assert.equal(JSON.stringify(shaping.getShapingConfig()).includes("sk-live-in-snapshot"), false);
 });
 
+test("a JSON body that carries a credential is refused, and a stored one never reaches a snapshot", async () => {
+  const curl = (args: string[]) => ({ kind: "upsert", shaper: { id: "json-body", label: "JSON body", stage: "gather",
+    transport: { type: "command", command: "/usr/bin/curl", args: ["-s", ...args, "https://context.example/shape"] } } });
+  for (const args of [["--json", '{"api_key":"sk-live-json-1"}'], ["-d", '{"auth":{"password":"pw-json-2"}}'], ["--data-raw={\"token\":\"sk-live-json-3\"}"]]) {
+    const refused = await put(curl(args));
+    assert.equal(refused.status, 400, args.join(" "));
+    assert.match(await refused.text(), /Name the variable in env instead/);
+  }
+  assert.equal((await put(curl(["--json", '{"query":"billing"}']))).status, 200, "a body without a credential is fine");
+  // Stored past the API's check, as a restore or another build could: read back without it.
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "stored-json", label: "Stored", stage: "gather",
+    transport: { type: "command", command: "/usr/bin/curl", args: ["--json", '{"auth":{"password":"pw-json-stored"}}', "https://context.example/x"] } }] });
+  shaping.reloadShaping();
+  assert.equal(JSON.stringify(shaping.getShapingConfig()).includes("pw-json-stored"), false, "the daemon's config holds no secret");
+  const backupStore = new SettingsBackupStore(join(home, "snapshots-json-body"));
+  const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
+    () => new Date("2026-11-23T12:00:00Z"), "test", {
+      preflightSkills: () => [], preflightCost: () => {}, reconcileSkills: () => {}, reconcileCost: () => {},
+    });
+  const saved = await service.ensureDailySnapshot();
+  assert.equal(saved.status, "ready");
+  const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
+  assert.equal(snapshot.includes("pw-json-stored") || snapshot.includes("sk-live-json"), false, "no snapshot carries the body's secret");
+  assert.equal(snapshot.includes('"stored-json"'), true, "the entry itself is kept, marked as stripped");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
+});
+
 test("a settings restore reloads the shaping config; a backup without the domain leaves it alone", async () => {
   await put({ kind: "upsert", shaper: fixture("kept", "gather", "ok") });
   const backupStore = new SettingsBackupStore(join(home, "snapshots"));

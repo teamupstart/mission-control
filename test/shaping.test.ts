@@ -293,7 +293,11 @@ test("an argument never hands over a credential as literal text; it is named in 
     // Data and form fields, cookies, and a URL given as a flag's value.
     ["-d", "token=sk-10"], ["--data", "q=1&password=hunter2"], ["-dapi_key=sk-11"], ["--form", "client_secret=sk-12"],
     ["--data-urlencode=access_token=sk-13"], ["-b", "session=abc"], ["--cookie=sid=1"],
-    ["--proxy", "https://u:p@proxy.example"], ["--proxy=https://u:p@proxy.example"]]) {
+    ["--proxy", "https://u:p@proxy.example"], ["--proxy=https://u:p@proxy.example"],
+    // JSON bodies naming a credential, at any depth, attached, in a form field, or malformed.
+    ["--json", "{\"api_key\":\"sk-14\"}"], ["-d", "{\"auth\":{\"password\":\"pw\"}}"], ["--data-raw=[{\"token\":42}]"],
+    ["-d{\"client_secret\":\"sk-15\"}"], ["--data", "{\"token\":{\"value\":\"sk-16\"}}"], ["-F", "meta={\"apiKey\":\"sk-17\"}"],
+    ["--json", "{\"token\": \"sk-18\""], ["--data", "{'password': 'pw'}"]]) {
     const refused = command(args);
     assert.equal(refused.success, false, args.join(" "));
     assert.match(refused.error!.issues[0]!.message, /Name the variable in env instead/);
@@ -304,7 +308,9 @@ test("an argument never hands over a credential as literal text; it is named in 
     ["--token", "--verbose"], ["--repo", "billing-api"], ["--monkey=1"],
     ["-H", "Accept: application/json"], ["--header", "X-Request-Id: 42"], ["--user-agent", "shaper/1"], ["-u", "1000"],
     ["sort", "-u"], ["https://context.example/x?page=2"], ["-v"],
-    ["-d", "name=value"], ["--data", "{\"q\":1}"], ["-debug=1"], ["-backup=x"], ["-b", "cookies.txt"], ["--proxy", "https://proxy.example"]]) {
+    ["-d", "name=value"], ["--data", "{\"q\":1}"], ["-debug=1"],
+    ["--json", "{\"token\":\"\",\"password\":null,\"use_token\":true}"], ["--json", "{\"auth\":{\"type\":\"bearer\"},\"token_file\":\"/etc/t\"}"],
+    ["--json", "{\"q\":\"a token in prose\"}"], ["-d", "@body.json"], ["-backup=x"], ["-b", "cookies.txt"], ["--proxy", "https://proxy.example"]]) {
     assert.equal(command(args).success, true, args.join(" "));
   }
 });

@@ -224,9 +224,32 @@ test("an inherited value and a short named value are redacted from a failure rea
   }
 });
 
+test("a short named credential printed inside a word is still redacted", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SHORT;
+  process.env.SHAPER_FIXTURE_SHORT = "x9";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-glued", "SHAPER_FIXTURE_SHORT"], { env: ["SHAPER_FIXTURE_SHORT"] }), ctx());
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: login failed for user[redacted]x" });
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SHORT;
+    else process.env.SHAPER_FIXTURE_SHORT = saved;
+  }
+});
+
+/** Inherited values only, none of them named by the operator. */
+const inheritedOnly = (...values: string[]) => ({ values, named: new Set<string>() });
+
+test("named values are redacted anywhere, inherited short ones only as whole tokens", () => {
+  const named = receivedValues({ LANG: "C", TOKEN: "ab1", OTHER: "zz" }, ["TOKEN", "UNSET_NAME"]);
+  assert.deepEqual([...named.named], ["ab1"], "only the named variables that were passed");
+  assert.equal(redactReceived("tokenab1 and Code zz9", named), "token[redacted] and Code zz9", "named anywhere, inherited short as tokens");
+  assert.equal(redactReceived("zz is C", named), "[redacted] is [redacted]");
+});
+
 test("redaction replaces long values anywhere and short ones only as whole tokens", () => {
   const values = receivedValues({ A: "abc-secret-xyz", B: "secret", LANG: "C", SHLVL: "1", EMPTY: "", UNSET: undefined });
-  assert.deepEqual(values, ["abc-secret-xyz", "secret", "C", "1"], "longest first, empty and unset ignored");
+  assert.deepEqual(values.values, ["abc-secret-xyz", "secret", "C", "1"], "longest first, empty and unset ignored");
+  assert.deepEqual([...values.named], [], "nothing was named");
   assert.equal(redactReceived("token abc-secret-xyz and secret-ish", values), "token [redacted] and [redacted]-ish");
   assert.equal(redactReceived("Could not open C at line 1 of 10", values), "Could not open [redacted] at line [redacted] of 10");
   // A buffer whose front cut a value: the piece before the margin is dropped, a full match kept.
@@ -235,19 +258,19 @@ test("redaction replaces long values anywhere and short ones only as whole token
 });
 
 test("overlapping values are redacted over their combined span, a value overlapping itself too", () => {
-  assert.equal(redactReceived("xx abcdefghi yy", ["abcdef", "defghi"]), "xx [redacted] yy", "no tail of the second value survives");
-  assert.equal(redactReceived("xx defghi-abcdef yy", ["abcdef", "defghi"]), "xx [redacted]-[redacted] yy", "separate values stay separate");
-  assert.equal(redactReceived("<ababab>", ["abab"]), "<[redacted]>", "a second copy that starts inside the first is covered");
-  assert.equal(redactReceived("a1b 1 1-1", ["1"]), "a1b [redacted] [redacted]-[redacted]", "short tokens next to each other");
+  assert.equal(redactReceived("xx abcdefghi yy", inheritedOnly("abcdef", "defghi")), "xx [redacted] yy", "no tail of the second value survives");
+  assert.equal(redactReceived("xx defghi-abcdef yy", inheritedOnly("abcdef", "defghi")), "xx [redacted]-[redacted] yy", "separate values stay separate");
+  assert.equal(redactReceived("<ababab>", inheritedOnly("abab")), "<[redacted]>", "a second copy that starts inside the first is covered");
+  assert.equal(redactReceived("a1b 1 1-1", inheritedOnly("1")), "a1b [redacted] [redacted]-[redacted]", "short tokens next to each other");
 });
 
 test("redacting 256 KiB of shaper output with thousands of matches stays linear", () => {
-  const values = ["aaaa", "aaab", ...Array.from({ length: 100 }, (_, i) => `value-${i}-unused`)];
+  const values = inheritedOnly("aaaa", "aaab", ...Array.from({ length: 100 }, (_, i) => `value-${i}-unused`));
   const text = "a".repeat(256 * 1024);
   const started = Date.now();
   assert.equal(redactReceived(text, values), "[redacted]");
   const error = `rejected ${"tok1 ".repeat(50_000)}`;
-  assert.equal(redactReceived(error, ["tok1"]), `rejected ${"[redacted] ".repeat(50_000)}`);
+  assert.equal(redactReceived(error, inheritedOnly("tok1")), `rejected ${"[redacted] ".repeat(50_000)}`);
   // Generous for a busy machine: the quadratic version took minutes on this input.
   assert.ok(Date.now() - started < 5_000, `took ${Date.now() - started} ms`);
 });

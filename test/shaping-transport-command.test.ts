@@ -127,7 +127,37 @@ const until = async (done: () => boolean, ms = 10_000): Promise<boolean> => {
   return done();
 };
 
-test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", async (t) => {
+/**
+ * Whether this process can remove a directory it may not read, as root or any process holding
+ * CAP_DAC_OVERRIDE can. Then a locked tree is no lock at all, and a test about one has nothing to
+ * prove.
+ */
+const bypassesDirectoryPermissions = ((): boolean => {
+  const probe = mkdtempSync(join(tmpdir(), "shaping-permission-probe-"));
+  const locked = join(probe, "locked");
+  mkdirSync(locked);
+  writeFileSync(join(locked, "file"), "");
+  chmodSync(locked, 0o000);
+  try {
+    rmSync(locked, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (existsSync(locked)) chmodSync(locked, 0o700);
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
+/** Kill whatever helper a fixture recorded, whether or not the test reached its own cleanup. */
+const killRecorded = (pidFile: string, pid = 0): void => {
+  const recorded = pid || (existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0);
+  if (recorded > 0) { try { process.kill(recorded, "SIGKILL"); } catch { /* Already gone. */ } }
+};
+
+test("a selector that locks a directory still answers; cleanup changes no permission, inside or outside", {
+  skip: bypassesDirectoryPermissions ? "this process can remove a directory it may not read, so nothing is locked" : false,
+}, async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
   const outside = mkdtempSync(join(tmpdir(), "shaping-outside-"));
@@ -148,7 +178,7 @@ test("a selector that locks a directory still answers; cleanup changes no permis
     chmodSync(outside, 0o700);
     rmSync(outside, { recursive: true, force: true });
     if (cwd) {
-      chmodSync(join(cwd, "locked"), 0o700);
+      if (existsSync(join(cwd, "locked"))) chmodSync(join(cwd, "locked"), 0o700);
       rmSync(cwd, { recursive: true, force: true });
     }
   }
@@ -649,7 +679,7 @@ test("a helper left in the group after a successful reply is reaped when the cal
     }
     assert.equal(alive, false, "the helper did not outlive the dry run");
   } finally {
-    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    killRecorded(pidFile, pid);
   }
 });
 
@@ -672,7 +702,7 @@ test("a successful reply is kept when a helper in the group still holds the pipe
     }
     assert.equal(alive, false, "the helper holding the pipes was stopped");
   } finally {
-    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+    killRecorded(pidFile, pid);
   }
 });
 
@@ -729,16 +759,22 @@ test("stopping a call kills its whole process group, descendants included", asyn
   const controller = new AbortController();
   const pending = callCommand(request(), shaper([FIXTURE, "grandchild", pidFile]), ctx(120_000, { signal: controller.signal }));
   const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
-  for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  assert.ok(pid > 0, "the shaper started its own child");
-  controller.abort();
-  assert.equal((await pending).kind, "timed_out");
-  let alive = true;
-  for (let attempt = 0; attempt < 200 && alive; attempt++) {
-    try { process.kill(pid, 0); await sleep(50); } catch { alive = false; }
+  try {
+    for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(pid > 0, "the shaper started its own child");
+    controller.abort();
+    assert.equal((await pending).kind, "timed_out");
+    let alive = true;
+    for (let attempt = 0; attempt < 200 && alive; attempt++) {
+      try { process.kill(pid, 0); await sleep(50); } catch { alive = false; }
+    }
+    assert.equal(alive, false, "the shaper's own child was killed with it");
+  } finally {
+    // The liveness check above runs first, so a transport regression still fails the test.
+    controller.abort();
+    killRecorded(pidFile);
   }
-  assert.equal(alive, false, "the shaper's own child was killed with it");
 });
 
 test("an abort stops the call at once", async () => {

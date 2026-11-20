@@ -196,6 +196,12 @@ test("a working-tree check Git never answered is unknown, never reported as a ba
   assert.equal(await insideWorkTree(repository, overflowed), "unknown");
   const neverStarted = async () => ({ code: null, stdout: "", stderr: "spawn git ENOENT", outcomeUnknown: false, overflowed: false }) as never;
   assert.equal(await insideWorkTree(repository, neverStarted), "unknown", "nor is a check that never started");
+  // `run`'s own shape for Git that could not start: a code of 1, with no process behind it.
+  const notFound = async () => ({ code: 1, childPid: null, stdout: "", stderr: 'executable "git" was not found', outcomeUnknown: false, overflowed: false }) as never;
+  assert.equal(await insideWorkTree(repository, notFound), "unknown", "a code of 1 with no process is not Git saying no");
+  // Git that ran and said no is still a no.
+  const refused = async () => ({ code: 128, childPid: 4242, stdout: "", stderr: "not a git repository", outcomeUnknown: false, overflowed: false }) as never;
+  assert.equal(await insideWorkTree(repository, refused), "not-worktree");
 });
 
 test("a repository check Git never answers is 503, never an invalid checkout", async () => {
@@ -241,7 +247,9 @@ test("a dry run refuses a bare repository and accepts a linked worktree", async 
   assert.equal(refused.status, 400);
   assert.match(((await refused.json()) as { reason: string }).reason, /bare repository/);
   // A linked worktree of an ordinary checkout is a working tree, and still runs.
-  execFileSync("git", ["-C", repository, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "init"]);
+  // Independent of the machine's Git config: no signing and no hooks for a fixture commit.
+  execFileSync("git", ["-C", repository, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgSign=false",
+    "-c", "core.hooksPath=/dev/null", "commit", "-q", "--no-verify", "--allow-empty", "-m", "init"]);
   const linked = join(home, "repos", "billing-api-linked");
   execFileSync("git", ["-C", repository, "worktree", "add", "-q", "--detach", linked]);
   assert.equal((await dryRun({ id: "bare-check", repository: linked })).status, 200);
@@ -865,4 +873,32 @@ test("a replacement written while the dry run resolves its checkout is not what 
   // And the store now holds the replacement, which a fresh dry run with the old revision refuses.
   const again = await dryRun({ id: "snapshot", repository, expect: revision });
   assert.equal(again.status, 409);
+});
+
+test("both shaping writes refuse a request a page on another site could send", async () => {
+  assert.equal((await put({ kind: "upsert", shaper: fixture("guarded", "gather", "ok") })).status, 200);
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  const forged: Array<Record<string, string>> = [
+    // A simple request: text/plain needs no preflight, and the body is still JSON.
+    { "content-type": "text/plain" },
+    // A declared JSON body from a page on another origin.
+    { "content-type": "application/json", origin: "https://attacker.example" },
+    { "content-type": "application/json", origin: "null" },
+  ];
+  for (const extra of forged) {
+    const write = await app.request("/api/shaping", {
+      method: "PUT", headers: { ...headers, ...extra }, body: JSON.stringify({ kind: "enable", id: "guarded", enabled: true }),
+    });
+    assert.equal(write.status, 403, JSON.stringify(extra));
+    const run = await app.request("/api/shaping/test", {
+      method: "POST", headers: { ...headers, ...extra }, body: JSON.stringify({ id: "guarded", repository }),
+    });
+    assert.equal(run.status, 403, JSON.stringify(extra));
+  }
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  // The dashboard's own origin is allowed.
+  const own = await app.request("/api/shaping", {
+    method: "PUT", headers: { ...headers, origin: "http://127.0.0.1:7317" }, body: JSON.stringify({ kind: "enable", id: "guarded", enabled: true }),
+  });
+  assert.equal(own.status, 200);
 });

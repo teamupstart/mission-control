@@ -122,9 +122,17 @@ test("gather settles before select starts, and selectors receive merged facts an
 
 test("calls in a stage run in parallel", async () => {
   const config = configWith([shaper("a", "select"), shaper("b", "select"), shaper("c", "select")]);
-  const started = Date.now();
-  const result = await run(config, async () => { await sleep(150); return data({}); });
-  assert.ok(Date.now() - started < 400, "six calls of 150 ms did not run one after another");
+  // Overlap, measured directly: elapsed time would also grow under a scheduler pause.
+  let inFlight = 0;
+  let peak = 0;
+  const result = await run(config, async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await sleep(150);
+    inFlight--;
+    return data({});
+  });
+  assert.equal(peak, Math.min(6, SHAPING_LIMITS.concurrentCalls), "six calls were in flight together, up to the bound");
   assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok", "ok", "ok"]);
 });
 

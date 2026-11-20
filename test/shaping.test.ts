@@ -592,6 +592,7 @@ test("a positional argument holding a well-known credential is refused, and stri
     transport: { type: "command", command: "/usr/local/bin/shaper", args } });
   const tokens = [
     `ghp_${"a".repeat(36)}`, `github_pat_${"b".repeat(40)}`, `sk-${"c".repeat(48)}`, `sk-ant-api03-${"d".repeat(32)}`,
+    `sk-proj-${"p".repeat(20)}_${"q".repeat(20)}-${"r".repeat(8)}`, `sk-svcacct-${"s".repeat(40)}`,
     "AKIAIOSFODNN7EXAMPLE", `AIza${"e".repeat(35)}`, `xoxb-${"1".repeat(12)}-${"f".repeat(24)}`, `glpat-${"g".repeat(20)}`,
     `npm_${"h".repeat(36)}`, `eyJ${"i".repeat(12)}.eyJ${"j".repeat(12)}.${"k".repeat(16)}`, "-----BEGIN RSA PRIVATE KEY-----",
   ];

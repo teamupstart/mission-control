@@ -970,14 +970,20 @@ export interface UnsupportedShaperView {
   label: string;
   /** Why, naming the failing field and never a stored value. */
   unsupported: string;
+  /**
+   * Present, and true, only when an import under this id replaces the entry: the daemon's own
+   * upsert rule, which accepts a replacement for an entry it emptied a literal credential in and
+   * refuses one for any other entry this build cannot run.
+   */
+  replaceable?: true;
 }
 
 /** The config as it leaves the daemon: the HTTP reply, and Phase 3's snapshot field and event. */
 export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
   shapers: Array<Shaper | UnsupportedShaperView>;
   /**
-   * Each registered id's `shapingStoredRevision`, derived by the daemon from the definition as
-   * stored. A window sends it back as `expect` with an intent that acts on a shaper it showed.
+   * Each registered id's `shapingIdRevision`, derived by the daemon from every definition stored
+   * under it. A window sends it back as `expect` with an intent that acts on a shaper it showed.
    * Opaque to the browser: two stored definitions that look the same in the view - an unsupported
    * entry's id, label and reason, say - still have different revisions.
    */
@@ -995,18 +1001,25 @@ export function shapingConfigView(
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ShapingConfigView {
   const classified = classifyShapers(config, definitions);
-  // The first stored entry owns an id, as everywhere else; a repeat never sets its revision.
-  // Keyed by a Map, never by probing a plain object: an id such as `constructor` would find the
-  // object's inherited property and keep its own revision out.
-  const owned = new Map<string, string>();
+  // One revision per id, over every entry stored under it: the first owns the id and a repeat has
+  // no row of its own to act on, but removing the owner removes the repeats too. Grouped in a
+  // Map, never by probing a plain object: an id such as `constructor` would find the object's
+  // inherited property.
+  const groups = new Map<string, StoredShaper[]>();
   for (const entry of classified) {
-    if (!owned.has(entry.stored.id)) owned.set(entry.stored.id, shapingStoredRevision(entry.stored));
+    const group = groups.get(entry.stored.id);
+    if (group) group.push(entry.stored);
+    else groups.set(entry.stored.id, [entry.stored]);
   }
+  const owned = new Map([...groups].map(([id, entries]) => [id, shapingIdRevision(entries)] as const));
   return {
     ...config,
     shapers: classified.map((entry) => entry.kind === "known"
       ? entry.shaper
-      : { id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason }),
+      : {
+        id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason,
+        ...(credentialsWereRemoved(entry.stored) ? { replaceable: true as const } : {}),
+      }),
     revisions: Object.fromEntries(owned),
   };
 }
@@ -1031,7 +1044,20 @@ export function shapingViewRevision(view: Pick<ShapingConfigView, "revisions">, 
  * definition; it does not protect one, so it is not a security hash.
  */
 export function shapingStoredRevision(stored: StoredShaper): string {
-  const text = canonicalJson(stored);
+  return fnv64(canonicalJson(stored));
+}
+
+/**
+ * The revision of everything stored under one id: the single entry's own revision, or, when a
+ * restore left repeats, one revision over every entry in stored order. A remove deletes them all,
+ * so a change to any of them - a repeat included - must refuse an intent bound to the old ones.
+ */
+export function shapingIdRevision(entries: readonly StoredShaper[]): string {
+  return entries.length === 1 ? shapingStoredRevision(entries[0]!) : fnv64(canonicalJson(entries));
+}
+
+/** FNV-1a 64 over a string's UTF-16 code units, as 16 lowercase hex digits. */
+function fnv64(text: string): string {
   let hash = 0xcbf29ce484222325n;
   const prime = 0x100000001b3n;
   const mask = 0xffffffffffffffffn;
@@ -1042,14 +1068,10 @@ export function shapingStoredRevision(stored: StoredShaper): string {
   return hash.toString(16).padStart(16, "0");
 }
 
-/** The revision of the stored entry that owns this id, or null when none is stored. */
-export function registeredShaperRevision(
-  config: ShapingConfig,
-  id: string,
-  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
-): string | null {
-  const entry = classifyShapers(config, definitions).find((candidate) => candidate.stored.id === id);
-  return entry ? shapingStoredRevision(entry.stored) : null;
+/** The revision of every stored entry with this id (`shapingIdRevision`), or null when none is stored. */
+export function registeredShaperRevision(config: ShapingConfig, id: string): string | null {
+  const entries = config.shapers.filter((stored) => stored.id === id);
+  return entries.length > 0 ? shapingIdRevision(entries) : null;
 }
 
 /** What moving one shaper within its stage comes to: the order to store, or why it cannot be. */
@@ -1233,7 +1255,7 @@ export function applyShapingIntent(
   const index = (id: string) => shapers.findIndex((entry) => entry.id === id);
   /** Whether the registered entry differs from the revision the sender showed. */
   const stale = (id: string, expect: string | undefined): boolean =>
-    expect !== undefined && registeredShaperRevision(config, id, definitions) !== expect;
+    expect !== undefined && registeredShaperRevision(config, id) !== expect;
   const changed = (id: string): ShapingIntentResult => refuse("shaper_changed",
     `"${id}" changed in another window since it was shown here, so nothing was done. Review it again first.`);
   /** Choices for ids that no longer exist make room before a live one is stored. */

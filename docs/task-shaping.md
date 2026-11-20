@@ -238,16 +238,21 @@ A registered shaper is stored switched off. Dry-run it before you switch it on.
 
 ## The shaping API
 
-All three routes are behind the flag and answer 404 while it is off.
+All three routes are behind the flag and answer 404 while it is off. `PUT /api/shaping` and
+`POST /api/shaping/test` also answer 403 `forbidden` unless the body is declared
+`application/json` and any `Origin` is a loopback `http:` origin, the check other browser-write
+routes use, so a page on another site cannot store an intent or run a shaper.
 
 - **`GET /api/shaping`** returns `{ config, discovered, references }`. `config` is the config
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
-  `{ id, label, unsupported }`. Its raw definition stays in the daemon's storage and settings
+  `{ id, label, unsupported }`, plus `replaceable: true` when an import under its id replaces
+  it, which the daemon allows only for an entry it emptied a literal credential in. Its raw definition stays in the daemon's storage and settings
   backup, and `PUT` replies with the same view. The view also carries `revisions`, one opaque
   revision per stored shaper id, which the daemon derives from the stored entry itself, so two
   unsupported entries that show the same id, label and reason still have different revisions.
-  Only the first stored entry for an id has a revision. A client reads only own, string-valued
+  An id has one revision, over every entry stored under it, so a remove, which deletes them all,
+  is refused once any of them has changed. A client reads only own, string-valued
   keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to
   an inherited property.
   `discovered` and `references` are empty until the folder and the remote transports land.
@@ -327,7 +332,8 @@ below applies at once in every open window, one write at a time. A refused write
 shows the daemon's reason beside the control that sent it. The daemon's answer decides whether a
 write succeeded: a frame from another window can free the controls first, but a refusal that
 arrives after it is still shown. When a newer write went out before that refusal arrived, the
-refusal names the earlier action, so it never reads as the outcome of the change just made.
+refusal names the earlier action, so it never reads as the outcome of the change just made. A
+later write that succeeds under the same control clears an earlier write's refusal there.
 
 - **The list.** One row per registered shaper, grouped by stage in run order: its label, id,
   transport and everything it runs or calls, an MCP shaper's tool and context delivery
@@ -362,7 +368,8 @@ refusal names the earlier action, so it never reads as the outcome of the change
 - **Dry run.** Pick a repository Mission Control knows, or type a checkout's path, add a prompt
   if the shaper needs one, and run it. It runs whether or not it is switched on, saves nothing,
   and shows the outcome, the duration, the version and each entry it would add. Closing the
-  dialog stops the run. If another window replaces or removes the shaper while the dialog is
+  dialog stops the run. A shaper just imported here can be dry-run once the daemon has answered
+  for it, never on the drawing shown before that. If another window replaces or removes the shaper while the dialog is
   open, the dialog says so and will not run.
 - **Remove** asks once more, then deletes the shaper's stored definition and its on or off
   choice. The confirmation closes if another window replaces the shaper first. When a shaper in

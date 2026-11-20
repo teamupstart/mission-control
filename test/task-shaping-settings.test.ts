@@ -488,3 +488,35 @@ test("a refusal that a newer write followed names the earlier action", () => {
   assert.equal(shapingRefusalText({ kind: "move", id: "notes", after: null }, reason, true),
     "An earlier change, moving notes, was refused: It changed.");
 });
+
+test("a remove is bound to every entry stored under its id, a repeat included", () => {
+  const repeat = (command: string) => gatherer("notes", { label: "Second notes", transport: { type: "command", command } });
+  const stored = ShapingConfigSchema.parse({ shapers: [gatherer("notes"), repeat("/usr/local/bin/first")] });
+  const shown = shapingConfigView(stored).revisions.notes!;
+  // A restore changes only the repeat; the owner is exactly as it was.
+  const restored = ShapingConfigSchema.parse({ shapers: [gatherer("notes"), repeat("/usr/local/bin/second")] });
+  assert.equal(shapingStoredRevision(restored.shapers[0]!), shapingStoredRevision(stored.shapers[0]!), "the owner is unchanged");
+  assert.notEqual(shapingConfigView(restored).revisions.notes, shown, "yet the id's revision changed");
+  const refused = applyShapingIntent(restored, { kind: "remove", id: "notes", expect: shown });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.ok ? "" : refused.error, "shaper_changed");
+  const current = shapingConfigView(restored).revisions.notes!;
+  const removed = applyShapingIntent(restored, { kind: "remove", id: "notes", expect: current });
+  assert.equal(removed.ok && removed.config.shapers.length, 0, "both entries go");
+  // A single entry's revision is its own, as before.
+  const single = ShapingConfigSchema.parse({ shapers: [gatherer("solo")] });
+  assert.equal(shapingConfigView(single).revisions.solo, shapingStoredRevision(single.shapers[0]!));
+});
+
+test("the view says which unsupported entries an import may replace, by the daemon's rule", () => {
+  const leaked = gatherer("leaked", { transport: { type: "command", command: "/usr/local/bin/notes", args: ["ghp_" + "a".repeat(36)] } });
+  const shown = view({ shapers: [leaked, unsupported] });
+  const [replaceable, future] = shown.shapers as Array<{ id: string; replaceable?: true }>;
+  assert.equal(replaceable!.replaceable, true, "an entry the daemon emptied a credential in is replaced by an import");
+  assert.equal("replaceable" in future!, false, "any other entry this build cannot run is not");
+  const stored = ShapingConfigSchema.parse({ shapers: [leaked, unsupported] });
+  const corrected = ShaperSchema.parse(gatherer("leaked"));
+  assert.equal(applyShapingIntent(stored, { kind: "upsert", shaper: corrected }).ok, true);
+  const refused = applyShapingIntent(stored, { kind: "upsert", shaper: { ...corrected, id: "future" } });
+  assert.equal(refused.ok ? "" : refused.error, "unsupported_shaper");
+});

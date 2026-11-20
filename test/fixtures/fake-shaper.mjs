@@ -18,6 +18,9 @@ const writePid = (path, pid) => {
   renameSync(`${path}.partial`, path);
 };
 
+// A failing mode sets `process.exitCode` and lets the process end on its own, never
+// `process.exit()`: on macOS a pipe write is asynchronous, and exiting at once could cut off the
+// diagnostic a redaction test reads.
 switch (mode) {
   case "echo": {
     // Everything the call saw: argv, working directory, the named variables, and the request.
@@ -49,7 +52,7 @@ switch (mode) {
     break;
   case "fail":
     process.stderr.write("the shaper broke");
-    process.exit(3);
+    process.exitCode = 3;
     break;
   case "slow":
     await sleep(Number(rest[0] ?? 5000));
@@ -62,12 +65,12 @@ switch (mode) {
   case "leak":
     // Repeats the value it was handed on stderr, then fails: its reason must not carry it.
     process.stderr.write(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`);
-    process.exit(4);
+    process.exitCode = 4;
     break;
   case "leak-glued":
     // The value printed with letters on both sides, as part of a larger word.
     process.stderr.write(`login failed for user${process.env[rest[0]] ?? "<unset>"}x`);
-    process.exit(4);
+    process.exitCode = 4;
     break;
   case "leak-split": {
     // Repeats a non-ASCII value on stderr in two writes, split inside one of its multi-byte
@@ -79,7 +82,7 @@ switch (mode) {
     await sleep(100);
     process.stderr.write(bytes.subarray(cut));
     await sleep(50);
-    process.exit(4);
+    process.exitCode = 4;
     break;
   }
   case "leak-long": {
@@ -87,7 +90,7 @@ switch (mode) {
     // through one copy of it. The front of the 2,000-character tail lands mid-value.
     const value = process.env[rest[0]] ?? "<unset>";
     process.stderr.write(`${value}\n`.repeat(12));
-    process.exit(5);
+    process.exitCode = 5;
     break;
   }
   case "reply-error-leak":
@@ -205,5 +208,5 @@ switch (mode) {
   }
   default:
     process.stderr.write(`unknown mode ${mode}`);
-    process.exit(2);
+    process.exitCode = 2;
 }

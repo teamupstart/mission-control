@@ -151,8 +151,8 @@ export function ShapingImportDialog({ config, busy, saving, error, onClose, onSa
             <ShaperReview shaper={reading.shaper} />
             {existing && (
               <p className="shaping-note">
-                {isUnsupportedShaper(existing)
-                  ? `A shaper this build cannot run already has the id "${reading.shaper.id}". It can only be removed.`
+                {isUnsupportedShaper(existing) && existing.replaceable !== true
+                  ? `A shaper this build cannot run already has the id "${reading.shaper.id}". It can only be switched off or removed, so this import will be refused.`
                   : `This replaces the registered shaper "${existing.label}" and switches it off.`}
               </p>
             )}

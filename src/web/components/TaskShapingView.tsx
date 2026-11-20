@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { SHAPING_LIMIT_RANGES, type ShapingConfigView, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
 import {
   moveIntent,
@@ -55,6 +55,14 @@ export function TaskShapingView({
   readFolderIds?: () => Promise<readonly string[] | null>;
 }): React.JSX.Element {
   const [importing, setImporting] = useState(false);
+  // Numbers each opening of the import dialog. A save answers after the stream may already have
+  // freed the dialog, and by then the operator may have closed it and opened a new one: the
+  // answer closes only the dialog that sent it.
+  const importSession = useRef(0);
+  const openImport = (): void => {
+    importSession.current += 1;
+    setImporting(true);
+  };
   // Each of these is bound to the revision of the entry the operator was shown: when another
   // window replaces that shaper, the confirmation or dialog no longer applies to what is stored,
   // and the daemon refuses any intent still carrying the old revision.
@@ -149,7 +157,9 @@ export function TaskShapingView({
                   onClick={() => { const intent = config && moveIntent(config, entry.id, 1); if (intent) void onSet(intent, key); }}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
-                <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready}
+                {/* Only with the daemon's revision: an optimistic import has none yet, and a dry run
+                    sent without one could run a replacement written before its frame arrives. */}
+                <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready || entry.revision === null}
                   onClick={() => setTesting({ id: entry.id, label: entry.label, revision: entry.revision })}>Dry run</button>
               </Tooltip>
             </>
@@ -202,7 +212,7 @@ export function TaskShapingView({
           </div>
           <span data-anchor="task-shaping/import">
             <Tooltip label="Paste or choose a shaper manifest and review what it runs or calls before saving it">
-              <button type="button" className="btn" disabled={busy} onClick={() => setImporting(true)}>Import manifest…</button>
+              <button type="button" className="btn" disabled={busy} onClick={openImport}>Import manifest…</button>
             </Tooltip>
           </span>
         </div>
@@ -229,8 +239,9 @@ export function TaskShapingView({
         <ShapingImportDialog config={config} busy={busy} saving={pending?.kind === "upsert"} error={errors.import ?? null}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {
+            const session = importSession.current;
             const saved = await onSet({ kind: "upsert", shaper }, "import");
-            if (saved) setImporting(false);
+            if (saved && importSession.current === session) setImporting(false);
           }} />
       )}
       {testing && (
@@ -302,7 +313,15 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
   const dirty = changed.user || changed.deadlineMs || changed.totalBytes;
   const edited = Object.keys(draft).length > 0;
   const valid = !deadlineProblem && !totalProblem && !userProblem;
-  const edit = (patch: Partial<SettingsFields>) => setDraft((current) => ({ ...current, ...patch }));
+  // Bumped by every edit of a field, so a save's answer clears only the edits it sent: typing a
+  // field away and back to the submitted text while the save is in flight is a new edit.
+  const generations = useRef<Partial<Record<keyof SettingsFields, number>>>({});
+  const edit = (patch: Partial<SettingsFields>) => {
+    for (const field of Object.keys(patch) as Array<keyof SettingsFields>) {
+      generations.current[field] = (generations.current[field] ?? 0) + 1;
+    }
+    setDraft((current) => ({ ...current, ...patch }));
+  };
   const save = async (): Promise<void> => {
     const intent: SettingsIntent = { kind: "settings" };
     if (changed.user) intent.caller = { user: shown.user.trim() };
@@ -311,15 +330,16 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
     if (changed.totalBytes) limits.totalBytes = totalBytes;
     if (Object.keys(limits).length > 0) intent.limits = limits;
     // Saved or refused, the submitted fields go back to showing the daemon's config: a refusal is
-    // a roll back, with its reason below. Only the values this save sent are cleared, and only
-    // if they are unchanged: the stream can free the form before the reply lands, and an edit
-    // made in that interval is a new draft, not part of this save.
-    const submitted = draft;
+    // a roll back, with its reason below. Only the edits this save sent are cleared: the stream
+    // can free the form before the reply lands, and an edit made in that interval, even one that
+    // types the same text again, is a new draft, not part of this save.
+    const submitted = Object.fromEntries((Object.keys(draft) as Array<keyof SettingsFields>)
+      .map((field) => [field, generations.current[field]])) as Partial<Record<keyof SettingsFields, number>>;
     await onSet(intent, "settings");
     setDraft((current) => {
       const next = { ...current };
       for (const field of Object.keys(submitted) as Array<keyof SettingsFields>) {
-        if (next[field] === submitted[field]) delete next[field];
+        if (generations.current[field] === submitted[field]) delete next[field];
       }
       return next;
     });

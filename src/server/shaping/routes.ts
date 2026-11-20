@@ -8,6 +8,7 @@ import { registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
 import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
+import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
@@ -84,6 +85,8 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
   });
 
   app.put("/api/shaping", gate, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
+    // Both writes are refused unless they come from the dashboard: a dry run executes a shaper.
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
     const parsed = await parseBody(c, ShapingIntentSchema);
     if (!parsed.ok) return parsed.res;
     try {
@@ -100,6 +103,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
   });
 
   app.post("/api/shaping/test", gate, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
     const { id, repository, prompt, kind, expect } = parsed.data;

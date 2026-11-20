@@ -37,6 +37,7 @@ import { registerSessionControlRoutes, sessionControlActor, sessionControlCaller
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
 import {
   localPlanAuthorityContext,
@@ -10158,28 +10159,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   return app;
 }
 
-/** True when the Host header names a loopback address (defeats DNS-rebinding). */
-export function hostIsLoopback(host: string | undefined): boolean {
-  if (!host) return false;
-  // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
-  const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
-  return h === "127.0.0.1" || h === "localhost" || h === "::1";
-}
-
-/** Guard browser-write routes that accept an otherwise empty JSON object. */
-function trustedLoopbackJsonRequest(c: Context): boolean {
-  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    return false;
-  }
-  const origin = c.req.header("origin");
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
-  } catch {
-    return false;
-  }
-}
+export { hostIsLoopback } from "./loopback.ts";
 
 
 /**

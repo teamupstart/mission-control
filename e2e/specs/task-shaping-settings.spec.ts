@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
@@ -216,6 +217,43 @@ test("Settings > Task shaping follows its flag live and drives every shaping int
   expect(peerNavigations, "the second window changed without navigating").toBe(0);
 });
 
+/**
+ * Counts, inside the page, each shaping write whose reply the app has read in full. A response
+ * reaching the browser says nothing about the app having handled it; this ticks one macrotask
+ * after the app's own read of the body resolves, once the code awaiting it has run.
+ */
+async function countReadWrites(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const counter = window as unknown as { shapingWritesRead: number };
+    counter.shapingWritesRead = 0;
+    const original = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await original(input, init);
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if ((init?.method ?? "GET").toUpperCase() === "PUT" && new URL(url, location.href).pathname === "/api/shaping") {
+        const read = response.json.bind(response);
+        response.json = async () => {
+          try {
+            return await read();
+          } finally {
+            setTimeout(() => { counter.shapingWritesRead += 1; }, 0);
+          }
+        };
+      }
+      return response;
+    };
+  });
+  // The dashboard fixture has already loaded the page, and the hash navigation that follows keeps
+  // the same document, so the script runs only once the page loads again.
+  await page.reload();
+}
+
+/** Waits until the app has handled `count` shaping write replies, then for two frames to paint. */
+async function writesHandled(page: Page, count: number): Promise<void> {
+  await expect.poll(() => page.evaluate(() => (window as unknown as { shapingWritesRead: number }).shapingWritesRead)).toBe(count);
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+}
+
 async function putShaping(daemon: DaemonHandle, intent: unknown): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/shaping`, {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(intent),
@@ -235,7 +273,10 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   await putShaping(daemon, { kind: "enable", id: "on-notes", enabled: true });
   await putShaping(daemon, { kind: "upsert", shaper: modeShaper("broken-notes", "Broken notes", "fail") });
   // Slow enough that the dialog is closed long before it answers, inside its own 30 s timeout.
-  await putShaping(daemon, { kind: "upsert", shaper: modeShaper("slow-notes", "Slow notes", "slow", "25000") });
+  // A marker of this run's own, which the fixture ignores, so the process check below finds the
+  // shaper this test started and never one another run in the same checkout started.
+  const slowMarker = "run-" + randomUUID();
+  await putShaping(daemon, { kind: "upsert", shaper: modeShaper("slow-notes", "Slow notes", "slow", "25000", slowMarker) });
 
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   const peer = await context.newPage();
@@ -435,16 +476,16 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   dialog = await openDryRun("Slow notes");
   await dialog.getByRole("button", { name: "Run", exact: true }).click();
   await expect(dialog.getByRole("status")).toHaveText("Running Slow notes…");
-  await expect.poll(slowShaperRunning, { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => slowShaperRunning(slowMarker), { timeout: 15_000 }).toBe(true);
   await dialog.getByRole("button", { name: "Close" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect.poll(slowShaperRunning, { timeout: 10_000 }).toBe(false);
+  await expect.poll(() => slowShaperRunning(slowMarker), { timeout: 10_000 }).toBe(false);
 });
 
-/** Whether this worktree's slow fixture shaper, the one `slow-notes` runs, is a live process. */
-function slowShaperRunning(): boolean {
+/** Whether the slow fixture shaper this test registered, named by its marker, is a live process. */
+function slowShaperRunning(marker: string): boolean {
   return execFileSync("ps", ["-ax", "-o", "command="], { encoding: "utf8" })
-    .split("\n").some((line) => line.includes(`${FAKE_SHAPER} slow 25000`));
+    .split("\n").some((line) => line.includes(`${FAKE_SHAPER} slow 25000 ${marker}`));
 }
 
 // The race the settings hook exists for: this window's write commits, but its HTTP answer is held
@@ -453,6 +494,7 @@ function slowShaperRunning(): boolean {
 test("a peer's newer write wins while this window's own write answer is still held", async ({ dashboard: page, context, daemon }) => {
   await setFlag(daemon, true);
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("race-notes", "Race notes") });
+  await countReadWrites(page);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   const peer = await context.newPage();
   await peer.goto(`${daemon.baseURL}/#/settings/task-shaping`);
@@ -490,6 +532,9 @@ test("a peer's newer write wins while this window's own write answer is still he
 
   // The older answer lands, and changes nothing either window shows.
   release();
+  // The held answer has been read and handled before anything is checked, so the checks below
+  // see what it left behind, not the state from before it arrived.
+  await writesHandled(page, 1);
   await expect(pill(page, "Race notes")).toBeEnabled();
   await expect(pill(page, "Race notes")).toHaveAccessibleName("Race notes: off");
   await expect(pill(peer, "Race notes")).toHaveAccessibleName("Race notes: off");
@@ -700,6 +745,7 @@ test("a repeated id is listed without controls, and an id like constructor still
 // identity keeps the peer's newer limits rather than writing back this window's stale copy.
 test("saving one setting keeps another window's newer change to the fields left alone", async ({ dashboard: page, context, daemon }) => {
   await setFlag(daemon, true);
+  await countReadWrites(page);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   const peer = await context.newPage();
   await peer.goto(`${daemon.baseURL}/#/settings/task-shaping`);
@@ -760,7 +806,8 @@ test("saving one setting keeps another window's newer change to the fields left 
   await expect(here.budget).toBeEnabled();
   await here.budget.fill("40");
   release();
-  await page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  // The identity save above was this window's first write; the held one is its second.
+  await writesHandled(page, 2);
   await expect(here.budget).toHaveValue("40");
   await expect(here.identity).toHaveValue("second-window-save");
   await expect(here.save).toBeEnabled();
@@ -824,5 +871,176 @@ test("a move keeps a hidden shaper's slot and composes with another window's mov
   await expect(pill(page, "A notes")).toHaveAccessibleName("A notes: off");
   await expect(pill(page, "A notes")).toBeEnabled();
   expect((await shapingConfig(daemon)).overrides["a-notes"]).toBe(false);
+  await page.unroute("**/api/shaping");
+});
+
+/** A gate a route handler waits on, opened by the test. */
+function gate(): { open: () => void; opened: Promise<void> } {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => { open = resolve; });
+  return { open, opened };
+}
+
+test("an imported row is not offered a dry run until the daemon has answered for it", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // The import never reaches the daemon until the test lets it: no frame can bring a revision.
+  const reached = gate();
+  const answer = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await answer.opened;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "save_failed", message: "Held by the test." }) });
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(commandShaper("held-notes", "Held notes")));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // Drawn at once, but with no revision of the daemon's yet, so nothing can be run against it.
+  await expect(row(page, "Held notes")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Dry-run Held notes" })).toBeDisabled();
+  answer.open();
+  await expect(row(page, "Held notes")).toHaveCount(0);
+  await page.unroute("**/api/shaping");
+});
+
+test("a save that answers late closes only the import dialog that sent it", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // The import reaches the daemon at once; only its answer is held, so the frame frees the dialog.
+  const answer = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const response = await route.fetch();
+    await answer.opened;
+    await route.fulfill({ response });
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  await manifest.fill(JSON.stringify(commandShaper("first-notes", "First notes")));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(pill(page, "First notes")).toHaveAccessibleName("First notes: off");
+  // Freed by the frame: closed, opened again, and a second manifest under review.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const second = JSON.stringify(commandShaper("second-notes", "Second notes"));
+  await manifest.fill(second);
+  const answered = page.waitForResponse((response) => response.url().endsWith("/api/shaping") && response.request().method() === "PUT");
+  answer.open();
+  await (await answered).finished();
+  await page.evaluate(() => new Promise<void>((done) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => done())), 50)));
+  await expect(dialog).toBeVisible();
+  await expect(manifest).toHaveValue(second);
+  await page.unroute("**/api/shaping");
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(pill(page, "Second notes")).toHaveAccessibleName("Second notes: off");
+});
+
+test("the import dialog says whether an unsupported entry's id can be replaced, as the daemon decides", async ({ dashboard: page, daemon }) => {
+  withDaemonDb(daemon, (db) => {
+    db.prepare(`INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run("shaping", JSON.stringify({
+        shapers: [
+          // A literal token in an argument: stored with it emptied, so it no longer runs as written.
+          commandShaper("leaked-notes", "Leaked notes", {
+            transport: { type: "command", command: process.execPath, args: [FAKE_SHAPER, "ok", "ghp_" + "a".repeat(36)] },
+          }),
+          { id: "future-notes", label: "Future notes", stage: "route", transport: { type: "grpc" } },
+        ],
+      }));
+  });
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(row(page, "Leaked notes")).toContainText("A literal credential was removed");
+
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  await manifest.fill(JSON.stringify(commandShaper("future-notes", "Future replacement")));
+  await expect(dialog).toContainText('A shaper this build cannot run already has the id "future-notes". It can only be switched off or removed, so this import will be refused.');
+  await manifest.fill(JSON.stringify(commandShaper("leaked-notes", "Leaked notes")));
+  await expect(dialog).toContainText('This replaces the registered shaper "Leaked notes" and switches it off.');
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(row(page, "Leaked notes")).not.toContainText("A literal credential was removed");
+  await expect(pill(page, "Leaked notes")).toHaveAccessibleName("Leaked notes: off");
+});
+
+test("a save's late answer keeps an edit made after it, even one that types the submitted text again", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await countReadWrites(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const answer = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const response = await route.fetch();
+    await answer.opened;
+    await route.fulfill({ response });
+  });
+  await identity.fill("alice");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  // The frame frees the form before the answer: the operator types away and back again.
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("alice");
+  await expect(identity).toBeEnabled();
+  await identity.fill("bob");
+  await identity.fill("alice");
+  // Another window then changes the identity.
+  await putShaping(daemon, { kind: "settings", caller: { user: "carol" } });
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("carol");
+  answer.open();
+  await writesHandled(page, 1);
+  await expect(identity).toHaveValue("alice");
+  await expect(form.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await page.unroute("**/api/shaping");
+});
+
+test("a later write that succeeds on a row clears the earlier write's refusal shown there", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("clear-notes", "Clear notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: off");
+  // The first write is held before it reaches the daemon; the second reaches it and only its
+  // answer is held. So the second lands first and the first is refused, then answered in order.
+  const firstGoes = gate();
+  const secondAnswers = gate();
+  const firstSent = gate();
+  let puts = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    if (++puts === 1) {
+      firstSent.open();
+      await firstGoes.opened;
+      return route.continue();
+    }
+    const response = await route.fetch();
+    await secondAnswers.opened;
+    await route.fulfill({ response });
+  });
+  const isPut = (request: { url(): string; method(): string }) => request.url().endsWith("/api/shaping") && request.method() === "PUT";
+  const first = page.waitForRequest(isPut);
+  await pill(page, "Clear notes").click();
+  await firstSent.opened;
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("clear-notes", "Clear notes", { timeoutMs: 20_000 }) });
+  await putShaping(daemon, { kind: "enable", id: "clear-notes", enabled: true });
+  await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: on");
+  await expect(pill(page, "Clear notes")).toBeEnabled();
+  await pill(page, "Clear notes").click();
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["clear-notes"]).toBe(false);
+
+  firstGoes.open();
+  expect((await (await first).response())?.status()).toBe(409);
+  const alert = row(page, "Clear notes").getByRole("alert");
+  await expect(alert).toContainText("An earlier change, switching clear-notes on, was refused");
+  // The second write's success is the row's latest outcome, so the earlier refusal goes.
+  secondAnswers.open();
+  await expect(alert).toHaveCount(0);
+  await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: off");
   await page.unroute("**/api/shaping");
 });

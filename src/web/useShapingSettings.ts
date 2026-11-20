@@ -31,6 +31,10 @@ export function useShapingSettings(
   const writing = useRef<ShapingIntent | null>(null);
   /** The last request sent, so a refusal can tell whether a newer write followed it. */
   const latest = useRef<ShapingIntent | null>(null);
+  /** Numbers each request in the order it was sent. */
+  const sent = useRef(0);
+  /** Which request, by its number, owns the refusal shown under each control. */
+  const refusedBy = useRef<Record<string, number>>({});
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
@@ -66,8 +70,10 @@ export function useShapingSettings(
       return false;
     }
     const request = parsed.data;
+    const number = ++sent.current;
     writing.current = request;
     latest.current = request;
+    refusedBy.current = {};
     setErrors({});
     setPending({ intent: request, key, accepted: false, observed: false });
     // Bounded, so a daemon that stops answering never leaves every control disabled. On the
@@ -90,6 +96,16 @@ export function useShapingSettings(
           setPending((current) => current && { ...current, accepted: true });
         }
       }
+      // A later write on this control succeeded, so an earlier one's refusal no longer describes
+      // it. A refusal of a request sent after this one is still news and stays.
+      const owner = refusedBy.current[key];
+      if (owner !== undefined && owner < number) {
+        delete refusedBy.current[key];
+        setErrors((current) => {
+          const { [key]: _cleared, ...rest } = current;
+          return rest;
+        });
+      }
       return true;
     } catch (error) {
       // The HTTP result decides whether this write succeeded. A frame can free the controls
@@ -101,6 +117,7 @@ export function useShapingSettings(
       // reading as the outcome of the change just made under the same control.
       const reason = error instanceof Error ? error.message : String(error);
       const message = shapingRefusalText(request, reason, latest.current !== request);
+      refusedBy.current[key] = number;
       setErrors((current) => ({ ...current, [key]: message }));
       if (writing.current === request) {
         writing.current = null;

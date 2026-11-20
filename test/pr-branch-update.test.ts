@@ -170,12 +170,15 @@ test("missing checks hold; accepted but unconfirmed updates become a visible blo
 });
 
 
-test("real update adapter publishes a non-conflict GitHub refusal and never retries the commit pair", async () => {
+for (const outcome of [
+  { label: "non-conflict GitHub refusal", reason: "Resource not accessible by integration (HTTP 403)", unknown: false },
+  { label: "unknown command outcome", reason: "Branch update outcome unknown. GitHub may have accepted the update; check the PR before retrying.", unknown: true },
+]) test(`real update adapter publishes a ${outcome.label} and never retries the commit pair`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "mission-pr-update-refusal-"));
   const gh = join(dir, "gh.cjs");
   const calls = join(dir, "calls.jsonl");
   const previousGh = process.env.MISSION_GH_BIN;
-  const reason = "Resource not accessible by integration (HTTP 403)";
+  const reason = outcome.reason;
   // Fake only the external executable. Use the real flag, GraphQL reader, PUT adapter,
   // reason extraction and durable reconciler, with no injected BranchUpdateDeps.
   writeFileSync(gh, `#!${process.execPath}
@@ -185,9 +188,12 @@ fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
 if (args[0] === "api" && args[1] === "graphql") {
   process.stdout.write(${JSON.stringify(JSON.stringify({ data: { repository: { pullRequest: snapshot() } } }))});
 } else if (args[0] === "api" && args[1] === "--method" && args[2] === "PUT") {
-  process.stdout.write("update request refused");
-  process.stderr.write(${JSON.stringify(`gh: ${reason}`)});
-  process.exitCode = 1;
+  if (${outcome.unknown}) process.kill(process.pid, "SIGTERM");
+  else {
+    process.stdout.write("update request refused");
+    process.stderr.write(${JSON.stringify(`gh: ${reason}`)});
+    process.exitCode = 1;
+  }
 } else {
   process.stderr.write("Unexpected fake gh command");
   process.exitCode = 2;

@@ -9,6 +9,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-"));
 const { Registry, prNumberFromUrl } = await import("../src/server/registry.ts");
+const { pollBranchUpdates } = await import("../src/server/github/branch-update.ts");
 
 function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
   return {
@@ -75,6 +76,51 @@ test("reconcilePrs tracks the PR's CI check status as it changes", () => {
   // A re-run turns them green again -> the alert clears.
   reg.reconcilePrs(new Map([["feat", match({ checks: "passing" })]]), new Set());
   assert.equal(reg.getSession("feat")!.prChecks, "passing");
+});
+
+test("discovery sweeps retain PR branch-update progress and conflict recovery", () => {
+  const reg = new Registry();
+  const discovered = disco({ syntheticId: "branch-update" });
+  reg.applyDiscovery([discovered]);
+  reg.reconcilePrs(new Map([[discovered.syntheticId, match()]]), new Set());
+  for (const status of ["updating", "checks", "conflict"] as const) {
+    const update = { status, reason: status === "conflict" ? "Merge conflict" : null };
+    reg.setPrBranchUpdate(discovered.syntheticId, PR, update);
+    reg.applyDiscovery([discovered]);
+    assert.deepEqual(reg.getSession(discovered.syntheticId)?.prBranchUpdates?.[PR], update);
+  }
+});
+
+test("branch snapshots use four workers and reconcile each shared PR URL once", async () => {
+  const reg = new Registry();
+  const sessions = Array.from({ length: 9 }, (_, i) => disco({ syntheticId: `pr-worker-${i}`, cwd: `/wt/${i}` }));
+  const urls = Array.from({ length: 8 }, (_, i) => `https://github.com/o/r/pull/${i + 1}`);
+  reg.applyDiscovery(sessions);
+  reg.reconcilePrs(new Map(sessions.map((s, i) => [s.syntheticId, match({ url: urls[i % 8]! })])), new Set());
+  const reads: string[] = [];
+  let running = 0;
+  let peak = 0;
+  let release!: () => void;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
+  const poll = pollBranchUpdates(reg, () => true, {
+    enabled: () => true,
+    read: async url => {
+      reads.push(url); peak = Math.max(peak, ++running);
+      await stalled;
+      running--;
+      return null;
+    },
+    update: async () => { assert.fail("unknown snapshots must not update a branch"); },
+  });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(reads.length, 4, "slow snapshots occupy a bounded pool instead of serializing all PRs");
+  } finally {
+    release();
+    await poll;
+  }
+  assert.equal(peak, 4, "GitHub and subprocess load stays bounded");
+  assert.deepEqual(reads.sort(), urls.sort(), "two sessions sharing a PR cause only one snapshot read");
 });
 
 test("a merged PR flips the chip to merged and lingers while on the branch", () => {

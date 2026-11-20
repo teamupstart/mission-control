@@ -9,6 +9,8 @@ import type { PrBranchUpdate } from "@shared/pr-branch-update.ts";
 import type { Registry } from "../registry.ts";
 
 const Sha = z.string().regex(/^[a-f0-9]{40}$/);
+const UNKNOWN_UPDATE_REASON = "Branch update outcome unknown. GitHub may have accepted the update; check the PR before retrying.";
+const BRANCH_UPDATE_CONCURRENCY = 4;
 const SnapshotSchema = z.object({
   state: z.enum(["OPEN", "CLOSED", "MERGED"]), isDraft: z.boolean(),
   headRefOid: Sha, baseRefOid: Sha, baseRefName: z.string().min(1),
@@ -70,6 +72,7 @@ const defaults: BranchUpdateDeps = {
     const result = await run(ghBin(), ["api", "--method", "PUT",
       `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/update-branch`, "-f", `expected_head_sha=${head}`],
     { cwd, timeoutMs: 20_000 });
+    if (result.outcomeUnknown) return { status: "blocked", reason: UNKNOWN_UPDATE_REASON };
     // 202 means accepted, not completed. Only a later read of the head confirms it.
     if (result.code === 0) return null;
     const reason = refusalReason({ ok: false, stderr: result.stderr, error: result.stdout });
@@ -120,7 +123,7 @@ export async function reconcileBranchUpdate(
   publish({ status: "updating", reason: null });
   let failure: PrBranchUpdate | null;
   try { failure = await deps.update(url, cwd, pr.headRefOid); }
-  catch { failure = { status: "blocked", reason: "Branch update outcome unknown. Check GitHub before retrying." }; }
+  catch { failure = { status: "blocked", reason: UNKNOWN_UPDATE_REASON }; }
   if (failure) {
     db.prepare(`UPDATE pr_branch_update_attempts SET status = ?, reason = ?
       WHERE pr_url = ? AND head_sha = ? AND base_sha = ?`)
@@ -130,7 +133,7 @@ export async function reconcileBranchUpdate(
 }
 
 /** Runs with the existing PR poller, independent of Inspector and merge permission. */
-export async function pollBranchUpdates(registry: Registry, active: () => boolean): Promise<void> {
+export async function pollBranchUpdates(registry: Registry, active: () => boolean, deps: BranchUpdateDeps = defaults): Promise<void> {
   const targets = registry.prPollTargets().filter(t => t.prUrl).map(t => ({ id: t.id, url: t.prUrl!, cwd: t.cwd }));
   for (const t of registry.extraRepoPrPollTargets()) {
     const url = registry.getSession(t.sessionId)?.task?.repoPrs.find(pr => pr.repoRoot === t.repoRoot)?.prUrl;
@@ -142,15 +145,21 @@ export async function pollBranchUpdates(registry: Registry, active: () => boolea
   }));
   const grouped = new Map<string, typeof targets>();
   for (const target of targets) grouped.set(target.url, [...(grouped.get(target.url) ?? []), target]);
-  for (const [url, owners] of grouped) {
-    const owned = (id: string): boolean => {
-      const s = registry.getSession(id);
-      const identity = identities.get(id);
-      return !!s && s.state !== "exited" && s.agentSessionId === identity?.agentSessionId &&
-        s.cwd === identity?.cwd && s.gitBranch === identity?.branch && (s.prUrl === url || !!s.task?.repoPrs.some(pr => pr.prUrl === url));
-    };
-    await reconcileBranchUpdate(url, owners[0]!.cwd,
-      update => { for (const owner of owners) if (owned(owner.id)) registry.setPrBranchUpdate(owner.id, url, update); },
-      () => active() && owners.some(owner => owned(owner.id)));
-  }
+  const groups = [...grouped];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(BRANCH_UPDATE_CONCURRENCY, groups.length) }, async () => {
+    while (next < groups.length && active()) {
+      const [url, owners] = groups[next++]!;
+      const owned = (id: string): boolean => {
+        const s = registry.getSession(id);
+        const identity = identities.get(id);
+        return !!s && s.state !== "exited" && s.agentSessionId === identity?.agentSessionId &&
+          s.cwd === identity?.cwd && s.gitBranch === identity?.branch && (s.prUrl === url || !!s.task?.repoPrs.some(pr => pr.prUrl === url));
+      };
+      try { await reconcileBranchUpdate(url, owners[0]!.cwd,
+        update => { for (const owner of owners) if (owned(owner.id)) registry.setPrBranchUpdate(owner.id, url, update); },
+        () => active() && owners.some(owner => owned(owner.id)), deps); }
+      catch (error) { console.error("[pr] branch update failed:", url, error); }
+    }
+  }));
 }

@@ -88,6 +88,18 @@ async function announcePullRequest(daemon: DaemonHandle, session: SessionRow, ur
 }
 
 
+async function expectConflictPromptReceived(daemon: DaemonHandle, session: SessionRow, url: string): Promise<void> {
+  const conflictPrompt = `Resolve the branch update conflicts for ${url}. Fetch its current target branch, merge it into the PR branch, resolve conflicts, run focused checks and push. Do not merge the pull request.`;
+  // The fake provider writes this native user record only after receiving the prompt.
+  // Resolve the transcript by the owning session's ID, so an acknowledged click or a
+  // prompt delivered to a different session cannot satisfy the assertion.
+  await expect.poll(async () => {
+    const owner = (await api<SessionRow[]>(daemon, "/api/sessions")).find(candidate => candidate.id === session.id);
+    return owner?.transcriptPath ? readFileSync(owner.transcriptPath, "utf8") : "";
+  }, { message: "the PR's owning session must receive its conflict resolution prompt" })
+    .toContain(JSON.stringify({ role: "user", content: conflictPrompt }));
+}
+
 // Real dispatch, PR poller, SQLite claims, GitHub adapter and SSE; only external agents and GitHub are faked.
 test("manual-merge PR updates once, follows the new checks/review, and offers conflict recovery", async ({ dashboard: page, daemon }) => {
   const session = await dispatch(page, daemon);
@@ -118,7 +130,7 @@ test("manual-merge PR updates once, follows the new checks/review, and offers co
   const capture = async (name: string) => {
     if (!process.env.MC_E2E_EVIDENCE) return;
     mkdirSync(artifactsDir("pr-branch-update"), { recursive: true });
-    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), name), fullPage: true });
+    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), `review-${name}`), fullPage: true, animations: "disabled" });
   };
   await capture("updating.png");
   pr.headRefOid = "c".repeat(40); pr.branchUpdate.mergeStateStatus = "BLOCKED";
@@ -143,17 +155,20 @@ test("manual-merge PR updates once, follows the new checks/review, and offers co
   await status.hover();
   await expect(page.locator(".tooltip")).toContainText("merge conflict updating branch");
   await capture("conflict.png");
-  await recovery.getByRole("button", { name: "Send to session to resolve" }).click();
+  const injectRoute = `**/api/sessions/${encodeURIComponent(session.id)}/inject`;
+  await page.route(injectRoute, route => route.fulfill({
+    status: 409, contentType: "application/json",
+    body: JSON.stringify({ ok: false, error: "Session delivery refused; try again." }),
+  }));
+  await resolve.click();
+  await expect(recovery.getByRole("alert")).toHaveText("Session delivery refused; try again.");
+  await expect(resolve).toBeEnabled();
+  await expect(recovery.getByRole("button", { name: "Sent to session" })).toHaveCount(0);
+  await capture("recovery-refused.png");
+  await page.unroute(injectRoute);
+  await resolve.click();
   await expect(recovery.getByRole("button", { name: "Sent to session" })).toBeDisabled();
-  const conflictPrompt = `Resolve the branch update conflicts for ${PR_URL}. Fetch its current target branch, merge it into the PR branch, resolve conflicts, run focused checks and push. Do not merge the pull request.`;
-  // The fake provider writes this native user record only after receiving the prompt.
-  // Resolve the transcript by the owning session's ID, so an acknowledged click or a
-  // prompt delivered to a different session cannot satisfy the assertion.
-  await expect.poll(async () => {
-    const owner = (await api<SessionRow[]>(daemon, "/api/sessions")).find(candidate => candidate.id === session.id);
-    return owner?.transcriptPath ? readFileSync(owner.transcriptPath, "utf8") : "";
-  }, { message: "the PR's owning session must receive its conflict resolution prompt" })
-    .toContain(JSON.stringify({ role: "user", content: conflictPrompt }));
+  await expectConflictPromptReceived(daemon, session, PR_URL);
   expect(writes()).toHaveLength(2);
   expect(calls().some(c => c.argv[0] === "pr" && c.argv[1] === "merge")).toBe(false);
   await flag(false);
@@ -210,7 +225,7 @@ test("an attached repository PR gets its own guarded update and progress beside 
     if (!process.env.MC_E2E_EVIDENCE) return;
     mkdirSync(artifactsDir("pr-branch-update"), { recursive: true });
     await page.mouse.move(0, 0);
-    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), name), fullPage: true });
+    await page.screenshot({ path: join(artifactsDir("pr-branch-update"), `review-${name}`), fullPage: true, animations: "disabled" });
   };
   await capture("attached-updating.png");
   attached.headRefOid = "c".repeat(40);
@@ -222,4 +237,23 @@ test("an attached repository PR gets its own guarded update and progress beside 
   await expect(primaryRow.locator(".pr-branch-update")).toHaveCount(0);
   expect(writes()).toHaveLength(1);
   await capture("attached-checks.png");
+
+  const layout = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }),
+  });
+  expect(layout.ok).toBe(true);
+  await page.reload();
+  await page.getByRole("button", { name: "Open Fix the Release Title Check" }).press("Enter");
+  await expect(attachedRow.getByText("Waiting for checks", { exact: true })).toBeVisible();
+  await capture("attached-board-checks.png");
+  attached.checkContexts = [{ __typename: "StatusContext", context: "ci", state: "SUCCESS" }];
+  attached.branchUpdate!.baseRefOid = "d".repeat(40);
+  attached.branchUpdate!.mergeStateStatus = "BEHIND";
+  attached.branchUpdate!.refusal = "gh: merge conflict updating attached branch (HTTP 422)";
+  writeGhPullRequests(daemon.home, [primary, attached]);
+  await expect(attachedRow.getByText("Branch update conflicts", { exact: true })).toBeVisible();
+  await expect(attachedRow.locator(".pr-branch-update-reason")).toContainText("merge conflict updating attached branch");
+  await capture("attached-board-conflict.png");
+  await attachedRow.getByRole("button", { name: "Send to session to resolve" }).click();
+  await expectConflictPromptReceived(daemon, session, attachedUrl);
 });

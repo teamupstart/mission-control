@@ -1658,7 +1658,11 @@ export function PrBranchUpdateStatus({ session, url, detailed = false }: { sessi
       <button className="btn" type="button" disabled={sent || busy}
       onClick={async () => {
         setBusy(true); setError(null);
-        try { await api.injectPrompt(session.id, branchConflictPrompt(url)); setSent(true); }
+        try {
+          const result = await api.injectPrompt(session.id, branchConflictPrompt(url));
+          if (result.ok) setSent(true);
+          else setError(result.error || "Could not send the conflict resolution prompt. Try again.");
+        }
         catch (error) { setError(error instanceof Error ? error.message : String(error)); }
         finally { setBusy(false); }
       }}>{sent ? "Sent to session" : busy ? "Sending…" : "Send to session to resolve"}</button>
@@ -2134,7 +2138,7 @@ export function TaskRepoPrs({
   repoPrs, session,
 }: {
   repoPrs: readonly TaskRepoPrSummary[];
-  session?: Session;
+  session: Session;
 }): React.JSX.Element | null {
   if (repoPrs.length === 0) return null;
   return (
@@ -2176,7 +2180,7 @@ export function TaskRepoPrs({
               <span className="pr-num">{label}</span>
             </a>
           </Tooltip>
-          {session && <PrBranchUpdateStatus session={session} url={entry.prUrl} detailed />}
+          <PrBranchUpdateStatus session={session} url={entry.prUrl} detailed />
           </span>
         );
       })}

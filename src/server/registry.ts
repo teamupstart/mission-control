@@ -2909,6 +2909,7 @@ export class Registry extends EventEmitter {
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
+      prBranchUpdates: prev?.prBranchUpdates,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
       pendingEffort: prev?.pendingEffort ?? null,

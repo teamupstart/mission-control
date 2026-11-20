@@ -616,16 +616,16 @@ const FAKE_WEZTERM = [
  * missing `gh` rather than as a broken fixture.
  */
 const FAKE_GH = `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require("node:fs");
+const { mkdirSync, writeFileSync, renameSync } = require("node:fs");
 const { join } = require("node:path");
 const argv = process.argv.slice(2);
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, \`gh-\${Date.now()}-\${process.pid}.json\`),
-    JSON.stringify({ argv, cwd: process.cwd() }, null, 2),
-  );
+  const stamp = \`\${Date.now()}-\${process.pid}\`;
+  const pending = join(dir, \`.pending-gh-\${stamp}\`);
+  writeFileSync(pending, JSON.stringify({ argv, cwd: process.cwd() }, null, 2));
+  renameSync(pending, join(dir, \`gh-\${stamp}.json\`));
 }
 const command = argv.join(" ");
 /** Whatever the spec last scripted, re-read per call. Absent or unreadable means none. */

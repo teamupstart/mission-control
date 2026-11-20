@@ -56,6 +56,9 @@ test("an empty PATH component is the current directory, so a git there keeps the
 test("the developer directory follows xcode-select's precedence and matches xcrun", { skip: process.platform !== "darwin" }, () => {
   const none = () => { throw new Error("no selection"); };
   assert.equal(developerDirectory({ DEVELOPER_DIR: "/chosen" }, () => true, none), "/chosen");
+  // An app bundle, as `xcode-select --switch /Applications/Xcode.app` and DEVELOPER_DIR allow.
+  assert.equal(developerDirectory({ DEVELOPER_DIR: "/Applications/Xcode.app" }, () => true, none), "/Applications/Xcode.app/Contents/Developer");
+  assert.equal(developerDirectory({}, () => true, () => "/Applications/Xcode-beta.app"), "/Applications/Xcode-beta.app/Contents/Developer");
   assert.equal(developerDirectory({}, () => true, () => "/Applications/Beta.app/Contents/Developer"), "/Applications/Beta.app/Contents/Developer");
   assert.equal(developerDirectory({}, (path) => path.startsWith("/Library/"), none), "/Library/Developer/CommandLineTools");
   assert.equal(developerDirectory({}, () => false, none), null);

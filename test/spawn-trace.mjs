@@ -93,13 +93,20 @@ if (dir) {
    * the API cannot tell (the *Sync output forms), which the report counts as started.
    */
   const LAUNCH_FAILURES = new Set(["ENOENT", "EACCES", "ENOTDIR", "E2BIG"]);
+  // Node's own argument validation (`ERR_INVALID_ARG_TYPE`, `ERR_INVALID_ARG_VALUE`, ...) throws
+  // before any process exists. A timeout or a maxBuffer kill, by contrast, ended one that ran.
+  const neverStarted = (code) => LAUNCH_FAILURES.has(code) || String(code ?? "").startsWith("ERR_INVALID_");
   const launchedFrom = (outcome) => {
     if (outcome === undefined || outcome === null || typeof outcome !== "object") return null;
-    if (outcome instanceof Error) return !LAUNCH_FAILURES.has(outcome.code);
-    if (outcome.error) return !LAUNCH_FAILURES.has(outcome.error.code);
+    if (outcome instanceof Error) return !neverStarted(outcome.code);
+    if (outcome.error) return !neverStarted(outcome.error.code);
     if ("pid" in outcome) return typeof outcome.pid === "number" && outcome.pid > 0;
     return null;
   };
+
+  // A command a shell cannot exec in its own place: it stays alive to sequence, pipe, redirect
+  // or substitute, which is one more process than the program the line starts with.
+  const SHELL_CONTROL = /[;&|`$()<>\n]/;
 
   /**
    * One spawn, recorded without its arguments: a command line can carry a credential, and the
@@ -110,16 +117,26 @@ if (dir) {
   const record = (api, callArgs, outcome) => {
     const [command, args] = callArgs;
     const shellString = api === "exec" || api === "execSync";
-    const words = shellString
-      ? String(command).trim().split(/\s+/)
-      : [String(api === "fork" ? process.execPath : command),
-        ...(api === "fork" ? [] : Array.isArray(args) ? args.filter((a) => typeof a === "string") : [])];
-    const cmd = basename(words[0] ?? "");
+    const shell = shellString || Boolean(optionsOf(callArgs).shell);
+    const argv = api === "fork" ? [] : Array.isArray(args) ? args.filter((a) => typeof a === "string") : [];
+    let cmd;
+    let sub = null;
+    if (shellString) {
+      // A shell line is not split into words here - quoting makes any split wrong, and a wrong
+      // split is how a quoted value would leak. Only a plain leading program name is kept; an
+      // assignment (`TOKEN=... git`) or anything quoted is recorded as the shell.
+      const first = String(command).trim().split(/\s+/)[0] ?? "";
+      cmd = /^[\w./+-]+$/.test(first) ? basename(first) : "(shell)";
+    } else {
+      cmd = basename(String(api === "fork" ? process.execPath : command));
+      if (cmd === "git") sub = gitSubcommand(argv);
+    }
+    const line = shellString ? String(command) : [String(command), ...argv].join(" ");
     write({
-      event: "spawn", file, api, cmd,
-      sub: cmd === "git" ? gitSubcommand(words.slice(1)) : null,
+      event: "spawn", file, api, cmd, sub,
       caller: caller(),
-      shell: shellString || Boolean(optionsOf(callArgs).shell),
+      shell,
+      compound: shell ? SHELL_CONTROL.test(line) : false,
       launched: launchedFrom(outcome),
       pid: outcome && typeof outcome === "object" && typeof outcome.pid === "number" ? outcome.pid : null,
       ppid: process.pid,

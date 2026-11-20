@@ -47,6 +47,9 @@ const files = new Set();
 let direct = 0;
 let shellSpawns = 0;
 let failedLaunches = 0;
+// A shell-mode git launch whose line the shell cannot exec in place (`git a && git b`): the
+// shell stays alive beside the gits, and neither trace2 nor the git spawn line counts it.
+let shellsAroundGit = 0;
 // Child pids the traced processes recorded, so a node child that loads the tracer itself is
 // recognised as already counted even when its parent exited first and it was reparented.
 const spawnedPids = new Set();
@@ -77,6 +80,7 @@ for (const name of readdirSync(dir)) {
     direct++;
     if (typeof entry.pid === "number" && entry.pid > 0) spawnedPids.add(`${entry.pid}`);
     if (entry.shell) shellSpawns++;
+    if (entry.cmd === "git" && entry.shell && entry.compound) shellsAroundGit++;
     files.add(entry.file);
     bump(byCmd, entry.cmd);
     bump(byFile, entry.file);
@@ -144,7 +148,8 @@ if (existsSync(trace2Dir)) {
 //   test workers (the runner starts one per file; no traced process recorded those spawns)
 // + every non-git spawn a traced process recorded that actually started. A shell-mode spawn
 //   (`exec`, `execSync`, `shell: true`) counts once: the shell runs a builtin itself and execs
-//   a lone program in its own place, so one recorded spawn is one process
+//   a lone program in its own place, so one recorded spawn is one process; a compound git line
+//   (`git a && git b`) keeps its shell alive, and that shell is added here
 // + node processes no traced spawn line accounts for - neither a recorded child pid nor the
 //   child of a traced process (a shell script's node child)
 // + every git process (trace2), every xcrun shim exec in front of one, and every shell git
@@ -161,6 +166,7 @@ const shellsStartedByGit = [...t2Shells.values()].reduce((a, b) => a + b, 0);
 const wholeRun = starts.length === 0 || !existsSync(trace2Dir) ? null : {
   testWorkers: workers,
   nonGitSpawns: direct - (byCmd.get("git") ?? 0),
+  shellsAroundGitLines: shellsAroundGit,
   nodeDescendantsNoSpawnAccountsFor: unaccounted,
   gitProcesses: t2Processes,
   xcrunShimExecs: t2ViaShim,

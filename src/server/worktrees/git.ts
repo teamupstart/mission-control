@@ -364,6 +364,10 @@ export class NativeWorktreeGit implements WorktreeGit {
         if (!detached.value) branch = "(a branch named (detached))";
       } else if (symbolic) {
         branch = symbolic[1]!;
+      } else if (head !== oid) {
+        // A direct HEAD is the commit itself. One that is not the commit status just reported
+        // means HEAD moved between the two reads, and neither answer can be trusted alone.
+        return unanswered("one HEAD: it moved during the inspection");
       }
     }
     const status = tracked

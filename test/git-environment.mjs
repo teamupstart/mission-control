@@ -52,9 +52,11 @@ function onPath(name, path) {
  * process - and this runs once in every test worker.
  */
 export function developerDirectory(env = process.env, exists = existsSync, readlink = readlinkSync) {
-  if (env.DEVELOPER_DIR) return env.DEVELOPER_DIR;
+  // Either may name the Xcode app bundle itself, which xcrun reads as its `Contents/Developer`.
+  const bundled = (dir) => (/\.app\/?$/.test(dir) ? join(dir, "Contents", "Developer") : dir);
+  if (env.DEVELOPER_DIR) return bundled(env.DEVELOPER_DIR);
   try {
-    return resolve("/var/db", readlink("/var/db/xcode_select_link"));
+    return bundled(resolve("/var/db", readlink("/var/db/xcode_select_link")));
   } catch {
     // Nothing selected explicitly.
   }

@@ -53,6 +53,39 @@ test("records carry the executable and git subcommand, never the arguments", () 
   assert.deepEqual(spawns.map((spawn) => [spawn.cmd, spawn.sub]), [["git", "(none)"], ["git", "status"], ["echo", null]]);
 });
 
+test("a shell line is never split into a subcommand, and a leading assignment is not kept", () => {
+  // A whitespace split ignores quoting, so it would hand `secret-token"` back as git's subcommand.
+  const { spawns } = traced(`
+    import cp from "node:child_process";
+    cp.execSync('git -c "http.extraHeader=Authorization: secret-token" --version');
+    cp.execSync("SECRET_VALUE=secret-token true");
+  `);
+  const text = JSON.stringify(spawns);
+  assert.ok(!text.includes("secret-token") && !text.includes("SECRET_VALUE"), text);
+  assert.deepEqual(spawns.map((spawn) => [spawn.cmd, spawn.sub]), [["git", null], ["(shell)", null]]);
+});
+
+test("a compound shell line around git counts its shell; a lone command does not", () => {
+  const { spawns, report } = traced(`
+    import cp from "node:child_process";
+    cp.execSync("git --version > /dev/null && git --version > /dev/null");
+    cp.execSync("git --version");
+  `);
+  assert.deepEqual(spawns.map((spawn) => spawn.compound), [true, false]);
+  // No trace2 here, so git processes are 0: the worker plus the one shell that stayed alive.
+  assert.equal(report.processTotalParts.shellsAroundGitLines, 1);
+  assert.equal(report.processTotal, 2);
+});
+
+test("a call Node rejects before spawning is not a launch", () => {
+  const { spawns, report } = traced(`
+    import cp from "node:child_process";
+    try { cp.spawnSync(""); } catch {}
+  `);
+  assert.deepEqual(spawns.map((spawn) => spawn.launched), [false]);
+  assert.equal(report.failedLaunches, 1);
+});
+
 test("a launch that starts no process is recorded as such and left out of the total", () => {
   const { spawns, report } = traced(`
     import cp from "node:child_process";

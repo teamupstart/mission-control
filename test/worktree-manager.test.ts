@@ -166,8 +166,16 @@ function mkLinkedDetached(clone: string, name: string): string {
 }
 
 test("inspection reads HEAD, detachment and dirtiness from real git in one status read", async () => {
+  // On the files ref backend, pinned: a machine whose git defaults to reftable correctly makes a
+  // second call there (covered by the reftable test below), which is not what this one counts.
+  // `-c init.defaultRefFormat` rather than `--ref-format`, which a git older than 2.45 rejects.
   const { clone } = repository("mission-native-inspect-");
-  const detached = mkLinkedDetached(clone, "detached");
+  const repo = join(clone, "..", "files-backend");
+  execFileSync("git", ["-c", "init.defaultRefFormat=files", "init", "-q", "-b", "main", repo], { stdio: "pipe" });
+  writeFileSync(join(repo, "keep.txt"), "base\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "-c", "user.email=t@test", "-c", "user.name=t", "commit", "-qm", "base");
+  const detached = mkLinkedDetached(repo, "detached");
   const calls: string[][] = [];
   const git = new NativeWorktreeGit(async (bin, args, options) => {
     calls.push(args);
@@ -280,6 +288,13 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   assert.ok(answered.ok);
   assert.equal(answered.value.head, sha);
   assert.equal(answered.value.detached, true);
+  // HEAD moving between status and the file read: status saw one commit, the file holds another.
+  // Neither read is trustworthy alone, so the inspection is unknown rather than detached at a
+  // commit the slot no longer stands on.
+  assertUnknown(
+    await new NativeWorktreeGit(async () => known(header("b".repeat(40), "(detached)")), noPause).inspect(detachedTree),
+    /moved during the inspection/,
+  );
   // `(detached)` is also a legal branch name, so that header is only believed once the
   // checkout's own HEAD file confirms it. A HEAD file that cannot be read settles nothing:
   // the inspection is unknown, never "detached", because detachment gates the lease.

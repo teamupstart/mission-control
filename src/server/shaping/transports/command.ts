@@ -336,7 +336,10 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     const stderrTail = (): string => {
       // Once the front was cut, the first `longestValue` characters may hold the tail end of a
       // value. They are dropped in the original text's positions, not after replacement.
-      return redactReceived(stderr, received, stderrDropped ? longestValue : 0).slice(-STDERR_TAIL_CHARS).trim();
+      // Then collapsed and scrubbed again: the record collapses whitespace, which can make a
+      // spacing variant of a value into the value itself.
+      const scrubbed = redactReceived(stderr, received, stderrDropped ? longestValue : 0);
+      return redactReceived(scrubbed.replace(/\s+/g, " "), received).slice(-STDERR_TAIL_CHARS).trim();
     };
     const end = (why: "timed_out" | "overflow"): void => {
       if (ending || settled) return;
@@ -427,7 +430,8 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       stderr += stderrDecoder.end();
       const tail = stderrTail();
       const detail = tail ? `: ${tail}` : "";
-      const named = namedValues.some(({ value }) => stderr.includes(value));
+      const flatStderr = stderr.replace(/\s+/g, " ");
+      const named = namedValues.some(({ value }) => stderr.includes(value) || flatStderr.includes(value));
       finish({
         kind: "failed", reason: signal ? `The command was killed by ${signal}${detail}` : `The command exited with code ${code}${detail}`,
         ...(named ? { redacted: true } : {}),

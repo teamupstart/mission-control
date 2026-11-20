@@ -13,6 +13,11 @@ const MAX_REDIRECTS = 5;
  * origin. Redirects are handled here rather than by `fetch`, which would follow one to another
  * origin with these headers attached: a redirect within the origin is followed with them, and
  * one that leaves it is refused, so no other host ever receives them. No cookie is ever kept.
+ *
+ * `keepMethod` is for a caller whose request means nothing without its body, such as a shaping
+ * call: a 301, 302 or 303 that would resend it as a GET without its body is refused with an
+ * error instead of followed, while a 307 or 308, which keep the method and the body, still are.
+ * Without it, redirects are followed as a browser would.
  */
 export async function fetchOnOrigin(
   origin: string,
@@ -20,6 +25,7 @@ export async function fetchOnOrigin(
   input: string | URL | Request,
   init: RequestInit = {},
   secretQuery: URLSearchParams = new URLSearchParams(),
+  options: { keepMethod?: boolean } = {},
 ): Promise<Response> {
   let target = new URL(input instanceof Request ? input.url : String(input));
   let request: RequestInit = input instanceof Request
@@ -42,7 +48,11 @@ export async function fetchOnOrigin(
     target = new URL(location, target);
     // As a browser would: 303, and 301 or 302 after a POST, continue as a GET without a body.
     const method = (request.method ?? "GET").toUpperCase();
-    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
+    const dropsBody = response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST");
+    if (dropsBody && options.keepMethod && method !== "GET" && method !== "HEAD") {
+      throw new Error(`the server answered ${response.status}, a redirect that would resend this ${method} as a GET without its body`);
+    }
+    if (dropsBody) {
       const { body: _body, ...rest } = request;
       request = { ...rest, method: "GET" };
     }
@@ -119,6 +129,9 @@ export function cappedFetch(
     // An event ends at a blank line: two line ends in a row, where a line end is LF, CR or CRLF.
     let lastWasLineEnd = false;
     let lastWasCr = false;
+    // The blank line ended on a CR: the LF that may follow, in this chunk or the next, is the
+    // same delimiter and still belongs to the event it ends, so the count resets after it.
+    let resetAfterLf = false;
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
         let read: ReadableStreamReadResult<Uint8Array>;
@@ -129,6 +142,18 @@ export function cappedFetch(
           counted += chunk.byteLength;
         } else {
           for (const byte of chunk) {
+            if (resetAfterLf) {
+              resetAfterLf = false;
+              lastWasCr = false;
+              if (byte === 0x0a) {
+                // The second half of the CRLF that ended the event: charged to that event.
+                counted += 1;
+                if (counted > capBytes) break;
+                counted = 0;
+                continue;
+              }
+              counted = 0;
+            }
             // Every byte on the wire counts, both bytes of a CRLF included: an event of many short
             // CRLF lines must not pass the cap while being counted as fewer bytes than it is.
             counted += 1;
@@ -138,7 +163,12 @@ export function cappedFetch(
             const lineEnd = byte === 0x0a || byte === 0x0d;
             lastWasCr = byte === 0x0d;
             // A line end right after another is the blank line that ends the event.
-            if (lineEnd && lastWasLineEnd) { counted = 0; lastWasLineEnd = false; continue; }
+            if (lineEnd && lastWasLineEnd) {
+              lastWasLineEnd = false;
+              if (byte === 0x0d) resetAfterLf = true;
+              else counted = 0;
+              continue;
+            }
             lastWasLineEnd = lineEnd;
           }
         }

@@ -422,7 +422,7 @@ test("a failed response labelled as an event stream is capped as a whole body, a
   } finally { await raw.close(); }
 });
 
-test("a response stream that ends before its reply fails the call at once, and the next call connects again", async () => {
+test("a response stream that ends before its reply fails that call at once, and the next call uses the same connection", async () => {
   const raw = await startRawMcpServer((res, id, index) => {
     if (index === 0) {
       // An event, then the end of the stream, and never the reply.
@@ -440,9 +440,80 @@ test("a response stream that ends before its reply fails the call at once, and t
     assert.ok(Date.now() - started < 5_000, "at once, not at the call's 30 s budget");
     const second = await callMcp(request(false), shaper({ type: "http", url: raw.url }), run);
     assert.deepEqual(data(second), { guidance: [{ id: "raw", body: "raw reply" }] });
-    assert.equal(raw.initializes(), 2, "the lost connection was forgotten and a fresh one opened");
+    assert.equal(raw.initializes(), 1, "one stream ending early does not break the shared session");
   } finally { await raw.close(); }
 });
+
+test("one call's interrupted response stream fails only that call, never another call on the same connection", async () => {
+  const raw = await startRawMcpServer((res, id, index) => {
+    if (index === 0) {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+        .end(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "working" } })}\n\n`);
+      return;
+    }
+    // The healthy call answers on its own stream a little later, after the other stream ended.
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    setTimeout(() => res.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id, result: OK_RESULT })}\n\n`), 400);
+  });
+  try {
+    const run = ctx();
+    const [first, second] = await Promise.all([
+      callMcp(request(false), shaper({ type: "http", url: raw.url }), run),
+      new Promise((done) => setTimeout(done, 50)).then(() => callMcp(request(false), shaper({ type: "http", url: raw.url }), run)),
+    ]);
+    assert.deepEqual(first, { kind: "failed", reason: "The MCP server's response stream ended before the reply arrived." });
+    assert.deepEqual(data(second), { guidance: [{ id: "raw", body: "raw reply" }] });
+    assert.equal(raw.initializes(), 1, "both calls shared one connection");
+  } finally { await raw.close(); }
+});
+
+test("a run that ended while a stdio command was being resolved starts no server", async () => {
+  const pidFile = join(home, `raw-stdio-closed-${Date.now()}.pid`);
+  const run = ctx();
+  (run.scope as ReturnType<typeof runScope>).close();
+  const reply = await callMcp(request(), shaper({ type: "stdio", mode: "overflow-init" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "overflow-init", "10", pidFile] } },
+  }), run);
+  assert.deepEqual(reply, { kind: "unavailable", reason: "The shaping run ended before the MCP server could start." });
+  await new Promise((done) => setTimeout(done, 500));
+  const { existsSync } = await import("node:fs");
+  assert.equal(existsSync(pidFile), false, "no server process was started");
+});
+
+test("a stdio server receives exactly the filtered environment, never an SDK default that was filtered out", async () => {
+  const { tokenPath } = await import("../src/shared/harness-runtime.mjs");
+  const { mkdirSync, writeFileSync, rmSync: removeFile } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const token = "daemon-token-3f9e2a";
+  mkdirSync(dirname(tokenPath()), { recursive: true });
+  writeFileSync(tokenPath(), token);
+  try {
+    // LOGNAME carries the daemon's token, so the filtered environment drops it; the SDK would
+    // have put it back from the daemon's own environment.
+    const seen = await withEnv({ LOGNAME: `user-${token}` }, async () => echoed(await callMcp(request(), shaper({ type: "stdio", mode: "echo" }), ctx())));
+    assert.equal(seen.envKeys.includes("LOGNAME"), false, seen.envKeys.join(","));
+    assert.ok(seen.envKeys.includes("PATH"), "the rest of the environment still arrives");
+  } finally { removeFile(tokenPath(), { force: true }); }
+});
+
+test("a value cut at the front of the retained stderr leaves no fragment in the reason", async () => {
+  // The value, then enough blank lines to push its start out of the retained 4,000 characters.
+  // Collapsed, those lines would bring the surviving end of it into the recorded tail.
+  const value = "stderr-secret-5e0c71";
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "stderr-exit", KEY_ENV, "3995"], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  const reason = (reply as { reason: string }).reason;
+  for (const piece of ["5e0c71", "e0c71", "c71"]) assert.equal(reason.includes(piece), false, reason);
+});
+
+test("the handshake budget comes from the call's own timeout, not the wall-clock deadline", async () => {
+  // A deadline already in the past, as a wall-clock jump during the run would leave it.
+  const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok" }), ctx({ deadline: Date.now() - 60_000 }));
+  assert.equal(reply.kind, "data", JSON.stringify(reply));
+});
+
 
 test("a stdio server that overflows during the handshake fails at once and is stopped", async () => {
   const pidFile = join(home, `raw-stdio-${Date.now()}.pid`);

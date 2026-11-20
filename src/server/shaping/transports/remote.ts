@@ -50,10 +50,30 @@ export function callHeaders(
   configured: Readonly<Record<string, string>>,
   request: ShapingRequest,
   ctx: Pick<TransportContext, "trace" | "workUnitId">,
+  owned: readonly string[] = [],
 ): { ok: true; headers: Record<string, string>; resolved: ResolvedValue[] } | { ok: false; reason: string } {
-  const resolution = resolveReferenceMap(withoutCarriedHeaders(configured), { caller: request.context.caller });
+  // Only headers that will be sent are resolved: one the transport owns and replaces, such as a
+  // configured `Accept`, cannot block a call by naming a reference that is not set.
+  const sent = withoutOwnedHeaders(withoutCarriedHeaders(configured), owned);
+  const resolution = resolveReferenceMap(sent, { caller: request.context.caller });
   if (!resolution.ok) return { ok: false, reason: missingReferenceReason(resolution.missing) };
-  return { ok: true, headers: { ...resolution.value, ...carriedHeaders(ctx.trace, ctx.workUnitId) }, resolved: resolution.resolved };
+  return {
+    ok: true,
+    headers: { ...resolution.value, ...carriedHeaders(ctx.trace, ctx.workUnitId) },
+    resolved: withTransmittedForms(resolution.resolved),
+  };
+}
+
+/**
+ * Each value as written, and as the server receives it when that differs: a header value is
+ * sent with its leading and trailing spaces and tabs removed, so a value at either end of a
+ * header reaches the server trimmed, and an echo of it carries the trimmed form.
+ */
+function withTransmittedForms(resolved: readonly ResolvedValue[]): ResolvedValue[] {
+  return resolved.flatMap((entry) => {
+    const trimmed = entry.value.replace(/^[\t ]+|[\t ]+$/g, "");
+    return trimmed && trimmed !== entry.value ? [entry, { name: entry.name, value: trimmed }] : [entry];
+  });
 }
 
 /** This call's own signal: the engine's, and the call's timeout, whichever comes first. */
@@ -95,8 +115,31 @@ function withJsonForms(resolved: readonly ResolvedValue[]): ResolvedValue[] {
  */
 export function quoted(text: string, resolved: readonly ResolvedValue[]): { text: string; redacted: boolean } {
   const forms = withJsonForms(resolved);
-  const clean = redactResolved(text, forms).replace(/\s+/g, " ").trim();
-  return { text: clean.length > QUOTED_CHARS ? `${clean.slice(0, QUOTED_CHARS)}…` : clean, redacted: holdsResolvedValue(text, forms) };
+  // As written, then with every JSON string escape decoded, so `\u0061` or `\/` spellings of a
+  // value are found as the value, then with whitespace collapsed, which can make a value out of
+  // a spacing variant of it. Each pass scrubs the previous pass's output.
+  const asWritten = redactResolved(text, forms);
+  const decoded = redactResolved(decodeJsonEscapes(asWritten), forms);
+  const collapsed = redactResolved(decoded.replace(/\s+/g, " ").trim(), forms);
+  const redacted = asWritten !== text || decoded !== decodeJsonEscapes(asWritten) || collapsed !== decoded.replace(/\s+/g, " ").trim();
+  return { text: collapsed.length > QUOTED_CHARS ? `${collapsed.slice(0, QUOTED_CHARS)}…` : collapsed, redacted };
+}
+
+const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+
+/**
+ * `text` with JSON string escapes decoded, up to three levels deep, for a body that nests one
+ * JSON document's text inside another's. Only for matching and display: a diagnostic, not data.
+ */
+export function decodeJsonEscapes(text: string): string {
+  let out = text;
+  for (let level = 0; level < 3; level++) {
+    const next = out.replace(/\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g,
+      (_whole, hex: string | undefined, char: string | undefined) => (hex ? String.fromCharCode(Number.parseInt(hex, 16)) : JSON_ESCAPES[char!]!));
+    if (next === out) break;
+    out = next;
+  }
+  return out;
 }
 
 /**
@@ -133,7 +176,10 @@ export function dataReply(raw: unknown, resolved: readonly ResolvedValue[]): Tra
   if (typeof raw === "string") {
     try { decoded = JSON.parse(raw); } catch { /* The engine refuses it without its text. */ }
   }
-  const scrubbed = scrubResolved(decoded, resolved);
+  // A string in the reply can hold JSON text of its own, such as a dump of the request headers,
+  // where a value with a quote, a backslash or a tab is written escaped: that form goes too.
+  const forms = withJsonForms(resolved);
+  const scrubbed = scrubResolved(decoded, forms);
   return {
     kind: "data",
     // As received when nothing was removed, otherwise the scrubbed reply as the decoded value it is.
@@ -141,7 +187,7 @@ export function dataReply(raw: unknown, resolved: readonly ResolvedValue[]): Tra
     ...(scrubbed.redacted ? { redacted: true } : {}),
     ...(scrubbed.notes.length > 0 ? { redactionNotes: scrubbed.notes } : {}),
     ...(resolved.length > 0
-      ? { redact: (text: string) => redactResolved(text, resolved), holdsNamed: (text: string) => holdsResolvedValue(text, resolved) }
+      ? { redact: (text: string) => redactResolved(text, forms), holdsNamed: (text: string) => holdsResolvedValue(text, forms) }
       : {}),
   };
 }

@@ -481,7 +481,10 @@ and a longer one is `failed` without being read further. The call's timeout abor
 - **Egress.** HTTPS only, except plain HTTP to this machine's loopback, decided before anything
   is sent. A plain `http` URL to any other host gets no request and is `unavailable`, with or
   without a credential header. Redirects are followed by hand and only on the URL's origin: one
-  that leaves it is refused, so no other host ever receives the headers. A cookie a server sets is never kept or sent back.
+  that leaves it is refused, so no other host ever receives the headers. A 307 or 308 is
+  followed with the request's method and body. A 301, 302 or 303 would resend the request as a
+  GET without its body, so the endpoint would never see the task: it is refused and the call is
+  `failed`. A cookie a server sets is never kept or sent back.
 - **References.** Header values may reference `{caller.user}`, the identity declared under
   `caller.user`, `{caller.agent}`, the harness, `{caller.conversation}`, the task id, and
   `{env:NAME}`, the daemon's environment variable `NAME`. They are resolved when the call is

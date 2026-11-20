@@ -527,12 +527,24 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   request never leaves the machine.
 - **Redirects stay on the origin.** They are followed by hand, at most five, with the headers
   reattached on each hop. A redirect to another origin is refused before any request reaches
-  it, so no other host ever receives the headers. There is no cookie jar: a cookie a server sets is
-  never kept or sent back.
+  it, so no other host ever receives the headers. A redirect that would resend a shaping
+  request as a GET without its body (a 301, 302 or 303) is refused rather than followed. There
+  is no cookie jar: a cookie a server sets is never kept or sent back.
 - **Bounded replies.** An `http` body is read to at most 256 KiB, and every MCP message, over
   stdio or streamable HTTP, is capped at 256 KiB while it is received. Reading stops at the byte
   that passes the cap, the request is aborted or the server closed, and the call is `failed` at
-  once. Nothing over the cap is parsed. A lost event stream is not reconnected.
+  once. Nothing over the cap is parsed. A successful event stream is counted per event, every
+  byte on the wire including both bytes of each CRLF, up to and including the blank line that
+  ends it; any other response, an error labelled as an event stream included, is counted as a
+  whole body, because the client reads it whole. A lost event stream is not reconnected. A
+  request whose own response stream ends before its reply fails that call at once and leaves
+  the shared connection, and its other calls, alone.
+- **Writes and dry runs take loopback JSON only.** `PUT /api/shaping` and
+  `POST /api/shaping/test` answer 403 unless the body is `application/json` and any `Origin` is
+  this machine's loopback over http. A cross-site page can send a `text/plain` POST with no
+  preflight and the real loopback `Host`, which is all the daemon-wide guard checks, so without
+  this it could start a dry run, and with it a remote shaper call carrying your credentials,
+  with a prompt of its choosing.
 - **Secrets are references, resolved at call time.** A header's `{env:NAME}` is read from the
   daemon's environment when the call is made, held only in that call's memory, and never
   logged, stored or returned. It never resolves Mission Control's own token, credentials or
@@ -547,7 +559,12 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   entry or fact whose id or name holds `pi` is dropped with a note, and the shaper is marked
   `redacted` though no credential was involved. A shaper that does not send a caller reference
   is not affected by it. When a variable's name itself contains a resolved value, the marker and
-  notes are neutral, so naming it cannot repeat the credential.
+  notes are neutral, so naming it cannot repeat the credential. Each value is also matched in the
+  form the server received, with leading and trailing spaces and tabs trimmed as a header is
+  sent, and in its JSON-escaped form inside a reply's text. Text quoted into a failure reason is
+  scrubbed as written, again with every JSON escape decoded, and again after whitespace is
+  collapsed, so a `\u0061` spelling or a spacing variant of a value cannot survive, and the
+  engine scrubs a shaper's notes and errors before and after collapsing them the same way.
 - **Trace context and work unit id.** The launch's `traceparent`, `tracestate` and the run's
   `x-work-unit-id` are the only Mission Control values a remote shaper receives besides the
   request and its own configured headers. A configured header of one of those names is
@@ -557,8 +574,14 @@ An `mcp` server started on this machine runs as you, like a `command` shaper: it
 resolved through the executable locator, or inside its own folder for a discovered shaper,
 spawned without a shell in an empty working directory of its own, with the same scrubbed
 environment plus only the variables its `env` names, and a value named there is removed from
-its replies and diagnostics. It is one process per shaping run, closed when the run ends. The
-SDK starts it outside a process group of its own, so a helper the server starts can outlive it.
+its replies and diagnostics. The SDK would add its own defaults (`HOME`, `LOGNAME`, `PATH`,
+`SHELL`, `TERM`, `USER`) beneath that environment, so each one the scrubbed environment left out
+is passed as unset and the server receives exactly what the diagnostics are redacted against.
+Its stderr is kept with a margin as long as the longest value it received, and that margin is
+dropped once the front is cut, so a value cut there leaves no fragment in a reason. It is one
+process per shaping run, closed when the run ends, or at once after a message over the cap. A
+run that ends while its command is still being located starts no server. The SDK starts it
+outside a process group of its own, so a helper the server starts can outlive it.
 
 This build only dry-runs shapers through the API: no worker receives their text yet. Calling
 them at dispatch, where the same rules will keep a shaper from stopping a launch, arrives in a

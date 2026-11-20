@@ -362,9 +362,14 @@ async function runShaping(
     // place, such as an invalid fact's name kept for validation. Removing it counts as redaction.
     const redact = reply.redact ?? ((text: string) => text);
     const holdsNamed = reply.holdsNamed ?? (() => false);
+    // The record collapses whitespace, which can turn a spacing variant of a value into the
+    // value itself: the text is scrubbed as written, collapsed, and scrubbed again, and either
+    // pass removing a value marks the record.
     const scrub = (text: string): string => {
-      if (holdsNamed(text)) redacted = true;
-      return redact(text);
+      const first = redact(text);
+      const flat = first.replace(/\s+/g, " ").trim();
+      if (holdsNamed(text) || holdsNamed(flat)) redacted = true;
+      return redact(flat);
     };
     let value = reply.data;
     if (typeof value === "string") {

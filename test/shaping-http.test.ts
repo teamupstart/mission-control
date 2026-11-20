@@ -645,6 +645,27 @@ async function withGuidanceKey<T>(value: string | undefined, run: () => Promise<
   }
 }
 
+test("a dry run or a write that is not loopback JSON is refused before anything runs", async () => {
+  const server = await startGuidanceHttp({ mode: "ok" });
+  try {
+    await put({ kind: "upsert", shaper: {
+      id: "csrf-target", label: "Target", stage: "select", timeoutMs: 30_000,
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: server.url } },
+    } });
+    const body = JSON.stringify({ id: "csrf-target", repository, prompt: "chosen by another site" });
+    const plain = await app.request("/api/shaping/test", { method: "POST", headers: { host: headers.host, "content-type": "text/plain" }, body });
+    assert.equal(plain.status, 403);
+    const foreign = await app.request("/api/shaping/test", { method: "POST", headers: { ...headers, origin: "https://attacker.example" }, body });
+    assert.equal(foreign.status, 403);
+    const write = await app.request("/api/shaping", { method: "PUT", headers: { host: headers.host, "content-type": "text/plain" }, body: JSON.stringify({ kind: "remove", id: "csrf-target" }) });
+    assert.equal(write.status, 403);
+    assert.deepEqual(server.requests.length, 0, "no shaper call was made");
+    assert.ok(shaping.getShapingConfig().shapers.some((entry) => entry.id === "csrf-target"), "and nothing was written");
+    const local = await app.request("/api/shaping/test", { method: "POST", headers: { ...headers, origin: "http://127.0.0.1:7317" }, body });
+    assert.equal(local.status, 200, "the dashboard's own origin still runs it");
+  } finally { await server.close(); }
+});
+
 test("GET lists every environment name a shaper references as set or unset, never a value", async () => {
   await put({ kind: "upsert", shaper: {
     id: "remote-guidance", label: "Remote guidance", stage: "select",

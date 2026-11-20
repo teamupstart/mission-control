@@ -57,6 +57,8 @@ export interface ShapingRunScope {
   readonly shared: Map<string, unknown>;
   /** Run `cleanup` once the run has ended, whatever happened. Failures are logged, never thrown. */
   defer(cleanup: () => void | Promise<void>): void;
+  /** True once the run has ended. A transport starts nothing new after that. */
+  readonly closed?: boolean;
 }
 
 export interface TransportContext {

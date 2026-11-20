@@ -7,6 +7,8 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ShaperSchema, type ShapingRequest } from "../src/shared/shaping.ts";
 import { callHttp } from "../src/server/shaping/transports/http.ts";
+import { shapeTask } from "../src/server/shaping/engine.ts";
+import { SHAPING_CONFIG_DEFAULTS } from "../src/shared/shaping.ts";
 import { REMOTE_REPLY_BYTES } from "../src/server/shaping/transports/remote.ts";
 import type { ShaperOf, TransportContext, TransportReply } from "../src/server/shaping/transports/types.ts";
 
@@ -46,6 +48,16 @@ before(async () => {
       case "/over-cap": return res.writeHead(200, { "content-type": "application/json" }).end(sized(REMOTE_REPLY_BYTES + 1));
       case "/slow": setTimeout(() => json(200, OK), 5_000); return;
       case "/echo": return json(200, { guidance: [{ id: "echo", title: `key ${req.headers["x-api-key"] ?? "none"}`, body: JSON.stringify({ headers: req.headers }) }] });
+      case "/moved": return res.writeHead(302, { location: "/ok" }).end();
+      case "/escaped-status": {
+        // Every character of the echoed value written as a \u escape, valid JSON for the same text.
+        const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+        return res.writeHead(500, { "content-type": "application/json" }).end(`{"error":"denied for ${echoed}"}`);
+      }
+      case "/spaced-note": {
+        const value = String(req.headers["x-caller"] ?? "");
+        return json(200, { degraded: true, notes: [`no guidance for ${value.replace(" ", "   ")}`], guidance: [] });
+      }
       default: return json(404, {});
     }
   });
@@ -241,6 +253,66 @@ test("a configured Content-Type or Accept, in any case, never replaces the JSON 
   assert.equal(last().headers.accept, "application/json");
   assert.equal(last().headers["x-tenant"], "kept", "other configured headers still ride the request");
   assert.deepEqual(JSON.parse(last().body), request());
+});
+
+test("a value with spaces or tabs at its ends is redacted in the trimmed form the server received", async () => {
+  const padded = "  trimmed-key-5c1d\t";
+  const reply = await withKey(padded, () => callHttp(request(), shaper("/echo", { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
+  assert.equal(last().headers["x-api-key"], "trimmed-key-5c1d", "Headers trims the ends before sending");
+  assert.equal(reply.redacted, true);
+  assert.equal(JSON.stringify((reply as { data: unknown }).data).includes("trimmed-key-5c1d"), false);
+  assert.equal(data(reply).guidance[0].title, `key [${KEY_ENV} redacted]`);
+});
+
+test("an unset reference in a header the transport owns and replaces does not block the call", async () => {
+  const reply = await withKey(undefined, () => callHttp(request(), shaper("/ok", { Accept: `{env:${KEY_ENV}}`, "content-type": `{env:${KEY_ENV}}` }), ctx()));
+  assert.deepEqual(data(reply), OK);
+  assert.equal(last().headers.accept, "application/json");
+});
+
+test("a 301 or 302 that would resend the request as a GET is refused, not followed into an empty reply", async () => {
+  const before = seen.filter((entry) => entry.path === "/ok").length;
+  const reply = await callHttp(request(), shaper("/moved"), ctx());
+  assert.equal(reply.kind, "failed");
+  assert.match((reply as { reason: string }).reason, /answered 302, a redirect that would resend this POST as a GET without its body/);
+  assert.equal(seen.filter((entry) => entry.path === "/ok").length, before, "the GET was never sent");
+});
+
+test("a value written with JSON escapes inside a successful reply's text is redacted", async () => {
+  // A quote and a backslash: the /echo body is JSON text of the headers, so they arrive escaped.
+  const tricky = 'quote"slash\\key-91be';
+  const reply = await withKey(tricky, () => callHttp(request(), shaper("/echo", { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
+  assert.equal(reply.redacted, true);
+  const body = data(reply).guidance[0].body as string;
+  assert.equal(body.includes("key-91be"), false, body.slice(0, 200));
+  assert.equal(JSON.parse(body).headers["x-api-key"], `[${KEY_ENV} redacted]`);
+});
+
+test("a failure body that spells a value in any JSON escape is redacted from the reason", async () => {
+  const reply = await withKey("plain-key-77aa", () => callHttp(request(), shaper("/escaped-status", { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
+  assert.equal(reply.kind, "failed");
+  assert.equal(reply.redacted, true);
+  assert.equal((reply as { reason: string }).reason, `The shaper answered HTTP 500: {"error":"denied for [${KEY_ENV} redacted]"}`);
+});
+
+test("a degraded note that spaces a resolved value out is redacted in the record, and the record is marked", async () => {
+  const remote = shaper("/spaced-note", { "x-caller": "{caller.user}" });
+  const result = await shapeTask({
+    task: "Retry",
+    context: {
+      taskId: "t_1", title: "Retry", kind: "ship", harness: "claude", runtime: "sdk", afterWork: null, labels: [], priority: null,
+      repositories: [{ name: "billing-api", role: "primary", branch: null, baseSha: null, path: null }],
+    },
+  }, {
+    config: { ...SHAPING_CONFIG_DEFAULTS, caller: { user: "Jane Doe" }, shapers: [remote], overrides: { remote: true } },
+    discovered: [], enabled: true,
+  });
+  const row = result.summary!.shapers[0]!;
+  assert.equal(last().headers["x-caller"], "Jane Doe");
+  assert.equal(row.outcome, "degraded");
+  assert.equal(row.redacted, true, JSON.stringify(row));
+  assert.equal(JSON.stringify(result.summary).includes("Jane Doe"), false, row.reason ?? "");
+  assert.match(row.reason ?? "", /no guidance for \[caller\.user redacted\]/);
 });
 
 test("an echoed caller value resolved into a header comes back redacted and marked", async () => {

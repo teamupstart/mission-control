@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -138,36 +139,59 @@ function connectionKey(shaper: ShaperOf<"mcp">, ctx: TransportContext, headers: 
   return `mcp\u0000${canonicalJson(shaper.transport.server)}\u0000${ctx.root ?? ""}\u0000${headers ? canonicalJson(headers) : ""}`;
 }
 
+/** How much of a local server's stderr is kept for a diagnostic, before the redaction margin. */
+const STDERR_KEEP_CHARS = 4_000;
+
 /** How long after a reply stream ends its reply may still be on its way through the client's parser. */
 const REPLY_SETTLE_MS = 100;
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-/** The JSON-RPC id of the request a POST body carries, when it is one. */
-function requestId(body: unknown): string | number | null {
+/** The JSON-RPC id and method of the request a POST body carries, when it is one. */
+function requestOf(body: unknown): { id: string | number; method: string } | null {
   if (typeof body !== "string") return null;
   try {
     const message = JSON.parse(body) as { id?: unknown; method?: unknown };
-    return typeof message.method === "string" && (typeof message.id === "string" || typeof message.id === "number") ? message.id : null;
+    return typeof message.method === "string" && (typeof message.id === "string" || typeof message.id === "number")
+      ? { id: message.id, method: message.method }
+      : null;
   } catch {
     return null;
   }
 }
 
 /**
- * A `fetch` that tells `interrupted` when a request's own successful event stream ends, or
- * breaks, and its reply has not arrived shortly after: `answered` says whether it did. Only a
- * POST that carries a request and is answered with an event stream is watched; a JSON reply
- * that breaks already fails its request where the client reads it.
+ * The call a request belongs to. `callMcp` runs each `tools/call` inside its own store, and the
+ * client sends the request from within it, so the `fetch` that carries it knows which call to
+ * tell when its response stream ends early, with nothing added to what the server receives.
  */
-function watchReplyStreams(base: FetchLike, answered: (id: string | number) => boolean, interrupted: () => void): FetchLike {
+const pendingCall = new AsyncLocalStorage<{ interrupted(): void }>();
+
+/** What a call answers when its own response stream ended before its reply. */
+const INTERRUPTED_REASON = "The MCP server's response stream ended before the reply arrived.";
+
+/**
+ * A `fetch` that reports a request whose own successful event stream ends, or breaks, without
+ * its reply having arrived shortly after: `answered` says whether it did. A `tools/call` tells
+ * only the call it belongs to, so the shared connection and its other calls carry on; the
+ * handshake's `initialize` fails the connection, which cannot be used without it. Only a POST
+ * that carries a request and is answered with an event stream is watched; a JSON reply that
+ * breaks already fails its request where the client reads it.
+ */
+function watchReplyStreams(base: FetchLike, answered: (id: string | number) => boolean, handshakeInterrupted: () => void): FetchLike {
   return async (input, init) => {
+    const call = pendingCall.getStore();
     const response = await base(input, init);
-    const id = requestId(init?.body);
+    const request = requestOf(init?.body);
     const stream = response.ok && (response.headers.get("content-type") ?? "").toLowerCase().startsWith("text/event-stream");
-    if (id === null || !stream || !response.body) return response;
+    if (request === null || !stream || !response.body) return response;
+    const { id, method } = request;
     const source = response.body.getReader();
-    const ended = () => setTimeout(() => { if (!answered(id)) interrupted(); }, REPLY_SETTLE_MS);
+    const ended = () => setTimeout(() => {
+      if (answered(id)) return;
+      if (method === "initialize") handshakeInterrupted();
+      else call?.interrupted();
+    }, REPLY_SETTLE_MS);
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
         let read: ReadableStreamReadResult<Uint8Array>;
@@ -203,15 +227,18 @@ function mergeResolved(...lists: ReadonlyArray<readonly ResolvedValue[]>): Resol
   });
 }
 
-/** How long the handshake may take: what is left of the whole step, never more. */
+/**
+ * How long the handshake may take: the opening call's own budget, which the engine derives from
+ * the step's monotonic deadline. Not the epoch `deadline`, which a wall-clock change can move.
+ */
 function handshakeMs(ctx: TransportContext): number {
-  return Math.max(1, ctx.deadline - Date.now());
+  return Math.max(1, ctx.timeoutMs);
 }
 
 async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promise<Connection> {
   const server = shaper.transport.server;
   if (server.type !== "stdio") throw new Error("not a stdio server");
-  const [{ Client: McpClient }, { StdioClientTransport }] = await Promise.all([
+  const [{ Client: McpClient }, { StdioClientTransport, DEFAULT_INHERITED_ENV_VARS }] = await Promise.all([
     import("@modelcontextprotocol/sdk/client/index.js"),
     import("@modelcontextprotocol/sdk/client/stdio.js"),
   ]);
@@ -230,6 +257,12 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     void removeScratch(scratch);
     throw new UnavailableError(`The command "${server.command}" was not found.`);
   }
+  // Resolution can wait, and the run can end meanwhile. Its cleanup has already run, so a server
+  // started now would have nothing to stop it: none is started.
+  if (ctx.scope.closed) {
+    void removeScratch(scratch);
+    throw new UnavailableError("The shaping run ended before the MCP server could start.");
+  }
   // A value the operator named in `env` is a credential the server may echo, as it is for a
   // `command` shaper: removed from replies under its name, and from every diagnostic.
   const credentials = credentialBearingValues(executable.env);
@@ -246,18 +279,36 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     named: new Set([...inherited.named, ...credentials.map(({ value }) => value)]),
   };
   const state = latch();
+  // The SDK spawns with its own inherited defaults (HOME, LOGNAME, PATH, SHELL, TERM, USER) under
+  // the environment it is given. Each one this environment left out is named as undefined, which
+  // Node leaves out of the child's, so the server receives exactly the filtered environment that
+  // every diagnostic is redacted against.
+  const spawnEnv: Record<string, string | undefined> = { ...executable.env };
+  for (const name of DEFAULT_INHERITED_ENV_VARS) if (!Object.hasOwn(spawnEnv, name)) spawnEnv[name] = undefined;
   const transport = new StdioClientTransport({
     command: executable.path,
     args: server.args,
-    env: executable.env as Record<string, string>,
+    env: spawnEnv as Record<string, string>,
     cwd: scratch,
     stderr: "pipe",
     maxBufferSize: REMOTE_REPLY_BYTES,
   });
+  // Kept a value's length beyond the tail it needs, as the `command` transport keeps it: once the
+  // front is cut, a value cut there survives only as a piece no search recognises, so that
+  // margin is dropped in the original text's positions before anything is recorded.
   let stderr = "";
-  transport.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString("utf8")).slice(-4_000); });
+  let stderrCut = false;
+  const longest = received.values[0]?.length ?? 0;
+  transport.stderr?.on("data", (chunk: Buffer) => {
+    const joined = stderr + chunk.toString("utf8");
+    const keep = STDERR_KEEP_CHARS + longest;
+    if (joined.length > keep) stderrCut = true;
+    stderr = joined.slice(-keep);
+  });
   const tail = (): string => {
-    const text = redactReceived(stderr, received).replace(/\s+/g, " ").trim().slice(-500);
+    const scrubbed = redactReceived(stderr, received, stderrCut ? longest : 0);
+    // Collapsed and scrubbed again: collapsing can make a spacing variant of a value the value.
+    const text = redactReceived(scrubbed.replace(/\s+/g, " "), received).trim().slice(-500);
     return text ? `: ${text}` : ".";
   };
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });
@@ -304,18 +355,20 @@ async function openHttp(
   // `headers` already holds the carried ones beside the configured; only the configured go here.
   // They are set over the client's own on every request, so any the client owns are left out.
   const configured = withoutOwnedHeaders(withoutCarriedHeaders(headers), MCP_OWNED_HEADERS);
-  const onOrigin = (input: string | URL | Request, init?: RequestInit) => fetchOnOrigin(url.origin, configured, input, { ...init, credentials: "omit" });
+  // A redirect that would resend a request as a GET without its body is refused, not followed.
+  const onOrigin = (input: string | URL | Request, init?: RequestInit) =>
+    fetchOnOrigin(url.origin, configured, input, { ...init, credentials: "omit" }, undefined, { keepMethod: true });
   const capped = cappedFetch(onOrigin, REMOTE_REPLY_BYTES, (_error: ResponseCapError) => {
     state.fail(capReason());
     void client.close().catch(() => {});
   });
   // A request's reply can arrive on its own response stream. One that ends, or breaks, before
-  // the reply came leaves the call waiting for an answer that will never come, while the
-  // transport itself stays open: the connection is failed at once, so the call answers and the
-  // next call of the run connects again.
+  // the reply came leaves its call waiting for an answer that will never come, while the
+  // transport stays open: that call answers at once (`watchReplyStreams`), and only a broken
+  // handshake fails the connection.
   const answered = new Set<string | number>();
   const interrupted = () => {
-    state.fail("The MCP server's response stream ended before the reply arrived.");
+    state.fail(INTERRUPTED_REASON);
     void client.close().catch(() => {});
   };
   const transport = new StreamableHTTPClientTransport(url, {
@@ -401,7 +454,7 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
   if (server.type === "http") {
     const refused = egressRefusal(server.url);
     if (refused) return { kind: "unavailable", reason: refused };
-    const resolution = callHeaders(server.headers, request, ctx);
+    const resolution = callHeaders(server.headers, request, ctx, MCP_OWNED_HEADERS);
     if (!resolution.ok) return { kind: "unavailable", reason: resolution.reason };
     http = { headers: resolution.headers, resolved: resolution.resolved };
   }
@@ -422,17 +475,25 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
   const resolved = mergeResolved(http?.resolved ?? [], connection.resolved);
   const meta = carriedMeta(ctx.trace, ctx.workUnitId);
   let result: Awaited<ReturnType<Client["callTool"]>>;
+  // Settled when this call's own response stream ends before its reply; cancels the request too.
+  const stop = new AbortController();
+  let interrupt!: (error: Error) => void;
+  const interrupted = new Promise<never>((_resolve, reject) => { interrupt = reject; });
+  interrupted.catch(() => {});
+  const marker = new Error(INTERRUPTED_REASON);
   try {
     result = await Promise.race([
-      connection.client.callTool(
+      pendingCall.run({ interrupted: () => { interrupt(marker); stop.abort(marker); } }, () => connection.client.callTool(
         { name: tool, arguments: mcpToolArguments(request, contextDelivery), ...(meta ? { _meta: meta } : {}) },
         undefined,
-        { signal, timeout: Math.max(1, ctx.timeoutMs) },
-      ),
+        { signal: AbortSignal.any([signal, stop.signal]), timeout: Math.max(1, ctx.timeoutMs) },
+      )),
       connection.lost,
+      interrupted,
     ]);
   } catch (error) {
     if (connection.failure) return failure("failed", connection.failure, resolved);
+    if (stop.signal.aborted && !signal.aborted) return failure("failed", INTERRUPTED_REASON, resolved);
     if (signal.aborted || (error as { code?: unknown } | null)?.code === -32001) return timedOut();
     const detail = quoted(requestFailure(error), resolved);
     return failure("failed", `The MCP call failed: ${detail.text}`, resolved, detail.redacted);

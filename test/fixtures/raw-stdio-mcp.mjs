@@ -6,6 +6,8 @@
 //                                    message this many bytes long, then stays running.
 //   error-init <NAME>                Answers `initialize` with an error that repeats the environment
 //                                    variable `NAME`, then stays running until stdin ends.
+//   stderr-exit <NAME> <lines>       Writes the variable `NAME` and then that many newlines to stderr,
+//                                    and exits before answering anything.
 import { renameSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -17,6 +19,10 @@ if (mode === "overflow-init" && args[1]) {
   renameSync(`${args[1]}.partial`, args[1]);
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1_000);
+}
+
+if (mode === "stderr-exit") {
+  process.stderr.write(`${process.env[args[0] ?? ""] ?? ""}${"\n".repeat(Number(args[1] ?? 0))}`, () => process.exit(1));
 }
 
 for await (const line of createInterface({ input: process.stdin })) {

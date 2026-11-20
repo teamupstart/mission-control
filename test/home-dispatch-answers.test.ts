@@ -186,8 +186,16 @@ test("tasks sharing a worker session: the review belongs to the active one, and 
   assert.equal(row(twinReview.id).status, "pending", "nothing was settled or receipted against the new holder");
   assert.equal((openDb().prepare(`SELECT count(*) AS n FROM home_dispatch_receipts WHERE review_id = ?`).get(twinReview.id) as { n: number }).n, 0);
   const after = await (await app.request(`/dispatch/inbox?session=${h.sessionId}`, { headers })).json() as
-    { items: Array<{ taskId: string; pending?: unknown }> };
+    { items: Array<{ taskId: string; state: string; pending?: { dashboardOnly: boolean; reviewId: string } }>; needsYou: string[]; dashboardOnly: number };
   assert.equal(after.items.find((i) => i.taskId === "t-twin-b")?.pending, undefined, "the new holder does not show the earlier task's question");
+  // The question is still pending, so it must not vanish: it is listed on its own, for the dashboard.
+  const orphan = after.items.find((i) => i.taskId === `review:${twinReview.id}`);
+  assert.equal(orphan?.state, "waiting");
+  assert.equal(orphan?.pending?.dashboardOnly, true);
+  assert.equal(orphan?.pending?.reviewId, twinReview.id);
+  assert.ok(after.needsYou.includes(`review:${twinReview.id}`));
+  assert.ok(after.dashboardOnly >= 1);
+  assert.equal(after.items.filter((i) => i.taskId === `review:${twinReview.id}`).length, 1, "listed once");
 });
 
 test("a failed or cancelled task that still has a pending request is in needsYou", async () => {

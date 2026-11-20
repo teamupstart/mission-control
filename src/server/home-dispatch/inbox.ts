@@ -138,6 +138,29 @@ function queuePositions(tasks: readonly Task[]): Map<string, number> {
   return new Map(queued.map((t, i) => [t.id, i + 1]));
 }
 
+/** The id prefix of an item that stands for a pending review no task can be named for. */
+export const UNATTRIBUTED_ITEM_PREFIX = "review:";
+
+/**
+ * A pending review whose asking task cannot be established (another task took over its worker
+ * session after it was asked). It is a waiting item in `needsYou`, marked dashboard-only so the
+ * answers route's refusal and the pane say the same thing, and it names no task but the review.
+ */
+function unattributedItem(review: ReviewItem, holder: Task, session: Session | undefined): HomeDispatchInboxItem {
+  return {
+    taskId: `${UNATTRIBUTED_ITEM_PREFIX}${review.id}`,
+    title: review.title,
+    kind: "chat",
+    state: "waiting",
+    origin: "home-session",
+    changedAt: review.createdAt,
+    canMessage: false,
+    agent: session?.agent ?? holder.agent,
+    runtime: session?.runtime ?? null,
+    pending: { ...pendingFor(review, false), dashboardOnly: true, allowsText: false },
+  };
+}
+
 /** Foreman's agent slots: the live agents against the `maxSessions` ceiling. */
 function slotsOf(deps: Pick<HomeDispatchDeps, "registry">): HomeDispatchInbox["slots"] {
   const sessions = deps.registry.snapshot().sessions;
@@ -161,6 +184,7 @@ export function buildInbox(
   const runs = runsBySession(deps);
   const positions = queuePositions(tasks);
   const items: HomeDispatchInboxItem[] = [];
+  const orphaned = new Set<string>();
 
   for (const task of tasks) {
     const origin = origins.get(task.id) ?? NO_ORIGIN;
@@ -175,6 +199,16 @@ export function buildInbox(
     // (an earlier one) never shows the question, and an ambiguous session shows it on neither.
     const owner = task.sessionId ? taskOwningSession(deps, task.sessionId) : undefined;
     const pending = owner && "task" in owner && owner.task.id === task.id ? firstPending(deps, task.sessionId, task) : undefined;
+    // A question that predates this task's start was asked by whichever task held the session before
+    // it, which the registry no longer records. It is still pending, so it is listed on its own as
+    // something only the dashboard can answer, and attributed to neither task.
+    if (task.sessionId && owner && "task" in owner && owner.task.id === task.id) {
+      for (const review of deps.registry.pendingReviews(task.sessionId)) {
+        if (reviewBelongsTo(task, review.createdAt) || orphaned.has(review.id)) continue;
+        orphaned.add(review.id);
+        items.push(unattributedItem(review, task, session));
+      }
+    }
     // A resident run is in the inbox only while it has a request; the Residents tab lists the rest.
     if (resident && !pending) continue;
     const run = task.sessionId ? runs.get(task.sessionId) : undefined;

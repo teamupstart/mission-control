@@ -248,6 +248,10 @@ test("worker rule: a cwd inside a live task worktree is refused by real path, a 
   assert.ok(sessions.workerRefusal(live, "s", tree), "the worktree itself");
   assert.ok(sessions.workerRefusal(live, "s", extra), "an attached repository's worktree");
   assert.equal(sessions.workerRefusal(live, "s", sibling), null, "a name prefix is not containment");
+  const dotted = join(tree, "..notes");
+  mkdirSync(dotted);
+  assert.ok(sessions.workerRefusal(live, "s", dotted), "a child whose name begins with two dots is inside the worktree");
+  assert.equal(sessions.workerRefusal(live, "s", join(tree, "..")), null, "the parent directory is outside it");
   for (const status of ["done", "failed", "cancelled"]) {
     assert.equal(sessions.workerRefusal(depsWith({ tasks: [task(status, tree)] }), "s", tree), null, status);
   }

@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import type { Handler } from "hono";
 import { HOST, PORT } from "../config.ts";
 import { inTransaction, openDb } from "../db.ts";
@@ -66,7 +66,9 @@ function realPath(p: string): string | null {
 /** True when the resolved path `child` is `parent` or lies inside it, never by name prefix. */
 function isInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  // A parent-directory component is `..` alone or `..` followed by a separator; a name that
+  // merely begins with two dots (`..notes`) is a child.
+  return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
 }
 
 function deny(reason: string): HomeSessionRefusal {

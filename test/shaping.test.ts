@@ -646,6 +646,26 @@ test("a registered shaper cannot name a ./ command; a manifest in the shapers fo
   }
 });
 
+test("an unsupported reason never names an unrecognised key, which a writer could have chosen", () => {
+  const entry = StoredShaperSchema.parse({ ...command("extra"), "sk-live-key-as-name": true });
+  const view = shapingConfigView(config({ shapers: [entry] }));
+  const row = view.shapers[0] as { unsupported: string };
+  assert.equal(row.unsupported, "This build does not recognise a field this entry names.");
+  assert.equal(JSON.stringify(view).includes("sk-live-key-as-name"), false);
+});
+
+test("an entry whose truncation marker cannot fit its cap is dropped, never kept over budget", () => {
+  const allocation = allocateBudget([{ group: "g", groupBytes: 100, body: "ab" }], 1, { entryBytes: 16 * 1024, minEntryBytes: 0 });
+  assert.equal(allocation.kept.length, 0);
+  assert.equal(allocation.dropped.length, 1);
+  assert.equal(allocation.bytes, 0);
+});
+
+test("a label, which heads every injected entry, cannot hold NUL", () => {
+  assert.equal(ShaperSchema.safeParse({ ...command("nul"), label: "Ac\u0000me" }).success, false);
+  assert.equal(ShaperSchema.safeParse({ ...command("nul"), label: "Acme" }).success, true);
+});
+
 test("a build that knows a later stage reads the same entry as known", () => {
   const later = { stages: ["gather", "select", "route"], shaper: shaperSchemaForStages(["gather", "select", "route"]) };
   const entry = StoredShaperSchema.parse({ ...command("router"), stage: "route" });

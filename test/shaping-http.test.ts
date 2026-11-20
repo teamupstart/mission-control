@@ -151,6 +151,50 @@ test("a deeply nested stored entry takes the unreadable path instead of throwing
   assert.equal(warnings.length >= 1, true);
 });
 
+test("a stored row that is not valid JSON is unreadable, never treated as missing", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const raw = '{"shapers":[{"id":"kept","label":"Kept"'; // truncated mid-write, as a crash could leave it
+  openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key, raw);
+  shaping.reloadShaping();
+  assert.deepEqual(shaping.getShapingConfig(), SHAPING_CONFIG_DEFAULTS, "reads fall back to the defaults");
+  const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
+  assert.equal(response.status, 409);
+  assert.equal(((await response.json()) as { error: string }).error, "unreadable_config");
+  const row = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.shaping.key) as { value: string };
+  assert.equal(row.value, raw, "the row is left exactly as it was");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
+});
+
+test("an oversized body is refused with 413 after the flag's gate, before it is parsed", async () => {
+  const huge = JSON.stringify({ kind: "upsert", shaper: { id: "big", label: "x".repeat(200 * 1024), stage: "gather", transport: { type: "command", command: "/bin/x" } } });
+  const putBig = await app.request("/api/shaping", { method: "PUT", headers, body: huge });
+  assert.equal(putBig.status, 413);
+  const testBig = await app.request("/api/shaping/test", { method: "POST", headers,
+    body: JSON.stringify({ id: "x", repository, prompt: "p".repeat(7 * 1024 * 1024) }) });
+  assert.equal(testBig.status, 413);
+  setFlag(false);
+  try {
+    assert.equal((await app.request("/api/shaping", { method: "PUT", headers, body: huge })).status, 404, "a disabled route reads no body");
+  } finally {
+    setFlag(true);
+  }
+});
+
+test("a dry run refuses a bare repository and accepts a linked worktree", async () => {
+  const bare = join(home, "repos", "bare.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  await put({ kind: "upsert", shaper: fixture("bare-check", "gather", "ok") });
+  const refused = await dryRun({ id: "bare-check", repository: bare });
+  assert.equal(refused.status, 400);
+  assert.match(((await refused.json()) as { reason: string }).reason, /bare repository/);
+  // A linked worktree of an ordinary checkout is a working tree, and still runs.
+  execFileSync("git", ["-C", repository, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "init"]);
+  const linked = join(home, "repos", "billing-api-linked");
+  execFileSync("git", ["-C", repository, "worktree", "add", "-q", "--detach", linked]);
+  assert.equal((await dryRun({ id: "bare-check", repository: linked })).status, 200);
+});
+
 test("a stored config this build cannot read is never overwritten", async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));

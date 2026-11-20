@@ -282,7 +282,7 @@ export type ShaperTransport = z.output<typeof ShaperTransportSchema>;
 function shaperFields<const Stages extends readonly [string, ...string[]]>(stages: Stages) {
   return {
     id: ShaperIdSchema,
-    label: z.string().trim().min(1).max(120),
+    label: z.string().trim().min(1).max(120).refine((value) => !value.includes("\u0000"), { message: "A label cannot contain NUL." }),
     stage: z.enum(stages),
     protocol: z.literal(SHAPING_PROTOCOL).default(SHAPING_PROTOCOL),
     transport: ShaperTransportSchema,
@@ -640,8 +640,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * The same entry with every literal credential emptied: a credential-bearing header value that
- * is not a reference, a URL's userinfo and credential query parameters, and a credential
- * argument. A definition this build writes can hold none of these, because the strict schema
+ * is not a reference, a transport URL's userinfo and its whole query string, and a credential
+ * argument. The query goes whole, even from an entry this build cannot run: `plan.md` allows a
+ * transport URL no query string, so this build cannot tell which parameter of one holds a
+ * secret, and a parameter it does not recognise is treated as one. Such an entry is marked
+ * removed, and its replacement names the secret as `{env:NAME}` in a header. A definition this build writes can hold none of these, because the strict schema
  * refuses them. This covers everything else the config may be handed - a settings restore, or
  * an entry a newer build stored - so no path leaves secret text in `app_config.shaping` or in
  * the `shaping` domain of a snapshot. Every other field is kept exactly as written, unless the
@@ -881,7 +884,13 @@ function issueSentence(error: z.ZodError, maxChars: number = SHAPING_LIMITS.reas
   const issue = error.issues[0];
   if (!issue) return "The definition is not valid.";
   const at = issue.path.length ? `${issue.path.join(".")}: ` : "";
-  return `${at}${issue.message}`.slice(0, maxChars);
+  // Zod names an unrecognised key in its message, and a key is whatever the entry's writer
+  // chose, a credential-shaped one included. The reason leaves the daemon in the config view,
+  // so it names where the field is, never the key itself.
+  const message = issue.code === "unrecognized_keys"
+    ? "This build does not recognise a field this entry names."
+    : issue.message;
+  return `${at}${message}`.slice(0, maxChars);
 }
 
 /** A known shaper, or an unsupported entry with the reason this build cannot run it. */
@@ -1559,7 +1568,9 @@ export function allocateBudget<T extends BudgetItem>(
     let body = item.body;
     let omittedBytes = 0;
     if (full > cap) {
-      if (cap < limits.minEntryBytes) {
+      // Dropped when the cap leaves too little to be useful, or not even room for the marker
+      // that says what was cut: a kept entry never exceeds its cap.
+      if (cap < limits.minEntryBytes || cap <= utf8Length(truncationMarker(full))) {
         dropped.push({ item, bytes: full });
         continue;
       }

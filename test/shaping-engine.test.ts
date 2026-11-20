@@ -235,6 +235,21 @@ test("input.trace reaches every call of a run as ctx.trace unchanged, and appear
   assert.deepEqual(none, [null, null], "no context is null, not undefined");
 });
 
+test("no NUL from a shaper reply reaches an entry, the section or a selector's request", async () => {
+  const seen: ShapingRequest[] = [];
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
+  const result = await run(config, (request, entry) => {
+    seen.push(request);
+    return data(entry.id === "g"
+      ? { repo: { summary: "sum\u0000mary", facts: { lang: "type\u0000script" } }, guidance: [] }
+      : { guidance: [{ id: "a\u0000b", title: "Ti\u0000tle", path: "do\u0000cs.md", body: "bo\u0000dy" }] });
+  }, input(1));
+  assert.deepEqual(result.entries.map((entry) => [entry.id, entry.title, entry.path, entry.body]), [["ab", "Title", "docs.md", "body"]]);
+  assert.equal(result.section.includes("\u0000"), false, "the section can be a launch argument");
+  const select = seen.find((request) => request.stage === "select")!;
+  assert.deepEqual([select.repo.summary, select.repo.facts], ["summary", { lang: "typescript" }]);
+});
+
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {
   // 33 attached repositories, one more than a request's context may name.
   const many = input(1);

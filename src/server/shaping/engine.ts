@@ -157,6 +157,27 @@ interface CallResult {
   truncated: boolean;
 }
 
+/**
+ * Remove every NUL from the strings of a decoded reply, in place. Keys are left as they are:
+ * none of them reaches the section. Walked with a stack, so no nesting overflows it.
+ */
+function stripNul(value: unknown): void {
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (!node || typeof node !== "object") continue;
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      const item = record[key];
+      if (typeof item === "string") {
+        if (item.includes("\u0000")) record[key] = item.replaceAll("\u0000", "");
+      } else if (item && typeof item === "object") {
+        pending.push(item);
+      }
+    }
+  }
+}
+
 function bounded(reason: string): string {
   return reason.replace(/\s+/g, " ").trim().slice(0, SHAPING_LIMITS.reasonChars);
 }
@@ -344,6 +365,9 @@ async function runShaping(
       try { value = JSON.parse(value); }
       catch { return empty("invalid", "The reply is not JSON.", redacted); }
     }
+    // No NUL from a shaper reaches anything built from its reply. Phase 2 appends the section to
+    // a launch argument, and an argument holding NUL refuses to start the worker at all.
+    stripNul(value);
     const error = replyError(value);
     if (error !== null) return empty("failed", scrub(error), redacted);
     const parsed = ShapingResultSchema.safeParse(value);

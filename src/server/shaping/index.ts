@@ -9,7 +9,7 @@ import {
   type ShapingIntent,
   type ShapingIntentResult,
 } from "@shared/shaping.ts";
-import { getAppConfig, openDb, setAppConfig } from "../db.ts";
+import { getAppConfig, hasAppConfigRow, openDb, setAppConfig } from "../db.ts";
 
 /**
  * The daemon's one owner of `app_config.shaping`, built the way the feature-flag store is: a
@@ -48,6 +48,13 @@ function deepFreeze<T>(value: T): T {
 
 function readConfig(): { config: ShapingConfig; readable: boolean } {
   const stored = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  // `getAppConfig` answers undefined both for a missing row and for one whose JSON does not
+  // parse. Only a missing row means "never configured"; a row that cannot be decoded is
+  // unreadable, so no write replaces the shapers it may hold.
+  if (stored === undefined && hasAppConfigRow(APP_CONFIG_ENTRIES.shaping)) {
+    console.warn("[shaping] stored config is not valid JSON; using defaults and refusing writes");
+    return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: false };
+  }
   if (stored === undefined || stored === null) return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: true };
   let parsed: ReturnType<typeof ShapingConfigSchema.safeParse>;
   try {

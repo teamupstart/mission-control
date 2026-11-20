@@ -542,6 +542,17 @@ export function isScanUnavailable(error: unknown): error is ReposScanTimeoutErro
  * Bare owners use their Git directory. Submodules and relocated non-bare metadata
  * still fall back to the working tree reported by Git; task validation refuses those.
  */
+/**
+ * Whether `p` lies inside a working tree: an ordinary checkout or a linked worktree, never a
+ * bare repository. `resolveRepoRoot` accepts a bare repository, which names a repository but
+ * has no files to run anything in.
+ */
+export async function insideWorkTree(p: string): Promise<boolean> {
+  if (!existsSync(p)) return false;
+  const r = await run("git", ["-C", p, "rev-parse", "--is-inside-work-tree"]);
+  return r.code === 0 && !r.outcomeUnknown && !r.overflowed && r.stdout.trim() === "true";
+}
+
 export async function resolveRepoRoot(p: string): Promise<string | null> {
   if (!existsSync(p)) return null;
   const r = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);

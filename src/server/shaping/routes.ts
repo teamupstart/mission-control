@@ -1,11 +1,14 @@
 import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
 import { DEFAULT_TASK_KIND } from "@shared/types.ts";
+import { SHAPING_LIMITS } from "@shared/shaping.ts";
+import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { resolveRepoRoot } from "../repos.ts";
+import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
@@ -20,6 +23,20 @@ import { referenceStatus } from "./references.ts";
  * - `POST /api/shaping/test` dry-runs one shaper against a repository and returns what dispatch
  *   would have recorded and injected. A failing shaper is an outcome in a 200, never an error.
  */
+/**
+ * Ceilings, not allocations: `bodyLimit` refuses past them while streaming, after the flag's
+ * gate, so a disabled route still answers 404 before any body is read. One intent is at most one
+ * definition, `SHAPING_LIMITS.entryJsonBytes`, and a dry run at most a prompt and a path. Each
+ * is multiplied by `JSON_UTF8_MAX_BYTES_PER_CHAR`, because the schemas count characters while
+ * the limit counts bytes, with room for the rest of the request.
+ */
+const SHAPING_PUT_BODY_MAX_BYTES = SHAPING_LIMITS.entryJsonBytes * JSON_UTF8_MAX_BYTES_PER_CHAR + 16 * 1024;
+const SHAPING_TEST_BODY_MAX_BYTES = (SHAPING_LIMITS.taskChars + 4096) * JSON_UTF8_MAX_BYTES_PER_CHAR + 16 * 1024;
+
+function limitBody(maxSize: number) {
+  return bodyLimit({ maxSize, onError: (c) => c.json({ error: "request_too_large", reason: "The request body is too large." }, 413) });
+}
+
 export function registerShapingRoutes(app: Hono): void {
   const gate = requireFeature("task-shaping");
 
@@ -29,7 +46,7 @@ export function registerShapingRoutes(app: Hono): void {
     return c.json({ config: shapingConfigView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
   });
 
-  app.put("/api/shaping", gate, async (c) => {
+  app.put("/api/shaping", gate, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingIntentSchema);
     if (!parsed.ok) return parsed.res;
     try {
@@ -41,7 +58,7 @@ export function registerShapingRoutes(app: Hono): void {
     }
   });
 
-  app.post("/api/shaping/test", gate, async (c) => {
+  app.post("/api/shaping/test", gate, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
     const { id, repository, prompt, kind } = parsed.data;
@@ -54,6 +71,10 @@ export function registerShapingRoutes(app: Hono): void {
     // owner, which names the repository but is not the tree under test.
     const repoRoot = await resolveRepoRoot(repository);
     if (!repoRoot) return c.json({ error: "unknown_repository", reason: "The path is not inside a Git checkout." }, 400);
+    // A bare repository resolves too, but has no working tree for a gatherer to run in.
+    if (!(await insideWorkTree(repository))) {
+      return c.json({ error: "unknown_repository", reason: "The path is a bare repository, with no working tree to run a shaper in." }, 400);
+    }
     let checkout = repository;
     try { checkout = realpathSync(repository); } catch { /* Keep the path as given. */ }
     const result = await dryRunShaper(id, {

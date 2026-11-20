@@ -170,7 +170,10 @@ The total is far above the one-phase threshold. Why each boundary exists:
 
 After the last phase merges: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`,
 `npm run smoke` and `npm run test:e2e` pass. Then one walkthrough with the flag on: register a
-`command` gatherer and an `mcp` selector against the fixture server, drop a third shaper into
-the folder, dispatch a two-repository task, and confirm "Shaping context", the section in turn
-one, the viewer's entries and origins, a `degraded` marker when the fixture is slow, and a
-byte-identical launch with the flag off.
+`command` gatherer and an `mcp` selector against the fixture server, then switch both on, since
+registration stores each off. Drop a third shaper into the folder, dispatch a two-repository
+task, and confirm "Shaping context", the section in turn one, an outcome recorded for each of
+the two registered shapers as well as the discovered one (a section the discovered shaper could
+produce alone is not evidence that either registered shaper ran), the viewer's entries and
+origins, a `degraded` marker when the fixture is slow, and a byte-identical launch with the flag
+off.

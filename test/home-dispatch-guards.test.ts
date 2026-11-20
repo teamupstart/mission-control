@@ -29,17 +29,19 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 421 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
-  // /api/shaping routes of task shaping (refreshed when one last changed), hashed key-sorted. Any added, removed
+  // The 422 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // of task shaping (the three /api/shaping routes and `GET /api/tasks/:id/shaping`), hashed
+  // key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
-  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
+  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default, and then for
+  // task shaping's `GET /api/tasks/:id/shaping`, which answers 404 with its flag off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 421);
+  assert.equal(others.length, 422);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "e73e257f5aabc3ab60a9011280a14ef1a43ac55784f824cc3c87bf4acb188d28");
+    "55198fe61b06ce3af489bfea37a00a5c8b0dd4ccb33eb19b56c3a57f917d1248");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -92,6 +92,10 @@ export function shapingInputFor(input: Pick<LaunchShapingInput, "task" | "runtim
       repositories,
     },
     trace: input.trace,
+    // Both call sites shape a conversation's first turn: a dispatch's launch, or the turn a
+    // handover types after its reset. A resident's wake turn is an `iteration` and never
+    // reaches either of them.
+    turn: "launch",
   };
 }
 

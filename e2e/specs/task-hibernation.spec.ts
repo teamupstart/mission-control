@@ -280,16 +280,19 @@ test("Hibernate is unavailable, and says why, while a workflow run is open on th
     await reader.cancel();
   }
   const snapshot = JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6));
+  // An older run of the repository that is still open, and a newer one that has completed: the
+  // card shows the newest, but the older one holds the session all the same.
   const run: WorkflowRunSummary = {
     id: "run-open", bindingId: "binding-open", workflowId: "workflow-open", workflowName: "No-Mistakes Review",
     workflowVersion: 1, sessionId: session.id, noteKey: session.agentSessionId!, status: "running", phase: "review",
     round: 1, maxRepairRounds: 3, activePersonaNames: [], failedPersonaCount: 0, bypassedPersonaReview: false,
     gate: "none", gatePrNumber: null, gateHeadShort: null, reviewPosture: null,
-    uncertainDeliveryCount: 0, refusedDeliveryCount: 0, updatedAt: Date.now(),
+    uncertainDeliveryCount: 0, refusedDeliveryCount: 0, updatedAt: Date.now() - 60_000,
   };
+  const newer: WorkflowRunSummary = { ...run, id: "run-done", status: "completed", phase: "done", updatedAt: Date.now() };
   await page.route("**/events", (route) => route.fulfill({
     contentType: "text/event-stream",
-    body: `data: ${JSON.stringify({ ...snapshot, workflowRunSummaries: [...(snapshot.workflowRunSummaries ?? []), run] })}\n\n`,
+    body: `data: ${JSON.stringify({ ...snapshot, workflowRunSummaries: [...(snapshot.workflowRunSummaries ?? []), run, newer] })}\n\n`,
   }));
   await page.reload();
   const card = boardCard(page, session.name);

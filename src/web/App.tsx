@@ -2587,7 +2587,17 @@ export function App(): React.JSX.Element {
   // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
-  const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
+  //
+  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
+  // per repository for display: an older run of the same repository that is still open holds
+  // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
+  const heldIds = useMemo(() => {
+    const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();
+    for (const run of workflowRuns) {
+      if (run.sessionId) runsBySession.set(run.sessionId, [...(runsBySession.get(run.sessionId) ?? []), run]);
+    }
+    return heldSessionIds(runsBySession);
+  }, [workflowRuns]);
   const pipelineRunByKey = useMemo(() => {
     const map = new Map<string, PipelineRun>();
     for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);

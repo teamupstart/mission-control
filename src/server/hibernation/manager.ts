@@ -457,7 +457,18 @@ export class HibernationManager {
     const cwd = record.checkout!.path;
     const stranded = record.failure?.launch ?? null;
     if (stranded && this.terminal.launchLive(stranded)) {
-      const closed = await this.terminal.closeHome(stranded);
+      if (stranded.homeName === null || stranded.homeBackend === null) {
+        // Its launcher failed before naming a home, so there is no terminal to close: only the
+        // lease being released says that agent has ended.
+        return this.resumeFailed(
+          task.id,
+          "the agent an earlier attempt may have started is still running, and Mission Control does not know its " +
+            "terminal. Stop that agent, then Retry",
+          stranded,
+        );
+      }
+      const home = { homeName: stranded.homeName, homeBackend: stranded.homeBackend, terminalResourceId: stranded.terminalResourceId };
+      const closed = await this.terminal.closeHome(home);
       if (!closed.ok || !(await this.launchEnded(stranded))) {
         return this.resumeFailed(
           task.id,
@@ -510,11 +521,14 @@ export class HibernationManager {
       } catch {
         revoked = false;
       }
+      const claimed = { homeName: null, homeBackend: null, terminalResourceId: null, leaseRoot: prepared.lease.root, leaseId: prepared.lease.id };
+      if (revoked || !this.terminal.launchLive(claimed)) return this.resumeFailed(task.id, reason);
+      // A guard claimed the lease before the launcher failed: its agent may be running, so the
+      // launch is recorded like one that could not be closed, and Retry refuses until it ends.
       return this.resumeFailed(
         task.id,
-        revoked || !this.terminal.launchLive({ leaseRoot: prepared.lease.root, leaseId: prepared.lease.id })
-          ? reason
-          : `${reason}. Its launch may have started anyway, and Retry is refused until that agent has ended`,
+        `${reason}. Its launch may have started anyway: stop that agent, then Retry`,
+        claimed,
       );
     }
     const outcome = await watch.settle((s) => this.terminal.provesLaunch(s, home, prepared), this.terminal.appearMs);

@@ -42,10 +42,14 @@ export const TaskHibernationBlockerSchema = z.object({
  * A terminal Resume's launch that could not be closed after it failed: its agent may still be
  * running. Recorded so the next Resume closes it (or finds it gone) BEFORE launching another
  * process onto the same conversation and worktree, and refuses while it cannot.
+ *
+ * The home is null when the launcher failed without saying which home it opened, yet a guard
+ * had already claimed the lease. There is then nothing safe to close - a guessed name could be
+ * another task's terminal - so the next Resume refuses until the lease says the agent ended.
  */
 export const TaskHibernationLaunchSchema = z.object({
-  homeName: z.string().min(1),
-  homeBackend: z.string().min(1),
+  homeName: z.string().min(1).nullable(),
+  homeBackend: z.string().min(1).nullable(),
   terminalResourceId: z.string().nullable(),
   /** The managed resume lease that launch ran under, which says whether it is still live. */
   leaseRoot: z.string().min(1),

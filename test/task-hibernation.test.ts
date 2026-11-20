@@ -774,7 +774,7 @@ test("a terminal launch the backend refuses leaves the task hibernated with the 
   assert.equal(task.hibernation ?? null, null, "a success clears the failure");
 });
 
-test("a terminal launch that fails to spawn releases its preparation, and says when it may have started anyway", async (t) => {
+test("a terminal launch that fails to spawn releases its preparation, and records a claimed lease until it ends", async (t) => {
   const f = terminalFleet(checkout("terminal-spawn-dispose"), { spawnRefusals: 2 });
   t.after(() => f.tasks.stopMissionSessionClosures());
   assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
@@ -785,17 +785,31 @@ test("a terminal launch that fails to spawn releases its preparation, and says w
     "Could not resume: tmux refused to create the session. The task stays hibernated with its worktree and conversation kept.");
   assert.deepEqual(f.disposed, ["lease-1"], "the preparation is released though no home came back");
 
-  // The launcher failed, but a guard had claimed the lease: it cannot be revoked, and says so.
+  // The launcher failed, but a guard had claimed the lease: it cannot be revoked, so the launch
+  // is recorded - with no home, since none was named, and so none to close by a guessed name.
   f.controls.live = true;
   const unknown = await f.hibernation.resume("term");
   assert.match(unknown.ok ? "" : unknown.error,
-    /tmux refused to create the session\. Its launch may have started anyway, and Retry is refused until that agent has ended/);
+    /tmux refused to create the session\. Its launch may have started anyway: stop that agent, then Retry/);
   assert.deepEqual(f.disposed, ["lease-1", "lease-2"]);
-  assert.equal(f.registry.getTask("term")?.status, "hibernated");
+  const recorded = f.registry.getTask("term")!.hibernation!.failure!.launch;
+  assert.deepEqual(recorded, { homeName: null, homeBackend: null, terminalResourceId: null, leaseRoot: "/fixture/leases", leaseId: "lease-2" });
+  assert.deepEqual(db.getTask("term")?.hibernation?.failure?.launch, recorded, "durably");
 
+  // Retry while that lease is held: nothing is prepared or launched, and nothing is closed.
+  const blocked = await f.hibernation.resume("term");
+  assert.match(blocked.ok ? "" : blocked.error,
+    /the agent an earlier attempt may have started is still running, and Mission Control does not know its terminal\. Stop that agent, then Retry/);
+  assert.equal(f.prepared.length, 2, "nothing new is prepared");
+  assert.equal(f.spawned.length, 2, "nor launched");
+  assert.deepEqual(f.closed, [], "and no terminal is closed by a guessed name");
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-2", "still recorded");
+
+  // Once its lease is released, Retry lets go of the record and launches.
   f.controls.live = false;
   const retried = await f.hibernation.resume("term");
   assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
+  assert.equal(f.spawned.length, 3);
 });
 
 test("a failed terminal Resume whose terminal cannot be closed refuses to launch again until it is gone", async (t) => {

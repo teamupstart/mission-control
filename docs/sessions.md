@@ -988,7 +988,9 @@ session is closed again), the task stays hibernated. Its Backlog row turns red a
 again. Nothing about the worktree, its changes or the conversation is touched by a failed attempt. A failed terminal Resume undoes its launch: it cancels a launch that has not
 started the agent yet, or closes the new terminal session and waits up to ten seconds for the
 agent it started to exit. If that terminal cannot be closed, or its agent is still running after
-it closed, the row says so and records it. Retry first closes it (or finds it gone) and refuses to
+it closed, the row says so and records it. So does a launch that failed to open its terminal
+after its agent may already have started: with no terminal to close, Retry refuses until that
+agent has ended. Retry first closes it (or finds it gone) and refuses to
 launch another agent while it may still be running, and the record is kept through any other
 failure in between.
 

@@ -1645,3 +1645,50 @@ test("a handover whose inject fails commits no shaping record", async () => {
     setShaping(false);
   }
 });
+
+test("a handover is told the commit the reset left the checkout on", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-base-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const probe = handoverStandIn(HANDOVER_SECTION, r);
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+      inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+    });
+    assert.equal(res.ok, true);
+    const head = gitIn(clone, "rev-parse", "HEAD");
+    assert.equal(probe.calls[0]!.input.context.repositories[0]!.baseSha, head);
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("a task changed while its handover was being shaped is not typed, and stays in the backlog", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-edited-");
+    r.upsertTask(mkTask({ repoRoot: clone, intent: "the original request" }));
+    const recordBefore = r.getTask("t1")?.shaping;
+    let typed = false;
+    const shapeTask: ShapeTask = async (input) => {
+      // An operator's edit is already refused while the task is being assigned.
+      assert.deepEqual(await tasks.update("t1", { intent: "an operator's edit" }), { ok: false, error: "task is being assigned" });
+      // A writer outside TaskManager does not take that lock; the handover must still notice.
+      r.upsertTask({ ...r.getTask("t1")!, intent: "the rewritten request" });
+      return handoverStandIn(HANDOVER_SECTION, r).shapeTask(input);
+    };
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask,
+      inject: async () => { typed = true; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.ok ? "" : res.error ?? "", /edited while its context was being shaped/);
+    assert.equal(typed, false, "the older text and its context were not handed over");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.getTask("t1")?.intent, "the rewritten request");
+    assert.deepEqual(r.getTask("t1")?.shaping, recordBefore, "and nothing was recorded for a turn nobody received");
+  } finally {
+    setShaping(false);
+  }
+});

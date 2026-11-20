@@ -110,13 +110,13 @@ import type { shapeTask } from "./shaping/engine.ts";
 import { shapeLaunch, withTaskContext, type LaunchShaping } from "./shaping/launch.ts";
 import { sessionTraceContext } from "./telemetry/index.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
-import { platformArgMax, type LaunchArgumentLaunch } from "./turn-one-budget.ts";
+import { appleScriptPasteFits, pasteTravelsAsArgument, platformArgMax, type LaunchArgumentLaunch } from "./turn-one-budget.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import {
   discardScoutPromptBoundary,
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
-import { withRepoMemoryPointer } from "./memory.ts";
+import { hasRepoMemory, withRepoMemoryPointer } from "./memory.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -285,6 +285,8 @@ interface DispatchResolution {
  */
 export class Dispatcher {
   private readonly teardown: typeof teardownWorktree;
+  /** Each task's current dispatch attempt; see `commitShaping`. */
+  private readonly dispatchAttempts = new Map<string, symbol>();
   private readonly worktrees: WorktreeManager;
   private readonly legacy: LegacyTreehouseService;
 
@@ -434,6 +436,10 @@ export class Dispatcher {
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
     const task = this.registry.getTask(taskId);
     if (!task) return;
+    // This attempt's identity, for the shaping commit: a later dispatch of the same task
+    // replaces it, and an attempt that is no longer current never writes the record.
+    const attempt = Symbol(taskId);
+    this.dispatchAttempts.set(taskId, attempt);
     // Only failures in the resource preflight/provisioning phase are safe ordinary backlog
     // retries. Earlier refusals describe a task or launch configuration that must change,
     // while anything after this phase may have crossed into an agent runtime.
@@ -881,11 +887,14 @@ export class Dispatcher {
       // carries exactly the trace context its agent is launched with (`supervisor.start`
       // derives it from this id). With shaping off the supervisor mints it, as it always has.
       const sdkSessionId = runtime === "sdk" && shapingOn ? newSdkSessionId() : null;
+      // Pi's memory pointer, read once: the budget below and the launch message after shaping
+      // must prefix the same text, even if the checkout gains an index while shapers run.
+      const piHasMemory = task.agent === "pi" && hasRepoMemory(wt.path);
       // Task shaping, the one awaited call before turn one is built. With the flag off it does
       // nothing at all, and with no shaper that applies it adds nothing, so either launch is
       // byte-identical to one from before shaping. It never throws and never blocks the launch.
       const shaping = await this.shapeTurnOne(taskId, provisioned, runtime, standing, standingPrefix, unshapedTurnOne, {
-        agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn,
+        agentBin, sdkSessionId, terminal, worktreePath: wt.path, enabled: shapingOn, piHasMemory, terminalBackend,
       });
       if (await this.abortIfSettled(taskId)) {
         cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
@@ -939,7 +948,7 @@ export class Dispatcher {
         );
         // Turn one IS the start on this runtime, so the launch reached its worker the moment
         // `supervisor.start` returned - cancelled underneath or not.
-        this.commitShaping(taskId, shaping, embeddedSession);
+        this.commitShaping(taskId, attempt, shaping, embeddedSession);
         observeDispatchFinished({
           taskId,
           ...dispatchFacts(resolution),
@@ -966,7 +975,7 @@ export class Dispatcher {
       // needs it to build the argv, and the launch marker needs to fingerprint the exact
       // text that argv carries. Recomposing it at the second site is how the two answers
       // drift apart.
-      const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent) : null;
+      const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent, piHasMemory) : null;
       const piLaunch = piText !== null
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
@@ -1158,7 +1167,7 @@ export class Dispatcher {
       }
       // Turn one has been handed to the worker: pasted and acknowledged, or for Pi carried by
       // the launch itself. Only now does this launch's shaping record replace the last one.
-      this.commitShaping(taskId, shaping, deliverySession.id);
+      this.commitShaping(taskId, attempt, shaping, deliverySession.id);
 
       if (await this.abortIfSettled(taskId)) return;
       // First set for a dispatched task: `Task.sessionId` means "currently executing on"
@@ -2337,6 +2346,10 @@ export class Dispatcher {
       terminal: { stateHome: string; advisorEnv: Record<string, string>; leadingArgs: string[] } | null;
       /** The primary worktree, where Pi's memory pointer is read from. */
       worktreePath: string;
+      /** Whether Pi's memory pointer prefixes this launch, read once by the caller. */
+      piHasMemory: boolean;
+      /** The terminal backend this launch was configured for, or null for an automatic choice. */
+      terminalBackend: string | null;
     },
   ): Promise<LaunchShaping> {
     const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
@@ -2344,12 +2357,12 @@ export class Dispatcher {
     const launchArgument = delivery.path === "launch-argument" && provisioned.agent === "pi" && launch.terminal;
     const carried = launchArgument
       // Composed exactly as the terminal arm composes Pi's launch message below.
-      ? variants.map((variant) => preparePiLaunch(withRepoMemoryPointer(launch.worktreePath, variant)).args.at(-1)!)
+      ? variants.map((variant) => preparePiLaunch(withRepoMemoryPointer(launch.worktreePath, variant, launch.piHasMemory)).args.at(-1)!)
       : variants;
     return shapeLaunch({
       task: provisioned,
       runtime,
-      workflowName: provisioned.workflowId ? this.deps.workflowName?.(provisioned.workflowId) ?? null : null,
+      workflowName: () => (provisioned.workflowId ? this.deps.workflowName?.(provisioned.workflowId) ?? null : null),
       // Exactly what the agent is launched under: an embedded session's derived context, and
       // none for a terminal launch, which carries none.
       trace: launch.sdkSessionId ? sessionTraceContext(launch.sdkSessionId) : null,
@@ -2377,6 +2390,17 @@ export class Dispatcher {
         : null,
       stillDispatching: () => this.stillDispatching(taskId),
       onShaping: (active) => this.registry.setTaskShapingContext(taskId, active),
+      // A pane paste that travels as an `osascript` argument shares `ARG_MAX` with the daemon's
+      // environment, and its size depends on the exact text, so the shaped turn is checked as
+      // the AppleScript backends encode it before it is sent.
+      ...(delivery.path === "paste" && runtime !== "sdk" && pasteTravelsAsArgument(launch.terminalBackend)
+        ? { finalCheck: async (section: string) => {
+            const argMax = await (this.deps.argMax ?? platformArgMax)();
+            return variants.every((variant) => appleScriptPasteFits(withTaskContext(variant, section), process.env, argMax))
+              ? null
+              : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context, so no context was added";
+          } }
+        : {}),
     }, { shapeTask: this.deps.shapeTask, enabled: launch.enabled });
   }
 
@@ -2386,7 +2410,14 @@ export class Dispatcher {
    * to - or that ran with the flag off - clears the record an earlier launch left. A commit
    * that fails is logged by the registry and never fails the launch.
    */
-  private commitShaping(taskId: string, shaping: LaunchShaping, sessionId: string): void {
+  private commitShaping(taskId: string, attempt: symbol, shaping: LaunchShaping, sessionId: string): void {
+    // Only the current attempt, and only while its worker is the task's: still dispatching (the
+    // terminal arm commits before it records the session) or running on this session (the
+    // embedded arm). A cancelled launch whose driver was stopped, or one a requeue replaced
+    // while it waited, must not overwrite or clear the record its successor delivered.
+    if (this.dispatchAttempts.get(taskId) !== attempt) return;
+    const task = this.registry.getTask(taskId);
+    if (!task || (task.status !== "dispatching" && task.sessionId !== sessionId)) return;
     this.registry.commitTaskShaping(taskId, shaping.summary ? { ...shaping.summary, sessionId } : null, shaping.section);
   }
 
@@ -2970,7 +3001,7 @@ export function worktreeSlotPath(taskId: string, slot: number): string {
  * and the agent can work in it, and refusing the whole dispatch over a baseline that is
  * only consumed by later phases would trade a working session for a bookkeeping field.
  */
-async function headCommit(dir: string): Promise<string | null> {
+export async function headCommit(dir: string): Promise<string | null> {
   const r = await run("git", ["-C", dir, "rev-parse", "HEAD"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
   });

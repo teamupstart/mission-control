@@ -83,3 +83,19 @@ test("the shaping route answers 404 with the flag off, and for an unknown task",
   setFlag(true);
   assert.equal((await app.request("/api/tasks/nope/shaping", { headers })).status, 404);
 });
+
+test("with the flag off, task reads and MCP reads hide a saved record without deleting it", async () => {
+  seed("flag-off", "s1", "s1");
+  setFlag(false);
+  try {
+    const listed = (await tasksRead()).find((task) => task.id === "flag-off");
+    assert.ok(listed);
+    assert.equal("shaping" in listed, false);
+    const mcp = (await (await mcpGet("flag-off")).json()) as Record<string, unknown>;
+    assert.equal("shaping" in mcp, false);
+  } finally {
+    setFlag(true);
+  }
+  const back = (await tasksRead()).find((task) => task.id === "flag-off");
+  assert.equal(back?.shaping?.sessionId, "s1", "turning the flag back on shows it again");
+});

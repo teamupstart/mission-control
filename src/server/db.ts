@@ -8315,6 +8315,12 @@ export function commitTaskShaping(taskId: string, summary: TaskShaping | null, t
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
+    // A task deleted while its worker started has nothing left to own a record: write neither
+    // half, so no delivered text outlives the row `deleteTask` already removed.
+    if (!d.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(taskId)) {
+      if (ownsTransaction) d.exec("COMMIT");
+      return false;
+    }
     let changes = 0;
     if (summary) {
       const record = TaskShapingSchema.parse(summary);

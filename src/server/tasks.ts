@@ -51,7 +51,7 @@ import {
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
-import { canMessage, canRename } from "@shared/pane.ts";
+import { canMessage, canRename, innermostPane } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
@@ -85,6 +85,7 @@ import {
   type DispatcherDeps as TaskDispatcherDeps,
   deriveTitle,
   reclaimedFrom,
+  headCommit,
   releasedTaskResources,
   teardownWorktree,
   type TaskDispatchOptions,
@@ -159,7 +160,8 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { shapeLaunch, withTaskContext } from "./shaping/launch.ts";
 import type { shapeTask } from "./shaping/engine.ts";
-import { PASTE_TURN_ONE, DRIVER_TURN_ONE } from "./turn-one-budget.ts";
+import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsArgument, platformArgMax } from "./turn-one-budget.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { getSkillsConfig } from "./skills/config.ts";
@@ -5263,26 +5265,72 @@ export class TaskManager {
     // this path. It matters more on an assignment than on a dispatch - the session already
     // holds a conversation, so the offset recorded now is the only thing that later
     // separates this scout's follow-ups from whatever the agent was doing beforehand.
+    // The turn this handover types, before any task context: composed once, so the shaping
+    // step's last check and the inject below see the same text.
+    //
+    // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
+    // refuses a multi-repo task and stands in the session's own checkout - so the only
+    // thing that could have is the configuration, and a live process's system prompt
+    // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
+    // one mid-session semantic and the pairs without one another, for the same feature.
+    // One boundary instead: a session keeps the standing instructions it launched with.
+    //
+    // So this replays the session's own launch snapshot, and only for a session whose
+    // pair had no out-of-band channel. On the three pairs that do, the block is still
+    // installed on that process - that is what "durable" means - and prefixing it again
+    // would have the agent read the same rule twice. A session with no snapshot acquires
+    // nothing mid-life.
+    const launched = this.registry.standingInstructionsFor(s.id);
+    const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
+    const unshapedTurn = withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
+      fallbackRoot: s.cwd,
+      planDiscovery,
+      planSkills: planSkills?.ok ? planSkills.commands : null,
+      grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
+      workflowEvidence,
+    });
     // Task shaping on the handover, the second call site beside `Dispatcher.dispatch`: the same
-    // input builder, budget path and section helper, awaited before the turn is composed. The
-    // repository is the session's own checkout, which is the one slot `assign` allows, on the
-    // branch the reset above left it on. Its trace context is the one the session's agent was
-    // launched with - an embedded session's own, none for a pane. A message to a live session
-    // has no byte ceiling, so the configured total applies. It never throws and never refuses.
+    // input builder and section helper, awaited before the turn is typed. The repository is the
+    // session's own checkout, which is the one slot `assign` allows, on the branch and commit the
+    // reset above left it on. Its trace context is the one the session's agent was launched
+    // with - an embedded session's own, none for a pane. A message to a live session has no byte
+    // ceiling unless its pane pastes through AppleScript, which is checked. The step itself never
+    // throws; the handover stops only if the task was edited while shapers ran.
     const live = this.registry.getSession(s.id) ?? s;
+    const shapingOn = featureEnabled("task-shaping");
+    // What the shapers are told is what the agent is handed: these fields of the task, read now.
+    const inputs = (task: Task) => JSON.stringify([task.intent, task.title, task.kind, task.labels, task.priority,
+      task.workflowId, task.repoRoot, task.planInputs ?? null, task.grillFirst]);
+    const shapedFrom = inputs(ready);
+    const writePane = innermostPane(live);
     const shaping = await shapeLaunch({
-      task: { ...ready, worktreePath: live.cwd, branch: live.gitBranch ?? null, baseSha: null },
+      // The baseline is the commit the reset left the checkout on, read only when shaping runs.
+      task: { ...ready, worktreePath: live.cwd, branch: live.gitBranch ?? null,
+        baseSha: shapingOn && live.cwd ? await headCommit(live.cwd) : null },
       runtime: live.runtime,
-      workflowName: ready.workflowId ? this.workflowNameFor(ready.workflowId) : null,
+      workflowName: () => (ready.workflowId ? this.workflowNameFor(ready.workflowId) : null),
       trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
       delivery: live.runtime === "sdk" ? DRIVER_TURN_ONE : PASTE_TURN_ONE,
       turnOnes: [],
       launch: null,
       stillDispatching: () => this.registry.getTask(t.id)?.status === "backlog",
       onShaping: (active) => this.registry.setTaskShapingContext(t.id, active),
-    }, { shapeTask: opts.shapeTask });
-    if (this.registry.getTask(t.id)?.status !== "backlog") {
+      // The session's own pane decides how the paste travels, as `Dispatcher` checks a launch.
+      ...(live.runtime !== "sdk" && writePane?.kind === "emulator" && pasteTravelsAsArgument(writePane.backend)
+        ? { finalCheck: async (section: string) => appleScriptPasteFits(withTaskContext(unshapedTurn, section), process.env, await platformArgMax())
+          ? null
+          : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context, so no context was added" }
+        : {}),
+    }, { shapeTask: opts.shapeTask, enabled: shapingOn });
+    const after = this.registry.getTask(t.id);
+    if (after?.status !== "backlog") {
       return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
+    }
+    // An edit made while shapers ran would be handed over as the older text with context chosen
+    // for it, while the card shows the newer one. The task stays in the backlog to be handed
+    // over again, as it is for every other refusal after the reset.
+    if (inputs(after) !== shapedFrom) {
+      return { ok: false, error: "the task was edited while its context was being shaped, so it was not typed - hand it over again", scope: "task" };
     }
     const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
     // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
@@ -5292,29 +5340,9 @@ export class TaskManager {
     // reject; the dispatcher's seam guards the same risk the same way.
     let r: InjectResult;
     try {
-      // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
-      // refuses a multi-repo task and stands in the session's own checkout - so the only
-      // thing that could have is the configuration, and a live process's system prompt
-      // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
-      // one mid-session semantic and the pairs without one another, for the same feature.
-      // One boundary instead: a session keeps the standing instructions it launched with.
-      //
-      // So this replays the session's own launch snapshot, and only for a session whose
-      // pair had no out-of-band channel. On the three pairs that do, the block is still
-      // installed on that process - that is what "durable" means - and prefixing it again
-      // would have the agent read the same rule twice. A session with no snapshot acquires
-      // nothing mid-life.
-      const launched = this.registry.standingInstructionsFor(s.id);
-      const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
       r = await inject(
         this.registry.getSession(s.id) ?? s,
-        withTaskContext(withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
-          fallbackRoot: s.cwd,
-          planDiscovery,
-          planSkills: planSkills?.ok ? planSkills.commands : null,
-          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
-          workflowEvidence,
-        }), shaping.section),
+        withTaskContext(unshapedTurn, shaping.section),
         undefined,
         () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id),
       );

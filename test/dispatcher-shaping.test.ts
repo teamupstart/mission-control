@@ -44,6 +44,7 @@ const { launchArgumentTurnOne } = await import("../src/server/turn-one-budget.ts
 const { isolatedAgentEnvironment } = await import("../src/server/agent-subprocess-env.ts");
 const { sessionTraceContext } = await import("../src/server/telemetry/index.ts");
 const { shapeTask } = await import("../src/server/shaping/engine.ts");
+const { MEMORY_INDEX_PATH } = await import("../src/shared/memory.ts");
 
 type ShapeTask = typeof import("../src/server/shaping/engine.ts").shapeTask;
 type ShapeTaskInput = Parameters<ShapeTask>[0];
@@ -144,6 +145,7 @@ interface DispatchOptions {
   shapeTask?: ShapeTask;
   argMax?: () => Promise<number | null>;
   failSpawn?: boolean;
+  workflowName?: (workflowId: string) => string | null;
 }
 
 /** One terminal dispatch through the real dispatcher, faking only the home and the pane. */
@@ -165,6 +167,7 @@ async function terminalDispatch(options: DispatchOptions): Promise<Run> {
     verifyMissionMcpTools: async () => ({ ok: true }),
     ...(options.shapeTask ? { shapeTask: options.shapeTask } : {}),
     ...(options.argMax ? { argMax: options.argMax } : {}),
+    ...(options.workflowName ? { workflowName: options.workflowName } : {}),
     spawn: async (_label, _short, cwd, _bin, args, home, _backend, env) => {
       if (options.failSpawn) throw new Error("the terminal could not start");
       argv = [...(args ?? [])];
@@ -599,6 +602,15 @@ test("Pi's launch argument: a turn one within 1 KiB of the per-argument ceiling 
 test("Pi's launch argument: an environment that leaves little room under ARG_MAX never produces E2BIG", async () => {
   registerLargeShaper();
   const repo = seedRepo("pi-argmax");
+  // Pi's CLI is a `#!` script, often installed deep in a version manager's tree: exec charges its
+  // pathname and its interpreter beyond argv, which the budget has to leave room for.
+  const piDir = join(home, "versions", ...Array.from({ length: 24 }, (_, n) => `node-v24.19.0-segment-${n}`), "bin");
+  mkdirSync(piDir, { recursive: true });
+  const piScript = join(piDir, "pi");
+  writeFileSync(piScript, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  assert.ok(piScript.length > 600, "a realistically long install path");
+  const previousPi = process.env.MISSION_PI_BIN;
+  process.env.MISSION_PI_BIN = piScript;
   const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
   // A turn one well under the per-argument limit, and an environment that leaves it about 8 KiB.
   setFlag(false);
@@ -606,7 +618,7 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
   assertRunning(baseline.task);
   setFlag(true);
   const env = () => ({ ...process.env, ...isolatedAgentEnvironment({ cwd: baseline.task.worktreePath!, stateHome: baseline.stateHome, extraEnv: baseline.extraEnv }) });
-  const used = execBytes(["/bin/echo", ...baseline.argv], env());
+  const used = execBytes([piScript, ...baseline.argv], env());
   // Many ordinary-sized variables rather than one huge one, the way a real environment fills up.
   const padNames: string[] = [];
   let room = argMax - used - 8 * 1024;
@@ -634,16 +646,17 @@ test("Pi's launch argument: an environment that leaves little room under ARG_MAX
     assert.equal(record?.truncated, true, JSON.stringify(record));
     assert.match(record?.limit?.reason ?? "", /arguments and environment/);
     const launchEnv = { ...process.env, ...isolatedAgentEnvironment({ cwd: shaped.task.worktreePath!, stateHome: shaped.stateHome, extraEnv: shaped.extraEnv }) };
-    assert.ok(execBytes(["/bin/echo", ...shaped.argv], launchEnv) <= argMax, "within the combined limit as the budget counts it");
+    assert.ok(execBytes([piScript, ...shaped.argv], launchEnv) <= argMax, "within the combined limit as the budget counts it");
     // And the kernel agrees: the exact argv and environment execute.
-    const ran = spawnSync("/bin/echo", shaped.argv, { env: launchEnv, stdio: "ignore" });
+    const ran = spawnSync(piScript, shaped.argv, { env: launchEnv, stdio: "ignore" });
     assert.equal(ran.error, undefined, `the launch executes (${ran.error?.message})`);
     assert.equal(ran.status, 0);
     // Without the budget the same section would not have fit.
     const unbudgeted = [...shaped.argv.slice(0, -1), `${shaped.argv.at(-1)}${"z".repeat(64 * 1024)}`];
-    assert.ok(execBytes(["/bin/echo", ...unbudgeted], launchEnv) > argMax, "a 64 KiB section would have exceeded it");
+    assert.ok(execBytes([piScript, ...unbudgeted], launchEnv) > argMax, "a 64 KiB section would have exceeded it");
   } finally {
     for (const name of padNames) delete process.env[name];
+    process.env.MISSION_PI_BIN = previousPi;
   }
 });
 
@@ -696,4 +709,126 @@ test("Pi's launch argument: when ARG_MAX cannot be measured near the limit, the 
   } finally {
     for (const name of padNames) delete process.env[name];
   }
+});
+
+// ---- superseded and cancelled launches, and the step's own failures ----
+
+/** A supervisor whose `start` waits until the test releases it. */
+function heldSupervisor(registry: InstanceType<typeof Registry>) {
+  const starts: Parameters<SdkSupervisor["start"]>[0][] = [];
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let reached!: () => void;
+  const atStart = new Promise<void>((resolve) => { reached = resolve; });
+  const supervisor = {
+    starts,
+    async start(input: Parameters<SdkSupervisor["start"]>[0]): Promise<Session> {
+      starts.push(input);
+      reached();
+      await released;
+      return registry.registerSdkSession({ id: input.sessionId ?? `sdk:${++seq}`, agent: input.agent, name: input.name, cwd: input.cwd });
+    },
+    async stop(): Promise<void> {},
+    taskLiveness: () => null,
+  };
+  return { supervisor: supervisor as typeof supervisor & SdkSupervisor, release, atStart };
+}
+
+test("a launch a later dispatch replaced never overwrites the record its successor delivered", async () => {
+  setHarnessesConfig({ sessionRuntime: { codex: "sdk" } });
+  const repo = seedRepo("superseded");
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "superseded", status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent: "codex" }));
+  const held = heldSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    supervisor: held.supervisor, missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    shapeTask: standIn(`${SHAPING_SECTION_PREAMBLE}\n\n### Acme guidance: First\nfirst launch`).shapeTask,
+  });
+  const first = dispatcher.dispatch("superseded");
+  await held.atStart;
+  // The operator cancels it and dispatches again while its driver is still starting.
+  registry.upsertTask({ ...registry.getTask("superseded")!, status: "cancelled" });
+  const second = await sdkDispatch({ agent: "codex", repo, taskId: "superseded", intent: "do it", registry, shapeTask: standIn(SECTION).shapeTask });
+  assertRunning(second.task);
+  const delivered = { record: getDurableTask("superseded")?.shaping, text: getTaskShapingText("superseded")?.text };
+  assert.equal(delivered.text, SECTION, "the successor's launch recorded its own context");
+  held.release();
+  await first;
+  assert.deepEqual(getDurableTask("superseded")?.shaping, delivered.record, "the replaced launch wrote nothing");
+  assert.equal(getTaskShapingText("superseded")?.text, SECTION);
+});
+
+test("a launch cancelled while its driver started records nothing", async () => {
+  setHarnessesConfig({ sessionRuntime: { codex: "sdk" } });
+  const repo = seedRepo("cancelled-start");
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "cancelled-start", status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it", agent: "codex" }));
+  const held = heldSupervisor(registry);
+  const run = new Dispatcher(registry, async () => {}, {
+    supervisor: held.supervisor, missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: true }), shapeTask: standIn(SECTION).shapeTask,
+  }).dispatch("cancelled-start");
+  await held.atStart;
+  registry.upsertTask({ ...registry.getTask("cancelled-start")!, status: "cancelled" });
+  held.release();
+  await run;
+  assert.equal(getDurableTask("cancelled-start")?.shaping, undefined, "a stopped driver's launch is not a delivery");
+  assert.equal(getTaskShapingText("cancelled-start"), null);
+});
+
+test("a workflow lookup that throws neither stops the launch nor reaches it with the flag off", async () => {
+  const repo = seedRepo("workflow-lookup");
+  for (const enabled of [true, false]) {
+    setFlag(enabled);
+    const probe = standIn("");
+    const registry = new Registry();
+    const taskId = `wf-${enabled}`;
+    registry.upsertTask(mkTask({ id: taskId, status: "dispatching", repoRoot: repo, title: "Shaping", intent: "do it",
+      agent: "claude", workflowId: "wf_review" }));
+    let looked = 0;
+    const run = await terminalDispatch({
+      agent: "claude", repo, taskId, intent: "do it", registry, shapeTask: probe.shapeTask,
+      workflowName: () => { looked += 1; throw new Error("the workflow store is unreadable"); },
+    });
+    assertRunning(run.task);
+    if (enabled) {
+      assert.equal(looked, 1, "asked only once shaping runs");
+      assert.deepEqual(probe.calls[0]!.context.afterWork, { workflowId: "wf_review", name: "wf_review" }, "the id stands in for the name");
+    } else {
+      assert.equal(looked, 0, "with the flag off nothing is asked");
+    }
+  }
+  setFlag(true);
+});
+
+test("the engine runs on the config snapshot the step's budget and deadline were taken from", async () => {
+  const repo = seedRepo("snapshot");
+  assert.equal(shapingStore.applyShapingIntent({ kind: "settings", limits: { deadlineMs: 4000 } }).ok, true);
+  const seenConfigs: unknown[] = [];
+  const shapeTask: ShapeTask = async (_input, deps) => {
+    seenConfigs.push(deps?.config?.limits.deadlineMs);
+    // The operator changes the deadline while the step runs; this run keeps its own snapshot.
+    assert.equal(shapingStore.applyShapingIntent({ kind: "settings", limits: { deadlineMs: 60_000 } }).ok, true);
+    return { summary: null, section: "", entries: [] };
+  };
+  const run = await terminalDispatch({ agent: "claude", repo, taskId: "snapshot", intent: "do it", shapeTask });
+  assertRunning(run.task);
+  assert.deepEqual(seenConfigs, [4000]);
+});
+
+test("Pi's launch message uses the memory pointer its budget measured, even if an index appears while shapers run", async () => {
+  const repo = seedRepo("pi-pointer");
+  let worktree = "";
+  const shapeTask: ShapeTask = async (input) => {
+    worktree = input.context.repositories[0]!.path!;
+    // The checkout gains a memory index after the budget was taken.
+    mkdirSync(join(worktree, ".agents", "memory"), { recursive: true });
+    writeFileSync(join(worktree, MEMORY_INDEX_PATH), "# Memory index\n");
+    return { summary: null, section: "", entries: [] };
+  };
+  const run = await terminalDispatch({ agent: "pi", repo, taskId: "pi-pointer", intent: "THE REQUEST", shapeTask });
+  assertRunning(run.task);
+  assert.ok(worktree, "the shaper saw the worktree");
+  assert.equal(run.prompt, await unshapedExpectation(run.task, "THE REQUEST"), "no pointer the budget did not count");
 });

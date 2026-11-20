@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { SHAPING_LIMITS, type TaskShaping } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, type ShapingConfig, type TaskShaping } from "@shared/shaping.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import type { SessionRuntime, Task } from "@shared/types.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
@@ -27,8 +27,11 @@ export interface LaunchShapingInput {
   /** The task as provisioned: its worktrees, branches and bases are what shapers are told. */
   task: Task;
   runtime: SessionRuntime;
-  /** The after-work workflow's name, or null when it cannot be named. */
-  workflowName: string | null;
+  /**
+   * The after-work workflow's name, or null when it cannot be named. Asked only once shaping is
+   * on, inside the step's failure boundary: a lookup that throws falls back to the workflow id.
+   */
+  workflowName: () => string | null;
   /** The trace context the session's agent is launched with, or null when it gets none. */
   trace: ShapingTraceContext | null;
   /** How this launch's turn one reaches the worker. */
@@ -44,6 +47,13 @@ export interface LaunchShapingInput {
   stillDispatching: () => boolean;
   /** Raised while the engine runs, for the pending tile's "Shaping context". */
   onShaping: (active: boolean) => void;
+  /**
+   * A last check of the composed turn against its delivery path, after the engine answered: the
+   * reason the section cannot be carried, or null when it fits. A section that does not fit is
+   * dropped, and the record says why. Supplied where a path's limit depends on the exact text,
+   * such as a pane paste that travels as an `osascript` argument.
+   */
+  finalCheck?: (section: string) => Promise<string | null>;
 }
 
 export interface LaunchShaping {
@@ -66,7 +76,9 @@ const CANCEL_POLL_MS = 200;
 const BACKSTOP_GRACE_MS = 2000;
 
 /** The engine's input, from everything dispatch collected (constraint C2). */
-export function shapingInputFor(input: Pick<LaunchShapingInput, "task" | "runtime" | "workflowName" | "trace">): ShapeTaskInput {
+export function shapingInputFor(
+  input: Pick<LaunchShapingInput, "task" | "runtime" | "trace"> & { workflowName: string | null },
+): ShapeTaskInput {
   const { task } = input;
   // Named as the dry run names them: the repository's own directory, not the worktree's.
   const repositories: ShapeTaskInput["context"]["repositories"] = taskHasRepository(task)
@@ -116,35 +128,60 @@ function stepRecord(outcome: "failed" | "timed_out", reason: string, at: number,
   };
 }
 
+/** The after-work workflow's name, or null: a lookup that fails is the same as no name. */
+function workflowNameOf(lookup: () => string | null): string | null {
+  try {
+    return lookup();
+  } catch (error) {
+    console.warn("[shaping] could not read the after-work workflow's name; shapers get its id:", error);
+    return null;
+  }
+}
+
 /**
  * Shape one launch. Resolves to no summary and no section with the flag off, so that launch is
- * byte-identical to one from before shaping existed. Never rejects.
+ * byte-identical to one from before shaping existed. Never rejects: everything from reading the
+ * flag and the config to the engine's answer sits inside one failure boundary, so a launch or a
+ * handover always goes on, with the unshaped prompt when the step cannot run.
  */
 export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShapingDeps = {}): Promise<LaunchShaping> {
-  if (!(deps.enabled ?? featureEnabled("task-shaping"))) return EMPTY;
-  const config = getShapingConfig();
-  // Budgeted against the larger variant, so whichever one is sent fits its path.
-  const largest = input.turnOnes.reduce((a, b) => (Buffer.byteLength(b) > Buffer.byteLength(a) ? b : a), "");
-  // A measurement that cannot be taken never stops the launch it was measuring: the budget then
-  // withholds the section (`turnOneAllowance`), and the record says why.
-  const launch = input.launch ? await input.launch().catch((error: unknown) => {
-    console.warn("[shaping] could not measure the launch's arguments and environment:", error);
-    return null;
-  }) : null;
-  const allowance = turnOneAllowance(input.delivery, largest, launch);
-  const cancel = new AbortController();
-  const poll = setInterval(() => { if (!input.stillDispatching()) cancel.abort(); }, CANCEL_POLL_MS);
   const startedAt = Date.now();
   const started = performance.now();
-  let backstop: ReturnType<typeof setTimeout> | undefined;
-  input.onShaping(true);
+  let config: ShapingConfig;
   try {
+    if (!(deps.enabled ?? featureEnabled("task-shaping"))) return EMPTY;
+    // One snapshot for the whole run: the budget, the backstop and the engine all read this one,
+    // so a settings change during the launch measurement cannot split them.
+    config = getShapingConfig();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[shaping] the shaping step could not start; launching without its context:", message);
+    return { summary: stepRecord("failed", `The shaping step could not start: ${message}`, startedAt, Math.round(performance.now() - started)), section: "" };
+  }
+  const cancel = new AbortController();
+  let poll: ReturnType<typeof setInterval> | undefined;
+  let backstop: ReturnType<typeof setTimeout> | undefined;
+  let marked = false;
+  try {
+    // Budgeted against the larger variant, so whichever one is sent fits its path.
+    const largest = input.turnOnes.reduce((a, b) => (Buffer.byteLength(b) > Buffer.byteLength(a) ? b : a), "");
+    // A measurement that cannot be taken never stops the launch it was measuring: the budget then
+    // withholds the section (`turnOneAllowance`), and the record says why.
+    const launch = input.launch ? await input.launch().catch((error: unknown) => {
+      console.warn("[shaping] could not measure the launch's arguments and environment:", error);
+      return null;
+    }) : null;
+    const allowance = turnOneAllowance(input.delivery, largest, launch);
+    const engineInput = {
+      ...shapingInputFor({ ...input, workflowName: workflowNameOf(input.workflowName) }),
+      signal: cancel.signal,
+      ...(allowance ? { maxSectionBytes: allowance.maxSectionBytes } : {}),
+    };
+    poll = setInterval(() => { if (!input.stillDispatching()) cancel.abort(); }, CANCEL_POLL_MS);
+    input.onShaping(true);
+    marked = true;
     const run = await Promise.race([
-      (deps.shapeTask ?? shapeTask)({
-        ...shapingInputFor(input),
-        signal: cancel.signal,
-        ...(allowance ? { maxSectionBytes: allowance.maxSectionBytes } : {}),
-      }),
+      (deps.shapeTask ?? shapeTask)(engineInput, { config, enabled: true }),
       new Promise<"backstop">((resolve) => {
         backstop = setTimeout(() => resolve("backstop"), config.limits.deadlineMs + BACKSTOP_GRACE_MS);
       }),
@@ -158,14 +195,24 @@ export async function shapeLaunch(input: LaunchShapingInput, deps: LaunchShaping
       console.warn("[shaping] the shaping step failed; launching without its context:", message);
       return { summary: stepRecord("failed", `The shaping step failed: ${message}`, startedAt, durationMs), section: "" };
     }
-    return recordLimit(run, allowance, config.limits.totalBytes);
+    const shaped = recordLimit(run, allowance, config.limits.totalBytes);
+    const unfit = shaped.section && input.finalCheck ? await input.finalCheck(shaped.section) : null;
+    if (!unfit || !shaped.summary) return shaped;
+    return {
+      summary: { ...shaped.summary, truncated: true, limit: { bytes: 0, reason: unfit.slice(0, SHAPING_LIMITS.reasonChars) } },
+      section: "",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[shaping] the shaping step failed; launching without its context:", message);
+    return { summary: stepRecord("failed", `The shaping step failed: ${message}`, startedAt, Math.round(performance.now() - started)), section: "" };
   } finally {
     clearInterval(poll);
     clearTimeout(backstop);
     // A run the backstop abandoned is told to stop, so its calls release what they hold. A run
     // that settled has already detached from the signal, and this changes nothing for it.
     cancel.abort();
-    input.onShaping(false);
+    if (marked) input.onShaping(false);
   }
 }
 

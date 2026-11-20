@@ -55,8 +55,10 @@ export function ShapingChip({ session }: { session: Pick<Session, "id" | "task">
   const [open, setOpen] = useState(false);
   const record = enabled ? sessionShaping(session) : null;
   const taskId = session.task?.id ?? null;
-  // A session switched underneath an open viewer closes it rather than showing another's record.
-  useEffect(() => setOpen(false), [session.id]);
+  // The viewer belongs to the task and launch record the operator opened it on. A session that
+  // switches, releases its task or takes another one closes it, rather than reopening it later
+  // on a record nobody clicked.
+  useEffect(() => setOpen(false), [session.id, taskId, record?.at, record?.sessionId]);
   if (!record || !taskId) return null;
   const degraded = record.state === "degraded";
   const label = degraded ? "Context degraded" : `Context: ${entriesLabel(record.entries)}`;
@@ -84,6 +86,22 @@ export function ShapingChip({ session }: { session: Pick<Session, "id" | "task">
 }
 
 /**
+ * What the viewer can say about the delivered text. `none` only when the route answered for
+ * this exact launch with no text, or the record itself counts no entries; a missing reply, or
+ * one that describes a different launch, is `unavailable`, never "no context was added".
+ */
+export function deliveredState(
+  view: TaskShapingView | null | "loading",
+  record: TaskShaping,
+): { kind: "loading" } | { kind: "text"; text: string } | { kind: "none" } | { kind: "unavailable" } {
+  if (view === "loading") return { kind: "loading" };
+  const matches = view !== null && view.summary.sessionId === record.sessionId && view.summary.at === record.at;
+  if (matches && view.text) return { kind: "text", text: view.text };
+  if (matches || record.entries === 0) return { kind: "none" };
+  return { kind: "unavailable" };
+}
+
+/**
  * "Context this session received": every shaper's outcome, the section exactly as turn one
  * carried it, and the notes. The section is shown as delivered, never split back into entries:
  * the engine owns its format, and a shaper's body may contain any heading it likes.
@@ -108,10 +126,7 @@ export function ShapingViewer({
   }, [taskId, record.at, record.sessionId]);
   // The route answers for the task's current session. A reply that describes another launch
   // than the one this chip was drawn from is not shown as this session's.
-  const delivered = view === "loading" ? null : view;
-  const text = delivered && delivered.summary.sessionId === record.sessionId && delivered.summary.at === record.at
-    ? delivered.text
-    : null;
+  const delivered = deliveredState(view, record);
   return (
     <Overlay
       id={OVERLAY_IDS.shapingContext}
@@ -156,13 +171,17 @@ export function ShapingViewer({
               </li>
             ))}
           </ul>
-          {view === "loading" ? (
+          {delivered.kind === "loading" ? (
             <p className="task-context-empty">Loading what was delivered…</p>
-          ) : text ? (
+          ) : delivered.kind === "text" ? (
             <section className="task-context-delivered" aria-label="Delivered in turn one">
               <span className="task-context-delivered-head">Delivered in turn one</span>
-              <pre className="task-context-delivered-text" tabIndex={0}>{text}</pre>
+              <pre className="task-context-delivered-text" tabIndex={0}>{delivered.text}</pre>
             </section>
+          ) : delivered.kind === "unavailable" ? (
+            <p className="task-context-empty" role="note">
+              The delivered text could not be loaded for this launch. The outcomes above are its record.
+            </p>
           ) : (
             <p className="task-context-empty">No context was added to turn one.</p>
           )}

@@ -1,4 +1,5 @@
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
+import { appleScriptString, appleScriptText } from "./terminal/applescript.ts";
 import { run } from "./util/exec.ts";
 
 /**
@@ -46,6 +47,22 @@ export function launchArgumentTurnOne(platform: NodeJS.Platform = process.platfo
 
 /** Bytes kept back for the separator that joins the section to turn one. */
 export const SECTION_JOIN_MARGIN = 64;
+/**
+ * What `execve` charges beyond argv and envp. Linux copies the executable's pathname as a string
+ * of its own, and a `#!` entry point (Pi's CLI is a script) has the kernel insert the
+ * interpreter, its optional argument and the script path again before exec'ing the interpreter.
+ * Each interpreter string is bounded by the 256-byte `#!` line.
+ */
+const SHEBANG_LINE_BYTES = 256;
+/**
+ * Room kept for the terminal server's own environment. The agent inherits it, and a reused
+ * server can hold variables the daemon never had, which cannot be read before the launch. A
+ * server whose extra environment exceeds this leaves too little room for many unshaped launches
+ * as well; within it, shaping never turns a working launch into an `E2BIG`.
+ */
+export const TERMINAL_ENV_RESERVE = 64 * 1024;
+/** Room kept for the AppleScript a pane paste wraps its text in: the tell block and its target. */
+const APPLESCRIPT_WRAPPER_RESERVE = 4096;
 /** What `execve` charges per argument or environment pointer on a 64-bit platform. */
 const POINTER_BYTES = 8;
 
@@ -107,28 +124,82 @@ export function turnOneAllowance(
     };
   }
   const others = launch.otherArgs.reduce((sum, arg) => sum + execString(arg), 0);
-  const environment = Object.entries(launch.env)
-    .reduce((sum, [name, value]) => value === undefined ? sum : sum + execString(`${name}=${value}`), 0);
   remainders.push({
-    room: launch.argMax - others - environment - execString(turnOne),
+    room: launch.argMax - others - execImageBytes(launch.otherArgs[0] ?? "") - environmentBytes(launch.env)
+      - TERMINAL_ENV_RESERVE - execString(turnOne),
     reason: `the launch's arguments and environment share this platform's ${launch.argMax}-byte limit`,
   });
   const tightest = remainders.reduce((a, b) => (b.room < a.room ? b : a));
   return { maxSectionBytes: Math.max(0, tightest.room - SECTION_JOIN_MARGIN), reason: tightest.reason };
 }
 
-let argMax: Promise<number | null> | null = null;
+function environmentBytes(env: Readonly<Record<string, string | undefined>>): number {
+  return Object.entries(env).reduce((sum, [name, value]) => value === undefined ? sum : sum + execString(`${name}=${value}`), 0);
+}
+
+/** The executable's pathname, and for a `#!` entry point the interpreter's strings (see above). */
+function execImageBytes(program: string): number {
+  return 2 * execString(program) + 2 * (SHEBANG_LINE_BYTES + 1 + POINTER_BYTES);
+}
+
+/** Terminal backends whose paste is an `osascript -e` argument. Both are macOS-only. */
+const APPLESCRIPT_PASTE_BACKENDS: ReadonlySet<string> = new Set(["ghostty", "iterm"]);
 
 /**
- * `ARG_MAX`, read once with `getconf`. Null when it cannot be read, and a launch argument then
- * carries no section at all (see `turnOneAllowance`).
+ * Whether a pane paste on this backend travels as an argument. `null` is an automatic choice,
+ * which on macOS may land on either AppleScript backend, so it is treated as one.
  */
-export function platformArgMax(): Promise<number | null> {
-  argMax ??= run(FIXED_OS_EXECUTABLES.getconf, ["ARG_MAX"], { timeoutMs: 2000 })
-    .then((result) => {
-      const value = Number.parseInt(result.stdout.trim(), 10);
-      return result.code === 0 && Number.isSafeInteger(value) && value > 0 ? value : null;
-    })
-    .catch(() => null);
-  return argMax;
+export function pasteTravelsAsArgument(backend: string | null, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "darwin" && (backend === null || APPLESCRIPT_PASTE_BACKENDS.has(backend));
+}
+
+/**
+ * Whether `turnOne`, pasted through AppleScript, stays under the combined limit with this
+ * environment. Measured with both encoders the AppleScript backends use, so whichever one the
+ * pane is on, the `osascript -e` argument is no larger than this counts. Null `argMax`: unknown,
+ * so it does not fit.
+ */
+export function appleScriptPasteFits(turnOne: string, env: Readonly<Record<string, string | undefined>>, argMax: number | null): boolean {
+  if (argMax == null) return false;
+  const encoded = Math.max(utf8(appleScriptString(turnOne)), utf8(appleScriptText(turnOne))) + APPLESCRIPT_WRAPPER_RESERVE;
+  const total = execImageBytes(FIXED_OS_EXECUTABLES.osascript) + execString(FIXED_OS_EXECUTABLES.osascript) + execString("-e")
+    + encoded + 1 + POINTER_BYTES + environmentBytes(env);
+  return total <= argMax;
+}
+
+/** How long a failed `getconf` probe is remembered before a later launch asks again. */
+const ARG_MAX_RETRY_MS = 60_000;
+let argMax: Promise<number | null> | null = null;
+let argMaxFailedAt: number | null = null;
+
+/**
+ * `ARG_MAX`, read with `getconf` and kept once it has been read. A probe that fails, for example
+ * one that timed out under load, is retried by a launch at least a minute later rather than
+ * withholding context until the daemon restarts. Null while it cannot be read, and a launch
+ * argument then carries no section (see `turnOneAllowance`).
+ */
+export function platformArgMax(
+  probe: () => Promise<number | null> = readArgMax,
+  now: () => number = Date.now,
+): Promise<number | null> {
+  if (argMax && (argMaxFailedAt === null || now() - argMaxFailedAt < ARG_MAX_RETRY_MS)) return argMax;
+  argMaxFailedAt = null;
+  const pending = probe().catch(() => null).then((value) => {
+    if (value === null) argMaxFailedAt = now();
+    return value;
+  });
+  argMax = pending;
+  return pending;
+}
+
+/** Forget the cached probe, for a test that drives `platformArgMax` from the start. */
+export function resetPlatformArgMaxForTests(): void {
+  argMax = null;
+  argMaxFailedAt = null;
+}
+
+async function readArgMax(): Promise<number | null> {
+  const result = await run(FIXED_OS_EXECUTABLES.getconf, ["ARG_MAX"], { timeoutMs: 2000 });
+  const value = Number.parseInt(result.stdout.trim(), 10);
+  return result.code === 0 && Number.isSafeInteger(value) && value > 0 ? value : null;
 }

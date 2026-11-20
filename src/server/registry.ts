@@ -18,7 +18,7 @@ import { basename } from "node:path";
 import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
-import { currentShaping, type TaskShaping } from "@shared/shaping.ts";
+import { currentShaping, withCurrentShaping, type TaskShaping } from "@shared/shaping.ts";
 import { EMPTY_PAUSE_STATE, PAUSED_SESSION_REASON, type PauseState, type SessionPause } from "@shared/pause.ts";
 import type {
   AgentType,
@@ -1351,7 +1351,9 @@ export class Registry extends EventEmitter {
       sessions: [...this.sessions.values()],
       restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
-      tasks: [...this.tasks.values()],
+      // Memory keeps an earlier launch's record so a later publish can carry it forward; what
+      // leaves the daemon carries only the record of the session the task is on now.
+      tasks: [...this.tasks.values()].map(withCurrentShaping),
       personas: [...this.personas.values()],
       sessionActions: [...this.sessionActions.values()],
       workflowCommands: [...this.workflowCommands.values()],
@@ -2132,7 +2134,12 @@ export class Registry extends EventEmitter {
     }
   }
 
-  private deliverEvent(e: ServerEvent): void {
+  private deliverEvent(event: ServerEvent): void {
+    // A task leaves the daemon with only its current session's shaping record, as every task
+    // read does; memory may still hold an earlier launch's (see `withShaping`).
+    const e: ServerEvent = event.type === "task_upsert" && event.task.shaping !== undefined
+      ? { ...event, task: withCurrentShaping(event.task) }
+      : event;
     this.emit("event", e);
     // The Line's one hook into the stores it folds over.
     //
@@ -7688,6 +7695,7 @@ export class Registry extends EventEmitter {
       (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, summary, text);
     } catch (error) {
       console.warn(`[shaping] could not record what task ${taskId}'s launch received:`, error);
+      this.hideSupersededShaping(taskId, summary?.sessionId ?? null);
       return false;
     }
     const current = this.tasks.get(taskId);
@@ -7704,8 +7712,8 @@ export class Registry extends EventEmitter {
   /**
    * Inside a caller's transaction that is about to bind `taskId` to `toSessionId` in
    * `episodeId`: when the task's current binding is the same episode under another session -
-   * the same conversation continuing - re-key the shaping record that named that session, in
-   * the database and in memory, and return it. Null when nothing moves.
+   * the same conversation continuing - re-key the shaping record that named that session in the
+   * database, and return it. Null when nothing moves.
    *
    * Only the database is written here. The caller's transaction may still roll back, so memory
    * is left alone and the task is marked: its next publish, after the commit, reads the record
@@ -7720,6 +7728,26 @@ export class Registry extends EventEmitter {
     if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
     this.carriedShaping.add(taskId);
     return { ...record, sessionId: toSessionId };
+  }
+
+  /**
+   * After a failed commit: a record left by an earlier delivery to the SAME session (a handover
+   * back to the session it already ran on) would read as this delivery's context. Drop it from
+   * what readers see now, and try once more to clear it on disk; a reader never shows context
+   * this delivery did not receive.
+   */
+  private hideSupersededShaping(taskId: string, sessionId: string | null): void {
+    const current = this.tasks.get(taskId);
+    if (!sessionId || current?.shaping?.sessionId !== sessionId) return;
+    try {
+      (this.shapingCommitter ?? dbCommitTaskShaping)(taskId, null, "");
+    } catch {
+      // Memory still drops it below; the next commit or restart settles the row.
+    }
+    const { shaping: _stale, ...rest } = current;
+    this.tasks.set(taskId, rest);
+    this.emitEvent({ type: "task_upsert", task: rest });
+    this.resyncSessionTask(sessionId);
   }
 
   /** Test seam for a commit that fails. Production always takes the database function. */

@@ -225,6 +225,56 @@ test("a resume whose transaction rolls back leaves the record on the original se
   assert.equal(registry.getTask("rollback-resume")?.shaping?.sessionId, "kept");
 });
 
+test("a commit for a task deleted while its worker started writes nothing", () => {
+  db.upsertTask(mkTask({ id: "deleted", status: "running", sessionId: "s1" }));
+  db.deleteTask("deleted");
+  assert.equal(db.commitTaskShaping("deleted", record("s1"), "late text", 1), false);
+  assert.equal(db.getTaskShapingText("deleted"), null, "no delivered text outlives its task");
+  assert.equal(db.getTask("deleted"), undefined);
+});
+
+test("task events and the snapshot carry only the current session's record", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "events", status: "running", sessionId: "first" }));
+  registry.commitTaskShaping("events", record("first"), "text");
+  const seen: Array<TaskShaping | undefined> = [];
+  const onEvent = (event: { type: string; task?: { id: string; shaping?: TaskShaping } }) => {
+    if (event.type === "task_upsert" && event.task?.id === "events") seen.push(event.task.shaping);
+  };
+  registry.on("event", onEvent);
+  try {
+    // A redispatch onto another session: memory keeps the earlier record, the wire never does.
+    registry.upsertTask({ ...registry.getTask("events")!, sessionId: "second" });
+  } finally {
+    registry.off("event", onEvent);
+  }
+  assert.equal(registry.getTask("events")?.shaping?.sessionId, "first", "memory still holds it");
+  assert.deepEqual(seen, [undefined], "the event does not carry a record that names another session");
+  const snap = registry.snapshot().tasks.find((task) => task.id === "events");
+  assert.equal(snap?.shaping, undefined, "and neither does the snapshot");
+});
+
+test("a failed commit for the same session hides the record it was meant to replace", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "same-session", status: "running", sessionId: "kept" }));
+  registry.commitTaskShaping("same-session", record("kept"), "first text");
+  let calls = 0;
+  registry.shapingCommitter = (taskId, summary, text) => {
+    calls += 1;
+    // The handover's write fails; the clean-up that follows it succeeds.
+    if (calls === 1) throw new Error("disk full");
+    return db.commitTaskShaping(taskId, summary, text);
+  };
+  try {
+    assert.equal(registry.commitTaskShaping("same-session", record("kept", "degraded"), ""), false);
+  } finally {
+    registry.shapingCommitter = null;
+  }
+  assert.equal(registry.getTask("same-session")?.shaping, undefined, "the earlier delivery's context is not shown as this one's");
+  assert.equal(db.getTask("same-session")?.shaping, undefined, "and is cleared on disk");
+  assert.equal(db.getTaskShapingText("same-session"), null);
+});
+
 test("a restart reads the record back with the task", () => {
   db.upsertTask(mkTask({ id: "restart", status: "running", sessionId: "live" }));
   db.commitTaskShaping("restart", record("live"), "text", 1);

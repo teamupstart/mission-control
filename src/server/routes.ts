@@ -2,7 +2,7 @@ import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
-import { withCurrentShaping } from "@shared/shaping.ts";
+import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -4400,7 +4400,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   // Every task read applies the one shaping reader rule: a record left by an earlier launch
   // describes another session and is not returned.
-  app.get("/api/tasks", (c) => c.json(tasks.list().map(withCurrentShaping)));
+  app.get("/api/tasks", (c) => c.json(tasks.list().map(taskShapingForReads)));
   app.get("/api/tasks/:id/plan-dependencies", (c) => {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);

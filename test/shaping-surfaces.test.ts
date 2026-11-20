@@ -6,7 +6,7 @@ import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
 import { currentShaping, shapingView, taskShapingRead, withCurrentShaping, type TaskShaping } from "../src/shared/shaping.ts";
 import type { Session, TaskSummary } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
-import { ShapingChip, ShapingRailMark, ShapingTileFlag } from "../src/web/components/ShapingChip.tsx";
+import { ShapingChip, ShapingRailMark, ShapingTileFlag, deliveredState } from "../src/web/components/ShapingChip.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 // The reader rule and the session surfaces that apply it: the chip's two states, the board and
@@ -98,4 +98,16 @@ test("with the flag off nothing renders, whatever the record says", () => {
   for (const component of [ShapingChip, ShapingTileFlag, ShapingRailMark]) {
     assert.equal(render(off, createElement(component, { session: degraded })), "");
   }
+});
+
+test("the viewer tells an unavailable delivery apart from a launch that added nothing", () => {
+  const delivered = record("s1", "ok");
+  assert.deepEqual(deliveredState("loading", delivered), { kind: "loading" });
+  assert.deepEqual(deliveredState({ summary: delivered, text: "## Task context" }, delivered), { kind: "text", text: "## Task context" });
+  // The route's 404, or a reply that describes a newer launch: the text is not this launch's to show.
+  assert.deepEqual(deliveredState(null, delivered), { kind: "unavailable" });
+  assert.deepEqual(deliveredState({ summary: { ...delivered, at: 99 }, text: "newer" }, delivered), { kind: "unavailable" });
+  // Only a matching reply with no text, or a record that counts no entries, says nothing was added.
+  assert.deepEqual(deliveredState({ summary: delivered, text: null }, delivered), { kind: "none" });
+  assert.deepEqual(deliveredState(null, record("s1", "degraded", 0)), { kind: "none" });
 });

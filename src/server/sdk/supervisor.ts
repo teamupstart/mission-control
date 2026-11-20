@@ -809,6 +809,12 @@ export class SdkSupervisor {
     beforeSend?: () => string | null,
     acceptedGoal?: AcceptedGoalPrompt,
   ): Promise<SdkSendDisposition> {
+    // A woken driver has not yet shown it reopened the task's conversation (`unboundWakes`), so a
+    // turn now could land in a conversation Resume is about to refuse. Refused before anything
+    // is recorded, and accepted again the moment the task is bound to it.
+    if (this.unboundWakes.has(id)) {
+      return Promise.reject(new Error("its conversation is still being reopened. Send again once it has resumed"));
+    }
     return this.serialize(id, async (handle) => {
       const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);

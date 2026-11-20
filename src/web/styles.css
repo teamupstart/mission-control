@@ -41906,6 +41906,9 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-row-note { margin: 0; font-size: 12px; color: var(--dim); }
 .shaping-row-problem { margin: 0; font-size: 12px; color: var(--attention); }
 .shaping-row-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+/* Older refusals, apart from the current one: the same warning colour, quieter, one per line. */
+.shaping-earlier-refusals { margin: 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; }
+.shaping-earlier-refusals li { font-size: 11.5px; color: var(--attention); opacity: 0.85; overflow-wrap: anywhere; }
 .shaping-env { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
 .shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
 .shaping-env li.is-set span { color: var(--idle); }

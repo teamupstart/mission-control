@@ -1044,3 +1044,50 @@ test("a later write that succeeds on a row clears the earlier write's refusal sh
   await expect(pill(page, "Clear notes")).toHaveAccessibleName("Clear notes: off");
   await page.unroute("**/api/shaping");
 });
+
+test("a refusal that arrives late never replaces the newer refusal under the same row", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("both-notes", "Both notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Both notes")).toHaveAccessibleName("Both notes: off");
+  // Both writes are held before they reach the daemon, and each is refused once let through,
+  // because a peer replaced the shaper after each was sent. The newer one is answered first.
+  const gates = [gate(), gate()];
+  const sent = [gate(), gate()];
+  let puts = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const at = puts++;
+    sent[at]!.open();
+    await gates[at]!.opened;
+    await route.continue();
+  });
+  const isPut = (request: { url(): string; method(): string }) => request.url().endsWith("/api/shaping") && request.method() === "PUT";
+  const first = page.waitForRequest(isPut);
+  await pill(page, "Both notes").click();
+  await sent[0]!.opened;
+  // A peer replaces and switches it on: the frame frees the row for the second click.
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("both-notes", "Both notes", { timeoutMs: 20_000 }) });
+  await putShaping(daemon, { kind: "enable", id: "both-notes", enabled: true });
+  await expect(pill(page, "Both notes")).toHaveAccessibleName("Both notes: on");
+  await expect(pill(page, "Both notes")).toBeEnabled();
+  const second = page.waitForRequest((request) => isPut(request) && request.postDataJSON()?.enabled === false);
+  await pill(page, "Both notes").click();
+  await sent[1]!.opened;
+  // The peer replaces it again, so the second click names a definition that is gone too.
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("both-notes", "Both notes", { timeoutMs: 25_000 }) });
+  await expect(pill(page, "Both notes")).toHaveAccessibleName("Both notes: off");
+
+  const changed = "\"both-notes\" changed in another window since it was shown here, so nothing was done. Review it again first.";
+  const alert = row(page, "Both notes").getByRole("alert");
+  const earlier = row(page, "Both notes").getByRole("list", { name: "Earlier refusals" });
+  gates[1]!.open();
+  expect((await (await second).response())?.status()).toBe(409);
+  await expect(alert).toHaveText(changed);
+  gates[0]!.open();
+  expect((await (await first).response())?.status()).toBe(409);
+  // The latest action's reason stays the row's refusal; the late one is listed apart from it.
+  await expect(earlier).toHaveText(`An earlier change, switching both-notes on, was refused: ${changed}`);
+  await expect(alert).toHaveText(changed);
+  await page.unroute("**/api/shaping");
+});

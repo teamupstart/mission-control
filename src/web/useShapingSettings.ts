@@ -27,14 +27,15 @@ export function useShapingSettings(
     accepted: boolean;
     observed: boolean;
   } | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  // Every refusal still worth showing, per control, each with the number of the request it
+  // answers. The newest is the control's error; any older ones are shown apart from it, so a
+  // refusal that arrives late never replaces the reason the latest action failed.
+  const [refusals, setRefusals] = useState<Record<string, Refusal[]>>({});
   const writing = useRef<ShapingIntent | null>(null);
   /** The last request sent, so a refusal can tell whether a newer write followed it. */
   const latest = useRef<ShapingIntent | null>(null);
   /** Numbers each request in the order it was sent. */
   const sent = useRef(0);
-  /** Which request, by its number, owns the refusal shown under each control. */
-  const refusedBy = useRef<Record<string, number>>({});
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
@@ -66,15 +67,14 @@ export function useShapingSettings(
     // here exactly as it is stored.
     const parsed = ShapingIntentSchema.safeParse(intent);
     if (!parsed.success) {
-      setErrors({ [key]: parsed.error.issues[0]?.message ?? "This change is not valid." });
+      setRefusals({ [key]: [{ number: ++sent.current, message: parsed.error.issues[0]?.message ?? "This change is not valid." }] });
       return false;
     }
     const request = parsed.data;
     const number = ++sent.current;
     writing.current = request;
     latest.current = request;
-    refusedBy.current = {};
-    setErrors({});
+    setRefusals({});
     setPending({ intent: request, key, accepted: false, observed: false });
     // Bounded, so a daemon that stops answering never leaves every control disabled. On the
     // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
@@ -98,14 +98,7 @@ export function useShapingSettings(
       }
       // A later write on this control succeeded, so an earlier one's refusal no longer describes
       // it. A refusal of a request sent after this one is still news and stays.
-      const owner = refusedBy.current[key];
-      if (owner !== undefined && owner < number) {
-        delete refusedBy.current[key];
-        setErrors((current) => {
-          const { [key]: _cleared, ...rest } = current;
-          return rest;
-        });
-      }
+      setRefusals((current) => withRefusals(current, key, (current[key] ?? []).filter((refusal) => refusal.number > number)));
       return true;
     } catch (error) {
       // The HTTP result decides whether this write succeeded. A frame can free the controls
@@ -117,8 +110,7 @@ export function useShapingSettings(
       // reading as the outcome of the change just made under the same control.
       const reason = error instanceof Error ? error.message : String(error);
       const message = shapingRefusalText(request, reason, latest.current !== request);
-      refusedBy.current[key] = number;
-      setErrors((current) => ({ ...current, [key]: message }));
+      setRefusals((current) => withRefusals(current, key, [...(current[key] ?? []), { number, message }]));
       if (writing.current === request) {
         writing.current = null;
         setPending(null);
@@ -133,9 +125,25 @@ export function useShapingSettings(
     confirmed,
     pending: pending?.intent ?? null,
     pendingKey: pending?.key ?? null,
-    errors,
+    /** Each control's newest refusal: the reason its latest refused action failed. */
+    errors: Object.fromEntries(Object.entries(refusals).map(([key, list]) => [key, list[0]!.message])),
+    /** Older refusals under each control, newest first, that arrived after a newer write went out. */
+    earlier: Object.fromEntries(Object.entries(refusals).filter(([, list]) => list.length > 1)
+      .map(([key, list]) => [key, list.slice(1).map((refusal) => refusal.message)])),
     ready: live,
     set,
   };
 }
 export type ShapingSettings = ReturnType<typeof useShapingSettings>;
+
+interface Refusal {
+  /** The request it answers, in the order requests were sent. */
+  number: number;
+  message: string;
+}
+
+/** `refusals` with one control's list replaced, newest first, and the control dropped when empty. */
+function withRefusals(refusals: Record<string, Refusal[]>, key: string, list: Refusal[]): Record<string, Refusal[]> {
+  const { [key]: _replaced, ...rest } = refusals;
+  return list.length === 0 ? rest : { ...rest, [key]: [...list].sort((a, b) => b.number - a.number) };
+}

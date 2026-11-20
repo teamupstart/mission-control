@@ -64,7 +64,21 @@ export function ShaperReview({ shaper }: { shaper: Shaper }): React.JSX.Element 
  * manifest says and whatever was stored for its id before. A manifest the schema refuses -
  * a literal credential included - shows its reason, and there is nothing to save.
  */
-export function ShapingImportDialog({ config, busy, saving, error, onClose, onSave }: {
+/**
+ * Refusals of earlier writes under one control that arrived after a newer write went out. They
+ * are listed apart from the control's current refusal, which stays the reason its latest action
+ * failed.
+ */
+export function EarlierRefusals({ messages }: { messages: readonly string[] | undefined }): React.JSX.Element | null {
+  if (!messages || messages.length === 0) return null;
+  return (
+    <ul className="shaping-earlier-refusals" aria-label="Earlier refusals">
+      {messages.map((message, at) => <li key={at}>{message}</li>)}
+    </ul>
+  );
+}
+
+export function ShapingImportDialog({ config, busy, saving, error, earlier, onClose, onSave }: {
   config: ShapingConfigView;
   /** Whether Save is unavailable: a write in flight, or no connection to the daemon. */
   busy: boolean;
@@ -72,6 +86,8 @@ export function ShapingImportDialog({ config, busy, saving, error, onClose, onSa
   saving: boolean;
   /** The daemon's refusal of the last save, if any. */
   error: string | null;
+  /** Refusals of earlier saves that arrived after a newer one went out. */
+  earlier?: readonly string[];
   onClose: () => void;
   onSave: (shaper: Shaper) => Promise<void>;
 }): React.JSX.Element {
@@ -162,6 +178,7 @@ export function ShapingImportDialog({ config, busy, saving, error, onClose, onSa
           </>
         )}
         {saved && error && <p role="alert" className="shaping-refusal">{error}</p>}
+        {saved && <EarlierRefusals messages={earlier} />}
       </div>
       <footer className="modal-foot">
         <Tooltip label="Close without saving anything">

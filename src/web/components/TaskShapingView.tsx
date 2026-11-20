@@ -8,7 +8,7 @@ import {
   type ShapingListGroup,
   type ShapingListRow,
 } from "../lib/shaping-settings.ts";
-import { ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
+import { EarlierRefusals, ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported", { title: string; hint: string }> = {
@@ -31,6 +31,7 @@ export function TaskShapingView({
   references = {},
   pending = null,
   errors = {},
+  earlier = {},
   ready = true,
   onSet,
   onTest,
@@ -42,6 +43,8 @@ export function TaskShapingView({
   references?: ShapingReferenceStatus;
   pending?: ShapingIntent | null;
   errors?: Record<string, string>;
+  /** Older refusals under each control, newest first, kept apart from its current one. */
+  earlier?: Record<string, string[]>;
   ready?: boolean;
   onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
   onTest: ShapingTestRunner;
@@ -129,6 +132,7 @@ export function TaskShapingView({
           )}
           {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
           {errors[key] && <p role="alert">{errors[key]}</p>}
+          <EarlierRefusals messages={earlier[key]} />
           {entry.repeats > 0 && (
             <p className="shaping-row-note">
               {entry.repeats === 1
@@ -203,7 +207,7 @@ export function TaskShapingView({
         guidance for it. A shaper you register is stored switched off: dry-run it, then switch it on. Every
         change applies at once in every open window.
       </p>
-      {config && <ShapingSettingsForm config={config} busy={busy} error={errors.settings ?? null} onSet={onSet} />}
+      {config && <ShapingSettingsForm config={config} busy={busy} error={errors.settings ?? null} earlier={earlier.settings} onSet={onSet} />}
       <div className="feature-flag-list shaping-list" data-anchor="task-shaping/shapers">
         <div className="settings-pane-head shaping-list-head">
           <div className="settings-pane-title-row">
@@ -236,7 +240,7 @@ export function TaskShapingView({
         })}
       </div>
       {importing && config && (
-        <ShapingImportDialog config={config} busy={busy} saving={pending?.kind === "upsert"} error={errors.import ?? null}
+        <ShapingImportDialog config={config} busy={busy} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {
             const session = importSession.current;
@@ -278,10 +282,11 @@ interface SettingsFields {
  * makes appears here at once. A save sends only the fields typed in here, so it never writes this
  * window's stale copy of a value another window has changed since.
  */
-function ShapingSettingsForm({ config, busy, error, onSet }: {
+function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
   config: ShapingConfigView;
   busy: boolean;
   error: string | null;
+  earlier?: readonly string[];
   onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<Partial<SettingsFields>>({});
@@ -379,6 +384,7 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
         </div>
       </div>
       {error && <p role="alert">{error}</p>}
+      <EarlierRefusals messages={earlier} />
       <div className="shaping-settings-actions">
         <Tooltip label="Put back the saved values">
           <button type="button" className="btn btn-ghost" disabled={!edited || busy} onClick={() => setDraft({})}>Reset</button>

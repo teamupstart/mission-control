@@ -42,6 +42,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
       references={references}
       pending={state?.pending ?? null}
       errors={state?.errors ?? {}}
+      earlier={state?.earlier ?? {}}
       ready={ready}
       onSet={(intent, key) => state ? state.set(intent, key) : Promise.resolve(false)}
       onTest={onTest}

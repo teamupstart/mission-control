@@ -41,7 +41,7 @@ const SHAPING: ShapingSettings = {
   confirmed: shapingConfigView(SHAPING_CONFIG_DEFAULTS),
   pending: null,
   pendingKey: null,
-  errors: {},
+  errors: {}, earlier: {},
   ready: true,
   set: async () => true,
 };

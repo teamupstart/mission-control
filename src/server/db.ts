@@ -3508,16 +3508,23 @@ function migrateCodeRabbitFollowUp(d: DatabaseSync): void {
     | undefined;
   // Missing settings already default on. Corrupt settings must still fail closed.
   if (!row) return;
+  let stored: unknown;
   try {
-    if (!entry.schema.safeParse(JSON.parse(row.value)).success) return;
+    stored = JSON.parse(row.value);
   } catch {
     return;
   }
+  if (!entry.schema.safeParse(stored).success) return;
   // Only an explicit stored `false` changes. An absent key already reads as the new default,
   // and writing it would rewrite a row that holds nothing to migrate.
-  d.prepare(`UPDATE app_config SET value = json_set(value, '$.codeRabbitAutoResolve', json('true'))
-    WHERE key = ? AND json_type(value, '$.codeRabbitAutoResolve') = 'false'`)
-    .run(entry.key);
+  const blob = stored as Record<string, unknown>;
+  if (blob.codeRabbitAutoResolve !== false) return;
+  // Rewritten from the parsed object rather than with SQLite's `json_set`, which refuses JSON
+  // nested past its own depth limit. The schema ignores unknown properties, so such a blob can
+  // pass the check above, and a throw here would abort every startup on the same migration.
+  // Every other property, known or not, is written back unchanged.
+  d.prepare("UPDATE app_config SET value = ? WHERE key = ?")
+    .run(JSON.stringify({ ...blob, codeRabbitAutoResolve: true }), entry.key);
 }
 
 /** Close the daemon's singleton connection before releasing state-directory ownership. */

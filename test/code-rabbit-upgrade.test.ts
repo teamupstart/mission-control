@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { upgradeDatabaseToCurrentSchema } from "../src/server/db.ts";
+import { CURRENT_DATABASE_SCHEMA_VERSION, upgradeDatabaseToCurrentSchema } from "../src/server/db.ts";
 import { ShippingConfigSchema } from "../src/shared/protocol.ts";
 
 function legacyDatabase(value?: string, version = 36): DatabaseSync {
@@ -60,6 +60,26 @@ test("the CodeRabbit upgrade never reruns on a database already past it", () => 
   try {
     upgradeDatabaseToCurrentSchema(db);
     assert.equal(storedShipping(db), optedOut);
+  } finally {
+    db.close();
+  }
+});
+
+test("a stored off value with an unknown property nested past SQLite's JSON depth limit still upgrades", () => {
+  // The Shipping schema ignores unknown properties, so this blob is valid settings that SQLite's
+  // own JSON functions refuse to read. The upgrade must not depend on them.
+  let deep: unknown = "leaf";
+  for (let level = 0; level < 1_200; level++) deep = { next: deep };
+  const before = { autoMerge: true, soakMinutes: 5, codeRabbitAutoResolve: false, legacyExtra: deep };
+  const db = legacyDatabase(JSON.stringify(before));
+  try {
+    assert.throws(() => db.prepare("SELECT json_type(value, '$.codeRabbitAutoResolve') FROM app_config").get(),
+      "the fixture really is past SQLite's limit");
+    upgradeDatabaseToCurrentSchema(db);
+    // Compared as text: a structural deep-equal would itself recurse 1,200 levels.
+    assert.equal(storedShipping(db), JSON.stringify({ ...before, codeRabbitAutoResolve: true }),
+      "the flag turns on and every other property, the unknown one included, is kept");
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
   } finally {
     db.close();
   }

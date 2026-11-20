@@ -34,8 +34,10 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // be a deliberate edit of this value, never a side effect of regenerating the oracle.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 416);
+  // Last deliberate change: `GET /api/shipping/config` reports `codeRabbitAutoResolve: true`,
+  // CodeRabbit follow-up's new shipped default.
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "a024968494352f725e6f719aabbb86cf9b06a3596e399f35704172ee0e9dab56");
+    "ebf5fd9c0674c1f6f9f7d67e474459e1f19403331e908be50a4814a3e35103e2");
 });
 
 function sourceFiles(dir: string): string[] {

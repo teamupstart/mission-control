@@ -10,6 +10,11 @@ searchable list; filter by name, description, keyword or id. Every click applies
 in every open window, with no Save button or restart. A refused write rolls back and shows an
 inline error. Preview features are off until enabled individually or through the master switch.
 
+**Codex resident native MCP** exposes [All native sources](residents.md#all-native-sources) in
+Codex resident profiles. Turning it off prevents new saves and launches in that mode. Existing
+runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
+**Pinned at launch** when the preview is off.
+
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
 off**, **Turn them on too**, or **Cancel**. Cancel and Escape write nothing. Turning the master
@@ -25,8 +30,7 @@ update channel.
 Declare flags in `src/shared/feature-flag-registry.ts`. It exports only `FEATURE_FLAGS` and
 `RETIRED_FEATURE_FLAG_IDS`, so a test build can substitute the data without replacing logic.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
-at most 64 characters. `FeatureFlagId` is derived from the tuple; an empty registry means
-there are no valid ids for production gates.
+at most 64 characters. `FeatureFlagId` is derived from the tuple.
 
 The `featureFlags` app_config entry stores `{ enableAll, overrides }`, defaulting to
 `{ enableAll: false, overrides: {} }`, with at most 512 boolean overrides. There is no database

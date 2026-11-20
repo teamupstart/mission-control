@@ -8,6 +8,8 @@ import {
   RESIDENT_PROFILE_SECTIONS,
   RESIDENT_PROFILE_SECTION_IDS,
   ResidentProfileRevisionRequestSchema,
+  type ResidentAgent,
+  type ResidentMcpNativeSources,
   type ResidentProfile,
   type ResidentProfileRevision,
   type ResidentProfileSectionId,
@@ -115,11 +117,19 @@ export function ResidentProfileEditor({
   }
   const conflict = newer && dirty && !archivedElsewhere ? newer : null;
 
-  const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void => {
-    setDraft((current) => ({ ...current, [id]: value }));
+  const editDraft = (edit: (current: ResidentProfileRevision) => ResidentProfileRevision): void => {
+    setDraft(edit);
     setDirty(true);
     setError(null);
   };
+  const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void =>
+    editDraft((current) => ({ ...current, [id]: value }));
+  const changeHarness = (agent: ResidentAgent, nativeSources: ResidentMcpNativeSources): void =>
+    editDraft((current) => ({
+      ...current,
+      execution: { agent, model: null, effort: null },
+      mcp: { ...current.mcp, nativeSources },
+    }));
 
   // Undefined is still loading; null is a failed read. Neither can verify an inherited cap.
   const [harnesses, setHarnesses] = useState<HarnessesConfig | null | undefined>(undefined);
@@ -344,7 +354,7 @@ export function ResidentProfileEditor({
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
             <p className="resident-section-blurb">{blurb}</p>
-            <Body draft={draft} update={update} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
+            <Body draft={draft} update={update} changeHarness={changeHarness} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
           </section>
         ))}
         {profile && <ResidentState key={profile.id} profileId={profile.id} />}

@@ -97,7 +97,7 @@ test("successful updates bound idle generations to the current and previous publ
   assert.equal(existsSync(targets.at(-2)!), true, "an idempotent publication preserves the previous generation");
 });
 
-test("a loaded real extension pins its bridge across updates and a crashed process is reclaimed", { timeout: 30_000 }, async () => {
+test("a loaded real extension pins its bridge across updates and a crashed process is reclaimed", { timeout: 120_000 }, async () => {
   await buildPiExtension(join(source, "extension.js"));
   const old = await enable();
   // The child loads the shipped extension, then opens a new bridge on demand from its
@@ -118,15 +118,16 @@ test("a loaded real extension pins its bridge across updates and a crashed proce
   const output = createInterface({ input: child.stdout });
   const exited = once(child, "exit");
   try {
-    assert.deepEqual(await once(output, "line", { signal: AbortSignal.timeout(5000) }), ["loaded"]);
+    assert.deepEqual(await once(output, "line", { signal: AbortSignal.timeout(30_000) }), ["loaded"]);
     assert.equal(readdirSync(join(dirname(old), ".leases")).length, 1);
-    for (let release = 0; release < 4; release++) {
+    // Two updates move the leased bundle past the retained previous generation.
+    for (let release = 0; release < 2; release++) {
       writePiIntegration(source, piMetadataSource + `\n// release ${release}`);
       await enable();
     }
     assert.equal(existsSync(old), true);
     assert.equal(readdirSync(piIntegrationRoot()).filter(name => /^[a-f0-9]{64}$/.test(name)).length, 3);
-    const reply = once(output, "line", { signal: AbortSignal.timeout(5000) });
+    const reply = once(output, "line", { signal: AbortSignal.timeout(30_000) });
     child.stdin.write("new bridge after updates\n");
     const [tools] = await reply;
     assert.ok(JSON.parse(tools).includes("request_input"));

@@ -4409,6 +4409,7 @@ export class WorkflowManager {
           const refresh = this.inspectorFeedbackRefreshes.get(runId);
           // Failure releases the read slot, not the packet. A later successful read or
           // positively newer poll may lift the hold; queued cached signals cannot.
+          // Success clears it before its queued observation runs, even in the same millisecond.
           if (!keepRefreshHold) this.inspectorFeedbackRefreshes.delete(runId);
           else if (refresh) refresh.pending = false;
         }

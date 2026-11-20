@@ -2548,6 +2548,64 @@ test("session return refreshes unsent Inspector feedback once and holds queued s
   }
 });
 
+for (const failedFirst of [false, true]) {
+  for (const newerHead of [false, true]) {
+    test(`successful feedback refresh accepts the same millisecond: failedFirst=${failedFirst}, newer=${newerHead}`, async (t) => {
+      let reads = 0;
+      let observedAt = 0;
+      const seeded = await seed({ policy: "inspector_only", deliveryMode: "live",
+        reobservePullRequest: async (prKey) => {
+          reads += 1;
+          if (failedFirst && reads === 1) return { ok: false, error: "scripted failure" };
+          return reobserveInspectorPr(seeded.registry, prKey, observedAt);
+        },
+      });
+      try {
+        const { packet, session } = await blockUnsentFeedback(seeded);
+        observedAt = Date.now();
+        // The request boundary, cached observation and successful read share one tick.
+        t.mock.method(Date, "now", () => observedAt);
+        const head = newerHead ? "same-tick-new-head" : seeded.head;
+        if (newerHead) {
+          db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(seeded.key);
+        }
+        updateInspectorPr(seeded.key, {
+          observedHeadSha: seeded.head, observedState: "OPEN", observedAt,
+          headSha: head, cleanReviewHeadSha: newerHead ? head : null,
+        }, observedAt);
+        scriptGitHub("OPEN", head);
+        session.state = "idle";
+        if (failedFirst) {
+          recheck(seeded, "same-tick-failure");
+          await settleGate(seeded);
+          signal(seeded, seeded.head, observedAt);
+          await settleGate(seeded);
+          assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+          assert.equal(seeded.store.getDelivery(packet.id)!.state, "prepared");
+          assert.deepEqual(seeded.injected, []);
+        }
+        recheck(seeded, "same-tick-success");
+        await settleGate(seeded);
+        assert.equal(reads, failedFirst ? 2 : 1);
+        assert.equal(getInspectorPr(seeded.key)!.observedAt, observedAt);
+        if (newerHead) {
+          assert.equal(phaseOf(seeded), "completed/complete");
+          assert.equal(seeded.store.getDelivery(packet.id)!.state, "cancelled");
+          assert.equal(seeded.store.getDelivery(packet.id)!.deliveredAt, null);
+          assert.deepEqual(seeded.injected, []);
+        } else {
+          assert.equal(seeded.store.getDelivery(packet.id)!.state, "delivered");
+          assert.deepEqual(seeded.injected, [packet.payload]);
+        }
+      } finally {
+        t.mock.restoreAll();
+        scriptGitHub(null);
+        await seeded.manager.stop();
+      }
+    });
+  }
+}
+
 for (const trigger of ["session", "recheck"] as const) {
   for (const recovery of ["retry-same-head", "poll-new-head"] as const) {
     test(`failed feedback refresh holds queued signals: ${trigger}, ${recovery}`, async () => {

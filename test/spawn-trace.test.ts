@@ -80,6 +80,37 @@ test("a compound shell line around git counts its shell; a lone command does not
   assert.equal(report.processTotal, 2);
 });
 
+test("a shell line that execs git is git's one process, not a shell beside it", () => {
+  // `exec` replaces the shell with git, so trace2's count of that git is the whole of it.
+  const { spawns, report } = traced(`
+    import cp from "node:child_process";
+    cp.execSync("exec git --version");
+  `);
+  assert.deepEqual(spawns.map((spawn) => spawn.cmd), ["git"]);
+  assert.equal(report.processTotalParts.nonGitSpawns, 0);
+});
+
+test("the report labels a shell git started by its git command, never by the child's text", () => {
+  const trace = mkdtempSync(join(tmpdir(), "mission-spawn-report-"));
+  try {
+    mkdirSync(join(trace, "trace2"));
+    writeFileSync(join(trace, "1.jsonl"), `${JSON.stringify({ event: "start", role: "worker", file: "t", pid: 1, ppid: 0 })}\n`);
+    writeFileSync(join(trace, "trace2", "a"), [
+      { event: "start", argv: ["/usr/bin/git", "fetch"] },
+      { event: "cmd_name", name: "fetch" },
+      { event: "child_start", use_shell: true, argv: ["SECRET_TOKEN=secret-in-child some-helper 'arg'"] },
+    ].map((event) => JSON.stringify(event)).join("\n"));
+    const output = execFileSync(process.execPath, [join(root, "scripts/test-spawn-report.mjs"), trace], { encoding: "utf8" });
+    const report = JSON.parse(execFileSync(process.execPath, [join(root, "scripts/test-spawn-report.mjs"), trace, "--json"], { encoding: "utf8" }));
+    for (const text of [output, JSON.stringify(report)]) {
+      assert.ok(!text.includes("secret-in-child") && !text.includes("SECRET_TOKEN"), text);
+    }
+    assert.deepEqual(report.shellsStartedByGitFor, [["sh -c from git fetch", 1]]);
+  } finally {
+    rmSync(trace, { recursive: true, force: true });
+  }
+});
+
 test("a call Node rejects before spawning is not a launch", () => {
   const { spawns, report } = traced(`
     import cp from "node:child_process";

@@ -101,6 +101,32 @@ test("a committed relative symlink in a cached tree stays relative in every copy
   assert.notEqual(copy.repo, first.repo);
 });
 
+test("a cached copy rewrites git's metadata only, never tracked files named like it", (t) => {
+  const roots: string[] = [];
+  t.after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
+  const build = () => {
+    const root = mkdtempSync(join(tmpdir(), "mission-git-fixture-metadata-"));
+    roots.push(root);
+    return cachedGitTree("tracked-config-and-gitdir", root, (dir) => {
+      const origin = join(dir, "origin");
+      // Tracked content that happens to share git's file names and quote the build root.
+      seedGitRepo(origin, { files: { "config": `${dir}\n`, "sub/gitdir": `${dir}\n` }, message: "metadata-like files" });
+      const clone = join(dir, "clone");
+      execFileSync("git", ["clone", "-q", origin, clone], { stdio: "pipe" });
+      return { builtAt: dir, origin, clone };
+    });
+  };
+  const first = build();
+  const copy = build();
+  for (const repo of [copy.origin, copy.clone]) {
+    assert.equal(readFileSync(join(repo, "config"), "utf8"), `${first.builtAt}\n`, "tracked content is left as committed");
+    assert.equal(readFileSync(join(repo, "sub/gitdir"), "utf8"), `${first.builtAt}\n`);
+    assert.equal(gitIn(repo, "status", "--porcelain"), "");
+  }
+  // While git's own record of the remote is re-rooted onto this copy.
+  assert.equal(gitIn(copy.clone, "remote", "get-url", "origin"), copy.origin);
+});
+
 test("fixtures still work when git defaults new repositories to reftable", { skip: !supportsReftable() }, (t) => {
   // A global `init.defaultRefFormat=reftable` leaves no loose branch ref to read the sha from.
   const root = mkdtempSync(join(tmpdir(), "mission-git-fixture-reftable-"));

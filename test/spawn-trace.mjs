@@ -126,7 +126,10 @@ if (dir) {
       // split is how a quoted value would leak. Only a plain leading program name is kept; an
       // assignment (`TOKEN=... git`) or anything quoted is recorded as the shell. With
       // `shell: true`, Node joins `command` and its arguments into exactly such a line.
-      const first = String(command).trim().split(/\s+/)[0] ?? "";
+      // A leading `exec` replaces the shell with the program after it, so that program is the
+      // one process this line starts - and the one trace2 counts when it is git.
+      const words = String(command).trim().split(/\s+/);
+      const first = (words[0] === "exec" ? words[1] : words[0]) ?? "";
       cmd = /^[\w./+-]+$/.test(first) ? basename(first) : "(shell)";
     } else {
       cmd = basename(String(api === "fork" ? process.execPath : command));

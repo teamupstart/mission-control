@@ -133,8 +133,10 @@ if (existsSync(trace2Dir)) {
       } else if (event.event === "cmd_name") command = event.name;
       else if (event.event === "def_param" && event.param === "MISSION_TEST_SPAWN_TRACE_FILE") file = event.value;
       else if (event.event === "child_start" && event.use_shell) {
+        // Labelled by the git command that started it, never by the child's own text: that is a
+        // command line from a sensitive trace2 file, and its first word can be `TOKEN=...`.
         const child = String((event.argv ?? [])[0] ?? "");
-        if (SHELL_METACHARACTERS.test(child)) bump(t2Shells, child.split(/\s/)[0] || "?");
+        if (SHELL_METACHARACTERS.test(child)) bump(t2Shells, `sh -c from git ${command ?? "(unknown)"}`);
       }
     }
     if (!sawStart) continue;

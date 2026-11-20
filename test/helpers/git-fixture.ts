@@ -192,18 +192,28 @@ export function seedGitRepo(dir: string, seed: RepoSeed = {}): string {
  * The files in which git records an absolute path: a remote's URL (`config`), and the two
  * halves of a linked worktree's link - its `.git` file, and the `gitdir` its repository keeps.
  */
-function isPathBearing(name: string, isFile: boolean): boolean {
-  return isFile && (name === "config" || name === "gitdir" || name === ".git");
+function isPathBearing(name: string, isFile: boolean, inGitDir: boolean): boolean {
+  if (!isFile) return false;
+  // `config` and `gitdir` only inside a git directory: a tracked file of the same name is the
+  // test's content, and rewriting it would dirty a checkout the first build left clean. A `.git`
+  // file is always git's own - a worktree cannot track one.
+  return name === ".git" || (inGitDir && (name === "config" || name === "gitdir"));
+}
+
+/** Whether `dir` is a bare repository's git directory: HEAD and objects at its top. */
+function isBareGitDir(dir: string): boolean {
+  return existsSync(join(dir, "HEAD")) && existsSync(join(dir, "objects"));
 }
 
 /** Every working tree under `root`: each directory holding a `.git`, file or directory. */
-function rerootTree(root: string, from: string, to: string, worktrees: string[] = []): string[] {
+function rerootTree(root: string, from: string, to: string, worktrees: string[] = [], inGitDir = false): string[] {
+  const gitDir = inGitDir || isBareGitDir(root);
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === ".git") worktrees.push(root);
-      if (entry.name !== "objects") rerootTree(path, from, to, worktrees);
-    } else if (isPathBearing(entry.name, entry.isFile())) {
+      if (entry.name !== "objects") rerootTree(path, from, to, worktrees, gitDir || entry.name === ".git");
+    } else if (isPathBearing(entry.name, entry.isFile(), gitDir)) {
       if (entry.name === ".git") worktrees.push(root);
       const text = readFileSync(path, "utf8");
       if (text.includes(from)) writeFileSync(path, text.split(from).join(to));

@@ -68,7 +68,8 @@ test("schemas bound keys and entries while accepting future ids", () => {
   assert.equal(FeatureFlagIntentSchema.safeParse({ kind: "master", enabled: "true" }).success, false);
 });
 test("shipped registry is data-only, declares only headless-mode, and is disjoint from append-only tombstones", () => {
-  assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "RETIRED_FEATURE_FLAG_IDS"]);
+  assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS"]);
+  assert.equal(registry.HEADLESS_MODE_FLAG_ID, registry.FEATURE_FLAGS[0].id);
   assert.deepEqual(registry.FEATURE_FLAGS, [{
     id: "headless-mode",
     label: "Headless mode",

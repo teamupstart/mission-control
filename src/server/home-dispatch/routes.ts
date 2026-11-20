@@ -1,5 +1,5 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { HEADLESS_MODE_FLAG_ID } from "@shared/headless-mode-flag.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { checkToken } from "../auth.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { answersHandler } from "./answers.ts";

@@ -22,8 +22,10 @@ update channel.
 
 ## Definition and resolution
 
-Declare flags in `src/shared/feature-flag-registry.ts`. It exports only `FEATURE_FLAGS` and
-`RETIRED_FEATURE_FLAG_IDS`, so a test build can substitute the data without replacing logic.
+Declare flags in `src/shared/feature-flag-registry.ts`. It exports `FEATURE_FLAGS`,
+`RETIRED_FEATURE_FLAG_IDS` and one `<FLAG>_ID` constant for each flag whose gates need to name it
+(today `HEADLESS_MODE_FLAG_ID`), so a gate imports the id instead of respelling it. It holds data
+only, so a test build can substitute it without replacing logic; a substitute keeps those constants.
 Each definition has `id`, `label`, `description`, `stage` and `keywords`. An id is kebab-case,
 at most 64 characters. `FeatureFlagId` is derived from the tuple; an empty registry means
 there are no valid ids for production gates.

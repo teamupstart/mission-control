@@ -1,5 +1,7 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
-import { HEADLESS_MODE_FLAG_ID } from "./headless-mode-flag.ts";
+
+/** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
+export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 
 export const FEATURE_FLAGS = [
   {

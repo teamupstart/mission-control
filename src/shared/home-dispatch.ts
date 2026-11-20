@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { HEADLESS_MODE_FLAG_ID } from "./headless-mode-flag.ts";
+import { HEADLESS_MODE_FLAG_ID } from "./feature-flag-registry.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS } from "./types.ts";
 import { WORKFLOW_RUN_STATUSES } from "./workflow.ts";
 import type { ResidentLoopState } from "./residents.ts";
@@ -13,7 +13,7 @@ import type { ResidentLoopState } from "./residents.ts";
  * optional, and lands in its own `contract:` commit. Browser safe: no `node:` imports.
  */
 
-/** The preview flag that gates every surface in this file; `headless-mode-flag.ts` owns its id. */
+/** The preview flag that gates every surface in this file; `feature-flag-registry.ts` owns its id. */
 export { HEADLESS_MODE_FLAG_ID };
 
 /** Largest chat message `POST /dispatch/tasks/{taskId}/send` accepts (7.23). */

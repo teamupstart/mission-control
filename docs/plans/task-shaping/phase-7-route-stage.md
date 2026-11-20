@@ -43,6 +43,10 @@ harness, and routing for work that does not go through dispatch.
   a session settles idle. It already carries rows the daemon wrote, inserted with their stamp
   in one transaction and recorded as `harness` authorship.
 - **Workflow stages.** A workflow can run a skill itself, as a session-action stage.
+- **Foreman's wrap-up.** The session's queue records it, through `markWrapupAsked` and
+  `setWrapupAnswer` in `src/server/queue.ts`. Foreman's automatic wrap-up sets the answer
+  after its instruction lands, the Ship it? card sets the person's, and a skipped wrap-up
+  sets a marker of its own.
 - **Turn one.** FR-05's pull request #1565 wraps `composeTurnOne` in `appendRepoTaskSkills`,
   which appends `.claude/skills/{kind}/SKILL.md` last. Its `resolveRepoTaskSkills` says which
   attached repositories contribute one.
@@ -54,8 +58,8 @@ harness, and routing for work that does not go through dispatch.
 
 1. **Registry.** Append `route` to `SHAPING_STAGES`. Add `SHAPING_LIFECYCLE_POINTS`
    (`task-start`, `during`, `after-work`), `SHAPING_SKILL_STATES` (`announced`, `superseded`,
-   `unavailable`, `unsupported`, `dropped`), `SHAPING_PROMPT_STATES` (`queued`, `delivered`,
-   `skipped`, `not_delivered`) and their retired tuples.
+   `unavailable`, `unsupported`, `dropped`), `SHAPING_PROMPT_STATES` (`held`, `queued`,
+   `delivered`, `skipped`, `not_delivered`) and their retired tuples.
 2. **Result schema.** `ShapingRouteResultSchema` in `src/shared/shaping.ts`:
    `{ version?, skills: [{ name, lifecycle_point, reason_id }], truncated?, degraded?, notes? }`,
    at most 10 skills, unknown fields ignored. `name` is 1 to 64 lower-case letters, digits,
@@ -106,15 +110,18 @@ harness, and routing for work that does not go through dispatch.
    of them ends with their names. With no line there is no section.
 6. **Turn-one order.** Kind contract, task context, skills for this task, repository lessons
    (FR-06, when built), and FR-05's repository task skill last. Keep `appendRepoTaskSkills`
-   outermost, and pass `repositoryTaskSkills` from `resolveRepoTaskSkills` when that reader is
-   on the branch. Without it the list is empty.
+   outermost, and pass `repositoryTaskSkills` from `resolveRepoTaskSkills`. That reader may
+   merge before or after this phase, and whichever lands second does the wiring. The order
+   test holds it to that: whenever a repository's own task skill is in turn one, a routed
+   skill of the same name has no line. It passes while the reader is absent, and fails if
+   the reader lands without the wiring.
 7. **After-work prompt.** `promptAfterWorkSkills(sessionId)` in
    `src/server/shaping/after-work.ts` has two callers: a new engine callback,
    `onSubmissionActivated`, wired in `WorkflowManager` beside the others, and `claimCompletion`
    when it answers `no_binding` (D16). It does nothing while the flag is off, when the task's
-   `currentShaping` record does not name this session, or when a row for this session exists.
+   `currentShaping` record does not name this session, or when a row for this task and session exists.
    That makes it once per launch: a repair round, a resubmit, a restart or the other caller
-   never repeat it.
+   never repeat it, and a later launch of the task into a new session gets its own.
    - **Which skills.** The `announced` skills whose point is `after-work`, less any that the
      task's armed workflow runs itself as a session-action stage.
    - **Packet.** `renderSessionAction`, with the first skill's invocation as its first line:
@@ -122,15 +129,22 @@ harness, and routing for work that does not go through dispatch.
      that skill routing chose it at dispatch and that the work is complete. Further skills
      follow as invocation lines, to run in order.
    - **Delivery.** One daemon-written turn in `PendingTurnManager`, inserted in the same
-     transaction as its `queued` row. It is delivered when the session settles idle, is never
-     steered into a running turn, and survives a restart. On a task with no workflow,
-     Foreman's wrap-up therefore runs first. The row ends `delivered`, `not_delivered` with a
-     reason (the session ended, or no skill resolved), or `skipped` when no skill was left.
+     transaction that marks its row `queued`. It is delivered when the session settles idle,
+     is never steered into a running turn, and survives a restart. The row ends `delivered`,
+     `not_delivered` with a reason (the session ended, or no skill resolved), or `skipped`
+     when no skill was left.
+   - **After Foreman's wrap-up.** On a task with no workflow the session is already idle at
+     the claim, so idle delivery alone would let the prompt overtake the wrap-up. The
+     `no_binding` caller therefore writes the row `held` and inserts no turn. The turn is
+     inserted when the session's wrap-up answer is recorded, by any of the three writers
+     above, so the wrap-up is in the session first. An unanswered card keeps it held.
    - **Never.** It does not wait for the skill, hold the review, or ask anyone first.
 8. **Record.** The summary gains `skills`, each `{ name, lifecyclePoint, reasonId, shaper,
    repositories, state, verified }`, written by Phase 2's one commit function. Prompt rows
-   live in a new table, `task_skill_prompts (task_id primary key, session_id, state, reason,
-   skills, created_at, delivered_at)`, re-keyed on resume where Phase 2 re-keys its text row.
+   live in a new table, `task_skill_prompts (task_id, session_id, state, reason, skills,
+   created_at, delivered_at)`, keyed by task and session so a second launch of a task never
+   collides with the first launch's row, and re-keyed on resume where Phase 2 re-keys its
+   text row.
    Task reads attach the row as `shaping.afterWork` while it names the record's session.
    `tasks.shaping` keeps one writer.
 9. **Visibility.** The one-line `summary` counts and names skills, as in
@@ -169,13 +183,17 @@ harness, and routing for work that does not go through dispatch.
   with no time left, a degraded reply, a switched-off catalog skill, a name outside the
   catalog, the reserve under a full budget, and no reserve without a router.
 - `test/dispatcher-shaping.test.ts`: the full turn-one order over every part on the branch,
-  and byte-identical output with no router.
+  no line for a routed skill whenever a repository's own task skill of that name is in turn
+  one, and byte-identical output with no router.
 - `test/shaping-after-work.test.ts`: both callers, once per launch across a repair round and
-  a restart, the workflow-stage skip, the flag off, a record naming another session, delivery
-  only at idle, a session that ended, and Foreman's wrap-up running first.
+  a restart, two launches of one task into different sessions, each prompted once, the
+  workflow-stage skip, the flag off, a record naming another session, delivery only at idle,
+  and a session that ended. On a task with no workflow: a session already idle at the claim
+  gets no turn until the wrap-up answer is recorded, the wrap-up precedes the prompt in the
+  transcript, a skipped wrap-up releases it, and an unanswered card holds it.
 - Transport tests: the folded line and the fourth argument, three arguments for
   `route_skills`, the scrub, and one connection for a selector and a router.
-- A database test for the table on an upgraded database and its re-key, `renderToStaticMarkup`
+- A database test for the table on an upgraded database, its key and its re-key, `renderToStaticMarkup`
   tests for the chip and viewer states, and HTTP tests for task reads and the dry run.
 - `e2e/specs/task-shaping-route.spec.ts`, with fake agents and `fake-shaper.mjs` in a `route`
   mode: the transcript's first user turn holds the section and the routed skill's line; after
@@ -189,7 +207,8 @@ harness, and routing for work that does not go through dispatch.
 - The activation proof holds: the route record, the section in turn one and the after-work
   prompt in the transcript, each shown by the spec above.
 - A router that fails, is slow or returns nonsense never stops a launch, and shows `degraded`.
-- An after-work prompt is sent at most once per launch and never interrupts a turn.
+- An after-work prompt is sent at most once per launch, never interrupts a turn, and on a
+  task with no workflow never precedes Foreman's wrap-up.
 - The turn-one order test passes, with FR-05's block last.
 - No model tokens are spent, and no company name appears in code, tests or docs.
 
@@ -210,3 +229,6 @@ line: keep both stable.
 - Phase 5: three small edits to its files, in step 10.
 - Phases 4 and 6: no shared files. A discovered manifest may be a router.
 - Complete-set audit: D12 to D16 are owned here, and D17 by Phases 1 and 5.
+- Review of pull request #1581: the prompt row is keyed by task and session, the prompt
+  follows Foreman's wrap-up through an explicit hold, and the order test enforces D14
+  whichever of this phase and FR-05's reader lands second.

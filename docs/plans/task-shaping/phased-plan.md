@@ -173,8 +173,8 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | MCP context delivery | 1 (schema), 5 (behaviour) | `contextDelivery` is `folded` or `argument`. `folded` calls the tool with exactly three arguments, `{ task, repo, version? }`, with every field of `context` except local paths rendered into `task` by one pure function. `argument` calls it with four, `{ task, repo, version?, context }`. Both deliver the complete collected input, and no mode omits it. |
 | Repository slots | 1 (fields), 5 (folded line) | Each `context.repositories` entry has a `slot`, `repo-01` for the primary and then in attachment order. `context.target` is the slot a call is about (D17). |
 | Route | 7 | `ShapingRouteResultSchema`: `{ version?, skills: [{ name, lifecycle_point, reason_id }], truncated?, degraded?, notes? }`. A route request adds `context.guidance`, `{ shaper, id }` per selected entry. The summary gains `skills`, and the engine's `section` ends with "Skills for this task". |
-| After-work prompt | 7 | `promptAfterWorkSkills(sessionId)`, called when a submission is activated and when a completion claim finds no binding. Once per launch. Table `task_skill_prompts`, read as `shaping.afterWork`. |
-| Turn-one order | 2, then 7 | Kind contract, task context, skills for this task, repository lessons (FR-06), FR-05's repository task skill last |
+| After-work prompt | 7 | `promptAfterWorkSkills(sessionId)`, called when a submission is activated and when a completion claim finds no binding, where the prompt is held until Foreman's wrap-up is answered. Once per launch. Table `task_skill_prompts`, keyed by task and session, read as `shaping.afterWork`. |
+| Turn-one order | 2, then 7 | Kind contract, task context, skills for this task, repository lessons (FR-06), FR-05's repository task skill last. Whichever of Phase 7 and FR-05's reader merges second wires `repositoryTaskSkills` (D14), and Phase 7's order test fails until it does. |
 | Guide | 1 | `docs/task-shaping.md`, one section per phase |
 
 ## Who owns each decision

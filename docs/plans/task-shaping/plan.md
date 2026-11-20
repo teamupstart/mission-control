@@ -57,7 +57,7 @@ them, except D17, which Phases 1 and 5 own.
 | D13 | Guidance ids for the router (FR-04 question 6) | Passed as `context.guidance`, on every transport |
 | D14 | A routed skill and a repository task skill for one kind (FR-04 question 4) | The repository's skill wins |
 | D15 | Which routed skill names are announced | A skill from Mission Control's catalog, checked. Any other name as given, marked not verified. |
-| D16 | When the after-work prompt is sent | When the after-work step starts, or when Foreman judges the work complete on a task with no after-work workflow. Once per launch. |
+| D16 | When the after-work prompt is sent | When the after-work step starts, or when Foreman judges the work complete on a task with no after-work workflow, after Foreman's wrap-up. Once per launch. |
 | D17 | Telling attached repositories apart | Each has a `slot`, and `context.target` names the one a call is about |
 | Proof | That routing took effect | The route record, and a browser test with a fake router and a fake agent |
 
@@ -677,7 +677,8 @@ its own, because a routed skill becomes an invocation line, not a context entry.
 - **After the work.** Mission Control itself prompts the session to run the skills routed for
   after the work: when the after-work step starts, or when Foreman judges the work complete on
   a task with no after-work workflow (D16). Once per launch, delivered when the session is
-  idle, never holding the review.
+  idle, never holding the review. With no workflow it is held until Foreman's wrap-up has
+  been sent, so the wrap-up always goes first.
 - **Record.** Routed skills and the prompt are part of the task's `shaping` record.
 
 `phase-7-route-stage.md` states the rules.

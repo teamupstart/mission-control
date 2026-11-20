@@ -209,7 +209,9 @@ mapping and the record. A new transport cannot change those semantics.
 - **`mcp`.** Config is `{ server, tool, contextDelivery }`. `server` is
   `{ type: "stdio", command, args, env }` or `{ type: "http", url, headers }`. The
   arguments the tool is called with depend on `contextDelivery`. Either way the transport
-  delivers the complete collected input, and there is no mode that omits it.
+  delivers the complete collected input, and there is no mode that omits it. Every message
+  from the server is capped at 256 KiB while it is received, as an `http` body is, so an
+  oversized reply is `failed` before it is parsed.
   - `folded` (default). The tool is called with exactly three arguments,
     `{ task, repo: { name, facts?, summary? }, version? }`. That is the FR-02 `get_guidance`
     input, so an existing tool is called unchanged. `task` is the operator's prompt followed
@@ -256,7 +258,7 @@ The feature-flag pattern, applied to shapers.
 | `app_config.featureFlags`, bounded, no migration | `app_config.shaping`: `{ caller, limits, shapers[], overrides, order }`, at most 32 shapers, with its own settings backup domain |
 | `featureEnabled`, `requireFeature`, `onFeatureFlagsChanged` | `src/server/shaping/`: `shapeTask` (the only caller of transports), `getShapingConfig`, `applyShapingIntent`, `onShapingConfigChanged` |
 | `GET` and `PUT /api/feature-flags` with an intent union | `GET` and `PUT /api/shaping` with an intent union: `upsert`, `remove`, `enable`, `reorder`, `settings` |
-| `feature_flags` event and snapshot field | `shaping_config` event and snapshot field. Per-task results travel on `task_upsert`. |
+| `feature_flags` event and snapshot field | `shaping_config` event and snapshot field, both sent only while the flag is on. Per-task results travel on `task_upsert`. |
 | Unknown ids ignored on read, preserved on write | A stored shaper whose stage or transport this build does not know is kept on every write, never resolved or called, and listed as unsupported. The parsing rule is under "Stored shapers this build does not understand". |
 | A stored choice wins over the default | A stored on or off for a shaper id wins over its manifest, for registered and discovered shapers alike |
 | Daemon and dashboard share one resolver | `resolveShapers(config, discovered, taskInput)` decides which shapers apply |
@@ -313,7 +315,10 @@ flag overrides are keyed by string and not by the id union.
   creates and edits only shapers it understands, and answers 400 otherwise. Every intent
   rewrites the list from the envelopes, so every other entry, unsupported ones and their
   unknown fields included, is carried through unchanged. `remove` works on any id, and so
-  does switching an entry off. Switching an unsupported entry on is refused.
+  does switching an entry off. Switching an unsupported entry on is refused. An `upsert`
+  also stores off for its id in the same write, so writing a definition never switches it
+  on, and a stored on left by a discovered shaper with that id does not carry over to the
+  registered definition that now shadows it.
 - **Manifests in the folder** are never written by Mission Control, so there is nothing to
   preserve. One whose stage or transport is unknown fails the strict schema and is listed as
   invalid, with that reason.
@@ -323,7 +328,8 @@ flag overrides are keyed by string and not by the id union.
 There are two ways in (D4) and one list.
 
 **Registered.** In **Settings > Task shaping**, or with `PUT /api/shaping`. The shaper is
-stored in `app_config.shaping` and is off until the operator enables it. A manifest can be
+stored in `app_config.shaping` and is off until the operator enables it, because every
+`upsert` stores off for its id. A manifest can be
 imported: Settings shows exactly which command will run or which URL will be called and what
 is sent to it, and stores it.
 

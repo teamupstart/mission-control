@@ -60,8 +60,9 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    `ShapingConfigSchema` holds a list of envelopes, at most 32, with defaults (5 s, 10 s,
    16 KiB, 32 KiB) and maxima (30 s, 60 s, 64 KiB). `ShapingIntentSchema`: `upsert`, `remove`,
    `enable`, `reorder`, `settings`. `applyShapingIntent` accepts an `upsert` only when it
-   passes the strict schema, refuses to switch an unsupported entry on, and carries every
-   other entry through unchanged, unknown fields included. The pure functions each take their
+   passes the strict schema, and also stores off for that id in `overrides` in the same
+   write, so writing a definition never switches it on. It refuses to switch an unsupported
+   entry on, and carries every other entry through unchanged, unknown fields included. The pure functions each take their
    definitions as arguments so tests inject their own. `allocateBudget` likewise takes the
    total it may fill as an argument and reads no config, so a later step outside shaping can
    call it with what the shaping stages left (decision 12 in `phased-plan.md`).
@@ -108,14 +109,17 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 - No migration. One `app_config` key, optional in older snapshots.
 - A stored on or off for a shaper id lives in `overrides`. `order` lists ids. Both exist now
   so Phase 4 changes no schema.
-- With the flag off the three routes answer 404 and nothing reads the config.
+- With the flag off the three routes answer 404 and nothing reads the config. Phase 3's
+  snapshot field and event follow the same gate.
 
 ## Tests and verification
 
 - `test/shaping.test.ts`: every pure function and every intent; the enablement table in
   `plan.md`, row for row; an entry with an unknown stage or transport id that survives a
   parse and every intent unchanged, is never resolved, cannot be switched on, and cannot be
-  written by `upsert`; the id rules; no `node:` import in the shared modules.
+  written by `upsert`; an `upsert` over an id whose stored choice is on, left there by a
+  discovered shaper, which leaves it off; the id rules; no `node:` import in the shared
+  modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
   timeouts and the deadline, partial results, each outcome, and a `redacted` mark carried
   into the summary from a data reply and from a failed one.
@@ -172,5 +176,8 @@ reshape them. They replace the contents of their own transport file, `discovery.
 - Review of the plan pull request, round 4, 2026-11-19: `TaskShaping` declares an optional
   `sessionId` now, so Phase 2 can stamp each record with its session without reshaping a
   Phase 1 type afterwards.
+- Review of the plan pull request, round 5, 2026-11-19: an `upsert` now also stores off for
+  its id. Overrides are keyed by id, so a registered definition imported over the id of a
+  discovered shaper the operator had switched on would otherwise have inherited that on.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

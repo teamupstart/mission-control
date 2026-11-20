@@ -82,7 +82,10 @@ Each phase document cites the findings it depends on. The ones that shaped the s
     its size and modification time (Phase 4). The built-in gatherer verifies containment and
     size on the file it opened, through a non-blocking open, not on a path checked beforehand
     (Phase 6). Egress follows the rule resident MCP servers already use: HTTPS, except plain
-    HTTP to loopback (Phase 5).
+    HTTP to loopback (Phase 5). An `upsert` stores off for its id, so importing over an id
+    whose discovered shaper was on does not switch the import on (Phases 1 and 3). Every MCP
+    message is capped at 256 KiB while it is received (Phase 5). The shaping snapshot field
+    and event are sent only while the flag is on (Phase 3).
 
 ## Size and phase count
 
@@ -139,12 +142,12 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Schemas and pure logic | 1 | `src/shared/shaping.ts`: `ShapingRequestSchema`, `ShapingResultSchema`, `StoredShaperSchema` (the stored envelope), `ShaperSchema` (the strict definition), `classifyShaper`, `ShaperManifestSchema`, `ShapingConfigSchema` (`caller`, `limits`, `shapers`, `overrides`, `order`), `ShapingIntentSchema`, `TaskShaping`, `resolveShapers(config, discovered, input)`, `applyShapingIntent`, `allocateBudget`, `composeShapingSection`, `summariseShaping` |
 | Engine | 1 | `shapeTask(input)` in `src/server/shaping/engine.ts` resolves to `{ summary, section }`. It never throws. `summary` is null and `section` is empty when no shaper applied. |
 | Transport | 1 | `call(request, shaper, ctx)` resolves to `{ kind: "data", data, redacted? }` or `{ kind: "failed" or "timed_out" or "unavailable", reason, redacted? }`. `ctx` carries the deadline, a signal and a per-run scope. One file per transport in `src/server/shaping/transports/`. `redacted` is true when the transport removed a resolved `{env:NAME}` value from the data or from the reason. |
-| Enablement | 1 | In `resolveShapers` only. A stored choice in `overrides`, on or off, always wins. With no stored choice, a registered shaper is off, and a discovered one runs unless its manifest says `"enabled": false`. |
+| Enablement | 1 | In `resolveShapers` only. A stored choice in `overrides`, on or off, always wins. With no stored choice, a registered shaper is off, and a discovered one runs unless its manifest says `"enabled": false`. An `upsert` stores off for its id in the same write, so writing a definition never switches it on. |
 | Context budget | 1 | One total, `limits.totalBytes`, filled in pipeline order by `allocateBudget`, which takes the total it may fill as an argument and reads no config. The summary's `bytes` is what the shaping stages used. A later step outside shaping, which is FR-06 lesson selection, is allocated last, from the remainder. |
 | Unknown ids | 1 | The config stores `StoredShaperSchema` envelopes. An entry that fails the strict `ShaperSchema` is unsupported: never resolved or called, never switched on, and carried through every write unchanged. `upsert` accepts only a strict definition. |
 | HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
 | Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping`. The record describes the latest launch that reached a worker. It is committed in one transaction when turn one has been handed to the worker: the summary is set, null when no shaper applied, and the text replaced, deleted when the section is empty. A dispatch that fails earlier writes nothing. Each record names the session it was delivered to (`sessionId`), and readers show it only for that session. |
-| Event | 3 | `shaping_config`, and the snapshot field `shaping` |
+| Event | 3 | `shaping_config`, and the snapshot field `shaping`, both sent only while the flag is on. Turning the flag on emits the config to open windows, and turning it off emits a cleared one. |
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
 | Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts`. Every scan reads and hashes every manifest, and only parsing is cached. |
 | References | 5 | `resolveReferences`, `referenceStatus` and `scrubResolved` in `src/server/shaping/references.ts`. Every reply and reason is scrubbed of resolved `{env:NAME}` values before it reaches the engine. |

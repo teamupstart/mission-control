@@ -24,7 +24,9 @@ identity, stored secrets.
 
 - **SDK.** `@modelcontextprotocol/sdk` provides `Client`, `StdioClientTransport` and
   `StreamableHTTPClientTransport`. The last is already used in
-  `src/server/residents/mcp-launcher.ts`.
+  `src/server/residents/mcp-launcher.ts`. In SDK 1.32, `StdioClientTransport` takes a
+  `maxBufferSize` (10 MiB by default) and reports an overflow through `onerror`.
+  `StreamableHTTPClientTransport` has no size limit, and takes a `fetch` option.
 - **Egress.** That file exports `fetchOnOrigin`, which follows redirects by hand and refuses to
   leave the origin. `plaintextCredentialProblem` and `residentMcpLoopbackHost` in
   `src/shared/resident-mcp.ts` state the rule: HTTPS, except plain HTTP to loopback. Reuse
@@ -81,6 +83,14 @@ identity, stored secrets.
    pin its text, and a second test that walks the context schema fails when a field has no
    line in the block. Read the reply from the structured content when it is an object, otherwise from the first text content parsed as
    JSON. A tool error is `failed`, with its text, bounded.
+
+   **Size cap.** Every message from the server is capped at 256 KiB while it is received,
+   the cap an `http` body has. On stdio, pass `maxBufferSize` of 256 KiB to
+   `StdioClientTransport`. Over streamable HTTP, hand it a `fetch` that stops reading a
+   response body, or one event of an event stream, at the cap and aborts the request.
+   Either way the overflow reaches `onerror`, and the call answers `failed` at once, with a
+   reason that names the cap, instead of waiting for the deadline. The server is closed, and
+   nothing over the cap is parsed.
 5. **Reply field.** `GET /api/shaping` returns `references` from `referenceStatus`.
 6. **Docs.** Fill "Remote shapers" in `docs/task-shaping.md`, with a worked example that
    registers a `get_guidance` tool under placeholder names. Add references and the daemon's
@@ -116,7 +126,8 @@ identity, stored secrets.
   runtime, the after-work step and its workflow id, labels, priority, the caller, and both
   repositories on the same branch name with different base commits, so a test can tell
   them apart) reaches the tool in each mode,
-  structured and text replies, a tool error, a timeout, a `degraded: true` reply passed
+  structured and text replies, a tool error, a timeout, a reply over 256 KiB on each server
+  type, which comes back `failed` at once without being parsed, a `degraded: true` reply passed
   through, one server process for a run over two repositories, and the same calls over
   streamable HTTP. Over streamable HTTP the fixture also has an echo mode that returns a
   header value it received inside a guidance body, and the transport redacts and marks it. A tool
@@ -132,6 +143,8 @@ identity, stored secrets.
 - Registering the fixture `get_guidance` tool through the API and dry-running it returns its
   guidance, with no code beyond configuration.
 - Neither transport sends a request over plain HTTP to a host that is not loopback.
+- No MCP message over 256 KiB is parsed, on either server type, and such a reply is
+  `failed`.
 - No value of an environment reference appears in any reply, log or record. That includes a
   successful reply that echoes one: the fixture's echoed value is absent from the engine's
   section and summary and from the dry-run reply, and the shaper is marked `redacted`.
@@ -174,3 +187,6 @@ free of shaping-specific assumptions where that is cheap.
   fields of `context` and left out others, such as each repository's base commit and the
   after-work workflow id. It now renders every field except local paths, a schema-walking
   test keeps it complete, and the MCP test tells apart two repositories on one branch name.
+- Review of the plan pull request, round 5, 2026-11-19: the `http` body had a 256 KiB cap and
+  MCP messages had none. Step 4 now caps every MCP message while it is received, on both
+  server types, and an oversized reply is `failed`.

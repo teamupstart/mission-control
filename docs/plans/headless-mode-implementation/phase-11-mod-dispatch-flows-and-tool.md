@@ -4,7 +4,7 @@ Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` 
 
 **1. Outcome.** From Claude Code the person can dispatch a task: `/mission-dispatch` (fast path, or a described task, then a confirm), or mid-conversation through the `start_dispatch` tool. `/mission-dispatch inbox`, `check` and `pane` open the Mission Control pane (on Needs you, on Tasks, or as it was). A dismissed dialog counts as Cancel. The launcher on session start is offered only if S10 or S11 passed and was recorded.
 
-**2. Entry.** P8 merged. P5 is already on `main`. Gate: S10 or S11, for the launcher part only; without a recorded answer the launcher stays off and the rest merges. S8, S12 and S15 are soft. P7 is deferred, so the confirm summary has no Codex line.
+**2. Entry.** P5 merged and P8 merged, both required (P5 supplies the options and drafts routes this phase calls; P5 is in review as #1582 and is not on `main` until it merges, and P8 itself waits for it). Gate: S10 or S11, for the launcher part only; without a recorded answer the launcher stays off and the rest merges. S8, S12 and S15 are soft. P7 is deferred, so the confirm summary has no Codex line.
 
 **3. Scope.** `src/mod/flows/command.ts`, `dispatch.ts`, `tool.ts`, `index.ts`: the launcher, fast path, description and confirm dialogs over P5's options and drafts routes, the `start_dispatch` tool, the intent nudge, one registration line each. The `inbox`, `check` and `pane` arguments call P8's `paneOpen` with the tab or task id and nothing else, so they show the placeholder until P12 lands and the real pane after. Non-goals: pane contents and answering (P12), the Codex line (P7).
 

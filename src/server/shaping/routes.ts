@@ -60,8 +60,11 @@ export async function checkoutFor(
   // `resolveRepoRoot` answers null both when Git rejects the path and when Git never answered.
   // A second probe tells them apart.
   if (!repoRoot) {
-    if ((await probes.insideWorkTree(repository)) === "unknown") return unanswered("the path is a Git checkout");
-    return { ok: false, status: 400, error: "unknown_repository", reason: "The path is not inside a Git checkout." };
+    // Only Git saying no is a 400. A path Git confirms is a working tree, whose root could still
+    // not be resolved, is as unanswered as one it never answered for.
+    const probe = await probes.insideWorkTree(repository);
+    if (probe === "not-worktree") return { ok: false, status: 400, error: "unknown_repository", reason: "The path is not inside a Git checkout." };
+    return unanswered("the path is a Git checkout");
   }
   const tree = await probes.insideWorkTree(repository);
   if (tree === "unknown") return unanswered("the path is a working tree");

@@ -1,4 +1,4 @@
-import { SHAPING_LIMITS, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, ShapingEntrySchema, ShapingFactValueSchema, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
 import { redactSpans } from "./redaction.ts";
 
 /**
@@ -51,39 +51,35 @@ export interface ScrubbedReply {
   notes: string[];
 }
 
-/**
- * Every occurrence of every resolved value, found on the original text and merged where values
- * overlap, so replacing one can never hide part of another from a later pass.
- */
-function replaceResolved(text: string, resolved: readonly ResolvedValue[], limit: number | undefined): string {
-  const next = redactSpans(text, resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name })),
-    (labels) => `[${labels.join(", ")} redacted]`);
-  // `[NAME redacted]` can be longer than the value it replaced. A field the result schema bounds
-  // is cut back to that bound, so a reply that was valid never becomes invalid because something
-  // was removed from it. Only the tail is cut, and nothing of the value is left in it. A field
-  // within its bound is left whole.
-  // A field already over its limit is left for the schema to refuse: only a replacement that
-  // pushed a field within its limit over it is clipped.
-  return limit !== undefined && text.length <= limit && next.length > limit ? next.slice(0, limit) : next;
+/** How a scrub names what it removed, decided once per reply. */
+interface Marker {
+  /** The replacement for a span covering these labels. */
+  render: (labels: readonly string[]) => string;
+  /** How a drop note names the value. */
+  name: (value: ResolvedValue) => string;
 }
 
 /**
- * The result schema's bound on the string at `path`, or undefined for a field it does not bound
- * or does not define. Read from `SHAPING_LIMITS`, the same constants the schema reads.
+ * The marker for one reply. A variable's name is printed in `[NAME redacted]` and in drop notes,
+ * so when any name contains any resolved value, naming it would repeat the credential: every
+ * marker and note is then neutral.
  */
-function fieldLimit(path: readonly (string | number)[]): number | undefined {
-  const [first, second, third] = path;
-  if (first === "version" && path.length === 1) return SHAPING_LIMITS.versionChars;
-  if (first === "notes" && path.length === 2) return SHAPING_LIMITS.replyNoteChars;
-  if (first === "guidance" && path.length === 3) {
-    if (third === "title") return SHAPING_LIMITS.entryTitleChars;
-    if (third === "path") return SHAPING_LIMITS.entryPathChars;
-    if (third === "id") return SHAPING_LIMITS.entryIdChars;
-    if (third === "body") return SHAPING_LIMITS.replyText;
-  }
-  if (first === "repo" && second === "summary" && path.length === 2) return SHAPING_LIMITS.replyText;
-  if (first === "repo" && second === "facts" && (path.length === 3 || path.length === 4)) return SHAPING_LIMITS.factValueChars;
-  return undefined;
+function markerFor(values: readonly ResolvedValue[]): Marker {
+  const neutral = values.some(({ name }) => values.some(({ value }) => name.includes(value)));
+  return neutral
+    ? { render: () => "[redacted]", name: () => "a passed variable" }
+    : { render: (labels) => `[${labels.join(", ")} redacted]`, name: (value) => value.name };
+}
+
+/**
+ * Every occurrence of every resolved value, found on the original text and merged where values
+ * overlap, so replacing one can never hide part of another from a later pass. The result is
+ * bounded as it is built: a field within its limit stays within it, and a field already over
+ * it stays just over it, for the schema to refuse, without growing further.
+ */
+function replaceResolved(text: string, resolved: readonly ResolvedValue[], limit: number, marker: Marker): string {
+  return redactSpans(text, resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name })),
+    marker.render, 0, text.length <= limit ? limit : limit + 1);
 }
 
 function holdsResolved(text: string, resolved: readonly ResolvedValue[]): ResolvedValue | undefined {
@@ -92,61 +88,75 @@ function holdsResolved(text: string, resolved: readonly ResolvedValue[]): Resolv
 
 /**
  * A shaper cannot hand a value back. Every occurrence of a value the transport handed it is
- * replaced with `[NAME redacted]` in every string of a decoded reply: entry paths, titles and
- * bodies, the summary, fact values, notes, the version and an error. Keys the result schema
- * defines are never changed. An entry whose id, or a fact whose name, contains such a value is
- * dropped instead of renamed, so redaction can never merge two entries or two facts, and the
- * drop is returned as a note beside the reply.
+ * replaced with `[NAME redacted]` in every field of a decoded reply the engine reads: entry ids,
+ * paths, titles and bodies, the summary, fact values, notes, the version and an error. Fields the
+ * result schema does not define are skipped, because the engine discards them unread. Keys the
+ * schema defines are never changed. An otherwise valid entry whose id, or fact whose name,
+ * contains such a value is dropped instead of renamed, so redaction can never merge two entries
+ * or two facts, and the drop is returned as a note beside the reply. An invalid one is kept,
+ * scrubbed, so the engine still refuses the reply as written rather than reporting it clean.
  *
- * The walk is iterative, so no nesting the reply could carry overflows the stack, and it
- * rewrites the freshly decoded value in place. A reply that is not a JSON object is left alone:
- * the engine refuses it without recording any of its text.
+ * Nothing here recurses, and the decoded value is rewritten in place. A reply that is not a
+ * JSON object is left alone: the engine refuses it without recording any of its text.
  */
 export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[]): ScrubbedReply {
   const values = resolved.filter(({ value }) => value.length > 0).sort((a, b) => b.value.length - a.value.length);
-  if (values.length === 0 || data === null || typeof data !== "object") return { data, redacted: false, notes: [] };
+  if (values.length === 0 || data === null || typeof data !== "object" || Array.isArray(data)) return { data, redacted: false, notes: [] };
   // NUL first: the engine removes it from every string later, so a value split by a NUL here
   // would pass every check below and be joined back into the credential afterwards.
   withoutNul(data);
+  const marker = markerFor(values);
   let redacted = false;
   const notes: string[] = [];
   const root = data as Record<string, unknown>;
+  const scrub = (text: string, limit: number): string => {
+    const next = replaceResolved(text, values, limit, marker);
+    if (next !== text) redacted = true;
+    return next;
+  };
+  const scrubIn = (record: Record<string, unknown>, key: string, limit: number) => {
+    const item = record[key];
+    if (typeof item === "string") record[key] = scrub(item, limit);
+  };
+  const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+
+  scrubIn(root, "version", SHAPING_LIMITS.versionChars);
+  if (Array.isArray(root.notes)) root.notes = root.notes.map((note) => (typeof note === "string" ? scrub(note, SHAPING_LIMITS.replyNoteChars) : note));
+  // An error the engine reports: a string, or `{ code, message }`.
+  if (typeof root.error === "string") root.error = scrub(root.error, SHAPING_LIMITS.replyText);
+  else if (isRecord(root.error)) { scrubIn(root.error, "code", SHAPING_LIMITS.replyText); scrubIn(root.error, "message", SHAPING_LIMITS.replyText); }
+
   if (Array.isArray(root.guidance)) {
     root.guidance = root.guidance.filter((entry) => {
-      const id = (entry as { id?: unknown } | null)?.id;
-      const hit = typeof id === "string" ? holdsResolved(id, values) : undefined;
-      if (hit) notes.push(`An entry was dropped because its id contained the value of ${hit.name}.`);
-      return !hit;
+      if (!isRecord(entry)) return true;
+      const hit = typeof entry.id === "string" ? holdsResolved(entry.id, values) : undefined;
+      if (hit && ShapingEntrySchema.safeParse(entry).success) {
+        notes.push(`An entry was dropped because its id contained the value of ${marker.name(hit)}.`);
+        redacted = true;
+        return false;
+      }
+      scrubIn(entry, "id", SHAPING_LIMITS.entryIdChars);
+      scrubIn(entry, "title", SHAPING_LIMITS.entryTitleChars);
+      scrubIn(entry, "path", SHAPING_LIMITS.entryPathChars);
+      scrubIn(entry, "body", SHAPING_LIMITS.replyText);
+      return true;
     });
   }
-  const repo = root.repo as { facts?: unknown } | undefined;
-  if (repo && typeof repo === "object" && repo.facts && typeof repo.facts === "object" && !Array.isArray(repo.facts)) {
-    const facts = repo.facts as Record<string, unknown>;
-    for (const name of Object.keys(facts)) {
-      const hit = holdsResolved(name, values);
-      if (!hit) continue;
-      delete facts[name];
-      notes.push(`A fact was dropped because its name contained the value of ${hit.name}.`);
-    }
-  }
-  if (notes.length > 0) redacted = true;
-  // Each node carries its path, so a replaced string can be held to its field's bound. The
-  // path is kept only to the depth the result schema defines; below that no field is bounded.
-  const pending: Array<{ node: unknown; path: readonly (string | number)[] }> = [{ node: root, path: [] }];
-  const child = (path: readonly (string | number)[], key: string | number) => (path.length < 4 ? [...path, key] : path);
-  while (pending.length > 0) {
-    const { node, path } = pending.pop()!;
-    if (!node || typeof node !== "object") continue;
-    const record = node as Record<string, unknown>;
-    const keys = Array.isArray(node) ? node.map((_, at) => at) : Object.keys(record);
-    for (const key of keys) {
-      const item = (record as Record<string | number, unknown>)[key];
-      const at = child(path, key);
-      if (typeof item === "string") {
-        const next = replaceResolved(item, values, at.length === path.length + 1 ? fieldLimit(at) : undefined);
-        if (next !== item) { (record as Record<string | number, unknown>)[key] = next; redacted = true; }
-      } else if (item && typeof item === "object") {
-        pending.push({ node: item, path: at });
+  if (isRecord(root.repo)) {
+    scrubIn(root.repo, "summary", SHAPING_LIMITS.replyText);
+    const facts = root.repo.facts;
+    if (isRecord(facts)) {
+      for (const name of Object.keys(facts)) {
+        const hit = holdsResolved(name, values);
+        if (hit && ShapingFactValueSchema.safeParse(facts[name]).success) {
+          delete facts[name];
+          notes.push(`A fact was dropped because its name contained the value of ${marker.name(hit)}.`);
+          redacted = true;
+          continue;
+        }
+        const value = facts[name];
+        if (typeof value === "string") facts[name] = scrub(value, SHAPING_LIMITS.factValueChars);
+        else if (Array.isArray(value)) facts[name] = value.map((item) => (typeof item === "string" ? scrub(item, SHAPING_LIMITS.factValueChars) : item));
       }
     }
   }

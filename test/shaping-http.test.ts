@@ -204,6 +204,9 @@ test("a repository check Git never answers is 503, never an invalid checkout", a
   // Root resolved, then the working-tree check went unanswered.
   const duringTree = await checkoutFor(repository, { resolveRepoRoot: async () => repository, insideWorkTree: silent });
   assert.deepEqual([duringTree.ok, !duringTree.ok && duringTree.status], [false, 503]);
+  // Root resolution failed although Git confirms a working tree: still an unanswered check.
+  const confirmedTree = await checkoutFor(repository, { resolveRepoRoot: async () => null, insideWorkTree: async () => "worktree" });
+  assert.deepEqual([confirmedTree.ok, !confirmedTree.ok && confirmedTree.status], [false, 503]);
   // Git answered no: still 400, for an ordinary folder and for a bare repository.
   const rejected = await checkoutFor(plainFolder, { resolveRepoRoot: async () => null, insideWorkTree: async () => "not-worktree" });
   assert.deepEqual([!rejected.ok && rejected.status, !rejected.ok && rejected.error], [400, "unknown_repository"]);
@@ -222,6 +225,18 @@ test("a dry run refuses a bare repository and accepts a linked worktree", async 
   const linked = join(home, "repos", "billing-api-linked");
   execFileSync("git", ["-C", repository, "worktree", "add", "-q", "--detach", linked]);
   assert.equal((await dryRun({ id: "bare-check", repository: linked })).status, 200);
+});
+
+test("a stored JSON null is unreadable, never treated as a missing row", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key, "null");
+  shaping.reloadShaping();
+  const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
+  assert.equal(response.status, 409);
+  const row = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.shaping.key) as { value: string };
+  assert.equal(row.value, "null", "the row is left as it was");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
 });
 
 test("a stored config this build cannot read is never overwritten", async (t) => {

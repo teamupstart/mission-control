@@ -324,6 +324,17 @@ test("a successful reply that lost an entry to redaction stays ok and says what 
   assert.equal(row.reason, "An entry was dropped because its id contained the value of ACME_TOKEN.");
 });
 
+test("a transport receives the request as the wire contract parsed it, without undeclared fields", async () => {
+  const seen: unknown[] = [];
+  const extra = input(1);
+  (extra.context as Record<string, unknown>).undeclared = "not part of the contract";
+  (extra.context.afterWork as Record<string, unknown>).hidden = "nor this";
+  await run(configWith([shaper("s", "select")]), (request) => { seen.push(request); return data({ guidance: [] }); }, extra);
+  const text = JSON.stringify(seen[0]);
+  assert.equal(text.includes("undeclared") || text.includes("hidden"), false);
+  assert.deepEqual((seen[0] as ShapingRequest).context.afterWork, { workflowId: "wf_1", name: "Review and merge" });
+});
+
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {
   // 33 attached repositories, one more than a request's context may name.
   const many = input(1);

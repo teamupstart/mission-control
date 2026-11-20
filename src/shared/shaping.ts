@@ -1290,11 +1290,11 @@ export function resolveShaperById(
 // ---------------------------------------------------------------------------------------------
 // The contract: one request, one result
 
-const FactValueSchema = z.union([
+export const ShapingFactValueSchema = z.union([
   z.string().max(SHAPING_LIMITS.factValueChars),
   z.array(z.string().max(SHAPING_LIMITS.factValueChars)).max(SHAPING_LIMITS.facts),
 ]);
-export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), FactValueSchema, SHAPING_LIMITS.facts);
+export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), ShapingFactValueSchema, SHAPING_LIMITS.facts);
 export type ShapingFacts = z.output<typeof ShapingFactsSchema>;
 
 /**

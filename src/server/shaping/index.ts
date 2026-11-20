@@ -51,11 +51,15 @@ function readConfig(): { config: ShapingConfig; readable: boolean } {
   // `getAppConfig` answers undefined both for a missing row and for one whose JSON does not
   // parse. Only a missing row means "never configured"; a row that cannot be decoded is
   // unreadable, so no write replaces the shapers it may hold.
-  if (stored === undefined && hasAppConfigRow(APP_CONFIG_ENTRIES.shaping)) {
-    console.warn("[shaping] stored config is not valid JSON; using defaults and refusing writes");
+  // Only an absent row means "never configured". A row that holds JSON `null`, or JSON that does
+  // not decode, is a value this build cannot read, and takes the same refusing path.
+  if (stored === undefined && !hasAppConfigRow(APP_CONFIG_ENTRIES.shaping)) {
+    return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: true };
+  }
+  if (stored === undefined || stored === null) {
+    console.warn("[shaping] stored config is not a readable value; using defaults and refusing writes");
     return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: false };
   }
-  if (stored === undefined || stored === null) return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: true };
   let parsed: ReturnType<typeof ShapingConfigSchema.safeParse>;
   try {
     parsed = ShapingConfigSchema.safeParse(stored);

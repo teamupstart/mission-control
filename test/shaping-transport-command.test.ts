@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Shaper, ShapingRequest } from "../src/shared/shaping.ts";
-import { ShaperManifestSchema, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
+import { SHAPING_LIMITS, ShaperManifestSchema, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
   callCommand, COMMAND_OUTPUT_BYTES, receivedValues, redactReceived, removeScratch, shaperCommandEnv,
 } from "../src/server/shaping/transports/command.ts";
@@ -421,6 +421,39 @@ test("a field already over its limit is left for the schema to refuse, not clipp
   assert.equal(scrubbed.redacted, false, "nothing was removed");
   assert.equal((scrubbed.data as typeof reply).guidance[0]!.title.length, 513);
   assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so the engine still refuses it");
+});
+
+test("a marker or note never repeats a credential that the variable's own name contains", () => {
+  const resolved = [{ name: "TOKEN_X9", value: "X9" }];
+  const reply = { guidance: [{ id: "e", body: "use X9 here" }, { id: "by-X9", body: "keyed by it" }] };
+  const scrubbed = scrubResolved(reply, resolved);
+  const text = JSON.stringify(scrubbed.data) + scrubbed.notes.join(" ");
+  assert.equal(text.includes("X9"), false, "neither the marker nor the note names TOKEN_X9");
+  assert.equal((scrubbed.data as typeof reply).guidance[0]!.body, "use [redacted] here");
+  assert.match(scrubbed.notes[0]!, /contained the value of a passed variable/);
+});
+
+test("redaction is bounded as it is built, and skips fields the engine discards", () => {
+  // 256 KiB of a two-character value, each replaced by a far longer marker naming two variables.
+  const resolved = [{ name: "FIRST_VARIABLE", value: "x9" }, { name: "SECOND_VARIABLE", value: "x9" }];
+  const body = "x9 ".repeat(80 * 1024);
+  const reply = { guidance: [{ id: "e", body }], extra: { unread: "x9 ".repeat(1024) } };
+  const started = Date.now();
+  const scrubbed = scrubResolved(reply, resolved);
+  const out = (scrubbed.data as typeof reply).guidance[0]!.body;
+  assert.ok(out.length <= SHAPING_LIMITS.replyText, `the body is ${out.length} characters`);
+  assert.equal(out.includes("x9"), false);
+  assert.equal((scrubbed.data as typeof reply).extra.unread.length, 3 * 1024, "an unknown field is left unread, as the engine discards it");
+  assert.ok(Date.now() - started < 1_000);
+});
+
+test("an invalid entry is kept, scrubbed, so the engine still refuses the reply rather than reporting it clean", () => {
+  const reply = { guidance: [{ id: "by-s3cret-value" }, { id: "fine", body: "ok" }] };
+  const scrubbed = scrubResolved(reply, [{ name: "TOKEN", value: "s3cret-value" }]);
+  const data = scrubbed.data as { guidance: Array<{ id: string }> };
+  assert.deepEqual(data.guidance.map((entry) => entry.id), ["by-[TOKEN redacted]", "fine"], "not dropped: it has no body");
+  assert.deepEqual(scrubbed.notes, []);
+  assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so validation still sees the malformed entry");
 });
 
 test("a reply holding no named value is returned byte for byte", async () => {

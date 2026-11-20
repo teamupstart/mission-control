@@ -59,13 +59,16 @@ export interface RedactionTarget {
  * match and nothing is sorted. Labels are tracked as bits, one per distinct label.
  *
  * `dropBefore` discards unmatched text in front of that offset: a value whose start was cut off
- * by a bounded buffer lives there, as a piece no search can recognise.
+ * by a bounded buffer lives there, as a piece no search can recognise. `maxLength` bounds the
+ * result as it is built: nothing past it is ever appended, so many short matches replaced by
+ * longer markers cannot grow the text beyond it.
  */
 export function redactSpans(
   text: string,
   targets: readonly RedactionTarget[],
   render: (labels: readonly string[]) => string,
   dropBefore = 0,
+  maxLength = Number.POSITIVE_INFINITY,
 ): string {
   // One search per value. A value is whole-token only if every target naming it is.
   const byValue = new Map<string, { wholeToken: boolean; labels: Set<string> }>();
@@ -92,7 +95,7 @@ export function redactSpans(
       matched = true;
     });
   }
-  if (!matched && dropBefore <= 0) return text;
+  if (!matched && dropBefore <= 0) return text.length > maxLength ? text.slice(0, maxLength) : text;
   let out = "";
   let covered = 0;
   let runStart = 0;
@@ -107,7 +110,7 @@ export function redactSpans(
     out += render(labels);
     spanBits.fill(0);
   };
-  for (let at = 0; at <= text.length; at++) {
+  for (let at = 0; at <= text.length && out.length < maxLength; at++) {
     const wasCovered = covered > 0;
     covered += depth[at]!;
     const isCovered = at < text.length && covered > 0;
@@ -117,6 +120,6 @@ export function redactSpans(
     else keep(runStart, at);
     runStart = at;
   }
-  if (covered <= 0 && runStart < text.length) keep(runStart, text.length);
-  return out;
+  if (out.length < maxLength && covered <= 0 && runStart < text.length) keep(runStart, text.length);
+  return out.length > maxLength ? out.slice(0, maxLength) : out;
 }

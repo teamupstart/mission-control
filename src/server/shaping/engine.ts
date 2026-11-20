@@ -318,7 +318,8 @@ async function runShaping(
     let reply: TransportReply | "abandoned";
     try {
       reply = await Promise.race([
-        callTransport(request, entry.shaper, {
+        // The parsed request, so a transport receives only the fields the wire contract declares.
+        callTransport(wire.data, entry.shaper, {
           deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null,
         }, transports),
         new Promise<"abandoned">((done) => {

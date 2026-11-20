@@ -33,8 +33,6 @@ import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./ty
 /** stdout beyond this is not a reply: the process group is killed and the call fails. */
 export const COMMAND_OUTPUT_BYTES = 256 * 1024;
 const STDERR_TAIL_CHARS = 2_000;
-/** How long to wait for the pipes to close after the group was killed. */
-const DRAIN_MS = 1_000;
 /** After the shaper exits, how long its pipes get to deliver the rest of its output. */
 const EXIT_DRAIN_MS = 500;
 /** How far before the call's deadline a drain ends, so its reply still counts as on time. */
@@ -345,15 +343,13 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       if (why === "timed_out" && exited) return complete(exited.code, exited.signal);
       ending = why;
       killGroup(child);
-      // An overflow is known the moment the cap is crossed, and nothing more the pipes could
-      // deliver changes it, so it settles at once. Waiting out the drain would let the engine's
-      // deadline land first and record a timeout in place of the output limit. `finish` still
-      // releases the pipes and reaps the group, whoever holds them.
-      if (why === "overflow") {
-        finish({ kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
-        return;
-      }
-      timers.push(setTimeout(() => finish({ kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` }), DRAIN_MS));
+      // Both outcomes are known the moment they happen, and nothing more the pipes could deliver
+      // changes either, so each settles at once. `finish` closes the daemon's ends of the pipes and
+      // reaps the group, whoever holds them, so a timed-out call frees its process and pipes before
+      // the engine hands its slot to the next call, and an overflow is never recorded as a timeout.
+      finish(why === "timed_out"
+        ? { kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` }
+        : { kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
     };
     const onAbort = (): void => end("timed_out");
     try {

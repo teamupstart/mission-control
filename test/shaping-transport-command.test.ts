@@ -598,8 +598,13 @@ test("a helper outside the process group that holds the pipes cannot keep them o
     for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
     assert.ok(existsSync(pidFile), "the helper really was holding the pipes");
     controller.abort();
+    const aborted = Date.now();
     const reply = await pending;
-    assert.equal(reply.kind, "timed_out", "the call settles after its drain, not when the helper exits");
+    const settledIn = Date.now() - aborted;
+    assert.equal(reply.kind, "timed_out", "the call settles, not when the helper exits");
+    // At once: the engine reuses a timed-out call's slot after a short grace, so its process and
+    // pipes must be released by then. The drain this replaced waited a full second.
+    assert.ok(settledIn < 500, `settled ${settledIn} ms after the abort`);
     let open = pipes();
     for (let waited = 0; open > before && waited < 3_000; waited += 50) { await sleep(50); open = pipes(); }
     assert.equal(open, before, "the daemon's ends of the shaper's pipes were closed");

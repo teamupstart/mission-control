@@ -94,19 +94,23 @@ test("shipped preview, live master and individual changes, reload, search, and a
   if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: `${artifactsDir("feature-flags")}alpha-enables-all.png`, animations: "disabled" });
 });
 
-test("a failed Enable all write keeps alpha on and offers a retry", async ({ dashboard: page, context, daemon }) => {
+test("a failed Enable all write keeps alpha on and offers a retry that survives navigation and never locks alpha", async ({ dashboard: page, context, daemon }) => {
   const peer = await context.newPage();
   await peer.goto(`${daemon.baseURL}/#/settings/feature-flags`);
   const peerMaster = peer.getByRole("checkbox", { name: /Enable all feature flags/ });
   await expect(peerMaster).toBeEnabled();
   await expect(peerMaster).not.toBeChecked();
-  // The first write is refused by the daemon, the retry never reaches it, the next one lands.
+  // The daemon refuses the first write, the second never reaches it, and the third stalls
+  // until the test releases it.
   let writes = 0;
+  let release!: () => void;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
   await page.route("**/api/feature-flags", async route => {
     if (route.request().method() !== "PUT") return route.continue();
     writes++;
     if (writes === 1) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "flag store unavailable" }) });
     if (writes === 2) return route.abort("connectionrefused");
+    await stalled;
     return route.continue();
   });
   await page.addInitScript(fakeAlphaBridge);
@@ -115,11 +119,16 @@ test("a failed Enable all write keeps alpha on and offers a retry", async ({ das
   const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
   const updates = page.getByRole("region", { name: "Application updates" });
   const alert = updates.getByRole("alert");
+  const retry = updates.getByRole("button", { name: "Retry" });
   await alpha.check();
   await expect(alert).toContainText("Alpha updates are on, but Enable all feature flags could not be switched on: flag store unavailable");
   await expect(alpha).toBeChecked();
   await expect(peerMaster).not.toBeChecked();
-  const retry = updates.getByRole("button", { name: "Retry" });
+  // Leaving Setup and coming back keeps the failure and its Retry.
+  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await expect(page.getByRole("tab", { name: /Feature flags/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: /Setup/ }).click();
+  await expect(alert).toContainText("flag store unavailable");
   await retry.click();
   await expect(alert).toContainText("Alpha updates are on, but Enable all feature flags could not be switched on:");
   await expect(alert).not.toContainText("flag store unavailable");
@@ -130,7 +139,17 @@ test("a failed Enable all write keeps alpha on and offers a retry", async ({ das
     await page.mouse.move(1, 1);
     await updates.screenshot({ path: `${artifactsDir("feature-flags")}alpha-enable-all-retry.png`, animations: "disabled" });
   }
+  // While the retried write stalls, Retry waits but the alpha switch stays usable.
   await retry.click();
+  await expect.poll(() => writes).toBe(3);
+  await expect(retry).toBeDisabled();
+  await expect(alpha).toBeEnabled();
+  await alpha.uncheck();
+  await expect(alpha).not.toBeChecked();
+  await alpha.check();
+  await expect(alpha).toBeChecked();
+  expect(writes, "a second opt-in does not race the pending write").toBe(3);
+  release();
   await expect(alert).toHaveCount(0);
   await expect(peerMaster).toBeChecked();
   await expect(alpha).toBeChecked();

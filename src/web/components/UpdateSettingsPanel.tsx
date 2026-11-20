@@ -1,10 +1,44 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState, useSyncExternalStore } from "react";
 import type { UpdateSnapshot } from "@shared/update.ts";
 import { pendingBuildNotice } from "@shared/update-copy.ts";
 import { subscribeToDesktopUpdates } from "../useDesktopUpdates.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { api } from "../lib/api.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { BINARY_RECOVERY_URL, BINARY_UPDATE_UNAVAILABLE, type BinaryEnrollment } from "@shared/binary-enrollment.ts";
+
+/*
+ * Opting in to alpha also opts in to every preview feature, current and future. It is the same
+ * write as switching on Enable all, so individual offs are kept, and leaving alpha changes no
+ * flag. Alpha is saved first and kept when this write fails, because the desktop owns alpha and
+ * it must work while the daemon is down; the failure offers a retry instead.
+ *
+ * The write's state lives here rather than in the panel so a failure, and its Retry, survive
+ * leaving Setup and coming back. It is independent of the desktop save: a daemon request that
+ * stalls never locks the alpha switch.
+ */
+type EnableAllWrite = { pending: boolean; error: string | null };
+let enableAllWrite: EnableAllWrite = { pending: false, error: null };
+const enableAllListeners = new Set<() => void>();
+function setEnableAllWrite(next: EnableAllWrite): void {
+  enableAllWrite = next;
+  for (const listener of enableAllListeners) listener();
+}
+function subscribeEnableAllWrite(listener: () => void): () => void {
+  enableAllListeners.add(listener);
+  return () => { enableAllListeners.delete(listener); };
+}
+const readEnableAllWrite = () => enableAllWrite;
+async function switchOnEnableAll(): Promise<void> {
+  if (enableAllWrite.pending) return;
+  // A retry keeps showing the last failure, with Retry disabled, until this one settles.
+  setEnableAllWrite({ pending: true, error: enableAllWrite.error });
+  const result = await api.setFeatureFlags({ kind: "master", enabled: true });
+  setEnableAllWrite({ pending: false, error: result.ok ? null : result.error ?? "unknown error" });
+}
+function forgetEnableAllFailure(): void {
+  if (enableAllWrite.error && !enableAllWrite.pending) setEnableAllWrite({ pending: false, error: null });
+}
 
 /** The desktop updater owns this setting, even when the daemon cannot start. */
 export function UpdateSettingsPanel(): React.JSX.Element | null {
@@ -12,8 +46,8 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
   const [snapshot, setSnapshot] = useState<UpdateSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** The alpha opt-in's Enable all write failed: alpha stays on, and the operator can retry. */
-  const [enableAllError, setEnableAllError] = useState<string | null>(null);
+  const flagWrite = useSyncExternalStore(subscribeEnableAllWrite, readEnableAllWrite, readEnableAllWrite);
+  const enableAllOn = useContext(FeatureFlagsContext).enableAll;
   const installation = typeof window === "undefined" ? undefined : window.missionDesktop?.binaryInstallation;
   const [enrollment, setEnrollment] = useState<BinaryEnrollment | null>(null);
   const [enrollmentResult, setEnrollmentResult] = useState<string | null>(null);
@@ -26,35 +60,26 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
     if (!updates?.setAlpha) return;
     return subscribeToDesktopUpdates(updates, setSnapshot);
   }, [updates]);
+  // Enable all came on some other way, such as the Feature flags panel: nothing is left to retry.
+  useEffect(() => { if (enableAllOn) forgetEnableAllFailure(); }, [enableAllOn]);
   if (!updates?.setAlpha) return null;
   const binary = !!enrollment || (snapshot?.phase === "disabled" && snapshot.reason === BINARY_UPDATE_UNAVAILABLE);
   const busy = saving || !snapshot || ["checking", "preparing", "ready", "applying"].includes(snapshot.phase);
-  // Opting in to alpha also opts in to every preview feature, current and future. It is the
-  // same write as switching on Enable all, so individual offs are kept, and leaving alpha
-  // changes no flag. Alpha is saved first and kept when this write fails, because the desktop
-  // owns alpha and it must work while the daemon is down; the failure offers a retry instead.
-  const enableAllFlags = async () => {
-    setEnableAllError(null);
-    const result = await api.setFeatureFlags({ kind: "master", enabled: true });
-    if (!result.ok) setEnableAllError(result.error ?? "unknown error");
-  };
   const change = async (alpha: boolean) => {
     setSaving(true);
     setError(null);
-    setEnableAllError(null);
+    if (!alpha) forgetEnableAllFailure();
     try {
       await updates.setAlpha!(alpha);
-      if (alpha) await enableAllFlags();
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
+      return;
     } finally {
       setSaving(false);
     }
+    if (alpha) void switchOnEnableAll();
   };
-  const retryEnableAll = async () => {
-    setSaving(true);
-    try { await enableAllFlags(); } finally { setSaving(false); }
-  };
+  const enableAllError = snapshot?.alpha && !enableAllOn ? flagWrite.error : null;
   const check = async () => {
     setError(null);
     try { await updates.check(); }
@@ -112,7 +137,7 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
       {enableAllError && <div role="alert">
         <p>Alpha updates are on, but Enable all feature flags could not be switched on: {enableAllError}</p>
         <Tooltip label="Try switching on Enable all feature flags again.">
-          <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => { void retryEnableAll(); }}>Retry</button>
+          <button type="button" className="btn btn-ghost" disabled={flagWrite.pending} onClick={() => { void switchOnEnableAll(); }}>Retry</button>
         </Tooltip>
       </div>}
       {error && <p role="alert">{error}</p>}

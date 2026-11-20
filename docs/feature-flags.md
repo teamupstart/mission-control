@@ -32,7 +32,8 @@ the same write as the master switch without "Turn them on too": flags you switch
 Switching alpha off changes no flag, and you can still switch Enable all or any flag off while
 on alpha. Alpha is saved first and stays on if that write fails, because the alpha
 switch must keep working while the daemon is down; the Application updates section then says
-Enable all could not be switched on and offers **Retry**.
+Enable all could not be switched on and offers **Retry**. That failure survives moving between
+Settings categories, and a pending write never locks the alpha switch.
 
 ## Definition and resolution
 

@@ -426,8 +426,10 @@ export type HomeDispatchConfig = z.infer<typeof HomeDispatchConfigSchema>;
 /* ------------------------------------------------------------------ route table */
 
 /**
- * Every `/dispatch/*` route, once. The route module, the guards and the fakes read this
- * list, so a route cannot exist in one and be missing from another.
+ * The inventory of every `/dispatch/*` route, with the phase that fills it. It registers
+ * nothing: `src/server/home-dispatch/routes.ts` lists each `app.get` and `app.post` itself.
+ * `test/home-dispatch-routes.test.ts` compares the two, so a route added in one place and not
+ * the other fails that test. A new route needs an entry here and a registration there.
  */
 export const HOME_DISPATCH_ROUTES = [
   { method: "POST", path: "/dispatch/sessions", owner: "P3" },

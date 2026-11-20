@@ -58,6 +58,7 @@ export function recordSdkSessionProcess(id: string, lifetime: SdkProcessLifetime
  *    child, so a restart necessarily stops it, and a shutdown that recorded that as
  *    `exited` would make every clean restart indistinguishable from an agent that finished
  *    - reclaiming worktrees out from under work that was merely interrupted.
+ *  - `hibernated`: the operator stopped it to free its memory and will resume it by hand.
  */
 export const SDK_SESSION_STATUSES = [
   "starting",
@@ -65,6 +66,10 @@ export const SDK_SESSION_STATUSES = [
   "exited",
   "failed",
   "suspended",
+  // The operator hibernated its task: stopped on purpose, its conversation kept, and resumed
+  // only by the operator's Resume (`SdkSupervisor.wake`). Deliberately NOT live, so neither a
+  // restart nor a sweep relaunches it on its own.
+  "hibernated",
 ] as const;
 export type SdkSessionStatus = (typeof SDK_SESSION_STATUSES)[number];
 

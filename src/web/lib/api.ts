@@ -1981,6 +1981,10 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/pause`, { mode }),
   /** Resume one session, whatever paused it. */
   resumeSession: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/resume`),
+  /** Hibernate a task's session: stop its agent and keep its conversation for Resume. */
+  hibernateSession: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/hibernate`),
+  /** Reopen a hibernated task's conversation in its worktree. */
+  resumeHibernatedTask: (taskId: string) => post(`/api/tasks/${encodeURIComponent(taskId)}/resume`),
   /** Pause every live session; optionally hold automatic launches and resume at a set time. */
   pauseFleet: (options: { holdDispatch: boolean; resumeAt: number | null }) => post("/api/pause/fleet", options),
   /** Resume what Pause all paused. Sessions paused one at a time stay paused. */

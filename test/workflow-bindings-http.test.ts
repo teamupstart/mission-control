@@ -1123,6 +1123,59 @@ test("the first completed discovery orphans bindings whose sessions disappeared 
   await workflows.stop();
 });
 
+test("a hibernated task's armed binding survives its session leaving and a restart's first discovery", async () => {
+  // Resume brings the SAME session id and conversation back (@shared/hibernation.ts), so the
+  // workflow armed on it must still be the one that judges the work - never orphaned.
+  const registry = new Registry();
+  registry.applyDiscovery([discovered({ syntheticId: "session-hib", tty: "ttys21" })]);
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  workflows.start();
+  const app = buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+    personas,
+    workflows,
+  });
+  const created = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-hib" });
+  assert.equal(created.status, 201);
+  const binding = await created.json() as { id: string };
+  const noteKey = noteKeyFor(registry.getSession("session-hib")!);
+  registry.upsertTask(mkTask({
+    id: "hibernated-binding-task",
+    status: "hibernated",
+    hibernation: { sessionId: "session-hib", runtime: "terminal" as const, permissionMode: null, checkout: null, agentSessionId: noteKey, noteKey, hibernatedAt: 1, blocker: null, failure: null },
+  }));
+
+  registry.emit("event", { type: "session_remove", id: "session-hib" });
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "active");
+  assert.equal(workflows.store.getBinding(binding.id)?.sessionId, "session-hib");
+  await workflows.stop();
+
+  // A restart: the task reloads from SQLite and the first discovery finds no such session.
+  const restarted = new Registry();
+  const again = new WorkflowManager(restarted, new PersonaManager(restarted).store);
+  again.start();
+  restarted.applyDiscovery([]);
+  assert.equal(again.store.getBinding(binding.id)?.state, "active");
+  assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-hib");
+
+  // A terminal Resume reopens the conversation as a new process: the binding follows it, and
+  // only into the same checkout.
+  restarted.applyDiscovery([
+    discovered({ syntheticId: "session-elsewhere", tty: "ttys23", cwd: "/other", gitRoot: "/other", repoRoot: "/other" }),
+    discovered({ syntheticId: "session-resumed", tty: "ttys22" }),
+  ]);
+  again.followResumedConversation("session-hib", restarted.getSession("session-elsewhere")!);
+  assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-hib", "another checkout does not take it");
+  again.followResumedConversation("session-hib", restarted.getSession("session-resumed")!);
+  assert.equal(again.store.getBinding(binding.id)?.state, "active");
+  assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-resumed");
+  await again.stop();
+});
+
 test("resubmit fingerprints are durable, unchanged confirmation reuses its trigger, and Persona fails cannot use infrastructure retry", async () => {
   const persona = {
     sourcePersonaId: "persona-repair",

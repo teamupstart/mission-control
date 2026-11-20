@@ -1,3 +1,4 @@
+import { hibernatedTasks } from "@shared/hibernation.ts";
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { isFrozen } from "@shared/pause.ts";
@@ -2747,6 +2748,13 @@ export function App(): React.JSX.Element {
     if (!q) return items;
     return items.filter((t) => matchesBacklogSearch(t, q));
   }, [tasks, filter]);
+  // The Backlog's Hibernated section, narrowed by the same filter box for the same reason.
+  const visibleHibernated = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const items = hibernatedTasks(tasks);
+    if (!q) return items;
+    return items.filter((t) => matchesBacklogSearch(t, q));
+  }, [tasks, filter]);
 
   // Dispatched, not yet standing on a session. Deliberately NOT narrowed by `filter`: this
   // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
@@ -3350,7 +3358,7 @@ export function App(): React.JSX.Element {
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
   // Whether the CURRENT layout has anything to draw. Both layouts render provisioning tasks;
-  // the board additionally renders backlog and restoring-session rows.
+  // the board additionally renders backlog, hibernated and restoring-session rows.
   const layoutHasContent =
     visible.length > 0 ||
     // An open resident's detail is drawn by the layout even though no fleet list holds it, and
@@ -3360,7 +3368,8 @@ export function App(): React.JSX.Element {
     (placement.excluded.size > 0 && !filter.trim()) ||
     dispatchingTasks.length > 0 ||
     failedLaunchTiles > 0 ||
-    (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
+    (layout === "board" &&
+      (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
   const filterableSessionNoun =
@@ -3387,6 +3396,7 @@ export function App(): React.JSX.Element {
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
+    hibernated: visibleHibernated,
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,

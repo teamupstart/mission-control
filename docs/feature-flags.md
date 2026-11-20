@@ -15,6 +15,10 @@ Codex resident profiles. Turning it off prevents new saves and launches in that 
 runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
 **Pinned at launch** when the preview is off.
 
+**Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
+task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
+Backlog and can still be resumed, so switching the preview off never strands a conversation.
+
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
 off**, **Turn them on too**, or **Cancel**. Cancel and Escape write nothing. Turning the master

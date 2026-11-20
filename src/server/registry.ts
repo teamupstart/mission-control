@@ -9026,6 +9026,11 @@ export class Registry extends EventEmitter {
     const liveKeys = new Set(
       [...this.sessions.values()].filter((s) => s.state !== "exited").map((s) => noteKeyFor(s)),
     );
+    // A hibernated task holds its conversation's key while nothing runs: Resume reopens that
+    // conversation, and it must come back still blocked however long it slept.
+    for (const task of this.tasks.values()) {
+      if (task.status === "hibernated" && task.hibernation) liveKeys.add(task.hibernation.noteKey);
+    }
     const held: string[] = [];
     let removed = 0;
     for (const [key, record] of this.blockers) {
@@ -10705,7 +10710,9 @@ export function summarizeQueue(
  *
  * `failed` and `cancelled` are in it because a merge UPGRADES them - the adopted decision
  * that a pull request which actually landed is the task's outcome, whatever was concluded
- * before anyone could see it merge. Only a merge does that; a closed-unmerged pull request
+ * before anyone could see it merge. `hibernated` is NOT in it: the operator parked that task
+ * and only their Resume moves it on, so a merge it shipped meanwhile waits until it is running
+ * again (issue #1547). Only a merge does that; a closed-unmerged pull request
  * changes nothing. `done` is not in it: its outcome is already recorded, and rewriting one
  * would overwrite what an operator typed. `backlog` is not either: a rescheduled task is
  * being re-run, so its previous attempt's merge is not this run's outcome.
@@ -10776,7 +10783,7 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * writes a note once it has read the transcript, by which point agentSessionId
  * is known, so a note is keyed on the agent id in practice.
  */
-export function noteKeyFor(s: Session): string {
+export function noteKeyFor(s: Pick<Session, "id" | "agentSessionId">): string {
   return s.agentSessionId ?? s.id;
 }
 

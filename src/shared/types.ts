@@ -13,6 +13,7 @@ import type { MissionSchedule } from "./schedules.ts";
 import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
+import type { TaskHibernation } from "./hibernation.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -2101,6 +2102,9 @@ export const TASK_STATUSES = [
   "done",
   "cancelled",
   "failed",
+  // The operator stopped the agent to free its memory and will resume the same conversation
+  // in the same worktree later (`@shared/hibernation.ts`). Neither active nor terminal.
+  "hibernated",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -2677,6 +2681,12 @@ export interface Task {
    * whose session ran and was later lost. See `@shared/launch-failure.ts`.
    */
   launchFailure?: TaskLaunchFailure | null;
+  /**
+   * Present exactly while the task is `hibernated`: the embedded session that resumes, the
+   * conversation it reopens, the blocker it carried, and why the last Resume failed, if it
+   * did. Absent or null on every other task. See `@shared/hibernation.ts`.
+   */
+  hibernation?: TaskHibernation | null;
   /**
    * Set on a Report bug session: the failed task it was started to report. The session's own
    * identity, persisted on it, so a report session that itself fails to start never offers a

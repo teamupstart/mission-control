@@ -48,6 +48,12 @@ when configured, deliver follow-up work through the daemon.
 A harness is Mission Control's declared adapter for an agent, including its capabilities,
 status evidence, runtime options, and terminal integration.
 
+## [Hibernated task](sessions.md#hibernate-a-task-and-resume-it-later)
+
+A hibernated task's agent was stopped by the operator to free its memory. The task keeps its
+conversation, worktree and blocker in the Backlog until the operator resumes it, which reopens
+the same conversation in the same worktree.
+
 ## [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review)
 
 GitHub Inspector is the opt-in automated reviewer for pull requests Mission Control adopted from

@@ -541,6 +541,8 @@ export function taskRequeueRefusal(task: RequeueCandidate): string | null {
       return "task is already in the backlog";
     case "done":
       return "task is done; its result is recorded, not re-run";
+    case "hibernated":
+      return "task is hibernated; resume it to continue its conversation";
   }
 }
 

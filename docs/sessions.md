@@ -884,6 +884,108 @@ narrowest title bar it gives way with the fleet pulse's words, and comes back as
 widens; while Pause all or priority is on, the banner under the title bar keeps **Resume all
 now** and **End priority** at every width.
 
+### Hibernate a task and resume it later
+
+Pause keeps the agent's process in memory. **Hibernate** ends it, so a low-priority task you
+want to leave blocked for days stops using memory. The task, its conversation, its worktree and
+local changes, and its recorded blocker are all kept. **Resume** starts a new agent process that
+reopens the same conversation in the same worktree, under the same task.
+
+It is a preview: switch on **Hibernate tasks** in Settings → Feature flags. It then appears as
+the last row of the pause menu (the run chip, the card's ⋯ menu and the console's toolbar button
+all open that menu).
+
+**What can be hibernated.** An idle session of a running task, in a terminal or on the Agent
+SDK, with Claude Code or Codex. A terminal Pi session can be hibernated too. The row is offered but
+disabled, with the reason on it, when:
+
+- the agent is Pi on the Agent SDK, whose driver runs inside Mission Control, so there is no
+  memory to free;
+- it is mid-turn, starting, or waiting on your answer (finish the turn or answer the question
+  first);
+- it has messages still waiting to be delivered, or a question waiting for you;
+- Mission Control has not yet seen the conversation's id, so it could not reopen it, or cannot
+  read the checkout the session is running in;
+- the task is a Pipeline, resident or ensemble-member task, which keeps its own lifecycle.
+
+The route also refuses a session whose workflow run is still in progress. An armed workflow
+that has not started a run is kept: it is still attached when the task resumes.
+
+**What Hibernate does.** The task is recorded as hibernated and unbound from its session first.
+Then the agent is stopped, after lifting its pause if it had one. An Agent SDK session is stopped
+and Mission Control waits until it has finished writing its conversation. A terminal agent is
+stopped the way Kill stops it: it is sent `SIGTERM`, and its terminal session is closed if the
+agent was the only thing in it. Hibernate then waits up to 10 seconds for the agent's process to
+be gone. If it is still running, Hibernate says the stop is incomplete instead of reporting
+success, and the task stays hibernated with that reason. Stop that session, or wait for it to
+exit, then Resume. Because nothing is bound to the session when it leaves, nothing
+settles the task as failed, clears its blocker or detaches its workflow. An Agent SDK session's
+record is kept with the status `hibernated`, which no restart picks back up. If the agent will not
+stop, the task goes back to running on its session and the menu says why.
+
+**Where a hibernated task is.** It leaves the board. It waits at the top of the Backlog column,
+in a **Hibernated** section, with its title, the blocker it was waiting on, how long it has been
+hibernated, and **Resume**. In the Console layout, the Line's Backlog drawer shows the same
+section, and its Backlog stage reads `1 hibernated` when nothing else is queued. A hibernated
+task stays hibernated across a Mission Control restart until you resume it. Foreman's backlog
+autopilot never starts it, a recurring mission treats it as still in flight, and a blocker
+it carries is never pruned for age. Nothing but your Resume changes its status: even a pull
+request that merges while it is hibernated leaves it hibernated, and it is settled by that
+merge only once it is running again.
+
+**What Resume does.** No prompt is sent either way: the agent comes back idle where it left off,
+still blocked if it was blocked, and the task is bound back to it and returns to the board.
+
+- An **Agent SDK** session is relaunched under the same id, with its conversation, model, effort
+  and permission mode, exactly as a daemon restart restores a session. The task is bound to it
+  only once the driver itself reports that it reopened the saved conversation. A driver that
+  reports a different conversation, or none within 30 seconds, is hibernated again, and the
+  task stays hibernated with the reason. A freshly hibernated card
+  lingers for a few seconds before it leaves, so a Resume pressed during that time is refused and
+  can be retried a moment later.
+- A **terminal** session is reopened with the managed terminal resume (the same one the
+  conversation pane's agent launcher uses): the agent's own resume command for that conversation,
+  in the task's worktree, with the permission mode it last ran in and Mission Control's tools, in
+  a new terminal session. It opens in the backend the task last used, or the one Settings →
+  Harnesses chooses for that agent. The agent is a new process with a new session id, so Resume
+  waits up to a minute for it to report the hibernated conversation's own id, then moves the
+  task, its work history and any armed workflow onto it. Only the process this Resume launched
+  qualifies: the one in the terminal tab it opened, or descended from the launch that claimed its
+  managed resume. A new agent in the same worktree that reports any other conversation is left
+  alone. If something else opens the same conversation meanwhile, the task is given to neither
+  and the launch is undone, so two processes never write one conversation.
+
+Hibernate records the checkout the conversation ran in, as the filesystem identifies that
+directory. Before Resume starts anything, it checks that the directory at that path is still
+the same one. A worktree moved away and back passes. If the worktree was removed and another
+directory now stands at its path, Resume refuses and says so, so the conversation is never
+reopened in a different checkout. The check runs again after the agent has started, immediately
+before the task is bound, so a checkout replaced during the launch is caught too: the launch is
+undone, or an Agent SDK session is hibernated again.
+
+Resume refuses a conversation that is already open in another session, so two processes never
+write one conversation at once. That includes the hibernated session's own agent: if it is still
+running, because it has not exited yet or because Mission Control stopped while hibernating a
+terminal session and the agent outlived it, Resume says so and launches nothing. Stop that
+session, or wait for it to exit, then Retry. Ownership is checked again across every live
+session immediately before the task is bound. If another session took the conversation while
+the agent was starting, a terminal launch is undone and an Agent SDK session is hibernated
+again, and the task stays hibernated with the reason. A launched terminal agent is bound only
+if it is still live, in the saved checkout and on the saved conversation at that moment. If an
+Agent SDK driver cannot be stopped again, the row says so, and the next Resume stops that driver
+before it launches anything.
+
+**When Resume fails.** If the worktree is gone, the agent cannot reopen its conversation, or a
+resumed terminal agent does not report that conversation within a minute (its new terminal
+session is closed again), the task stays hibernated. Its Backlog row turns red and says why, and **Retry** tries
+again. Nothing about the worktree, its changes or the conversation is touched by a failed attempt. A failed terminal Resume undoes its launch: it cancels a launch that has not
+started the agent yet, or closes the new terminal session. If that terminal cannot be closed, the
+row says so and records it, and Retry first closes it (or finds it gone) and refuses to launch
+another agent while it may still be running.
+
+Turning the preview off hides Hibernate. Tasks already hibernated stay in the Backlog and can
+still be resumed, so switching the preview off never strands a conversation.
+
 ### What each agent can do is declared, not assumed
 
 Claude Code, Codex and Pi are not the same product, and several features below reach
@@ -2566,7 +2668,8 @@ The MCP tools are:
   daemon-token authority as task creation without a Control other sessions grant. Chat launches
   pre-approve task creation and dispatch so a conversation can delegate separate work.
 - `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
-  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`),
+  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`,
+  `hibernated`),
   `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),
   `priority` (`null` means unset), `enabled`, or `dependsOnTaskId` (direct prerequisite).
   Repository selectors accept an absolute checkout path or unique directory name; worktrees

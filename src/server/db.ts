@@ -161,6 +161,7 @@ import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import { parseLaunchFailure } from "@shared/launch-failure.ts";
+import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
 import {
@@ -254,7 +255,9 @@ let db: DatabaseSync | undefined;
 //     no question offered or used a snooze before these existed.
 // 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
 //     '[]' with no backfill: no run attached a repository before this existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
+// 36: a hibernated task's record (`tasks.hibernation`, @shared/hibernation.ts), nullable with no
+//     backfill: no task was hibernated before it existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -506,6 +509,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       launch_failure TEXT,
       -- A Report bug session: the failed task it was started to report. NULL on every other.
       launch_report_for TEXT,
+      -- JSON TaskHibernation (@shared/hibernation.ts): the embedded session that resumes, the
+      -- conversation it reopens and the blocker it carried. Written only while the task is
+      -- 'hibernated' and NULL on every other row.
+      hibernation TEXT,
       -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
       -- when they were leased. NULL when none failed, which is nearly every task.
       claim_warnings TEXT,
@@ -3497,6 +3504,7 @@ function outstandingFileCommentIndexSql(): string {
 function migrate(d: DatabaseSync): void {
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
+  addColumn(d, "tasks", "hibernation", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "resident_runs", "launch_extra_repo_spellings", "TEXT NOT NULL DEFAULT '[]'");
@@ -6263,6 +6271,7 @@ interface TaskRow {
   error: string | null;
   launch_failure: string | null;
   launch_report_for: string | null;
+  hibernation?: string | null;
   created_at: number;
   updated_at: number;
   dispatched_at: number | null;
@@ -6731,6 +6740,8 @@ function rowToTask(
     error: r.error,
     launchFailure: parseLaunchFailure(r.launch_failure),
     launchReportFor: r.launch_report_for,
+    // Read only for a hibernated row, so a record can never outlive the status it describes.
+    hibernation: r.status === "hibernated" ? parseTaskHibernation(r.hibernation) : null,
     automaticCleanup,
     residentRestart,
     ...readTaskClaimWarnings(r.claim_warnings ?? null),
@@ -6792,9 +6803,9 @@ export function upsertTask(t: Task): string[] {
          base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings,
+         status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings, hibernation,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -6827,6 +6838,7 @@ export function upsertTask(t: Task): string[] {
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, launch_failure=excluded.launch_failure,
          launch_report_for=excluded.launch_report_for, claim_warnings=excluded.claim_warnings,
+         hibernation=excluded.hibernation,
          updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
@@ -6860,6 +6872,8 @@ export function upsertTask(t: Task): string[] {
       t.launchFailure ? JSON.stringify(t.launchFailure) : null,
       t.launchReportFor ?? null,
       t.claimWarnings && t.claimWarnings.length > 0 ? JSON.stringify(t.claimWarnings) : null,
+      // Stored only while hibernated: a status change that forgot to clear it clears it here.
+      t.status === "hibernated" && t.hibernation ? JSON.stringify(t.hibernation) : null,
       t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,
@@ -8073,11 +8087,14 @@ export function listTaskSourceBacklog(sourceId: string): Task[] {
   return rowsToTasks(rows);
 }
 
-/** Tasks still in flight (backlog/dispatching/running) - reloaded into the registry on start. */
+/**
+ * Tasks still in flight (backlog/dispatching/running) and hibernated ones, which wait for the
+ * operator's Resume - reloaded into the registry on start.
+ */
 export function loadActiveTasks(): Task[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM tasks WHERE status = 'backlog' OR status IN (${ACTIVE_TASK_STATUSES_SQL})
+      `SELECT * FROM tasks WHERE status IN ('backlog', 'hibernated') OR status IN (${ACTIVE_TASK_STATUSES_SQL})
        ORDER BY created_at ASC`,
     )
     .all() as unknown as TaskRow[];

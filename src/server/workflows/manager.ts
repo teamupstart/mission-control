@@ -1,3 +1,4 @@
+import { hibernationHoldsSession } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
@@ -770,7 +771,8 @@ export class WorkflowManager {
             this.publishRun(delivery.runId);
           }
           for (const binding of this.store.listBindings()) {
-            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+              || this.hibernationHoldsBinding(binding)) continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
             if (active) {
               this.publishBinding(active.id);
@@ -1622,7 +1624,7 @@ export class WorkflowManager {
   }
 
   /** Resume obligations include secondary repository bindings and exited projections. */
-  resumeNeedsEvidence(session: Session): boolean {
+  resumeNeedsEvidence(session: Pick<Session, "id" | "agentSessionId">): boolean {
     const noteKey = noteKeyFor(session);
     return this.store.listBindings().some((binding) => {
       if (binding.noteKey !== noteKey || binding.state !== "active") return false;
@@ -7571,7 +7573,8 @@ export class WorkflowManager {
 
   private reconcileBindingsAfterDiscovery(): void {
     for (const binding of this.store.listBindings()) {
-      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+        || this.hibernationHoldsBinding(binding)) continue;
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const updated = !session || session.state === "exited"
         ? this.store.orphanBinding(binding.id, "session_disappeared")
@@ -7583,6 +7586,38 @@ export class WorkflowManager {
       const run = this.store.activeRunForBinding(updated.id);
       if (run) this.publishRun(run.id);
     }
+  }
+
+  /**
+   * A hibernated terminal task resumed as a new process on its conversation: the bindings armed
+   * on the stopped session follow the new one. Only an armed binding moves - hibernation is
+   * refused while a run is open, so none has a delivery in flight - and only into the same
+   * checkout and agent, the compatibility `reattach` asks for.
+   */
+  followResumedConversation(priorSessionId: string, session: Session, now = Date.now()): void {
+    for (const binding of this.store.listBindings()) {
+      if (binding.sessionId !== priorSessionId || binding.state !== "active") continue;
+      if ((binding.sessionAgent && binding.sessionAgent !== session.agent) || binding.sessionCwd !== session.cwd) continue;
+      const updated = this.store.reattachBinding(binding.id, {
+        noteKey: noteKeyFor(session),
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: session.cwd,
+        sessionRepoRoot: session.repoRoot,
+      }, now);
+      if (updated) this.publishBinding(updated.id);
+    }
+  }
+
+  /**
+   * A hibernated task's binding is not orphaned by its session leaving: Resume reopens the same
+   * conversation (`@shared/hibernation.ts`) - under the same session id for an Agent SDK session,
+   * and through `followResumedConversation` for a terminal one - so the armed workflow is still
+   * the one that will judge its work.
+   */
+  private hibernationHoldsBinding(binding: WorkflowBinding): boolean {
+    return hibernationHoldsSession(this.registry.listTasks(), binding.sessionId);
   }
 
   private localPlanOwnsBinding(binding: WorkflowBinding): boolean {

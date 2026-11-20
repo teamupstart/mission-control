@@ -85,9 +85,12 @@ test("a shell line that execs git is git's one process, not a shell beside it", 
   const { spawns, report } = traced(`
     import cp from "node:child_process";
     cp.execSync("exec git --version");
+    cp.execSync("exec git --version > /dev/null");
   `);
-  assert.deepEqual(spawns.map((spawn) => spawn.cmd), ["git"]);
+  assert.deepEqual(spawns.map((spawn) => [spawn.cmd, spawn.compound]), [["git", false], ["git", false]]);
   assert.equal(report.processTotalParts.nonGitSpawns, 0);
+  // The redirect is applied before the exec, so no shell is left beside git either.
+  assert.equal(report.processTotalParts.shellsAroundGitLines, 0);
 });
 
 test("the report labels a shell git started by its git command, never by the child's text", () => {

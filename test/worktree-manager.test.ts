@@ -300,6 +300,19 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   assert.ok(answered.ok);
   assert.equal(answered.value.head, detachedSha);
   assert.equal(answered.value.detached, true);
+  // A `.git` that is a symbolic link to the gitfile is a layout git accepts; it is read through.
+  const gitfile = join(detachedTree, ".git");
+  const movedGitfile = join(detachedTree, "..", "detached-gitfile-elsewhere");
+  renameSync(gitfile, movedGitfile);
+  symlinkSync(movedGitfile, gitfile);
+  try {
+    const linked = await new NativeWorktreeGit(async () => known(header(detachedSha, "(detached)")), noPause).inspect(detachedTree);
+    assert.ok(linked.ok, linked.ok ? "" : linked.reason);
+    assert.equal(linked.value.detached, true);
+  } finally {
+    unlinkSync(gitfile);
+    renameSync(movedGitfile, gitfile);
+  }
   // HEAD moving between status and the file read: status saw one commit, the file holds another.
   // Neither read is trustworthy alone, so the inspection is unknown rather than detached at a
   // commit the slot no longer stands on.

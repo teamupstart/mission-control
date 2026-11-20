@@ -140,7 +140,9 @@ if (dir) {
       event: "spawn", file, api, cmd, sub,
       caller: caller(),
       shell,
-      compound: shell ? SHELL_CONTROL.test(line) : false,
+      // A line led by `exec` replaces the shell with its program after applying any redirection,
+      // so no shell is left beside it whatever the rest of the line contains.
+      compound: shell && !/^\s*exec\s/.test(line) ? SHELL_CONTROL.test(line) : false,
       launched: launchedFrom(outcome),
       pid: outcome && typeof outcome === "object" && typeof outcome.pid === "number" ? outcome.pid : null,
       ppid: process.pid,

@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
@@ -126,7 +126,9 @@ async function headFile(path: string): Promise<string | null> {
   try {
     const dotGit = join(path, ".git");
     let gitDir = dotGit;
-    if ((await lstat(dotGit)).isFile()) {
+    // `stat`, not `lstat`: git accepts a `.git` that is a symbolic link to a gitfile, and reads
+    // through it as a gitfile.
+    if ((await stat(dotGit)).isFile()) {
       const pointer = (await readFile(dotGit, "utf8")).trim();
       if (!pointer.startsWith("gitdir: ")) return null;
       gitDir = resolve(path, pointer.slice("gitdir: ".length));

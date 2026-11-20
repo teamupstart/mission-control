@@ -248,8 +248,12 @@ All three routes are behind the flag and answer 404 while it is off.
   each known shaper appears in full and an entry this build cannot run appears only as
   `{ id, label, unsupported }`. Its raw definition stays in the daemon's storage and settings
   backup, and `PUT` replies with the same view.
-  `discovered` is empty until the folder lands. `references` lists every `{env:NAME}` a
-  shaper references, as `set` or `unset` in the daemon's environment, never a value.
+  `discovered` is empty until the folder lands. `references` lists every environment name a
+  shaper uses, each `{env:NAME}` its headers reference and each variable a `command` shaper or
+  a locally started MCP server passes through in `env`, as `set` or `unset` in the daemon's
+  environment, never a value. A name is `set` only when a call would send it, so Mission
+  Control's own token and state directory, an empty value and a value carrying the daemon's
+  token read `unset`.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,

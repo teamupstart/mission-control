@@ -254,7 +254,8 @@ A reference that resolves to nothing, an empty value included, fails closed: the
 called and its outcome is `unavailable`, naming the reference. `{env:NAME}` never resolves
 Mission Control's own API token, its token file, its scout credentials, or its state directory
 under any name, and never a value that carries the daemon's token. `GET /api/shaping` reports
-every referenced name as `set` or `unset`, never its value.
+every referenced name as `set` or `unset`, never its value, and so it does for each variable a
+`command` shaper or a locally started MCP server passes through in its `env` list.
 
 **Where the daemon's environment comes from.** `{env:NAME}` reads the daemon process's
 environment and nothing else: not your login shell, and not a file. What that environment holds

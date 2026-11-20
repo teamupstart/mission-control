@@ -19,6 +19,7 @@ import {
 } from "@shared/shaping.ts";
 import { STATE_HOME_ENV_NAMES } from "../agent-subprocess-env.ts";
 import { redactSpans } from "./redaction.ts";
+import { carriedEnvName } from "./transports/carriers.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Resolution
@@ -148,8 +149,25 @@ export function shaperEnvReferences(shaper: Shaper): string[] {
 }
 
 /**
- * Whether each `{env:NAME}` a shaper references is set in the daemon's environment, never its
+ * Every environment name a shaper uses, in the order it names them: the `{env:NAME}` its headers
+ * reference, and the variables a `command` shaper or a locally started MCP server passes through
+ * in its `env` list. The carriers' own names are left out, because a shaper never receives one
+ * it named. Settings shows each as set or not set beside the shaper.
+ */
+export function shaperEnvironmentNames(shaper: Shaper): string[] {
+  const transport = shaper.transport;
+  const passed = transport.type === "command"
+    ? transport.env
+    : transport.type === "mcp" && transport.server.type === "stdio" ? transport.server.env : [];
+  return [...new Set([...shaperEnvReferences(shaper), ...passed.filter((name) => !carriedEnvName(name))])];
+}
+
+/**
+ * Whether each environment name a shaper uses is set in the daemon's environment, never its
  * value: every registered shaper this build understands and every discovered one that can run.
+ * A name counts as set only when a call would send it: one no reference may resolve, or that a
+ * `command` shaper may never receive, such as Mission Control's own token, is always `unset`, as
+ * are an empty value and one that carries the daemon's token.
  * A name no reference may resolve, such as Mission Control's own token, is always `unset`, as a
  * call would find it.
  */
@@ -165,7 +183,7 @@ export function referenceStatus(
   ];
   const token = daemonToken.trim();
   const status: ShapingReferenceStatus = {};
-  for (const name of shapers.flatMap(shaperEnvReferences).sort()) {
+  for (const name of [...new Set(shapers.flatMap(shaperEnvironmentNames))].sort()) {
     status[name] = resolveOne(`env:${name}`, { caller: { user: null, agent: null, conversation: null }, env }, token) === null ? "unset" : "set";
   }
   return status;

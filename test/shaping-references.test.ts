@@ -58,12 +58,20 @@ test("the status lists every environment name a shaper references as set or unse
     transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://mcp.example.test/mcp", headers: { "x-api-key": "{env:NOT_SET}", "x-tenant": "{env:EMPTY}" } } },
   });
   const local = ShaperSchema.parse({
-    id: "local", label: "Local", stage: "gather", transport: { type: "command", command: "/bin/echo", env: ["PASSED_THROUGH"] },
+    id: "local", label: "Local", stage: "gather",
+    transport: { type: "command", command: "/bin/echo", env: ["PASSED_THROUGH", "MISSION_API_TOKEN", "TRACEPARENT", "ACME_TENANT"] },
   });
-  const status = referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [remote, local] }, [
+  const stdio = ShaperSchema.parse({
+    id: "stdio", label: "Stdio", stage: "select",
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: "/bin/echo", env: ["STDIO_ONLY"] } },
+  });
+  const status = referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [remote, local, stdio] }, [
     { id: "found", path: "/shapers/found/shaper.json", state: "ok", problem: null, sha256: null, shaper: mcp },
   ], env, ctx.daemonToken);
-  assert.deepEqual(status, { ACME_TOKEN: "set", EMPTY: "unset", NOT_SET: "unset" }, "a pass-through name is not a reference");
+  assert.deepEqual(status, {
+    ACME_TENANT: "set", ACME_TOKEN: "set", EMPTY: "unset", MISSION_API_TOKEN: "unset", NOT_SET: "unset",
+    PASSED_THROUGH: "unset", STDIO_ONLY: "unset",
+  }, "header references and pass-through names alike; Mission Control's own token is never set, and a carrier's name is not listed");
   assert.equal(JSON.stringify(status).includes("tok-9f8e7d"), false);
   assert.deepEqual(referenceStatus(SHAPING_CONFIG_DEFAULTS, [], env), {});
 });

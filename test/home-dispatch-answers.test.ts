@@ -28,6 +28,7 @@ const { isApprovingActor, isHomeDispatchActor } = await import("../src/shared/re
 const { receiptLine, HOME_DISPATCH_CHAT_FIRST_TEXT } = await import("../src/shared/home-dispatch-inbox.ts");
 const { mkTask, mkMuxHandle } = await import("./helpers/session-fixture.ts");
 const { revisionHashFor, taskOwningSession } = await import("../src/server/home-dispatch/approval.ts");
+const { unattributedItems } = await import("../src/server/home-dispatch/inbox.ts");
 const { PLAN_APPROVAL_DECISION } = await import("../src/shared/managed-plans.ts");
 
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
@@ -267,10 +268,43 @@ test("a takeover question is shown only in the repository of the session that as
   assert.ok(inA.needsYou.includes(`review:${review.id}`));
 });
 
+test("a session names one task at a time: a later task takes the pointer from an earlier one, so runs and questions cannot be shared", async () => {
+  const h = await homeIn("exclusive");
+  const shared = addTask("t-excl-a", h.repo, "home-session", { status: "done", completedAt: 1, updatedAt: 1 });
+  assert.equal(registry.getTask("t-excl-a")?.sessionId, shared);
+  addTask("t-excl-b", h.repo, "home-session", { sessionId: shared });
+  assert.equal(registry.getTask("t-excl-a")?.sessionId, null, "the earlier task no longer holds the session");
+  assert.equal((openDb().prepare(`SELECT session_id FROM tasks WHERE id = 't-excl-a'`).get() as { session_id: string | null }).session_id, null);
+  // So a run found by session id can only be the holder's, however long ago the earlier task ended.
+  assert.equal(registry.listTasks().filter((t) => t.sessionId === shared).map((t) => t.id).join(), "t-excl-b");
+});
+
+test("a request stranded by an ambiguous session is still listed, as dashboard-only, in the asking repository", async () => {
+  const h = await homeIn("ambiguous");
+  const other = await homeIn("ambiguous-other");
+  const shared = addTask("t-amb-a", h.repo, "home-session");
+  addTask("t-amb-b", h.repo, "home-session");
+  const review = reviews.create(shared, "input", "Stranded", "Which?", [QUESTION]);
+  // The registry cannot produce two active holders, so the ambiguity is simulated on its task list.
+  const both = registry.listTasks().filter((t) => ["t-amb-a", "t-amb-b"].includes(t.id)).map((t) => ({ ...t, sessionId: shared }));
+  const fake = { registry: Object.assign(Object.create(registry), { listTasks: () => both }) };
+  const resolvedFor = (home: { sessionId: string; repo: string }) =>
+    ({ caller: { surface: "home-session" as const, sessionId: home.sessionId, repoRoot: home.repo }, sessionId: home.sessionId, allRepos: false });
+
+  const mine = unattributedItems(fake, resolvedFor(h));
+  const item = mine.find((i) => i.taskId === `review:${review.id}`);
+  assert.equal(item?.state, "waiting");
+  assert.equal(item?.pending?.dashboardOnly, true);
+  assert.equal(unattributedItems(fake, resolvedFor(other)).some((i) => i.taskId === `review:${review.id}`), false, "not shown to another repository");
+});
+
 test("taskOwningSession refuses to guess when two active tasks claim one session", () => {
   const t = (id: string, status: string) => ({ id, status, sessionId: "s-shared", updatedAt: 1 });
   const deps = (tasks: unknown[]) => ({ registry: { listTasks: () => tasks, taskForSession: () => undefined } }) as never;
-  assert.deepEqual(taskOwningSession(deps([t("a", "running"), t("b", "dispatching")]), "s-shared"), { ambiguous: true });
+  assert.deepEqual(
+    taskOwningSession(deps([t("a", "running"), t("b", "dispatching")]), "s-shared"),
+    { ambiguous: true, tasks: [t("a", "running"), t("b", "dispatching")] },
+  );
   assert.deepEqual(taskOwningSession(deps([t("a", "running"), t("b", "done")]), "s-shared"), { task: t("a", "running") });
   assert.equal(taskOwningSession(deps([]), "s-shared"), undefined);
   const started = (id: string, dispatchedAt: number) => ({ id, status: "running", sessionId: "s-shared", dispatchedAt, createdAt: 1, updatedAt: 1 });

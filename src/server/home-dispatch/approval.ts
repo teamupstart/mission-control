@@ -169,9 +169,9 @@ export function taskOwningSession(
   sessionId: string,
   /** When the review was created. A task that started after it cannot be the one that asked. */
   reviewCreatedAt?: number,
-): { task: Task } | { ambiguous: true } | { unestablished: true; task: Task } | undefined {
+): { task: Task } | { ambiguous: true; tasks: Task[] } | { unestablished: true; task: Task } | undefined {
   const active = deps.registry.listTasks().filter((t) => t.sessionId === sessionId && isActiveTask(t.status));
-  if (active.length > 1) return { ambiguous: true };
+  if (active.length > 1) return { ambiguous: true, tasks: active };
   // The registry's card rule skips a cancelled task, but a cancelled task can still hold a pending
   // question, so the newest task ever bound to the session is the last resort.
   const task = active[0]

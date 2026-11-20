@@ -189,6 +189,34 @@ export const UNATTRIBUTED_ITEM_PREFIX = "review:";
  * session after it was asked). It is a waiting item in `needsYou`, marked dashboard-only so the
  * answers route's refusal and the pane say the same thing, and it names no task but the review.
  */
+/**
+ * The pending questions no single task can be named for, as dashboard-only items. Two cases: another
+ * task took over the session after it was asked (`unestablished`), and more than one active task
+ * claims the session (`ambiguous`, which the exclusive session pointer should make impossible, so a
+ * request stranded by it is still reported rather than dropped). Each is shown only where it was
+ * asked, the session's own repository, never the holder's, and only when a home-dispatched task is
+ * involved, so a dashboard task's question is not exposed to a home session. Found in a pass of its
+ * own because the holder may belong to a repository the caller cannot see.
+ */
+export function unattributedItems(
+  deps: Pick<HomeDispatchDeps, "registry">,
+  resolved: ResolvedCaller,
+): HomeDispatchInboxItem[] {
+  const out: HomeDispatchInboxItem[] = [];
+  const origins = taskOrigins();
+  for (const review of deps.registry.pendingReviews()) {
+    const owner = taskOwningSession(deps, review.sessionId, review.createdAt);
+    if (!owner) continue;
+    const holders = "unestablished" in owner ? [owner.task] : "ambiguous" in owner ? owner.tasks : [];
+    if (holders.length === 0) continue;
+    if (!holders.some((t) => origins.get(t.id)?.originSurface != null)) continue;
+    const asked = deps.registry.getSession(review.sessionId);
+    if (!resolved.allRepos && !sameRepo(asked?.repoRoot ?? null, resolved.caller.repoRoot)) continue;
+    out.push(unattributedItem(review, holders[0]!, asked));
+  }
+  return out;
+}
+
 function unattributedItem(review: ReviewItem, holder: Task, session: Session | undefined): HomeDispatchInboxItem {
   // Only the review's own words and ids are used: nothing of the task that now holds the session.
   return {
@@ -311,19 +339,7 @@ export function buildInbox(
     for (const review of furtherPending) items.push(furtherPendingItem(review, item, resident !== undefined));
   }
 
-  // A question whose asking task cannot be established: another task took over its worker session
-  // after it was asked. It is still pending, so it is listed on its own as something only the
-  // dashboard can answer, attributed to no task, and only where it was asked: the session's own
-  // repository (the one association that survives the takeover), never the new holder's. Found in a
-  // pass of its own because the holder may belong to a repository the caller cannot see.
-  for (const review of deps.registry.pendingReviews()) {
-    const owner = taskOwningSession(deps, review.sessionId, review.createdAt);
-    if (!owner || !("unestablished" in owner)) continue;
-    if (taskOrigins().get(owner.task.id)?.originSurface == null) continue;
-    const asked = deps.registry.getSession(review.sessionId);
-    if (!resolved.allRepos && !sameRepo(asked?.repoRoot ?? null, caller.repoRoot)) continue;
-    items.push(unattributedItem(review, owner.task, asked));
-  }
+  items.push(...unattributedItems(deps, resolved));
 
   const needsYou = needsYouOrder(items);
   const counts = Object.fromEntries(INBOX_STATES.map((s) => [s, 0])) as Record<InboxState, number>;

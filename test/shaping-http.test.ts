@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
@@ -86,14 +86,20 @@ test("each intent persists, notifies and is reflected by GET", async () => {
     assert.equal(settings.status, 200);
     const { config } = await settings.json() as { config: typeof SHAPING_CONFIG_DEFAULTS };
     assert.deepEqual(config.shapers.map((entry) => entry.id), ["gather-one", "select-one"]);
-    assert.deepEqual(config.overrides, { "gather-one": true });
+    assert.deepEqual(config.overrides, { "gather-one": true, "select-one": false }, "an upsert stores an explicit off");
     assert.deepEqual(config.order, ["select-one", "gather-one"]);
     assert.deepEqual([config.caller.user, config.limits.deadlineMs], ["declared-user", 20_000]);
     assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), config);
     assert.deepEqual(((await (await get()).json()) as { config: unknown }).config, config);
+    // Replacing a shaper that is on stores an explicit off, in the reply and in storage.
+    const replaced = await put({ kind: "upsert", shaper: fixture("gather-one", "gather", "degraded") });
+    assert.equal(replaced.status, 200);
+    assert.equal(((await replaced.json()) as { config: typeof SHAPING_CONFIG_DEFAULTS }).config.overrides["gather-one"], false);
+    assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as typeof SHAPING_CONFIG_DEFAULTS).overrides["gather-one"], false);
     assert.equal((await put({ kind: "remove", id: "select-one" })).status, 200);
     assert.deepEqual(shaping.getShapingConfig().order, ["gather-one"]);
-    assert.equal(seen.length, 6);
+    assert.equal(shaping.getShapingConfig().overrides["select-one"], undefined, "remove still clears the choice");
+    assert.equal(seen.length, 7);
   } finally { off(); }
 });
 
@@ -143,6 +149,111 @@ test("a deeply nested stored entry takes the unreadable path instead of throwing
   const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
   assert.equal(response.status, 409, "and writes are refused rather than overwriting it");
   assert.equal(warnings.length >= 1, true);
+});
+
+test("a stored row that is not valid JSON is unreadable, never treated as missing", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const raw = '{"shapers":[{"id":"kept","label":"Kept"'; // truncated mid-write, as a crash could leave it
+  openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key, raw);
+  shaping.reloadShaping();
+  assert.deepEqual(shaping.getShapingConfig(), SHAPING_CONFIG_DEFAULTS, "reads fall back to the defaults");
+  const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
+  assert.equal(response.status, 409);
+  assert.equal(((await response.json()) as { error: string }).error, "unreadable_config");
+  const row = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.shaping.key) as { value: string };
+  assert.equal(row.value, raw, "the row is left exactly as it was");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
+});
+
+test("an oversized body is refused with 413 after the flag's gate, before it is parsed", async () => {
+  const huge = JSON.stringify({ kind: "upsert", shaper: { id: "big", label: "x".repeat(200 * 1024), stage: "gather", transport: { type: "command", command: "/bin/x" } } });
+  const putBig = await app.request("/api/shaping", { method: "PUT", headers, body: huge });
+  assert.equal(putBig.status, 413);
+  const testBig = await app.request("/api/shaping/test", { method: "POST", headers,
+    body: JSON.stringify({ id: "x", repository, prompt: "p".repeat(7 * 1024 * 1024) }) });
+  assert.equal(testBig.status, 413);
+  setFlag(false);
+  try {
+    assert.equal((await app.request("/api/shaping", { method: "PUT", headers, body: huge })).status, 404, "a disabled route reads no body");
+  } finally {
+    setFlag(true);
+  }
+});
+
+test("a working-tree check Git never answered is unknown, never reported as a bare repository", async () => {
+  const { insideWorkTree } = await import("../src/server/repos.ts");
+  assert.equal(await insideWorkTree(repository), "worktree");
+  const bare = join(home, "repos", "bare-check.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  assert.equal(await insideWorkTree(bare), "not-worktree");
+  const unanswered = async () => ({ code: null, stdout: "", stderr: "", outcomeUnknown: true, overflowed: false, timedOut: true }) as never;
+  assert.equal(await insideWorkTree(repository, unanswered), "unknown", "a timed-out check is not a no");
+  const overflowed = async () => ({ code: 0, stdout: "true", stderr: "", outcomeUnknown: false, overflowed: true }) as never;
+  assert.equal(await insideWorkTree(repository, overflowed), "unknown");
+  const neverStarted = async () => ({ code: null, stdout: "", stderr: "spawn git ENOENT", outcomeUnknown: false, overflowed: false }) as never;
+  assert.equal(await insideWorkTree(repository, neverStarted), "unknown", "nor is a check that never started");
+});
+
+test("a repository check Git never answers is 503, never an invalid checkout", async () => {
+  const { checkoutFor } = await import("../src/server/shaping/routes.ts");
+  const silent = async () => "unknown" as const;
+  // Root resolution fails because Git did not answer: a second probe says so.
+  const duringRoot = await checkoutFor(repository, { resolveRepoRoot: async () => null, insideWorkTree: silent });
+  assert.deepEqual([duringRoot.ok, !duringRoot.ok && duringRoot.status, !duringRoot.ok && duringRoot.error], [false, 503, "repository_check_failed"]);
+  // Root resolved, then the working-tree check went unanswered.
+  const duringTree = await checkoutFor(repository, { resolveRepoRoot: async () => repository, insideWorkTree: silent });
+  assert.deepEqual([duringTree.ok, !duringTree.ok && duringTree.status], [false, 503]);
+  // Root resolution failed although Git confirms a working tree: still an unanswered check.
+  const confirmedTree = await checkoutFor(repository, { resolveRepoRoot: async () => null, insideWorkTree: async () => "worktree" });
+  assert.deepEqual([confirmedTree.ok, !confirmedTree.ok && confirmedTree.status], [false, 503]);
+  // Git answered no: still 400, for an ordinary folder and for a bare repository.
+  const rejected = await checkoutFor(plainFolder, { resolveRepoRoot: async () => null, insideWorkTree: async () => "not-worktree" });
+  assert.deepEqual([!rejected.ok && rejected.status, !rejected.ok && rejected.error], [400, "unknown_repository"]);
+  assert.deepEqual(await checkoutFor(repository), { ok: true, repoRoot: realpathSync(repository) }, "the real probes accept the checkout");
+});
+
+test("a dry run resolves its path once: the gatherer runs where Git checked, and a dangling link is refused", async () => {
+  await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+  await put({ kind: "upsert", shaper: fixture("where", "gather", "echo") });
+  const link = join(home, "repos", "billing-api-link");
+  rmSync(link, { force: true });
+  symlinkSync(repository, link);
+  const response = await dryRun({ id: "where", repository: link });
+  assert.equal(response.status, 200);
+  const run = await response.json() as { entries: Array<{ body: string }> };
+  assert.equal((JSON.parse(run.entries[0]!.body) as { cwd: string }).cwd, realpathSync(repository), "the canonical path, not the link");
+  const dangling = join(home, "repos", "dangling-link");
+  rmSync(dangling, { force: true });
+  symlinkSync(join(home, "repos", "gone"), dangling);
+  const refused = await dryRun({ id: "where", repository: dangling });
+  assert.equal(refused.status, 400, "a path that cannot be resolved stops the dry run");
+});
+
+test("a dry run refuses a bare repository and accepts a linked worktree", async () => {
+  const bare = join(home, "repos", "bare.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  await put({ kind: "upsert", shaper: fixture("bare-check", "gather", "ok") });
+  const refused = await dryRun({ id: "bare-check", repository: bare });
+  assert.equal(refused.status, 400);
+  assert.match(((await refused.json()) as { reason: string }).reason, /bare repository/);
+  // A linked worktree of an ordinary checkout is a working tree, and still runs.
+  execFileSync("git", ["-C", repository, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "init"]);
+  const linked = join(home, "repos", "billing-api-linked");
+  execFileSync("git", ["-C", repository, "worktree", "add", "-q", "--detach", linked]);
+  assert.equal((await dryRun({ id: "bare-check", repository: linked })).status, 200);
+});
+
+test("a stored JSON null is unreadable, never treated as a missing row", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key, "null");
+  shaping.reloadShaping();
+  const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
+  assert.equal(response.status, 409);
+  const row = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.shaping.key) as { value: string };
+  assert.equal(row.value, "null", "the row is left as it was");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
 });
 
 test("a stored config this build cannot read is never overwritten", async (t) => {
@@ -233,8 +344,9 @@ test("a structured error, a degraded note or a version that repeats a passed val
     await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
     const named = { transport: { type: "command", command: process.execPath, env: ["SHAPER_FIXTURE_SECRET"] } };
     for (const [id, mode, outcome, reason] of [
-      ["error-leak", "reply-error-leak", "failed", "denied: rejected credential [redacted]"],
-      ["notes-leak", "reply-notes-leak", "degraded", "fell back after [redacted] was refused"],
+      // Scrubbed from the reply's content before the engine reads it, under the variable's name.
+      ["error-leak", "reply-error-leak", "failed", "denied: rejected credential [SHAPER_FIXTURE_SECRET redacted]"],
+      ["notes-leak", "reply-notes-leak", "degraded", "fell back after [SHAPER_FIXTURE_SECRET redacted] was refused"],
       ["version-leak", "version-leak", "ok", null],
     ] as const) {
       const shaper = fixture(id, "select", mode);
@@ -243,10 +355,35 @@ test("a structured error, a degraded note or a version that repeats a passed val
       assert.equal(response.status, 200);
       const text = await response.text();
       assert.equal(text.includes("s3cret-passed-value"), false, `${id}: the value appears nowhere in the reply`);
-      const run = JSON.parse(text) as { summary: { shapers: Array<{ outcome: string; reason: string; version: string | null }> } };
+      const run = JSON.parse(text) as { summary: { shapers: Array<{ outcome: string; reason: string; version: string | null; redacted: boolean }> } };
       assert.deepEqual([run.summary.shapers[0]!.outcome, run.summary.shapers[0]!.reason], [outcome, reason]);
-      if (id === "version-leak") assert.equal(run.summary.shapers[0]!.version, "v2-[redacted]", "the recorded version is scrubbed");
+      assert.equal(run.summary.shapers[0]!.redacted, true, `${id}: the record says a credential value was removed`);
+      if (id === "version-leak") assert.equal(run.summary.shapers[0]!.version, "v2-[SHAPER_FIXTURE_SECRET redacted]", "the recorded version is scrubbed");
     }
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
+    else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("a dry run never returns a named credential the shaper echoed in its guidance", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SECRET;
+  process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
+  try {
+    await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+    await put({ kind: "upsert", shaper: { ...fixture("guidance-leak", "gather", "guidance-leak"),
+      transport: { type: "command", command: process.execPath, args: [FIXTURE, "guidance-leak", "SHAPER_FIXTURE_SECRET"], env: ["SHAPER_FIXTURE_SECRET"] } } });
+    const response = await dryRun({ id: "guidance-leak", repository });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.equal(text.includes("s3cret-passed-value"), false, "neither entries nor section nor summary carry it");
+    const run = JSON.parse(text) as { section: string; entries: Array<{ id: string; body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean; reason: string | null }> } };
+    assert.deepEqual(run.entries.map((entry) => [entry.id, entry.body]), [["kept", "use [SHAPER_FIXTURE_SECRET redacted] to sign in"]]);
+    assert.match(run.section, /use \[SHAPER_FIXTURE_SECRET redacted\] to sign in/);
+    assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]], "redaction is not degradation");
+    assert.match(run.summary.shapers[0]!.reason ?? "",
+      /An entry was dropped because its id contained the value of SHAPER_FIXTURE_SECRET\..*A fact was dropped/,
+      "and the dry run says what was dropped");
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;

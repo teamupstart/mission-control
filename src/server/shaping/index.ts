@@ -9,7 +9,7 @@ import {
   type ShapingIntent,
   type ShapingIntentResult,
 } from "@shared/shaping.ts";
-import { getAppConfig, openDb, setAppConfig } from "../db.ts";
+import { getAppConfig, hasAppConfigRow, openDb, setAppConfig } from "../db.ts";
 
 /**
  * The daemon's one owner of `app_config.shaping`, built the way the feature-flag store is: a
@@ -48,7 +48,18 @@ function deepFreeze<T>(value: T): T {
 
 function readConfig(): { config: ShapingConfig; readable: boolean } {
   const stored = getAppConfig(APP_CONFIG_ENTRIES.shaping);
-  if (stored === undefined || stored === null) return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: true };
+  // `getAppConfig` answers undefined both for a missing row and for one whose JSON does not
+  // parse. Only a missing row means "never configured"; a row that cannot be decoded is
+  // unreadable, so no write replaces the shapers it may hold.
+  // Only an absent row means "never configured". A row that holds JSON `null`, or JSON that does
+  // not decode, is a value this build cannot read, and takes the same refusing path.
+  if (stored === undefined && !hasAppConfigRow(APP_CONFIG_ENTRIES.shaping)) {
+    return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: true };
+  }
+  if (stored === undefined || stored === null) {
+    console.warn("[shaping] stored config is not a readable value; using defaults and refusing writes");
+    return { config: freeze(structuredClone(SHAPING_CONFIG_DEFAULTS)), readable: false };
+  }
   let parsed: ReturnType<typeof ShapingConfigSchema.safeParse>;
   try {
     parsed = ShapingConfigSchema.safeParse(stored);

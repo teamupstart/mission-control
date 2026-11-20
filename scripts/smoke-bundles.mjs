@@ -28,7 +28,7 @@ import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
 // would fail for anyone who had not built first - reporting a missing build as a broken
 // daemon. This runs after `npm run build`, where the artifact is guaranteed to exist.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, copyFile, readFile, rm } from "node:fs/promises";
@@ -526,6 +526,48 @@ async function smokeSatellitePaths() {
 }
 
 /**
+ * Prove `npm run build:mod` left the Claude Code mod and its folder marketplace in the shape
+ * `mctl setup` stages and installs (spec 7.10, 7.10a): a plugin manifest carrying the app's
+ * version and a `modApi` integer, a hooks file naming a module that exists, the state contract
+ * the manifest names, and a marketplace whose relative `source` reaches the plugin. When the
+ * `claude` CLI is installed it also runs `claude plugin validate`, which is how a layout the
+ * engine would refuse shows up here rather than on a person's machine.
+ */
+async function smokeModBuild() {
+  const modRoot = resolve("dist/mod");
+  const pluginDir = join(modRoot, "mission-control");
+  const readJson = async (path) => JSON.parse(await readFile(path, "utf8"));
+  try {
+    const pkg = await readJson(resolve("package.json"));
+    const plugin = await readJson(join(pluginDir, ".claude-plugin", "plugin.json"));
+    if (plugin.name !== "mission-control") throw new Error(`plugin.json names ${plugin.name}`);
+    if (plugin.version !== pkg.version) throw new Error(`plugin.json version ${plugin.version} is not the app's ${pkg.version}`);
+    if (!Number.isInteger(plugin.modApi)) throw new Error("plugin.json has no integer modApi");
+    if (!existsSync(join(pluginDir, plugin.types))) throw new Error(`plugin.json names types ${plugin.types}, which does not exist`);
+    const hooks = await readJson(join(pluginDir, "hooks", "hooks.json"));
+    if (!Array.isArray(hooks.modules) || hooks.modules.length !== 1) throw new Error("hooks.json must name exactly one module");
+    if (!existsSync(join(pluginDir, "hooks", hooks.modules[0]))) throw new Error(`hooks.json names ${hooks.modules[0]}, which does not exist`);
+    const market = await readJson(join(modRoot, ".claude-plugin", "marketplace.json"));
+    const entry = market.plugins?.find((p) => p.name === "mission-control");
+    if (!entry || typeof entry.source !== "string" || !entry.source.startsWith("./")) {
+      throw new Error("marketplace.json must list mission-control with a relative source");
+    }
+    if (!existsSync(join(modRoot, entry.source, ".claude-plugin", "plugin.json"))) throw new Error(`marketplace source ${entry.source} does not reach the plugin`);
+  } catch (error) {
+    fail(`the built mod is not in the expected shape: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  console.log("[smoke] the mod and its folder marketplace are in the expected shape");
+  if (spawnSync("claude", ["--version"], { stdio: "ignore" }).status !== 0) {
+    console.log("[smoke] claude is not installed; skipping claude plugin validate");
+    return;
+  }
+  const validated = spawnSync("claude", ["plugin", "validate", pluginDir], { encoding: "utf8" });
+  if (validated.status !== 0) fail(`claude plugin validate rejected the built mod:\n${validated.stdout}${validated.stderr}`);
+  else console.log("[smoke] claude plugin validate accepts the built mod");
+}
+
+/**
  * Prove the second Vite entry is a real isolated document and Mermaid remains outside
  * the dashboard's initial static import graph. A missing file would otherwise be answered
  * by the daemon's SPA fallback, which looks like a successful HTTP load until the bridge
@@ -812,6 +854,7 @@ await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+await smokeModBuild();
 // The optional wrapper ships under dist/**/*, alongside the other satellites.
 if (!existsSync(resolve("dist/satellites/harness-statusline.mjs"))) fail("the shipped statusline wrapper is missing");
 else {

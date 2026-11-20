@@ -416,8 +416,22 @@ chose to pass, so it is replaced anywhere whatever its length, inside a word inc
 are replaced as one span, so no part of either survives. Each value is found with a
 Knuth-Morris-Pratt scan and its matches are marked in a difference array, so the work is linear
 in the text and the value however many copies overlap, and a reply at the 256 KiB cap cannot
-stall the daemon. Entry bodies are
-the shaper's content and are not rewritten.
+stall the daemon.
+
+A value the operator named in `env` is also removed from the reply's own content before the
+engine reads it: every occurrence in an entry's path, title or body, the summary, a fact's value,
+the notes, the version and an error becomes `[NAME redacted]`. Keys the result schema defines are
+never changed. An entry whose id, or a fact whose name, contains the value is dropped with a
+note rather than renamed, so redaction never merges two of them. Every value is found on the
+original text before anything is replaced, so two named values that overlap are removed over
+their combined span and no fragment of either survives. A field the result schema bounds, such
+as an entry's title or the version, is cut back to its bound when the marker makes it longer, so
+a reply that was valid stays valid. The shaper's record is marked
+`redacted`, its reason names what was dropped, and its outcome does not change. An inherited
+value that carries a credential although nobody named it, a URL with userinfo such as an
+authenticated `HTTPS_PROXY`, is treated as named: the whole URL, its `user:password` part and the
+password are removed from diagnostics and content alike, under the variable's name. Inherited values are not rewritten in content, which
+legitimately holds paths and ordinary words.
 
 stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
 whole and a non-ASCII value still matches exactly when it is redacted.
@@ -437,7 +451,13 @@ shaper locked is left behind and logged, because a path in the tree could be swa
 link between a read and a `chmod`. A cleanup a transport registers after its call was
 abandoned runs as soon as it is registered, so a late resource is still released.
 
-**No secret is stored.** A header that looks like it carries a credential must hold its secret
+**Pass command credentials through `env`.** Credential detection in a shaper definition is
+best-effort. It recognises the forms below and refuses them, but a literal secret in a form it
+cannot recognise, such as a bare positional argument with no known token shape, is stored as
+written and copied into settings snapshots. A command's credential belongs in a variable named
+in `env`, which is passed from the daemon's environment and never stored.
+
+A header that looks like it carries a credential must hold its secret
 as a reference. That is `authorization`, `proxy-authorization` or `cookie`, or any name that
 contains `token`, `secret`, `key`, `password`, `auth` or `credential`, compared without case,
 such as `x-api-key` or `X-Monkey`, as well as a name with a segment such as `session`. The rule

@@ -12,6 +12,7 @@ import {
   SHAPING_SECTION_PREAMBLE,
   shaperIsLocal,
   shapingEntryHeading,
+  shapingSlot,
   ShapingRequestSchema,
   ShapingResultSchema,
   summariseShaping,
@@ -30,6 +31,7 @@ import {
 import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { discoverShapers } from "./discovery.ts";
+import { withoutNul } from "./references.ts";
 import { getShapingConfig } from "./index.ts";
 import {
   callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTraceContext, type ShapingTransportCalls, type TransportReply,
@@ -56,7 +58,8 @@ export interface ShapeTaskRepository {
 export interface ShapeTaskInput {
   /** The operator's prompt, verbatim. */
   task: string;
-  context: Omit<ShapingContext, "repositories" | "caller"> & { repositories: readonly ShapeTaskRepository[] };
+  // Slots and the call's target are the engine's to assign, from the order dispatch collected.
+  context: Omit<ShapingContext, "repositories" | "caller" | "target"> & { repositories: readonly ShapeTaskRepository[] };
   /** Aborted when the task is cancelled while it is being shaped. */
   signal?: AbortSignal;
   /**
@@ -157,6 +160,20 @@ interface CallResult {
   truncated: boolean;
 }
 
+/** `fn` over `items`, at most `limit` at a time, results in the items' order. */
+async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = Array.from({ length: items.length });
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const at = next++;
+      results[at] = await fn(items[at]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 function bounded(reason: string): string {
   return reason.replace(/\s+/g, " ").trim().slice(0, SHAPING_LIMITS.reasonChars);
 }
@@ -204,8 +221,14 @@ export function runScope(): ShapingRunScope & { close(): void; readonly closed: 
   };
 }
 
-function orderRepositories(repositories: readonly ShapeTaskRepository[]): ShapeTaskRepository[] {
-  return [...repositories].sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
+/**
+ * The primary first, then the rest in attachment order (the sort is stable), each with its slot
+ * (D17): `repo-01` for the primary, then `repo-02` onward.
+ */
+function orderRepositories(repositories: readonly ShapeTaskRepository[]): Array<ShapeTaskRepository & { slot: string }> {
+  return [...repositories]
+    .sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"))
+    .map((repo, position) => ({ ...repo, slot: shapingSlot(position) }));
 }
 
 async function runShaping(
@@ -232,14 +255,15 @@ async function runShaping(
   const hashes = new Map(resolved.map((entry) => [entry.shaper.id, shaperSha256(entry)]));
   const facts = repositories.map((): ShapingFacts | null => null);
   const summaries = repositories.map((): string | null => null);
-  const results: Array<{ resolved: ResolvedShaper; repo: ShapeTaskRepository; result: CallResult }> = [];
+  const results: Array<{ resolved: ResolvedShaper; repo: ShapeTaskRepository & { slot: string }; result: CallResult }> = [];
 
-  const contextFor = (local: boolean): ShapingContext => ({
+  const contextFor = (local: boolean, target: string): ShapingContext => ({
     ...input.context,
     repositories: repositories.map((repo) => ({
-      name: repo.name, role: repo.role, branch: repo.branch, baseSha: repo.baseSha,
+      slot: repo.slot, name: repo.name, role: repo.role, branch: repo.branch, baseSha: repo.baseSha,
       ...(local && repo.path ? { path: repo.path } : {}),
     })),
+    target,
     caller: {
       user: config.caller.user || null,
       agent: input.context.harness,
@@ -281,7 +305,7 @@ async function runShaping(
         ...(stage !== "gather" && summaries[repoIndex] ? { summary: summaries[repoIndex]! } : {}),
       },
       ...(entry.shaper.version ? { version: entry.shaper.version } : {}),
-      context: contextFor(local),
+      context: contextFor(local, repo.slot),
       limits: { maxBytes: entry.shaper.maxBytes ?? config.limits.maxBytes, deadlineMs: timeoutMs },
     };
     // The request is checked against the wire schema before any transport sees it. Input the
@@ -308,7 +332,8 @@ async function runShaping(
     let reply: TransportReply | "abandoned";
     try {
       reply = await Promise.race([
-        callTransport(request, entry.shaper, {
+        // The parsed request, so a transport receives only the fields the wire contract declares.
+        callTransport(wire.data, entry.shaper, {
           deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null,
         }, transports),
         new Promise<"abandoned">((done) => {
@@ -333,32 +358,46 @@ async function runShaping(
       if (run.signal.aborted) return stopped();
       return reply.kind === "timed_out" ? empty("timed_out", reply.reason, reply.redacted === true) : timedOut();
     }
-    const redacted = reply.redacted === true;
+    let redacted = reply.redacted === true;
     if (reply.kind !== "data") return empty(reply.kind, reply.reason, redacted);
 
     // Every reason below is built from text the shaper wrote, so it is scrubbed of what the
     // transport handed the shaper before it is recorded, and before it is cut to length.
-    const scrub = reply.redact ?? ((text: string) => text);
+    // A diagnostic built here from the shaper's text can hold a named value the transport left in
+    // place, such as an invalid fact's name kept for validation. Removing it counts as redaction.
+    const redact = reply.redact ?? ((text: string) => text);
+    const holdsNamed = reply.holdsNamed ?? (() => false);
+    const scrub = (text: string): string => {
+      if (holdsNamed(text)) redacted = true;
+      return redact(text);
+    };
     let value = reply.data;
     if (typeof value === "string") {
       try { value = JSON.parse(value); }
       catch { return empty("invalid", "The reply is not JSON.", redacted); }
     }
+    // No NUL from a shaper reaches anything built from its reply. Phase 2 appends the section to
+    // a launch argument, and an argument holding NUL refuses to start the worker at all.
+    withoutNul(value);
     const error = replyError(value);
     if (error !== null) return empty("failed", scrub(error), redacted);
     const parsed = ShapingResultSchema.safeParse(value);
     if (!parsed.success) return empty("invalid", scrub(describeInvalidResult(parsed.error)), redacted);
     const result = parsed.data;
     const notes = scrub(result.notes?.filter((note) => note.trim()).join(" ") ?? "");
+    // What the transport dropped while redacting, recorded whatever the outcome: a successful
+    // reply that lost an entry still says so, and still answers `ok`.
+    const dropped = (reply.redactionNotes ?? []).join(" ");
     // The version is the shaper's text too, recorded and returned, so it is scrubbed as an
     // identifier (a named credential and any long value go, `v1.4.0` keeps an inherited "0"),
     // then held to its bound: a replacement can be longer than what it replaced.
+    if (result.version != null && holdsNamed(result.version)) redacted = true;
     const version = result.version == null ? null
-      : (reply.redact ? reply.redact(result.version, { identifier: true }) : result.version).slice(0, SHAPING_LIMITS.versionChars);
+      : redact(result.version, { identifier: true }).slice(0, SHAPING_LIMITS.versionChars);
     return {
       record: result.degraded
-        ? record("degraded", notes || "The shaper reported that it is degraded.", version, redacted)
-        : record("ok", null, version, redacted),
+        ? record("degraded", [notes || "The shaper reported that it is degraded.", dropped].filter(Boolean).join(" "), version, redacted)
+        : record("ok", dropped || null, version, redacted),
       entries: result.guidance.map((guidance) => ({
         id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
         body: guidance.body, truncated: guidance.truncated === true,
@@ -374,7 +413,9 @@ async function runShaping(
       const calls = resolved.filter((entry) => entry.shaper.stage === stage).flatMap((entry) =>
         repositories.flatMap((repo, index) => entry.repositories.includes(repo.name) ? [{ entry, index }] : []));
       if (calls.length === 0) continue;
-      const settled = await Promise.all(calls.map(({ entry, index }) => callOne(stage, entry, index)));
+      // At most `concurrentCalls` in flight. Results keep the call order whatever finishes first,
+      // and a call that waits for a slot starts with what is left of the step's deadline.
+      const settled = await mapBounded(calls, SHAPING_LIMITS.concurrentCalls, ({ entry, index }) => callOne(stage, entry, index));
       settled.forEach((result, at) => {
         const { entry, index } = calls[at]!;
         results.push({ resolved: entry, repo: repositories[index]!, result });
@@ -421,7 +462,8 @@ async function runShaping(
         // De-duplicated per repository, and only against entries the budget keeps: the same id
         // from the same shaper, or an identical body from any shaper, is injected once for that
         // repository. Two repositories whose entries share an id both reach the section.
-        keys: [`id\u0000${repo.name}\u0000${shaper.shaper.id}\u0000${item.id}`, `body\u0000${repo.name}\u0000${item.body}`],
+        // Keyed by slot, not name: two attached worktrees of one repository are separate here.
+        keys: [`id\u0000${repo.slot}\u0000${shaper.shaper.id}\u0000${item.id}`, `body\u0000${repo.slot}\u0000${item.body}`],
       });
     }
   }

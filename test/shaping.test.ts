@@ -26,6 +26,8 @@ import {
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
+  shapingSlot,
+  ShapingRequestSchema,
   shapingConfigView,
   TaskShapingSchema,
   ShaperSchema,
@@ -288,7 +290,7 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
   assert.equal(replaced.ok, true, "a valid replacement is accepted");
   const after = (replaced as { config: ShapingConfig }).config;
   assert.equal(classifyShaper(after.shapers.find((entry) => entry.id === "cmd")!).kind, "known");
-  assert.equal(Object.hasOwn(after.overrides, "cmd"), false, "and stored off, like a new definition");
+  assert.equal(after.overrides.cmd, false, "and stored off, like a new definition");
   assert.equal(ShapingConfigSchema.parse(JSON.parse(JSON.stringify(stored))).shapers.filter(credentialsWereRemoved).length, 2,
     "the mark survives a round trip");
 });
@@ -607,6 +609,19 @@ test("a positional argument holding a well-known credential is refused, and stri
   assert.equal(credentialsWereRemoved(entry), true);
 });
 
+test("a discovered manifest naming a ./ command resolves and can be dry-run; a registered one cannot", () => {
+  const manifest = ShaperManifestSchema.parse({ id: "folder-run", label: "Folder run", stage: "gather", transport: { type: "command", command: "./run" } });
+  const found: DiscoveredShaper = { id: "folder-run", path: "/shapers/folder-run", state: "ok", problem: null, sha256: "a".repeat(64), shaper: manifest };
+  const resolved = resolveShapers(config(), [found], task);
+  assert.deepEqual(resolved.map((entry) => [entry.shaper.id, entry.origin, entry.root, entry.shaper.transport.type === "command" && entry.shaper.transport.command]),
+    [["folder-run", "discovered", "/shapers/folder-run", "./run"]], "resolved against its folder");
+  assert.equal(resolveShaperById(config(), [found], "folder-run", task).ok, true, "and found for a dry run");
+  // A build modelled with its own stages keeps the same split.
+  const later = { stages: ["gather", "select"], shaper: shaperSchemaForStages(["gather", "select"]),
+    discovered: shaperSchemaForStages(["gather", "select"], { discovered: true }) };
+  assert.equal(resolveShapers(config(), [found], task, later).length, 1);
+});
+
 test("a built-in is registered only at a stage its registry entry declares", () => {
   const builtin = (stage: string) => ({ id: "files", label: "Files", stage, transport: { type: "builtin", builtin: "repository-files", options: {} } });
   assert.equal(ShaperSchema.safeParse(builtin("gather")).success, true);
@@ -633,6 +648,62 @@ test("a registered shaper cannot name a ./ command; a manifest in the shapers fo
   }
 });
 
+test("an unsupported reason never names an unrecognised key, which a writer could have chosen", () => {
+  const entry = StoredShaperSchema.parse({ ...command("extra"), "sk-live-key-as-name": true });
+  const view = shapingConfigView(config({ shapers: [entry] }));
+  const row = view.shapers[0] as { unsupported: string };
+  assert.equal(row.unsupported, "This build does not recognise a field this entry names.");
+  assert.equal(JSON.stringify(view).includes("sk-live-key-as-name"), false);
+});
+
+test("an entry whose truncation marker cannot fit its cap is dropped, never kept over budget", () => {
+  const allocation = allocateBudget([{ group: "g", groupBytes: 100, body: "ab" }], 1, { entryBytes: 16 * 1024, minEntryBytes: 0 });
+  assert.equal(allocation.kept.length, 0);
+  assert.equal(allocation.dropped.length, 1);
+  assert.equal(allocation.bytes, 0);
+});
+
+test("a label, which heads every injected entry, cannot hold NUL", () => {
+  assert.equal(ShaperSchema.safeParse({ ...command("nul"), label: "Ac\u0000me" }).success, false);
+  assert.equal(ShaperSchema.safeParse({ ...command("nul"), label: "Acme" }).success, true);
+});
+
+test("a request's context names each repository's slot and the call's target", () => {
+  assert.deepEqual([0, 1, 9, 31].map(shapingSlot), ["repo-01", "repo-02", "repo-10", "repo-32"]);
+  const base = { protocol: 1, stage: "select", task: "t", repo: { name: "r" }, limits: { maxBytes: 1024, deadlineMs: 100 },
+    context: { taskId: null, title: "", kind: "ship", harness: null, runtime: null, afterWork: null, labels: [], priority: null,
+      repositories: [{ slot: "repo-01", name: "r", role: "primary", branch: null, baseSha: null }], target: "repo-01",
+      caller: { user: null, agent: null, conversation: null } } };
+  assert.equal(ShapingRequestSchema.safeParse(base).success, true);
+  assert.equal(ShapingRequestSchema.safeParse({ ...base, context: { ...base.context, target: "billing-api" } }).success, false, "a target is a slot");
+  const { target: _target, ...noTarget } = base.context;
+  assert.equal(ShapingRequestSchema.safeParse({ ...base, context: noTarget }).success, false, "and is required");
+  assert.equal(ShapingRequestSchema.safeParse({ ...base, context: { ...base.context,
+    repositories: [{ name: "r", role: "primary", branch: null, baseSha: null }] } }).success, false, "so is each slot");
+});
+
+test("a URL argument with leading whitespace is still checked for credentials, at registration and in storage", () => {
+  const run = (args: string[]) => ShaperSchema.safeParse({ id: "w", label: "W", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args } });
+  for (const arg of ["  https://user:pw@context.example/x", "\thttps://user:pw@context.example/x", "https://user:pw@context.example/x \n"]) {
+    assert.equal(run([arg]).success, false, JSON.stringify(arg));
+  }
+  const stored = ShapingConfigSchema.parse({ shapers: [{ id: "w", label: "W", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args: ["  https://user:pw-in-storage@context.example/x"] } }] });
+  assert.equal(JSON.stringify(stored).includes("pw-in-storage"), false, "stripped from a stored definition too");
+});
+
+test("a reason survives an outcome tie, so a redaction note in one repository is never hidden", () => {
+  const call = (repo: string, reason: string | null) => ({
+    shaper: { id: "s", label: "S", stage: "select" }, origin: "registered" as const, sha256: null, repo, outcome: "ok" as const,
+    reason, durationMs: 1, version: null, redacted: reason !== null,
+  });
+  const summary = summariseShaping({ calls: [call("billing-api", null), call("ledger", "An entry was dropped because its id contained the value of TOKEN.")],
+    kept: [], truncatedShapers: new Set(), at: 1, durationMs: 1, multiRepo: true })!;
+  assert.deepEqual([summary.shapers[0]!.outcome, summary.shapers[0]!.redacted], ["ok", true]);
+  assert.equal(summary.shapers[0]!.reason, "ledger: An entry was dropped because its id contained the value of TOKEN.");
+});
+
 test("a build that knows a later stage reads the same entry as known", () => {
   const later = { stages: ["gather", "select", "route"], shaper: shaperSchemaForStages(["gather", "select", "route"]) };
   const entry = StoredShaperSchema.parse({ ...command("router"), stage: "route" });
@@ -651,19 +722,19 @@ test("a repeated stored id is unsupported; the first entry owns it", () => {
 
 test("upsert stores a new shaper off, replaces an existing one in place and off, and is bounded", () => {
   let stored = apply(config({ overrides: { fresh: true } }), { kind: "upsert", shaper: command("fresh") });
-  assert.deepEqual(stored.overrides, {}, "a new registered shaper is off whatever an old choice said");
+  assert.deepEqual(stored.overrides, { fresh: false }, "a new registered shaper is stored off whatever an old choice said");
   assert.deepEqual(resolveShapers(stored, [], task), []);
   stored = apply(stored, { kind: "upsert", shaper: command("second") });
   stored = apply(stored, { kind: "enable", id: "fresh", enabled: true });
   stored = apply(stored, { kind: "upsert", shaper: command("fresh", "select") });
   assert.deepEqual(stored.shapers.map((entry) => [entry.id, entry.stage]), [["fresh", "select"], ["second", "gather"]]);
-  assert.equal(Object.hasOwn(stored.overrides, "fresh"), false, "a replacement is stored off: the choice was for the old definition");
+  assert.equal(stored.overrides.fresh, false, "a replacement is stored off, explicitly: the choice was for the old definition");
   assert.deepEqual(resolveShapers(stored, [], task).map((entry) => entry.shaper.id), [], "and does not run until switched on again");
   // A replacement that changes only the executable is still a definition nobody switched on.
   stored = apply(stored, { kind: "enable", id: "second", enabled: true });
   stored = apply(stored, { kind: "enable", id: "fresh", enabled: true });
   stored = apply(stored, { kind: "upsert", shaper: command("second", "gather", { transport: { type: "command", command: "/usr/local/bin/other" } }) });
-  assert.equal(Object.hasOwn(stored.overrides, "second"), false);
+  assert.equal(stored.overrides.second, false);
   assert.equal(stored.overrides.fresh, true, "and another id's choice is untouched by it");
   const full = config({ shapers: Array.from({ length: SHAPING_LIMITS.shapers }, (_, i) => command(`s-${i}`)) });
   const refused = applyShapingIntent(full, { kind: "upsert", shaper: command("one-more") });

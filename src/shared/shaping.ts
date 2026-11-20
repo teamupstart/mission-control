@@ -45,6 +45,22 @@ export const SHAPING_LIMITS = {
   summaryBytes: 4 * KIB,
   /** Entries one reply may carry. */
   replyEntries: 32,
+  /** Notes one reply may carry. */
+  replyNotes: 16,
+  /**
+   * Shaper calls in flight at once within a stage. A command call holds a process and three pipes,
+   * so 32 repositories times 32 shapers must not open a thousand processes at once.
+   */
+  concurrentCalls: 16,
+  /** Characters in one reply note. */
+  replyNoteChars: 1000,
+  /** Characters in an entry's id and title. */
+  entryIdChars: 512,
+  entryTitleChars: 512,
+  /** Characters in an entry's path. */
+  entryPathChars: 1024,
+  /** Characters in one fact value, or in one item of a list-valued fact. */
+  factValueChars: 1024,
   /** Text one reply may carry in any one string, before Mission Control applies its caps. */
   replyText: 256 * KIB,
   /** The bound on a reason recorded for an outcome. */
@@ -282,7 +298,7 @@ export type ShaperTransport = z.output<typeof ShaperTransportSchema>;
 function shaperFields<const Stages extends readonly [string, ...string[]]>(stages: Stages) {
   return {
     id: ShaperIdSchema,
-    label: z.string().trim().min(1).max(120),
+    label: z.string().trim().min(1).max(120).refine((value) => !value.includes("\u0000"), { message: "A label cannot contain NUL." }),
     stage: z.enum(stages),
     protocol: z.literal(SHAPING_PROTOCOL).default(SHAPING_PROTOCOL),
     transport: ShaperTransportSchema,
@@ -564,11 +580,24 @@ function hasQueryString(raw: string): boolean {
 }
 
 /** Whether `value` is a URL, of any scheme, that carries userinfo or a credential query parameter. */
+/**
+ * `value` without the leading and trailing C0 controls and spaces the URL parser strips, so a check
+ * that inspects a URL's text sees what the parser will: "  https://user:pass@host" is a URL.
+ */
+export function trimUrlText(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) start++;
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) end--;
+  return value.slice(start, end);
+}
+
 function urlCarriesCredential(value: string): boolean {
+  const trimmed = trimUrlText(value);
   // Any scheme: a proxy URL such as socks5://user:pass@host carries credentials as well as http.
-  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return false;
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) return false;
   try {
-    const url = new URL(value);
+    const url = new URL(trimmed);
     return Boolean(url.username || url.password) || Array.from(url.searchParams.keys()).some(credentialBearingName);
   } catch {
     return false;
@@ -640,8 +669,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * The same entry with every literal credential emptied: a credential-bearing header value that
- * is not a reference, a URL's userinfo and credential query parameters, and a credential
- * argument. A definition this build writes can hold none of these, because the strict schema
+ * is not a reference, a transport URL's userinfo and its whole query string, and a credential
+ * argument. The query goes whole, even from an entry this build cannot run: `plan.md` allows a
+ * transport URL no query string, so this build cannot tell which parameter of one holds a
+ * secret, and a parameter it does not recognise is treated as one. Such an entry is marked
+ * removed, and its replacement names the secret as `{env:NAME}` in a header. A definition this build writes can hold none of these, because the strict schema
  * refuses them. This covers everything else the config may be handed - a settings restore, or
  * an entry a newer build stored - so no path leaves secret text in `app_config.shaping` or in
  * the `shaping` domain of a snapshot. Every other field is kept exactly as written, unless the
@@ -789,21 +821,38 @@ export const ShaperManifestSchema = ShaperObjectSchema
   .superRefine(builtinStageDeclared);
 export type ShaperManifest = z.output<typeof ShaperManifestSchema>;
 
-/** The strict definition over a different stage tuple, so a test can model another build. */
-export function shaperSchemaForStages(stages: readonly [string, ...string[]]): z.ZodType<Shaper> {
-  return z.strictObject(shaperFields(stages))
+/**
+ * A discovered shaper's definition, as the resolver reads a manifest once its own fields are
+ * stripped: the strict definition, where a `./` command resolves against the manifest's folder.
+ */
+export const DiscoveredDefinitionSchema = ShaperObjectSchema
+  .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
+  .superRefine(credentialsAreReferences)
+  .superRefine(builtinStageDeclared);
+
+/**
+ * The strict definition over a different stage tuple, so a test can model another build. The
+ * discovered variant leaves out the registered-only `./` rule, as `DiscoveredDefinitionSchema` does.
+ */
+export function shaperSchemaForStages(stages: readonly [string, ...string[]], options: { discovered?: boolean } = {}): z.ZodType<Shaper> {
+  const schema = z.strictObject(shaperFields(stages))
     .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
     .superRefine(credentialsAreReferences)
-    .superRefine(builtinStageDeclared)
-    .superRefine(registeredCommandResolvable) as unknown as z.ZodType<Shaper>;
+    .superRefine(builtinStageDeclared);
+  return (options.discovered ? schema : schema.superRefine(registeredCommandResolvable)) as unknown as z.ZodType<Shaper>;
 }
 
 /** What a pure function reads from the registry. Tests pass their own. */
 export interface ShapingDefinitions {
   readonly stages: readonly string[];
+  /** A registered shaper's definition. */
   readonly shaper: z.ZodType<Shaper>;
+  /** A discovered shaper's definition. Absent, the registered one is used. */
+  readonly discovered?: z.ZodType<Shaper>;
 }
-export const SHAPING_DEFINITIONS: ShapingDefinitions = Object.freeze({ stages: SHAPING_STAGES, shaper: ShaperSchema });
+export const SHAPING_DEFINITIONS: ShapingDefinitions = Object.freeze({
+  stages: SHAPING_STAGES, shaper: ShaperSchema, discovered: DiscoveredDefinitionSchema as unknown as z.ZodType<Shaper>,
+});
 
 /** Bounded JSON, for the fields of a stored entry this build may not understand. */
 export const ShapingJsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
@@ -864,7 +913,13 @@ function issueSentence(error: z.ZodError, maxChars: number = SHAPING_LIMITS.reas
   const issue = error.issues[0];
   if (!issue) return "The definition is not valid.";
   const at = issue.path.length ? `${issue.path.join(".")}: ` : "";
-  return `${at}${issue.message}`.slice(0, maxChars);
+  // Zod names an unrecognised key in its message, and a key is whatever the entry's writer
+  // chose, a credential-shaped one included. The reason leaves the daemon in the config view,
+  // so it names where the field is, never the key itself.
+  const message = issue.code === "unrecognized_keys"
+    ? "This build does not recognise a field this entry names."
+    : issue.message;
+  return `${at}${message}`.slice(0, maxChars);
 }
 
 /** A known shaper, or an unsupported entry with the reason this build cannot run it. */
@@ -1045,6 +1100,12 @@ export function applyShapingIntent(
   const overrides = { ...config.overrides };
   let order = [...config.order];
   const index = (id: string) => shapers.findIndex((entry) => entry.id === id);
+  /** Choices for ids that no longer exist make room before a live one is stored. */
+  const makeRoomForChoice = (id: string): void => {
+    if (Object.hasOwn(overrides, id) || Object.keys(overrides).length < SHAPING_LIMITS.choices) return;
+    const live = new Set([...shapers.map((entry) => entry.id), ...discovered.map((entry) => entry.id)]);
+    for (const key of Object.keys(overrides)) if (!live.has(key)) delete overrides[key];
+  };
   switch (intent.kind) {
     case "upsert": {
       const parsed = definitions.shaper.safeParse(intent.shaper);
@@ -1064,11 +1125,12 @@ export function applyShapingIntent(
         }
         shapers[at] = stored.data;
       }
-      // Every upsert stores off for its id, a replacement as much as a new definition: a choice
-      // to run applies to the definition the operator reviewed, not to whatever is written over
-      // it later with a different command, arguments or transport, nor to a discovered shaper
-      // that happened to hold the id.
-      delete overrides[parsed.data.id];
+      // Every upsert stores off for its id, an explicit `false`, a replacement as much as a new
+      // definition: a choice to run applies to the definition the operator reviewed, not to
+      // whatever is written over it later with a different command, arguments or transport, nor
+      // to a discovered shaper that happened to hold the id.
+      makeRoomForChoice(parsed.data.id);
+      overrides[parsed.data.id] = false;
       break;
     }
     case "remove": {
@@ -1090,11 +1152,7 @@ export function applyShapingIntent(
           return refuse("unsupported_shaper", found.problem ?? `The shaper "${intent.id}" cannot run.`);
         }
       }
-      if (!Object.hasOwn(overrides, intent.id) && Object.keys(overrides).length >= SHAPING_LIMITS.choices) {
-        // Choices for ids that no longer exist make room before a live one is refused.
-        const live = new Set([...shapers.map((entry) => entry.id), ...discovered.map((entry) => entry.id)]);
-        for (const id of Object.keys(overrides)) if (!live.has(id)) delete overrides[id];
-      }
+      makeRoomForChoice(intent.id);
       overrides[intent.id] = intent.enabled;
       break;
     }
@@ -1159,7 +1217,8 @@ function candidates(
     // A registered shaper wins an id clash, whatever the scan reported.
     if (entry.state !== "ok" || !entry.shaper || registered.has(entry.id) || entry.shaper.id !== entry.id) continue;
     if (out.some((candidate) => candidate.shaper.id === entry.id)) continue;
-    const parsed = definitions.shaper.safeParse(stripManifestFields(entry.shaper));
+    // A manifest's definition, which may name a `./` command resolved against its folder.
+    const parsed = (definitions.discovered ?? definitions.shaper).safeParse(stripManifestFields(entry.shaper));
     if (!parsed.success) continue;
     out.push({
       shaper: parsed.data, origin: "discovered", stored: null, sha256: entry.sha256, root: entry.path,
@@ -1249,14 +1308,26 @@ export function resolveShaperById(
 // ---------------------------------------------------------------------------------------------
 // The contract: one request, one result
 
-const FactValueSchema = z.union([
-  z.string().max(1024),
-  z.array(z.string().max(1024)).max(SHAPING_LIMITS.facts),
+export const ShapingFactValueSchema = z.union([
+  z.string().max(SHAPING_LIMITS.factValueChars),
+  z.array(z.string().max(SHAPING_LIMITS.factValueChars)).max(SHAPING_LIMITS.facts),
 ]);
-export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), FactValueSchema, SHAPING_LIMITS.facts);
+export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), ShapingFactValueSchema, SHAPING_LIMITS.facts);
 export type ShapingFacts = z.output<typeof ShapingFactsSchema>;
 
+/**
+ * A repository's slot within one task (D17): `repo-01` for the primary, then `repo-02` onward in
+ * attachment order. It tells two attached worktrees of one repository apart, which a name cannot.
+ */
+export const ShapingSlotSchema = z.string().regex(/^repo-\d{2}$/, { message: "A slot is repo-NN." });
+
+/** The slot at a position in the ordered list: the primary first, then attachment order. */
+export function shapingSlot(position: number): string {
+  return `repo-${String(position + 1).padStart(2, "0")}`;
+}
+
 export const ShapingRepositoryRefSchema = z.object({
+  slot: ShapingSlotSchema,
   name: z.string().min(1).max(256),
   role: z.enum(["primary", "additional"]),
   branch: z.string().max(256).nullable(),
@@ -1278,6 +1349,8 @@ export const ShapingContextSchema = z.object({
   labels: z.array(z.string().max(128)).max(64),
   priority: z.string().max(64).nullable(),
   repositories: z.array(ShapingRepositoryRefSchema).max(SHAPING_LIMITS.repositories),
+  /** The slot of the repository this call is about (D17), one of `repositories`. */
+  target: ShapingSlotSchema,
   caller: z.object({
     user: z.string().max(256).nullable(),
     agent: z.string().max(64).nullable(),
@@ -1306,9 +1379,9 @@ export const ShapingRequestSchema = z.object({
 export type ShapingRequest = z.output<typeof ShapingRequestSchema>;
 
 export const ShapingEntrySchema = z.object({
-  id: z.string().min(1).max(512),
-  path: z.string().max(1024).optional(),
-  title: z.string().max(512).optional(),
+  id: z.string().min(1).max(SHAPING_LIMITS.entryIdChars),
+  path: z.string().max(SHAPING_LIMITS.entryPathChars).optional(),
+  title: z.string().max(SHAPING_LIMITS.entryTitleChars).optional(),
   body: z.string().max(SHAPING_LIMITS.replyText),
   truncated: z.boolean().optional(),
 });
@@ -1327,7 +1400,7 @@ export const ShapingResultSchema = z.object({
     facts: ShapingFactsSchema.optional(),
     summary: z.string().max(SHAPING_LIMITS.replyText).optional(),
   }).optional(),
-  notes: z.array(z.string().max(1000)).max(16).optional(),
+  notes: z.array(z.string().max(SHAPING_LIMITS.replyNoteChars)).max(SHAPING_LIMITS.replyNotes).optional(),
 });
 export type ShapingResult = z.output<typeof ShapingResultSchema>;
 
@@ -1470,7 +1543,13 @@ export function summariseShaping(input: {
   }
   const shapers = ids.map((id): ShapingShaperSummary => {
     const calls = byShaper.get(id)!;
-    const worst = calls.reduce((a, b) => (OUTCOME_SEVERITY.indexOf(b.outcome) < OUTCOME_SEVERITY.indexOf(a.outcome) ? b : a));
+    // The worst outcome; on a tie, the first call that gives a reason, so a redaction note from one
+    // repository is never hidden behind another's silent success.
+    const worst = calls.reduce((a, b) => {
+      const order = OUTCOME_SEVERITY.indexOf(b.outcome) - OUTCOME_SEVERITY.indexOf(a.outcome);
+      if (order !== 0) return order < 0 ? b : a;
+      return a.reason === null && b.reason !== null ? b : a;
+    });
     const kept = input.kept.filter((entry) => entry.shaperId === id);
     const reason = worst.reason === null ? null
       : (input.multiRepo ? `${worst.repo}: ${worst.reason}` : worst.reason).slice(0, SHAPING_LIMITS.reasonChars);
@@ -1586,7 +1665,9 @@ export function allocateBudget<T extends BudgetItem>(
     let body = item.body;
     let omittedBytes = 0;
     if (full > cap) {
-      if (cap < limits.minEntryBytes) {
+      // Dropped when the cap leaves too little to be useful, or not even room for the marker
+      // that says what was cut: a kept entry never exceeds its cap.
+      if (cap < limits.minEntryBytes || cap <= utf8Length(truncationMarker(full))) {
         dropped.push({ item, bytes: full });
         continue;
       }

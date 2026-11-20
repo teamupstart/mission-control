@@ -107,6 +107,36 @@ switch (mode) {
     // A structured error on stdout, exit 0, that repeats the value it was handed.
     reply({ error: { code: "denied", message: `rejected credential ${process.env[rest[0]] ?? "<unset>"}` } });
     break;
+  case "guidance-leak": {
+    // A good reply that repeats the value it was handed in every kind of content, and as an
+    // entry id and a fact name, which cannot be scrubbed without merging two of them.
+    const value = process.env[rest[0]] ?? "<unset>";
+    reply({
+      guidance: [
+        { id: "kept", title: `token ${value}`, body: `use ${value} to sign in`, path: `docs/${value}.md` },
+        { id: `entry-${value}`, body: "an entry keyed by the value" },
+      ],
+      repo: { facts: { language: "typescript", owner: `team ${value}`, [`by-${value}`]: "x" }, summary: `summary with ${value}` },
+    });
+    break;
+  }
+  case "deep-leak": {
+    // A reply well within the cap that repeats the value, beside an unknown field nested far
+    // deeper than any recursive serialiser can follow.
+    const value = process.env[rest[0]] ?? "<unset>";
+    const deep = `${"[".repeat(100_000)}${"]".repeat(100_000)}`;
+    process.stdout.write(`{"guidance":[{"id":"clean","body":"a clean entry with ${value}"}],"extra":${deep}}`);
+    break;
+  }
+  case "proxy-leak": {
+    // An inherited proxy URL, nobody named it, echoed whole and as its bare password.
+    const url = process.env[rest[0]] ?? "<unset>";
+    let password = "<none>";
+    try { password = new URL(url).password || "<none>"; } catch { /* Not a URL. */ }
+    reply({ guidance: [{ id: "proxy", body: `reached through ${url}` }, { id: "pass", body: `password ${password}` },
+      { id: "decoded", body: `decoded ${decodeURIComponent(password)}` }] });
+    break;
+  }
   case "version-leak":
     // A version string that repeats the value it was handed, on an otherwise good reply.
     reply({ version: `v2-${process.env[rest[0]] ?? "<unset>"}`, guidance: [{ id: "v", body: "versioned entry" }] });

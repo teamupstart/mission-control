@@ -1,13 +1,15 @@
 import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
-import { currentShaping } from "@shared/shaping.ts";
 import { DEFAULT_TASK_KIND, type Task } from "@shared/types.ts";
+import { currentShaping, SHAPING_LIMITS } from "@shared/shaping.ts";
+import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
 import { getTaskShapingText } from "../db.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { resolveRepoRoot } from "../repos.ts";
+import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
@@ -25,6 +27,57 @@ import { referenceStatus } from "./references.ts";
  *   and the delivered text, `text` null when nothing was kept. 404 when `currentShaping` shows
  *   nothing, including a record that names an earlier session.
  */
+/**
+ * Ceilings, not allocations: `bodyLimit` refuses past them while streaming, after the flag's
+ * gate, so a disabled route still answers 404 before any body is read. One intent is at most one
+ * definition, `SHAPING_LIMITS.entryJsonBytes`, and a dry run at most a prompt and a path. Each
+ * is multiplied by `JSON_UTF8_MAX_BYTES_PER_CHAR`, because the schemas count characters while
+ * the limit counts bytes, with room for the rest of the request.
+ */
+const SHAPING_PUT_BODY_MAX_BYTES = SHAPING_LIMITS.entryJsonBytes * JSON_UTF8_MAX_BYTES_PER_CHAR + 16 * 1024;
+const SHAPING_TEST_BODY_MAX_BYTES = (SHAPING_LIMITS.taskChars + 4096) * JSON_UTF8_MAX_BYTES_PER_CHAR + 16 * 1024;
+
+function limitBody(maxSize: number) {
+  return bodyLimit({ maxSize, onError: (c) => c.json({ error: "request_too_large", reason: "The request body is too large." }, 413) });
+}
+
+/** The Git probes a dry run's repository check makes, so a test can stand in for either. */
+export interface CheckoutProbes {
+  resolveRepoRoot: typeof resolveRepoRoot;
+  insideWorkTree: typeof insideWorkTree;
+}
+
+/**
+ * Whether `repository` is a working tree a dry run may use, and the repository it belongs to.
+ * Git rejecting the path is a 400. Git never answering is a 503, whether during root resolution
+ * or the working-tree check, so a valid checkout is never refused as an invalid one. A bare
+ * repository resolves but has no working tree for a gatherer to run in.
+ */
+export async function checkoutFor(
+  repository: string,
+  probes: CheckoutProbes = { resolveRepoRoot, insideWorkTree },
+): Promise<{ ok: true; repoRoot: string } | { ok: false; status: 400 | 503; error: string; reason: string }> {
+  const unanswered = (what: string) => ({
+    ok: false as const, status: 503 as const, error: "repository_check_failed", reason: `Git did not answer whether ${what}. Try again.`,
+  });
+  const repoRoot = await probes.resolveRepoRoot(repository);
+  // `resolveRepoRoot` answers null both when Git rejects the path and when Git never answered.
+  // A second probe tells them apart.
+  if (!repoRoot) {
+    // Only Git saying no is a 400. A path Git confirms is a working tree, whose root could still
+    // not be resolved, is as unanswered as one it never answered for.
+    const probe = await probes.insideWorkTree(repository);
+    if (probe === "not-worktree") return { ok: false, status: 400, error: "unknown_repository", reason: "The path is not inside a Git checkout." };
+    return unanswered("the path is a Git checkout");
+  }
+  const tree = await probes.insideWorkTree(repository);
+  if (tree === "unknown") return unanswered("the path is a working tree");
+  if (tree === "not-worktree") {
+    return { ok: false, status: 400, error: "unknown_repository", reason: "The path is a bare repository, with no working tree to run a shaper in." };
+  }
+  return { ok: true, repoRoot };
+}
+
 export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task | undefined = () => undefined): void {
   const gate = requireFeature("task-shaping");
 
@@ -42,7 +95,7 @@ export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task 
     return c.json({ config: shapingConfigView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
   });
 
-  app.put("/api/shaping", gate, async (c) => {
+  app.put("/api/shaping", gate, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingIntentSchema);
     if (!parsed.ok) return parsed.res;
     try {
@@ -54,21 +107,26 @@ export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task 
     }
   });
 
-  app.post("/api/shaping/test", gate, async (c) => {
+  app.post("/api/shaping/test", gate, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
     const { id, repository, prompt, kind } = parsed.data;
+    // Resolved once, before any probe: the path Git checks is the path the gatherer runs in, so a
+    // symlink that changes after the probes cannot send the gatherer somewhere unchecked.
+    let checkout: string;
+    try { checkout = realpathSync(repository); } catch {
+      return c.json({ error: "unknown_repository", reason: "The repository is not a directory on this machine." }, 400);
+    }
     let directory = false;
-    try { directory = statSync(repository).isDirectory(); } catch { directory = false; }
+    try { directory = statSync(checkout).isDirectory(); } catch { directory = false; }
     if (!directory) return c.json({ error: "unknown_repository", reason: "The repository is not a directory on this machine." }, 400);
     // A Git checkout, through the same resolver dispatch uses, so a mistyped path that names an
     // ordinary folder is refused instead of running a gatherer there and reporting success. The
     // gatherer still runs where it was pointed: the resolver walks a linked worktree back to its
     // owner, which names the repository but is not the tree under test.
-    const repoRoot = await resolveRepoRoot(repository);
-    if (!repoRoot) return c.json({ error: "unknown_repository", reason: "The path is not inside a Git checkout." }, 400);
-    let checkout = repository;
-    try { checkout = realpathSync(repository); } catch { /* Keep the path as given. */ }
+    const checked = await checkoutFor(checkout);
+    if (!checked.ok) return c.json({ error: checked.error, reason: checked.reason }, checked.status);
+    const repoRoot = checked.repoRoot;
     const result = await dryRunShaper(id, {
       task: prompt ?? "",
       context: {

@@ -61,7 +61,7 @@ export function FeatureFlagsView({ definitions, config, pending = null, errors =
           <span className="settings-toggle-desc">Turns on every preview feature below, and any that a future update adds. Keeps your individual choices.</span>
         </span>
       </label></Tooltip>
-      <p className="settings-hint">Updating to an alpha build does not turn this on, or any flag.</p>
+      <p className="settings-hint">Switching on Alpha updates also switches this on.</p>
       {errors["enable-all"] && <p role="alert">{errors["enable-all"]}</p>}
     </div>
     <div className="feature-flag-list">

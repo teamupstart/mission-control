@@ -41889,6 +41889,9 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-field-problem, .shaping-settings [role="alert"] { margin: 0; font-size: 11.5px; color: var(--attention); }
 .shaping-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .shaping-list-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+/* Inset like the rows below it, so the text never meets the list border. */
+.shaping-import-outcome { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 10px 12px 2px; overflow-wrap: anywhere; }
+.shaping-import-outcome [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
 .shaping-stage + .shaping-stage { border-top: 1px solid var(--border-soft); }
 .shaping-stage-head { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 4px; }
 .shaping-stage-head h4 { margin: 0; font-size: 12px; font-weight: 640; }

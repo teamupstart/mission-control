@@ -1190,3 +1190,75 @@ test("an import whose answer is lost is reported unconfirmed, never refused", as
   await page.unroute("**/api/shaping");
   expect((await shapingConfig(daemon)).shapers.map((entry) => entry.id)).toEqual(["lost-answer"]);
 });
+
+test("an import refused after its dialog was closed is shown beside the import button", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // The test stands in for the daemon's answer, and holds it until the dialog has been closed.
+  const reached = gate();
+  const answer = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await answer.opened;
+    await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_shaper", reason: "Refused late for this test." }) });
+  });
+  const shaper = commandShaper("late-import", "Late import");
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // Another window imports the same definition, so the frame shows this one stored and frees the dialog.
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  const outcome = panel(page).getByRole("group", { name: "Last import" });
+  await expect(outcome).toHaveCount(0);
+  answer.open();
+  await expect(outcome.getByRole("alert")).toHaveText("Refused late for this test.");
+  await capture(page, "late-import-refusal");
+  // While the dialog is open again the outcome is not repeated beside the button; closing the
+  // dialog brings it back until the next import is sent.
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  await expect(outcome).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(outcome.getByRole("alert")).toHaveText("Refused late for this test.");
+  await page.unroute("**/api/shaping");
+});
+
+test("a settings save never clears a draft it left out of its intent", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await countReadWrites(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const form = page.getByRole("form", { name: "Caller identity and budgets" });
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const budget = form.getByRole("spinbutton", { name: "Context budget (KiB)" });
+  // A budget draft that another window then happens to store: it matches, so a save leaves it out.
+  await budget.fill("48");
+  await putShaping(daemon, { kind: "settings", limits: { totalBytes: 48 * 1024 } });
+  await expect.poll(async () => (await shapingConfig(daemon)).limits.totalBytes).toBe(48 * 1024);
+  const answer = gate();
+  const sent: unknown[] = [];
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    sent.push(route.request().postDataJSON());
+    const response = await route.fetch();
+    await answer.opened;
+    await route.fulfill({ response });
+  });
+  await identity.fill("identity-only");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("identity-only");
+  expect(sent).toEqual([{ kind: "settings", caller: { user: "identity-only" } }]);
+  // The other window changes the budget again before this save's answer lands.
+  await putShaping(daemon, { kind: "settings", limits: { totalBytes: 56 * 1024 } });
+  await expect.poll(async () => (await shapingConfig(daemon)).limits.totalBytes).toBe(56 * 1024);
+  answer.open();
+  await writesHandled(page, 1);
+  // The budget draft was never sent, so the identity save's answer leaves it as typed.
+  await expect(budget).toHaveValue("48");
+  await expect(identity).toHaveValue("identity-only");
+  await page.unroute("**/api/shaping");
+});

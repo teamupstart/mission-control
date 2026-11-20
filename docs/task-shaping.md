@@ -343,7 +343,10 @@ apart from it, under **Earlier refusals**. A refusal belongs to its control: a w
 control leaves it in place, and acting on the same control again dismisses it. A write whose
 answer never arrives, because it timed out or the connection failed, is reported as unconfirmed,
 never as refused. When the event stream already showed it stored, the panel treats it as saved,
-so an import's dialog closes.
+so an import's dialog closes. An import's outcome that arrives after its dialog was closed is shown
+beside **Import manifest…**, until the next import is sent. A save of the caller identity and
+budgets sends only the fields that differ from the stored values, and its answer clears only the
+edits it sent: a draft it left out, or one typed after it, stays.
 
 - **The list.** One row per registered shaper, grouped by stage in run order: its label, id,
   transport and everything it runs or calls, an MCP shaper's tool and context delivery

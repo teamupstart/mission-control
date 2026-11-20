@@ -220,6 +220,15 @@ export function TaskShapingView({
             </Tooltip>
           </span>
         </div>
+        {/* The dialog is the only other place an import's outcome shows. A stream frame can free it
+            before the answer lands, and the operator may close it then: a refusal that arrives
+            afterwards is shown here, beside the button that opens the dialog again. */}
+        {!importing && (errors.import || earlier.import) && (
+          <div className="shaping-import-outcome" role="group" aria-label="Last import">
+            {errors.import && <p role="alert">{errors.import}</p>}
+            <EarlierRefusals messages={earlier.import} />
+          </div>
+        )}
         {config === null && <p className="feature-flag-empty">Loading shapers…</p>}
         {config !== null && count === 0 && (
           <p className="feature-flag-empty">No shapers registered. Import a manifest to add one.</p>
@@ -338,9 +347,15 @@ function ShapingSettingsForm({ config, busy, error, earlier, onSet }: {
     // Saved or refused, the submitted fields go back to showing the daemon's config: a refusal is
     // a roll back, with its reason below. Only the edits this save sent are cleared: the stream
     // can free the form before the reply lands, and an edit made in that interval, even one that
-    // types the same text again, is a new draft, not part of this save.
-    const submitted = Object.fromEntries((Object.keys(draft) as Array<keyof SettingsFields>)
-      .map((field) => [field, generations.current[field]])) as Partial<Record<keyof SettingsFields, number>>;
+    // types the same text again, is a new draft, not part of this save. Only fields the intent
+    // carries count as sent: a draft that matched the stored value was left out, and stays a
+    // draft whatever the reply says.
+    const sentFields: Array<keyof SettingsFields> = [];
+    if (intent.caller) sentFields.push("user");
+    if (intent.limits?.deadlineMs !== undefined) sentFields.push("deadlineMs");
+    if (intent.limits?.totalBytes !== undefined) sentFields.push("totalKiB");
+    const submitted = Object.fromEntries(sentFields.map((field) => [field, generations.current[field]])) as
+      Partial<Record<keyof SettingsFields, number>>;
     await onSet(intent, "settings");
     setDraft((current) => {
       const next = { ...current };

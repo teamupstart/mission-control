@@ -1,4 +1,4 @@
-import { SHAPING_LIMITS, ShapingEntrySchema, ShapingFactValueSchema, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, ShapingResultSchema, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
 import { redactSpans } from "./redaction.ts";
 
 /**
@@ -93,8 +93,9 @@ function holdsResolved(text: string, resolved: readonly ResolvedValue[]): Resolv
  * result schema does not define are skipped, because the engine discards them unread. Keys the
  * schema defines are never changed. An otherwise valid entry whose id, or fact whose name,
  * contains such a value is dropped instead of renamed, so redaction can never merge two entries
- * or two facts, and the drop is returned as a note beside the reply. An invalid one is kept,
- * scrubbed, so the engine still refuses the reply as written rather than reporting it clean.
+ * or two facts, and the drop is returned as a note beside the reply. Drops happen only when the
+ * reply is valid as written: an invalid reply is kept, scrubbed, so the engine still refuses it
+ * rather than reporting a reply that only a drop made valid.
  *
  * Nothing here recurses, and the decoded value is rewritten in place. A reply that is not a
  * JSON object is left alone: the engine refuses it without recording any of its text.
@@ -106,6 +107,10 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
   // would pass every check below and be joined back into the credential afterwards.
   withoutNul(data);
   const marker = markerFor(values);
+  // A drop changes what validation sees: a reply with one entry too many would pass once an entry
+  // is dropped. So entries and facts are dropped only from a reply that is valid as written; an
+  // invalid one is only scrubbed, and the engine refuses it as the shaper sent it.
+  const valid = ShapingResultSchema.safeParse(data).success;
   let redacted = false;
   const notes: string[] = [];
   const root = data as Record<string, unknown>;
@@ -130,7 +135,7 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
     root.guidance = root.guidance.filter((entry) => {
       if (!isRecord(entry)) return true;
       const hit = typeof entry.id === "string" ? holdsResolved(entry.id, values) : undefined;
-      if (hit && ShapingEntrySchema.safeParse(entry).success) {
+      if (hit && valid) {
         notes.push(`An entry was dropped because its id contained the value of ${marker.name(hit)}.`);
         redacted = true;
         return false;
@@ -148,7 +153,7 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
     if (isRecord(facts)) {
       for (const name of Object.keys(facts)) {
         const hit = holdsResolved(name, values);
-        if (hit && ShapingFactValueSchema.safeParse(facts[name]).success) {
+        if (hit && valid) {
           delete facts[name];
           notes.push(`A fact was dropped because its name contained the value of ${marker.name(hit)}.`);
           redacted = true;

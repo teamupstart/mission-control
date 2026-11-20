@@ -142,6 +142,9 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 | One shaper's share (`maxBytes`, per shaper or the config default) | 16 KiB | 64 KiB |
 | The whole section (`limits.totalBytes`) | 32 KiB | 64 KiB |
 
+- At most 16 calls run at once within a stage, so a task with many repositories and shapers
+  never opens hundreds of processes together. A call that waits for a slot starts with what is
+  left of the step, and results keep their call order.
 - A call's timeout is the smaller of its own and the time left in the step. Its signal is
   aborted at exactly that timeout, and any reply that arrives later, success or failure, is
   `timed_out` and contributes nothing, however much step time is left. At the step's deadline,

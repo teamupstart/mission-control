@@ -427,7 +427,10 @@ original text before anything is replaced, so two named values that overlap are 
 their combined span and no fragment of either survives. A field the result schema bounds, such
 as an entry's title or the version, is cut back to its bound when the marker makes it longer, so
 a reply that was valid stays valid. The shaper's record is marked
-`redacted`, its reason names what was dropped, and its outcome does not change. Inherited values are not rewritten in content, which
+`redacted`, its reason names what was dropped, and its outcome does not change. An inherited
+value that carries a credential although nobody named it, a URL with userinfo such as an
+authenticated `HTTPS_PROXY`, is treated as named: the whole URL, its `user:password` part and the
+password are removed from diagnostics and content alike, under the variable's name. Inherited values are not rewritten in content, which
 legitimately holds paths and ordinary words.
 
 stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays

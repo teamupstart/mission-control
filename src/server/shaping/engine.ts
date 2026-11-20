@@ -160,6 +160,20 @@ interface CallResult {
   truncated: boolean;
 }
 
+/** `fn` over `items`, at most `limit` at a time, results in the items' order. */
+async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = Array.from({ length: items.length });
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const at = next++;
+      results[at] = await fn(items[at]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 function bounded(reason: string): string {
   return reason.replace(/\s+/g, " ").trim().slice(0, SHAPING_LIMITS.reasonChars);
 }
@@ -399,7 +413,9 @@ async function runShaping(
       const calls = resolved.filter((entry) => entry.shaper.stage === stage).flatMap((entry) =>
         repositories.flatMap((repo, index) => entry.repositories.includes(repo.name) ? [{ entry, index }] : []));
       if (calls.length === 0) continue;
-      const settled = await Promise.all(calls.map(({ entry, index }) => callOne(stage, entry, index)));
+      // At most `concurrentCalls` in flight. Results keep the call order whatever finishes first,
+      // and a call that waits for a slot starts with what is left of the step's deadline.
+      const settled = await mapBounded(calls, SHAPING_LIMITS.concurrentCalls, ({ entry, index }) => callOne(stage, entry, index));
       settled.forEach((result, at) => {
         const { entry, index } = calls[at]!;
         results.push({ resolved: entry, repo: repositories[index]!, result });

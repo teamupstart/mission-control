@@ -118,6 +118,25 @@ function seconds(ms: number): string {
 /** Below this length a value is redacted only where it stands as a whole token. */
 const SHORT_VALUE_CHARS = 4;
 
+/**
+ * Inherited values that carry a credential although nobody named them: a URL with userinfo, as an
+ * authenticated proxy setting such as `HTTPS_PROXY=http://user:pass@proxy:8080` is. Each one is
+ * reported under its variable's name as the whole URL, its `user:password` part and the
+ * password, so a shaper echoing any of them is caught.
+ */
+export function credentialBearingValues(env: NodeJS.ProcessEnv): ResolvedValue[] {
+  const out: ResolvedValue[] = [];
+  for (const [name, value] of Object.entries(env)) {
+    if (typeof value !== "string" || traceContextName(name)) continue;
+    const userinfo = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#@\s]+)@/.exec(value)?.[1];
+    if (!userinfo) continue;
+    out.push({ name, value }, { name, value: userinfo });
+    const password = userinfo.slice(userinfo.indexOf(":") + 1);
+    if (userinfo.includes(":") && password.length > 0) out.push({ name, value: password });
+  }
+  return out;
+}
+
 /** What a child's output is redacted against: every value it received, and which were named. */
 export interface ReceivedValues {
   /** Every distinct, non-empty value in the environment the child was spawned with, longest first. */
@@ -270,11 +289,21 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   }
 
   // What the child is spawned with, which is what its output may repeat.
-  const received = receivedValues(executable.env, transport.env);
+  // Values that carry a credential although nobody named them, such as an authenticated proxy
+  // URL, count as named: removed from diagnostics wherever they appear, and from the reply's content.
+  const credentials = credentialBearingValues(executable.env);
+  const inheritedReceived = receivedValues(executable.env, transport.env);
+  const received: ReceivedValues = {
+    values: [...new Set([...inheritedReceived.values, ...credentials.map(({ value }) => value)])].sort((a, b) => b.length - a.length),
+    named: new Set([...inheritedReceived.named, ...credentials.map(({ value }) => value)]),
+  };
   // The named variables' values, each under its own name, for the reply's content.
-  const namedValues: ResolvedValue[] = transport.env
-    .filter((name) => !traceContextName(name))
-    .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; });
+  const namedValues: ResolvedValue[] = [
+    ...transport.env
+      .filter((name) => !traceContextName(name))
+      .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; }),
+    ...credentials,
+  ];
   const longestValue = received.values[0]?.length ?? 0;
   // For identifiers: everything but the short inherited values only whole-token rules apply to.
   const identifierValues: ReceivedValues = {

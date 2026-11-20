@@ -8,6 +8,7 @@ import {
   canonicalJson,
   ShaperSchema,
   ShapingConfigSchema,
+  SHAPING_LIMITS,
   ShapingRequestSchema,
   ShapingResultSchema,
   SHAPING_SECTION_PREAMBLE,
@@ -352,6 +353,27 @@ test("a named value scrubbed from a validation diagnostic marks the record redac
     kind: "data", data: { repo: { facts: { plain: 42 } } }, redact: (text: string) => text, holdsNamed: () => false,
   }), input(1));
   assert.equal(clean.summary!.shapers[0]!.redacted, false);
+});
+
+test("calls within a stage are bounded in flight, and keep their order", async () => {
+  const many = input(1);
+  many.context.repositories = Array.from({ length: 32 }, (_, i) => ({
+    name: `repo-${String(i).padStart(2, "0")}`, role: i === 0 ? "primary" : "additional", branch: null, baseSha: null, path: `/work/${i}`,
+  })) as ShapeTaskInput["context"]["repositories"];
+  let inFlight = 0;
+  let peak = 0;
+  const result = await run(configWith([shaper("a", "select"), shaper("b", "select")], { limits: { deadlineMs: 60_000 } }), async (request, entry) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await sleep(5);
+    inFlight--;
+    return data({ guidance: [{ id: "e", body: `${entry.id} ${request.repo.name}` }] });
+  }, many);
+  assert.ok(peak <= SHAPING_LIMITS.concurrentCalls, `${peak} in flight`);
+  assert.ok(peak > 1, "still parallel");
+  assert.equal(result.summary!.shapers.every((row) => row.outcome === "ok"), true);
+  const expected = ["a", "b"].flatMap((id) => many.context.repositories.map((repo) => `${id} ${repo.name}`));
+  assert.deepEqual(result.entries.map((entry) => entry.body), expected, "in call order, whatever finished first");
 });
 
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {

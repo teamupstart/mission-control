@@ -456,6 +456,39 @@ test("an invalid entry is kept, scrubbed, so the engine still refuses the reply 
   assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so validation still sees the malformed entry");
 });
 
+test("an authenticated proxy URL the shaper inherited is scrubbed from its reply, whole and in part", async () => {
+  const saved = process.env.HTTPS_PROXY;
+  process.env.HTTPS_PROXY = "http://proxyuser:pr0xy-pass@proxy.example:8080";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
+    assert.equal(reply.kind, "data");
+    assert.equal((reply as { redacted?: boolean }).redacted, true);
+    const text = JSON.stringify(decoded(reply));
+    assert.equal(text.includes("pr0xy-pass") || text.includes("proxyuser:"), false, "neither the URL nor the password survives");
+    assert.deepEqual(decoded(reply).guidance.map((entry: { body: string }) => entry.body),
+      ["reached through [HTTPS_PROXY redacted]", "password [HTTPS_PROXY redacted]"]);
+    // A proxy without credentials is ordinary configuration, passed and echoed as written.
+    process.env.HTTPS_PROXY = "http://proxy.example:8080";
+    const plain = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
+    assert.equal((plain as { redacted?: boolean }).redacted, undefined);
+    assert.equal(decoded(plain).guidance[0].body, "reached through http://proxy.example:8080");
+  } finally {
+    if (saved === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = saved;
+  }
+});
+
+test("a reply over its entry bound stays invalid: redaction never drops it into validity", () => {
+  const entries = Array.from({ length: SHAPING_LIMITS.replyEntries + 1 }, (_, i) => ({ id: i === 0 ? "by-s3cret-value" : `e${i}`, body: "b" }));
+  const reply = { guidance: entries };
+  assert.equal(ShapingResultSchema.safeParse(reply).success, false, "33 entries, one over the bound");
+  const scrubbed = scrubResolved(reply, [{ name: "TOKEN", value: "s3cret-value" }]);
+  const data = scrubbed.data as typeof reply;
+  assert.equal(data.guidance.length, SHAPING_LIMITS.replyEntries + 1, "nothing is dropped from an invalid reply");
+  assert.equal(data.guidance[0]!.id, "by-[TOKEN redacted]", "but the credential is still removed");
+  assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so the engine refuses it");
+});
+
 test("a reply holding no named value is returned byte for byte", async () => {
   const reply = await callCommand(request(), shaper([FIXTURE, "ok"]), ctx());
   assert.equal(reply.kind, "data");

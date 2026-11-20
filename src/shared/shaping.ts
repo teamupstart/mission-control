@@ -47,6 +47,11 @@ export const SHAPING_LIMITS = {
   replyEntries: 32,
   /** Notes one reply may carry. */
   replyNotes: 16,
+  /**
+   * Shaper calls in flight at once within a stage. A command call holds a process and three pipes,
+   * so 32 repositories times 32 shapers must not open a thousand processes at once.
+   */
+  concurrentCalls: 16,
   /** Characters in one reply note. */
   replyNoteChars: 1000,
   /** Characters in an entry's id and title. */

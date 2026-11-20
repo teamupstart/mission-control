@@ -139,7 +139,7 @@ import {
   type WritebackNotice,
   type WritebackSignal,
 } from "@shared/task-source.ts";
-import { HUMAN_REVIEW_STATUSES, isConversationResolvedReview } from "@shared/review-item.ts";
+import { HUMAN_REVIEW_STATUSES, isConversationResolvedReview, isHomeDispatchResolvedReview } from "@shared/review-item.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
@@ -5468,7 +5468,7 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
       `SELECT * FROM reviews
         WHERE mcp_wait_detached_at IS NOT NULL
           AND continuation_queued_at IS NULL
-          AND (resolved_by = 'human' OR resolved_by LIKE 'session:%')
+          AND (resolved_by = 'human' OR resolved_by LIKE 'session:%' OR resolved_by LIKE 'home:%' OR resolved_by LIKE 'home-approval:%' OR resolved_by = 'mctl')
           AND status IN ('approved', 'rejected', 'answered', 'dismissed')${suffix}
         ORDER BY resolved_at ASC, created_at ASC`,
     )
@@ -5493,7 +5493,7 @@ export function createReviewContinuationPendingTurn(input: {
     turnId: `review-continuation:${input.reviewId}`,
     eligible: `mcp_wait_detached_at IS NOT NULL
             AND continuation_queued_at IS NULL
-            AND (resolved_by = 'human' OR resolved_by LIKE 'session:%')
+            AND (resolved_by = 'human' OR resolved_by LIKE 'session:%' OR resolved_by LIKE 'home:%' OR resolved_by LIKE 'home-approval:%' OR resolved_by = 'mctl')
             AND status IN ('approved', 'rejected', 'answered', 'dismissed')`,
     stamp: "continuation_queued_at",
   });
@@ -5649,14 +5649,19 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
+            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : " OR resolved_by LIKE 'home-approval:%' OR resolved_by LIKE 'home:%' OR resolved_by = 'mctl'"})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?
        ) ORDER BY resolved_at ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
-  return rows.map(rowToReview).filter(isConversationResolvedReview);
+  // The evidence-of-human-intent read (`includeDelegated` false) also returns the answers given from a
+  // home session or `mctl` (headless mode, 7.9), so plan publication can see a later refusal from
+  // any of them. Which of them APPROVE is decided by `isApprovingActor`, not here. The
+  // conversation replay (`includeDelegated`) never sees them.
+  return rows.map(rowToReview).filter((review) =>
+    isConversationResolvedReview(review) || (!includeDelegated && isHomeDispatchResolvedReview(review)));
 }
 
 /**

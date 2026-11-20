@@ -65,6 +65,27 @@ export function isConversationResolvedReview(review: ReviewItem): boolean {
     && HUMAN_REVIEW_STATUSES.has(review.status);
 }
 
+/**
+ * Answers given from a home session or `mctl` (spec 7.8): `home:{sessionId}`,
+ * `home-approval:{sessionId}` and `mctl`. They are never the human's own conversation, so
+ * `isConversationResolvedReview` leaves them out, but plan publication must see them: a later
+ * "needs revision" from any of them beats an earlier approval (7.9).
+ */
+export function isHomeDispatchResolvedReview(review: ReviewItem): boolean {
+  const by = review.resolvedBy;
+  return (by === "mctl" || by?.startsWith("home:") === true || by?.startsWith("home-approval:") === true)
+    && HUMAN_REVIEW_STATUSES.has(review.status);
+}
+
+/**
+ * Whether the actor's answer can count as a human approval of a plan's final bundle: the
+ * operator, their standing approval, or an accepted `home-approval:` (7.9). A plain `home:`,
+ * `session:` or `mctl` answer never approves.
+ */
+export function isApprovingActor(by: ReviewItem["resolvedBy"] | undefined): boolean {
+  return by === "human" || by === "standing-approval" || by?.startsWith("home-approval:") === true;
+}
+
 /** The line a standing approval prefixes onto the agent's tool result and the logged record. */
 export const STANDING_APPROVAL_NOTE = "Approved automatically: the operator chose to approve all future plan bundles for this task.";
 

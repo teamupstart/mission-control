@@ -13,6 +13,7 @@ import {
   type HomeSessionRegistrationAnswer,
 } from "@shared/home-dispatch.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
+import { registrationCounts } from "./inbox.ts";
 import { launcherPromptSetting, shouldOfferLauncher } from "./launcher.ts";
 import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
 
@@ -247,12 +248,12 @@ export function canMessageTask(
   return canReadTask(caller, task, options);
 }
 
-/** `counts` is zero for every state until P4 fills it from the inbox (same shape). */
+/** `counts` for the banner, read from the inbox (7.2): running tasks, and what needs the person. */
 export function sessionCounts(
-  _deps: Pick<HomeDispatchDeps, "registry">,
-  _repoRoot: string | null,
+  deps: Pick<HomeDispatchDeps, "registry" | "workflows">,
+  repoRoot: string | null,
 ): HomeSessionRegistrationAnswer["counts"] {
-  return { running: 0, waiting: 0 };
+  return registrationCounts(deps, repoRoot);
 }
 
 /**

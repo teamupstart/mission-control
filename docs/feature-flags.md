@@ -19,9 +19,10 @@ Codex resident profiles. Turning it off prevents new saves and launches in that 
 runs keep their launch revision's MCP mode on resume. A saved profile can switch back to
 **Pinned at launch** when the preview is off.
 
-**Headless mode** (`headless-mode`) dispatches work to Mission Control from a Claude Code terminal
-session. It ships as a preview, off until chosen, and with it off every `/dispatch/*` route answers
-404 and the `home-dispatch-v1` health capability is absent.
+**Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
+a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
+answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
+route answers 404 and the `home-dispatch-v1` health capability is absent.
 
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them

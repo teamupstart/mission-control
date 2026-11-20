@@ -4,10 +4,11 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const oracle = JSON.parse(readFileSync(join(root, "test/fixtures/route-surface.json"), "utf8")) as Record<string, string>;
 
 test("guard 2: the route oracle's Focus and terminal entries are the ones `main` recorded", () => {
@@ -49,9 +50,14 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
+/** `source` with comments blanked, so a comment between import tokens, or a commented-out import, cannot hide or fake one. */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|\s)\/\/[^\n]*/g, "$1");
+}
+
 /** Every module specifier a file imports, re-exports or dynamically imports. */
 function specifiers(source: string): string[] {
-  return [...source.matchAll(/(?:from\s*|import\s*\(\s*|import\s+)["']([^"']+)["']/g)].map((match) => match[1]!);
+  return [...withoutComments(source).matchAll(/(?:from\s*|import\s*\(\s*|import\s+)["']([^"']+)["']/g)].map((match) => match[1]!);
 }
 
 const GUARDED = ["src/mod", "src/cli", "src/server/home-dispatch"];
@@ -64,6 +70,7 @@ export function terminalViolations(source: string): string[] {
 /** The actions.ts rule: what `source`, living at `rel`, imports from actions.ts that it may not. */
 export function actionsViolations(rel: string, source: string): string[] {
   const out: string[] = [];
+  source = withoutComments(source);
   const imports = [...source.matchAll(/import\s+(type\s+)?([^;]*?)\s+from\s+["']([^"']*\/actions\.ts)["']/gs)];
   const reExports = [...source.matchAll(/export\s+[^;]*?from\s+["']([^"']*\/actions\.ts)["']/gs)];
   const dynamic = [...source.matchAll(/import\s*\(\s*["'][^"']*\/actions\.ts["']\s*\)/g)];
@@ -100,4 +107,10 @@ test("guard 3 rejects a violating file and accepts the allowed import", () => {
   assert.equal(actionsViolations(chat, `export { focus } from "../actions.ts";`).length, 1, "re-export");
   assert.equal(actionsViolations(chat, `const a = await import("../actions.ts");`).length, 1, "dynamic import");
   assert.deepEqual(actionsViolations("src/mod/x.ts", `import type { Action } from "../actions.ts";`), [], "type-only imports are erased");
+  // A comment between the tokens neither hides a violation nor invents one.
+  assert.equal(actionsViolations("src/server/home-dispatch/inbox.ts", `import { focus } from /* rationale */ "../actions.ts";`).length, 1, "comment before the specifier");
+  assert.equal(actionsViolations(chat, `import { sendText, focus } /* why */ from "../actions.ts";`).length, 1, "comment before from");
+  assert.deepEqual(terminalViolations(`import { x } from /* rationale */ "../terminal/tmux.ts";`), ["../terminal/tmux.ts"], "terminal import with a comment");
+  assert.deepEqual(terminalViolations(`// import { x } from "../terminal/tmux.ts";`), [], "commented-out import");
+  assert.deepEqual(actionsViolations("src/mod/x.ts", `/* import { focus } from "../actions.ts"; */`), [], "block-commented import");
 });

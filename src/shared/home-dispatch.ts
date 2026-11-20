@@ -273,8 +273,10 @@ export type HomeDispatchConfirmResult = z.infer<typeof HomeDispatchConfirmResult
 
 /* ------------------------------------------------------------ residents (7.24) */
 
-/** Mirrors `ResidentLoopState` in `residents.ts`; the `satisfies` below fails if they drift. */
+/** Mirrors `ResidentLoopState` in `residents.ts`: `satisfies` fails if a value here is not a state, and `ResidentLoopStatesComplete` below fails if a state is missing here. */
 export const RESIDENT_LOOP_STATE_VALUES = ["working", "waiting", "compacting", "paused", "ended"] as const satisfies readonly ResidentLoopState[];
+type AssertNever<T extends never> = T;
+export type ResidentLoopStatesComplete = AssertNever<Exclude<ResidentLoopState, (typeof RESIDENT_LOOP_STATE_VALUES)[number]>>;
 export const HomeDispatchResidentSchema = z.object({
   runId: Text,
   taskId: Text,

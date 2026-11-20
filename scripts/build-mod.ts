@@ -7,7 +7,9 @@
 //   dist/mod/mission-control/hooks/register.js    the bundled hooks module
 //   dist/mod/mission-control/types/index.d.ts     the `$.state` contract, named in plugin.json
 //
-// This script only builds under `dist/`. Staging into `{stateDir}/mod/` and installing are P14's.
+// It writes to `dist/mod` by default. `MISSION_MOD_OUT_DIR` may name another directory, but only one
+// inside `dist/` or the temp directory, and never the checkout, one of its ancestors, or a path inside
+// it outside `dist/` (see `resolveOutRoot`). Staging into `{stateDir}/mod/` and installing are P14's.
 import { build } from "esbuild";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";

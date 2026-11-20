@@ -1074,6 +1074,79 @@ test("an Agent SDK Resume rereads the task after its driver confirms, and never 
   }
 });
 
+test("an Agent SDK driver that exits after reopening the conversation is never bound, and Retry reopens it", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const id = "sdk-exits-after-confirming";
+  const sessionId = await hibernated(f, t, id, checkout(id));
+  const woken = boundTo(fakeHandle(), `conv-${id}`);
+  const first = withFakeDriver(async () => woken);
+  // The driver does report the saved conversation, then ends before the task is bound to it.
+  const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
+  f.supervisor.reportedConversation = async (session, timeoutMs) => {
+    const reported = await confirm(session, timeoutMs);
+    woken.push({ kind: "exited", reason: "crashed", resumable: true });
+    await drain();
+    return reported;
+  };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const refused = await f.hibernation.resume(id);
+  first.restore();
+  f.supervisor.reportedConversation = confirm;
+  assert.match(refused.ok ? "" : refused.error, /its agent exited after reopening the conversation, before the task could be bound to it/);
+  const parked = f.registry.getTask(id)!;
+  assert.equal(parked.status, "hibernated", "the task is not marked running on a stopped session");
+  assert.equal(parked.sessionId, null);
+  await drain();
+  assert.equal(getSdkSession(sessionId)?.status, "hibernated", "and its conversation stays resumable");
+  // Its stopped card leaves, and Retry reopens the same conversation under the same session.
+  t.mock.timers.tick(9_000);
+  await drain();
+  t.mock.timers.reset();
+  assert.equal(f.registry.getSession(sessionId), undefined);
+  const again = boundTo(fakeHandle(), `conv-${id}`);
+  const second = withFakeDriver(async () => again);
+  const retried = await f.hibernation.resume(id);
+  second.restore();
+  assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
+  assert.equal(f.registry.getTask(id)?.status, "running");
+  assert.equal(f.registry.getTask(id)?.sessionId, sessionId);
+});
+
+test("Hibernate is refused for the priority session before anything stops", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const { sessionId } = await idleTask(f, handle, "priority", checkout("priority"));
+  let priority: string | null = sessionId;
+  const hibernation = new HibernationManager(f.registry, f.supervisor, {
+    confirmMs: 300,
+    pause: { releaseNow: () => null, state: () => ({ priority: priority ? { sessionId: priority, since: 0 } : null }) },
+  });
+
+  const refused = await hibernation.hibernate(sessionId);
+  assert.equal(refused.ok ? 0 : refused.status, 409);
+  assert.match(refused.ok ? "" : refused.error, /It is the priority session\. End priority before hibernating it\./);
+  assert.equal(handle.stopped, false, "its agent keeps running");
+  const task = f.registry.getTask("priority")!;
+  assert.equal(task.status, "running");
+  assert.equal(task.sessionId, sessionId);
+  assert.equal(task.hibernation ?? null, null);
+
+  // Another session holding priority does not stand in its way.
+  priority = "sdk:someone-else";
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const parked = await hibernation.hibernate(sessionId);
+  assert.equal(parked.ok, true, parked.ok ? "" : parked.error);
+  await drain();
+  t.mock.timers.tick(9_000);
+  await drain();
+  t.mock.timers.reset();
+  assert.equal(f.registry.getTask("priority")?.status, "hibernated");
+});
+
 test("a launch Resume could not close stays recorded through later failures until it is gone", async (t) => {
   const cwd = checkout("terminal-unclosed-then-moved");
   const f = terminalFleet(cwd, { appears: false, closeFailures: 2 });

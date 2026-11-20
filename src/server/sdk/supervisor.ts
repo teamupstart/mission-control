@@ -263,6 +263,13 @@ export class SdkSupervisor {
   /** Hibernated sessions a `wake` is relaunching, so a second Resume cannot launch it twice. */
   private waking = new Set<string>();
   /**
+   * Woken drivers whose task has not been bound back to them yet. One that ends in that window,
+   * stopped by a Resume that refused it or exiting on its own, leaves its row `hibernated` as it
+   * was before the Resume, so the next Resume can still reopen the conversation. Cleared only by
+   * `wakeBound`, once the task is running on it.
+   */
+  private unboundWakes = new Set<string>();
+  /**
    * The conversation each driver has itself reported binding since it was adopted - the
    * driver's own word, never the id the adoption was handed - and who is waiting to hear it.
    */
@@ -1208,6 +1215,11 @@ export class SdkSupervisor {
     }
   }
 
+  /** A woken session's task is bound to it: from here on its end is an ordinary one. */
+  wakeBound(id: string): void {
+    this.unboundWakes.delete(id);
+  }
+
   /**
    * Reopen a hibernated session: relaunch its driver under the SAME id with its conversation,
    * exactly as a daemon restart does (`resume`), on the operator's Resume.
@@ -1232,6 +1244,8 @@ export class SdkSupervisor {
     // Asked here rather than left to the harness, whose refusal would not name the checkout.
     if (!existsSync(row.cwd)) throw new Error(`its checkout ${row.cwd} no longer exists`);
     this.waking.add(id);
+    // Before the driver starts, so not even an immediate exit can write its row `exited`.
+    this.unboundWakes.add(id);
     try {
       // No continuation turn is owed: only an idle session is hibernated.
       await this.resume({ ...row, turnInProgress: false });
@@ -1244,6 +1258,7 @@ export class SdkSupervisor {
         // `adopt` may have written the row before refusing; nothing is running, so the
         // conversation stays hibernated for the next attempt.
         setSdkSessionStatus(id, "hibernated");
+        this.unboundWakes.delete(id);
         throw error;
       }
     } finally {
@@ -1334,7 +1349,7 @@ export class SdkSupervisor {
     for (const id of ids) {
       if (!this.handles.has(id)) continue;
       try {
-        setSdkSessionStatus(id, this.hibernating.has(id) ? "hibernated" : "suspended");
+        setSdkSessionStatus(id, this.endsHibernated(id) ? "hibernated" : "suspended");
       } catch (err) {
         console.error(`[sdk] could not mark ${id} suspended:`, err);
       }
@@ -1978,7 +1993,7 @@ export class SdkSupervisor {
       this.stateHomes.delete(id);
       try {
         // A hibernating driver's conversation is on disk whatever its stream did on the way out.
-        setSdkSessionStatus(id, outcome === "failed" && !this.hibernating.has(id) ? "failed" : this.endStatus(id));
+        setSdkSessionStatus(id, outcome === "failed" && !this.endsHibernated(id) ? "failed" : this.endStatus(id));
       } catch (err) {
         console.error(`[sdk] final status write for ${id} failed:`, err);
       }
@@ -2125,9 +2140,14 @@ export class SdkSupervisor {
     }
   }
 
+  /** Hibernating, or woken and not yet bound: either way its conversation waits for a Resume. */
+  private endsHibernated(id: string): boolean {
+    return this.hibernating.has(id) || this.unboundWakes.has(id);
+  }
+
   /** What a driver ending means, which depends entirely on who ended it. */
   private endStatus(id: string): SdkSessionStatus {
-    if (this.hibernating.has(id)) return "hibernated";
+    if (this.endsHibernated(id)) return "hibernated";
     return this.shuttingDown ? "suspended" : "exited";
   }
 }

@@ -6,6 +6,7 @@ import {
   type TaskHibernationLaunch,
 } from "@shared/hibernation.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
+import type { PauseState } from "@shared/pause.ts";
 import type { Session, Task } from "@shared/types.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
 import { kill } from "../actions.ts";
@@ -117,7 +118,8 @@ export class HibernationManager {
     private readonly supervisor: SdkSupervisor | null,
     private readonly options: {
       workflows?: WorkflowManager;
-      pause?: PauseRelease;
+      /** Thaws an agent before it is stopped, and names the priority session, never hibernated. */
+      pause?: PauseRelease & { state(): Pick<PauseState, "priority"> };
       /** Whether a task is an ensemble member, for the tools its resumed terminal agent needs. */
       ensembleMember?: (taskId: string) => boolean;
       terminal?: Partial<TerminalHibernationDeps>;
@@ -182,6 +184,10 @@ export class HibernationManager {
     if (!session) return { ok: false, status: 404, error: "no such session" };
     const refusal = hibernateRefusal(session);
     if (refusal) return { ok: false, status: 409, error: refusal };
+    // The Pause menu never offers it either: the fleet was paused for this session to run.
+    if (this.options.pause?.state().priority?.sessionId === session.id) {
+      return { ok: false, status: 409, error: "It is the priority session. End priority before hibernating it." };
+    }
     const task = session.task ? this.registry.getTask(session.task.id) : undefined;
     if (!task || task.sessionId !== session.id || task.status !== "running") {
       return { ok: false, status: 409, error: "Its task is not running." };
@@ -358,7 +364,15 @@ export class HibernationManager {
     // earlier would recreate a task deleted meanwhile, or overwrite whatever it became.
     const current = this.stillHibernated(taskId, record);
     if (!current) return this.taskChangedWhileResuming(session);
-    return this.bindResumed(current, session, record, {});
+    // And the driver itself: one that reported the conversation and then ended is not a session
+    // to put the task on. Its row is still `hibernated` (`SdkSupervisor.wakeBound`), so Retry
+    // can reopen it.
+    const live = this.registry.getSession(session.id);
+    if (!live || live.state === "exited" || !this.supervisor.handleFor(session.id)) {
+      return this.resumeFailed(taskId, "its agent exited after reopening the conversation, before the task could be bound to it");
+    }
+    this.supervisor.wakeBound(session.id);
+    return this.bindResumed(current, live, record, {});
   }
 
   /**
@@ -386,6 +400,8 @@ export class HibernationManager {
    * so, and the next Resume stops it before it launches anything (see `resume`).
    */
   private async putBackToSleep(taskId: string, session: Session, reason: string): Promise<HibernationResult> {
+    // Already ended on its own: nothing to stop, and its row stayed `hibernated`.
+    if (!this.supervisor!.handleFor(session.id)) return this.resumeFailed(taskId, reason);
     try {
       await this.supervisor!.hibernate(session.id);
     } catch (error) {

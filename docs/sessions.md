@@ -908,7 +908,8 @@ disabled, with the reason on it, when:
   read the checkout the session is running in;
 - the task is a Pipeline, resident or ensemble-member task, which keeps its own lifecycle.
 
-The route also refuses a session whose workflow run is still in progress. An armed workflow
+The priority session is not offered Hibernate at all, and the route refuses it: end priority
+first. The route also refuses a session whose workflow run is still in progress. An armed workflow
 that has not started a run is kept: it is still attached when the task resumes.
 
 **What Hibernate does.** The task is recorded as hibernated and unbound from its session first.
@@ -971,7 +972,11 @@ session, or wait for it to exit, then Retry. Ownership is checked again across e
 session immediately before the task is bound. If another session took the conversation while
 the agent was starting, a terminal launch is undone and an Agent SDK session is hibernated
 again, and the task stays hibernated with the reason. A launched terminal agent is bound only
-if it is still live, in the saved checkout and on the saved conversation at that moment. If an
+if it is still live, in the saved checkout and on the saved conversation at that moment, and an
+Agent SDK session only if its driver is still running. A woken Agent SDK session whose driver
+ends before the task is bound, for any reason, keeps the status `hibernated`, so Retry can still
+reopen it. If the task itself was deleted, cancelled or completed while the agent was starting,
+nothing is bound and the agent is stopped. If an
 Agent SDK driver cannot be stopped again, the row says so, and the next Resume stops that driver
 before it launches anything.
 

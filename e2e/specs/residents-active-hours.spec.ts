@@ -194,3 +194,39 @@ test("inside its window a resident whose next wake falls after the window closes
   await expect(tags.nth(2), "its held wake goes out when the next window opens").toHaveText(/^wakes (\w{3} )?\d{2}:\d{2}$/);
   await capture(dock, "03-dock-awake-held");
 });
+
+test("outside its window a resident whose next wake is already due inside the next window reads as asleep", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setActiveHours(daemon, true);
+  // The window opens three hours from now; the cadence puts the first wake three and a half hours
+  // out, inside that window. Nothing is held, yet the resident is asleep until the window opens.
+  const hhmm = (at: number) => new Date(at).toISOString().slice(11, 16);
+  const opens = Date.now() + 3 * 3_600_000;
+  const profile = await api<{ id: string }>(daemon, "/api/residents/profiles", {
+    settings: {
+      identity: { name: "Early Bird" },
+      persona: { personaId: PERSONA_ID },
+      workspace: { defaultRepoRoot: daemon.repo },
+      execution: { model: "claude-fable-5" },
+      loop: { delaySeconds: 12_600 },
+      schedule: { enabled: true, days: [0, 1, 2, 3, 4, 5, 6], start: hhmm(opens), end: hhmm(opens + 3_600_000), timeZone: "UTC" },
+    },
+  });
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "active-hours-asleep-due-inside" });
+  const nextWakeAt = () => withDaemonDb(daemon, (db) => (db.prepare(
+    "SELECT next_wake_at FROM resident_runs WHERE ended_at IS NULL AND launch_state = 'launched'",
+  ).get() as { next_wake_at: number | null } | undefined)?.next_wake_at ?? null);
+  await expect.poll(nextWakeAt, { timeout: 60_000 }).not.toBeNull();
+  const due = new Date(nextWakeAt()!);
+  const dueTime = `${String(due.getHours()).padStart(2, "0")}:${String(due.getMinutes()).padStart(2, "0")}`;
+
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
+  const dock = dashboard.getByRole("dialog", { name: "Residents", exact: true });
+  const tags = dock.locator("li.residents-pop-card").getByLabel("Resident loop status").locator(".resident-loop-tag");
+  await expect(tags.nth(0), "outside its window: asleep, though its wake is not held").toHaveText("asleep");
+  await expect(tags.nth(2), "the wake goes out at its own time, inside the next window").toHaveText(new RegExp(`^wakes (\\w{3} )?${dueTime}$`));
+  await capture(dock, "04-dock-asleep-due-inside");
+});

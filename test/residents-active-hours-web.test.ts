@@ -37,6 +37,15 @@ test("a waiting resident outside its active hours reads as asleep with the time 
   assert.match(statusLine(off, due), /waiting · iteration 3 · next in/, "the preview off: the ordinary countdown");
 });
 
+test("outside its window a resident whose next wake already falls inside the next window still reads as asleep", () => {
+  // Friday 18:00 with a wake due Monday 10:00: the wake is not held, but the resident sleeps now.
+  // The window opens in three hours; the wake is due half an hour after it opens.
+  const html = statusLine(on, Date.now() + 3.5 * HOUR, windowFromNow(3, 4));
+  assert.match(html, /asleep · iteration 3 · wakes /, "asleep now, with the time the wake goes out");
+  assert.doesNotMatch(html, /waiting|next in/);
+  assert.match(statusLine(off, Date.now() + 3.5 * HOUR, windowFromNow(3, 4)), /waiting · iteration 3 · next in/, "the preview off: the ordinary countdown");
+});
+
 test("inside its window a resident whose next wake is held reads as waiting, with the held wake's time", () => {
   // Awake now (the window closes in an hour), but the wake due in two hours falls after it closes.
   const html = statusLine(on, Date.now() + 2 * HOUR, windowFromNow(-1, 1));

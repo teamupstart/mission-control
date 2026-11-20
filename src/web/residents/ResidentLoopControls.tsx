@@ -39,17 +39,20 @@ export function ResidentLoopStatusLine({ loop, session, tags = false }: {
   }, [loop.nextWakeAt]);
   const activeHours = useFeatureFlag("resident-active-hours");
   const held = loop.loopState !== "paused" && session && reportBucket(session) === "needs-you";
-  // Outside its active hours a waiting resident sleeps; its due wake goes out when the window opens.
-  // When the next wake goes out if active hours hold it, and, separately, whether the resident
-  // is asleep right now: at 16:58 in a 09:00-17:00 window a wake due at 17:03 is already held
-  // until Monday, but the resident is still awake until 17:00.
-  const heldUntil = !held && loop.loopState === "waiting"
-    ? residentSleepingUntil(loop.settings?.schedule, loop.nextWakeAt, now, activeHours) : null;
-  const asleep = heldUntil !== null && !residentAwakeAt(loop.settings?.schedule, now, activeHours);
+  // Two separate questions. Asleep is whether a waiting resident is outside its window right now,
+  // whatever its next wake: at Friday 18:00 a wake already due Monday 10:00 is not held, yet the
+  // resident sleeps until then. The wake time is when its next wake will actually go out: the
+  // next opening when the wake falls outside the hours (held), else the wake's own time. At
+  // 16:58 in a 09:00-17:00 window a wake due at 17:03 is held until Monday, but the resident is
+  // awake until 17:00, so it reads waiting with that held time.
+  const waiting = !held && loop.loopState === "waiting";
+  const heldUntil = waiting ? residentSleepingUntil(loop.settings?.schedule, loop.nextWakeAt, now, activeHours) : null;
+  const asleep = waiting && !residentAwakeAt(loop.settings?.schedule, now, activeHours);
+  const wakesAt = heldUntil ?? (asleep ? loop.nextWakeAt : null);
   const label = held ? "waiting on you" : asleep ? "asleep" : loop.loopState;
   const remaining = loop.nextWakeAt === null ? null : Math.max(0, Math.ceil((loop.nextWakeAt - now) / 1000));
   const next = held || remaining === null ? null
-    : heldUntil !== null ? `wakes ${residentWakeOpeningLabel(heldUntil, now)}`
+    : wakesAt !== null ? `wakes ${residentWakeOpeningLabel(wakesAt, now)}`
       : `next in ${remaining < 60 ? `${remaining}s` : `${Math.ceil(remaining / 60)}m`}`;
   if (tags) {
     const reasons = [loop.pauseReason, loop.wakeReason].filter((reason): reason is string => !!reason);

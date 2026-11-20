@@ -191,6 +191,10 @@ test("the launch environment drops an inherited trace context and adds only TRAC
   assert.deepEqual(withAgentTraceContext(inherited, null), { PATH: "/usr/bin" });
   assert.deepEqual(withAgentTraceContext(inherited, PARENT), { PATH: "/usr/bin", TRACEPARENT: PARENT.traceparent });
   assert.equal("TRACEPARENT" in inherited, true, "the input is not mutated");
+  // A carried context, such as a shaping run's, may bring its own tracestate: it replaces the
+  // inherited one, and a context without one still sets none.
+  assert.deepEqual(withAgentTraceContext(inherited, { ...PARENT, tracestate: "mc=launch" }),
+    { PATH: "/usr/bin", TRACEPARENT: PARENT.traceparent, TRACESTATE: "mc=launch" });
 });
 
 // ---- which context a session gets ----

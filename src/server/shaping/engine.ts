@@ -31,7 +31,9 @@ import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { discoverShapers } from "./discovery.ts";
 import { getShapingConfig } from "./index.ts";
-import { callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTransportCalls, type TransportReply } from "./transports/index.ts";
+import {
+  callTransport, SHAPING_TRANSPORT_CALLS, type ShapingRunScope, type ShapingTraceContext, type ShapingTransportCalls, type TransportReply,
+} from "./transports/index.ts";
 
 /**
  * `shapeTask`: the only caller of the transports. It decides nothing about which shapers exist
@@ -57,6 +59,17 @@ export interface ShapeTaskInput {
   context: Omit<ShapingContext, "repositories" | "caller"> & { repositories: readonly ShapeTaskRepository[] };
   /** Aborted when the task is cancelled while it is being shaped. */
   signal?: AbortSignal;
+  /**
+   * Lowers the section's total for this one launch: the section never exceeds the smaller of
+   * this and `limits.totalBytes`, and what does not fit is cut and recorded by the allocator's
+   * usual rules. Phase 2 passes it on a delivery path with a byte ceiling.
+   */
+  maxSectionBytes?: number;
+  /**
+   * The launch's W3C trace context. Every call of the run receives it unchanged as `ctx.trace`.
+   * It is never logged or recorded. Phase 2 passes it in.
+   */
+  trace?: ShapingTraceContext | null;
 }
 
 /** One entry as it would be injected, for the record, the viewer and the dry run. */
@@ -237,11 +250,14 @@ async function runShaping(
   const callOne = async (stage: ShapingStage, entry: ResolvedShaper, repoIndex: number): Promise<CallResult> => {
     const repo = repositories[repoIndex]!;
     const callStart = performance.now();
-    const record = (outcome: ShapingOutcome, reason: string | null, version: string | null = null): ShapingCallRecord => ({
+    // `redacted`: the transport removed a credential value from what this record was built from.
+    const record = (outcome: ShapingOutcome, reason: string | null, version: string | null = null, redacted = false): ShapingCallRecord => ({
       shaper: entry.shaper, origin: entry.origin, sha256: hashes.get(entry.shaper.id) ?? null, repo: repo.name,
-      outcome, reason: reason === null ? null : bounded(reason), durationMs: Math.round(performance.now() - callStart), version,
+      outcome, reason: reason === null ? null : bounded(reason), durationMs: Math.round(performance.now() - callStart), version, redacted,
     });
-    const empty = (outcome: ShapingOutcome, reason: string): CallResult => ({ record: record(outcome, reason), entries: [], facts: null, summary: null, truncated: false });
+    const empty = (outcome: ShapingOutcome, reason: string, redacted = false): CallResult => ({
+      record: record(outcome, reason, null, redacted), entries: [], facts: null, summary: null, truncated: false,
+    });
     const stopped = () => input.signal?.aborted
       ? empty("failed", "The task was cancelled while it was being shaped.")
       : empty("timed_out", "The shaping step ran out of time before this call could finish.");
@@ -293,7 +309,7 @@ async function runShaping(
     try {
       reply = await Promise.race([
         callTransport(request, entry.shaper, {
-          deadline, timeoutMs, signal: call.signal, scope, root: entry.root,
+          deadline, timeoutMs, signal: call.signal, scope, root: entry.root, trace: input.trace ?? null,
         }, transports),
         new Promise<"abandoned">((done) => {
           abandon = setTimeout(() => done("abandoned"), timeoutMs + 50);
@@ -315,9 +331,10 @@ async function runShaping(
     // is a timeout, keeping the transport's own timeout diagnostic when it gave one.
     if (late) {
       if (run.signal.aborted) return stopped();
-      return reply.kind === "timed_out" ? empty("timed_out", reply.reason) : timedOut();
+      return reply.kind === "timed_out" ? empty("timed_out", reply.reason, reply.redacted === true) : timedOut();
     }
-    if (reply.kind !== "data") return empty(reply.kind, reply.reason);
+    const redacted = reply.redacted === true;
+    if (reply.kind !== "data") return empty(reply.kind, reply.reason, redacted);
 
     // Every reason below is built from text the shaper wrote, so it is scrubbed of what the
     // transport handed the shaper before it is recorded, and before it is cut to length.
@@ -325,12 +342,12 @@ async function runShaping(
     let value = reply.data;
     if (typeof value === "string") {
       try { value = JSON.parse(value); }
-      catch { return empty("invalid", "The reply is not JSON."); }
+      catch { return empty("invalid", "The reply is not JSON.", redacted); }
     }
     const error = replyError(value);
-    if (error !== null) return empty("failed", scrub(error));
+    if (error !== null) return empty("failed", scrub(error), redacted);
     const parsed = ShapingResultSchema.safeParse(value);
-    if (!parsed.success) return empty("invalid", scrub(describeInvalidResult(parsed.error)));
+    if (!parsed.success) return empty("invalid", scrub(describeInvalidResult(parsed.error)), redacted);
     const result = parsed.data;
     const notes = scrub(result.notes?.filter((note) => note.trim()).join(" ") ?? "");
     // The version is the shaper's text too, recorded and returned, so it is scrubbed as an
@@ -340,8 +357,8 @@ async function runShaping(
       : (reply.redact ? reply.redact(result.version, { identifier: true }) : result.version).slice(0, SHAPING_LIMITS.versionChars);
     return {
       record: result.degraded
-        ? record("degraded", notes || "The shaper reported that it is degraded.", version)
-        : record("ok", null, version),
+        ? record("degraded", notes || "The shaper reported that it is degraded.", version, redacted)
+        : record("ok", null, version, redacted),
       entries: result.guidance.map((guidance) => ({
         id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
         body: guidance.body, truncated: guidance.truncated === true,
@@ -410,7 +427,12 @@ async function runShaping(
       });
     }
   }
-  const allocation = allocateBudget(candidates, config.limits.totalBytes - utf8Length(SHAPING_SECTION_PREAMBLE));
+  // The launch may lower the total, never raise it: the section fits the smaller of the two.
+  const launchCap = input.maxSectionBytes;
+  const totalBytes = typeof launchCap === "number" && Number.isFinite(launchCap)
+    ? Math.min(config.limits.totalBytes, Math.max(0, Math.floor(launchCap)))
+    : config.limits.totalBytes;
+  const allocation = allocateBudget(candidates, Math.max(0, totalBytes - utf8Length(SHAPING_SECTION_PREAMBLE)));
   const entries: ShapingInjectedEntry[] = allocation.kept.map((slot) => ({
     ...slot.item.entry, body: slot.body, truncated: slot.truncated || slot.item.sourceTruncated, omittedBytes: slot.omittedBytes,
   }));

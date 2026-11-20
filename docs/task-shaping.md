@@ -145,6 +145,10 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 - Every budget and lateness check counts elapsed time on the monotonic clock, so a wall-clock
   correction during the step neither ends a call early nor skips a stage. The wall clock only
   stamps when the step started.
+- A launch can lower the section's total for itself, never raise it: the engine's optional
+  `maxSectionBytes` caps the section at the smaller of it and `limits.totalBytes`, and what
+  does not fit is cut or dropped by the rules below. Dispatch passes it on a delivery path with
+  a byte ceiling (Phase 2).
 - One entry is at most 16 KiB, its heading included. The budget is filled in stage order, then
   list order, then the order a shaper returned its entries. An entry that does not fit is cut at the last line
   boundary that does and marked `[truncated: N bytes omitted]`. An entry with less than 1 KiB
@@ -187,6 +191,12 @@ A `command` shaper is any program. Mission Control runs it once per call:
   and state directory are removed, and so is every variable whose name looks like a credential.
   To pass one of those to your program, such as an API token, name it in `env`. Mission
   Control's own token and state directory are never passed, even by name.
+- **Trace context.** When the launch has a W3C trace context, your program gets it as
+  `TRACEPARENT`, and `TRACESTATE` when there is one, the variables agents already get, so its
+  spans can join the session's trace. A `TRACEPARENT` or `TRACESTATE` inherited from the daemon
+  or named in `env`, in any case, is always removed first, so only the launch's own values are
+  ever sent. A trace value is not a credential, so it is never redacted. A dry run has no launch
+  and carries none.
   [Security](security.md#task-shaping) states the exact rule.
 - **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
@@ -230,8 +240,10 @@ All three routes are behind the flag and answer 404 while it is off.
   one that names an ordinary folder, answers 400 `unknown_repository` and runs nothing. A
   gatherer runs at the path given. The repository is named after the checkout, or after the
   repository that owns it when the path is a linked worktree. It answers
-  `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, the
-  section that would be injected, and each entry in it. A shaper that fails, times out or
+  `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, whether
+  a credential value was removed from its reply (`redacted`, set by the remote transports in
+  Phase 5), the section that would be injected, and each entry in it. The summary's optional
+  `sessionId` stays unset here; dispatch stamps it when it delivers a record (Phase 2). A shaper that fails, times out or
   answers garbage is an outcome in a 200, never an error reply. A client that closes its
   connection before the reply stops the run, and with it each running shaper's process group.
 
@@ -278,11 +290,12 @@ Arrives with the `mcp` and `http` transports. Their config shapes are already ac
 shaper names its `server`, its `tool` and a `contextDelivery` of `folded` or `argument`, and an
 `http` shaper names its `url` and `headers`. Header values may reference `{caller.user}`,
 `{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. A credential is always a
-reference: a header such as `authorization` or `x-api-key` that is not empty holds an
-`{env:NAME}` reference and nothing literal. `Authorization` and `Proxy-Authorization` may put
+reference: a header named `authorization`, `proxy-authorization` or `cookie`, or whose name
+contains `token`, `secret`, `key`, `password`, `auth` or `credential`, without case, that is
+not empty holds `{env:NAME}` references and nothing literal. `Authorization` and `Proxy-Authorization` may put
 `Bearer`, `Basic`, `Token` or `Digest` before it (`Bearer {env:ACME_TOKEN}`). Any other
-leading word is refused as part of the secret. A URL carries no user name,
-password or credential-shaped query parameter. A definition with literal secret text is
+leading word is refused as part of the secret. A URL carries no user name, password or query
+string. A definition with literal secret text is
 refused, so it is never stored or backed up. Until that phase lands, such a shaper's outcome
 is `unavailable`.
 

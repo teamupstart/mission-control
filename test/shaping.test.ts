@@ -20,11 +20,13 @@ import {
   SHAPING_LIMITS,
   SHAPING_SECTION_PREAMBLE,
   credentialBearingName,
+  credentialLookingHeader,
   credentialValueIsReferenced,
   credentialsWereRemoved,
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
+  TaskShapingSchema,
   ShaperSchema,
   shaperSchemaForStages,
   ShapingConfigSchema,
@@ -141,6 +143,39 @@ test("the strict definition covers all four transports and fills defaults", () =
   assert.equal(ShaperSchema.safeParse({ ...command("x"), maxBytes: 64 * 1024 + 1 }).success, false);
 });
 
+test("plan.md's credential rule: header names that contain a credential word, and URLs with no query string", () => {
+  // A header is credential-looking when its name contains token, secret, key, password, auth or
+  // credential, without case, or is authorization, proxy-authorization or cookie.
+  for (const name of ["authorization", "Proxy-Authorization", "Cookie", "X-Monkey", "x-keyring", "XAUTHOR", "x-mytoken-id",
+    "X-SECRETS", "x-password-hint", "x-credentialed", "x-session-id"]) {
+    assert.equal(credentialLookingHeader(name), true, name);
+  }
+  for (const name of ["accept", "content-type", "x-request-id", "x-acme-user-id", "user-agent"]) {
+    assert.equal(credentialLookingHeader(name), false, name);
+  }
+  const http = (headers: Record<string, string>, url = "https://context.example/shape") => ShaperSchema.safeParse({
+    id: "h", label: "H", stage: "select", transport: { type: "http", url, headers },
+  });
+  const refused = http({ "X-Monkey": "literal-value" });
+  assert.equal(refused.success, false, "a name containing key holds references only");
+  assert.equal(JSON.stringify(refused.error!.issues).includes("literal-value"), false, "and the refusal never names the value");
+  assert.equal(http({ "X-Monkey": "{env:MONKEY}" }).success, true);
+  // A transport URL carries no query string at all, whatever its parameters are called.
+  for (const url of ["https://context.example/shape?page=2", "https://context.example/shape?x=1&y=2", "https://context.example/shape?"]) {
+    const result = http({}, url);
+    assert.equal(result.success, url.endsWith("?"), url);
+  }
+  const mcp = ShaperSchema.safeParse({ id: "m", label: "M", stage: "select",
+    transport: { type: "mcp", tool: "t", server: { type: "http", url: "https://context.example/mcp?page=2", headers: {} } } });
+  assert.equal(mcp.success, false, "an mcp server's URL as well");
+  assert.match(mcp.error!.issues[0]!.message, /cannot carry a query string/);
+  // A manifest is the strict definition too.
+  assert.equal(ShaperManifestSchema.safeParse({ id: "f", label: "F", stage: "select",
+    transport: { type: "http", url: "https://context.example/x?page=2", headers: {} } }).success, false);
+  assert.equal(ShaperManifestSchema.safeParse({ id: "f", label: "F", stage: "select",
+    transport: { type: "http", url: "https://context.example/x", headers: { "x-api-key": "sk-live-manifest" } } }).success, false);
+});
+
 test("a credential is held only as a reference, so no secret text is ever stored or backed up", () => {
   for (const name of ["authorization", "Proxy-Authorization", "x-api-key", "X-Auth-Token", "cookie", "x-session-id", "apitoken", "clientSecret"]) {
     assert.equal(credentialBearingName(name), true, name);
@@ -169,11 +204,13 @@ test("a credential is held only as a reference, so no secret text is ever stored
   assert.equal(http({ "x-api-key": "plain-secret" }).success, false);
   // A lone word is the secret itself, not an auth scheme, with or without whitespace after it,
   // and a credential header needs an {env:NAME} reference, not only a caller one.
-  for (const value of ["sk-live-abc ", "sk-live-abc", "  sk-live-abc\t", "Bearer ", "Bearer {caller.user}", "{caller.user}"]) {
+  for (const value of ["sk-live-abc ", "sk-live-abc", "  sk-live-abc\t", "Bearer ", "Bearer {caller.user}", "{caller.user}",
+    // `plan.md`: `{env:NAME}` references only, so a caller reference beside one is refused too.
+    "Bearer {env:A}{caller.user}"]) {
     assert.equal(credentialValueIsReferenced("authorization", value), false, JSON.stringify(value));
     assert.equal(http({ authorization: value }).success, false, JSON.stringify(value));
   }
-  for (const value of ["", "   ", "{env:A}", " Bearer {env:A} ", "Bearer {env:A}{caller.user}", "basic {env:A}", "TOKEN {env:A}", "Digest {env:A}"]) {
+  for (const value of ["", "   ", "{env:A}", " Bearer {env:A} ", "Bearer {env:A}{env:B}", "basic {env:A}", "TOKEN {env:A}", "Digest {env:A}"]) {
     assert.equal(credentialValueIsReferenced("authorization", value), true, JSON.stringify(value));
   }
   // A leading word that is not a known scheme is a literal prefix of the secret: refused, and
@@ -190,7 +227,7 @@ test("a credential is held only as a reference, so no secret text is ever stored
     "a header that carries no credential may hold literal text");
   assert.equal(http({}, "https://user:pass@context.example/shape").success, false, "no userinfo in a URL");
   assert.equal(http({}, "https://context.example/shape?api_key=abc").success, false, "no credential in a query");
-  assert.equal(http({}, "https://context.example/shape?page=2").success, true);
+  assert.equal(http({}, "https://context.example/shape?page=2").success, false, "nor any query string, as plan.md requires");
   assert.equal(ShaperManifestSchema.safeParse({ id: "h", label: "H", stage: "select",
     transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer abc" } } }).success, false,
     "a manifest follows the same rule");
@@ -219,7 +256,7 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
   const [stripped, cmd, untouched] = parsed.shapers as Array<Record<string, any>>;
   assert.deepEqual(stripped!.transport.server.headers, { authorization: "", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}", "x-auth-token": "" },
     "only the literal credential is emptied; a reference and an ordinary header are kept");
-  assert.equal(stripped!.transport.server.url, "https://context.example/mcp?page=2");
+  assert.equal(stripped!.transport.server.url, "https://context.example/mcp", "userinfo and the whole query string are removed");
   assert.deepEqual(stripped!.note, { kept: true }, "every other field of an unsupported entry is kept as written");
   assert.deepEqual(cmd!.transport.args, ["--json", "", "--api-key", "", "-H", ""]);
   assert.deepEqual(untouched, StoredShaperSchema.parse(shaperEntry()), "an entry with no literal credential is unchanged");
@@ -666,12 +703,13 @@ test("the section: a labelled preamble, one heading per entry, the repository on
 
 test("the summary folds calls per shaper, worst outcome first; truncation is not degradation", () => {
   assert.equal(summariseShaping({ calls: [], kept: [], truncatedShapers: new Set(), at: 1, durationMs: 0, multiRepo: false }), null);
-  const call = (id: string, repo: string, outcome: "ok" | "timed_out" | "degraded", reason: string | null = null) => ({
+  const call = (id: string, repo: string, outcome: "ok" | "timed_out" | "degraded", reason: string | null = null, redacted = false) => ({
     shaper: { id, label: id, stage: "select" }, origin: "registered" as const, sha256: "f".repeat(64), repo, outcome, reason,
-    durationMs: 120, version: outcome === "ok" ? "v1" : null,
+    durationMs: 120, version: outcome === "ok" ? "v1" : null, redacted,
   });
   const summary = summariseShaping({
-    calls: [call("acme", "billing-api", "ok"), call("acme", "ledger", "timed_out", "Timed out after 5 s."), call("files", "billing-api", "ok")],
+    // One of acme's two calls had a credential value removed: the shaper's row says so.
+    calls: [call("acme", "billing-api", "ok", null, true), call("acme", "ledger", "timed_out", "Timed out after 5 s."), call("files", "billing-api", "ok")],
     kept: [{ shaperId: "acme", bytes: 100, truncated: false }, { shaperId: "files", bytes: 50, truncated: true }],
     truncatedShapers: new Set(["files"]), at: 1000, durationMs: 300.4, multiRepo: true,
   })!;
@@ -679,9 +717,9 @@ test("the summary folds calls per shaper, worst outcome first; truncation is not
     state: "degraded", at: 1000, durationMs: 300, entries: 2, bytes: 150, truncated: true,
     shapers: [
       { id: "acme", label: "acme", stage: "select", origin: "registered", sha256: "f".repeat(64), outcome: "timed_out",
-        reason: "ledger: Timed out after 5 s.", durationMs: 120, entries: 1, bytes: 100, truncated: false, version: "v1" },
+        reason: "ledger: Timed out after 5 s.", durationMs: 120, entries: 1, bytes: 100, truncated: false, redacted: true, version: "v1" },
       { id: "files", label: "files", stage: "select", origin: "registered", sha256: "f".repeat(64), outcome: "ok",
-        reason: null, durationMs: 120, entries: 1, bytes: 50, truncated: true, version: "v1" },
+        reason: null, durationMs: 120, entries: 1, bytes: 50, truncated: true, redacted: false, version: "v1" },
     ],
   });
   assert.equal(shapingSummaryLine(summary), "degraded: acme timed out; 2 entries");
@@ -691,6 +729,17 @@ test("the summary folds calls per shaper, worst outcome first; truncation is not
   assert.equal(shapingSummaryLine(ok), "ok: 1 entry from 1 shaper, truncated");
   const degraded = summariseShaping({ calls: [call("g", "r", "degraded", "model down")], kept: [], truncatedShapers: new Set(), at: 1, durationMs: 1, multiRepo: false })!;
   assert.equal(degraded.state, "degraded");
+});
+
+test("the task record declares an optional sessionId, and each shaper row a redacted mark", () => {
+  const row = { id: "a", label: "A", stage: "select", origin: "registered", sha256: null, outcome: "ok", reason: null,
+    durationMs: 1, entries: 0, bytes: 0, truncated: false, version: null };
+  const base = { state: "ok", at: 1, durationMs: 1, entries: 0, bytes: 0, truncated: false, shapers: [row] };
+  const parsed = TaskShapingSchema.parse(base);
+  assert.equal(parsed.sessionId, undefined, "absent until Phase 2 commits the record");
+  assert.equal(parsed.shapers[0]!.redacted, false, "a row written before the mark existed reads as not redacted");
+  assert.equal(TaskShapingSchema.parse({ ...base, sessionId: "s_123" }).sessionId, "s_123");
+  assert.equal(TaskShapingSchema.safeParse({ ...base, sessionId: "" }).success, false);
 });
 
 test("the result schema is FR-02's reply: unknown fields ignored, every collection bounded", () => {

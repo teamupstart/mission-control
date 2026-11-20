@@ -40,14 +40,57 @@ function request(stage: "gather" | "select" = "gather"): ShapingRequest {
 function ctx(timeoutMs = 10_000, extra: Partial<TransportContext> = {}): TransportContext {
   return {
     deadline: Date.now() + timeoutMs, timeoutMs, signal: new AbortController().signal,
-    scope: { shared: new Map(), defer() {} }, root: null, ...extra,
-  };
+    scope: { shared: new Map(), defer() {} }, root: null, trace: null, ...extra,
+  } as TransportContext;
 }
 function echoed(reply: Awaited<ReturnType<typeof callCommand>>) {
   assert.equal(reply.kind, "data", JSON.stringify(reply));
   const body = JSON.parse(JSON.parse((reply as { data: string }).data).guidance[0].body);
   return body as { argv: string[]; cwd: string; env: Record<string, string | null>; envKeys: string[]; request: ShapingRequest };
 }
+
+const TRACE = { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", tracestate: "mc=launch" };
+
+test("a command shaper gets the launch's trace context, and never one inherited or configured", async () => {
+  const names = ["TRACEPARENT", "TRACESTATE", "traceparent"] as const;
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  // The daemon's own context, which belongs to whatever started the daemon.
+  process.env.TRACEPARENT = "00-11111111111111111111111111111111-2222222222222222-01";
+  process.env.TRACESTATE = "vendor=ambient";
+  process.env.traceparent = "00-33333333333333333333333333333333-4444444444444444-01";
+  try {
+    // The shaper even names the variables itself: they are removed first, in any case.
+    const named = { env: ["TRACEPARENT", "TRACESTATE", "traceparent"] };
+    const env = (args: string[]) => [...args, "env=TRACEPARENT", "env=TRACESTATE", "env=traceparent"];
+    const withTrace = echoed(await callCommand(request(), shaper(env([FIXTURE, "echo"]), named), ctx(10_000, { trace: TRACE })));
+    assert.match(withTrace.env.TRACEPARENT!, /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/, "well-formed");
+    assert.deepEqual(withTrace.env, { TRACEPARENT: TRACE.traceparent, TRACESTATE: TRACE.tracestate, traceparent: null });
+    const parentOnly = echoed(await callCommand(request(), shaper(env([FIXTURE, "echo"]), named),
+      ctx(10_000, { trace: { traceparent: TRACE.traceparent } })));
+    assert.deepEqual(parentOnly.env, { TRACEPARENT: TRACE.traceparent, TRACESTATE: null, traceparent: null }, "no TRACESTATE without one");
+    const none = echoed(await callCommand(request(), shaper(env([FIXTURE, "echo"]), named), ctx()));
+    assert.deepEqual(none.env, { TRACEPARENT: null, TRACESTATE: null, traceparent: null }, "with no context, none at all");
+    assert.equal(none.envKeys.some((key) => /^trace(parent|state)$/i.test(key)), false);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("a trace value is never redacted: it is neither a credential nor a reference", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SECRET;
+  process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak", "TRACEPARENT"], { env: ["SHAPER_FIXTURE_SECRET"] }),
+      ctx(10_000, { trace: TRACE }));
+    assert.deepEqual(reply, { kind: "failed", reason: `The command exited with code 4: could not authenticate with ${TRACE.traceparent}` });
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
+    else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
 
 test("argv reaches the program verbatim, with no shell in between", async () => {
   const args = [FIXTURE, "echo", "$(echo injected)", "; rm -rf /", "*", "a b"];

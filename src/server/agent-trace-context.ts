@@ -22,6 +22,14 @@ export interface AgentTraceContext {
   traceparent: string;
 }
 
+/**
+ * A trace context a caller may carry further, such as a shaping run's: `AgentTraceContext` plus
+ * the `tracestate` the launch has, when it has one.
+ */
+export interface CarriedTraceContext extends AgentTraceContext {
+  tracestate?: string;
+}
+
 const TRACEPARENT_PATTERN = /^00-(?!0{32})[0-9a-f]{32}-(?!0{16})[0-9a-f]{16}-[0-9a-f]{2}$/;
 
 /** A sampled version-00 `traceparent`, or null when either id is not a valid W3C id. */
@@ -37,14 +45,18 @@ export function formatTraceparent(traceId: string, spanId: string): AgentTraceCo
  * set. The daemon's own environment belongs to whatever started the daemon - a shell, a CI
  * job, an agent's Bash tool - and an embedded session parented under that would join every
  * session this daemon ever launches to one unrelated trace. With no context, the agent starts
- * its own root spans exactly as it would outside Mission Control.
+ * its own root spans exactly as it would outside Mission Control. A context that carries a
+ * `tracestate` sets `TRACESTATE` beside it.
  */
 export function withAgentTraceContext<T extends Record<string, string | undefined>>(
   env: T,
-  context: AgentTraceContext | null | undefined,
+  context: CarriedTraceContext | null | undefined,
 ): T {
   const next: Record<string, string | undefined> = { ...env };
   for (const name of TRACE_CONTEXT_ENV_NAMES) delete next[name];
-  if (context) next.TRACEPARENT = context.traceparent;
+  if (context) {
+    next.TRACEPARENT = context.traceparent;
+    if (context.tracestate) next.TRACESTATE = context.tracestate;
+  }
   return next as T;
 }

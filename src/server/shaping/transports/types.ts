@@ -1,10 +1,13 @@
 import type { Shaper, ShapingRequest, ShapingTransportId } from "@shared/shaping.ts";
+import type { CarriedTraceContext } from "../../agent-trace-context.ts";
 
 /**
- * What a transport answers. A transport only moves bytes: `data` is the raw reply (a string the
- * engine parses as JSON, or an already-decoded value), and the engine owns validation, caps,
- * de-duplication, the outcome and the record. A transport never throws.
+ * The launch's W3C trace context, `{ traceparent, tracestate? }`. It is handed to every call of
+ * a run unchanged. It is not a credential and not a reference, so it is never redacted, and the
+ * engine never logs or records it.
  */
+export type ShapingTraceContext = CarriedTraceContext;
+
 /** How a reply's redactor treats the text it is given. */
 export interface RedactOptions {
   /**
@@ -15,10 +18,19 @@ export interface RedactOptions {
   identifier?: boolean;
 }
 
+/**
+ * What a transport answers. A transport only moves bytes: `data` is the raw reply (a string the
+ * engine parses as JSON, or an already-decoded value), and the engine owns validation, caps,
+ * de-duplication, the outcome and the record. A transport never throws.
+ *
+ * Either kind may carry `redacted: true`: the transport removed a resolved `{env:NAME}` value
+ * from the data or from the reason. Phase 5 sets it; the engine records it for the shaper.
+ */
 export type TransportReply =
   | {
     kind: "data";
     data: unknown;
+    redacted?: boolean;
     /**
      * Removes values the shaper was handed from text derived from this reply. The engine runs
      * every reason it builds from `data` through it (an `error` the reply states, its `notes`,
@@ -28,7 +40,7 @@ export type TransportReply =
      */
     redact?: (text: string, options?: RedactOptions) => string;
   }
-  | { kind: "failed" | "timed_out" | "unavailable"; reason: string };
+  | { kind: "failed" | "timed_out" | "unavailable"; reason: string; redacted?: boolean };
 
 /** State that lives for one shaping run, so a transport can reuse one connection across calls. */
 export interface ShapingRunScope {
@@ -48,6 +60,8 @@ export interface TransportContext {
   readonly scope: ShapingRunScope;
   /** The folder a discovered shaper was found in, which its `./` command resolves against. Null when registered. */
   readonly root: string | null;
+  /** The launch's trace context, or null when it has none. Every call of a run gets the same one. */
+  readonly trace: ShapingTraceContext | null;
 }
 
 export type ShaperOf<Id extends ShapingTransportId> = Shaper & { transport: Extract<Shaper["transport"], { type: Id }> };

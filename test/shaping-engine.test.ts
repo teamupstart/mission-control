@@ -189,6 +189,52 @@ test("a slow call is abandoned at its timeout, and the others' entries are kept"
   assert.deepEqual(result.entries.map((entry) => entry.id), ["kept"]);
 });
 
+test("a transport's redacted mark is recorded for its shaper, from a data reply and from a failed one", async () => {
+  const config = configWith([shaper("clean", "select"), shaper("scrubbed", "select"), shaper("scrubbed-failure", "select"), shaper("quiet-failure", "select")]);
+  const result = await run(config, (_request, entry): TransportReply => {
+    if (entry.id === "scrubbed") return { kind: "data", data: JSON.stringify({ guidance: [{ id: "a", body: "[ACME_TOKEN redacted] body" }] }), redacted: true };
+    if (entry.id === "scrubbed-failure") return { kind: "failed", reason: "rejected [ACME_TOKEN redacted]", redacted: true };
+    if (entry.id === "quiet-failure") return { kind: "failed", reason: "plain failure" };
+    return data({ guidance: [] });
+  }, input(1));
+  assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.redacted]), [
+    ["clean", "ok", false], ["scrubbed", "ok", true], ["scrubbed-failure", "failed", true], ["quiet-failure", "failed", false],
+  ], "redaction is not degradation: the outcome does not change");
+  assert.equal(result.summary!.sessionId, undefined, "the engine leaves sessionId to Phase 2");
+});
+
+test("maxSectionBytes below limits.totalBytes cuts the section and records it as truncated", async () => {
+  // Distinct bodies: identical ones would be de-duplicated before the budget ever saw them.
+  const config = configWith([shaper("big", "select")], { limits: { totalBytes: 32 * 1024 } });
+  const handler = () => data({ guidance: [1, 2, 3].map((n) => ({ id: `e${n}`, body: `${n}`.repeat(3_000) })) });
+  const full = await run(config, handler, input(1));
+  assert.equal(full.summary!.truncated, false, "under the config's total all three fit");
+  const capped = await run(config, handler, input(1, { maxSectionBytes: 4_000 }));
+  assert.ok(utf8Length(capped.section) <= 4_000, `the section is ${utf8Length(capped.section)} bytes`);
+  assert.equal(capped.summary!.truncated, true);
+  assert.equal(capped.summary!.shapers[0]!.truncated, true);
+  // A launch can only lower the total: a larger cap changes nothing.
+  const raised = await run(config, handler, input(1, { maxSectionBytes: 1_000_000 }));
+  assert.equal(raised.section, full.section);
+});
+
+test("input.trace reaches every call of a run as ctx.trace unchanged, and appears in no summary or record", async () => {
+  const trace = { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", tracestate: "mc=launch" };
+  const seen: unknown[] = [];
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
+  const result = await run(config, (_request, _entry, ctx) => {
+    seen.push(ctx.trace);
+    return data({ guidance: [{ id: "a", body: "b" }] });
+  }, input(2, { trace }));
+  assert.equal(seen.length, 4, "two shapers, two repositories");
+  for (const each of seen) assert.equal(each, trace, "the very same object, unchanged");
+  const recorded = JSON.stringify(result);
+  assert.equal(recorded.includes(trace.traceparent) || recorded.includes(trace.tracestate), false);
+  const none: unknown[] = [];
+  await run(config, (_request, _entry, ctx) => { none.push(ctx.trace); return data({ guidance: [] }); }, input(1));
+  assert.deepEqual(none, [null, null], "no context is null, not undefined");
+});
+
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {
   // 33 attached repositories, one more than a request's context may name.
   const many = input(1);

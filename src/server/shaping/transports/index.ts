@@ -5,7 +5,7 @@ import { callHttp } from "./http.ts";
 import { callMcp } from "./mcp.ts";
 import type { ShaperOf, ShapingTransport, TransportContext, TransportReply } from "./types.ts";
 
-export type { ShapingRunScope, ShapingTransport, TransportContext, TransportReply } from "./types.ts";
+export type { ShapingRunScope, ShapingTraceContext, ShapingTransport, TransportContext, TransportReply } from "./types.ts";
 
 export type ShapingTransportCalls = { readonly [Id in ShapingTransportId]: ShapingTransport<Id> };
 

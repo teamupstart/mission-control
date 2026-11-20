@@ -320,6 +320,20 @@ export function credentialBearingName(name: string): boolean {
 }
 
 /**
+ * Whether a header looks like it carries a credential, the rule in `plan.md`: `authorization`,
+ * `proxy-authorization` or `cookie`, or a name that contains `token`, `secret`, `key`,
+ * `password`, `auth` or `credential`, compared without case. A name the segment rule above
+ * recognises, such as `x-session`, counts as well. The rule goes by name, so a credential under
+ * an innocent-looking name is not caught.
+ */
+export function credentialLookingHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === "authorization" || lower === "proxy-authorization" || lower === "cookie"
+    || /token|secret|key|password|auth|credential/.test(lower)
+    || credentialBearingName(name);
+}
+
+/**
  * The field the stored config sets on an entry it removed a literal credential from. Such an
  * entry is unsupported: never resolved, run or dry-run, until the operator registers a valid
  * replacement for its id.
@@ -338,7 +352,7 @@ export const SHAPING_AUTH_SCHEMES = ["Bearer", "Basic", "Token", "Digest"] as co
 
 /**
  * A credential-bearing value may hold its secret only as a reference, resolved at call time.
- * Empty is fine. Otherwise it is references only, at least one of them `{env:NAME}`. Only an
+ * Empty is fine. Otherwise it is `{env:NAME}` references only, as `plan.md` requires. Only an
  * `Authorization` or `Proxy-Authorization` header may put a scheme before them, and only one of
  * `SHAPING_AUTH_SCHEMES`: any other leading word, such as a key prefix, is literal secret text.
  * The config holds no secret text, so no settings snapshot can carry one.
@@ -353,7 +367,7 @@ export function credentialValueIsReferenced(name: string, value: string): boolea
     if (!SHAPING_AUTH_SCHEMES.some((known) => known.toLowerCase() === scheme.toLowerCase())) return false;
   }
   const references = shapingReferences(shape[2]!);
-  return references !== null && references.some((reference) => reference.startsWith("env:"));
+  return references !== null && references.length > 0 && references.every((reference) => reference.startsWith("env:"));
 }
 
 /** Name segments that say an argument names where a credential lives, not the credential itself. */
@@ -591,7 +605,7 @@ function literalCredentialArguments(args: readonly string[], command?: unknown):
     if (COOKIE_FLAGS.has(name)) { if (parts.value.includes("=")) found.add(parts.at); return; }
     if (HEADER_FLAGS.has(name)) {
       const header = parts.value.split(":")[0]!.trim();
-      if (header && credentialBearingName(header)) found.add(parts.at);
+      if (header && credentialLookingHeader(header)) found.add(parts.at);
       return;
     }
     if (curl && CURL_CERT_FLAGS.has(name)) {
@@ -628,7 +642,7 @@ export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
   if (isRecord(holder.headers)) {
     const headers: Record<string, unknown> = { ...holder.headers };
     for (const [name, value] of Object.entries(headers)) {
-      if (credentialBearingName(name) && !(typeof value === "string" && credentialValueIsReferenced(name, value))) {
+      if (credentialLookingHeader(name) && !(typeof value === "string" && credentialValueIsReferenced(name, value))) {
         headers[name] = "";
         changed = true;
       }
@@ -641,9 +655,8 @@ export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
       const before = url.href;
       url.username = "";
       url.password = "";
-      // A copy of the names first: deleting while iterating the live list would skip entries.
-      const names = Array.from(url.searchParams.keys());
-      for (const name of names) if (credentialBearingName(name)) url.searchParams.delete(name);
+      // A transport URL carries no query string at all, as `plan.md` requires.
+      url.search = "";
       if (url.href !== before) {
         holder.url = url.href;
         changed = true;
@@ -691,7 +704,7 @@ function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   }
   const headers = (holder.headers ?? {}) as Record<string, string>;
   for (const [name, header] of Object.entries(headers)) {
-    if (credentialBearingName(name) && !credentialValueIsReferenced(name, header)) {
+    if (credentialLookingHeader(name) && !credentialValueIsReferenced(name, header)) {
       ctx.addIssue({
         code: "custom", path: [...at, "headers", name],
         message: `The "${name}" header carries a credential, so its secret must be a reference such as {env:NAME}, never literal text. It is resolved at call time and never stored or backed up.`,
@@ -704,13 +717,11 @@ function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   if (url.username || url.password) {
     ctx.addIssue({ code: "custom", path: [...at, "url"], message: "A URL cannot carry a user name or password. Send a credential in a header as {env:NAME}." });
   }
-  for (const name of url.searchParams.keys()) {
-    if (credentialBearingName(name)) {
-      ctx.addIssue({
-        code: "custom", path: [...at, "url"],
-        message: `The URL's "${name}" parameter looks like a credential. Send it in a header as {env:NAME}, so no secret is stored or backed up.`,
-      });
-    }
+  if (url.search !== "") {
+    ctx.addIssue({
+      code: "custom", path: [...at, "url"],
+      message: "A URL cannot carry a query string, which may hold a credential that would be stored and backed up. Send a credential in a header as {env:NAME}.",
+    });
   }
 }
 
@@ -1265,6 +1276,8 @@ export const ShapingShaperSummarySchema = z.object({
   entries: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
   truncated: z.boolean(),
+  /** A transport removed a credential value from this shaper's data or reason (Phase 5 sets it). */
+  redacted: z.boolean().default(false),
   version: z.string().max(SHAPING_LIMITS.versionChars).nullable(),
 });
 export type ShapingShaperSummary = z.output<typeof ShapingShaperSummarySchema>;
@@ -1273,6 +1286,8 @@ export type ShapingShaperSummary = z.output<typeof ShapingShaperSummarySchema>;
 export const TaskShapingSchema = z.object({
   state: z.enum(["ok", "degraded"]),
   at: z.number().int().nonnegative(),
+  /** The session the record was delivered to. The engine leaves it unset; Phase 2 sets it. */
+  sessionId: z.string().min(1).max(256).optional(),
   durationMs: z.number().int().nonnegative(),
   entries: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
@@ -1291,6 +1306,8 @@ export interface ShapingCallRecord {
   reason: string | null;
   durationMs: number;
   version: string | null;
+  /** The transport removed a credential value from what this call's record was built from. */
+  redacted: boolean;
 }
 
 /** What the budget kept, per shaper. */
@@ -1336,6 +1353,7 @@ export function summariseShaping(input: {
       entries: kept.length,
       bytes: kept.reduce((sum, entry) => sum + entry.bytes, 0),
       truncated: input.truncatedShapers.has(id),
+      redacted: calls.some((call) => call.redacted),
       version: calls.find((call) => call.version !== null)?.version ?? null,
     };
   });

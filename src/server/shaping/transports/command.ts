@@ -12,9 +12,10 @@ import {
   readToken,
 } from "@shared/harness-runtime.mjs";
 import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subprocess-env.ts";
+import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
-import type { ShapingTransport, TransportReply } from "./types.ts";
+import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
 /**
  * The `command` transport: one short-lived local process per call. The request is JSON on
@@ -47,15 +48,25 @@ const NEVER_PASSED = new Set<string>([
   SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
 ]);
 
+/** `traceparent` and `tracestate` in any spelling: only the launch's own values are ever sent. */
+function traceContextName(name: string): boolean {
+  return /^trace(?:parent|state)$/i.test(name);
+}
+
 /**
  * The child environment: the locator's child environment (its PATH snapshot), without what an
  * agent subprocess never inherits, without credential-shaped names and without any value that
  * carries the daemon's token - then exactly the variables the shaper named, from `base`.
+ *
+ * Then the launch's trace context, through the one carrier agents use: a `TRACEPARENT` or
+ * `TRACESTATE` inherited from the daemon or named by the shaper, in any case, is removed first,
+ * and the launch's own are set exactly when it has one.
  */
 export function shaperCommandEnv(
   base: NodeJS.ProcessEnv,
   names: readonly string[],
   daemonToken: string,
+  trace: ShapingTraceContext | null = null,
 ): NodeJS.ProcessEnv {
   const token = daemonToken.trim();
   const carriesToken = (value: string) => token.length > 0 && value.includes(token);
@@ -63,16 +74,16 @@ export function shaperCommandEnv(
   for (const [name, value] of Object.entries(executableChildEnv(base))) {
     if (value === undefined || NEVER_PASSED.has(name)) continue;
     if ((MAKE_RECURSION_ENV_NAMES as readonly string[]).includes(name)) continue;
-    if (credentialShapedName(name) || carriesToken(value)) continue;
+    if (credentialShapedName(name) || carriesToken(value) || traceContextName(name)) continue;
     env[name] = value;
   }
   dropPaneIdentityEnv(env);
   for (const name of names) {
     const value = base[name];
-    if (NEVER_PASSED.has(name) || value === undefined || value === "" || carriesToken(value)) continue;
+    if (NEVER_PASSED.has(name) || traceContextName(name) || value === undefined || value === "" || carriesToken(value)) continue;
     env[name] = value;
   }
-  return env;
+  return withAgentTraceContext(env, trace);
 }
 
 function killGroup(child: ChildProcess): void {
@@ -119,8 +130,10 @@ export interface ReceivedValues {
 
 /** Every distinct, non-empty value in the environment the child was actually spawned with. */
 export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly string[] = []): ReceivedValues {
-  const values = Object.values(env).filter((value): value is string => typeof value === "string" && value.length > 0);
-  const named = namedVariables.map((name) => env[name]).filter((value): value is string => typeof value === "string" && value.length > 0);
+  // The trace context is neither a credential nor a reference, so it is never redacted.
+  const values = Object.entries(env).filter(([name]) => !traceContextName(name)).map(([, value]) => value)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  const named = namedVariables.filter((name) => !traceContextName(name)).map((name) => env[name]).filter((value): value is string => typeof value === "string" && value.length > 0);
   return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
 }
 
@@ -276,7 +289,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   // Monotonic, like the engine's budget: a wall-clock correction must not end a call early.
   const started = performance.now();
   const transport = shaper.transport;
-  const env = shaperCommandEnv(process.env, transport.env, readToken());
+  const env = shaperCommandEnv(process.env, transport.env, readToken(), ctx.trace);
 
   let cwd: string;
   let scratch: string | null = null;

@@ -429,15 +429,18 @@ shaper locked is left behind and logged, because a path in the tree could be swa
 link between a read and a `chmod`. A cleanup a transport registers after its call was
 abandoned runs as soon as it is registered, so a late resource is still released.
 
-**No secret is stored.** A header whose name says it carries a credential, such as
-`authorization`, `x-api-key`, a `cookie` or anything with a `token`, `secret` or `key`
-segment, must hold its secret as a reference. When it is not empty it is references only, at
-least one of them `{env:NAME}`. Only `Authorization` and `Proxy-Authorization` may put a scheme
+**No secret is stored.** A header that looks like it carries a credential must hold its secret
+as a reference. That is `authorization`, `proxy-authorization` or `cookie`, or any name that
+contains `token`, `secret`, `key`, `password`, `auth` or `credential`, compared without case,
+such as `x-api-key` or `X-Monkey`, as well as a name with a segment such as `session`. The rule
+goes by name, so a credential under an innocent-looking name is not caught. When the value is
+not empty it is `{env:NAME}` references only, so a caller reference beside one is refused too. Only `Authorization` and `Proxy-Authorization` may put a scheme
 before them, and only `Bearer`, `Basic`, `Token` or `Digest`, as in `Bearer {env:ACME_TOKEN}`.
 An API-key header such as `x-api-key` takes references alone. Any other leading word, a lone
 word with or without whitespace after it, or a key prefix such as `sk-live {env:X}`, is
-literal secret text and is refused. So is a value that names only a caller reference. A URL may not carry a user name,
-a password or a credential-shaped query parameter. An argument may not hand over a credential
+literal secret text and is refused. So is a value that names only a caller reference. A transport
+URL, an `http` shaper's or an `mcp` server's, may not carry a user name, a password or any query
+string. An argument may not hand over a credential
 as literal text: a credential-named flag (`--token=…`, `--api-key …`), a header flag naming a
 credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
 `--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
@@ -456,8 +459,7 @@ definition that breaks these rules is
 refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every
 settings snapshot, hold the reference and never the value. The stored config's own schema
 also empties any literal credential it finds in an entry, including one this build cannot
-run: a header value, a URL's userinfo or credential query parameter, or a credential
-argument. Every read, settings restore and backup capture goes through that schema, so an
+run: a header value, a transport URL's userinfo and query string, or a credential argument. Every read, settings restore and backup capture goes through that schema, so an
 entry handed over another way, such as a foreign snapshot, still cannot carry secret text
 into the daemon or into a snapshot. A stored entry may nest at most 32 levels deep, checked
 without recursion before anything recursive reads it, so a crafted entry is a validation

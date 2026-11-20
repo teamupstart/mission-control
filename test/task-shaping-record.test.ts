@@ -110,12 +110,39 @@ test("the one commit settles the summary and the text together, in each of the f
   assert.equal(db.commitTaskShaping("combo", null, "", 50), false);
 });
 
-test("a commit that fails part-way writes nothing", () => {
+test("a summary the schema refuses is rejected before anything is written", () => {
+  db.upsertTask(mkTask({ id: "refused", status: "running", sessionId: "s1" }));
+  assert.equal(db.commitTaskShaping("refused", record("s1"), "first text", 1), true);
+  const broken = { ...record("s2"), state: "unknown" } as unknown as TaskShaping;
+  assert.throws(() => db.commitTaskShaping("refused", broken, "second text", 2));
+  assert.deepEqual(db.getTask("refused")?.shaping, record("s1"));
+  assert.equal(db.getTaskShapingText("refused")?.text, "first text");
+});
+
+test("a text write that fails after the summary was written rolls the summary back too", () => {
   db.upsertTask(mkTask({ id: "atomic", status: "running", sessionId: "s1" }));
   assert.equal(db.commitTaskShaping("atomic", record("s1"), "first text", 1), true);
-  // A summary the schema refuses throws before anything is written, inside the transaction.
-  const broken = { ...record("s2"), state: "unknown" } as unknown as TaskShaping;
-  assert.throws(() => db.commitTaskShaping("atomic", broken, "second text", 2));
+  // A valid summary, so the `UPDATE tasks` runs and succeeds; then the text write is refused by
+  // SQLite itself, inside the same transaction. Both writes must be undone.
+  const d = db.openDb();
+  d.exec(`CREATE TRIGGER refuse_shaping_text BEFORE UPDATE ON task_shaping_text
+          BEGIN SELECT RAISE(ABORT, 'disk refused the text'); END;`);
+  try {
+    assert.throws(() => db.commitTaskShaping("atomic", record("s2", "degraded"), "second text", 2), /disk refused the text/);
+  } finally {
+    d.exec("DROP TRIGGER refuse_shaping_text");
+  }
+  assert.equal(d.isTransaction, false, "the transaction was closed, not left open");
+  assert.deepEqual(db.getTask("atomic")?.shaping, record("s1"), "the summary written before the failure was rolled back");
+  assert.deepEqual(db.getTaskShapingText("atomic"), { text: "first text", createdAt: 1 }, "and the text is the previous launch's");
+  // The same rollback when the second write is the delete that clears the text.
+  d.exec(`CREATE TRIGGER refuse_shaping_delete BEFORE DELETE ON task_shaping_text
+          BEGIN SELECT RAISE(ABORT, 'disk refused the delete'); END;`);
+  try {
+    assert.throws(() => db.commitTaskShaping("atomic", record("s3", "degraded"), "", 3), /disk refused the delete/);
+  } finally {
+    d.exec("DROP TRIGGER refuse_shaping_delete");
+  }
   assert.deepEqual(db.getTask("atomic")?.shaping, record("s1"));
   assert.equal(db.getTaskShapingText("atomic")?.text, "first text");
 });

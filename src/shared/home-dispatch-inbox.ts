@@ -108,11 +108,9 @@ export function workflowStages(item: StageFields): WorkflowStages {
   const runBlocked = runStatus !== undefined && BLOCKED_RUN_STATUSES.includes(runStatus);
   const hasRun = runStatus !== undefined;
 
-  if (item.state === "failed") {
-    stages.work = "blocked";
-    return stages;
-  }
-  if (item.state === "waiting") stages.work = "blocked";
+  // A failed task stopped at `work`, but review and the pull request below still show how far it got
+  // before it failed, so only `work` is overridden and the rest is derived as for any other item.
+  if (item.state === "failed" || item.state === "waiting") stages.work = "blocked";
   else if (item.state === "running" && !hasRun) stages.work = "running";
   else stages.work = "done";
 

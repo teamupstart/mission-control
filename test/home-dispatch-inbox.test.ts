@@ -151,6 +151,11 @@ test("workflowStages draws the strip from the state and the run", () => {
   const ready = shared.workflowStages({ state: "ready", run: run("completed"), pr: { number: 3, url: "u", checks: "passing" } });
   assert.deepEqual(ready, { start: "done", work: "done", review: "done", pr: "done", merge: "pending" });
   assert.equal(shared.workflowStages({ state: "failed" }).work, "blocked");
+  // A task that failed after its review passed and its pull request opened still shows how far it got.
+  assert.deepEqual(
+    shared.workflowStages({ state: "failed", run: { status: "completed" }, pr: { number: 7, url: "u", checks: null } }),
+    { start: "done", work: "blocked", review: "done", pr: "done", merge: "pending" },
+  );
   // A finished task whose after-work run ended badly does not show its review as still running.
   const ended = (status: "failed" | "cancelled" | "completed") => shared.workflowStages({ state: "ready", run: { status } }).review;
   assert.equal(ended("failed"), "blocked");

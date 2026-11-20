@@ -190,6 +190,19 @@ test("tasks sharing a worker session: the review belongs to the active one, and 
   assert.equal(after.items.find((i) => i.taskId === "t-twin-b")?.pending, undefined, "the new holder does not show the earlier task's question");
 });
 
+test("a failed or cancelled task that still has a pending request is in needsYou", async () => {
+  const h = await homeIn("failed-pending");
+  for (const status of ["failed", "cancelled"] as const) {
+    const id = `t-${status}-pending`;
+    const worker = addTask(id, h.repo, "home-session", { status, completedAt: Date.now(), updatedAt: Date.now() });
+    reviews.create(worker, "input", `Q ${status}`, "Keep?", [QUESTION]);
+    const inbox = await (await app.request(`/dispatch/inbox?session=${h.sessionId}`, { headers })).json() as
+      { items: Array<{ taskId: string; state: string }>; needsYou: string[] };
+    assert.equal(inbox.items.find((i) => i.taskId === id)?.state, "waiting", status);
+    assert.ok(inbox.needsYou.includes(id), status);
+  }
+});
+
 test("a finished task that still has a pending request is waiting, and is answerable", async () => {
   const h = await homeIn("done-pending");
   const worker = addTask("t-done-pending", h.repo, "home-session", { status: "done", completedAt: Date.now(), updatedAt: Date.now() });

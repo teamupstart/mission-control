@@ -62,6 +62,8 @@ export function inboxStateFor(facts: InboxStateFacts): InboxState | null {
       return facts.now - facts.settledAt <= INBOX_READY_WINDOW_MS ? "ready" : null;
     case "failed":
     case "cancelled":
+      // A request still open on a failed or cancelled task is still owed an answer, however old.
+      if (facts.hasPending) return "waiting";
       return facts.now - facts.settledAt <= INBOX_FAILED_WINDOW_MS ? "failed" : null;
   }
 }

@@ -10,13 +10,45 @@
 // This script only builds under `dist/`. Staging into `{stateDir}/mod/` and installing are P14's.
 import { build } from "esbuild";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MOD_API, MOD_NAME } from "../src/mod/constants.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// `MISSION_MOD_OUT_DIR` lets a test build into a temporary directory instead of `dist/mod`.
-const outRoot = process.env.MISSION_MOD_OUT_DIR ? resolve(process.env.MISSION_MOD_OUT_DIR) : join(root, "dist", "mod");
+/** The real path of `path`, resolving symlinks in its nearest existing ancestor. */
+function realPathOfNearest(path: string): string {
+  const missing: string[] = [];
+  let current = resolve(path);
+  while (!existsSync(current)) {
+    missing.unshift(basename(current));
+    current = dirname(current);
+  }
+  return join(realpathSync(current), ...missing);
+}
+
+/**
+ * The build replaces its output directory wholesale, so an override must name somewhere this
+ * script may delete: strictly inside `dist/` or the temp directory, judged after symlinks are
+ * resolved (the same shape of check as `openDb`'s test-home guard). `MISSION_MOD_OUT_DIR` lets a
+ * test build into a temporary directory instead of `dist/mod`.
+ */
+function resolveOutRoot(): string {
+  const override = process.env.MISSION_MOD_OUT_DIR;
+  if (!override) return join(root, "dist", "mod");
+  const target = realPathOfNearest(override);
+  const allowed = [realPathOfNearest(join(root, "dist")), realPathOfNearest(tmpdir())];
+  const inside = allowed.some((base) => {
+    const rel = relative(base, target);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  });
+  if (!inside) {
+    throw new Error(`MISSION_MOD_OUT_DIR ${override} resolves to ${target}, which is not inside dist/ or the temp directory; refusing to replace it`);
+  }
+  return resolve(override);
+}
+const outRoot = resolveOutRoot();
 const pluginDir = join(outRoot, MOD_NAME);
 const DESCRIPTION = "Mission Control inside Claude Code: dispatch, the Mission Control pane and attention.";
 

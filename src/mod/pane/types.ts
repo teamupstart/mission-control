@@ -26,7 +26,6 @@ export interface PaneProps {
 
 export type TabRenderer = (host: ModHost, props: PaneProps) => PaneView;
 
-/** The line every stub tab draws. */
 export const PANE_NOT_IMPLEMENTED = "not implemented";
 
 export function stubTab(tab: ModPaneTab): TabRenderer {

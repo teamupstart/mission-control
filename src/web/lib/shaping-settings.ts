@@ -17,6 +17,7 @@ import {
   shaperIsLocal,
   shaperSwitchedOn,
   shapingReferences,
+  shapingViewRevision,
   TaskShapingSchema,
   type Shaper,
   type ShapingConfigView,
@@ -50,6 +51,14 @@ export interface ShapingListRow {
    * what this row shows. Null only while an optimistic import awaits the frame that brings it.
    */
   revision: string | null;
+  /**
+   * A later stored entry with an id an earlier one already owns. It never runs and has no
+   * revision of its own, so it is drawn for information only: every intent naming its id acts
+   * on the owning row, and removing that row removes this entry too.
+   */
+  duplicate: boolean;
+  /** How many later stored entries repeat this row's id: removing this row removes them too. */
+  repeats: number;
 }
 
 /** Rows for one stage, in run order, or the entries that cannot run (`stage: null`). */
@@ -66,18 +75,34 @@ export interface ShapingListGroup {
 export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
   const known: Array<ShapingListRow & { position: number; stage: string }> = [];
   const unsupported: ShapingListRow[] = [];
+  const owners = new Map<string, ShapingListRow>();
   view.shapers.forEach((entry, position) => {
-    if (isUnsupportedShaper(entry)) {
+    const owner = owners.get(entry.id);
+    if (owner) {
+      // The daemon classifies a repeat as unsupported; it is drawn without controls of its own.
+      owner.repeats += 1;
       unsupported.push({
-        id: entry.id, label: entry.label, shaper: null,
-        on: view.overrides[entry.id] === true, problem: entry.unsupported, revision: view.revisions[entry.id] ?? null,
+        id: entry.id, label: entry.label, shaper: null, on: false,
+        problem: isUnsupportedShaper(entry) ? entry.unsupported : null, revision: null, duplicate: true, repeats: 0,
       });
       return;
     }
-    known.push({
+    const revision = shapingViewRevision(view, entry.id);
+    if (isUnsupportedShaper(entry)) {
+      const row: ShapingListRow = {
+        id: entry.id, label: entry.label, shaper: null,
+        on: view.overrides[entry.id] === true, problem: entry.unsupported, revision, duplicate: false, repeats: 0,
+      };
+      owners.set(entry.id, row);
+      unsupported.push(row);
+      return;
+    }
+    const row = {
       id: entry.id, label: entry.label, shaper: entry, stage: entry.stage, position,
-      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision: view.revisions[entry.id] ?? null,
-    });
+      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision, duplicate: false, repeats: 0,
+    };
+    owners.set(entry.id, row);
+    known.push(row);
   });
   known.sort(compareShapingOrder(view.order));
   const strip = ({ position: _position, stage: _stage, ...row }: (typeof known)[number]): ShapingListRow => row;
@@ -210,6 +235,26 @@ export interface ShaperReachLine {
 /** Quote an argument only when it needs it, so the common case reads as typed. */
 function shellWord(word: string): string {
   return word === "" || /[\s"'\\$`]/.test(word) ? JSON.stringify(word) : word;
+}
+
+/** What an intent did, in words, so a refusal that lands after a newer write names its own action. */
+export function describeShapingIntent(intent: ShapingIntent): string {
+  switch (intent.kind) {
+    case "upsert": return `importing ${intent.shaper.id}`;
+    case "remove": return `removing ${intent.id}`;
+    case "enable": return `switching ${intent.id} ${intent.enabled ? "on" : "off"}`;
+    case "move": return `moving ${intent.id}`;
+    case "reorder": return "reordering the shapers";
+    case "settings": return "saving the caller identity and budgets";
+  }
+}
+
+/**
+ * The text a refusal shows. A refusal for a write that a newer one has since followed says it
+ * belongs to the earlier action, so it never reads as the outcome of the change just made.
+ */
+export function shapingRefusalText(intent: ShapingIntent, reason: string, superseded: boolean): string {
+  return superseded ? `An earlier change, ${describeShapingIntent(intent)}, was refused: ${reason}` : reason;
 }
 
 function commandLine(command: string, args: readonly string[]): string {

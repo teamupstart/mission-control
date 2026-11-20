@@ -995,16 +995,31 @@ export function shapingConfigView(
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ShapingConfigView {
   const classified = classifyShapers(config, definitions);
-  const revisions: Record<string, string> = {};
   // The first stored entry owns an id, as everywhere else; a repeat never sets its revision.
-  for (const entry of classified) revisions[entry.stored.id] ??= shapingStoredRevision(entry.stored);
+  // Keyed by a Map, never by probing a plain object: an id such as `constructor` would find the
+  // object's inherited property and keep its own revision out.
+  const owned = new Map<string, string>();
+  for (const entry of classified) {
+    if (!owned.has(entry.stored.id)) owned.set(entry.stored.id, shapingStoredRevision(entry.stored));
+  }
   return {
     ...config,
     shapers: classified.map((entry) => entry.kind === "known"
       ? entry.shaper
       : { id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason }),
-    revisions,
+    revisions: Object.fromEntries(owned),
   };
+}
+
+/**
+ * The revision a config view reports for `id`, or null when it reports none. Only an own,
+ * string-valued entry counts, so an id that names an inherited property, such as `constructor`,
+ * never reads a function that JSON would drop from the intent that carries it.
+ */
+export function shapingViewRevision(view: Pick<ShapingConfigView, "revisions">, id: string): string | null {
+  if (!Object.hasOwn(view.revisions, id)) return null;
+  const revision: unknown = view.revisions[id];
+  return typeof revision === "string" ? revision : null;
 }
 
 /**

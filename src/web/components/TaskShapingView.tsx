@@ -71,6 +71,25 @@ export function TaskShapingView({
   const count = config?.shapers.length ?? 0;
 
   const row = (entry: ShapingListRow, group: ShapingListGroup, at: number): React.JSX.Element => {
+    if (entry.duplicate) {
+      // A repeat of an id an earlier entry owns: information only. Every intent naming this id,
+      // and every revision, belongs to the owning row, so no control here can act on it.
+      return (
+        <div className="shaping-row" key={`${entry.id}:repeat:${at}`} role="group" aria-label={`${entry.label} (repeated id)`}>
+          <div className="shaping-row-copy">
+            <div className="shaping-row-title">
+              <strong>{entry.label}</strong>
+              <code className="shaping-row-id">{entry.id}</code>
+              <span className="shaping-chip">Repeated id</span>
+            </div>
+            {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
+            <p className="shaping-row-note">
+              It never runs. Removing the shaper that owns the id {entry.id} removes this entry too.
+            </p>
+          </div>
+        </div>
+      );
+    }
     const key = `row:${entry.id}`;
     const shaper = entry.shaper;
     const environment = shaper ? shaperEnvironmentStatus(shaper, references) : [];
@@ -102,6 +121,13 @@ export function TaskShapingView({
           )}
           {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
           {errors[key] && <p role="alert">{errors[key]}</p>}
+          {entry.repeats > 0 && (
+            <p className="shaping-row-note">
+              {entry.repeats === 1
+                ? `Another stored entry repeats the id ${entry.id}. Removing this shaper removes it too.`
+                : `${entry.repeats} more stored entries repeat the id ${entry.id}. Removing this shaper removes them too.`}
+            </p>
+          )}
           {confirmRemove && removing.folder && (
             <p className="shaping-row-note">
               A shaper in the shapers folder also has the id {entry.id}. Removing this registration leaves that one
@@ -209,7 +235,7 @@ export function TaskShapingView({
       )}
       {testing && (
         <ShapingTestDialog id={testing.id} label={testing.label} revision={testing.revision}
-          current={groups.flatMap((group) => group.rows).find((entry) => entry.id === testing.id)?.revision ?? null}
+          current={groups.flatMap((group) => group.rows).find((entry) => entry.id === testing.id && !entry.duplicate)?.revision ?? null}
           repositories={repositories} onTest={onTest} onClose={() => setTesting(null)} />
       )}
     </section>

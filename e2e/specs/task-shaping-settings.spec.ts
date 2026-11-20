@@ -5,6 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 // Settings > Task shaping, end to end against the shipped registry: the category follows its
@@ -597,6 +598,100 @@ test("the import dialog offers Save only for a file it has read and reviewed", a
 
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toHaveCount(0);
+  expect((await shapingConfig(daemon)).shapers).toEqual([]);
+});
+
+// The peer's frame frees the row while this window's first enable is held; the operator switches
+// the shaper off again, which lands, and then the held enable is refused. That refusal is the
+// first click's, so it says so instead of reading as the outcome of the switch just made.
+test("a refusal that lands after a newer write on the same row names the earlier action", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("late-notes", "Late notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: off");
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let sent!: () => void;
+  const requested = new Promise<void>((resolve) => { sent = resolve; });
+  let puts = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    // Only the first write is held; every later one goes straight through.
+    if (++puts === 1) { sent(); await held; }
+    await route.continue();
+  });
+  // Each answer is read from its own request: the second write is answered before the first.
+  const isPut = (request: { url(): string; method(): string }) => request.url().endsWith("/api/shaping") && request.method() === "PUT";
+  const first = page.waitForRequest(isPut);
+  await pill(page, "Late notes").click();
+  await requested;
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("late-notes", "Late notes", { timeoutMs: 20_000 }) });
+  await putShaping(daemon, { kind: "enable", id: "late-notes", enabled: true });
+  await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: on");
+  await expect(pill(page, "Late notes")).toBeEnabled();
+
+  // The newer write, on the same row, lands first.
+  const second = page.waitForRequest(isPut);
+  await pill(page, "Late notes").click();
+  expect((await (await second).response())?.status()).toBe(200);
+  await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: off");
+  await expect(row(page, "Late notes").getByRole("alert")).toHaveCount(0);
+
+  release();
+  expect((await (await first).response())?.status()).toBe(409);
+  await expect(row(page, "Late notes").getByRole("alert")).toHaveText(
+    "An earlier change, switching late-notes on, was refused: \"late-notes\" changed in another window since it was shown here, so nothing was done. Review it again first.",
+  );
+  await expect(pill(page, "Late notes")).toHaveAccessibleName("Late notes: off");
+  expect((await shapingConfig(daemon)).overrides["late-notes"]).toBe(false);
+  await page.unroute("**/api/shaping");
+});
+
+// Entries no import can produce, seeded the way a settings restore from another build leaves
+// them: a second entry repeating an id, and an id that names an inherited object property.
+test("a repeated id is listed without controls, and an id like constructor still sends its revision", async ({ dashboard: page, daemon }) => {
+  withDaemonDb(daemon, (db) => {
+    db.prepare(`INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run("shaping", JSON.stringify({
+        shapers: [
+          commandShaper("twin-notes", "Twin notes"),
+          commandShaper("twin-notes", "Twin copy", { timeoutMs: 20_000 }),
+          commandShaper("constructor", "Constructor notes"),
+        ],
+      }));
+  });
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+
+  const owner = row(page, "Twin notes");
+  const copy = panel(page).getByRole("group", { name: "Twin copy (repeated id)" });
+  await expect(owner).toContainText("Another stored entry repeats the id twin-notes. Removing this shaper removes it too.");
+  await expect(copy).toContainText('Another stored shaper already has the id "twin-notes".');
+  await expect(copy).toContainText("It never runs. Removing the shaper that owns the id twin-notes removes this entry too.");
+  await expect(copy.getByRole("button")).toHaveCount(0);
+
+  // The constructor row's Remove carries the daemon's own revision for it.
+  const removals: Array<{ id?: string; expect?: unknown }> = [];
+  page.on("request", (request) => {
+    if (request.method() === "PUT" && request.url().endsWith("/api/shaping")) removals.push(request.postDataJSON() as { id?: string });
+  });
+  const revisions = async () => {
+    const response = await fetch(`${daemon.baseURL}/api/shaping`);
+    return ((await response.json()) as { config: { revisions: Record<string, string> } }).config.revisions;
+  };
+  const constructorRevision = (await revisions()).constructor;
+  expect(constructorRevision).toMatch(/^[0-9a-f]{16}$/);
+  await page.getByRole("button", { name: "Remove Constructor notes" }).click();
+  await page.getByRole("button", { name: "Confirm removing Constructor notes" }).click();
+  await expect(row(page, "Constructor notes")).toHaveCount(0);
+  expect(removals.find((intent) => intent.id === "constructor")).toEqual({ kind: "remove", id: "constructor", expect: constructorRevision });
+
+  // Removing the owner removes its repeat with it.
+  await page.getByRole("button", { name: "Remove Twin notes" }).click();
+  await page.getByRole("button", { name: "Confirm removing Twin notes" }).click();
+  await expect(owner).toHaveCount(0);
+  await expect(copy).toHaveCount(0);
   expect((await shapingConfig(daemon)).shapers).toEqual([]);
 });
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ShapingIntentSchema, type ShapingConfigView, type ShapingIntent } from "@shared/shaping.ts";
 import { api } from "./lib/api.ts";
-import { previewShapingIntent, shapingIntentReflected } from "./lib/shaping-settings.ts";
+import { previewShapingIntent, shapingIntentReflected, shapingRefusalText } from "./lib/shaping-settings.ts";
 import type { MissionState } from "./useEventStream.ts";
 
 /** How long one write may wait for the daemon's answer before the panel stops waiting. */
@@ -29,6 +29,8 @@ export function useShapingSettings(
   } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const writing = useRef<ShapingIntent | null>(null);
+  /** The last request sent, so a refusal can tell whether a newer write followed it. */
+  const latest = useRef<ShapingIntent | null>(null);
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
@@ -65,6 +67,7 @@ export function useShapingSettings(
     }
     const request = parsed.data;
     writing.current = request;
+    latest.current = request;
     setErrors({});
     setPending({ intent: request, key, accepted: false, observed: false });
     // Bounded, so a daemon that stops answering never leaves every control disabled. On the
@@ -93,8 +96,11 @@ export function useShapingSettings(
       // early, but it only shows a config that looks like the outcome: a peer may have written it,
       // say by replacing and enabling the shaper this request named, while the daemon refused this
       // request with `shaper_changed`. So a refusal is always shown, even after a frame freed the
-      // panel, and never reported as saved.
-      const message = error instanceof Error ? error.message : String(error);
+      // panel, and never reported as saved. A frame that freed the panel early also lets a newer
+      // write go out first; this refusal is then the earlier action's, and says so, rather than
+      // reading as the outcome of the change just made under the same control.
+      const reason = error instanceof Error ? error.message : String(error);
+      const message = shapingRefusalText(request, reason, latest.current !== request);
       setErrors((current) => ({ ...current, [key]: message }));
       if (writing.current === request) {
         writing.current = null;

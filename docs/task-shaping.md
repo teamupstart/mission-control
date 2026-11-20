@@ -247,6 +247,9 @@ All three routes are behind the flag and answer 404 while it is off.
   backup, and `PUT` replies with the same view. The view also carries `revisions`, one opaque
   revision per stored shaper id, which the daemon derives from the stored entry itself, so two
   unsupported entries that show the same id, label and reason still have different revisions.
+  Only the first stored entry for an id has a revision. A client reads only own, string-valued
+  keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to
+  an inherited property.
   `discovered` and `references` are empty until the folder and the remote transports land.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
@@ -323,7 +326,8 @@ window already open on its link shows the panel the moment the flag turns on. Ev
 below applies at once in every open window, one write at a time. A refused write rolls back and
 shows the daemon's reason beside the control that sent it. The daemon's answer decides whether a
 write succeeded: a frame from another window can free the controls first, but a refusal that
-arrives after it is still shown.
+arrives after it is still shown. When a newer write went out before that refusal arrived, the
+refusal names the earlier action, so it never reads as the outcome of the change just made.
 
 - **The list.** One row per registered shaper, grouped by stage in run order: its label, id,
   transport and everything it runs or calls, an MCP shaper's tool and context delivery
@@ -332,7 +336,10 @@ arrives after it is still shown.
   them once another window has replaced that shaper. A row that names environment variables lists them, each marked set or not set
   once the daemon reports it, never with a value. An entry this build cannot run is listed last,
   under **Not supported by this build**, with its reason. It can be removed, and switched off if
-  an older build left it on, but not switched on, moved or dry-run.
+  an older build left it on, but not switched on, moved or dry-run. A later stored entry that
+  repeats an id an earlier one owns, which a restore from another build can leave, is listed
+  there for information only, with no controls: the owning row says how many entries repeat its
+  id, and removing it removes them too.
 - **Import manifest.** Paste a manifest or choose its file. It is read with the daemon's own
   schema, and before anything is saved the dialog shows its stage, the exact command and
   arguments or the URL and headers, every environment variable it names, and what it is given.

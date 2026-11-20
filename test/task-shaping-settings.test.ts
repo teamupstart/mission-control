@@ -17,6 +17,7 @@ import {
   ShapingConfigSchema,
   shapingStoredRevision,
   shapingConfigView,
+  shapingViewRevision,
   type ShapingConfigView,
   type ShapingIntent,
 } from "../src/shared/shaping.ts";
@@ -30,6 +31,7 @@ import {
   shaperReceives,
   shapingIntentReflected,
   shapingList,
+  shapingRefusalText,
 } from "../src/web/lib/shaping-settings.ts";
 
 const gatherer = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -135,6 +137,7 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
   assert.deepEqual(groups[2]!.rows, [{
     id: "future", label: "Future shaper", shaper: null, on: false,
     problem: "stage: This build does not support the stage this entry names.", revision: shapingStoredRevision(unsupported as never),
+    duplicate: false, repeats: 0,
   }]);
 });
 
@@ -440,4 +443,48 @@ test("a write is confirmed by the outcome it asked for, not by the preview match
   // A switch is confirmed by the stored choice.
   assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a")], overrides: { a: true } }), { kind: "enable", id: "a", enabled: true }), true);
   assert.equal(shapingIntentReflected(view({ shapers: [gatherer("a")], overrides: { a: false } }), { kind: "enable", id: "a", enabled: true }), false);
+});
+
+test("an id that names an inherited property still gets its own revision, through JSON too", () => {
+  const stored = ShapingConfigSchema.parse({ shapers: [gatherer("constructor"), unsupported] });
+  const shown = shapingConfigView(stored);
+  assert.ok(Object.hasOwn(shown.revisions, "constructor"), "the revision is an own key");
+  assert.equal(shown.revisions.constructor, registeredShaperRevision(stored, "constructor"));
+  // The browser reads the view as JSON gives it, where the map is an ordinary object again.
+  const wire = JSON.parse(JSON.stringify(shown)) as ShapingConfigView;
+  const row = shapingList(wire).flatMap((group) => group.rows).find((entry) => entry.id === "constructor")!;
+  assert.match(row.revision ?? "", /^[0-9a-f]{16}$/);
+  // A view that reports no revision for such an id reads null, never the inherited function.
+  assert.equal(shapingViewRevision({ revisions: {} }, "constructor"), null);
+  assert.equal(shapingViewRevision({ revisions: {} }, "toString"), null);
+});
+
+test("a repeated id is drawn for information only, and its owner says removing it removes the repeat", () => {
+  const repeat = gatherer("notes", { label: "Second notes", transport: { type: "command", command: "/usr/local/bin/other" } });
+  const stored = ShapingConfigSchema.parse({ shapers: [gatherer("notes"), repeat] });
+  const shown = shapingConfigView(stored);
+  const rows = shapingList(shown).flatMap((group) => group.rows);
+  const owner = rows.find((entry) => entry.id === "notes" && !entry.duplicate)!;
+  const copy = rows.find((entry) => entry.duplicate)!;
+  assert.equal(owner.revision, registeredShaperRevision(stored, "notes"));
+  assert.equal(owner.repeats, 1);
+  assert.deepEqual([copy.label, copy.revision, copy.on, copy.repeats], ["Second notes", null, false, 0]);
+  assert.equal(copy.problem, 'Another stored shaper already has the id "notes".');
+  const html = render(shown);
+  assert.match(html, /aria-label="Second notes \(repeated id\)"/);
+  assert.equal(/Remove Second notes|Second notes: (on|off)|Dry-run Second notes/.test(html), false, "the repeat has no controls");
+  assert.match(html, /aria-label="Remove Gatherer notes"/);
+  assert.match(html, /Another stored entry repeats the id notes\. Removing this shaper removes it too\./);
+  assert.match(html, /It never runs\. Removing the shaper that owns the id notes removes this entry too\./);
+});
+
+test("a refusal that a newer write followed names the earlier action", () => {
+  const reason = "It changed.";
+  assert.equal(shapingRefusalText({ kind: "enable", id: "notes", enabled: true }, reason, false), reason);
+  assert.equal(shapingRefusalText({ kind: "enable", id: "notes", enabled: true }, reason, true),
+    "An earlier change, switching notes on, was refused: It changed.");
+  assert.equal(shapingRefusalText({ kind: "remove", id: "notes" }, reason, true),
+    "An earlier change, removing notes, was refused: It changed.");
+  assert.equal(shapingRefusalText({ kind: "move", id: "notes", after: null }, reason, true),
+    "An earlier change, moving notes, was refused: It changed.");
 });

@@ -122,7 +122,18 @@ test("registration answers the 7.2 shape, offers the launcher once, and sets no 
   const again = shared.HomeSessionRegistrationAnswerSchema.parse(await (await register(registration())).json());
   assert.equal(again.created, false);
   assert.equal(again.offerLauncher, false, "never offered twice in one session");
-  assert.ok(sessions.getHomeSession("claude-session-1")?.launcherOfferedAt, "the offer is recorded");
+  const stored = sessions.getHomeSession("claude-session-1");
+  assert.ok(stored, "the registration is persisted");
+  assert.equal(stored.sessionId, "claude-session-1");
+  assert.equal(stored.harness, "claude");
+  assert.equal(stored.cwd, repo);
+  assert.equal(stored.repoRoot, realpathSync(repo));
+  assert.equal(stored.clientVersion, "1.0.0");
+  assert.equal(stored.startSource, "startup");
+  assert.equal(stored.entrypoint, "cli");
+  assert.equal(stored.launcherDisabled, false);
+  assert.equal(typeof stored.launcherOfferedAt, "number", "the offer is recorded with its time");
+  assert.equal(stored.launcherOfferedAt, stored.startedAt, "offered at the registration that created the row");
 
   const columns = (openDb().prepare(`PRAGMA table_info(home_dispatch_sessions)`).all() as Array<{ name: string }>).map((c) => c.name);
   assert.ok(!columns.some((c) => c.includes("runtime")), "the session record has no runtime");

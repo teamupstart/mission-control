@@ -26,8 +26,9 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 
 - **Event.** `feature_flags` is the model: `Registry.emitFeatureFlags` drops identical frames,
   `src/server/index.ts` wires the change subscription once, `useEventStream.ts` has an
-  exhaustive `case`, and the snapshot carries the config. Decide `LINE_INPUT_EVENTS`
-  membership explicitly: this event is not a line input.
+  exhaustive `case`, and the snapshot carries the config. Unlike the flags themselves, the
+  shaping config sits behind its flag, so its snapshot field and event are gated. Decide
+  `LINE_INPUT_EVENTS` membership explicitly: this event is not a line input.
 - **Category.** `SETTINGS_CATEGORIES` in `src/web/lib/settings-registry.ts`, a `case` in
   `renderCategory` (`src/web/components/SettingsPage.tsx`), and entries in
   `ALL_SETTINGS_CONTROLS` (`src/web/lib/settings-search.ts`), each declaring a backup domain or
@@ -43,7 +44,12 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 
 1. **Event.** `shaping_config` in `ServerEvent`, `Registry.emitShapingConfig`, the snapshot
    field `shaping`, the reducer case, and `useShapingConfig`. Wire
-   `onShapingConfigChanged` once at daemon start and unsubscribe at shutdown.
+   `onShapingConfigChanged` once at daemon start and unsubscribe at shutdown. Both are gated
+   like the routes: the snapshot carries `shaping` only while `task-shaping` is on, and no
+   `shaping_config` frame is sent while it is off. The same wiring listens to
+   `onFeatureFlagsChanged`: turning the flag on emits the current config, so an open window
+   fills the panel with no reload, and turning it off emits `{ config: null }`, which the
+   reducer clears.
 2. **Category.** `task-shaping`, labelled "Task shaping", in the Sessions group, shown only
    while the flag is on, in the sidebar, search and the command palette alike.
 3. **List.** One row per shaper in stored order, grouped by stage: label, id, transport, what
@@ -55,7 +61,10 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 4. **Import.** A dialog that takes a manifest as pasted JSON or a file, validates it with
    `ShaperManifestSchema`, and shows before saving: the command and arguments or the URL, the
    environment variables it names, and the list of what a remote shaper is sent. Saving stores
-   it disabled.
+   it disabled: the save is one `upsert`, which also stores off for its id, so a stored on
+   left by a discovered shaper with the same id does not switch the import on. A manifest
+   that breaks the credential rule in `plan.md` is refused with its reason, so nothing is
+   saved and nothing reaches another window.
 5. **Test.** Pick a repository Mission Control knows, run `POST /api/shaping/test`, and show
    the outcome, the duration and the entries that would be injected.
 6. **Caller identity and limits.** A text field for `caller.user`, and the step deadline and
@@ -73,13 +82,18 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 
 ## Tests and verification
 
-- `test/shaping-http.test.ts` gains the emitted event and the snapshot field.
+- `test/shaping-http.test.ts` gains the emitted event and the snapshot field: both absent
+  while the flag is off with shapers stored, the config emitted when the flag turns on and
+  cleared when it turns off, an import over an id whose discovered shaper was switched on,
+  which is saved off, and an import with a literal token in an `authorization` header,
+  refused with 400, with nothing stored and no `shaping_config` frame sent.
 - `test/settings-sidebar-render.test.ts`, `test/settings-search.test.ts`,
   `test/palette-index.test.ts` and `test/settings-backup-coverage.test.ts` gain the category,
   its anchors and its domain, with the flag off and on.
 - `renderToStaticMarkup` tests for the list: empty, populated, an unsupported entry, and a row with one set and one unset reference.
 - `e2e/specs/task-shaping-settings.spec.ts`: the category appears when the flag is turned on
-  in another window; import a manifest and see what it will run; enable it; dry-run it against
+  in another window, and its list fills with the stored shapers without a reload; import a
+  manifest and see what it will run, saved off; enable it; dry-run it against
   a repository; reorder; remove; set the identity and limits; search finds the category; a
   refused write rolls back; `expectContentClearsBorder` on the import dialog.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
@@ -88,7 +102,9 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 ## Merge and exit criteria
 
 - Everything in the Outcome works in a browser with no reload.
-- With the flag off the category is absent from the sidebar, search and the palette.
+- With the flag off the category is absent from the sidebar, search and the palette, and no
+  snapshot or event carries the shaping config.
+- An import is saved off, whatever was stored for its id before.
 - No `data-testid`. Rows carry `data-anchor="task-shaping/<id>"`.
 
 ## Handoff
@@ -107,3 +123,7 @@ registered rows behave.
   Phase 5 has no dashboard work and the two can merge in either order.
 - Plan validation repair 3, 2026-11-19: the row for an entry this build does not understand
   now uses `plan.md`'s word, unsupported, and its rule: switch off or remove only.
+- Review of the plan pull request, round 5, 2026-11-19: the snapshot field and the event
+  were not gated, so a dashboard could receive the stored config while the flag was off.
+  They now follow the flag, and an open window fills when it turns on. The import also
+  saves off whatever its id had stored, through Phase 1's `upsert`.

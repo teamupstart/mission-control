@@ -26,20 +26,48 @@ is not a built-in at all (see Handoff).
   path) and `facts` (one path).
 - **Reading rules.** FR-05 section 7.15 states the rules this follows. If its reader
   (`src/server/instructions/repo-task-skill.ts`) has merged, share the file-reading helper
-  instead of writing a second one.
+  instead of writing a second one, provided it reads through an opened and verified handle as
+  step 2 requires. `readFileWithinCap` in `src/server/session-files.ts` already reads from a
+  handle and stops at a byte limit.
 - **Byte handling.** `src/server/util/utf8.ts` has `utf8Bytes` and `clipUtf8Bytes`.
 - **In-process.** A built-in shares the daemon's event loop, so it must be bounded by
-  construction: `stat` before every read, fixed limits, and the `ctx` signal checked between
-  files.
+  construction: an open that cannot block, `fstat` on the opened handle before every read, a
+  read that stops at its limit, fixed limits, and the `ctx` signal checked between files.
 
 ## Steps
 
 1. **`builtin.ts`.** An exhaustive `Record` from built-in id to implementation. A shaper whose
    built-in does not serve its stage answers `unavailable`.
-2. **Read one file.** Resolve the path inside `repo.path`. It must be a regular file whose real
-   path stays inside the worktree, and at most 4 MiB by `stat`. Replace invalid UTF-8, drop a
-   byte order mark, and cut at the last line boundary within the cap. A skip has one reason:
-   `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`, `unreadable` or `empty`.
+2. **Read one file.** Every check is made on the file that is read, never on a path that is
+   read afterwards, because a worktree file can be replaced while shaping runs.
+   - **Path.** Refuse a configured path that is absolute or has a `..` segment. Resolve its
+     real path, which must lie inside the worktree's real path. `lstat` it, and skip anything
+     that is not a regular file without opening it.
+   - **Open.** Open that real path with `O_NOFOLLOW` and `O_NONBLOCK`. The open then returns
+     at once for a named pipe with no writer or for a device, instead of waiting past the
+     deadline where no abort check could release it.
+   - **Identity.** Verify the handle, which is the file that will be read. `fstat` must
+     report a regular file of at most 4 MiB. Then look the real path up again: it must still
+     be free of symbolic links and inside the worktree, and it must name the same device and
+     inode as the handle. This is an identity check, not a second path check. If a directory
+     on the way was swapped while the open ran, the handle is some other file, its inode
+     differs from the one inside the worktree, and the read is refused. A file that is moved
+     or hard-linked into the worktree is a worktree file.
+   - **What this guarantees.** The checks are portable: Node has no `openat`, `openat2` or
+     `O_NOFOLLOW_ANY`, and no other worktree reader in the daemon uses native code. They
+     prove that no file outside the worktree is read while the worktree's directories are
+     not being rearranged during the read. A process running as the operator that swaps a
+     directory on the path between the lookup and the identity check, in a tight race, can
+     still get an outside file read. That is outside the threat model, because such a
+     process can read that file itself, and `plan.md` does not treat processes running as
+     the operator as a boundary. The operator chose to state this rather than add a native
+     open, on 2026-11-19.
+   - **Read.** Read from the handle with a hard limit, so a file that grows meanwhile is
+     still cut off. Replace invalid UTF-8, drop a byte order mark, and cut at the last line
+     boundary within the cap.
+
+   A skip has one reason: `missing`, `outside-worktree`, `not-a-regular-file`, `too-large`,
+   `unreadable` or `empty`.
 3. **`include`.** At most 16 paths. Each readable file becomes one entry whose id and title are
    its path, with `truncated` set when it was cut. The per-file cap is its `maxBytes`, at most
    16 KiB.
@@ -62,7 +90,12 @@ is not a built-in at all (see Handoff).
 - `test/shaping-builtin-repository-files.test.ts`, in a temporary worktree: every skip reason
   (including a symlink that leaves the worktree and a directory), the line-boundary cut, the
   summary cut, a valid and an invalid facts file, the limits, and a signal that stops the run
-  between files.
+  between files. Three cases drive the helper through a filesystem seam it takes as an argument:
+  a file swapped for a symlink out of the worktree after its path was resolved, and a
+  directory on the way to it swapped for a symlink out of the worktree while the open runs,
+  both refused, and a file that grows past the limit while it is read, which is cut off. A
+  named pipe with no writer is skipped at once, as `not-a-regular-file`, whether it was there
+  from the start or swapped in after the `lstat`.
 - An engine test: the facts and summary this gatherer returns reach a selector's request.
 - `test/shaping-http.test.ts` gains a dry-run of a registered `repository-files` gatherer.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` and `npm run smoke`.
@@ -71,7 +104,9 @@ is not a built-in at all (see Handoff).
 
 - A registered `repository-files` gatherer dry-runs against a repository and returns the
   entries, summary and facts its options name.
-- No path outside the worktree is ever read.
+- No read exceeds its limit, and no file outside the worktree is read while the worktree's
+  directories are not being rearranged during the read. Both are checked on the opened file,
+  not on a path checked beforehand. Step 2 states the one race that remains.
 
 ## Handoff
 
@@ -91,3 +126,17 @@ the same budget. Do not add it to `SHAPING_BUILTINS` or serve it through this tr
   selector" as a later built-in, while `plan.md` also called lesson selection a later stage.
   It has one placement now, a step after the shaping stages that is not a shaper, and this
   file says so.
+- Review of the plan pull request, round 2, 2026-11-19, the operator's choice: step 2 checked
+  a path's real location and size and then read it by path, so a file swapped in between
+  could have been read from outside the worktree or past the limit. The checks now run on the
+  opened handle, and the read has a hard limit.
+- Review of the plan pull request, round 3, 2026-11-19: opening a named pipe with no writer
+  would have waited indefinitely, before `fstat` could reject it. The open is non-blocking.
+  The reviewer also kept the containment finding open, because `O_NOFOLLOW` covers only the
+  last path component. Step 2 now states that the check after the open is an identity check
+  on the handle, which a swapped directory cannot pass, and the tests add that case.
+- Review of the plan pull request, round 4, 2026-11-19, the operator's choice: the reviewer
+  showed that a directory can also be swapped between the lookup and the identity check, so
+  round 3's claim that a swapped directory cannot pass was too strong. Step 2 and the exit
+  criterion now state the guarantee the portable checks give, and why the remaining race is
+  outside the threat model. No native open is added.

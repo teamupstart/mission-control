@@ -9,7 +9,8 @@ switch it off there. Every launch records which definition ran.
 
 ## Entry criteria and dependencies
 
-- Phase 3 is merged, for the list its rows join. Phase 1's contracts are unchanged.
+- Phases 2 and 3 are merged. Phase 3 for the list its rows join, and Phase 2 for the dispatch
+  seam and the viewer that the browser spec drives. Phase 1's contracts are unchanged.
 
 ## Scope
 
@@ -43,7 +44,9 @@ non-goal), any sandbox.
    or transport this build does not know: Mission Control never writes a manifest, so there
    is nothing to preserve. Record the SHA-256 of the
    file's bytes.
-4. **Cache.** Re-read a manifest only when its size or modification time changed.
+4. **Read every time.** Read and hash every manifest on every scan. That is at most 32 files
+   of 16 KiB. Keep only the parsed result, keyed by the hash, so an unchanged manifest is not
+   parsed again and a replaced one is always noticed, whatever its size or timestamps.
 5. **States.** `ok`, `invalid`, `refused`, or `shadowed` when a registered shaper has the same
    id. Only `ok` can run.
 6. **Enablement.** Already in `resolveShapers` from Phase 1, as the table in `plan.md` states
@@ -75,7 +78,9 @@ non-goal), any sandbox.
 - `test/shaping-discovery.test.ts`, in a temporary state home: a valid folder, invalid JSON, a
   schema failure, an id that differs from the folder name, an oversize manifest, a manifest
   that is not a regular file, a symlinked folder, a group-writable folder (refused), 33 folders,
-  a re-read after a change, a `./` command that escapes.
+  a re-read after a change, a replacement of the same size that keeps the old modification
+  time, a `./` command that escapes, a manifest with a literal credential in a header,
+  which is invalid, with a problem that names the header and never its value.
 - Engine tests: a discovered shaper runs with no settings write; a stored off wins; a manifest
   with `"enabled": false` does not run until the operator switches it on, and then does; a
   shadowed one does not run; `origin` and `sha256` are
@@ -91,6 +96,8 @@ non-goal), any sandbox.
 
 - A dropped-in folder takes effect at the next dispatch and is visible in Settings and in the
   viewer.
+- A replaced manifest runs as its new definition at the next dispatch, and that launch
+  records the new hash.
 - A stored choice, on or off, always wins over the manifest, and survives a daemon restart.
 - A refused, invalid or shadowed manifest never runs and says why.
 
@@ -109,6 +116,15 @@ rule that a repository's own files never register a shaper.
 - Phase 2: the viewer already shows `origin`. No session surface is added here.
 - Phase 3: rows reuse its component.
 - Phases 5 and 6: a discovered manifest may name any transport, and gets that transport's
-  behaviour unchanged.
+  behaviour unchanged. That includes trace context: a folder `command` shaper gets
+  `TRACEPARENT` from Phase 1's `command` transport, so this phase adds nothing for it.
 - Plan validation repair 3, 2026-11-19: a manifest's size cap is 16 KiB, the same as a stored
   entry, and the scan at daemon start that `plan.md` lists is now stated in step 9.
+- Review of the plan pull request, 2026-11-19, the operator's choice: step 4 trusted a
+  manifest's size and modification time, so a file replaced with one of the same size and a
+  preserved timestamp would have kept running as its old definition under its old hash.
+  Every scan now reads and hashes every manifest, and only parsing is cached.
+- Review of the plan pull request, round 6, 2026-11-19, the operator's choice: this phase
+  depended on Phase 3 alone, but its browser spec dispatches a task and reads the viewer,
+  which Phase 2 adds. It now depends on Phases 2 and 3, so the spec keeps its end-to-end
+  check. The scheduled task depends on both.

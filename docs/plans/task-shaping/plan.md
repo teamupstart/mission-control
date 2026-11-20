@@ -209,14 +209,18 @@ mapping and the record. A new transport cannot change those semantics.
 - **`mcp`.** Config is `{ server, tool, contextDelivery }`. `server` is
   `{ type: "stdio", command, args, env }` or `{ type: "http", url, headers }`. The
   arguments the tool is called with depend on `contextDelivery`. Either way the transport
-  delivers the complete collected input, and there is no mode that omits it.
+  delivers the complete collected input, and there is no mode that omits it. Every message
+  from the server is capped at 256 KiB while it is received, as an `http` body is, so an
+  oversized reply is `failed` before it is parsed.
   - `folded` (default). The tool is called with exactly three arguments,
     `{ task, repo: { name, facts?, summary? }, version? }`. That is the FR-02 `get_guidance`
     input, so an existing tool is called unchanged. `task` is the operator's prompt followed
-    by one fixed, labelled block that states every other collected field: title, kind, harness
-    and runtime, after-work step, labels, priority, and each attached repository with its role
-    and branch. This is the folding FR-02 section 5a proposes, applied to the whole input
-    instead of three fields.
+    by one fixed, labelled block that states every field of the request's `context` except
+    local paths: the task id, title, kind, harness and runtime, the after-work step with its
+    workflow id, labels, priority, the caller, and each attached repository with its role,
+    branch and base commit. One pure function renders it from the `context` object, and a
+    test that walks the context schema fails when a field has no line in the block. This is
+    the folding FR-02 section 5a proposes, applied to the whole input instead of three fields.
   - `argument`. The tool is called with four arguments,
     `{ task, repo: { name, facts?, summary? }, version?, context }`. `task` is the prompt
     alone, and `context` is the request's whole `context` object. This is not the FR-02 call.
@@ -227,18 +231,34 @@ mapping and the record. A new transport cannot change those semantics.
 - **`http`.** Config is `{ url, headers }`. HTTPS only, except to loopback. Redirects are not
   followed off the origin. The response body is capped at 256 KiB.
 - **`builtin`.** Config is `{ builtin, options }`. v1 ships one, `repository-files`.
+- **Trace context.** When the launch a shaping run belongs to has a W3C trace context, every
+  shaper call carries it, so a shaper's own spans join that session's trace. It is the
+  context Mission Control already gives the session's agent, from `sessionTraceContext` in
+  `src/server/telemetry/session-trace.ts`. With none, nothing is added. `http` and
+  streamable-HTTP `mcp` calls carry the `traceparent` header, and `tracestate` when the
+  context has one. A `command` shaper, and an `mcp` server started as a local process, get
+  `TRACEPARENT` and `TRACESTATE` in their environment, the variables agents already get, and
+  never a value inherited from the daemon. Every `mcp` `tools/call` also carries the two
+  values in `params._meta`. A `builtin` runs in the daemon and needs no carrier. A
+  configured header or variable named `traceparent` or `tracestate`, compared without case,
+  is always removed first, with or without a launch context, so only the launch's own
+  values are ever sent. A trace value is not a
+  credential and not a reference, so it is never redacted. Nothing about it is configured
+  per shaper or per company.
 
 The block that `folded` appends to the prompt, for a task with two repositories:
 
 ```text
 Task context from Mission Control:
+- Task: t_123
 - Title: Retry failed charges
 - Kind: ship
 - Harness: claude (sdk)
-- After-work step: Review and merge
+- After-work step: Review and merge (workflow wf_1)
 - Labels: payments
 - Priority: high
-- Repositories: billing-api (primary, branch task/retry), ledger (additional, branch task/retry)
+- Caller: declared-user (agent claude, conversation t_123)
+- Repositories: billing-api (primary, branch task/retry, base abc123), ledger (additional, branch task/retry, base def456)
 ```
 
 ### Registry, config and wire
@@ -252,7 +272,7 @@ The feature-flag pattern, applied to shapers.
 | `app_config.featureFlags`, bounded, no migration | `app_config.shaping`: `{ caller, limits, shapers[], overrides, order }`, at most 32 shapers, with its own settings backup domain |
 | `featureEnabled`, `requireFeature`, `onFeatureFlagsChanged` | `src/server/shaping/`: `shapeTask` (the only caller of transports), `getShapingConfig`, `applyShapingIntent`, `onShapingConfigChanged` |
 | `GET` and `PUT /api/feature-flags` with an intent union | `GET` and `PUT /api/shaping` with an intent union: `upsert`, `remove`, `enable`, `reorder`, `settings` |
-| `feature_flags` event and snapshot field | `shaping_config` event and snapshot field. Per-task results travel on `task_upsert`. |
+| `feature_flags` event and snapshot field | `shaping_config` event and snapshot field, both sent only while the flag is on. Per-task results travel on `task_upsert`. |
 | Unknown ids ignored on read, preserved on write | A stored shaper whose stage or transport this build does not know is kept on every write, never resolved or called, and listed as unsupported. The parsing rule is under "Stored shapers this build does not understand". |
 | A stored choice wins over the default | A stored on or off for a shaper id wins over its manifest, for registered and discovered shapers alike |
 | Daemon and dashboard share one resolver | `resolveShapers(config, discovered, taskInput)` decides which shapers apply |
@@ -309,7 +329,10 @@ flag overrides are keyed by string and not by the id union.
   creates and edits only shapers it understands, and answers 400 otherwise. Every intent
   rewrites the list from the envelopes, so every other entry, unsupported ones and their
   unknown fields included, is carried through unchanged. `remove` works on any id, and so
-  does switching an entry off. Switching an unsupported entry on is refused.
+  does switching an entry off. Switching an unsupported entry on is refused. An `upsert`
+  also stores off for its id in the same write, so writing a definition never switches it
+  on, and a stored on left by a discovered shaper with that id does not carry over to the
+  registered definition that now shadows it.
 - **Manifests in the folder** are never written by Mission Control, so there is nothing to
   preserve. One whose stage or transport is unknown fails the strict schema and is listed as
   invalid, with that reason.
@@ -319,7 +342,8 @@ flag overrides are keyed by string and not by the id union.
 There are two ways in (D4) and one list.
 
 **Registered.** In **Settings > Task shaping**, or with `PUT /api/shaping`. The shaper is
-stored in `app_config.shaping` and is off until the operator enables it. A manifest can be
+stored in `app_config.shaping` and is off until the operator enables it, because every
+`upsert` stores off for its id. A manifest can be
 imported: Settings shows exactly which command will run or which URL will be called and what
 is sent to it, and stores it.
 
@@ -341,8 +365,9 @@ refused or shadowed entry never runs, whatever is stored for its id.
 - **When the folder is read.** At daemon start, when Settings opens, and at the start of
   every shaping run. A folder dropped in by setup tooling therefore takes effect at the next
   dispatch, with no restart and no click. There is no file watcher. A scan reads at most 32
-  folders and manifests of at most 16 KiB, the same cap as a stored entry, and re-reads a manifest only when its size or
-  modification time changed.
+  folders and manifests of at most 16 KiB, the same cap as a stored entry. It reads and
+  hashes every manifest on every scan, so a replaced file is always noticed, whatever its
+  size or timestamps. Only parsing is skipped, when the hash is unchanged.
 - **One list.** Settings shows both kinds in one ordered list, each marked Registered or
   Found on disk, with the path of a discovered one. The order is stored. A newly discovered
   shaper joins at the end of its stage.
@@ -372,11 +397,15 @@ refused or shadowed entry never runs, whatever is stored for its id.
   argv without a shell, a scrubbed environment plus only the variables the shaper names, a
   bounded working directory, bounded output and a hard timeout.
 - **What a remote shaper receives.** The prompt, the task context above, repository names,
-  and the facts and summary a gatherer produced. No local paths, no other file contents, and
+  and the facts and summary a gatherer produced, plus the launch's trace context when it has
+  one. No local paths, no other file contents, and
   no tokens other than the header references in its config. Settings states this list beside
   every remote shaper.
-- **Egress.** HTTPS only, except loopback. A header that carries a credential reference is
-  never sent over plain HTTP. Redirects stay on the origin. No cookies.
+- **Egress.** The rule resident MCP servers already follow, through the same helpers: HTTPS
+  only, except plain HTTP to a loopback address. A header that carries a credential reference
+  is therefore never sent over plain HTTP to another host. It may be sent to loopback, as it
+  may for a resident MCP server, because that request never leaves the machine. Redirects
+  stay on the origin. No cookies.
 - **What comes back.** Returned text goes into a worker's prompt, so it is treated as
   untrusted content: it sits in its own labelled section, which says it cannot relax
   authorization, plan or workflow rules, it is capped, and the operator can read exactly what
@@ -398,7 +427,10 @@ refused or shadowed entry never runs, whatever is stored for its id.
 ### Context budget and truncation
 
 - One entry is at most 16 KiB. One shaper contributes at most its `maxBytes` (default 16 KiB).
-  The whole section is at most `limits.totalBytes` (default 32 KiB, at most 64 KiB).
+  The whole section is at most `limits.totalBytes` (default 32 KiB, at most 64 KiB). On a
+  delivery path with a byte ceiling, such as a launch argument, it is also at most what the
+  rest of turn one leaves under that ceiling, so shaping never makes a task that launches
+  today fail to launch. What does not fit is cut and recorded, as below.
 - The budget is filled in one order: stage order, then the list order, then the order the
   shaper returned. An entry that does not fit is cut at the last line boundary that does,
   followed by `[truncated: N bytes omitted]`. An entry with less than 1 KiB left is dropped.
@@ -424,8 +456,25 @@ reference is resolved at call time.
 | `{env:NAME}` | The daemon's environment variable `NAME` at call time | Nowhere. The value is never stored, logged or sent to the browser. |
 
 - Header names are config, so a company's header never appears in Mission Control's code.
+- A credential is never written into config. A header named `authorization`,
+  `proxy-authorization` or `cookie`, or whose name contains `token`, `secret`, `key`,
+  `password`, `auth` or `credential`, compared without case, may hold only `{env:NAME}`
+  references, optionally after a fixed scheme word such as `Bearer`. A URL may not carry a
+  username, password or query string. The strict shaper schema refuses anything else, so a
+  literal credential is never stored or sent to a dashboard, whether it arrives through the
+  API, a Settings import or a folder manifest. The rule goes by header name, so a credential
+  under an innocent-looking name is not caught.
 - A reference that resolves to nothing fails closed: the shaper is not called and is recorded
   as `unavailable`, with a reason that names the missing reference.
+- A shaper cannot hand a value back. Before a reply reaches the engine, the transport
+  replaces every occurrence of a value it resolved for an `{env:NAME}` reference with
+  `[NAME redacted]`. That covers every string value of a successful reply (entry paths,
+  titles and bodies, the summary, fact values, notes and version) as well as a failure
+  reason. Keys the result schema defines are never changed. A fact name or an entry id that
+  contains such a value is dropped with a note instead of renamed, so redaction can never
+  merge two facts or two entries. The shaper's record is marked `redacted`,
+  and the viewer and a dry-run say that a credential value was removed. Redaction is not
+  degradation: the outcome does not change and the rest of the reply is used.
 - A `command` shaper may also rely on its own program's sign-in, as the GitHub and Jira task
   sources do.
 - The identity is declared and unverified, which is what the reference server accepts today.
@@ -464,18 +513,27 @@ cannot relax their authorization, plan or workflow rules.
   "Provisioning its worktree" and "Launching claude".
 - **On the task.** A bounded summary is stored on the task record and travels with
   `task_upsert`:
-  `{ state, at, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, version }] }`.
+  `{ state, at, sessionId, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, redacted, version }] }`.
   `state` is `ok` or `degraded`. `origin` is `registered` or `discovered`. `outcome` is one of
   `ok`, `degraded`, `failed`, `timed_out`, `invalid`, `unavailable`. The field is absent when
-  no shaper applied.
+  no shaper applied. The record describes the latest launch that reached a worker, and nothing
+  else. It is committed when turn one has been handed to the worker, in one transaction: the
+  summary is set to this launch's own, or cleared when no shaper applied, and the delivered
+  text is replaced, or deleted when this launch's section is empty. A dispatch that fails
+  before that point writes nothing. A launch whose shapers all failed therefore keeps its
+  `degraded` summary and has no text, and a retry never shows an earlier launch's context.
+  Each record names the session it was delivered to, `sessionId`, and follows that session
+  across a resume. The chip and the viewer show a record only for the session it names, so
+  if a commit fails, the new session shows no context rather than the previous launch's.
 - **In the dashboard.** A chip in the session header beside the standing-instructions chip:
   "Context: 3 entries", or an amber "Context degraded". It opens a viewer, "Context this
-  session received", listing each shaper's origin, outcome, reason, duration and version, and
-  each injected entry. A degraded task also carries a small marker on its board card and rail
+  session received", listing each shaper's origin, outcome, reason, duration and version,
+  each injected entry, and a note for a shaper whose reply had a credential value removed.
+  A degraded task also carries a small marker on its board card and rail
   row, where claim warnings show today.
 - **Headless and `mctl`.** The summary is part of every task read: `GET /api/tasks`, and the
   Mission Control MCP tools `get_task` and `list_tasks`, whose records gain a `shaping` field
-  with a one-line `summary` such as `degraded: acme-guidance timed out after 5 s`. FR-05
+  with the `sessionId` it describes and a one-line `summary` such as `degraded: acme-guidance timed out after 5 s`. FR-05
   surfaces read the task record and need no shaping-specific endpoint.
 - **Never.** No dialog, no confirmation, no attention item, no blocked launch.
 
@@ -500,7 +558,9 @@ cannot relax their authorization, plan or workflow rules.
 
 While the flag is off, and while it is on with no shaper that applies, every worker launch is
 byte-identical to today: same argv, same first prompt, no extra process. A test pins both.
-Turning the flag off deletes nothing: stored shapers, the folder and past records stay.
+Turning the flag off deletes nothing: stored shapers, the folder and past records stay. A task
+that is dispatched again while the flag is off launches unshaped, so its own record is cleared
+then, as it is for any launch that no shaper applied to.
 Mission Control ships no enabled shaper, because which files to read is the operator's choice.
 
 ### Harnesses
@@ -509,8 +569,9 @@ Shaping runs in the daemon before any harness is involved, and the section is pa
 composed prompt, so Claude, Codex and Pi, on the SDK and terminal runtimes, receive identical
 text. `context.harness` and `context.runtime` let a shaper tailor its answer. Pi receives turn
 one as a launch argument and terminal sessions receive it as a paste, so the phase that adds
-the seam pins the largest composed prompt through all three delivery paths. That is why the
-total budget is capped at 64 KiB.
+the seam finds each delivery path's byte ceiling and budgets every launch against the whole
+composed turn one, not only the section. That is also why the total budget is capped at
+64 KiB.
 
 ### Versioning
 
@@ -534,8 +595,12 @@ Sources context from the task's repositories and returns text, facts and a summa
   (one path, cut to 4 KiB, returned as `repo.summary`) and `facts` (one path to a flat JSON
   object of strings or string lists, returned as `repo.facts`).
 - It reads only regular files inside the worktree, with size caps, and records every skip
-  without stopping the launch. Phase 6 states the rules. The facts file format a setup skill
-  writes is owned by FR-03 and is not published, so flat JSON is what it reads for now.
+  without stopping the launch. Containment and size are verified on the file it opened, not
+  on a path checked beforehand, so a file swapped while shaping runs cannot get past them.
+  The one race these portable checks leave, a process running as the operator rearranging
+  the worktree's directories during the read, is outside the threat model, because that
+  process can read the file itself. Phase 6 states the rules. The facts file format a setup skill writes is owned by FR-03 and
+  is not published, so flat JSON is what it reads for now.
 
 ### Guidance selector
 
@@ -611,7 +676,8 @@ Six phases, each one pull request: 1 the shaping core, 2 the dispatch seam and v
 gatherer. `phased-plan.md` has the table, the dependencies and the contracts between them,
 and each `phase-<n>-*.md` file is that phase's guide. Phases 1 and 2 are the first slice
 (D3): both stages over the `command` transport with `degraded` visible, proven with two
-fixture scripts and no external service. Phases 2, 3, 5 and 6 can run at the same time. The
+fixture scripts and no external service. Phases 2, 3, 5 and 6 can run at the same time, and
+Phase 4 follows Phases 2 and 3. The
 reference implementer can register a `command` selector after phase 2 and needs no code
 after phase 5.
 
@@ -632,6 +698,8 @@ after phase 5.
 - FR-06 lesson selection at dispatch. This plan fixes only its place after the shaping
   stages and its share of the context budget.
 - A nudge or a task that hydrates missing repository facts (FR-02 section 5).
+- A Mission Control span for the shaping run. In v1 a shaper's spans join the session's
+  trace directly, and a span that groups one run's calls is later work.
 
 ## Risks
 
@@ -645,7 +713,8 @@ after phase 5.
 - **Two first flags.** `task-shaping` and FR-05's `headless-mode` both expect an empty
   registry. The second to merge updates the registry test instead of replacing it.
 - **Prompt size on delivery paths.** A 32 KiB section is four times the largest block injected
-  today. Phase 2 measures paste and launch-argument delivery before the default is fixed.
+  today. Phase 2 measures paste and launch-argument delivery before the default is fixed,
+  and budgets each launch against its path's ceiling.
 - **Prompt injection through a shaper.** A compromised or careless shaper can put text in
   front of a worker. The mitigations are a labelled section that cannot relax the contract,
   caps, and a viewer that shows exactly what was injected and from where.

@@ -41,6 +41,10 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   `maxBuffer`, and never throws. A direct `node:child_process` call must be registered in
   `test/executable-contracts.test.ts` as `operator-command`. The child environment starts from
   `executableChildEnv` and drops what `src/server/agent-subprocess-env.ts` drops.
+- **Trace context.** `src/server/agent-trace-context.ts` already hands agents a W3C trace
+  context as `TRACEPARENT`, through `withAgentTraceContext`, which also strips one inherited
+  from the daemon. `src/server/telemetry/session-trace.ts` decides each session's context.
+  Reuse both rather than add a second source.
 
 ## Steps
 
@@ -53,15 +57,21 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    `transport.type` as bounded strings, every other field kept as bounded JSON, at most 16 KiB
    per entry. An unknown stage or transport id is valid in it. `ShaperSchema` is the strict
    definition: `stage` from `SHAPING_STAGES`, and a discriminated `transport` for all four
-   ids, with header and env reference syntax checked but not resolved. The `mcp` config's
+   ids, with header and env reference syntax checked but not resolved. It also enforces the
+   credential rule in `plan.md`: a header whose name looks like a credential (`authorization`,
+   `proxy-authorization`, `cookie`, or a name containing `token`, `secret`, `key`,
+   `password`, `auth` or `credential`, without case) may hold only `{env:NAME}` references
+   after an optional scheme word such as `Bearer`, and a URL may carry no username, password
+   or query string. A refusal names the field, never its value. The `mcp` config's
    `contextDelivery` is `folded` or `argument`, with no value that omits the context.
    `classifyShaper(stored)` returns a known shaper, or an unsupported entry with its reason.
    `ShaperManifestSchema` is the strict definition plus an optional `enabled`.
    `ShapingConfigSchema` holds a list of envelopes, at most 32, with defaults (5 s, 10 s,
    16 KiB, 32 KiB) and maxima (30 s, 60 s, 64 KiB). `ShapingIntentSchema`: `upsert`, `remove`,
    `enable`, `reorder`, `settings`. `applyShapingIntent` accepts an `upsert` only when it
-   passes the strict schema, refuses to switch an unsupported entry on, and carries every
-   other entry through unchanged, unknown fields included. The pure functions each take their
+   passes the strict schema, and also stores off for that id in `overrides` in the same
+   write, so writing a definition never switches it on. It refuses to switch an unsupported
+   entry on, and carries every other entry through unchanged, unknown fields included. The pure functions each take their
    definitions as arguments so tests inject their own. `allocateBudget` likewise takes the
    total it may fill as an argument and reads no config, so a later step outside shaping can
    call it with what the shaping stages left (decision 12 in `phased-plan.md`).
@@ -79,14 +89,27 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    select, one call per shaper per repository in parallel, merge facts and summary for the
    selectors, cut a summary to 4 KiB, validate every reply with `ShapingResultSchema`, map
    every failure to an outcome, allocate the budget, compose the section, build the summary.
+   A transport reply of any kind may carry `redacted: true`, which Phase 5 sets when it
+   removed a credential value from the data or from a failure reason, and the summary records
+   it for that shaper.
    Each call's timeout is the smaller of the shaper's and the time left in the step. Paths are
    put in a request only when `shaperIsLocal`. The summary records each shaper's origin and
-   the SHA-256 of its definition, taken over canonical JSON for a registered shaper.
+   the SHA-256 of its definition, taken over canonical JSON for a registered shaper. The
+   `TaskShaping` type also declares an optional `sessionId`, which the engine leaves unset
+   and Phase 2 sets when it commits the record. An optional `input.maxSectionBytes` lowers
+   the total for one launch: the section never exceeds the smaller of it and
+   `limits.totalBytes`, and what does not fit is cut and recorded by the allocator's usual
+   rules. Phase 2 passes it on a delivery path with a byte ceiling. An optional `input.trace`
+   is the launch's W3C trace context, `{ traceparent, tracestate? }`, the shape of
+   `AgentTraceContext` plus an optional `tracestate`. The engine hands it to every call
+   unchanged as `ctx.trace`, and never logs or records it.
 7. **Transports.** `transports/index.ts` holds the exhaustive `Record`. Every `call` receives a
    `ctx` with the deadline, an abort signal, and a per-run scope (a `shared` map and `defer`)
    so a transport can reuse one connection during a run and close it afterwards. `command.ts` runs argv
    with the request on stdin and a 256 KiB output cap, in the repository for a gatherer and in
-   an empty directory for a selector. `mcp.ts`, `http.ts` and `builtin.ts` each answer
+   an empty directory for a selector. Its child environment goes through `withAgentTraceContext`,
+   so it carries `TRACEPARENT`, and `TRACESTATE` when present, exactly when `ctx.trace` is set,
+   and never one inherited from the daemon. `mcp.ts`, `http.ts` and `builtin.ts` each answer
    `unavailable` with a sentence naming the transport. `discovery.ts` exports
    `discoverShapers()` returning an empty list, and `references.ts` exports `referenceStatus()`
    returning an empty object, so the route reply already has its final shape.
@@ -103,18 +126,32 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
 - No migration. One `app_config` key, optional in older snapshots.
 - A stored on or off for a shaper id lives in `overrides`. `order` lists ids. Both exist now
   so Phase 4 changes no schema.
-- With the flag off the three routes answer 404 and nothing reads the config.
+- With the flag off the three routes answer 404 and nothing reads the config. Phase 3's
+  snapshot field and event follow the same gate.
 
 ## Tests and verification
 
 - `test/shaping.test.ts`: every pure function and every intent; the enablement table in
   `plan.md`, row for row; an entry with an unknown stage or transport id that survives a
   parse and every intent unchanged, is never resolved, cannot be switched on, and cannot be
-  written by `upsert`; the id rules; no `node:` import in the shared modules.
+  written by `upsert`; an `upsert` over an id whose stored choice is on, left there by a
+  discovered shaper, which leaves it off; a literal credential in a credential-looking
+  header, and a URL with a username, password or query string, refused by `upsert` and by
+  `ShaperManifestSchema` before anything is stored, with a reason that does not contain the
+  value; `Bearer {env:NAME}` and a static non-secret header accepted; the id rules; no
+  `node:` import in the shared
+  modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
-  timeouts and the deadline, partial results, each outcome.
+  timeouts and the deadline, partial results, each outcome, and a `redacted` mark carried
+  into the summary from a data reply and from a failed one, and a `maxSectionBytes` below
+  `limits.totalBytes` that cuts the section and records it as truncated, and `input.trace`
+  reaching every call of a run as `ctx.trace` unchanged while appearing in no summary or
+  record.
 - `test/shaping-transport-command.test.ts` with a fixture script under `test/fixtures/`: argv
-  without a shell, the scrubbed environment, stdin and stdout, the cap, a timeout.
+  without a shell, the scrubbed environment, stdin and stdout, the cap, a timeout, and trace
+  context: with `ctx.trace` set, `TRACEPARENT` is present and well-formed (`00-`, 32 hex,
+  `-`, 16 hex, `-`, 2 hex) and `TRACESTATE` is present when the context has one; with none,
+  both are absent, even when the daemon's own environment has a `TRACEPARENT`.
 - `test/shaping-http.test.ts`: the three routes, each intent, 404 with the flag off, reload
   after a restore.
 - The exhaustive tests that gain entries: feature flags, settings backup coverage, telemetry
@@ -158,5 +195,25 @@ reshape them. They replace the contents of their own transport file, `discovery.
 - Plan validation repair 4, 2026-11-19: step 3 now says `allocateBudget` takes its total as
   an argument. That is how FR-06's lesson step, which runs after shaping and is not a shaper,
   is allocated last from the one context budget. Nothing else in this phase changed.
+- Review of the plan pull request, 2026-11-19: the transport's data reply gained an optional
+  `redacted` mark and the per-shaper summary a `redacted` field, so Phase 5 can report a
+  removed credential value without reshaping a Phase 1 contract afterwards.
+- Review of the plan pull request, round 2, 2026-11-19: the mark is allowed on a failure
+  reply too. A scrubbed failure reason could not otherwise be reported.
+- Review of the plan pull request, round 4, 2026-11-19: `TaskShaping` declares an optional
+  `sessionId` now, so Phase 2 can stamp each record with its session without reshaping a
+  Phase 1 type afterwards.
+- Review of the plan pull request, round 5, 2026-11-19: an `upsert` now also stores off for
+  its id. Overrides are keyed by id, so a registered definition imported over the id of a
+  discovered shaper the operator had switched on would otherwise have inherited that on.
+- Review of the plan pull request, round 6, 2026-11-19: `shapeTask` takes an optional
+  `maxSectionBytes`, so Phase 2 can budget a launch against its delivery path's ceiling
+  without reshaping the engine contract afterwards.
+- Trace context, 2026-11-19, the operator's choice: `input.trace`, `ctx.trace` and the
+  `command` carrier are here, so every `command` shaper, registered or found on disk, gets
+  the launch's trace context, and Phases 4 and 5 add only what their transports need.
+- Review of the plan pull request, round 7, 2026-11-19, the operator's choice: the strict
+  schema now requires references for credential-looking headers and refuses credentials in
+  a URL, so a literal credential can never be stored or broadcast to a dashboard.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
@@ -184,6 +184,55 @@ test("an oversized body is refused with 413 after the flag's gate, before it is 
   }
 });
 
+test("a working-tree check Git never answered is unknown, never reported as a bare repository", async () => {
+  const { insideWorkTree } = await import("../src/server/repos.ts");
+  assert.equal(await insideWorkTree(repository), "worktree");
+  const bare = join(home, "repos", "bare-check.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  assert.equal(await insideWorkTree(bare), "not-worktree");
+  const unanswered = async () => ({ code: null, stdout: "", stderr: "", outcomeUnknown: true, overflowed: false, timedOut: true }) as never;
+  assert.equal(await insideWorkTree(repository, unanswered), "unknown", "a timed-out check is not a no");
+  const overflowed = async () => ({ code: 0, stdout: "true", stderr: "", outcomeUnknown: false, overflowed: true }) as never;
+  assert.equal(await insideWorkTree(repository, overflowed), "unknown");
+  const neverStarted = async () => ({ code: null, stdout: "", stderr: "spawn git ENOENT", outcomeUnknown: false, overflowed: false }) as never;
+  assert.equal(await insideWorkTree(repository, neverStarted), "unknown", "nor is a check that never started");
+});
+
+test("a repository check Git never answers is 503, never an invalid checkout", async () => {
+  const { checkoutFor } = await import("../src/server/shaping/routes.ts");
+  const silent = async () => "unknown" as const;
+  // Root resolution fails because Git did not answer: a second probe says so.
+  const duringRoot = await checkoutFor(repository, { resolveRepoRoot: async () => null, insideWorkTree: silent });
+  assert.deepEqual([duringRoot.ok, !duringRoot.ok && duringRoot.status, !duringRoot.ok && duringRoot.error], [false, 503, "repository_check_failed"]);
+  // Root resolved, then the working-tree check went unanswered.
+  const duringTree = await checkoutFor(repository, { resolveRepoRoot: async () => repository, insideWorkTree: silent });
+  assert.deepEqual([duringTree.ok, !duringTree.ok && duringTree.status], [false, 503]);
+  // Root resolution failed although Git confirms a working tree: still an unanswered check.
+  const confirmedTree = await checkoutFor(repository, { resolveRepoRoot: async () => null, insideWorkTree: async () => "worktree" });
+  assert.deepEqual([confirmedTree.ok, !confirmedTree.ok && confirmedTree.status], [false, 503]);
+  // Git answered no: still 400, for an ordinary folder and for a bare repository.
+  const rejected = await checkoutFor(plainFolder, { resolveRepoRoot: async () => null, insideWorkTree: async () => "not-worktree" });
+  assert.deepEqual([!rejected.ok && rejected.status, !rejected.ok && rejected.error], [400, "unknown_repository"]);
+  assert.deepEqual(await checkoutFor(repository), { ok: true, repoRoot: realpathSync(repository) }, "the real probes accept the checkout");
+});
+
+test("a dry run resolves its path once: the gatherer runs where Git checked, and a dangling link is refused", async () => {
+  await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+  await put({ kind: "upsert", shaper: fixture("where", "gather", "echo") });
+  const link = join(home, "repos", "billing-api-link");
+  rmSync(link, { force: true });
+  symlinkSync(repository, link);
+  const response = await dryRun({ id: "where", repository: link });
+  assert.equal(response.status, 200);
+  const run = await response.json() as { entries: Array<{ body: string }> };
+  assert.equal((JSON.parse(run.entries[0]!.body) as { cwd: string }).cwd, realpathSync(repository), "the canonical path, not the link");
+  const dangling = join(home, "repos", "dangling-link");
+  rmSync(dangling, { force: true });
+  symlinkSync(join(home, "repos", "gone"), dangling);
+  const refused = await dryRun({ id: "where", repository: dangling });
+  assert.equal(refused.status, 400, "a path that cannot be resolved stops the dry run");
+});
+
 test("a dry run refuses a bare repository and accepts a linked worktree", async () => {
   const bare = join(home, "repos", "bare.git");
   execFileSync("git", ["init", "-q", "--bare", bare]);
@@ -196,6 +245,18 @@ test("a dry run refuses a bare repository and accepts a linked worktree", async 
   const linked = join(home, "repos", "billing-api-linked");
   execFileSync("git", ["-C", repository, "worktree", "add", "-q", "--detach", linked]);
   assert.equal((await dryRun({ id: "bare-check", repository: linked })).status, 200);
+});
+
+test("a stored JSON null is unreadable, never treated as a missing row", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(APP_CONFIG_ENTRIES.shaping.key, "null");
+  shaping.reloadShaping();
+  const response = await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
+  assert.equal(response.status, 409);
+  const row = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.shaping.key) as { value: string };
+  assert.equal(row.value, "null", "the row is left as it was");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
 });
 
 test("a stored config this build cannot read is never overwritten", async (t) => {
@@ -319,10 +380,13 @@ test("a dry run never returns a named credential the shaper echoed in its guidan
     assert.equal(response.status, 200);
     const text = await response.text();
     assert.equal(text.includes("s3cret-passed-value"), false, "neither entries nor section nor summary carry it");
-    const run = JSON.parse(text) as { section: string; entries: Array<{ id: string; body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean }> } };
+    const run = JSON.parse(text) as { section: string; entries: Array<{ id: string; body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean; reason: string | null }> } };
     assert.deepEqual(run.entries.map((entry) => [entry.id, entry.body]), [["kept", "use [SHAPER_FIXTURE_SECRET redacted] to sign in"]]);
     assert.match(run.section, /use \[SHAPER_FIXTURE_SECRET redacted\] to sign in/);
     assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]], "redaction is not degradation");
+    assert.match(run.summary.shapers[0]!.reason ?? "",
+      /An entry was dropped because its id contained the value of SHAPER_FIXTURE_SECRET\..*A fact was dropped/,
+      "and the dry run says what was dropped");
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;

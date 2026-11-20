@@ -11,10 +11,12 @@ import {
   SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
   readToken,
 } from "@shared/harness-runtime.mjs";
+import { trimUrlText } from "@shared/shaping.ts";
 import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subprocess-env.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
+import { redactSpans } from "../redaction.ts";
 import { scrubResolved, type ResolvedValue } from "../references.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
@@ -32,8 +34,6 @@ import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./ty
 /** stdout beyond this is not a reply: the process group is killed and the call fails. */
 export const COMMAND_OUTPUT_BYTES = 256 * 1024;
 const STDERR_TAIL_CHARS = 2_000;
-/** How long to wait for the pipes to close after the group was killed. */
-const DRAIN_MS = 1_000;
 /** After the shaper exits, how long its pipes get to deliver the rest of its output. */
 const EXIT_DRAIN_MS = 500;
 /** How far before the call's deadline a drain ends, so its reply still counts as on time. */
@@ -117,6 +117,41 @@ function seconds(ms: number): string {
 /** Below this length a value is redacted only where it stands as a whole token. */
 const SHORT_VALUE_CHARS = 4;
 
+/**
+ * Inherited values that carry a credential although nobody named them: a URL with userinfo, as an
+ * authenticated proxy setting such as `HTTPS_PROXY=http://user:pass@proxy:8080` is. Each one is
+ * reported under its variable's name as the whole URL, its `user:password` part and the
+ * password, each as written and percent-decoded, so a shaper echoing any of them is caught.
+ */
+/** `text` percent-decoded, or as written when it is not valid percent-encoding. */
+function decoded(text: string): string {
+  try { return decodeURIComponent(text); } catch { return text; }
+}
+
+export function credentialBearingValues(env: NodeJS.ProcessEnv): ResolvedValue[] {
+  const out: ResolvedValue[] = [];
+  for (const [name, value] of Object.entries(env)) {
+    if (typeof value !== "string" || traceContextName(name)) continue;
+    const trimmed = trimUrlText(value);
+    if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) continue;
+    let url: URL;
+    try { url = new URL(trimmed); } catch { continue; }
+    if (!url.username && !url.password) continue;
+    // The userinfo as written runs to the authority's LAST "@", which is where the URL parser
+    // ends it, so an unescaped "@" inside the password does not cut it short.
+    const authority = trimmed.slice(trimmed.indexOf("//") + 2).split(/[/?#]/, 1)[0]!;
+    const written = authority.slice(0, authority.lastIndexOf("@"));
+    const writtenPassword = written.includes(":") ? written.slice(written.indexOf(":") + 1) : "";
+    // Each form a tool might print: as written, as the parser normalised it, and decoded.
+    const forms = [value, trimmed, written, writtenPassword, url.password, `${url.username}:${url.password}`,
+      decoded(written), decoded(writtenPassword), decoded(url.password), decoded(`${url.username}:${url.password}`)];
+    for (const form of new Set(forms)) {
+      if (form.length > 0 && form !== ":") out.push({ name, value: form });
+    }
+  }
+  return out;
+}
+
 /** What a child's output is redacted against: every value it received, and which were named. */
 export interface ReceivedValues {
   /** Every distinct, non-empty value in the environment the child was spawned with, longest first. */
@@ -138,43 +173,6 @@ export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly 
   return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
 }
 
-/** Whether `char` is an ASCII letter or digit: the edge a short value's whole-token match needs. */
-function alphanumeric(char: string | undefined): boolean {
-  return char !== undefined && /[A-Za-z0-9]/.test(char);
-}
-
-/**
- * Every start offset of `value` in `text`, overlapping occurrences included: a search that
- * resumed after each match would step over a second copy that begins inside the first.
- *
- * Knuth-Morris-Pratt, so the scan is linear in the text and the value whatever they hold. A
- * search that restarted at each match, such as `indexOf` from the next offset, compares a long
- * value against the same characters again for every overlapping copy: a 100 KiB value of one
- * repeated character over a 256 KiB diagnostic is billions of comparisons on the event loop.
- * A whole-token match is the same scan with the characters on either side checked afterwards.
- */
-function occurrences(text: string, value: string, wholeToken: boolean): number[] {
-  const starts: number[] = [];
-  if (value.length === 0 || value.length > text.length) return starts;
-  // fallback[i]: the length of the longest proper prefix of value[0..i] that is also its suffix.
-  const fallback = new Int32Array(value.length);
-  for (let i = 1, k = 0; i < value.length; i++) {
-    while (k > 0 && value[i] !== value[k]) k = fallback[k - 1]!;
-    if (value[i] === value[k]) k++;
-    fallback[i] = k;
-  }
-  for (let i = 0, k = 0; i < text.length; i++) {
-    while (k > 0 && text[i] !== value[k]) k = fallback[k - 1]!;
-    if (text[i] === value[k]) k++;
-    if (k === value.length) {
-      const start = i - value.length + 1;
-      if (!wholeToken || (!alphanumeric(text[start - 1]) && !alphanumeric(text[i + 1]))) starts.push(start);
-      k = fallback[k - 1]!;
-    }
-  }
-  return starts;
-}
-
 /**
  * Remove every value the child received from text it printed, before it is recorded. A value of
  * four characters or more is replaced wherever it appears. A shorter inherited one is replaced
@@ -183,40 +181,15 @@ function occurrences(text: string, value: string, wholeToken: boolean): number[]
  * named is a credential it chose to pass, so it is replaced wherever it appears whatever its
  * length: `tokenab1` must not keep a three-character `ab1` just because letters surround it.
  *
- * Every occurrence of every value is marked on the original text, and overlapping or touching
- * marks merge into one span, so two values that overlap are redacted over their combined extent
- * and no part of either survives. The marks go into a difference array, so the work is linear in
- * the text for each value, however many matches it has: up to 256 KiB of shaper output never
- * costs the event loop more than that.
+ * Every occurrence of every value is found on the original text and overlapping or touching
+ * matches merge into one span (`redactSpans`), so two values that overlap are redacted over their
+ * combined extent and no part of either survives. Each value is found in linear time, however
+ * many matches it has: up to 256 KiB of shaper output never stalls the event loop.
  */
 export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0): string {
-  const depth = new Int32Array(text.length + 1);
-  let marked = false;
-  for (const value of received.values) {
-    const wholeToken = value.length < SHORT_VALUE_CHARS && !received.named.has(value);
-    for (const start of occurrences(text, value, wholeToken)) {
-      depth[start]! += 1;
-      depth[start + value.length]! -= 1;
-      marked = true;
-    }
-  }
-  if (!marked && dropBefore <= 0) return text;
-  // `dropBefore` discards unmarked text in front of that offset: a value whose start was cut
-  // off by a bounded buffer lives there, as a piece no pattern can recognise.
-  let out = "";
-  let covered = 0;
-  let runStart = 0;
-  for (let at = 0; at <= text.length; at++) {
-    const wasCovered = covered > 0;
-    covered += depth[at]!;
-    const isCovered = at < text.length && covered > 0;
-    if (isCovered === wasCovered) continue;
-    if (wasCovered) out += "[redacted]";
-    else out += text.slice(Math.max(runStart, dropBefore), Math.max(at, dropBefore));
-    runStart = at;
-  }
-  if (covered <= 0 && runStart < text.length) out += text.slice(Math.max(runStart, dropBefore));
-  return out;
+  return redactSpans(text, received.values.map((value) => ({
+    value, wholeToken: value.length < SHORT_VALUE_CHARS && !received.named.has(value), label: "",
+  })), () => "[redacted]", dropBefore);
 }
 
 /**
@@ -331,11 +304,21 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   }
 
   // What the child is spawned with, which is what its output may repeat.
-  const received = receivedValues(executable.env, transport.env);
+  // Values that carry a credential although nobody named them, such as an authenticated proxy
+  // URL, count as named: removed from diagnostics wherever they appear, and from the reply's content.
+  const credentials = credentialBearingValues(executable.env);
+  const inheritedReceived = receivedValues(executable.env, transport.env);
+  const received: ReceivedValues = {
+    values: [...new Set([...inheritedReceived.values, ...credentials.map(({ value }) => value)])].sort((a, b) => b.length - a.length),
+    named: new Set([...inheritedReceived.named, ...credentials.map(({ value }) => value)]),
+  };
   // The named variables' values, each under its own name, for the reply's content.
-  const namedValues: ResolvedValue[] = transport.env
-    .filter((name) => !traceContextName(name))
-    .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; });
+  const namedValues: ResolvedValue[] = [
+    ...transport.env
+      .filter((name) => !traceContextName(name))
+      .flatMap((name) => { const value = executable.env[name]; return value ? [{ name, value }] : []; }),
+    ...credentials,
+  ];
   const longestValue = received.values[0]?.length ?? 0;
   // For identifiers: everything but the short inherited values only whole-token rules apply to.
   const identifierValues: ReceivedValues = {
@@ -377,15 +360,13 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       if (why === "timed_out" && exited) return complete(exited.code, exited.signal);
       ending = why;
       killGroup(child);
-      // An overflow is known the moment the cap is crossed, and nothing more the pipes could
-      // deliver changes it, so it settles at once. Waiting out the drain would let the engine's
-      // deadline land first and record a timeout in place of the output limit. `finish` still
-      // releases the pipes and reaps the group, whoever holds them.
-      if (why === "overflow") {
-        finish({ kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
-        return;
-      }
-      timers.push(setTimeout(() => finish({ kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` }), DRAIN_MS));
+      // Both outcomes are known the moment they happen, and nothing more the pipes could deliver
+      // changes either, so each settles at once. `finish` closes the daemon's ends of the pipes and
+      // reaps the group, whoever holds them, so a timed-out call frees its process and pipes before
+      // the engine hands its slot to the next call, and an overflow is never recorded as a timeout.
+      finish(why === "timed_out"
+        ? { kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` }
+        : { kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
     };
     const onAbort = (): void => end("timed_out");
     try {
@@ -425,6 +406,9 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     // Runs from child-process callbacks, where a throw would escape every handler and could stop
     // the daemon: whatever goes wrong while building the answer settles the call as failed.
     const complete = (code: number | null, signal: NodeJS.Signals | null): void => {
+      // The drain may already have answered; the pipes' `close` that follows must not parse and
+      // redact the reply a second time.
+      if (settled) return;
       try {
         answer(code, signal);
       } catch (error) {
@@ -448,8 +432,10 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
           // the engine validates a decoded value just as it does text.
           data: scrubbed.redacted ? scrubbed.data : text,
           ...(scrubbed.redacted ? { redacted: true } : {}),
+          ...(scrubbed.notes.length > 0 ? { redactionNotes: scrubbed.notes } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
           redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),
+          holdsNamed: (text) => namedValues.some(({ value }) => text.includes(value)),
         });
       }
       // Only the child's own text is redacted, never the sentence Mission Control wraps it in.

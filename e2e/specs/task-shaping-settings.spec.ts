@@ -224,7 +224,7 @@ function modeShaper(id: string, label: string, mode: string, ...args: string[]) 
   return commandShaper(id, label, { transport: { type: "command", command: process.execPath, args: [FAKE_SHAPER, mode, ...args] } });
 }
 
-test("the panel's other paths: switching off, keeping a shaper, the budget bounds, Reset, a refused save, and dry runs that fail or are closed", async ({ dashboard: page, context, daemon }) => {
+test("the panel's other paths: switching off, keeping a shaper, a file import, the identity and budget bounds, Reset, a refused save, and dry runs that fail or are closed", async ({ dashboard: page, context, daemon }) => {
   test.setTimeout(120_000);
   await setFlag(daemon, true);
   await putShaping(daemon, { kind: "upsert", shaper: commandShaper("on-notes", "On notes") });
@@ -255,6 +255,23 @@ test("the panel's other paths: switching off, keeping a shaper, the budget bound
   await expect(row(page, "On notes")).toBeVisible();
   await expect(row(peer, "On notes")).toBeVisible();
   expect((await shapingConfig(daemon)).shapers.map((entry) => entry.id)).toContain("on-notes");
+
+  // Import through the file chooser: the chosen file fills the manifest, is reviewed, and is saved off.
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const fromFile = page.getByRole("dialog", { name: "Import a shaper" });
+  await fromFile.getByLabel("Choose a manifest file").setInputFiles({
+    name: "file-notes.json", mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(modeShaper("file-notes", "File notes", "ok"), null, 2)),
+  });
+  await expect(fromFile.getByRole("textbox", { name: "Manifest" })).toHaveValue(/"id": "file-notes"/);
+  const fileReview = fromFile.getByRole("region", { name: "What this shaper runs or calls" });
+  await expect(fileReview).toContainText("File notes");
+  await expect(fileReview).toContainText(`${process.execPath} ${FAKE_SHAPER} ok`);
+  await fromFile.getByRole("button", { name: "Save switched off" }).click();
+  await expect(fromFile).toHaveCount(0);
+  await expect(pill(page, "File notes")).toHaveAccessibleName("File notes: off");
+  await expect(pill(peer, "File notes")).toHaveAccessibleName("File notes: off");
+  expect((await shapingConfig(daemon)).overrides["file-notes"]).toBe(false);
 
   // The budgets: inside and at both bounds Save is offered; just outside, empty, or not a whole
   // number of milliseconds, it is not, and the field says why.
@@ -294,6 +311,20 @@ test("the panel's other paths: switching off, keeping a shaper, the budget bound
   await expect(budgetProblem).toHaveCount(0);
   await expect(save).toBeDisabled();
   await expect(reset).toBeDisabled();
+
+  // The caller identity is at most 256 characters: 257 is refused before it is sent, 256 saves.
+  const identity = form.getByRole("textbox", { name: "Caller identity" });
+  const identityProblem = form.getByText("At most 256 characters.");
+  await identity.fill("a".repeat(257));
+  await expect(identityProblem).toBeVisible();
+  await expect(save).toBeDisabled();
+  await identity.fill("a".repeat(256));
+  await expect(identityProblem).toHaveCount(0);
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("a".repeat(256));
+  await expect(panel(peer).getByRole("textbox", { name: "Caller identity" })).toHaveValue("a".repeat(256));
+  await expect(save).toBeDisabled();
 
   // A refused settings save shows the daemon's reason and the fields go back to the stored values.
   await page.route("**/api/shaping", async (route) => {

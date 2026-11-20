@@ -546,11 +546,19 @@ export function isScanUnavailable(error: unknown): error is ReposScanTimeoutErro
  * Whether `p` lies inside a working tree: an ordinary checkout or a linked worktree, never a
  * bare repository. `resolveRepoRoot` accepts a bare repository, which names a repository but
  * has no files to run anything in.
+ *
+ * Three answers, because Git not answering is not the same as Git saying no: `unknown` means
+ * the check timed out, overflowed or could not start, and the caller must not diagnose the path.
  */
-export async function insideWorkTree(p: string): Promise<boolean> {
-  if (!existsSync(p)) return false;
-  const r = await run("git", ["-C", p, "rev-parse", "--is-inside-work-tree"]);
-  return r.code === 0 && !r.outcomeUnknown && !r.overflowed && r.stdout.trim() === "true";
+export async function insideWorkTree(
+  p: string,
+  git: typeof run = run,
+): Promise<"worktree" | "not-worktree" | "unknown"> {
+  if (!existsSync(p)) return "not-worktree";
+  const r = await git("git", ["-C", p, "rev-parse", "--is-inside-work-tree"]);
+  // No exit code at all is a check that never ran, such as Git failing to start.
+  if (r.outcomeUnknown || r.overflowed || r.code === null) return "unknown";
+  return r.code === 0 && r.stdout.trim() === "true" ? "worktree" : "not-worktree";
 }
 
 export async function resolveRepoRoot(p: string): Promise<string | null> {

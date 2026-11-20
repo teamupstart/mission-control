@@ -47,6 +47,20 @@ export const SHAPING_LIMITS = {
   replyEntries: 32,
   /** Notes one reply may carry. */
   replyNotes: 16,
+  /**
+   * Shaper calls in flight at once within a stage. A command call holds a process and three pipes,
+   * so 32 repositories times 32 shapers must not open a thousand processes at once.
+   */
+  concurrentCalls: 16,
+  /** Characters in one reply note. */
+  replyNoteChars: 1000,
+  /** Characters in an entry's id and title. */
+  entryIdChars: 512,
+  entryTitleChars: 512,
+  /** Characters in an entry's path. */
+  entryPathChars: 1024,
+  /** Characters in one fact value, or in one item of a list-valued fact. */
+  factValueChars: 1024,
   /** Text one reply may carry in any one string, before Mission Control applies its caps. */
   replyText: 256 * KIB,
   /** The bound on a reason recorded for an outcome. */
@@ -566,11 +580,24 @@ function hasQueryString(raw: string): boolean {
 }
 
 /** Whether `value` is a URL, of any scheme, that carries userinfo or a credential query parameter. */
+/**
+ * `value` without the leading and trailing C0 controls and spaces the URL parser strips, so a check
+ * that inspects a URL's text sees what the parser will: "  https://user:pass@host" is a URL.
+ */
+export function trimUrlText(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) start++;
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) end--;
+  return value.slice(start, end);
+}
+
 function urlCarriesCredential(value: string): boolean {
+  const trimmed = trimUrlText(value);
   // Any scheme: a proxy URL such as socks5://user:pass@host carries credentials as well as http.
-  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return false;
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) return false;
   try {
-    const url = new URL(value);
+    const url = new URL(trimmed);
     return Boolean(url.username || url.password) || Array.from(url.searchParams.keys()).some(credentialBearingName);
   } catch {
     return false;
@@ -1321,14 +1348,26 @@ export function resolveShaperById(
 // ---------------------------------------------------------------------------------------------
 // The contract: one request, one result
 
-const FactValueSchema = z.union([
-  z.string().max(1024),
-  z.array(z.string().max(1024)).max(SHAPING_LIMITS.facts),
+export const ShapingFactValueSchema = z.union([
+  z.string().max(SHAPING_LIMITS.factValueChars),
+  z.array(z.string().max(SHAPING_LIMITS.factValueChars)).max(SHAPING_LIMITS.facts),
 ]);
-export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), FactValueSchema, SHAPING_LIMITS.facts);
+export const ShapingFactsSchema = boundedRecord(z.string().min(1).max(128), ShapingFactValueSchema, SHAPING_LIMITS.facts);
 export type ShapingFacts = z.output<typeof ShapingFactsSchema>;
 
+/**
+ * A repository's slot within one task (D17): `repo-01` for the primary, then `repo-02` onward in
+ * attachment order. It tells two attached worktrees of one repository apart, which a name cannot.
+ */
+export const ShapingSlotSchema = z.string().regex(/^repo-\d{2}$/, { message: "A slot is repo-NN." });
+
+/** The slot at a position in the ordered list: the primary first, then attachment order. */
+export function shapingSlot(position: number): string {
+  return `repo-${String(position + 1).padStart(2, "0")}`;
+}
+
 export const ShapingRepositoryRefSchema = z.object({
+  slot: ShapingSlotSchema,
   name: z.string().min(1).max(256),
   role: z.enum(["primary", "additional"]),
   branch: z.string().max(256).nullable(),
@@ -1350,6 +1389,8 @@ export const ShapingContextSchema = z.object({
   labels: z.array(z.string().max(128)).max(64),
   priority: z.string().max(64).nullable(),
   repositories: z.array(ShapingRepositoryRefSchema).max(SHAPING_LIMITS.repositories),
+  /** The slot of the repository this call is about (D17), one of `repositories`. */
+  target: ShapingSlotSchema,
   caller: z.object({
     user: z.string().max(256).nullable(),
     agent: z.string().max(64).nullable(),
@@ -1378,9 +1419,9 @@ export const ShapingRequestSchema = z.object({
 export type ShapingRequest = z.output<typeof ShapingRequestSchema>;
 
 export const ShapingEntrySchema = z.object({
-  id: z.string().min(1).max(512),
-  path: z.string().max(1024).optional(),
-  title: z.string().max(512).optional(),
+  id: z.string().min(1).max(SHAPING_LIMITS.entryIdChars),
+  path: z.string().max(SHAPING_LIMITS.entryPathChars).optional(),
+  title: z.string().max(SHAPING_LIMITS.entryTitleChars).optional(),
   body: z.string().max(SHAPING_LIMITS.replyText),
   truncated: z.boolean().optional(),
 });
@@ -1399,7 +1440,7 @@ export const ShapingResultSchema = z.object({
     facts: ShapingFactsSchema.optional(),
     summary: z.string().max(SHAPING_LIMITS.replyText).optional(),
   }).optional(),
-  notes: z.array(z.string().max(1000)).max(SHAPING_LIMITS.replyNotes).optional(),
+  notes: z.array(z.string().max(SHAPING_LIMITS.replyNoteChars)).max(SHAPING_LIMITS.replyNotes).optional(),
 });
 export type ShapingResult = z.output<typeof ShapingResultSchema>;
 
@@ -1517,7 +1558,13 @@ export function summariseShaping(input: {
   }
   const shapers = ids.map((id): ShapingShaperSummary => {
     const calls = byShaper.get(id)!;
-    const worst = calls.reduce((a, b) => (OUTCOME_SEVERITY.indexOf(b.outcome) < OUTCOME_SEVERITY.indexOf(a.outcome) ? b : a));
+    // The worst outcome; on a tie, the first call that gives a reason, so a redaction note from one
+    // repository is never hidden behind another's silent success.
+    const worst = calls.reduce((a, b) => {
+      const order = OUTCOME_SEVERITY.indexOf(b.outcome) - OUTCOME_SEVERITY.indexOf(a.outcome);
+      if (order !== 0) return order < 0 ? b : a;
+      return a.reason === null && b.reason !== null ? b : a;
+    });
     const kept = input.kept.filter((entry) => entry.shaperId === id);
     const reason = worst.reason === null ? null
       : (input.multiRepo ? `${worst.repo}: ${worst.reason}` : worst.reason).slice(0, SHAPING_LIMITS.reasonChars);

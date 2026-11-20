@@ -7,10 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Shaper, ShapingRequest } from "../src/shared/shaping.ts";
-import { ShaperManifestSchema, ShaperSchema } from "../src/shared/shaping.ts";
+import { SHAPING_LIMITS, ShaperManifestSchema, ShaperSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import {
   callCommand, COMMAND_OUTPUT_BYTES, receivedValues, redactReceived, removeScratch, shaperCommandEnv,
 } from "../src/server/shaping/transports/command.ts";
+import { scrubResolved } from "../src/server/shaping/references.ts";
 import type { ShaperOf, TransportContext } from "../src/server/shaping/transports/types.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
@@ -34,7 +35,8 @@ function request(stage: "gather" | "select" = "gather"): ShapingRequest {
     repo: { name: "billing-api", path: worktree },
     context: {
       taskId: "t_1", title: "Retry", kind: "ship", harness: "claude", runtime: "sdk", afterWork: null,
-      labels: [], priority: null, repositories: [{ name: "billing-api", role: "primary", branch: null, baseSha: null, path: worktree }],
+      labels: [], priority: null, repositories: [{ slot: "repo-01", name: "billing-api", role: "primary", branch: null, baseSha: null, path: worktree }],
+      target: "repo-01",
       caller: { user: null, agent: "claude", conversation: "t_1" },
     },
     limits: { maxBytes: 16384, deadlineMs: 5000 },
@@ -324,15 +326,17 @@ test("a named credential the shaper echoes in its reply's content is scrubbed be
     assert.equal(reply.kind, "data");
     assert.equal((reply as { redacted?: boolean }).redacted, true);
     assert.equal(JSON.stringify(decoded(reply)).includes("s3cret-passed-value"), false, "no copy survives anywhere in the reply");
-    const parsed = decoded(reply) as { guidance: Array<{ id: string; title: string; body: string; path: string }>; repo: { facts: Record<string, string>; summary: string }; notes: string[] };
+    const parsed = decoded(reply) as { guidance: Array<{ id: string; title: string; body: string; path: string }>; repo: { facts: Record<string, string>; summary: string }; notes?: string[] };
     assert.deepEqual(parsed.guidance.map((entry) => entry.id), ["kept"], "an entry whose id held the value is dropped, never renamed");
     assert.deepEqual(parsed.guidance[0], { id: "kept", title: "token [SHAPER_FIXTURE_SECRET redacted]",
       body: "use [SHAPER_FIXTURE_SECRET redacted] to sign in", path: "docs/[SHAPER_FIXTURE_SECRET redacted].md" });
     assert.deepEqual(parsed.repo.facts, { language: "typescript", owner: "team [SHAPER_FIXTURE_SECRET redacted]" },
       "a fact named after the value is dropped; one holding it is scrubbed");
     assert.equal(parsed.repo.summary, "summary with [SHAPER_FIXTURE_SECRET redacted]");
-    assert.equal(parsed.notes.length, 2, "each drop leaves a note");
-    assert.match(parsed.notes.join(" "), /dropped because its id contained the value of SHAPER_FIXTURE_SECRET/);
+    assert.equal(parsed.notes, undefined, "the reply's own notes are left as written");
+    const dropped = (reply as { redactionNotes?: string[] }).redactionNotes ?? [];
+    assert.equal(dropped.length, 2, "each drop is reported beside the reply");
+    assert.match(dropped.join(" "), /dropped because its id contained the value of SHAPER_FIXTURE_SECRET/);
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;
@@ -350,6 +354,157 @@ test("a redacted reply with a deeply nested unknown field settles, and its clean
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("overlapping named values are removed over their combined span, so no fragment of either survives", () => {
+  const resolved = [{ name: "FIRST", value: "abcdef" }, { name: "SECOND", value: "defghi" }];
+  const reply = { guidance: [{ id: "e", body: "xx abcdefghi yy", title: "defghi-abcdef" }] };
+  const scrubbed = scrubResolved(reply, resolved);
+  const entry = (scrubbed.data as { guidance: Array<{ body: string; title: string }> }).guidance[0]!;
+  assert.equal(entry.body, "xx [FIRST, SECOND redacted] yy", "replacing one first would have left \"ghi\" behind");
+  assert.equal(entry.title, "[SECOND redacted]-[FIRST redacted]", "separate values stay separate");
+  // A value overlapping itself.
+  const self = scrubResolved({ guidance: [{ id: "e", body: "<ababab>" }] }, [{ name: "AB", value: "abab" }]);
+  assert.equal((self.data as { guidance: Array<{ body: string }> }).guidance[0]!.body, "<[AB redacted]>");
+});
+
+test("a scrubbed field never grows past its schema limit, so a reply at its limits stays valid", () => {
+  // A two-character credential becomes a far longer marker: each field must still fit.
+  const title = `${"t".repeat(509)}x9z`; // 512, the title's limit
+  const version = `${"v".repeat(253)}x9z`; // 256, the version's limit
+  const reply = { version, guidance: [{ id: "e", title, path: `${"p".repeat(1021)}x9z`, body: "b" }], repo: { facts: { owner: `${"o".repeat(4)}x9` } } };
+  const before = ShapingResultSchema.safeParse(reply);
+  assert.equal(before.success, true, "valid as written");
+  const scrubbed = scrubResolved(structuredClone(reply), [{ name: "TOKEN", value: "x9" }]);
+  assert.equal(scrubbed.redacted, true);
+  const after = ShapingResultSchema.safeParse(scrubbed.data);
+  assert.equal(after.success, true, after.success ? "" : JSON.stringify(after.error.issues[0]));
+  const entry = (scrubbed.data as typeof reply).guidance[0]!;
+  assert.equal(entry.title.length, 512);
+  assert.equal(entry.title.includes("x9"), false, "and the value is gone");
+  assert.equal((scrubbed.data as typeof reply).version.length, 256);
+  assert.equal((scrubbed.data as typeof reply).repo.facts.owner, "oooo[TOKEN redacted]", "a field well within its limit keeps the whole marker");
+});
+
+test("a named value split by a NUL is still found, so stripping the NUL can never rejoin it", () => {
+  const resolved = [{ name: "TOKEN", value: "s3cret-passed" }];
+  const reply = { guidance: [{ id: "e", body: "use s3cret-\u0000passed here" }, { id: "by-s3cret-pa\u0000ssed", body: "keyed by it" }],
+    repo: { facts: { owner: "s3c\u0000ret-passed" } } };
+  const scrubbed = scrubResolved(reply, resolved);
+  assert.equal(scrubbed.redacted, true);
+  const text = JSON.stringify(scrubbed.data);
+  assert.equal(text.includes("s3cret-passed") || text.includes("\\u0000"), false, "no NUL is left to strip, and no credential behind one");
+  const data = scrubbed.data as typeof reply;
+  assert.deepEqual(data.guidance.map((entry) => entry.id), ["e"], "an id holding the value behind a NUL is dropped too");
+  assert.equal(data.guidance[0]!.body, "use [TOKEN redacted] here");
+  assert.equal(data.repo.facts.owner, "[TOKEN redacted]");
+});
+
+test("redacting many targets that share a short value stays bounded", () => {
+  // 32 named variables with one two-character value, over 256 KiB of it: every offset matches.
+  const resolved = Array.from({ length: 32 }, (_, i) => ({ name: `VAR_${i}`, value: "aa" }));
+  const reply = { guidance: [{ id: "e", body: "a".repeat(256 * 1024) }] };
+  const started = Date.now();
+  const scrubbed = scrubResolved(reply, resolved);
+  const elapsed = Date.now() - started;
+  const body = (scrubbed.data as typeof reply).guidance[0]!.body;
+  assert.equal(body.startsWith("[VAR_0, VAR_1"), true, "one span, naming every variable that holds the value");
+  assert.equal(body.includes("a]") || body.endsWith("a"), false);
+  // About 13 ms here; the per-match version took about 700 ms and 600 MB of heap on this input.
+  assert.ok(elapsed < 250, `took ${elapsed} ms`);
+});
+
+test("a field already over its limit is left for the schema to refuse, not clipped into validity", () => {
+  const reply = { guidance: [{ id: "e", title: "t".repeat(513), body: "nothing named here" }] };
+  const scrubbed = scrubResolved(structuredClone(reply), [{ name: "TOKEN", value: "x9" }]);
+  assert.equal(scrubbed.redacted, false, "nothing was removed");
+  assert.equal((scrubbed.data as typeof reply).guidance[0]!.title.length, 513);
+  assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, "so the engine still refuses it");
+});
+
+test("a marker or note never repeats a credential that the variable's own name contains", () => {
+  const resolved = [{ name: "TOKEN_X9", value: "X9" }];
+  const reply = { guidance: [{ id: "e", body: "use X9 here" }, { id: "by-X9", body: "keyed by it" }] };
+  const scrubbed = scrubResolved(reply, resolved);
+  const text = JSON.stringify(scrubbed.data) + scrubbed.notes.join(" ");
+  assert.equal(text.includes("X9"), false, "neither the marker nor the note names TOKEN_X9");
+  assert.equal((scrubbed.data as typeof reply).guidance[0]!.body, "use [redacted] here");
+  assert.match(scrubbed.notes[0]!, /contained the value of a passed variable/);
+});
+
+test("redaction is bounded as it is built, and skips fields the engine discards", () => {
+  // 256 KiB of a two-character value, each replaced by a far longer marker naming two variables.
+  const resolved = [{ name: "FIRST_VARIABLE", value: "x9" }, { name: "SECOND_VARIABLE", value: "x9" }];
+  const body = "x9 ".repeat(80 * 1024);
+  const reply = { guidance: [{ id: "e", body }], extra: { unread: "x9 ".repeat(1024) } };
+  const started = Date.now();
+  const scrubbed = scrubResolved(reply, resolved);
+  const out = (scrubbed.data as typeof reply).guidance[0]!.body;
+  assert.ok(out.length <= SHAPING_LIMITS.replyText, `the body is ${out.length} characters`);
+  assert.equal(out.includes("x9"), false);
+  assert.equal((scrubbed.data as typeof reply).extra.unread.length, 3 * 1024, "an unknown field is left unread, as the engine discards it");
+  assert.ok(Date.now() - started < 1_000);
+});
+
+test("a reply invalid as sent is left exactly as sent, so no rewrite can make it pass", () => {
+  const resolved = [{ name: "TOKEN", value: "s3cret-value" }];
+  const cases = {
+    "an entry with no body": { guidance: [{ id: "by-s3cret-value" }, { id: "fine", body: "ok" }] },
+    "one entry over the bound": { guidance: Array.from({ length: SHAPING_LIMITS.replyEntries + 1 }, (_, i) => ({ id: i === 0 ? "by-s3cret-value" : `e${i}`, body: "b" })) },
+    // A long value inside an oversized title: replacing it with a short marker would bring the
+    // title within its limit, and the engine would accept a reply the protocol refuses.
+    "an oversized title a replacement would shorten": { guidance: [{ id: "e", body: "b", title: `${"t".repeat(500)}${"s3cret-value".repeat(4)}` }] },
+  };
+  const long = [{ name: "TOKEN", value: "s3cret-value".repeat(4) }];
+  for (const [label, reply] of Object.entries(cases)) {
+    const before = structuredClone(reply);
+    assert.equal(ShapingResultSchema.safeParse(reply).success, false, `${label}: invalid as sent`);
+    const scrubbed = scrubResolved(reply, label.startsWith("an oversized") ? long : resolved);
+    assert.deepEqual(scrubbed.data, before, `${label}: left as sent`);
+    assert.deepEqual([scrubbed.redacted, scrubbed.notes], [false, []]);
+    assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, false, `${label}: so the engine refuses it`);
+  }
+});
+
+test("an authenticated proxy URL the shaper inherited is scrubbed from its reply, whole, in part and decoded", async () => {
+  const saved = process.env.HTTPS_PROXY;
+  // Percent-encoded in the URL, as it must be: a tool can print the decoded `pr0xy@pass!`.
+  process.env.HTTPS_PROXY = "http://proxyuser:pr0xy%40pass%21@proxy.example:8080";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
+    assert.equal(reply.kind, "data");
+    assert.equal((reply as { redacted?: boolean }).redacted, true);
+    const text = JSON.stringify(decoded(reply));
+    assert.equal(text.includes("pr0xy") || text.includes("proxyuser:"), false, "neither the URL nor the password, in any form, survives");
+    assert.deepEqual(decoded(reply).guidance.map((entry: { body: string }) => entry.body),
+      ["reached through [HTTPS_PROXY redacted]", "password [HTTPS_PROXY redacted]", "decoded [HTTPS_PROXY redacted]"]);
+    // A proxy without credentials is ordinary configuration, passed and echoed as written.
+    process.env.HTTPS_PROXY = "http://proxy.example:8080";
+    const plain = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
+    assert.equal((plain as { redacted?: boolean }).redacted, undefined);
+    assert.equal(decoded(plain).guidance[0].body, "reached through http://proxy.example:8080");
+  } finally {
+    if (saved === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = saved;
+  }
+});
+
+
+test("a proxy password holding an unescaped @ is read as the URL parser reads it, in full", async () => {
+  const saved = process.env.HTTPS_PROXY;
+  // The parser ends the userinfo at the LAST "@": the password is "pr0xy@pass".
+  process.env.HTTPS_PROXY = "http://proxyuser:pr0xy@pass@proxy.example:8080";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "proxy-leak", "HTTPS_PROXY"]), ctx(30_000));
+    assert.equal(reply.kind, "data");
+    const text = JSON.stringify(decoded(reply));
+    assert.equal(text.includes("pr0xy") || text.includes("@pass"), false, "no prefix or suffix of the password survives");
+    assert.deepEqual(decoded(reply).guidance.map((entry: { body: string }) => entry.body),
+      ["reached through [HTTPS_PROXY redacted]", "password [HTTPS_PROXY redacted]", "decoded [HTTPS_PROXY redacted]"]);
+  } finally {
+    if (saved === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = saved;
   }
 });
 
@@ -462,8 +617,13 @@ test("a helper outside the process group that holds the pipes cannot keep them o
     for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
     assert.ok(existsSync(pidFile), "the helper really was holding the pipes");
     controller.abort();
+    const aborted = Date.now();
     const reply = await pending;
-    assert.equal(reply.kind, "timed_out", "the call settles after its drain, not when the helper exits");
+    const settledIn = Date.now() - aborted;
+    assert.equal(reply.kind, "timed_out", "the call settles, not when the helper exits");
+    // At once: the engine reuses a timed-out call's slot after a short grace, so its process and
+    // pipes must be released by then. The drain this replaced waited a full second.
+    assert.ok(settledIn < 500, `settled ${settledIn} ms after the abort`);
     let open = pipes();
     for (let waited = 0; open > before && waited < 3_000; waited += 50) { await sleep(50); open = pipes(); }
     assert.equal(open, before, "the daemon's ends of the shaper's pipes were closed");

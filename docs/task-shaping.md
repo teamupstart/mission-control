@@ -67,7 +67,8 @@ The request:
     "harness": "claude", "runtime": "sdk",
     "afterWork": { "workflowId": "wf_1", "name": "Review and merge" },
     "labels": ["payments"], "priority": "high",
-    "repositories": [{ "name": "billing-api", "role": "primary", "branch": "task/retry", "baseSha": "abc123", "path": "/abs/path/to/worktree" }],
+    "repositories": [{ "slot": "repo-01", "name": "billing-api", "role": "primary", "branch": "task/retry", "baseSha": "abc123", "path": "/abs/path/to/worktree" }],
+    "target": "repo-01",
     "caller": { "user": "declared-user", "agent": "claude", "conversation": "t_123" }
   },
   "limits": { "maxBytes": 16384, "deadlineMs": 5000 }
@@ -78,6 +79,10 @@ The request:
   `context`, and every shaper receives all of it.
 - `repo.facts` and `repo.summary` are absent in a gather request. Producing them is a
   gatherer's job.
+- Each `context.repositories` entry has a `slot`: `repo-01` for the primary, then `repo-02`
+  onward in attachment order. `context.target` is the slot of the repository this call is about,
+  so a shaper can tell two attached worktrees of one repository apart, where `repo.name` is the
+  same for both.
 - `repo.path` and the paths in `context.repositories` go to local shapers only. A remote
   shaper never receives a local path.
 - `version` is present when the shaper's config pins one.
@@ -138,6 +143,9 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 | One shaper's share (`maxBytes`, per shaper or the config default) | 16 KiB | 64 KiB |
 | The whole section (`limits.totalBytes`) | 32 KiB | 64 KiB |
 
+- At most 16 calls run at once within a stage, so a task with many repositories and shapers
+  never opens hundreds of processes together. A call that waits for a slot starts with what is
+  left of the step, and results keep their call order.
 - A call's timeout is the smaller of its own and the time left in the step. Its signal is
   aborted at exactly that timeout, and any reply that arrives later, success or failure, is
   `timed_out` and contributes nothing, however much step time is left. At the step's deadline,
@@ -207,8 +215,10 @@ A `command` shaper is any program. Mission Control runs it once per call:
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
   reason drawn from your reply, such as an `error` or degraded `notes`.
   A variable you named in `env` is also removed from your reply's content: each occurrence in an
-  entry, the summary, a fact, the notes or the version becomes `[NAME redacted]`, and an entry
-  or fact keyed by it is dropped with a note. The record says `redacted`.
+  entry, the summary, a fact, the notes or the version becomes `[NAME redacted]`, where two
+  overlapping values become one span naming both. An entry or fact keyed by it is dropped. The
+  record says `redacted`, and its reason says what was dropped, even when the outcome is `ok`.
+  A NUL anywhere in your reply is removed, and a fact whose name holds one is dropped.
 - **Timeout.** The program runs in its own process group, and the whole group is killed at the
   timeout. Whatever is left of the group is also killed when the call ends, so a helper your
   program starts does not outlive it.

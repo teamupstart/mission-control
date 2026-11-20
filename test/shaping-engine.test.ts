@@ -8,6 +8,7 @@ import {
   canonicalJson,
   ShaperSchema,
   ShapingConfigSchema,
+  SHAPING_LIMITS,
   ShapingRequestSchema,
   ShapingResultSchema,
   SHAPING_SECTION_PREAMBLE,
@@ -152,17 +153,55 @@ test("the request carries the complete collected input; local paths only to loca
       taskId: "t_123", title: "Retry failed charges", kind: "ship", harness: "claude", runtime: "sdk",
       afterWork: { workflowId: "wf_1", name: "Review and merge" }, labels: ["payments"], priority: "high",
       repositories: [
-        { name: "billing-api", role: "primary", branch: "task/retry", baseSha: "abc123", path: "/work/billing-api" },
-        { name: "ledger", role: "additional", branch: "task/retry", baseSha: "def456", path: "/work/ledger" },
+        { slot: "repo-01", name: "billing-api", role: "primary", branch: "task/retry", baseSha: "abc123", path: "/work/billing-api" },
+        { slot: "repo-02", name: "ledger", role: "additional", branch: "task/retry", baseSha: "def456", path: "/work/ledger" },
       ],
+      target: "repo-01",
       caller: { user: "declared-user", agent: "claude", conversation: "t_123" },
     },
     limits: { maxBytes: 16384, deadlineMs: local.limits.deadlineMs },
   });
   const far = seen.get("remote ledger")!;
+  assert.equal(far.context.target, "repo-02", "the target is the slot of the repository the call is about");
   assert.equal(far.repo.path, undefined, "a remote shaper never gets a local path");
   assert.ok(far.context.repositories.every((repo) => repo.path === undefined));
   assert.equal(JSON.stringify(far).includes("/work/"), false);
+});
+
+test("slots follow the primary, then attachment order, whatever order dispatch listed them in", async () => {
+  const seen: ShapingRequest[] = [];
+  const listed = input(1);
+  listed.context.repositories = [
+    { name: "docs", role: "additional", branch: null, baseSha: null, path: "/work/docs" },
+    { name: "billing-api", role: "primary", branch: null, baseSha: null, path: "/work/billing-api" },
+    { name: "ledger", role: "additional", branch: null, baseSha: null, path: "/work/ledger" },
+  ];
+  await run(configWith([shaper("s", "select")]), (request) => { seen.push(request); return data({ guidance: [] }); }, listed);
+  assert.deepEqual(seen[0]!.context.repositories.map((repo) => [repo.slot, repo.name]),
+    [["repo-01", "billing-api"], ["repo-02", "docs"], ["repo-03", "ledger"]]);
+  assert.deepEqual(seen.map((request) => [request.repo.name, request.context.target]),
+    [["billing-api", "repo-01"], ["docs", "repo-02"], ["ledger", "repo-03"]], "each call names its own repository's slot");
+  for (const request of seen) assert.equal(ShapingRequestSchema.safeParse(request).success, true);
+});
+
+test("two attached worktrees of one repository get requests that differ only in context.target", async () => {
+  const seen: ShapingRequest[] = [];
+  const twins = input(1);
+  twins.context.repositories = [
+    { name: "billing-api", role: "primary", branch: "main", baseSha: "abc123", path: "/work/billing-api" },
+    { name: "billing-api", role: "additional", branch: "main", baseSha: "abc123", path: "/work/billing-api" },
+  ];
+  const result = await run(configWith([shaper("s", "select")]), (request) => {
+    seen.push(request);
+    return data({ guidance: [{ id: "same-id", body: `for ${request.context.target}` }] });
+  }, twins);
+  assert.equal(seen.length, 2);
+  const [first, second] = seen;
+  assert.deepEqual([first!.context.target, second!.context.target], ["repo-01", "repo-02"]);
+  assert.deepEqual({ ...first, context: { ...first!.context, target: "" } }, { ...second, context: { ...second!.context, target: "" } },
+    "nothing else tells them apart");
+  // De-duplicated per slot, not per name: each worktree keeps its entry.
+  assert.deepEqual(result.entries.map((entry) => entry.body), ["for repo-01", "for repo-02"]);
 });
 
 test("each call's timeout is the smaller of the shaper's and the time left in the step", async () => {
@@ -252,16 +291,102 @@ test("no NUL from a shaper reply reaches an entry, the section or a selector's r
   assert.deepEqual([select.repo.summary, select.repo.facts], ["summary", { lang: "typescript" }]);
 });
 
-test("redaction never turns a valid reply invalid: drop notes stop at the result's notes bound", async () => {
+test("redaction never turns a valid reply invalid: drop notes travel beside the reply, not in its notes", async () => {
   const notes = Array.from({ length: 16 }, (_, i) => `note ${i}`);
   const reply = { guidance: [{ id: "drop-sk-secret", body: "x" }, { id: "clean", body: "a clean entry" }], notes, degraded: true };
   const scrubbed = scrubResolved(structuredClone(reply), [{ name: "ACME_TOKEN", value: "sk-secret" }]);
   assert.equal(scrubbed.redacted, true);
-  assert.equal((scrubbed.data as { notes: string[] }).notes.length, 16, "the reply's own notes already fill the bound");
+  assert.equal((scrubbed.data as { notes: string[] }).notes.length, 16, "the reply's own notes, already at their bound, are untouched");
+  assert.equal(scrubbed.notes.length, 1, "the drop is reported beside the reply");
   assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, true, "so the scrubbed reply still validates");
-  const result = await run(configWith([shaper("s", "select")]), () => ({ kind: "data", data: scrubbed.data, redacted: true }), input(1));
+  const result = await run(configWith([shaper("s", "select")]),
+    () => ({ kind: "data", data: scrubbed.data, redacted: true, redactionNotes: scrubbed.notes }), input(1));
   assert.deepEqual(result.entries.map((entry) => entry.id), ["clean"], "its clean entry still counts");
   assert.equal(result.summary!.shapers[0]!.redacted, true);
+});
+
+test("a fact named with a NUL is dropped before the merge, never renamed into another", async () => {
+  const seen: ShapingRequest[] = [];
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
+  await run(config, (request, entry) => {
+    seen.push(request);
+    return data(entry.id === "g" ? { repo: { facts: { "lang\u0000": "go", lang: "typescript", "own\u0000er": "x" } } } : { guidance: [] });
+  }, input(1));
+  const select = seen.find((request) => request.stage === "select")!;
+  assert.deepEqual(select.repo.facts, { lang: "typescript" }, "the NUL-bearing names are gone, and lang kept its own value");
+});
+
+test("a successful reply that lost an entry to redaction stays ok and says what was dropped", async () => {
+  const result = await run(configWith([shaper("s", "select")]), () => ({ kind: "data",
+    data: JSON.stringify({ guidance: [{ id: "kept", body: "fine" }] }), redacted: true,
+    redactionNotes: ["An entry was dropped because its id contained the value of ACME_TOKEN."] }), input(1));
+  const row = result.summary!.shapers[0]!;
+  assert.deepEqual([row.outcome, row.redacted], ["ok", true]);
+  assert.equal(row.reason, "An entry was dropped because its id contained the value of ACME_TOKEN.");
+});
+
+test("a transport receives the request as the wire contract parsed it, without undeclared fields", async () => {
+  const seen: unknown[] = [];
+  const extra = input(1);
+  (extra.context as Record<string, unknown>).undeclared = "not part of the contract";
+  (extra.context.afterWork as Record<string, unknown>).hidden = "nor this";
+  await run(configWith([shaper("s", "select")]), (request) => { seen.push(request); return data({ guidance: [] }); }, extra);
+  const text = JSON.stringify(seen[0]);
+  assert.equal(text.includes("undeclared") || text.includes("hidden"), false);
+  assert.deepEqual((seen[0] as ShapingRequest).context.afterWork, { workflowId: "wf_1", name: "Review and merge" });
+});
+
+test("a named value scrubbed from a validation diagnostic marks the record redacted", async () => {
+  // An invalid fact keeps its name for validation; the name holds a named value.
+  const result = await run(configWith([shaper("g", "gather")]), () => ({
+    kind: "data",
+    data: { repo: { facts: { "by-sk-secret": 42 } } },
+    redact: (text: string) => text.replaceAll("sk-secret", "[redacted]"),
+    holdsNamed: (text: string) => text.includes("sk-secret"),
+  }), input(1));
+  const row = result.summary!.shapers[0]!;
+  assert.equal(row.outcome, "invalid");
+  assert.equal((row.reason ?? "").includes("sk-secret"), false, "the diagnostic is scrubbed");
+  assert.equal(row.redacted, true, "and the record says a credential value was removed");
+  // A diagnostic holding no named value leaves the flag as the transport set it.
+  const clean = await run(configWith([shaper("g", "gather")]), () => ({
+    kind: "data", data: { repo: { facts: { plain: 42 } } }, redact: (text: string) => text, holdsNamed: () => false,
+  }), input(1));
+  assert.equal(clean.summary!.shapers[0]!.redacted, false);
+});
+
+test("calls within a stage are bounded in flight, and keep their order", async () => {
+  const many = input(1);
+  many.context.repositories = Array.from({ length: 32 }, (_, i) => ({
+    name: `repo-${String(i).padStart(2, "0")}`, role: i === 0 ? "primary" : "additional", branch: null, baseSha: null, path: `/work/${i}`,
+  })) as ShapeTaskInput["context"]["repositories"];
+  let inFlight = 0;
+  let peak = 0;
+  const result = await run(configWith([shaper("a", "select"), shaper("b", "select")], { limits: { deadlineMs: 60_000 } }), async (request, entry) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await sleep(5);
+    inFlight--;
+    return data({ guidance: [{ id: "e", body: `${entry.id} ${request.repo.name}` }] });
+  }, many);
+  assert.ok(peak <= SHAPING_LIMITS.concurrentCalls, `${peak} in flight`);
+  assert.ok(peak > 1, "still parallel");
+  assert.equal(result.summary!.shapers.every((row) => row.outcome === "ok"), true);
+  const expected = ["a", "b"].flatMap((id) => many.context.repositories.map((repo) => `${id} ${repo.name}`));
+  assert.deepEqual(result.entries.map((entry) => entry.body), expected, "in call order, whatever finished first");
+});
+
+test("an invalid reply holding a named value is refused, and nothing of it reaches the run", async () => {
+  const result = await run(configWith([shaper("s", "select")]), () => ({
+    kind: "data",
+    data: { guidance: [{ id: "e", body: "b", title: `${"t".repeat(500)}${"sk-secret-".repeat(4)}` }] },
+    redact: (text: string) => text.replaceAll("sk-secret-", "[redacted]"),
+    holdsNamed: (text: string) => text.includes("sk-secret-"),
+  }), input(1));
+  const row = result.summary!.shapers[0]!;
+  assert.equal(row.outcome, "invalid", "the title is over its limit as sent");
+  assert.deepEqual(result.entries, []);
+  assert.equal(JSON.stringify(result).includes("sk-secret-"), false);
 });
 
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {

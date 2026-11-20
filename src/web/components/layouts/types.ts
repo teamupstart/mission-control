@@ -55,6 +55,12 @@ export interface SessionViewProps {
    * silently skip the Backlog column.
    */
   backlog: Task[];
+  /**
+   * Hibernated tasks (`@shared/hibernation.ts`), narrowed by the same filter as `backlog`. The
+   * Backlog column draws them as their own section; they are not backlog work. Optional so a
+   * layout rendered in isolation needs no hibernation to exist.
+   */
+  hibernated?: Task[];
   /** Reopen the dispatch modal over a backlog task, to correct it or send it now. */
   onEditTask: (taskId: string) => void;
   /**

@@ -5,6 +5,8 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TaskShapingView } from "../src/web/components/TaskShapingView.tsx";
+import { ShaperReview } from "../src/web/components/TaskShapingDialogs.tsx";
+import { SHAPING_STAGES } from "../src/shared/shaping-registry.ts";
 import {
   SHAPING_CONFIG_DEFAULTS,
   ShapingConfigSchema,
@@ -119,7 +121,8 @@ test("rows carry data-anchor task-shaping/<id> and no data-testid", () => {
 
 test("the list groups unsupported entries last and shapes rows for both origins", () => {
   const groups = shapingList(view({ shapers: [unsupported, gatherer("a"), remote] }));
-  assert.deepEqual(groups.map((group) => group.stage), ["gather", "select", null]);
+  // One group per stage in the tuple, whatever stages a later build appends, then the unsupported ones.
+  assert.deepEqual(groups.map((group) => group.stage), [...SHAPING_STAGES, null]);
   const [row] = groups[2]!.rows;
   assert.deepEqual({ ...row, shaper: null }, {
     id: "future", label: "Future shaper", origin: "registered", shaper: null, on: false,
@@ -187,3 +190,86 @@ test("the review states what a shaper runs or calls, the variables it names and 
   assert.equal(sent.remote, true);
   assert.match(sent.never ?? "", /Never sent: local paths/);
 });
+
+// Every transport's review, as a table: what the review promises is exactly what the shaper runs
+// or calls, so each row names every part a reviewer must see - command, arguments, endpoint,
+// headers, tool, context delivery, or the files a built-in reads - and the review renders each.
+const TRANSPORT_REVIEWS: Array<{
+  name: string;
+  shaper: Record<string, unknown>;
+  reach: Array<{ label: string; value: string }>;
+  environment: string[];
+  remote: boolean;
+}> = [
+  {
+    name: "an MCP server started locally",
+    shaper: { id: "mcp-local", label: "Local guidance", stage: "select", transport: {
+      type: "mcp", tool: "get_guidance", contextDelivery: "argument",
+      server: { type: "stdio", command: "/opt/acme/mcp-server", args: ["--port", "0", "two words"], env: ["ACME_MCP_TOKEN"] },
+    } },
+    reach: [
+      { label: "Runs MCP server", value: '/opt/acme/mcp-server --port 0 "two words"' },
+      { label: "Tool", value: "get_guidance" },
+      { label: "Context", value: "As a fourth argument, context" },
+    ],
+    environment: ["ACME_MCP_TOKEN"],
+    remote: false,
+  },
+  {
+    name: "an MCP server reached over HTTP",
+    shaper: { id: "mcp-remote", label: "Remote guidance", stage: "select", transport: {
+      type: "mcp", tool: "get_guidance",
+      server: { type: "http", url: "https://mcp.acme.example/mcp", headers: { authorization: "Bearer {env:ACME_MCP_TOKEN}", "x-acme-user": "{caller.user}" } },
+    } },
+    reach: [
+      { label: "Calls MCP server", value: "https://mcp.acme.example/mcp" },
+      { label: "Header authorization", value: "Bearer {env:ACME_MCP_TOKEN}" },
+      { label: "Header x-acme-user", value: "{caller.user}" },
+      { label: "Tool", value: "get_guidance" },
+      { label: "Context", value: "Folded into the task argument" },
+    ],
+    environment: ["ACME_MCP_TOKEN"],
+    remote: true,
+  },
+  {
+    name: "the built-in repository-files gatherer",
+    shaper: { id: "files", label: "Repository files", stage: "gather", transport: {
+      type: "builtin", builtin: "repository-files",
+      options: { include: [{ path: "README.md" }, { path: "docs/guide.md", maxBytes: 2048 }], summary: "docs/summary.md", facts: "facts.json" },
+    } },
+    reach: [
+      { label: "Built in", value: "repository-files" },
+      { label: "Reads", value: "README.md, docs/guide.md, docs/summary.md, facts.json" },
+    ],
+    environment: [],
+    remote: false,
+  },
+  {
+    name: "the built-in gatherer with no files named",
+    shaper: { id: "no-files", label: "No files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } },
+    reach: [{ label: "Built in", value: "repository-files" }, { label: "Reads", value: "No files" }],
+    environment: [],
+    remote: false,
+  },
+];
+
+for (const row of TRANSPORT_REVIEWS) {
+  test(`the review of ${row.name} states exactly what it runs or calls`, () => {
+    const read = readShaperManifest(JSON.stringify(row.shaper));
+    assert.equal(read.ok, true, read.ok ? "" : read.reason);
+    if (!read.ok) return;
+    assert.deepEqual(shaperReach(read.shaper), row.reach);
+    assert.deepEqual(shaperEnvironmentNames(read.shaper), row.environment);
+    const receives = shaperReceives(read.shaper);
+    assert.equal(receives.remote, row.remote);
+    const html = renderToStaticMarkup(createElement(ShaperReview, { shaper: read.shaper }));
+    for (const line of row.reach) {
+      const value = line.value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      assert.ok(html.includes(`<dt>${line.label}</dt><dd><code>${value}</code></dd>`), `${row.name}: the review omits ${line.label} ${line.value}`);
+    }
+    for (const name of row.environment) assert.ok(html.includes(`<code>${name}</code>`), `${row.name}: the review omits ${name}`);
+    if (row.environment.length === 0) assert.match(html, /<dt>Environment variables<\/dt><dd>None<\/dd>/);
+    assert.match(html, row.remote ? /<h4>What it is sent<\/h4>/ : /<h4>What it can reach<\/h4>/);
+    if (row.remote) assert.match(html, /Never sent: local paths/);
+  });
+}

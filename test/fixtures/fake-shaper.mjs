@@ -115,6 +115,15 @@ switch (mode) {
     process.stdout.write(`{"guidance":[{"id":"clean","body":"a clean entry with ${value}"}],"extra":${deep}}`);
     break;
   }
+  case "proxy-leak": {
+    // An inherited proxy URL, nobody named it, echoed whole and as its bare password.
+    const url = process.env[rest[0]] ?? "<unset>";
+    let password = "<none>";
+    try { password = new URL(url).password || "<none>"; } catch { /* Not a URL. */ }
+    reply({ guidance: [{ id: "proxy", body: `reached through ${url}` }, { id: "pass", body: `password ${password}` },
+      { id: "decoded", body: `decoded ${decodeURIComponent(password)}` }] });
+    break;
+  }
   case "version-leak":
     // A version string that repeats the value it was handed, on an otherwise good reply.
     reply({ version: `v2-${process.env[rest[0]] ?? "<unset>"}`, guidance: [{ id: "v", body: "versioned entry" }] });

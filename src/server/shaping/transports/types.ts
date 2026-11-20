@@ -31,6 +31,8 @@ export type TransportReply =
     kind: "data";
     data: unknown;
     redacted?: boolean;
+    /** Why the transport dropped an entry or a fact while redacting. The engine records them. */
+    redactionNotes?: readonly string[];
     /**
      * Removes values the shaper was handed from text derived from this reply. The engine runs
      * every reason it builds from `data` through it (an `error` the reply states, its `notes`,
@@ -39,6 +41,12 @@ export type TransportReply =
      * Absent means the transport handed the shaper nothing secret.
      */
     redact?: (text: string, options?: RedactOptions) => string;
+    /**
+     * Whether `text` holds a value the operator named, which `redact` would remove. The engine asks
+     * it of each diagnostic it scrubs, so a credential removed there still marks the record
+     * `redacted`. Absent means the transport named nothing.
+     */
+    holdsNamed?: (text: string) => boolean;
   }
   | { kind: "failed" | "timed_out" | "unavailable"; reason: string; redacted?: boolean };
 

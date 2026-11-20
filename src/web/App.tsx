@@ -1,3 +1,4 @@
+import { hibernatedTasks } from "@shared/hibernation.ts";
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
@@ -120,7 +121,7 @@ import {
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
-import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
@@ -2593,7 +2594,17 @@ export function App(): React.JSX.Element {
   // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
-  const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
+  //
+  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
+  // per repository for display: an older run of the same repository that is still open holds
+  // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
+  const heldIds = useMemo(() => {
+    const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();
+    for (const run of workflowRuns) {
+      if (run.sessionId) runsBySession.set(run.sessionId, [...(runsBySession.get(run.sessionId) ?? []), run]);
+    }
+    return heldSessionIds(runsBySession);
+  }, [workflowRuns]);
   const pipelineRunByKey = useMemo(() => {
     const map = new Map<string, PipelineRun>();
     for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
@@ -2751,6 +2762,13 @@ export function App(): React.JSX.Element {
   const visibleBacklog = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const items = backlogTasks(tasks);
+    if (!q) return items;
+    return items.filter((t) => matchesBacklogSearch(t, q));
+  }, [tasks, filter]);
+  // The Backlog's Hibernated section, narrowed by the same filter box for the same reason.
+  const visibleHibernated = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const items = hibernatedTasks(tasks);
     if (!q) return items;
     return items.filter((t) => matchesBacklogSearch(t, q));
   }, [tasks, filter]);
@@ -3357,7 +3375,7 @@ export function App(): React.JSX.Element {
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
   // Whether the CURRENT layout has anything to draw. Both layouts render provisioning tasks;
-  // the board additionally renders backlog and restoring-session rows.
+  // the board additionally renders backlog, hibernated and restoring-session rows.
   const layoutHasContent =
     visible.length > 0 ||
     // An open resident's detail is drawn by the layout even though no fleet list holds it, and
@@ -3367,7 +3385,8 @@ export function App(): React.JSX.Element {
     (placement.excluded.size > 0 && !filter.trim()) ||
     dispatchingTasks.length > 0 ||
     failedLaunchTiles > 0 ||
-    (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
+    (layout === "board" &&
+      (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
   const filterableSessionNoun =
@@ -3394,6 +3413,7 @@ export function App(): React.JSX.Element {
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
+    hibernated: visibleHibernated,
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,
@@ -4524,6 +4544,7 @@ export function App(): React.JSX.Element {
     <OverlayHost value={overlays}>
       <FeatureFlagsContext.Provider value={featureFlags}>
       <FleetPauseContext.Provider value={fleetPause}>
+      <HeldSessionsContext.Provider value={heldIds}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -5405,6 +5426,7 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </HeldSessionsContext.Provider>
       </FleetPauseContext.Provider>
       </FeatureFlagsContext.Provider>
     </OverlayHost>

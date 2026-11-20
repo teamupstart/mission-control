@@ -56,7 +56,11 @@ non-goal), any sandbox.
 7. **Order.** Also already there: `order` lists ids, and a discovered id that is not listed
    sorts after the listed ones of its stage, by id.
 8. **Commands.** A `command` that starts with `./` resolves against the folder's real path and
-   must stay inside it. Otherwise the manifest is `invalid`.
+   must stay inside it. Otherwise the manifest is `invalid`. The executable it names, and
+   every directory between the shaper's folder and it, pass the ownership check of step 2:
+   owned by the daemon's user, with no group or other write bit. Otherwise the state is
+   `refused`, with the reason. The check runs at every scan, so at the start of every
+   shaping run, because changing the executable does not change the manifest's hash.
 9. **Engine and routes.** With the flag on, scan at daemon start, at the start of every
    shaping run and at the start of every dry-run. `GET /api/shaping` scans and returns `discovered`: id, path, state, problem,
    SHA-256 and the parsed shaper.
@@ -77,7 +81,9 @@ non-goal), any sandbox.
 
 - `test/shaping-discovery.test.ts`, in a temporary state home: a valid folder, invalid JSON, a
   schema failure, an id that differs from the folder name, an oversize manifest, a manifest
-  that is not a regular file, a symlinked folder, a group-writable folder (refused), 33 folders,
+  that is not a regular file, a symlinked folder, a group-writable folder (refused), a `./`
+  command whose executable, or an in-folder directory above it, is group-writable (refused),
+  33 folders,
   a re-read after a change, a replacement of the same size that keeps the old modification
   time, a `./` command that escapes, a manifest with a literal credential in a header,
   which is invalid, with a problem that names the header and never its value.
@@ -107,24 +113,14 @@ The folder is the only discovery location. Later work must not add another, and 
 rule that a repository's own files never register a shaper.
 
 ## Cross-phase audit
-
 - Phase 1: the enablement and ordering rule was moved into Phase 1's `resolveShapers`, so this
   phase edits no shared function. It owns D4's folder half and D4a.
-- Plan validation repair 2, 2026-11-19: step 6 said a manifest's `"enabled": false` kept a
-  shaper off even against a stored on, which contradicted `plan.md`. A stored choice now
-  always wins, in every file.
 - Phase 2: the viewer already shows `origin`. No session surface is added here.
 - Phase 3: rows reuse its component.
 - Phases 5 and 6: a discovered manifest may name any transport, and gets that transport's
   behaviour unchanged. That includes trace context: a folder `command` shaper gets
   `TRACEPARENT` from Phase 1's `command` transport, so this phase adds nothing for it.
-- Plan validation repair 3, 2026-11-19: a manifest's size cap is 16 KiB, the same as a stored
-  entry, and the scan at daemon start that `plan.md` lists is now stated in step 9.
-- Review of the plan pull request, 2026-11-19, the operator's choice: step 4 trusted a
-  manifest's size and modification time, so a file replaced with one of the same size and a
-  preserved timestamp would have kept running as its old definition under its old hash.
-  Every scan now reads and hashes every manifest, and only parsing is cached.
-- Review of the plan pull request, round 6, 2026-11-19, the operator's choice: this phase
-  depended on Phase 3 alone, but its browser spec dispatches a task and reads the viewer,
-  which Phase 2 adds. It now depends on Phases 2 and 3, so the spec keeps its end-to-end
-  check. The scheduled task depends on both.
+- Review history: plan validation and the review of pull request #1546 changed this phase
+  in several rounds. The rules they produced are stated in the steps above and in
+  `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each
+  finding and its change.

@@ -49,7 +49,8 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
    `shaping_config` frame is sent while it is off. The same wiring listens to
    `onFeatureFlagsChanged`: turning the flag on emits the current config, so an open window
    fills the panel with no reload, and turning it off emits `{ config: null }`, which the
-   reducer clears.
+   reducer clears. Both carry Phase 1's config view, so an unsupported entry reaches a
+   window only as its id, label and reason, never as its raw envelope.
 2. **Category.** `task-shaping`, labelled "Task shaping", in the Sessions group, shown only
    while the flag is on, in the sidebar, search and the command palette alike.
 3. **List.** One row per shaper in stored order, grouped by stage: label, id, transport, what
@@ -86,7 +87,9 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
   while the flag is off with shapers stored, the config emitted when the flag turns on and
   cleared when it turns off, an import over an id whose discovered shaper was switched on,
   which is saved off, and an import with a literal token in an `authorization` header,
-  refused with 400, with nothing stored and no `shaping_config` frame sent.
+  refused with 400, with nothing stored and no `shaping_config` frame sent, and a stored
+  unsupported entry whose envelope holds a literal token, which reaches the snapshot, a
+  frame and the reply only as its id, label and reason.
 - `test/settings-sidebar-render.test.ts`, `test/settings-search.test.ts`,
   `test/palette-index.test.ts` and `test/settings-backup-coverage.test.ts` gain the category,
   its anchors and its domain, with the flag off and on.
@@ -114,16 +117,13 @@ problem. Phase 5 fills the `references` field this panel already renders. Neithe
 registered rows behave.
 
 ## Cross-phase audit
-
 - Uses Phase 1's routes and schemas unchanged. Owns the Settings half of D4's registered path
   and D6's identity setting.
 - Reconciled with Phase 4: the row takes `origin` and an optional `problem` from the start, so
   that phase adds data, not a second row type.
 - Reconciled with Phase 5: the references note moved here, read from Phase 1's reply shape, so
   Phase 5 has no dashboard work and the two can merge in either order.
-- Plan validation repair 3, 2026-11-19: the row for an entry this build does not understand
-  now uses `plan.md`'s word, unsupported, and its rule: switch off or remove only.
-- Review of the plan pull request, round 5, 2026-11-19: the snapshot field and the event
-  were not gated, so a dashboard could receive the stored config while the flag was off.
-  They now follow the flag, and an open window fills when it turns on. The import also
-  saves off whatever its id had stored, through Phase 1's `upsert`.
+- Review history: plan validation and the review of pull request #1546 changed this phase
+  in several rounds. The rules they produced are stated in the steps above and in
+  `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each
+  finding and its change.

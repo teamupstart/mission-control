@@ -45,68 +45,41 @@ Each phase document cites the findings it depends on. The ones that shaped the s
    task reads. Those tools return JSON, so the record gains a `shaping` field with a one-line
    `summary`.
 7. **Prompt-size measurement belongs to Phase 2**, which owns the seam. It also budgets each
-   launch against its delivery path's byte ceiling, measured over the whole turn one.
+   launch against its delivery path's byte ceiling, measured over the whole turn one, and a
+   launch argument also against the platform's combined argument-and-environment limit,
+   measured over the launch's actual argv and environment.
 8. **A local `command` call is bounded by its timeout.** `run()` cannot be aborted, so the step
    deadline is enforced by giving each call the time that is left.
-9. **An `mcp` shaper always receives the complete collected input.** Plan validation found
-   that the first version of `contextDelivery` had a mode that sent none of it and a default
-   that folded only three fields into `task`. There are now two modes, `folded` and
-   `argument`, and both carry everything constraint C2 lists. `folded` calls the tool with
-   exactly FR-02's three arguments, so `get_guidance` is unchanged. `argument` calls it with
-   four, adding `context`, and is for a server whose tool declares that argument.
-10. **A stored choice always wins over a manifest.** Plan validation found two statements of
-    the enablement rule that disagreed about a discovered shaper whose manifest says
-    `"enabled": false` while the operator has switched it on. The stored choice wins, on or
-    off. `plan.md` has the table, and `resolveShapers` is the only place the rule lives.
-11. **Stored shapers are parsed in two layers.** A single strict schema could not preserve an
-    entry whose stage or transport id this build does not know. The config stores a lenient
-    envelope, the strict definition is checked per entry, and every write carries the other
-    entries through unchanged. `plan.md` states the rule under "Stored shapers this build does
-    not understand".
-12. **FR-06 lesson selection is a step after shaping, not a shaper.** Plan validation found
-    `plan.md` describing it twice, as a later stage and as a built-in selector. It has one
-    placement: a step of its own after the last shaping stage and before `composeTurnOne`,
-    which is where FR-06 puts it, because it selects only the lessons that `select` and
-    `route` did not already deliver. It is not an id in `SHAPING_STAGES` or
-    `SHAPING_BUILTINS`, and no phase here builds it. It shares the one context budget by being
-    allocated last: it is given `limits.totalBytes` less the `bytes` the shaping summary
-    records, and lessons are fitted into that remainder by `allocateBudget`. `plan.md` states
-    the rule under "Lesson selection at dispatch (FR-06)".
-13. **Rules from the review of the plan pull request.** The operator chose each on
-    2026-11-19. The task record describes the latest launch that reached a worker: it is
-    committed when turn one has been handed over and names the session that
-    received it, a launch that no shaper applied to clears
-    what an earlier launch left, and a launch whose shapers all failed keeps its own degraded
-    summary with no text (Phase 2). A resolved `{env:NAME}` value is redacted from every
-    reply, data or failure, before it reaches the engine, and the shaper is marked `redacted`
-    (Phases 1 and 5). Every folder scan reads and hashes every manifest instead of trusting
-    its size and modification time (Phase 4). The built-in gatherer verifies containment and
-    size on the file it opened, through a non-blocking open, not on a path checked beforehand
-    (Phase 6). Egress follows the rule resident MCP servers already use: HTTPS, except plain
-    HTTP to loopback (Phase 5). An `upsert` stores off for its id, so importing over an id
-    whose discovered shaper was on does not switch the import on (Phases 1 and 3). Every MCP
-    message is capped at 256 KiB while it is received (Phase 5). The shaping snapshot field
-    and event are sent only while the flag is on (Phase 3). On a delivery path with a byte
-    ceiling the section is also bounded by what the rest of turn one leaves under it (Phases
-    1 and 2). Scrubbing never changes a schema key, and drops a fact name or entry id that
-    contains a credential value instead of renaming it (Phase 5). Phase 4 depends on Phases
-    2 and 3, because its browser spec dispatches a task and reads the viewer.
-14. **Every shaper call carries the launch's trace context.** The operator chose on
-    2026-11-19 to add this before the plan merges. A shaping run carries the W3C trace context
-    the session's agent is launched with, from `sessionTraceContext`, and no other:
-    `traceparent` and `tracestate` headers on `http` and streamable-HTTP `mcp`,
-    `TRACEPARENT` and `TRACESTATE` for a `command` shaper and a local `mcp` server, and
-    `params._meta` on every `tools/call`. Phase 1 owns the input field, `ctx.trace` and the
-    `command` carrier, so registered and folder `command` shapers get it alike and Phase 4
-    adds nothing. Phase 2 passes it in. Phase 5 owns the `mcp` and `http` carriers. A trace
-    value is never a credential and never redacted. A Mission Control span for the shaping
-    run is later work. A configured `traceparent` or `tracestate` is always removed first.
-15. **A credential is never literal in config.** The operator chose on 2026-11-19, from the
-    review of the plan pull request, to require references for credential-looking headers.
-    Phase 1's strict shaper schema enforces it, so the API, a Settings import and a folder
-    manifest are covered alike: such a header may hold only `{env:NAME}` references after an
-    optional scheme word, and a URL may carry no username, password or query string. Nothing
-    that breaks the rule is stored or reaches a dashboard.
+9. **Every `mcp` shaper receives the complete collected input.** `contextDelivery` is
+   `folded`, exactly FR-02's three arguments with the rest of the input rendered into
+   `task`, or `argument`, four arguments adding `context`. No mode omits any of it.
+10. **A stored choice always wins over a manifest.** `plan.md` has the table, and
+    `resolveShapers` is the only place the rule lives.
+11. **Stored shapers are parsed in two layers**, a lenient envelope and the strict
+    definition, so an entry this build does not understand is kept on every write and never
+    called. `plan.md` states the rule under "Stored shapers this build does not understand".
+12. **FR-06 lesson selection is a step after shaping, not a shaper.** It runs after the last
+    shaping stage and before `composeTurnOne`, is not an id in `SHAPING_STAGES` or
+    `SHAPING_BUILTINS`, is built by no phase here, and is allocated last from the one context
+    budget. `plan.md` states the rule under "Lesson selection at dispatch (FR-06)".
+13. **Rules from the review of the plan pull request**, each stated in `plan.md` and owned by
+    the phases in brackets. The task record is committed once turn one is delivered, names
+    its session, and keeps a failed run `degraded` (2). Credential values are redacted from
+    every reply without changing a schema key (1, 5). The section fits a delivery path's byte
+    ceiling and the combined argument-and-environment limit (1, 2). Every folder scan reads
+    and hashes every manifest and checks a `./` executable's ownership (4). The built-in
+    gatherer verifies the file it opened (6). Egress follows the resident MCP rule, and every
+    MCP message is capped at 256 KiB (5). An `upsert` stores off for its id (1, 3). The
+    shaping snapshot and event follow the flag and carry only the config view (1, 3).
+    Phase 4 depends on Phases 2 and 3.
+14. **Every shaper call carries the launch's trace context**, the one the session's agent gets
+    from `sessionTraceContext`, and a configured `traceparent` or `tracestate` is always
+    removed first. Phase 1 owns `input.trace`, `ctx.trace` and the `command` carrier, Phase 2
+    passes it in, and Phase 5 owns the `mcp` and `http` carriers. A trace value is never a
+    credential. A Mission Control span for the shaping run is later work.
+15. **A credential is never literal in config.** Phase 1's strict schema requires
+    `{env:NAME}` references for credential-looking headers and refuses credentials in a URL,
+    for the API, a Settings import and a folder manifest alike.
 
 ## Size and phase count
 
@@ -167,9 +140,9 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Enablement | 1 | In `resolveShapers` only. A stored choice in `overrides`, on or off, always wins. With no stored choice, a registered shaper is off, and a discovered one runs unless its manifest says `"enabled": false`. An `upsert` stores off for its id in the same write, so writing a definition never switches it on. |
 | Context budget | 1 | One total, `limits.totalBytes`, filled in pipeline order by `allocateBudget`, which takes the total it may fill as an argument and reads no config. The summary's `bytes` is what the shaping stages used. A later step outside shaping, which is FR-06 lesson selection, is allocated last, from the remainder. |
 | Unknown ids | 1 | The config stores `StoredShaperSchema` envelopes. An entry that fails the strict `ShaperSchema` is unsupported: never resolved or called, never switched on, and carried through every write unchanged. `upsert` accepts only a strict definition. |
-| HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
+| HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`, where `config` is the config view: known shapers in full, and each unsupported entry only as its id, label and a reason. The raw envelope never leaves the daemon. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
 | Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping`. The record describes the latest launch that reached a worker. It is committed in one transaction when turn one has been handed to the worker: the summary is set, null when no shaper applied, and the text replaced, deleted when the section is empty. A dispatch that fails earlier writes nothing. Each record names the session it was delivered to (`sessionId`), and readers show it only for that session. |
-| Event | 3 | `shaping_config`, and the snapshot field `shaping`, both sent only while the flag is on. Turning the flag on emits the config to open windows, and turning it off emits a cleared one. |
+| Event | 3 | `shaping_config`, and the snapshot field `shaping`, both sent only while the flag is on and both carrying Phase 1's config view, never raw envelopes. Turning the flag on emits the config to open windows, and turning it off emits a cleared one. |
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
 | Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts`. Every scan reads and hashes every manifest, and only parsing is cached. |
 | References | 5 | `resolveReferences`, `referenceStatus` and `scrubResolved` in `src/server/shaping/references.ts`. Every reply and reason is scrubbed of resolved `{env:NAME}` values before it reaches the engine. Schema keys are never changed, and a fact name or entry id that contains a value is dropped, not renamed. A literal credential never reaches a transport, because Phase 1's schema requires references for credential-looking headers. |

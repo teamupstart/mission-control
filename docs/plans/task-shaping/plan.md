@@ -324,7 +324,10 @@ flag overrides are keyed by string and not by the id union.
    it does not, the entry is **unsupported**, with the reason.
 
 - **Reading.** Only known shapers are resolved and called. An unsupported entry is listed in
-  Settings as unsupported, with its reason.
+  Settings as unsupported, with its reason. Outside the daemon it is only its id, its label
+  and a reason that names the failing field, never a value. The API, the snapshot and the
+  event never carry its raw envelope, which may hold anything an older build or a restored
+  backup wrote, a literal credential included.
 - **Writing.** `upsert` accepts only a definition that passes the strict schema, so a build
   creates and edits only shapers it understands, and answers 400 otherwise. Every intent
   rewrites the list from the envelopes, so every other entry, unsupported ones and their
@@ -375,7 +378,9 @@ refused or shadowed entry never runs, whatever is stored for its id.
   listed as shadowed and is not run.
 - **An invalid manifest** is listed with its problem and never run.
 - **File ownership.** The folder and its manifest must belong to the daemon's user and must
-  not be writable by group or others. Otherwise the shaper is listed as refused.
+  not be writable by group or others. So must a program the manifest runs from inside the
+  folder, and every directory between the folder and that program. Otherwise the shaper is
+  listed as refused.
 - **Isolation.** An explicit `MISSION_HOME` owns its own `shapers/` folder, so tests and the
   browser suite never see the operator's.
 - **Audit.** Every launch records, for each shaper, whether it was registered or discovered
@@ -429,8 +434,9 @@ refused or shadowed entry never runs, whatever is stored for its id.
 - One entry is at most 16 KiB. One shaper contributes at most its `maxBytes` (default 16 KiB).
   The whole section is at most `limits.totalBytes` (default 32 KiB, at most 64 KiB). On a
   delivery path with a byte ceiling, such as a launch argument, it is also at most what the
-  rest of turn one leaves under that ceiling, so shaping never makes a task that launches
-  today fail to launch. What does not fit is cut and recorded, as below.
+  rest of turn one leaves under that ceiling, and for a launch argument also at most what the
+  launch's other arguments and its environment leave under the platform's combined limit,
+  so shaping never makes a task that launches today fail to launch. What does not fit is cut and recorded, as below.
 - The budget is filled in one order: stage order, then the list order, then the order the
   shaper returned. An entry that does not fit is cut at the last line boundary that does,
   followed by `[truncated: N bytes omitted]`. An entry with less than 1 KiB left is dropped.

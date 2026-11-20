@@ -4,8 +4,11 @@ import { missionRouteHash, parseMissionRoute } from "../src/web/workflows/useWor
 import {
   DEFAULT_SETTINGS_CATEGORY,
   SETTINGS_CATEGORIES,
-  VISIBLE_SETTINGS_CATEGORIES,
+  settingsCategoryInBuild,
 } from "../src/web/lib/settings-registry.ts";
+
+/** The categories this build routes: every one but those the build hides, flag-gated ones included. */
+const ROUTED_CATEGORIES = SETTINGS_CATEGORIES.filter((c) => settingsCategoryInBuild(c.id));
 
 // What is at stake: Settings is a page reached by hash now, so `#/settings/shipping` is a
 // link people keep - in a bookmark, in a README, in a message to somebody else. Two things
@@ -39,7 +42,7 @@ test("settings hashes parse and serialize without drifting", () => {
 });
 
 test("every category round-trips through its own hash", () => {
-  for (const c of VISIBLE_SETTINGS_CATEGORIES) {
+  for (const c of ROUTED_CATEGORIES) {
     const hash = missionRouteHash({ page: "settings", category: c.id });
     assert.equal(hash, `#/settings/${c.id}`);
     assert.deepEqual(parseMissionRoute(hash), { page: "settings", category: c.id });
@@ -48,12 +51,18 @@ test("every category round-trips through its own hash", () => {
 
 test("a category this build withholds is not a route, and lands on the default panel", () => {
   // Conductor, while the ai-conductor integration is hidden. Kept in the registry, not routed.
-  for (const c of SETTINGS_CATEGORIES.filter((entry) => !VISIBLE_SETTINGS_CATEGORIES.includes(entry))) {
+  for (const c of SETTINGS_CATEGORIES.filter((entry) => !ROUTED_CATEGORIES.includes(entry))) {
     assert.deepEqual(
       parseMissionRoute(`#/settings/${c.id}`),
       { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
     );
   }
+});
+
+test("a category behind a feature flag stays a route, so a reload keeps its deep link", () => {
+  // The flags arrive with the first snapshot, after the route is parsed and canonicalized. The
+  // page withholds the panel while the flag is off (settings-sidebar-render.test.ts).
+  assert.deepEqual(parseMissionRoute("#/settings/task-shaping"), { page: "settings", category: "task-shaping" });
 });
 
 test("a retired category lands where its settings moved, not on the default panel", () => {

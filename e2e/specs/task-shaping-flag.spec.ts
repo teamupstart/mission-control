@@ -16,7 +16,7 @@ test("the Task shaping row appears and its toggle reaches a second window withou
   const shapingStatus = async () => (await fetch(`${daemon.baseURL}/api/shaping`)).status;
 
   await expect(page.getByText("Task shaping", { exact: true })).toBeVisible();
-  await expect(page.getByText("Register shapers and dry-run them through the API to see the context they would add to a worker's first prompt. Dispatch does not call them yet.")).toBeVisible();
+  await expect(page.getByText("Register shapers in Settings > Task shaping and dry-run them to see the context they would add to a worker's first prompt. Dispatch does not call them yet.")).toBeVisible();
   await expect(page.getByText("No preview features right now. New ones appear here.")).toHaveCount(0);
   await expect(toggle(page)).toHaveAttribute("aria-pressed", "false");
   await expect(toggle(peer)).toHaveAttribute("aria-pressed", "false");

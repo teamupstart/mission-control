@@ -5,17 +5,18 @@ Task shaping asks operator-configured programs for context about a task. Each pr
 at stage `select` chooses guidance for the task. How Mission Control reaches a shaper is its
 **transport**. Mission Control ships the mechanism and no shaper of its own content.
 
-**What this build does.** You register a `command` shaper through the API and dry-run it
-against a repository. Mission Control calls it at the gather and select stages, validates and
-caps what it returns, and reports the section it would add to a worker's first prompt and an
-outcome for each shaper. Nothing is called at dispatch: no worker receives shaped context yet,
-and the dashboard has no shaping surface beyond the flag's row.
+**What this build does.** You register a `command` shaper in **Settings > Task shaping** or
+through the API, and dry-run it against a repository. Mission Control calls it at the gather and
+select stages, validates and caps what it returns, and reports the section it would add to a
+worker's first prompt and an outcome for each shaper. Nothing is called at dispatch: no worker
+receives shaped context yet.
 
 **What comes later.** Calling shapers at dispatch, so that the section reaches the worker, and
 the other surfaces arrive in later phases. The sections marked for later below describe them.
 
 Task shaping is a preview behind the `task-shaping` flag in **Settings > Feature flags**. With
-the flag off, the shaping API answers 404 and nothing reads the stored shapers.
+the flag off, the shaping API answers 404, Settings has no Task shaping category, no window is
+sent the config, and nothing reads the stored shapers.
 
 The design and its decisions are in [the task shaping plan](plans/task-shaping/plan.md).
 
@@ -249,14 +250,27 @@ All three routes are behind the flag and answer 404 while it is off.
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
     so a replacement is switched on again with `enable` after it has been dry-run.
-  - `{ "kind": "remove", "id": "..." }`.
-  - `{ "kind": "enable", "id": "...", "enabled": true }` stores the operator's choice.
+  - `{ "kind": "remove", "id": "...", "expect"?: "..." }`. When a shaper in the folder has the
+    same id, the registration was shadowing it, and removing the registration stores that id off
+    in its place in the order, so the folder shaper runs only once it is switched on.
+  - `{ "kind": "enable", "id": "...", "enabled": true, "expect"?: "..." }` stores the operator's choice.
+  - `{ "kind": "move", "id": "...", "after": "..." | null }` places a registered shaper right
+    after another registered shaper of its stage, or first for `null`. It is applied to the order
+    as stored when it arrives, so moves from two windows both stick, and repeating one changes
+    nothing. Stored ids that belong to no row keep their slots. When the move would pass the
+    order's bound of 128 ids, stored ids that name no registered or discovered shaper are left
+    out, the oldest kept, and otherwise it is refused with `order_full`.
   - `{ "kind": "reorder", "order": ["...", "..."] }` sets the run order within each stage.
   - `{ "kind": "settings", "caller": { "user": "..." }, "limits": {...} }` changes the declared
     caller identity and the budgets.
 
-  A refused intent answers 400 with `{ error, reason }`.
-- **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind? }`, where `repository` is
+  `expect` is the `shapingEntryRevision` of the entry as the sender showed it: 16 hex digits
+  over its view, from `src/shared/shaping.ts`. When it is sent and the stored entry has changed
+  since, the intent answers 409 `shaper_changed` and nothing is stored, so a click never removes
+  or switches on a replacement another window wrote in the meantime. Any other refused intent
+  answers 400 with `{ error, reason }`.
+- **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind?, expect? }`, where `expect`
+  is refused with 409 `shaper_changed` as above, and `repository` is
   an absolute path inside a local Git checkout, and runs that one shaper through the shaping
   engine, whatever its stored choice. A path that is not inside a checkout, such as a mistyped
   one that names an ordinary folder, answers 400 `unknown_repository` and runs nothing. A
@@ -300,7 +314,56 @@ Arrives with the dispatch seam.
 
 ## Settings
 
-Arrives with the Settings panel.
+**Settings > Task shaping** sits under Sessions, after Tasks, and is there only while the
+`task-shaping` flag is on. Switching the flag in any window adds or removes the category in
+every open window, in the rail, settings search and the palette alike, with no reload; a
+window already open on its link shows the panel the moment the flag turns on. Every change
+below applies at once in every open window, one write at a time. A refused write rolls back and
+shows the daemon's reason beside the control that sent it.
+
+- **The list.** One row per registered shaper, grouped by stage in run order: its label, id,
+  transport and everything it runs or calls, an MCP shaper's tool and context delivery
+  included, with an on or off switch read by the same rule a launch uses. The switch, Remove
+  and Dry run carry the revision of the definition the row shows, so the daemon refuses any of
+  them once another window has replaced that shaper. A row that names environment variables lists them, each marked set or not set
+  once the daemon reports it, never with a value. An entry this build cannot run is listed last,
+  under **Not supported by this build**, with its reason. It can be removed, and switched off if
+  an older build left it on, but not switched on, moved or dry-run.
+- **Import manifest.** Paste a manifest or choose its file. It is read with the daemon's own
+  schema, and before anything is saved the dialog shows its stage, the exact command and
+  arguments or the URL and headers, every environment variable it names, and what it is given.
+  A remote shaper's list is what it is sent: the prompt, the task context, repository names, a
+  gatherer's facts and summary, the launch's trace context and its own header references. The
+  repositories' local paths and every other credential are left out, but the text that is sent
+  goes as written: a prompt, title, fact or summary that contains a path, file contents or a
+  secret sends that too. Text longer than four times a stored definition's 16 KiB is refused
+  before it is read or parsed. **Save
+  switched off** stores it off, whatever its manifest says and whatever was stored for its id
+  before, so it runs only once you switch it on. A manifest that breaks the credential rule, or
+  names a `./` command a registered shaper cannot resolve, is refused with its reason and
+  nothing is saved.
+- **Order.** The arrows move a shaper earlier or later within its stage. Each sends a `move`
+  intent, which the daemon applies to the order as stored, so another window's move in the
+  meantime is kept and a shaper the list does not draw keeps its slot. When the order is full,
+  the daemon decides what may make room, and the row says so if nothing can.
+- **Dry run.** Pick a repository Mission Control knows, or type a checkout's path, add a prompt
+  if the shaper needs one, and run it. It runs whether or not it is switched on, saves nothing,
+  and shows the outcome, the duration, the version and each entry it would add. Closing the
+  dialog stops the run. If another window replaces or removes the shaper while the dialog is
+  open, the dialog says so and will not run.
+- **Remove** asks once more, then deletes the shaper's stored definition and its on or off
+  choice. The confirmation closes if another window replaces the shaper first. When a shaper in
+  the folder has the same id, the confirmation says it stays switched off.
+- **Caller identity** is the text a shaper receives as `{caller.user}`: declared, unverified
+  and not a secret. **Step deadline** (at most 60 s) and **Context budget** (at most 64 KiB) are
+  `limits.deadlineMs` and `limits.totalBytes`. **Save** writes only the fields typed in this
+  window, so a change another window made to the others is kept, and **Reset** puts back the
+  saved values. A save the daemon does not answer within 15 seconds stops being waited on: the
+  panel says so and shows the daemon's current settings.
+
+The panel reads the config from the event stream's `shaping_config` frame and its snapshot
+field ([Event stream](event-stream.md#task-shaping)), and writes through the three routes
+above. Its settings are the `shaping` settings backup domain.
 
 ## The shaper folder
 

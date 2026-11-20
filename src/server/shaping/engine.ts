@@ -23,12 +23,16 @@ import {
   type ShapingConfig,
   type ShapingContext,
   type ShapingFacts,
+  type ShapingInjectedEntry,
   type ShapingOutcome,
   type ShapingRequest,
+  type ShapingRun,
   type ShapingStage,
-  type TaskShaping,
 } from "@shared/shaping.ts";
 import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
+
+// The dry run's reply shape lives beside the other wire shapes, so the dashboard reads the same one.
+export type { ShapingInjectedEntry, ShapingRun };
 import { featureEnabled } from "../feature-flags/index.ts";
 import { discoverShapers } from "./discovery.ts";
 import { withoutNul } from "./references.ts";
@@ -75,28 +79,6 @@ export interface ShapeTaskInput {
    * It is never logged or recorded. Phase 2 passes it in.
    */
   trace?: ShapingTraceContext | null;
-}
-
-/** One entry as it would be injected, for the record, the viewer and the dry run. */
-export interface ShapingInjectedEntry {
-  shaperId: string;
-  label: string;
-  stage: string;
-  repo: string;
-  id: string;
-  title: string | null;
-  path: string | null;
-  body: string;
-  truncated: boolean;
-  omittedBytes: number;
-}
-
-export interface ShapingRun {
-  /** Null when no shaper applied. */
-  summary: TaskShaping | null;
-  /** The section for turn one. Empty when nothing was kept. */
-  section: string;
-  entries: ShapingInjectedEntry[];
 }
 
 export interface ShapeTaskDeps {

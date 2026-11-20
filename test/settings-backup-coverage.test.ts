@@ -19,14 +19,17 @@ import {
 } from "../src/server/settings-backups/config-registry.ts";
 import {
   ALL_SETTINGS_CONTROLS,
-  SETTINGS_CONTROLS,
+  settingsControls,
   type SettingsControl,
 } from "../src/web/lib/settings-search.ts";
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import { AGENT_TYPES } from "../src/shared/types.ts";
 
+// Every preview on: a control behind a flag is a Settings control all the same.
+const SETTINGS_CONTROLS = settingsControls({ enableAll: true, overrides: {} });
+
 test("every Settings control declares backup coverage or an explicit reason", () => {
-  for (const control of SETTINGS_CONTROLS) {
+  for (const control of ALL_SETTINGS_CONTROLS) {
     if (control.backup.kind === "domain") {
       assert.ok(control.backup.domains.length > 0, `${control.id} has no backup domain`);
       for (const domain of control.backup.domains) {
@@ -125,8 +128,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "residents.mcpServers",
       "residents.skillSources",
       "setup.banner",
-      // Task shaping's registered shapers and settings. Its domain is `runtime` until the
-      // Settings panel lands.
+      // Task shaping's registered shapers and settings, edited in Settings > Task shaping.
       "shaping",
       "shipping",
       "skills",
@@ -249,6 +251,20 @@ test("generated Settings controls inherit backup coverage in their generators", 
     const control = SETTINGS_CONTROLS.find((candidate) => candidate.id === `harness-${agent}`);
     assert.deepEqual(control?.backup, { kind: "domain", domains: ["harnesses"] });
   }
+});
+
+test("Task shaping's domain is on the settings surface, named by its own panel's controls", () => {
+  assert.deepEqual(SETTINGS_BACKUP_DOMAINS.find((domain) => domain.id === "shaping"), { id: "shaping", surface: "settings" });
+  const owners = (controls: readonly SettingsControl[]) => controls
+    .filter((control) => control.backup.kind === "domain" && control.backup.domains.includes("shaping"))
+    .map((control) => control.id);
+  const expected = ["task-shaping-shapers", "task-shaping-import", "task-shaping-identity", "task-shaping-limits"];
+  // The registry owns the domain whatever the flag says, so a backup always has its owner.
+  assert.deepEqual(owners(ALL_SETTINGS_CONTROLS), expected);
+  assert.ok(ALL_SETTINGS_CONTROLS.filter((control) => expected.includes(control.id)).every((control) => control.category === "task-shaping"));
+  // Search offers them only while the flag is on.
+  assert.deepEqual(owners(settingsControls({ enableAll: false, overrides: {} })), []);
+  assert.deepEqual(owners(settingsControls({ enableAll: false, overrides: { "task-shaping": true } })), expected);
 });
 
 test("the Trust matrix declares every persisted grant source", () => {

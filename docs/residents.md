@@ -414,7 +414,15 @@ messages, and never clears a blocker without evidence that its `resumeWhen` cond
 After each completed turn a resident waits for its next wake. Foreman never completes it
 automatically, and it is not invited into resident sessions: a resident launches with Foreman
 out of the session, so Foreman writes no Purpose note, queue tick, wrap-up prompt or
-pull-request follow-through there. Invite it from the session's Foreman rail if you want it. It ends when you choose **Complete & close** on its session,
+pull-request follow-through there. Invite it from the session's Foreman rail if you want it.
+
+Upgrading from a build where residents were invited by default applies this to residents
+that are already running, too. A resident you had invited Foreman into explicitly keeps that
+invite. One you only restored, by withdrawing Foreman and then inviting it back, does not: that
+earlier re-invite went back to the old default rather than recording an invite of its own, so
+Foreman is out of that session after the upgrade. Invite it again from the Foreman rail.
+
+A resident ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. The
 Complete dialog first offers a [retro](#retro-before-completing) that turns your steering into
 proposed instruction changes. A

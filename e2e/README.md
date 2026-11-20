@@ -2288,9 +2288,15 @@ under `e2e/.artifacts/feature-flags/`. No product module contains a fixture swit
 ### Resident active hours
 
 `specs/residents-active-hours.spec.ts` covers the `resident-active-hours` preview. The editor
-draws the **Active hours** card only while the flag is on, and a Settings toggle in another
-window adds or removes it live. Days, times and zone chosen in it are saved with the profile.
-A launched resident whose next wake falls outside its window reads as **asleep** in the dock,
-with the time its held wake goes out, and reads as waiting again once the flag is off.
-`MC_E2E_EVIDENCE=1` writes `01-active-hours-card.png` and `02-dock-asleep.png` under
+draws the **Active hours** card while the flag is on, and a Settings toggle in another window adds
+or removes it live. The one exception: a draft whose schedule cannot be saved, such as one with
+no day chosen, keeps the card on screen after the flag is turned off, so the error stays
+reachable; once it is fixed the card goes away and the profile saves. Turning hours on fills the
+zone picker with the browser's zone. Days, times and zone chosen in the card are saved with the
+profile. In the dock, a launched resident outside its window reads as **asleep**, with the time
+its held wake goes out, or the wake's own time when it is already due inside the next window,
+and reads as waiting again once the flag is off. Inside its window, a resident whose next wake
+falls after the window closes reads as **waiting** with the held wake's time.
+`MC_E2E_EVIDENCE=1` writes `01-active-hours-card.png`, `02-dock-asleep.png`,
+`03-dock-awake-held.png` and `04-dock-asleep-due-inside.png` under
 `e2e/.artifacts/residents-active-hours/`; attach them to the pull request, never commit them.

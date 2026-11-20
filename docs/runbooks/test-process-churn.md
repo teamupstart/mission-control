@@ -18,7 +18,7 @@ Git's own trace2 stream counts every git process, including the ones git starts 
 in-process tracer cannot see.
 
 The report's first line is a whole-run process total: test workers, every non-git process a
-traced node process started, the shell in front of each shell-mode spawn, node processes a
+traced node process started (a shell-mode spawn counts once, as the shell), node processes a
 non-node parent started, every git process, every xcrun shim exec in front of one, and every
 shell git started. It is a lower bound. It cannot see what a non-node, non-git process starts
 (a shell script's `ps` or `sed`), Electron's helper processes, or the test runner itself.

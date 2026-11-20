@@ -80,10 +80,17 @@ function templateDir(): string {
   return mkdtempSync(join(templateRoot, "t-"));
 }
 
-/** The sha HEAD's branch names, read from disk rather than through another git process. */
-function headSha(gitDir: string): string {
+/**
+ * The sha HEAD's branch names: read from the loose ref the files backend writes, without
+ * another git process. A repository on any other backend - reftable, which a global
+ * `init.defaultRefFormat` can select - has no such file, and is asked.
+ */
+function headSha(dir: string): string {
+  const gitDir = join(dir, ".git");
   const ref = readFileSync(join(gitDir, "HEAD"), "utf8").trim().replace(/^ref: /, "");
-  return readFileSync(join(gitDir, ...ref.split("/")), "utf8").trim();
+  const loose = join(gitDir, ...ref.split("/"));
+  if (existsSync(loose)) return readFileSync(loose, "utf8").trim();
+  return gitIn(dir, "rev-parse", "HEAD");
 }
 
 function writeFiles(root: string, files: Record<string, string>): void {
@@ -129,7 +136,7 @@ function buildRepo(dir: string, seed: FullSeed): string[] {
     const empty = Object.keys(commit.files).length === 0;
     if (!empty) gitIn(dir, "add", "-A");
     gitIn(dir, ...identity, "commit", "-q", ...(empty ? ["--allow-empty"] : []), "-m", commit.message);
-    shas.push(headSha(join(dir, ".git")));
+    shas.push(headSha(dir));
   }
   return shas;
 }

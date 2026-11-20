@@ -177,6 +177,25 @@ test("credentialShapedName is the name rule on its own", () => {
   assert.equal(credentialShapedName("SOME_FUTURE_TOOL_TOKEN"), true);
 });
 
+test("every GIT_CONFIG_COUNT spelling git accepts, with all its entries, reaches a Command whole", () => {
+  // Zero-padded, signed and space-led counts are all counts to git, so a complete family
+  // spelled that way is an operator's real setting and must not be dropped.
+  for (const [count, entries] of [["01", 1], ["007", 7], ["+1", 1], [" 1", 1]] as const) {
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin", HOME: "/home/me", GIT_CONFIG_COUNT: count };
+    for (let i = 0; i < entries; i++) {
+      env[`GIT_CONFIG_KEY_${i}`] = `mission.probe${i}`;
+      env[`GIT_CONFIG_VALUE_${i}`] = `value-${i}`;
+    }
+    // The premise, asserted: git itself reads this family.
+    assert.equal(spawnSync("git", ["config", "--get", "mission.probe0"], { env, encoding: "utf8" }).stdout.trim(), "value-0", count);
+    const scrubbed = scrubCheckEnv(env, TOKEN);
+    assert.equal(scrubbed.GIT_CONFIG_COUNT, count, JSON.stringify(count));
+    const read = spawnSync("git", ["config", "--get", `mission.probe${entries - 1}`], { env: scrubbed, encoding: "utf8" });
+    assert.equal(read.status, 0, `${JSON.stringify(count)}: ${read.stderr}`);
+    assert.equal(read.stdout.trim(), `value-${entries - 1}`);
+  }
+});
+
 test("git's GIT_CONFIG_COUNT family reaches a Command whole, so git can still start", () => {
   // `GIT_CONFIG_KEY_0` has a `KEY` segment and names a config key, not a credential. Dropping
   // it while COUNT survived made every git in the Command exit "missing config key".
@@ -216,7 +235,7 @@ test("an inherited GIT_CONFIG family that is already incomplete is removed whole
 
 test("an inherited GIT_CONFIG_COUNT that git cannot read as a count removes the whole family", () => {
   // Including spellings JavaScript's `Number` reads as integers and git still refuses.
-  for (const count of ["two", "-1", "1.5", "0.0", "1e0", "0x1", "007"]) {
+  for (const count of ["two", "-1", "1.5", "0.0", "1e0", "0x1"]) {
     const env: NodeJS.ProcessEnv = {
       PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8",
       GIT_CONFIG_COUNT: count, GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true",

@@ -156,8 +156,9 @@ if (existsSync(trace2Dir)) {
 
 // A whole-run process total, assembled so nothing is counted twice:
 //   test workers (the runner starts one per file; no traced process recorded those spawns)
-// + every non-git spawn a traced process recorded
-// + one `/bin/sh` per shell-mode spawn (`exec`, `execSync`, `shell: true`)
+// + every non-git spawn a traced process recorded. A shell-mode spawn (`exec`, `execSync`,
+//   `shell: true`) counts once: the shell runs a builtin itself and execs a lone program in
+//   its own place, so one recorded spawn is one process unless the trace shows another
 // + node processes whose parent was not traced (a shell script's node child), which no
 //   traced spawn line already counted
 // + every git process (trace2), every xcrun shim exec in front of one, and every shell git
@@ -172,7 +173,6 @@ const untracedParents = starts.filter((start) => start.role === "descendant" && 
 const wholeRun = starts.length === 0 || !existsSync(trace2Dir) ? null : {
   testWorkers: workers,
   nonGitSpawns: direct - (byCmd.get("git") ?? 0),
-  shellsForShellModeSpawns: shellSpawns,
   nodeDescendantsOfUntracedParents: untracedParents,
   gitProcesses: t2Processes,
   xcrunShimExecs: t2ViaShim,
@@ -183,6 +183,7 @@ const wholeRunTotal = wholeRun ? Object.values(wholeRun).reduce((a, b) => a + b,
 const report = {
   processTotal: wholeRunTotal,
   processTotalParts: wholeRun,
+  shellModeSpawns: shellSpawns,
   tracedNodeDescendants: nodeDescendants,
   testWorkersThatSpawned: files.size,
   directSpawns: direct,

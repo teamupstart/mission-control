@@ -191,6 +191,37 @@ test("inspection reads HEAD, detachment and dirtiness from real git in one statu
   assert.equal(named.value.dirty, true);
 });
 
+/** Whether this git can make a reftable repository (2.45 and later). */
+function supportsReftable(dir: string): boolean {
+  try {
+    execFileSync("git", ["init", "-q", "--ref-format=reftable", "-b", "main", dir], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("inspection settles detachment from git, not the HEAD file, in a reftable repository", async (t) => {
+  // Reftable writes a fixed stub as HEAD (`ref: refs/heads/.invalid`) whatever HEAD really is,
+  // so the HEAD-file shortcut would read every detached slot as one holding a branch.
+  const { clone } = repository("mission-native-inspect-reftable-");
+  const repo = join(clone, "..", "reftable");
+  if (!supportsReftable(repo)) return t.skip("this git predates reftable");
+  writeFileSync(join(repo, "keep.txt"), "base\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "-c", "user.email=t@test", "-c", "user.name=t", "commit", "-qm", "base");
+  const detached = mkLinkedDetached(repo, "reftable-detached");
+  const git = new NativeWorktreeGit();
+  const inspected = await git.inspect(detached);
+  assert.ok(inspected.ok, inspected.ok ? "" : inspected.reason);
+  assert.equal(inspected.value.detached, true);
+  assert.equal(inspected.value.head, gitIn(detached, "rev-parse", "HEAD"));
+  gitIn(detached, "switch", "-q", "-c", "(detached)");
+  const named = await git.inspect(detached);
+  assert.ok(named.ok, named.ok ? "" : named.reason);
+  assert.equal(named.value.detached, false, "a branch named (detached) is still a branch");
+});
+
 test("native Git operations fail closed when a subprocess outcome is unknown", async () => {
   const { clone, sha } = repository("mission-native-git-unknown-");
   const identity = worktreeRepositoryIdentity(clone);

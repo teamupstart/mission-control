@@ -144,10 +144,11 @@ export const MAKE_RECURSION_ENV_NAMES = ["MAKELEVEL", "MAKEFLAGS", "MFLAGS", "MA
 function completeGitConfigFamily(env: NodeJS.ProcessEnv): boolean {
   const count = env.GIT_CONFIG_COUNT;
   if (count === undefined) return true;
-  // The spelling, not the number: `Number` reads "0.0", "1e0", "0x1" and "007" as integers,
-  // and git refuses every one of them at startup. Only a plain decimal is forwarded; any other
-  // spelling takes the family with it, which costs the Command those settings, not git.
-  if (!/^(?:0|[1-9][0-9]*)$/.test(count)) return false;
+  // The spelling git reads, not the one `Number` reads: git takes decimal digits, zero-padded
+  // or not, after optional leading space and `+` ("01", "+1", " 1"), and refuses "0.0", "1e0"
+  // and "0x1" at startup though `Number` reads each as an integer. Anything else takes the
+  // family with it, which costs the Command those settings, not git.
+  if (!/^\s*\+?[0-9]+$/.test(count)) return false;
   // Bounded before the loop as well as by it. The loop already stops at the first missing
   // entry, so even a long digit string that converts to Infinity ends at once; this states the
   // limit outright. A complete family needs a KEY and a VALUE variable per entry, so a count

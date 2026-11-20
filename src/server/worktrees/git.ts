@@ -112,6 +112,9 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
   return registrations;
 }
 
+/** What a reftable repository writes as its HEAD file, whatever HEAD really is. */
+const REFTABLE_HEAD_STUB = "ref: refs/heads/.invalid";
+
 /**
  * The trimmed contents of the checkout's own HEAD file, or null when it cannot be read. A
  * linked worktree's `.git` is a file naming its private git dir, relative paths included.
@@ -338,12 +341,20 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: "git status: HEAD names no commit yet", outcomeUnknown: false };
     }
     if (!/^[0-9a-f]{40}$/.test(oid)) return unanswered("HEAD as a full commit id");
-    // `(detached)` is also a legal branch name, and status prints it identically. The HEAD
-    // file settles it without another process: a detached HEAD holds a commit, a branch a ref.
+    // `(detached)` is also a legal branch name, and status prints it identically. With the
+    // files ref backend the HEAD file settles it without another process: a detached HEAD
+    // holds a commit, a branch a ref. A reftable repository keeps only a fixed stub there
+    // (`ref: refs/heads/.invalid`), which says nothing, so it asks git instead.
     if (branch === "(detached)") {
       const head = await headFile(path);
       if (head === null) return unanswered("whether HEAD is detached");
-      if (head.startsWith("ref: ")) branch = head.slice("ref: ".length);
+      if (head === REFTABLE_HEAD_STUB) {
+        const detached = await this.detachedAt(path);
+        if (!detached.ok) return detached;
+        if (!detached.value) branch = "(a branch named (detached))";
+      } else if (head.startsWith("ref: ")) {
+        branch = head.slice("ref: ".length);
+      }
     }
     const status = tracked
       ? { ok: true as const, value: { dirty: true, scratch: [] } }

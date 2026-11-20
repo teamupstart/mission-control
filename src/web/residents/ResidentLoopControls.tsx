@@ -2,7 +2,9 @@ import { useContext, useEffect, useState } from "react";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
 import { residentRestartRequestId, type ResidentLoopStatus, type ResidentRunSummary } from "@shared/residents.ts";
+import { residentSleepingUntil, residentWakeOpeningLabel } from "@shared/resident-schedule.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { authorizeResidentLaunch } from "../lib/session-control-authorization.ts";
 import { controlResident, type ResidentControlAction } from "./api.ts";
 import type { ResidentSessionMark } from "./marker.ts";
@@ -24,7 +26,7 @@ const actionDescriptions = {
  * compaction layers as one line under them.
  */
 export function ResidentLoopStatusLine({ loop, session, tags = false }: {
-  loop: ResidentLoopStatus & Partial<Pick<ResidentRunSummary, "compaction">>;
+  loop: ResidentLoopStatus & Partial<Pick<ResidentRunSummary, "compaction" | "settings">>;
   session?: Session | null;
   tags?: boolean;
 }): React.JSX.Element {
@@ -35,15 +37,21 @@ export function ResidentLoopStatusLine({ loop, session, tags = false }: {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [loop.nextWakeAt]);
+  const activeHours = useFeatureFlag("resident-active-hours");
   const held = loop.loopState !== "paused" && session && reportBucket(session) === "needs-you";
-  const label = held ? "waiting on you" : loop.loopState;
+  // Outside its active hours a waiting resident sleeps; its due wake goes out when the window opens.
+  const asleepUntil = !held && loop.loopState === "waiting"
+    ? residentSleepingUntil(loop.settings?.schedule, loop.nextWakeAt, now, activeHours) : null;
+  const label = held ? "waiting on you" : asleepUntil !== null ? "asleep" : loop.loopState;
   const remaining = loop.nextWakeAt === null ? null : Math.max(0, Math.ceil((loop.nextWakeAt - now) / 1000));
-  const next = held || remaining === null ? null : `next in ${remaining < 60 ? `${remaining}s` : `${Math.ceil(remaining / 60)}m`}`;
+  const next = held || remaining === null ? null
+    : asleepUntil !== null ? `wakes ${residentWakeOpeningLabel(asleepUntil, now)}`
+      : `next in ${remaining < 60 ? `${remaining}s` : `${Math.ceil(remaining / 60)}m`}`;
   if (tags) {
     const reasons = [loop.pauseReason, loop.wakeReason].filter((reason): reason is string => !!reason);
     return <span className="resident-loop-status resident-loop-tags" aria-label="Resident loop status">
       <span className="resident-loop-tag-row">
-        <span className={`resident-loop-tag is-${loop.loopState}`}>{label}</span>
+        <span className={`resident-loop-tag is-${asleepUntil !== null ? "asleep" : loop.loopState}`}>{label}</span>
         <span className="resident-loop-tag">iteration {loop.iteration}</span>
         {next && <span className="resident-loop-tag">{next}</span>}
         {loop.runRequestedAt !== null && <span className="resident-loop-tag is-queued">run queued</span>}

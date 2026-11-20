@@ -9,6 +9,8 @@ import type { SdkSupervisor } from "../sdk/supervisor.ts";
 import { adoptResidentLaunch, getResidentRun, listOpenResidentRuns, residentRunForTask } from "./store.ts";
 import { CompactionError } from "../harness/compaction.ts";
 import { residentStandingRestatement } from "./launch.ts";
+import { residentAwakeAt, residentSleepingUntil } from "@shared/resident-schedule.ts";
+import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import {
   ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, clearResidentRunRequest, completeResidentCompaction,
   completeResidentGeneration, humanResidentTurn, liveRun, markResidentCompacted, paceResident, pauseResident, pruneResidentLoop,
@@ -26,12 +28,20 @@ interface LoopDeps {
   refreshSession: (session: Session) => void;
   now?: () => number;
   messages?: (session: Session) => SessionMessages | null;
+  /** Whether active hours are honoured: the `resident-active-hours` gate, read per decision. */
+  activeHours?: () => boolean;
+  /** Called with a listener whenever that gate may have changed; returns an unsubscribe. */
+  onActiveHoursChanged?: (listener: () => void) => () => void;
 }
+
+/** The feature that holds scheduled wakes outside a resident's active hours. */
+export const RESIDENT_ACTIVE_HOURS_FLAG = "resident-active-hours";
 
 /** The daemon's only resident-turn owner. All decisions re-read the durable pinned run. */
 export class ResidentLoop {
   private readonly now: () => number;
   private readonly messages: (session: Session) => SessionMessages | null;
+  private readonly activeHours: () => boolean;
   private stopped = true;
   private subscriptions: Array<() => void> = [];
   private timers = new Map<string, NodeJS.Timeout>();
@@ -41,6 +51,7 @@ export class ResidentLoop {
   constructor(private readonly deps: LoopDeps) {
     this.now = deps.now ?? Date.now;
     this.messages = deps.messages ?? sessionMessages;
+    this.activeHours = deps.activeHours ?? (() => featureEnabled(RESIDENT_ACTIVE_HOURS_FLAG));
   }
   start(): void {
     if (!this.stopped) return;
@@ -83,6 +94,15 @@ export class ResidentLoop {
       const session = this.deps.registry.getSession(sessionId);
       const run = session?.task?.kind === "resident" ? residentRunForTask(session.task.id)?.run : undefined;
       if (run && run.endedAt === null && markResidentCompacted(run.id)) this.publish(run.id);
+    }));
+    // Turning active hours on or off re-times every waiting resident at once: a held wake that
+    // is now allowed fires, and one that is now outside its window is held.
+    this.subscriptions.push((this.deps.onActiveHoursChanged ?? ((listener) => onFeatureFlagsChanged(() => listener())))(() => {
+      for (const { run } of listOpenResidentRuns()) {
+        if (run.launchState !== "launched") continue;
+        this.cancelTimer(run.id);
+        this.enqueue(run.id);
+      }
     }));
     for (const { run } of listOpenResidentRuns()) {
       if (run.launchState !== "launched") continue;
@@ -157,10 +177,14 @@ export class ResidentLoop {
     // Run now pressed while busy: human turns and the turn in progress went first; now it runs.
     if (current.runRequestedAt !== null) { this.cancelTimer(id); void this.wake(id, "run_now"); return; }
     if (current.nextWakeAt === null || this.timers.has(id)) return;
+    // Outside its active hours the resident sleeps: the wake stays due, and fires when the next
+    // window opens. Nothing durable changes, so turning the feature off sends it on time.
+    const now = this.now();
+    const fireAt = residentSleepingUntil(current.settings.schedule, current.nextWakeAt, now, this.activeHours()) ?? current.nextWakeAt;
     const timer = setTimeout(() => {
       this.timers.delete(id);
       void this.wake(id, "loop");
-    }, Math.max(0, Math.min(2_147_483_647, current.nextWakeAt - this.now())));
+    }, Math.max(0, Math.min(2_147_483_647, fireAt - now)));
     timer.unref();
     this.timers.set(id, timer);
   }
@@ -263,6 +287,9 @@ export class ResidentLoop {
   private async deliver(id: string, trigger: "loop" | "run_now"): Promise<void> {
     let run = liveRun(id);
     if (run.loopState === "paused" || claimedIteration(id)) return;
+    // A scheduled wake never goes out while the resident sleeps, compaction included: the
+    // observation that follows re-arms it for the next window. Run now is the operator's own.
+    if (trigger === "loop" && !residentAwakeAt(run.settings.schedule, this.now(), this.activeHours())) return;
     let session = this.session(run);
     if (!session || this.held(run, session, trigger)) return;
     // A restored overdue wake or Run now can precede the next passive poll.

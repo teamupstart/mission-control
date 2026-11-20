@@ -1,5 +1,7 @@
 import { ResidentState } from "./ResidentState.tsx";
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { resolveLaunchModel } from "@shared/kind-defaults.ts";
 import type { HarnessesConfig } from "@shared/protocol.ts";
@@ -87,6 +89,7 @@ export function ResidentProfileEditor({
   const [draft, setDraft] = useState<ResidentProfileRevision>(() => profile?.settings ?? seed ?? blankResidentDraft());
   // A built-in ships with Mission Control and is replaced on upgrade: nothing here can save it.
   const readOnly = profile?.builtin === true;
+  const featureFlags = useContext(FeatureFlagsContext);
   const [dirty, setDirtyState] = useState(profile === null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -340,7 +343,7 @@ export function ResidentProfileEditor({
       {error && <p className="resident-error" role="alert">{error}</p>}
       {!error && dirty && problem && <p className="field-hint resident-problem">{problem}</p>}
       <div className="resident-cards">
-        {RESIDENT_EDITOR_SECTIONS.map(({ id, title: heading, blurb, Body }) => (
+        {RESIDENT_EDITOR_SECTIONS.filter(({ featureFlag }) => !featureFlag || resolveFeatureFlag(featureFlag, featureFlags)).map(({ id, title: heading, blurb, Body }) => (
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
             <p className="resident-section-blurb">{blurb}</p>

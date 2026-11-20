@@ -153,7 +153,7 @@ test("only a live run has a wire summary", () => {
     personaName: "Fleet Triage",
     compaction: { betweenIterations: true, nativeBackstop: false },
     loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
-    settings: { identity: run.settings.identity, board: run.settings.board, authority: run.settings.authority, loop: run.settings.loop },
+    settings: { identity: run.settings.identity, board: run.settings.board, authority: run.settings.authority, loop: run.settings.loop, schedule: run.settings.schedule },
     createdAt: 5,
   });
   // Projected to the sections the browser draws: the instruction text, Persona id, execution

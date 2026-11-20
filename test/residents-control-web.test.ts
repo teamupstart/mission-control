@@ -34,7 +34,7 @@ function run(controlOtherSessions: boolean): ResidentRunSummary {
     personaName: "Fleet Triage",
     compaction: { betweenIterations: true, nativeBackstop: false },
     loopState: "waiting", iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
-    settings: { identity: settings.identity, board: settings.board, authority: settings.authority, loop: settings.loop },
+    settings: { identity: settings.identity, board: settings.board, authority: settings.authority, loop: settings.loop, schedule: settings.schedule },
     createdAt: 1,
   };
 }

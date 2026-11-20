@@ -1,4 +1,14 @@
 import { useEffect, useState } from "react";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import {
+  RESIDENT_WEEKDAYS,
+  RESIDENT_WORKDAYS,
+  residentActiveWindowAt,
+  residentNextActiveAt,
+  residentScheduleSummary,
+  residentWakeOpeningLabel,
+  type ResidentScheduleSection,
+} from "@shared/resident-schedule.ts";
 import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.tsx";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -65,6 +75,8 @@ export interface ResidentEditorSection {
   /** One line under the heading saying what the section decides. */
   blurb: string;
   Body: (props: ResidentEditorSectionProps) => React.JSX.Element;
+  /** A preview section: drawn only while this feature flag is on. Its stored settings stay either way. */
+  featureFlag?: FeatureFlagId;
 }
 
 function IdentitySection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
@@ -637,6 +649,193 @@ function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: Resi
   </div>;
 }
 
+/** The daemon's zone is the browser's on one machine; named so the operator sees which. */
+function localTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+}
+
+/** Every zone this browser can name, or just the common ones where the list is unavailable. */
+function timeZoneChoices(): string[] {
+  const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
+  // Chromium's canonical list leaves out plain UTC, the zone a schedule most often wants.
+  try { if (supported) return ["UTC", ...supported("timeZone").filter((zone) => zone !== "UTC")]; } catch { /* fall through */ }
+  return ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Australia/Sydney"];
+}
+
+function minutesOf(time: string): number {
+  const [hours, minutes] = time.split(":").map(Number);
+  return (hours ?? 0) * 60 + (minutes ?? 0);
+}
+
+/**
+ * Each weekday's awake spans, as [from, to] minutes of that day, Monday first. A window that runs
+ * past midnight draws its tail on the following day, so a night shift reads as it will run.
+ */
+export function residentWeekSpans(schedule: Pick<ResidentScheduleSection, "days" | "start" | "end">): Map<number, Array<[number, number]>> {
+  const spans = new Map<number, Array<[number, number]>>(RESIDENT_WEEKDAYS.map((entry) => [entry.day, []]));
+  const start = minutesOf(schedule.start);
+  const end = minutesOf(schedule.end);
+  for (const day of schedule.days) {
+    if (end > start) { spans.get(day)?.push([start, end]); continue; }
+    spans.get(day)?.push([start, 1440]);
+    if (end > 0) spans.get((day + 1) % 7)?.push([0, end]);
+  }
+  return spans;
+}
+
+/**
+ * Where a sleeping resident's schedule stands right now, in one sentence, on the schedule's own
+ * clock: a window chosen as 09:00 UTC reads as 09:00 UTC, not as the browser's local hour.
+ */
+function scheduleNowLine(schedule: ResidentScheduleSection, now: number): string {
+  if (!schedule.enabled) return "Always awake: the loop wakes it on its cadence, day and night.";
+  if (schedule.days.length === 0) return "Choose at least one day.";
+  const zone = schedule.timeZone;
+  const at = (instant: number) => `${residentWakeOpeningLabel(instant, now, zone)}${zone ? ` ${zone}` : ""}`;
+  const window = residentActiveWindowAt(schedule, now);
+  if (window) return `Awake now, until ${at(window.end)}.`;
+  const next = residentNextActiveAt(schedule, now);
+  return next === null ? "Asleep." : `Asleep now. Next window opens ${at(next)}.`;
+}
+
+function ActiveHoursSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+  const schedule = draft.schedule;
+  const set = (patch: Partial<ResidentScheduleSection>) => update("schedule", { ...schedule, ...patch });
+  const off = disabled || !schedule.enabled;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const local = localTimeZone();
+  const zones = timeZoneChoices();
+  const toggleDay = (day: number) => set({
+    days: schedule.days.includes(day) ? schedule.days.filter((d) => d !== day) : [...schedule.days, day].sort((a, b) => a - b),
+  });
+  const spans = residentWeekSpans(schedule);
+  const overnight = minutesOf(schedule.end) <= minutesOf(schedule.start);
+  return (
+    <div className={`resident-fields resident-schedule${schedule.enabled ? "" : " is-off"}`}>
+      <label className="alert-row resident-schedule-toggle">
+        <Tooltip label="Hold the loop's wakes outside the days and hours below; the resident keeps running and sleeps until its next window">
+          <input
+            type="checkbox"
+            checked={schedule.enabled}
+            disabled={disabled}
+            onChange={(event) => set({ enabled: event.target.checked })}
+          />
+        </Tooltip>
+        <span>Sleep outside active hours</span>
+      </label>
+      <div className="resident-schedule-grid">
+        <div className="resident-schedule-controls">
+          <div className="field">
+            <span className="field-label" id="resident-schedule-days-label">Active days</span>
+            <div className="resident-schedule-days" role="group" aria-labelledby="resident-schedule-days-label">
+              {RESIDENT_WEEKDAYS.map((entry) => {
+                const on = schedule.days.includes(entry.day);
+                return (
+                  <Tooltip key={entry.day} label={`${on ? "Stop waking" : "Wake"} this resident on ${entry.label}s`}>
+                    <button
+                      type="button"
+                      className={`resident-schedule-day${on ? " active" : ""}`}
+                      aria-pressed={on}
+                      aria-label={entry.label}
+                      disabled={off}
+                      onClick={() => toggleDay(entry.day)}
+                    >
+                      {entry.short}
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </div>
+            <div className="resident-schedule-presets">
+              <Tooltip label="Monday to Friday">
+                <button type="button" className="btn btn-ghost" disabled={off} onClick={() => set({ days: [...RESIDENT_WORKDAYS] })}>Weekdays</button>
+              </Tooltip>
+              <Tooltip label="All seven days">
+                <button type="button" className="btn btn-ghost" disabled={off} onClick={() => set({ days: [0, 1, 2, 3, 4, 5, 6] })}>Every day</button>
+              </Tooltip>
+            </div>
+          </div>
+          <div className="resident-fields-row resident-schedule-hours">
+            <label className="field">
+              <span className="field-label">Wakes at</span>
+              <Tooltip label="When each active day's window opens and held wakes are sent">
+                <input
+                  className="field-input"
+                  type="time"
+                  value={schedule.start}
+                  disabled={off}
+                  onChange={(event) => { if (event.target.value) set({ start: event.target.value }); }}
+                />
+              </Tooltip>
+            </label>
+            <label className="field">
+              <span className="field-label">
+                Sleeps at {overnight && <span className="field-hint">{schedule.start === schedule.end ? "24 hours" : "next day"}</span>}
+              </span>
+              <Tooltip label="When the window closes; at or before Wakes at, it runs into the next day">
+                <input
+                  className="field-input"
+                  type="time"
+                  value={schedule.end}
+                  disabled={off}
+                  onChange={(event) => { if (event.target.value) set({ end: event.target.value }); }}
+                />
+              </Tooltip>
+            </label>
+          </div>
+          <div className="field">
+            {/* Labelled by id, not by wrapping: a wrapping label would read every zone into its name. */}
+            <label className="field-label" htmlFor="resident-schedule-zone">Time zone</label>
+            <Tooltip label="The clock the wake and sleep times are read on">
+              <select
+                id="resident-schedule-zone"
+                className="field-input"
+                value={schedule.timeZone ?? ""}
+                disabled={off}
+                onChange={(event) => set({ timeZone: event.target.value || null })}
+              >
+                <option value="">This computer's time zone ({local})</option>
+                {schedule.timeZone && !zones.includes(schedule.timeZone) && <option value={schedule.timeZone}>{schedule.timeZone}</option>}
+                {zones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+              </select>
+            </Tooltip>
+          </div>
+        </div>
+        <div className="resident-schedule-week" role="img" aria-label={`Weekly active hours: ${residentScheduleSummary(schedule, local)}`}>
+          {RESIDENT_WEEKDAYS.map((entry) => (
+            <div key={entry.day} className="resident-schedule-week-row">
+              <span className="resident-schedule-week-day">{entry.short}</span>
+              <span className="resident-schedule-week-track">
+                {spans.get(entry.day)!.map(([from, to]) => (
+                  <span
+                    key={`${from}-${to}`}
+                    className="resident-schedule-week-span"
+                    style={{ left: `${(from / 1440) * 100}%`, width: `${((to - from) / 1440) * 100}%` }}
+                  />
+                ))}
+              </span>
+            </div>
+          ))}
+          <div className="resident-schedule-week-row resident-schedule-week-axis" aria-hidden="true">
+            <span className="resident-schedule-week-day" />
+            <span className="resident-schedule-week-ticks"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></span>
+          </div>
+        </div>
+      </div>
+      <p className="field-hint resident-schedule-now" role="status">{scheduleNowLine(schedule, now)}</p>
+      <p className="field-hint">
+        While asleep the resident keeps running but gets no loop prompt and spends no tokens. A wake
+        that falls due waits for the next window. Your messages and Run now still reach it. Running
+        residents keep the hours they launched with.
+      </p>
+    </div>
+  );
+}
+
 /**
  * The editor's sections, in reading order. Phase 1 registered the core five; later phases append
  * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
@@ -683,6 +882,13 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     Body: WorkspaceSection,
   },
   { id: "loop", title: "Loop and guardrails", blurb: "Cadence, self-pacing and rolling 24-hour limits.", Body: ResidentLoopSection },
+  {
+    id: "schedule",
+    title: "Active hours",
+    blurb: "The days and hours the loop may wake this resident. Outside them it stays running but sleeps.",
+    Body: ActiveHoursSection,
+    featureFlag: "resident-active-hours",
+  },
   {
     id: "mcp",
     title: "MCP servers",

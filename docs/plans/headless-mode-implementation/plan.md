@@ -6,7 +6,7 @@
 | Spec | Commonroom, workspace Meta Harness, spec `d2cdf331-4f03-4c77-957d-246cfde0017c`, **version 18**, 236,444 characters, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`. The spec, not this plan, is the contract: where they differ, the current spec version wins. |
 | Base | `main` at `c2b873f6f`. It has no `src/mod/`, `src/cli/` or `src/server/home-dispatch/`, no preview flag in `src/shared/feature-flag-registry.ts`, and database schema 35 (`CURRENT_DATABASE_SCHEMA_VERSION`). |
 | Not done here | No code, no edit to the spec, no post to Commonroom. Phase tasks go to the backlog and are not started. |
-| Revision | 10. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. Revision 7 closes the fourth round: P15 also owns the producer of each task's subagent lines, and P14 owns the edit that makes `mctl claude` use the shared `claude` detection. Revision 8 sweeps all files for the same class of gap and names the owner, field and later phase for every stub, slot and optional field. Revision 9 names the one read path for subagent lines, gives P14 one merge rule for the soft spikes, and makes P13's launcher outcome conditional on the S10/S11 gate. Revision 10 replaces the invented subagent field with the spec's own `subagents` fields and `subagentLines` function, names every route by its spec path, states the hard and soft gate rules once and repeats them, and states both branches of every spike-dependent outcome. |
+| Revision | 12. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. Revision 7 closes the fourth round: P15 also owns the producer of each task's subagent lines, and P14 owns the edit that makes `mctl claude` use the shared `claude` detection. Revision 8 sweeps all files for the same class of gap and names the owner, field and later phase for every stub, slot and optional field. Revision 9 names the one read path for subagent lines, gives P14 one merge rule for the soft spikes, and makes P13's launcher outcome conditional on the S10/S11 gate. Revision 10 replaces the invented subagent field with the spec's own `subagents` fields and `subagentLines` function, names every route by its spec path, states the hard and soft gate rules once and repeats them, and states both branches of every spike-dependent outcome. Revision 11 gives S4 a mergeable fallback, uses one confirmation threshold for P14's checks, orders P5 after P3 and P8 after P5, and adds a producer to consumer audit. Revision 12 replaces that audit with script-derived tables in 6.8 (producer to consumer, and spikes), splits the grouped spike rows, makes P8 name S14, S18 and S19, and defines the interim for P7's steps before P14's commands exist. |
 
 ## 1. Read this first: the brief and the spec disagree on the version
 
@@ -100,14 +100,17 @@ The spec's WP0 says the spikes need a person at a terminal, and says to record a
 | S10, S11 | Can the launcher open from `classic.SessionStart`, or hold the first prompt? | WP14 launcher | **Merge gate** | Owner decides; the rest of WP14 merges with the launcher off |
 | S16 | Does a message through `/dispatch/tasks/{taskId}/send` reach a worker waiting on `request_input`; else does `chat_first` work? | WP16, WP17 | **Merge gate** | Owner decides how chat works |
 | S27 | Does every `codex login` and `logout` change `auth.json`'s mtime? | WP18 | **Merge gate**, but either answer has a defined behavior (7.25) | Record `CODEX_AUTH_MTIME_RELIABLE = false` |
-| S14, S17 | Do `marketplace add` and `install --scope user` run without prompts, here and on a managed Upstart Mac? | WP7, WP13 | Soft | `CLAUDE_CODE_PLUGIN_DIRS` through the settings installer, and ask the policy owner (Q19) |
+| S14 | Do `marketplace add` and `install --scope user` run without prompts on this machine? | WP7, WP13 | Soft | `CLAUDE_CODE_PLUGIN_DIRS` through the settings installer, and ask the policy owner (Q19) |
+| S17 | Do they run without prompts on a managed Upstart Mac with the real policy? | WP7 | Soft | `CLAUDE_CODE_PLUGIN_DIRS` through the settings installer, and ask the policy owner (Q19) |
 | S18 | Does `/reload-plugins` load a restaged build with no `plugin update`, and does a fresh session after restaging show the new installed version in `claude plugin list`? | WP7, WP13 | Soft | Loading at session start is not enough on its own: P14 detects a stale installed version and reinstalls (6.5, `mod-current`) |
 | S19 | Does a mod one `modApi` behind or ahead stay fully inert? | WP13 | Soft | The daemon hides the capability |
 | S20 | Does `claude` detection find every install place, including from a LaunchAgent? | WP7 | Soft | Add the place, or `MISSION_CLAUDE_BIN` |
 | S21 | Does the Esc, refuse, reopen-after-150-ms pattern keep the keyboard in iTerm2, Terminal.app, tmux and herdr, docked and inline, ten times? | WP17 | Soft | Esc hands the keyboard back; only Back returns to the list |
 | S22 | Does the pane draw and take keys in the desktop app's local sessions and in VS Code? | WP17 | Soft | Terminal only in the alpha; the command says so |
 | S23 | What do the 5 s inbox poll, 1.5 s chat poll and 50 items cost? | WP17 | Soft | Chat poll 3 s, Tasks tab capped at 30 rows |
-| S4, S5, S8, S12, S15 | Agents as `subagent_type`, one Foreman leader, `start_dispatch` phrasing, `$.prompt.fill`, tool offer and withdrawal | WP11, WP7, WP14 | Soft | Per spec 11.2 |
+| S4 | Are agents usable as `subagent_type`? | WP11 | Soft | Link the agents, warn in doctor, and no flow names them (P15) |
+| S5 | Is there one Foreman leader? | WP7 | Soft | Per spec 11.2 |
+| S8, S12, S15 | `start_dispatch` phrasing, `$.prompt.fill`, tool offer and withdrawal | WP14 | Soft | Per spec 11.2 |
 | S24, S25, S26 | `codex login status` per account type, `codex` found from the LaunchAgent, model-id matching | WP18 | Soft | Per spec 11.2 |
 
 Two rules cover every spike gate. A merge gate is satisfied only by the owner's answer posted to Commonroom: read it, quote it in the pull request, and stop without merging if none exists. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded.
@@ -167,10 +170,10 @@ One pull request each, to `main`, behind `headless-mode`; P0 opens none. Work pa
 | P2 | WP1b | The CLI command registry, the mod and pane skeleton, `npm run build:mod`, the `PluginState` contract, and the fakes in `test/helpers/home-dispatch-fakes.ts` | P1 | P1 | none |
 | P3 | WP2a | Home sessions, the registration answer, the launcher decision, the intent detector | P2 | P2 | none |
 | P4 | WP2b | The read-only inbox, `blocked` state, `needsYouOrder`, `workflowStages`, `residentLoopLabel`, answers and receipts, plan approval, config view, reviewer rows, the inbox `subagents` counts and the shared `subagent-state.ts` module. Calls P3's home-session predicate, so it merges after P3. | P2 | P3 | none |
-| P5 | WP3 | Dialog pages, drafts, the banner builder, the shared `kindAfterWork` | P2 | P2 | none |
+| P5 | WP3 | Dialog pages, drafts, the banner builder, the shared `kindAfterWork`. Calls P3's home-session predicate, so it merges after P3. | P2 | P3 | none |
 | P6 | WP8 | Repository task skills in `composeTurnOne` | P2 | P2 | none |
 | P7 | WP18 | Codex readiness, `GET /dispatch/readiness`, the Codex setup step and doctor checks, the flag-gated fail-fast reviewer gate. Applies P3's home-session rules, so it merges after P3. | P2 | P3 | **S27 recorded** (hard); S24 to S26 (soft) |
-| P8 | WP13 | Mod core: adapter, `ModHost`, poll, toasts, the band and its `1` button, the status entry, the banner, the real `paneOpen` and `paneClose` host calls with a placeholder pane view until P12, and the `mod-calls` smoke check (6.5) | P2 | P3, P4 | S14 (soft) |
+| P8 | WP13 | Mod core: adapter, `ModHost`, poll, toasts, the band and its `1` button, the status entry, the banner, the real `paneOpen` and `paneClose` host calls with a placeholder pane view until P12, and the `mod-calls` smoke check (6.5) | P2 | P3, P4, P5 | S14, S18, S19 (all soft) |
 | P9 | WP16 | Residents and chat routes, including the transcript stream and the transcript response's `subagents` lines | P2 | P3, P4 | **S16** (hard) |
 | P10 | WP6a | `mctl` client and read commands. Until P9 lands, `mctl logs` reports that the transcript routes are not available yet (6.3). | P2 | P4 | none |
 | P11 | WP14 | Dispatch flows, `start_dispatch`, the intent nudge, the confirm summary's Codex line. The `inbox`, `check`, `pane` and task-id arguments call P8's `paneOpen`, which shows a placeholder until P12 lands (6.3). | P2 | P8, P5, P7 | **S10 or S11** (hard, launcher part only); S8, S12, S15 (soft) |
@@ -194,11 +197,12 @@ flowchart TD
   P1[P1 WP1a contracts, flag, stubs] --> P2[P2 WP1b CLI, mod, pane skeleton, fakes]
   P2 --> P3[P3 WP2a sessions]
   P3 --> P4[P4 WP2b inbox]
-  P2 --> P5[P5 WP3 dialogs, drafts]
+  P3 --> P5[P5 WP3 dialogs, drafts]
   P2 --> P6[P6 WP8 repo skills]
   P3 --> P7[P7 WP18 Codex readiness]
   P3 --> P8[P8 WP13 mod core]
   P4 --> P8
+  P5 --> P8
   P3 --> P9[P9 WP16 residents, chat]
   P4 --> P9
   P4 --> P10[P10 WP6a mctl reads]
@@ -232,12 +236,14 @@ Merge waves, in which phases inside a wave merge in any order:
 | Wave | Phases |
 |---|---|
 | 1 | P1, then P2 |
-| 2 | P3, P5, P6 |
-| 3 | P4 and P7 (both after P3) |
+| 2 | P3, P6 |
+| 3 | P4, P5 and P7 (all after P3) |
 | 4 | P8, P9, P10 |
 | 5 | P11, P12, P13, then P14 (P14 after P13) |
 | 6 | P15, P16 |
 | 7 | P17, then P18 |
+
+The producer to consumer audit and the spike table are derived from the Markdown files by script and given in 6.8.
 
 ### 6.3 Per-phase notes that the phase files must carry
 
@@ -247,12 +253,13 @@ Merge waves, in which phases inside a wave merge in any order:
 - **P5, P6.** P6 owns `composeTurnOne` in `src/server/dispatcher.ts`. The task-shaping plan's Phase 2 also edits `composeTurnOne` (spec 12.2), so P6 must be rebased onto whichever lands first, and its pull request names the other plan.
 - **P7.** Merges after P3, whose home-session rules the readiness route applies. Owns the one flag-gated change to `src/server/workflows/engine.ts` and `src/server/llm/provider-failure.ts`. The pull request calls it out, adds a test that with the flag off every reviewer path keeps today's retries (Q25), and merges only after S27's answer is recorded as `CODEX_AUTH_MTIME_RELIABLE`.
 - **P9 and P12.** Neither merges until S16 and its `chat_first` fallback are recorded. If both fail, they wait for the owner (8.1 rule 8).
+- **P5 and P8.** P5 merges after P3 because its options, drafts and banner routes call P3's home-session predicate. P8 merges after P5 because the mod banner is drawn from P5's builder.
 - **P4.** Merges after P3. The inbox, answers and approval routes call P3's home-session predicate, so there is no interim state in which they run without it.
 - **P8 and P11, the pane-open handoff.** P8 implements the real `paneOpen` and `paneClose` host calls (open id `mission`, focus, size, close) and draws a placeholder view reading `The Mission Control pane is not available in this build yet.` P11's `inbox`, `check`, `pane` and task-id arguments call `paneOpen` with the tab or task id and nothing else, so they work before P12 lands and show the placeholder. P11's exit check: with the fake host, each argument records one `paneOpen` with the right target, and no argument errors while the placeholder is in place. P12 replaces the placeholder and changes no call signature.
 - **P10, `mctl logs` before P9.** The transcript routes are P1 stubs that answer 501 until P9 lands. `mctl logs` and `mctl logs -f` then print `the transcript routes are not available in this build yet`, exit 1 and do not retry. P10's tests cover that state against a daemon whose routes answer 501, and the real routes need no change to `mctl` once P9 merges.
 - **P13, the launcher handoff.** `mctl claude` starts Claude with no workspace and no added prompt. The launcher is P11's and appears on its own only when P11's launcher is enabled (S10 or S11 passed and recorded) and P11 and P14 (the mod install) are in. Before then, or if P11 merged with its launcher switched off, `mctl claude` starts a plain Claude session, which is the expected result. P13's exit check asserts both states (no mod installed, and launcher switched off) with a fake `claude` runner; the launcher's own acceptance belongs to P11.
 - **P13 and P14, `claude` detection.** P14 merges after P13. P13 resolves `claude` from `PATH` in one place in `src/cli/commands/claude.ts`. P14 creates the shared detection (`src/cli/claude-cli.ts`) and owns the one edit that makes `mctl claude` call it, tested with the fake `claude` runner (a `MISSION_CLAUDE_BIN` override and a binary outside `PATH` are both found). Whichever of the two is open when the other lands rebases onto it.
-- **P14 and the soft spikes.** Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded. For P14 the fallback is: a check whose fact S17 or S20 would confirm ships at the severity plan 6.5 gives only when the fact is documented or a recorded answer confirms it, and as warn otherwise, and the pull request lists every check shipped as warn for want of an answer. Raising such a check to fail after an answer is recorded is a small follow-up pull request that changes only the severity table in `src/server/environment/claude-mods.ts` and its test.
+- **P14 and the soft spikes.** Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded. For P14 the fallback is: a check whose fact comes from the Claude Code documentation (the `mods-version` floor, `mods-user-switch`, `mods-managed-policy`, `mods-sideload-policy`, `mods-traffic` and `mods-can-load`) ships as warn until a recorded S17 or S20 answer confirms the fact on a machine, and documentation alone never permits fail; the checks that read this machine's own state at run time (`mod-enabled`, `mod-current` and `mod-calls`) fail as plan 6.5 lists without a spike answer; and the pull request lists every check shipped as warn for want of an answer. Raising such a check to fail after an answer is recorded is a small follow-up pull request that changes only the severity table in `src/server/environment/claude-mods.ts` and its test.
 - **Branches stated in each downstream phase.** Every outcome that depends on a spike or flag result states both branches in that phase's outcome and exit criteria: P7 (S27 true or false), P9 and P12 (S16 direct or `chat_first`), P11 (launcher on or off), P12 (S21, S22, S23 fallbacks), P13 (launcher present or plain Claude), P14 (S17 unprompted or policy-blocked), P15 (S4), P17 and P18 (each as recorded).
 - **P11.** The launcher part merges only when S10 or S11 passes; otherwise the rest of P11 merges with the launcher switched off.
 - **P14 and P16, D44.** The mod ships only inside Mission Control. No pull request opens in claude-code-extensions. `src/server/mod-stage.ts` publishes by writing a sibling folder and renaming it, never by copying onto the published path (the rule CLAUDE.md sets for native addons). P16 changes `electron-builder.yml` by one named entry, and keeps `asar` off. `npm run smoke` runs `claude plugin validate dist/mod/mission-control` when `claude` is installed.
@@ -271,7 +278,7 @@ Because spike answers live in task reports and Commonroom, a gate is satisfied o
 
 Source: local plan `8065dbe0-950a-4572-b358-8e5b5489e69b`, revision 2, folded in by the owner's decision. It was written as spec edits to version 11, so these requirements are **not in spec version 18**, and its decision and spike numbers are not used here. The Claude Code facts in it come from the Claude Code mods documentation and were not observed on a machine, so spike S17 and S20 confirm them.
 
-**What it adds.** One setup step between finding `claude` and installing the mod, plus doctor lines. If a check marked fail does not pass, setup skips the mod install, prints each cause with its fix, finishes the other steps, and exits 1, as it does when no `claude` is found (D45). Setup never changes any of these switches, except the mod's own enabled state.
+**What it adds.** One setup step between finding `claude` and installing the mod, plus doctor lines. If a check marked fail does not pass, setup skips the mod install, prints each cause with its fix, finishes the other steps, and exits 1, as it does when no `claude` is found (D45). Setup never changes any of these switches, except the mod's own enabled state. The Severity column is the severity once the fact is confirmed: until a recorded S17 or S20 answer confirms it on a machine, the documentation-based checks (`mods-version`, `mods-user-switch`, `mods-managed-policy`, `mods-sideload-policy`, `mods-traffic`, `mods-can-load`) ship as warn, while `mod-enabled`, `mod-current` and `mod-calls` read this machine's own state and fail as listed.
 
 | Check | Looks at | Severity |
 |---|---|---|
@@ -309,6 +316,59 @@ WP4, WP5a, WP5b and WP10 (withdrawn); FR-05 v2 shaping, context injection, skill
 
 The person-run spikes of P0 are not tasks: they need a managed Mac, several terminals or the desktop app. Each is written up by the person who runs it and posted to Commonroom by the owner. Gated phases carry their gate in the task text (6.4) and read that posted answer.
 
+### 6.8 Mechanical audit
+
+Both tables were derived by a script run over the 20 Markdown files at this revision, not written from memory. Table A takes every path, route, field, function, flag, CLI command and fixture named in the backticks of a phase's Scope line, assigns it to the lowest-numbered implementing phase (phases 1 and 2 only declare shapes and stubs, phases 17 and 18 only document and test), lists every other phase file that names the same token, and checks that the producer is a direct or transitive prerequisite of each consumer in the dependency graph of the phased plan. Artifacts that no other phase file names are omitted. Every pair that is not ordered by the graph carries its reason: a mention only (the consumer names the artifact without using it), or a tested interim state. Table B takes every spike row of plan 5.1 and the gate cells of plan 6.1, the phased plan table and each phase's section 2, and checks that the three agree.
+
+**A. Producer to consumer**
+
+| Artifact (named in the Scope line of its producing phase) | Producer | Consumers named in other phase files | Producer is a direct or transitive prerequisite of each consumer |
+|---|---|---|---|
+| `CodexReadiness` | P1 | P7, P11 | yes |
+| `npm run build:mod` | P2 | P16 | yes |
+| `residentLoopLabel` | P4 | P12 | yes |
+| `src/server/home-dispatch/subagent-state.ts` | P4 | P9 | yes |
+| `subagents` | P4 | P9, P12, P15 | yes |
+| `workflowStages` | P4 | P12 | yes |
+| `src/shared/home-dispatch-banner.ts` | P5 | P8 | yes |
+| `composeTurnOne` | P6 | P5 | yes, except P5: mention only: P5 says it does not edit it |
+| `mctl doctor --live` | P7 | P17 | yes |
+| `ModHost` | P8 | P11 | yes |
+| `paneOpen` | P8 | P11, P12 | yes |
+| `GET /dispatch/tasks/{taskId}/transcript` | P9 | P4, P12, P15 | yes, except P4: mention only: P4 names P9's route as the carrier of the `subagents` lines |
+| `mctl logs` | P10 | P9 | yes, except P9: mention only: P9 names the command that reads its stream route |
+| `src/mod/pane/header.tsx` | P12 | P15 | yes |
+| `mctl claude` | P13 | P11, P14 | yes, except P11: mention only: P11 says P13's command is unaffected by the launcher setting |
+| `mctl run` | P13 | P5 | yes, except P5: mention only: P5's handoff says P13 reuses its drafts; P13 lists P5 |
+| `mctl doctor` | P14 | P7 | yes, except P7: tested interim: same as `mctl setup` |
+| `mctl setup` | P14 | P7, P16, P17, P18 | yes, except P7: tested interim: P7's `codex` step runs under its own tests until P14 merges, then from P2's step list (P14 skips stub steps) |
+| `src/cli/claude-cli.ts` | P14 | P13 | yes, except P13: tested interim: P14 merges after P13; P13 resolves `claude` from PATH until P14's one edit |
+| `src/server/mod-stage.ts` | P14 | P16 | yes |
+
+**B. Spikes**
+
+The hard rule and the soft rule of 5.1 apply to every row. In every phase file the gate is named in section 2, and its outcome and exit criteria state both branches.
+
+| Spike | Class | Phases it gates (plan 6.1, phased plan and each phase's section 2 agree) | No answer recorded | Negative answer: fallback (plan 5.1) |
+|---|---|---|---|---|
+| S10, S11 | Hard (merge gate) | P11 | The gated phase stops without merging the gated part | Owner decides; the rest of WP14 merges with the launcher off |
+| S16 | Hard (merge gate) | P9, P12 | The gated phase stops without merging the gated part | Owner decides how chat works |
+| S27 | Hard (merge gate) | P7 | The gated phase stops without merging the gated part | Record `CODEX_AUTH_MTIME_RELIABLE = false` |
+| S14 | Soft | P8, P14 | The phase merges using the fallback | `CLAUDE_CODE_PLUGIN_DIRS` through the settings installer, and ask the policy owner (Q19) |
+| S17 | Soft | P14 | The phase merges using the fallback | `CLAUDE_CODE_PLUGIN_DIRS` through the settings installer, and ask the policy owner (Q19) |
+| S18 | Soft | P8, P14 | The phase merges using the fallback | Loading at session start is not enough on its own: P14 detects a stale installed version and reinstalls (6.5, `mod-current`) |
+| S19 | Soft | P8 | The phase merges using the fallback | The daemon hides the capability |
+| S20 | Soft | P14 | The phase merges using the fallback | Add the place, or `MISSION_CLAUDE_BIN` |
+| S21 | Soft | P12 | The phase merges using the fallback | Esc hands the keyboard back; only Back returns to the list |
+| S22 | Soft | P12 | The phase merges using the fallback | Terminal only in the alpha; the command says so |
+| S23 | Soft | P12 | The phase merges using the fallback | Chat poll 3 s, Tasks tab capped at 30 rows |
+| S4 | Soft | P15 | The phase merges using the fallback | Link the agents, warn in doctor, and no flow names them (P15) |
+| S5 | Soft | P14 | The phase merges using the fallback | Per spec 11.2 |
+| S8, S12, S15 | Soft | P11 | The phase merges using the fallback | Per spec 11.2 |
+| S24, S25, S26 | Soft | P7 | The phase merges using the fallback | Per spec 11.2 |
+
+Rerun the derivation and update both tables whenever a phase file adds a Scope artifact or a spike. A pair that is not ordered and has no stated reason is a plan error.
+
 ## 7. Risks
 
 | # | Risk | Likelihood and effect | Mitigation |
@@ -328,7 +388,7 @@ The person-run spikes of P0 are not tasks: they need a managed Mac, several term
 | R13 | `composeTurnOne` is edited by two plans | Medium. | P6 rebases on whichever lands first and names the other plan. |
 | R14 | Stale local plans are scheduled by mistake | Low, but wrong work would result. | Section 2 marks them superseded; only this plan's phases are scheduled. |
 | R15 | The user expects a pane-to-terminal jump | Medium for tmux users. | Section 4.3 states the loss; the dashboard link and Focus remain. |
-| R16 | P14 builds the 6.5 checks from a plan that is not in the spec, and from documentation facts nobody has observed | Medium. A check could fail a working machine, for example a wrong version floor. | P14 cites the check names; S17 and S20 are soft, so a check ships as warn until a recorded answer confirms its fact (the merge rule in 6.3), a follow-up raises it to fail, and the owner lands the checks in the spec under new ids. |
+| R16 | P14 builds the 6.5 checks from a plan that is not in the spec, and from documentation facts nobody has observed | Medium. A check could fail a working machine, for example a wrong version floor. | P14 cites the check names; S17 and S20 are soft, so a check whose fact comes from documentation ships as warn until a recorded answer confirms it on a machine, and documentation alone never permits fail (the merge rule in 6.3), a follow-up raises it to fail, and the owner lands the checks in the spec under new ids. |
 | R17 | A gate answer lives only in a task report and Commonroom, so a phase task can miss or misread it | Medium. A gated pull request could merge on a stale or absent answer. | 6.4: the phase task names the spike in its text, quotes the recorded answer in its pull request, and stops if none exists. |
 | R18 | An installed mod stays on an old build after a new one is staged, because install skips anything already listed | Medium. The pane or daemon routes could disagree with the mod (`modApi` inert path), and nothing says why. | `mod-current` check, a version probe after staging, a reinstall that retries once and otherwise leaves a printed recovery path (no rollback is claimed), tests in P14 and P16, and S18 evidence (6.3, 6.5). |
 
@@ -343,7 +403,7 @@ Asked as selectable decisions on revision 1, and recorded here. Choices that dif
 5. **Where spike answers live.** Adopted, **differing from the recommendation**: task reports and Commonroom only, with no results file in the repository (5 and 6.4).
 6. **Phased follow-up.** Adopted: create the phased implementation plan, once this revision is approved.
 
-## 9. Repairs after the Plan Validation review (revisions 4 to 10)
+## 9. Repairs after the Plan Validation review (revisions 4 to 12)
 
 Revision 4:
 
@@ -402,5 +462,23 @@ Revision 10, after a sweep by class (named paths, gates, conditionals):
 | Named paths | The spec defines no `subagentLines` field: it is the pure function in `src/shared/subagent-lines.ts` (P15), and the data rides on `subagents` counts on each `GET /dispatch/inbox` item (P4) and `subagents` lines in the `GET /dispatch/tasks/{taskId}/transcript` response (P9), both from one `subagent-state.ts` module (P4); there is no separate tasks route. Every route in P1, P3, P4, P5, P9 and P10 now uses its spec 2.3 path; `{taskId}` is used everywhere; the probe module is named `claude-mods.ts` | 6.1, 6.3, phases 1, 3, 4, 5, 9, 10, 12, 15 |
 | Gates | One hard rule and one soft rule in 5.1, repeated in phased-plan.md rules 8 and 9 and in each phase that has a gate; every gate column says hard or soft; S14 no longer appears as a merge prerequisite of P8 | 5.1, 6.1, phased plan, phases 7, 8, 9, 11, 12, 14, 15 |
 | Conditionals | Both branches of S27, S16, S10 and S11, S21 to S23, S17 and S4 are stated in each downstream phase's outcome and exit criteria, including P17 and P18 | 6.3, phases 7, 9, 11, 12, 14, 15, 17, 18 |
+
+Revision 11, after the sixth review round:
+
+| Finding | Repair | Where |
+|---|---|---|
+| S4 was soft but P15 stopped when agents were unusable | P15 still merges: agents are linked, doctor warns, no flow names them; the plan 5.1 S4 row says so | 5.1, phase 15 |
+| P14 allowed fail on merely documented facts while R16 said warn until confirmed | One threshold: documentation alone never permits fail; only a recorded S17 or S20 answer does, except the three checks that read the machine's own state | 6.3, 6.5, R16, phase 14 |
+| P5 could merge before P3's home-session predicate | P5 merges after P3; graph, waves, phase 5 and the P5 task updated | 6.1, 6.2, 6.3, phases 3 and 5 |
+| P8 could merge before P5's banner builder | P8 merges after P5; graph, phase 8 and the P8 task updated | 6.1, 6.2, 6.3, phase 8 |
+| Same class (producer after consumer) elsewhere | A producer to consumer audit table in 6.2 lists every cross-phase artifact and its ordering edge; no further missing edge was found | 6.2 |
+
+Revision 12, after the operator's Shepherd asked for a mechanical audit:
+
+| Finding | Repair | Where |
+|---|---|---|
+| Validators keep sampling different ordering edges | Tables A and B in 6.8 are derived by script from the 20 files; every unordered pair has a stated reason; the hand-written audit table is removed | 6.2, 6.8 |
+| The audit found P7's `codex` step consumed P14's commands with no stated interim | P7's step runs under its own tests until P14 merges, then from P2's step list; P14 skips a stub step with `step not available in this build` and tests it | 6.8, phases 7 and 14 |
+| Spike rows were grouped, and P8's gate cell omitted S18 and S19 | Rows split (S14, S17; S4, S5, S8, S12, S15); P8 gates are S14, S18 and S19 in plan 6.1, the phased plan and phase 8 | 5.1, 6.1 |
 
 No recorded human decision changed. Decision 5 (spike answers in task reports and Commonroom) is kept: reports are task reports where an agent ran the spike, and Commonroom posts everywhere.

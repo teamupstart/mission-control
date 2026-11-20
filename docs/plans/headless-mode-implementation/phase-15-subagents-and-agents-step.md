@@ -2,9 +2,9 @@
 
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.14, 7.17.
 
-**1. Outcome.** The read-only briefer and kind subagents are linked for Claude, the pane shows each task's subagent lines (the Tasks row text and the follow view's header lines) through the two slots P12 reserved, and setup installs and doctor checks the agents. If S4 shows agents are not usable as `subagent_type`, this phase stops and the owner decides before anything advertises them. Branches (S4): if agents work as `subagent_type`, they are linked and used; if not, this phase stops and the owner decides.
+**1. Outcome.** The read-only briefer and kind subagents are linked for Claude, the pane shows each task's subagent lines (the Tasks row text and the follow view's header lines) through the two slots P12 reserved, and setup installs and doctor checks the agents. If S4 shows agents are not usable as `subagent_type`, P15 still merges: it links the agents as files, the doctor agents check reports `agents not usable as subagent_type` as warn, and no flow names them (P11's flows do not), so nothing in v1 depends on them; the owner then decides whether to retire them in a follow-up. Branches (S4): if agents work as `subagent_type`, they are linked and the doctor check passes; if not, they are linked, the doctor check warns, and the phase still merges.
 
-**2. Entry and dependencies.** Direct prerequisites: P11 (flows), P12 (pane), P14 (setup list). Soft spike S4, recorded in Commonroom; if agents are not usable as `subagent_type`, ask the owner. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded.
+**2. Entry and dependencies.** Direct prerequisites: P11 (flows), P12 (pane), P14 (setup list). Soft spike S4, recorded in Commonroom where it has been run. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded.
 
 **3. Scope.** `agents/` (`mission-briefer`, `mission-explorer`, `mission-reviewer`), `src/server/skills/agent-links.ts` with the one `reconcileAgentLinks` call in `src/server/skills/reconcile.ts`, `src/shared/subagent-lines.ts` (the pure `subagentLines` function of spec 7.17: a running task's row says `working · {n} subagents`, and its follow view lists one line per subagent), the two pane slot fills in `src/mod/pane/header.tsx` and nothing else in the pane, `test/home-dispatch-mod-pane-subagents.test.ts`, `src/cli/setup-steps/agents.ts` and its doctor check. Non-goals: the data fields (P4 fills the inbox `subagents` counts and P9 the transcript `subagents` lines, both from P4's `subagent-state.ts`), and any change to the owned hook or status line wrapper (D43).
 
@@ -16,7 +16,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **7. Tests.** Link creation and removal, no clobbering of a user's own agent files, `subagentLines` formatting incl. empty agent type and unknown tokens, the setup step on a fake home, and rendered-pane checks with the fake host at 40, 71 and 120 columns: the Tasks row shows `working · {n} subagents`, the follow view lists one line per subagent, both show nothing extra when empty, and P12's pane tests still pass. An end-to-end check with the fake daemon: `SubagentStart` and `SubagentStop` events recorded for a task appear in that task's inbox `subagents` counts and its transcript `subagents` lines (P4's and P9's routes) and render in the pane.
 
-**8. Merge and exit.** Agents link and doctor reports them; F2 can now be accepted with P7. Tests cover both branches of S4 against the fake home.
+**8. Merge and exit.** Agents link and doctor reports them; F2 can now be accepted with P7. Tests cover both branches of S4 against the fake home (check passes; check warns and the phase's other behavior is unchanged).
 
 **9. Handoff.** P17 documents agents. Do not change the line formatter's output without checking P12's tests.
 

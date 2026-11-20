@@ -6,7 +6,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **2. Entry and dependencies.** Direct prerequisite: P4 (inbox and config shapes). `logs` needs P9's transcript routes. Until P9 lands, the real routes are P1's stubs and answer 501, so `mctl logs` and `mctl logs -f` print `the transcript routes are not available in this build yet` and exit 1, with no retry loop. Once P9 lands they work with no change to `mctl`.
 
-**3. Scope.** `src/cli/client.ts`, `src/cli/commands/get.ts`, `describe.ts`, `logs.ts`, `status.ts`, `config.ts`. Non-goals: `run`, `claude`, `daemon` (P13), `setup` and `doctor` (P14).
+**3. Scope.** The commands `mctl get`, `mctl describe`, `mctl logs` (including `mctl logs -f`), `mctl status` and `mctl config`: `src/cli/client.ts`, `src/cli/commands/get.ts`, `describe.ts`, `logs.ts`, `status.ts`, `config.ts`. Non-goals: `run`, `claude`, `daemon` (P13), `setup` and `doctor` (P14).
 
 **4. Findings.** `main` has no `src/cli/`; P2 supplies the registry. An `mctl` caller is a `cli` caller: it may read any home-dispatched task of its repository and nothing else (spec 7.23). `mctl logs -f` follows the stream route and exits when the task ends. The client reads the token through the shared path helper.
 

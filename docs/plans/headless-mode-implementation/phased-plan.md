@@ -1,6 +1,6 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 10). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 12). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
@@ -15,6 +15,8 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 10). Spec: C
 - Review repairs (revision 7): P14 owns the one edit that makes the already-merged `mctl claude` use the shared `claude` detection (P14 now merges after P13). The subagent chain it also repaired is restated in revision 10.
 - Review repairs (revision 9): P14 has one merge rule for the soft spikes S17 and S20 (warn until a recorded answer confirms the fact); P13's launcher outcome is conditional on P11's launcher being enabled.
 - Review repairs (revision 10): a sweep by class. Named paths: routes use their spec 2.3 paths and per-task subagent data is the `subagents` field on inbox items (P4) and the transcript response (P9), formatted by P15's `subagentLines`. Gates: one hard rule and one soft rule, repeated. Conditionals: both branches of each spike-dependent outcome in each downstream phase.
+- Review repairs (revision 11): S4 has a mergeable fallback; P14 uses one confirmation threshold (documentation alone never permits fail); P5 merges after P3 and P8 after P5; the plan carries a producer to consumer audit table.
+- Review repairs (revision 12): plan 6.8 holds script-derived producer to consumer and spike tables; every unordered pair has a stated reason; P7's `codex` step has a defined interim before P14's commands exist.
 - Review repairs (revision 8): a sweep of every file for stub, slot, optional-field and interim wording; P1 and P2 now name the owner of every route stub, CLI command, setup step, mod flow and pane; P12 names the fields its header and rows read; P15 names the source of the subagent events.
 
 ## 2. Findings from the repository
@@ -78,10 +80,10 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 | P2 `phase-2-cli-mod-pane-skeleton-and-fakes` | WP1b | P1 | none |
 | P3 `phase-3-home-sessions-and-launcher-decision` | WP2a | P2 | none |
 | P4 `phase-4-read-only-inbox-answers-and-approval` | WP2b | P3 | none |
-| P5 `phase-5-dispatch-options-drafts-and-banner` | WP3 | P2 | none |
+| P5 `phase-5-dispatch-options-drafts-and-banner` | WP3 | P3 | none |
 | P6 `phase-6-repository-task-skills` | WP8 | P2 | none |
 | P7 `phase-7-codex-readiness-and-fail-fast` | WP18 | P3 | S27 recorded (hard); S24 to S26 (soft) |
-| P8 `phase-8-mod-core-and-glance-layer` | WP13 | P3, P4 | S14 (soft) |
+| P8 `phase-8-mod-core-and-glance-layer` | WP13 | P3, P4, P5 | S14, S18, S19 (all soft) |
 | P9 `phase-9-residents-and-chat-routes` | WP16 | P3, P4 | S16 (hard) |
 | P10 `phase-10-mctl-client-and-reads` | WP6a | P4 | none |
 | P11 `phase-11-mod-dispatch-flows-and-tool` | WP14 | P8, P5, P7 | S10 or S11 (hard, launcher part only); S8, S12, S15 (soft) |
@@ -102,11 +104,12 @@ flowchart TD
   P1 --> P2
   P2 --> P3
   P3 --> P4
-  P2 --> P5
+  P3 --> P5
   P2 --> P6
   P3 --> P7
   P3 --> P8
   P4 --> P8
+  P5 --> P8
   P3 --> P9
   P4 --> P9
   P4 --> P10
@@ -137,7 +140,7 @@ flowchart TD
   P17 --> P18
 ```
 
-Concurrency: after P2, P3, P5 and P6 run together; P4 and P7 follow P3. After P4, P8, P9 and P10 run together. P11 to P13 run together once their prerequisites land, and P14 follows P13. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
+Concurrency: after P2, P3 and P6 run together; P4, P5 and P7 follow P3. After P4, P8, P9 and P10 run together. P11 to P13 run together once their prerequisites land, and P14 follows P13. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
 
 ## 7. Cross-phase contracts
 

@@ -6,7 +6,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **2. Entry and dependencies.** Direct prerequisites: P10 (client) and P5 (drafts and options). The launcher itself is P11's and does not gate this phase.
 
-**3. Scope.** `src/cli/commands/run.ts`, `claude.ts`, `daemon.ts`. Non-goals: reads (P10), setup (P14), any tmux, herdr or terminal-runtime behavior (withdrawn by D50).
+**3. Scope.** The commands `mctl run`, `mctl claude` and `mctl daemon`: `src/cli/commands/run.ts`, `claude.ts`, `daemon.ts`. Non-goals: reads (P10), setup (P14), any tmux, herdr or terminal-runtime behavior (withdrawn by D50).
 
 **4. Findings.** `mctl claude` no longer adds a prompt or a workspace (D40, D50); the launcher opens on its own through the mod when P11's launcher is enabled. `mctl run` creates tasks through the dashboard path with no runtime override (Focus guard 1). `mctl` never answers, approves, cancels or sends (D8). The daemon runs without the app via `install-service`, but Foreman is started only by the app (L25).
 

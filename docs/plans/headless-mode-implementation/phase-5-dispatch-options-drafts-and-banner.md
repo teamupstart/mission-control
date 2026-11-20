@@ -4,7 +4,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **1. Outcome.** The daemon builds the dispatch dialog pages from shared registries, keeps the person's picks in a draft, and builds the banner text, so the mod never invents a list.
 
-**2. Entry and dependencies.** Direct prerequisite: P2.
+**2. Entry and dependencies.** Direct prerequisite: P3 (which itself follows P2). The options, drafts and banner routes call P3's home-session predicate, so this phase merges only after P3; you may start against the P2 fakes and rebase on P3 before merging.
 
 **3. Scope.** `src/server/home-dispatch/options.ts`, `drafts.ts`; `src/shared/dispatch-options.ts`, `src/shared/after-work.ts` (the shared `kindAfterWork`), `src/shared/home-dispatch-banner.ts`; the import swap in `DispatchModal.tsx` so the dashboard and the daemon read one source (spec 7.5, 7.6, 7.20 draft, 7.21). Drafts include the quick path and repository names. Non-goals: the dialogs themselves (P11), starting a task beyond the draft contract.
 

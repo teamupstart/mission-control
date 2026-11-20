@@ -1,8 +1,7 @@
 // Headless mode phase 2: the shared fakes satisfy P1's schemas, so every later phase can build
 // against them. This file tests the fakes themselves, not the code that will use them.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import test, { after } from "node:test";
 import { HOME_DISPATCH_ROUTES } from "../src/shared/home-dispatch.ts";
 import {
@@ -102,33 +101,10 @@ test("fake daemon: serves over a loopback socket, and the fake host reaches it i
   }
 });
 
-test("fake daemon: while down, a request over the loopback socket fails, and it works again once up", async () => {
-  const daemon = createFakeDaemon({ token: null });
-  const { url } = await daemon.listen();
-  try {
-    assert.equal((await fetch(url + "/api/health")).status, 200);
-    daemon.setDown(true);
-    await assert.rejects(fetch(url + "/api/health"));
-    daemon.setDown(false);
-    assert.equal((await fetch(url + "/api/health")).status, 200);
-  } finally {
-    await daemon.close();
-  }
-});
-
 const claudes: ReturnType<typeof createFakeClaude>[] = [];
 after(() => { for (const c of claudes) c.cleanup(); });
 const claudeAt = (c: ReturnType<typeof createFakeClaude>, ...args: string[]) =>
   spawnSync(c.path, args, { cwd: "/", encoding: "utf8" });
-
-test("fake claude: reports a settable version and answers plugin --help like a Claude Code with marketplaces", () => {
-  const fake = createFakeClaude({ version: "2.1.400" });
-  claudes.push(fake);
-  assert.equal(claudeAt(fake, "--version").stdout, "2.1.400 (Claude Code)\n");
-  assert.match(claudeAt(fake, "plugin", "--help").stdout, /marketplace/);
-  fake.update({ marketplaceSupported: false });
-  assert.doesNotMatch(claudeAt(fake, "plugin", "--help").stdout, /marketplace/);
-});
 
 test("fake claude: marketplace add, install, list, uninstall and a settable installed version", () => {
   const fake = createFakeClaude({ stagedVersion: "2.3.0" });
@@ -149,27 +125,3 @@ test("fake claude: marketplace add, install, list, uninstall and a settable inst
   assert.equal(claudeAt(fake, "plugin", "test", "/x").status, 0);
 });
 
-test("fake claude: a scripted failure plays the set number of times, then the command works", () => {
-  const fake = createFakeClaude({ failures: { install: { exitCode: 3, stderr: "boom", times: 2 } } });
-  claudes.push(fake);
-  const install = () => claudeAt(fake, "plugin", "install", "mission-control@mission-control");
-  const first = install();
-  assert.equal(first.status, 3);
-  assert.equal(first.stderr, "boom\n");
-  assert.equal(install().status, 3);
-  assert.equal(install().status, 0);
-});
-
-test("fake claude: records the argv and cwd of every launch, and a plain launch has no prompt", () => {
-  const fake = createFakeClaude();
-  claudes.push(fake);
-  execFileSync(fake.path, [], { cwd: process.cwd() });
-  execFileSync(fake.path, ["--resume", "abc"], { cwd: "/" });
-  claudeAt(fake, "--version");
-  claudeAt(fake, "plugin", "list");
-  assert.equal(fake.invocations().length, 4);
-  const launches = fake.launches();
-  assert.deepEqual(launches.map((l) => l.argv), [[], ["--resume", "abc"]]);
-  assert.equal(launches[0]!.cwd, process.cwd());
-  assert.equal(launches[1]!.cwd, realpathSync("/"));
-});

@@ -398,3 +398,52 @@ function slowShaperRunning(): boolean {
   return execFileSync("ps", ["-ax", "-o", "command="], { encoding: "utf8" })
     .split("\n").some((line) => line.includes(`${FAKE_SHAPER} slow 25000`));
 }
+
+// The race the settings hook exists for: this window's write commits, but its HTTP answer is held
+// while the peer writes something newer. The event stream already said the first write landed, so
+// the peer's later write stays authoritative here: the held answer never draws the older state.
+test("a peer's newer write wins while this window's own write answer is still held", async ({ dashboard: page, context, daemon }) => {
+  await setFlag(daemon, true);
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("race-notes", "Race notes") });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(pill(page, "Race notes")).toHaveAccessibleName("Race notes: off");
+  await expect(pill(peer, "Race notes")).toHaveAccessibleName("Race notes: off");
+
+  // Let this window's write reach the daemon, and hold its answer until the peer has written.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let committed!: () => void;
+  const reachedDaemon = new Promise<void>((resolve) => { committed = resolve; });
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const response = await route.fetch();
+    committed();
+    await held;
+    await route.fulfill({ response });
+  });
+
+  await pill(page, "Race notes").click();
+  await reachedDaemon;
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["race-notes"]).toBe(true);
+  await expect(pill(peer, "Race notes")).toHaveAccessibleName("Race notes: on");
+  // This window is still waiting for its answer, so its controls wait too.
+  await expect(pill(page, "Race notes")).toBeDisabled();
+
+  // The peer writes the newer state while the first answer is still held.
+  await pill(peer, "Race notes").click();
+  await expect.poll(async () => (await shapingConfig(daemon)).overrides["race-notes"]).toBe(false);
+  await expect(pill(peer, "Race notes")).toHaveAccessibleName("Race notes: off");
+  // Already shown here before the held answer arrives: the stream's frame beats this window's optimism.
+  await expect(pill(page, "Race notes")).toHaveAccessibleName("Race notes: off");
+
+  // The older answer lands, and changes nothing either window shows.
+  release();
+  await expect(pill(page, "Race notes")).toBeEnabled();
+  await expect(pill(page, "Race notes")).toHaveAccessibleName("Race notes: off");
+  await expect(pill(peer, "Race notes")).toHaveAccessibleName("Race notes: off");
+  await expect(row(page, "Race notes").getByRole("alert")).toHaveCount(0);
+  expect((await shapingConfig(daemon)).overrides["race-notes"]).toBe(false);
+  await page.unroute("**/api/shaping");
+});

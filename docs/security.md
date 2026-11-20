@@ -398,7 +398,9 @@ The child's environment is built in two steps (`shaperCommandEnv`):
 Before any reason is recorded from what the shaper wrote, every value in the environment the
 child was spawned with, inherited or named, is replaced with `[redacted]`. That covers a
 failure's stderr and the reasons drawn from a reply on stdout: an `error` it states, its
-degraded `notes`, and a validation failure. A value is replaced anywhere it appears when it is
+degraded `notes`, and a validation failure, whose path can hold a key the shaper chose. Each
+is redacted whole and only then cut to its recorded length, so a cut cannot split a value
+into a fragment the redactor no longer recognises. A value is replaced anywhere it appears when it is
 four characters or longer, and as a whole token when it is shorter, so `LANG=C` does not blank
 every "C" in the message. Overlapping or adjacent matches, including two values that overlap,
 are replaced as one span, so no part of either survives. Marking the matches is linear in the
@@ -426,7 +428,12 @@ as literal text, as in `--token=…` or `--api-key …`; name the variable in `e
 Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
 definition that breaks these rules is
 refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every
-settings snapshot, hold the reference and never the value.
+settings snapshot, hold the reference and never the value. The stored config's own schema
+also empties any literal credential it finds in an entry, including one this build cannot
+run: a header value, a URL's userinfo or credential query parameter, or a credential
+argument. Every read, settings restore and backup capture goes through that schema, so an
+entry handed over another way, such as a foreign snapshot, still cannot carry secret text
+into the daemon or into a snapshot.
 
 **What a shaper is sent.** The operator's prompt, the task's title, kind, labels, priority,
 harness, runtime and after-work workflow, the attached repositories' names, roles, branches and

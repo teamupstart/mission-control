@@ -350,6 +350,63 @@ function literalCredentialArguments(args: readonly string[]): number[] {
   return found;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The same entry with every literal credential emptied: a credential-bearing header value that
+ * is not a reference, a URL's userinfo and credential query parameters, and a credential
+ * argument. A definition this build writes can hold none of these, because the strict schema
+ * refuses them. This covers everything else the config may be handed - a settings restore, or
+ * an entry a newer build stored - so no path leaves secret text in `app_config.shaping` or in
+ * the `shaping` domain of a snapshot. Every other field is kept exactly as written.
+ */
+export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
+  const transport = stored.transport as Record<string, unknown>;
+  const fromServer = transport.type === "mcp" && isRecord(transport.server);
+  const holder = { ...(fromServer ? transport.server as Record<string, unknown> : transport) };
+  let changed = false;
+  if (isRecord(holder.headers)) {
+    const headers: Record<string, unknown> = { ...holder.headers };
+    for (const [name, value] of Object.entries(headers)) {
+      if (credentialBearingName(name) && !(typeof value === "string" && credentialValueIsReferenced(value))) {
+        headers[name] = "";
+        changed = true;
+      }
+    }
+    holder.headers = headers;
+  }
+  if (typeof holder.url === "string") {
+    try {
+      const url = new URL(holder.url);
+      const before = url.href;
+      url.username = "";
+      url.password = "";
+      // A copy of the names first: deleting while iterating the live list would skip entries.
+      const names = Array.from(url.searchParams.keys());
+      for (const name of names) if (credentialBearingName(name)) url.searchParams.delete(name);
+      if (url.href !== before) {
+        holder.url = url.href;
+        changed = true;
+      }
+    } catch {
+      // Not a URL this build can read; there is nothing to recognise in it.
+    }
+  }
+  if (Array.isArray(holder.args)) {
+    const args = holder.args.map((arg) => (typeof arg === "string" ? arg : ""));
+    const literal = new Set(literalCredentialArguments(args));
+    if (literal.size > 0) {
+      holder.args = holder.args.map((arg, index) => (literal.has(index) ? "" : arg));
+      changed = true;
+    }
+  }
+  if (!changed) return stored;
+  const nextTransport = fromServer ? { ...transport, server: holder } : { ...transport, ...holder };
+  return { ...stored, transport: nextTransport as StoredShaper["transport"] };
+}
+
 /** The credential rule over a whole definition's headers, URLs and arguments. */
 function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   const transport = (value as { transport?: Record<string, unknown> }).transport;
@@ -445,11 +502,11 @@ export type ClassifiedShaper =
   | { kind: "known"; stored: StoredShaper; shaper: Shaper }
   | { kind: "unsupported"; stored: StoredShaper; reason: string };
 
-function issueSentence(error: z.ZodError): string {
+function issueSentence(error: z.ZodError, maxChars: number = SHAPING_LIMITS.reasonChars): string {
   const issue = error.issues[0];
   if (!issue) return "The definition is not valid.";
   const at = issue.path.length ? `${issue.path.join(".")}: ` : "";
-  return `${at}${issue.message}`.slice(0, SHAPING_LIMITS.reasonChars);
+  return `${at}${issue.message}`.slice(0, maxChars);
 }
 
 /** A known shaper, or an unsupported entry with the reason this build cannot run it. */
@@ -524,7 +581,7 @@ export const ShapingConfigSchema = z.object({
   overrides: boundedRecord(z.string().min(1).max(64), z.boolean(), SHAPING_LIMITS.choices).default({}),
   /** Shaper ids in run order. An unlisted id sorts after the listed ones of its stage. */
   order: z.array(z.string().min(1).max(64)).max(SHAPING_LIMITS.choices).default([]),
-}).prefault({});
+}).transform((config) => ({ ...config, shapers: config.shapers.map(withoutLiteralCredentials) })).prefault({});
 export type ShapingConfig = z.output<typeof ShapingConfigSchema>;
 
 export const SHAPING_CONFIG_DEFAULTS: ShapingConfig = ShapingConfigSchema.parse({});
@@ -880,8 +937,13 @@ export const ShapingResultSchema = z.object({
 export type ShapingResult = z.output<typeof ShapingResultSchema>;
 
 /** A shaper's reply in words, for the `invalid` outcome. */
+/**
+ * A shaper's reply in words, for the `invalid` outcome. Not clipped: the path can hold a key the
+ * shaper chose, so the caller redacts the whole sentence first and only then cuts it to length.
+ * Clipping first could split a value the redactor would then fail to recognise.
+ */
 export function describeInvalidResult(error: z.ZodError): string {
-  return `The reply does not match the shaping result: ${issueSentence(error)}`.slice(0, SHAPING_LIMITS.reasonChars);
+  return `The reply does not match the shaping result: ${issueSentence(error, Infinity)}`;
 }
 
 // ---------------------------------------------------------------------------------------------

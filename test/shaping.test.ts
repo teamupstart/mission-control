@@ -34,6 +34,7 @@ import {
   StoredShaperSchema,
   summariseShaping,
   utf8Length,
+  withoutLiteralCredentials,
   type DiscoveredShaper,
   type ShapingConfig,
   type ShapingIntent,
@@ -173,6 +174,36 @@ test("a credential is held only as a reference, so no secret text is ever stored
     transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer abc" } } } }).success, false,
     "so it can never be written into app_config.shaping, the backup domain's payload");
 });
+
+test("the stored config cannot hold a literal credential, whatever wrote the entry", () => {
+  // Entries a strict write would refuse, as a restore or a newer build could hand them over:
+  // one this build cannot read at all, and one it can.
+  const future = {
+    id: "future", label: "Future", stage: "route", note: { kept: true },
+    transport: { type: "mcp", tool: "t", server: { type: "http", url: "https://user:pw@context.example/mcp?api_key=k1&page=2",
+      headers: { authorization: "Bearer sk-live-literal", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}" } } },
+  };
+  const command = { id: "cmd", label: "Cmd", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args: ["--json", "--token=sk-live-arg", "--api-key", "sk-live-next"] } };
+  const parsed = ShapingConfigSchema.parse({ shapers: [future, command, shaperEntry()] });
+  const text = JSON.stringify(parsed);
+  for (const secret of ["sk-live-literal", "sk-live-arg", "sk-live-next", "user:pw", "api_key", "k1"]) {
+    assert.equal(text.includes(secret), false, secret);
+  }
+  const [stripped, cmd, untouched] = parsed.shapers as Array<Record<string, any>>;
+  assert.deepEqual(stripped!.transport.server.headers, { authorization: "", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}" },
+    "only the literal credential is emptied; a reference and an ordinary header are kept");
+  assert.equal(stripped!.transport.server.url, "https://context.example/mcp?page=2");
+  assert.deepEqual(stripped!.note, { kept: true }, "every other field of an unsupported entry is kept as written");
+  assert.deepEqual(cmd!.transport.args, ["--json", "", "--api-key", ""]);
+  assert.deepEqual(untouched, StoredShaperSchema.parse(shaperEntry()), "an entry with no literal credential is unchanged");
+  assert.equal(withoutLiteralCredentials(untouched as StoredShaper), untouched, "and is not even copied");
+});
+
+function shaperEntry() {
+  return ShaperSchema.parse({ id: "clean", label: "Clean", stage: "select",
+    transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer {env:ACME_TOKEN}" } } });
+}
 
 test("an argument never hands over a credential as literal text; it is named in env instead", () => {
   const command = (args: string[]) => ShaperSchema.safeParse({ id: "c", label: "C", stage: "gather",

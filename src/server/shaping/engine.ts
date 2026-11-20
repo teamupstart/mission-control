@@ -374,8 +374,11 @@ async function runShaping(
   const truncatedShapers = new Set<string>([
     ...allocation.kept.filter((slot) => slot.truncated || slot.item.sourceTruncated).map((slot) => slot.item.group),
     ...allocation.dropped.map((drop) => drop.item.group),
-    // A shaper that says its reply was cut supplied incomplete context, entries or not.
-    ...results.filter(({ result }) => result.truncated).map(({ resolved: shaper }) => shaper.shaper.id),
+    // A shaper that says its reply was cut supplied incomplete context, entries or not. So does
+    // one that marked any entry truncated, counted from every validated reply before
+    // de-duplication, so a dropped duplicate's truncation is not lost with it.
+    ...results.filter(({ result }) => result.truncated || result.entries.some((entry) => entry.truncated))
+      .map(({ resolved: shaper }) => shaper.shaper.id),
   ]);
   const summary = summariseShaping({
     calls: results.map(({ result }) => result.record),

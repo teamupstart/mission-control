@@ -230,6 +230,45 @@ test("a literal credential is refused, so a settings snapshot holds only the ref
   assert.equal(snapshot.includes("{env:ACME_CONTEXT_TOKEN}"), true, "the shaping domain carries the reference");
 });
 
+test("an entry stored by another path cannot carry a literal credential into a snapshot", async () => {
+  // Written straight into app_config, as a restore or a newer build would, past the API's check.
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{
+    id: "future", label: "Future", stage: "route",
+    transport: { type: "grpc", url: "https://user:pw-literal@context.example/x", headers: { authorization: "Bearer sk-live-bypass" } },
+  }] });
+  shaping.reloadShaping();
+  const held = JSON.stringify(shaping.getShapingConfig());
+  assert.equal(held.includes("sk-live-bypass") || held.includes("pw-literal"), false, "the daemon's config holds no secret");
+  const backupStore = new SettingsBackupStore(join(home, "snapshots-bypass"));
+  const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
+    () => new Date("2026-11-22T12:00:00Z"), "test", {
+      preflightSkills: () => [], preflightCost: () => {}, reconcileSkills: () => {}, reconcileCost: () => {},
+    });
+  const saved = await service.ensureDailySnapshot();
+  assert.equal(saved.status, "ready");
+  const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
+  assert.equal(snapshot.includes("sk-live-bypass") || snapshot.includes("pw-literal"), false, "nor does the snapshot");
+  assert.equal(snapshot.includes('"future"'), true, "the unsupported entry itself is still kept");
+  // A snapshot that itself carries a literal credential, as a hand-edited or foreign one could,
+  // is restored as the parsed value: the row the restore writes holds no secret either.
+  assert.equal(saved.status, "ready");
+  if (saved.status !== "ready") return;
+  const { digest: _digest, ...body } = saved.snapshot;
+  const crafted = createSettingsBackupEnvelope({ ...body, id: "daily-2026-11-21", localDate: "2026-11-21",
+    domains: body.domains.map((domain) => domain.domain !== "shaping" ? domain : { ...domain, payload: {
+      ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+        transport: { type: "grpc", headers: { authorization: "Bearer sk-live-in-snapshot" } } }],
+    } }) });
+  backupStore.write(crafted);
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
+  assert.equal((await service.restore(crafted.id, crafted.digest)).status, "restored");
+  const row = JSON.stringify(getAppConfig(APP_CONFIG_ENTRIES.shaping));
+  assert.equal(row.includes("sk-live-in-snapshot"), false, "the restored row holds no secret");
+  assert.equal(row.includes('"future"'), true, "the entry itself is restored");
+  assert.equal(JSON.stringify(shaping.getShapingConfig()).includes("sk-live-in-snapshot"), false);
+});
+
 test("a settings restore reloads the shaping config; a backup without the domain leaves it alone", async () => {
   await put({ kind: "upsert", shaper: fixture("kept", "gather", "ok") });
   const backupStore = new SettingsBackupStore(join(home, "snapshots"));

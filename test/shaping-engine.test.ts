@@ -268,6 +268,33 @@ test("the summary records origin and the SHA-256 of the canonical definition", a
   assert.equal(result.summary!.shapers[0]!.sha256, createHash("sha256").update(canonicalJson(stored)).digest("hex"));
 });
 
+test("a validation diagnostic is redacted whole before it is cut, so no fragment of a value survives", async () => {
+  const secret = "SECRET-VALUE-0123456789-abcdef";
+  // The diagnostic's path carries this shaper-chosen key, and the value sits across the
+  // 500-character cut: 56 characters of prefix, then 430 of key, then the secret.
+  const key = `${"k".repeat(430)}${secret}`;
+  const result = await run(configWith([shaper("leaky", "select")]), () => ({
+    kind: "data", data: JSON.stringify({ repo: { facts: { [key]: "v" } } }),
+    redact: (text: string) => text.split(secret).join("[redacted]"),
+  }), input(1));
+  const reason = result.summary!.shapers[0]!.reason!;
+  assert.equal(result.summary!.shapers[0]!.outcome, "invalid");
+  assert.ok(reason.length <= 500);
+  for (let size = 6; size <= secret.length; size++) {
+    assert.equal(reason.includes(secret.slice(0, size)), false, `no ${size}-character prefix of the value`);
+  }
+});
+
+test("an entry reported truncated still marks its shaper truncated when de-duplication drops it", async () => {
+  const result = await run(configWith([shaper("dup", "select")]), (request) => data({
+    guidance: [{ id: "shared", body: `body for ${request.repo.name}`, truncated: request.repo.name === "ledger" }],
+  }));
+  assert.deepEqual(result.entries.map((entry) => [entry.repo, entry.truncated]), [["billing-api", false]],
+    "the later repository's copy is the one de-duplicated");
+  assert.equal(result.summary!.shapers[0]!.truncated, true, "its reported truncation still reaches the summary");
+  assert.equal(result.summary!.truncated, true);
+});
+
 test("cleanup a transport registers after its call was abandoned still runs", async () => {
   let released = 0;
   let registered = false;

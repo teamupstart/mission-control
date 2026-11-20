@@ -7,6 +7,10 @@ import type { TaskHibernationCheckout } from "@shared/hibernation.ts";
  * it being removed and something else created at the same path. Strings, because an inode is a
  * 64-bit number a JavaScript number cannot always hold.
  *
+ * That relies on the filesystem not handing a removed directory's inode number straight to the
+ * next one. APFS, on the macOS Mission Control supports, does not reuse file ids that way.
+ * Linux's ext4 can, so there a directory removed and recreated at once may read as the same.
+ *
  * Null when the path is not a directory that can be read now.
  */
 export function checkoutIdentity(path: string | null | undefined): TaskHibernationCheckout | null {

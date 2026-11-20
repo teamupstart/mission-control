@@ -148,6 +148,19 @@ function checkout(name: string): string {
   return dir;
 }
 
+let replacements = 0;
+/**
+ * Another directory standing at `dir`'s path, as when a worktree is removed and something else
+ * is created there. The original is moved aside rather than deleted, so the two can never share
+ * an inode: ext4 (CI's Linux) hands a just-freed inode number straight to the next directory,
+ * which no stat can tell from the same one. APFS, on the macOS Mission Control runs on, does not
+ * reuse file ids that way, which is what `checkoutIdentity` relies on.
+ */
+function replaceCheckout(dir: string): void {
+  renameSync(dir, `${dir}.replaced-${++replacements}`);
+  mkdirSync(dir, { recursive: true });
+}
+
 interface Fleet {
   registry: RegistryT;
   supervisor: InstanceType<typeof SdkSupervisor>;
@@ -627,8 +640,7 @@ function terminalFleet(
       spawn: async (input) => {
         spawned.push({ name: input.name, terminalBackend: input.terminalBackend });
         if (options.replaceDuringLaunch) {
-          rmSync(cwd, { recursive: true, force: true });
-          mkdirSync(cwd, { recursive: true });
+          replaceCheckout(cwd);
         }
         if ((options.spawnRefusals ?? 0) >= spawned.length) {
           throw new Error("tmux refused to create the session");
@@ -1079,8 +1091,7 @@ test("a checkout replaced while the agent starts is never given the task, for bo
   const sessionId = await hibernated(f, t, "sdk-replaced-mid-launch", cwd);
   const woken = fakeHandle();
   const fake = withFakeDriver(async () => {
-    rmSync(cwd, { recursive: true, force: true });
-    mkdirSync(cwd, { recursive: true });
+    replaceCheckout(cwd);
     return woken;
   });
   t.after(fake.restore);
@@ -1105,8 +1116,7 @@ test("an Agent SDK Resume rechecks the checkout after its driver confirms the co
   // checkout is replaced while the manager is still waiting for that report.
   const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
   f.supervisor.reportedConversation = async (id, timeoutMs) => {
-    rmSync(cwd, { recursive: true, force: true });
-    mkdirSync(cwd, { recursive: true });
+    replaceCheckout(cwd);
     return confirm(id, timeoutMs);
   };
 
@@ -1517,10 +1527,9 @@ test("Hibernate is refused before anything stops when the session's checkout can
 });
 
 test("Resume refuses a different checkout standing at the saved path, for both runtimes, before launching anything", async (t) => {
-  const { mkdirSync: mk, rmSync: rm, writeFileSync: write } = await import("node:fs");
+  const { writeFileSync: write } = await import("node:fs");
   const replace = (dir: string) => {
-    rm(dir, { recursive: true, force: true });
-    mk(dir, { recursive: true });
+    replaceCheckout(dir);
     write(join(dir, "README.md"), "some other checkout\n");
   };
 

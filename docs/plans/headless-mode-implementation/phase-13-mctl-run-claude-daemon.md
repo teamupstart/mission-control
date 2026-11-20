@@ -1,5 +1,7 @@
 # Phase 13: mctl run, claude and daemon (WP6b)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: Terminal entry points are not the Claude-session loop; P14 owns claude detection. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.13.
 
 **1. Outcome.** From a terminal, `mctl run` starts a dispatch, `mctl claude` starts Claude with no workspace and no added prompt, so the launcher the mod shows (P11) appears on its own when P11's launcher is enabled (S10 or S11 passed and was recorded) and P11 and P14 are in, while a plain Claude session is the expected result if P11 merged with its launcher switched off, and `mctl daemon` manages the background daemon.

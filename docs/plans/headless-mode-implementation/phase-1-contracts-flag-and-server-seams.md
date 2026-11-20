@@ -1,5 +1,7 @@
 # Phase 1: Contracts, flag and server seams (WP1a)
 
+> **Status: merged on main.** Built; no work remains in this phase. See `phased-plan.md` section 1.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, sha256 prefix `feece382`.
 
 **1. Outcome.** The `headless-mode` preview flag exists, every shared contract, schema 36 and every route seam is on `main` as a stub, and the existing Focus feature is guarded. Nothing visible happens with the flag off.

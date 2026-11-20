@@ -1,5 +1,7 @@
 # Phase 7: Codex readiness and fail-fast (WP18)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: The loop does not depend on Codex reviews; needs hard spike S27. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, section 7.25.
 
 **1. Outcome.** Mission Control checks, with no model tokens, that Codex can run the after-work reviews, shows the result through `GET /dispatch/readiness`, and fails a run fast when Codex is missing or signed out. Branches (S27): if the recorded value is `CODEX_AUTH_MTIME_RELIABLE = true`, a mod read detects an account change from the `auth.json` mtime; if `false`, a mod read never claims `reviews ready` and only `mctl doctor --live` verifies the account.

@@ -58,10 +58,10 @@ A session is invited when any of these is true:
 
 | Invite | Which sessions |
 |--------|----------------|
-| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition. |
+| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition - except [residents](residents.md#lifecycle). |
 | `dispatch` | **Dispatched** terminal sessions. Recorded automatically once the spawn is confirmed. |
 | `operator` | Sessions **you** invited, explicitly. |
-| *(none)* | Everything else - every session merely discovered on your machine, and any session whose invite you withdrew. |
+| *(none)* | Everything else - every session merely discovered on your machine, every resident session until you invite Foreman, and any session whose invite you withdrew. |
 
 In an uninvited session Foreman does nothing at all: no Purpose note, no decision brief, no
 queue tick, no wrap-up prompt, no pull-request follow-through, and no backlog assignment. It

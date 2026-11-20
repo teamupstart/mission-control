@@ -274,6 +274,7 @@ async function repairHarness(
   const goal = { prompt: HUMAN_ASK };
   /** Flipped by a test to stand in for a binding whose conversation cannot be read. */
   const intentAvailable = { value: true };
+  const rounds = { n: 1 };
   const manager = new WorkflowManager(registry, store, {
     inject: (async (
       _session: Session,
@@ -298,6 +299,11 @@ async function repairHarness(
             frozenAt: now,
           })
         : null,
+    readEvidenceProbe: async () => ({
+      headSha: `head-${rounds.n}`,
+      diffFingerprint: `diff-${rounds.n}`,
+      workingTreeStatus: [],
+    }),
     readContextRaw: async (_registry, binding, _feedback, _anchors, frozenIntent) => {
       await beforeReadContext?.();
       const raw = {
@@ -349,8 +355,6 @@ async function repairHarness(
       }),
     },
   });
-  /** Bumped by the caller so each round captures genuinely different work. */
-  const rounds = { n: 1 };
   manager.start();
   t.after(() => manager.stop());
   const binding = manager.createBinding({ workflowVersionId: published.version.id, sessionId: id });
@@ -514,8 +518,11 @@ test("a failed first compaction freezes nothing and the next round retries it", 
  */
 test("a capture that started before the run's criteria were frozen still reuses them", async (t) => {
   let compactions = 0;
-  let releaseHold: (() => void) | null = null;
-  let held: Promise<void> | null = null;
+  let holdContextRead = false;
+  let markContextRead!: () => void;
+  let releaseContextRead!: () => void;
+  const contextEntered = new Promise<void>((resolve) => { markContextRead = resolve; });
+  const contextHeld = new Promise<void>((resolve) => { releaseContextRead = resolve; });
   const h = await repairHarness(
     t,
     "stale-read-intent",
@@ -529,7 +536,11 @@ test("a capture that started before the run's criteria were frozen still reuses 
         reconcile: async () => ({ kind: "ok", value: { criterionMappings: [] } }),
       });
     },
-    () => held ?? Promise.resolve(),
+    async () => {
+      if (!holdContextRead) return;
+      markContextRead();
+      await contextHeld;
+    },
   );
 
   const submitted = await h.manager.submit(h.binding.id, { requestId: "stale-1" });
@@ -545,37 +556,40 @@ test("a capture that started before the run's criteria were frozen still reuses 
 
   // Round 2 enters capture and is held inside its context read. Its view of the run - taken
   // before the hold - says this run has no criteria. That view is about to go stale.
-  held = new Promise<void>((resolve) => { releaseHold = resolve; });
+  holdContextRead = true;
   h.rounds.n = 2;
   const repairing = h.manager.resubmit(runId, { requestId: "stale-2" });
-  await waitFor(
-    () => h.store.latestSubmission(runId)?.round === 2 && releaseHold !== null,
-    "round 2 never reached its context read",
-  );
-  // The concurrent winner, through the store's own write-once door.
-  const raced = h.store.freezeRunCriteria(runId, {
-    intentFingerprint: h.store.getRun(runId)!.intent!.fingerprint,
-    constraints: [],
-    acceptanceCriteria: ["The winning capture's criteria"],
-    canonicalCriteria: [{
-      id: "criterion-1-raced",
-      text: "The winning capture's criteria",
-      material: true,
-      suggestedProofClass: null,
-    }],
-    compaction: {
-      status: "model",
-      runner: "claude",
-      model: "fake",
-      error: null,
-      reusedFromSubmissionId: null,
-    },
-    compactedFromSubmissionId: h.store.listSubmissions(runId)[0]!.id,
-    compactedAt: 20,
-  });
-  assert.ok(raced, "the racing writer froze the run's criteria");
-  releaseHold!();
-  held = null;
+  let raced: ReturnType<typeof h.store.freezeRunCriteria>;
+  try {
+    const premature = await Promise.race([contextEntered, repairing]);
+    if (premature) assert.fail(`round 2 finished before reading context: ${JSON.stringify(premature)}`);
+    assert.equal(h.store.latestSubmission(runId)?.round, 2);
+    // The concurrent winner, through the store's own write-once door.
+    raced = h.store.freezeRunCriteria(runId, {
+      intentFingerprint: h.store.getRun(runId)!.intent!.fingerprint,
+      constraints: [],
+      acceptanceCriteria: ["The winning capture's criteria"],
+      canonicalCriteria: [{
+        id: "criterion-1-raced",
+        text: "The winning capture's criteria",
+        material: true,
+        suggestedProofClass: null,
+      }],
+      compaction: {
+        status: "model",
+        runner: "claude",
+        model: "fake",
+        error: null,
+        reusedFromSubmissionId: null,
+      },
+      compactedFromSubmissionId: h.store.listSubmissions(runId)[0]!.id,
+      compactedAt: 20,
+    });
+    assert.ok(raced, "the racing writer froze the run's criteria");
+  } finally {
+    holdContextRead = false;
+    releaseContextRead();
+  }
   const repaired = await repairing;
   assert.equal(repaired.ok, true);
   await waitFor(

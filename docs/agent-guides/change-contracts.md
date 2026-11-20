@@ -1404,7 +1404,7 @@ profile is authoring state, and a launched resident reaches the Line as its task
 The `residentRuns` collection carries each live run (`ResidentRunSummary`: not ended, not failed)
 with its pinned revision's settings, and nothing is added to `Session`: the browser joins a
 session to its run through the task id (`residentMarksBySession`). Its `settings` is the pinned
-revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority` and `loop`), not the whole
+revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority`, `loop` and `schedule`), not the whole
 revision: the profile instructions, Persona id, execution and workspace choices stay on the
 daemon, which reads the full pinned revision through `ResidentStore.revision`. A later phase that
 shows its own pinned section in the browser appends that section id to the list, in one line,

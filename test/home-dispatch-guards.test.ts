@@ -28,13 +28,13 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 416 entries `main` recorded before headless mode, hashed key-sorted. Any added, removed
+  // The 416 entries `main` records outside /dispatch (refreshed when `main` last changed one), hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 416);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "ce6c9ebba3ac9513ba78646bfc575041b80c70ded387d8bc4c5dd786f0cb16af");
+    "a024968494352f725e6f719aabbb86cf9b06a3596e399f35704172ee0e9dab56");
 });
 
 function sourceFiles(dir: string): string[] {

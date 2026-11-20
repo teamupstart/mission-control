@@ -156,7 +156,13 @@ test("only a person's answer applies the proposal, and exactly the changes they 
       response: "1. Half-hourly checks, 3. Name the change",
       selections: [{ decisionId: "q", selected: ["o0", "o2"], other: "Keep escalation for later." }],
     };
-    // Foreman is refused, and the question stays open for the operator.
+    // Foreman is refused, and the question stays open for the operator. A resident launches
+    // with Foreman out of its session, so by default the invite gate answers first...
+    const uninvited = await f.resolve(reviewId, { ...answer, by: "foreman" });
+    assert.equal(uninvited.status, 403);
+    assert.match((await uninvited.json()).error, /Foreman is not invited/);
+    // ...and even once the operator invites it, the approval rule still refuses it.
+    assert.equal(f.registry.inviteForeman(f.resident.id), "operator");
     const refused = await f.resolve(reviewId, { ...answer, by: "foreman" });
     assert.equal(refused.status, 403);
     assert.match((await refused.json()).error, /Only the operator can approve/);

@@ -54,17 +54,30 @@ export interface HomeSessionRow {
   startedAt: number;
 }
 
-function realPath(p: string): string {
+/**
+ * The real path of `p`, or null when it cannot be resolved. A path that does not exist yet
+ * (ENOENT, ENOTDIR) falls back to its absolute spelling, since there is nothing to follow. Any
+ * other failure (a symlink loop, a denied segment) returns null: a containment or repository
+ * check that cannot resolve a path must not fall back to comparing the unresolved spelling.
+ */
+function realPath(p: string): string | null {
   try {
     return realpathSync(p);
-  } catch {
-    return resolve(p);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? resolve(p) : null;
   }
 }
 
-/** True when `child` is `parent` or lies inside it, compared as real paths, never by prefix. */
+/**
+ * True when `child` is `parent` or lies inside it, compared as real paths, never by prefix.
+ * It fails closed: a path that cannot be resolved counts as inside, so the worker check refuses.
+ */
 function isInside(child: string, parent: string): boolean {
-  const rel = relative(realPath(parent), realPath(child));
+  const c = realPath(child);
+  const p = realPath(parent);
+  if (c === null || p === null) return true;
+  const rel = relative(p, c);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
@@ -164,7 +177,9 @@ export function requireHomeSession(
 }
 
 function sameRepo(a: string | null, b: string | null): boolean {
-  return a !== null && b !== null && realPath(a) === realPath(b);
+  if (a === null || b === null) return false;
+  const ra = realPath(a);
+  return ra !== null && ra === realPath(b);
 }
 
 /** `residentVisible` is P9's answer to 7.24 for a resident run's task. */
@@ -239,11 +254,16 @@ export function sessionCounts(
  * updates it and is not.
  */
 function upsertHomeSession(
+  deps: Pick<HomeDispatchDeps, "registry">,
   body: HomeSessionRegistration,
   repoRoot: string | null,
   now: number,
-): { created: boolean; offered: boolean } {
+): { refusal: HomeSessionRefusal } | { created: boolean; offered: boolean } {
   return inTransaction(() => {
+    // The first check ran before the awaited repository lookup. A session bound to a task in
+    // that window must not be recorded, or offered the launcher, so decide again at the write.
+    const worker = workerRefusal(deps, body.sessionId, body.cwd);
+    if (worker) return { refusal: worker };
     const db = openDb();
     const existing = getHomeSession(body.sessionId);
     const offered = shouldOfferLauncher({
@@ -283,7 +303,9 @@ export const registerSessionHandler: HomeDispatchHandler = (deps): Handler => as
   const worker = workerRefusal(deps, body.sessionId, body.cwd);
   if (worker) return c.json({ error: worker.reason }, worker.status);
   const repoRoot = await resolveRepoRoot(body.cwd);
-  const { created, offered } = upsertHomeSession(body, repoRoot, Date.now());
+  const written = upsertHomeSession(deps, body, repoRoot, Date.now());
+  if ("refusal" in written) return c.json({ error: written.refusal.reason }, written.refusal.status);
+  const { created, offered } = written;
   const answer: HomeSessionRegistrationAnswer = {
     sessionId: body.sessionId,
     repoRoot,

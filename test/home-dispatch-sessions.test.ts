@@ -244,6 +244,39 @@ test("registration from a symlink into a live task worktree is a 403 and leaves 
   }
 });
 
+test("a cwd that cannot be resolved (a symlink loop) fails closed instead of comparing its spelling", async () => {
+  const a = join(home, "loop-a");
+  const b = join(home, "loop-b");
+  symlinkSync(b, a);
+  symlinkSync(a, b);
+  const original = registry.listTasks;
+  registry.listTasks = (() => [{ sessionId: null, status: "running", worktreePath: join(home, "trees-link", "live"), extraRepos: [] }]) as unknown as typeof registry.listTasks;
+  try {
+    const res = await register(registration({ sessionId: "loop", cwd: join(a, "x") }));
+    assert.equal(res.status, 403);
+    assert.equal(sessions.getHomeSession("loop"), null);
+  } finally {
+    registry.listTasks = original;
+  }
+});
+
+test("a session bound to a task while the repository lookup was awaited is refused at the write", async () => {
+  const originalTasks = registry.listTasks;
+  const originalGet = registry.getSession;
+  let calls = 0;
+  registry.getSession = ((id: string) => (id === "racer" ? { id: "racer", runtime: "terminal", agentSessionId: null } : undefined)) as unknown as typeof registry.getSession;
+  registry.listTasks = (() => (++calls === 1 ? [] : [{ sessionId: "racer", status: "running", worktreePath: null, extraRepos: [] }])) as unknown as typeof registry.listTasks;
+  try {
+    const res = await register(registration({ sessionId: "racer" }));
+    assert.equal(res.status, 403, "the second check, at the write, refuses");
+    assert.ok(calls >= 2);
+    assert.equal(sessions.getHomeSession("racer"), null, "nothing was recorded");
+  } finally {
+    registry.listTasks = originalTasks;
+    registry.getSession = originalGet;
+  }
+});
+
 test("task rules: a home session sees its repository, the cli names one and answers only mctl tasks", () => {
   const home1 = { surface: "home-session" as const, sessionId: "s", repoRoot: repo };
   const cli = { surface: "cli" as const, repoRoot: repo };

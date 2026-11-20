@@ -117,7 +117,13 @@ export function workflowStages(item: StageFields): WorkflowStages {
   else stages.work = "done";
 
   if (hasRun) {
-    stages.review = runBlocked ? "blocked" : runStatus === "completed" ? "done" : "running";
+    // `WorkflowStageState` has no failure value, so a failed run reads as `blocked` (stopped, and the
+    // person should look) and a cancelled one as `pending` (the review did not happen). Neither is
+    // `running`, which is only for a run still in progress.
+    stages.review = runBlocked || runStatus === "failed" ? "blocked"
+      : runStatus === "completed" ? "done"
+        : runStatus === "cancelled" ? "pending"
+          : "running";
   } else if (item.state === "ready") {
     stages.review = "done";
   }

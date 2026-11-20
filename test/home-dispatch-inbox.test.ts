@@ -151,6 +151,12 @@ test("workflowStages draws the strip from the state and the run", () => {
   const ready = shared.workflowStages({ state: "ready", run: run("completed"), pr: { number: 3, url: "u", checks: "passing" } });
   assert.deepEqual(ready, { start: "done", work: "done", review: "done", pr: "done", merge: "pending" });
   assert.equal(shared.workflowStages({ state: "failed" }).work, "blocked");
+  // A finished task whose after-work run ended badly does not show its review as still running.
+  const ended = (status: "failed" | "cancelled" | "completed") => shared.workflowStages({ state: "ready", run: { status } }).review;
+  assert.equal(ended("failed"), "blocked");
+  assert.equal(ended("cancelled"), "pending");
+  assert.equal(ended("completed"), "done");
+  assert.equal(shared.workflowStages({ state: "running", run: { status: "running" } }).review, "running", "an active run is still running");
 });
 
 test("residentLoopLabel builds the 7.24 lines and sortResidents puts needs-you first", () => {
@@ -320,6 +326,21 @@ test("a blocked run puts its task in needs-you after the waiting ones, and the r
   assert.equal(inbox.counts.blocked, 1);
 });
 
+test("a blocked run is not hidden by a completed run of the same session in another repository", async () => {
+  const h = await homeIn("two-runs");
+  const sid = liveSession("w-two-runs");
+  addTask({ id: "t-two-runs", status: "running", sessionId: sid, updatedAt: Date.now() }, { surface: "home-session", repo: h.repo });
+  const run = (id: string, status: string, updatedAt: number) => ({
+    id, sessionId: sid, workflowId: "wf", workflowName: "General Review", workflowVersion: 1, status, phase: "p", round: 1, actionWait: null, updatedAt,
+  });
+  fakeRuns = [run("run-blocked", "blocked", 1), run("run-completed", "completed", 99)];
+  const item = (await inboxFor(h)).items.find((i) => i.taskId === "t-two-runs")!;
+  assert.equal(item.state, "blocked", "the later completed run does not hide the blocker");
+  assert.equal(item.run?.status, "blocked");
+  fakeRuns = [run("run-a", "running", 1), run("run-b", "completed", 99)];
+  assert.equal((await inboxFor(h)).items.find((i) => i.taskId === "t-two-runs")!.run?.status, "running", "an open run beats an ended one");
+});
+
 test("a resident's pending request is an item with origin resident, visible by repository or with none", async () => {
   const h = await homeIn("resident");
   const other = await homeIn("resident-other");
@@ -333,10 +354,14 @@ test("a resident's pending request is an item with origin resident, visible by r
     return reviews.create(`w-${id}`, "input", `Res ${id}`, "Rotate keys?", [QUESTION]);
   };
   mk("res-mine", h.repo);
-  mk("res-none", h.repo, { workspaceKind: "resident-workspace", repoRoot: "", extraRepos: [] });
+  // A repository-less resident stores its workspace directory as `repoRoot`; that is not a repository.
+  mk("res-none", join(home, "workspaces", "res-none"), { workspaceKind: "resident-workspace", extraRepos: [] });
   mk("res-other", other.repo);
-  // A resident workspace that names a primary repository belongs to that repository, not to everyone.
-  mk("res-ws-other", other.repo, { workspaceKind: "resident-workspace", extraRepos: [] });
+  // A resident workspace with a repository attached belongs to that repository, not to everyone.
+  mk("res-ws-other", join(home, "workspaces", "res-ws-other"), {
+    workspaceKind: "resident-workspace",
+    extraRepos: [{ repoRoot: other.repo, worktreePath: null, branch: null, provider: null, worktreeLeaseId: null, baseSha: null }] as never,
+  });
   addTask({ id: "res-idle", status: "running", kind: "resident", repoRoot: h.repo, sessionId: liveSession("w-idle") }, null);
   registry.upsertResidentRun({ id: "run-idle", profileId: "p", taskId: "res-idle", loopState: "working", iteration: 1 } as never);
 

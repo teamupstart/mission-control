@@ -9,6 +9,7 @@ import {
 } from "@shared/home-dispatch.ts";
 import { inboxStateFor, needsYouOrder, workflowSlug } from "@shared/home-dispatch-inbox.ts";
 import { canMessage } from "@shared/pane.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
@@ -64,9 +65,11 @@ export function visibleResidents(
   for (const run of deps.registry.listResidentRuns()) {
     const task = deps.registry.getTask(run.taskId);
     if (!task) continue;
-    const roots = [task.repoRoot, ...task.extraRepos.map((r) => r.repoRoot)].filter((r): r is string => Boolean(r));
-    // A resident has no repository only when it names none at all, primary or attached. A resident
-    // with a primary repository belongs to that repository, whatever kind of workspace it runs in.
+    // A repository-less resident runs in a workspace directory, which is stored as its `repoRoot` but
+    // is not a repository (`taskHasRepository` is the codebase's one test for that), so it is left out
+    // of the roots. Repositories attached to it still count, and it has none only when it has neither.
+    const roots = [...(taskHasRepository(task) ? [task.repoRoot] : []), ...task.extraRepos.map((r) => r.repoRoot)]
+      .filter((r): r is string => Boolean(r));
     const noRepository = roots.length === 0;
     if (!noRepository && !roots.some((root) => sameRepo(sessionRepoRoot, root))) continue;
     const profile: ResidentProfile | undefined = deps.registry.getResidentProfile(run.profileId);
@@ -90,13 +93,29 @@ function firstPending(deps: Pick<HomeDispatchDeps, "registry">, sessionId: strin
     .sort((a, b) => a.createdAt - b.createdAt)[0];
 }
 
-/** The task's most relevant workflow run: the most recently updated one its session owns. */
+/**
+ * How much a run matters to the person: one stopped for them first, then one still going, then one
+ * that ended. A session has one run per repository it changed, so the task shows the most pressing.
+ */
+function runPriority(run: WorkflowRunSummary): number {
+  if (run.status === "blocked" || run.status === "waiting_for_action") return 2;
+  return run.status === "completed" || run.status === "cancelled" || run.status === "failed" ? 0 : 1;
+}
+
+/**
+ * The task's most relevant workflow run for each session: a run needing the person beats a running
+ * one, which beats an ended one, and among equals the most recently updated wins. A completed run in
+ * one repository therefore never hides a blocked run in another.
+ */
 function runsBySession(deps: Pick<HomeDispatchDeps, "workflows">): Map<string, WorkflowRunSummary> {
   const out = new Map<string, WorkflowRunSummary>();
   for (const summary of deps.workflows?.runs() ?? []) {
     if (!summary.sessionId) continue;
     const have = out.get(summary.sessionId);
-    if (!have || summary.updatedAt > have.updatedAt) out.set(summary.sessionId, summary);
+    const better = !have
+      || runPriority(summary) > runPriority(have)
+      || (runPriority(summary) === runPriority(have) && summary.updatedAt > have.updatedAt);
+    if (better) out.set(summary.sessionId, summary);
   }
   return out;
 }

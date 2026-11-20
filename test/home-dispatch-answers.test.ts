@@ -364,7 +364,10 @@ test("mctl retries return the receipt only for the same answer; a different comm
   assert.equal(same.status, 200, "the same command again is a retry");
   assert.deepEqual(await receiptOf(same), receipt);
 
-  for (const other of [{ action: "answer", option: "Delete" }, { action: "answer", text: "something else" }, { action: "reject_review", text: "no" }]) {
+  for (const other of [
+    { action: "answer", option: "Delete" }, { action: "answer", text: "something else" }, { action: "reject_review", text: "no" },
+    { action: "answer", text: "Keep" }, // the same words typed as text are a different request from the option
+  ]) {
     const res = await cli(other);
     assert.equal(res.status, 409, JSON.stringify(other));
     assert.match(await errorOf(res), /different answer; nothing was sent/);
@@ -544,6 +547,21 @@ test("the continuation SQL and the actor predicate come from one list and agree 
     assert.equal(loadReviewContinuationCandidates(review.id).length === 1, wakes, `${actor} wakes a detached session`);
     assert.equal(isHomeDispatchActor(actor as never), isHome, `${actor} is a home-dispatch actor`);
   }
+});
+
+test("a late answer from a home session is delivered to a detached wait as it settles", async () => {
+  const h = await homeIn("late-live");
+  const worker = addTask("t-late-live", h.repo, "home-session");
+  const delivered: Array<{ id: string; by: string | null | undefined; text: string }> = [];
+  reviews.startContinuationRecovery((review, text) => { delivered.push({ id: review.id, by: review.resolvedBy, text }); return true; });
+  // Created after the recovery pass, so the wait is marked detached by hand, as a cancelled MCP call would.
+  const review = reviews.create(worker, "input", "Q", "Keep?", [QUESTION]);
+  openDb().prepare(`UPDATE reviews SET mcp_wait_detached_at = ? WHERE id = ?`).run(Date.now(), review.id);
+  assert.equal((await answer(h, { action: "answer", taskId: "t-late-live", reviewId: review.id, option: "Keep" })).status, 200);
+  // The recovery pass also replays other tests' detached reviews, so look only at this one.
+  const mine = delivered.filter((d) => d.id === review.id);
+  assert.deepEqual(mine.map((d) => d.by), [`home:${h.sessionId}`], "delivered live, not only on the next restart");
+  assert.match(mine[0]!.text, /after its MCP wait ended/);
 });
 
 test("the dashboard's own resolve route still settles as the human, unchanged", async () => {

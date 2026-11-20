@@ -76,14 +76,44 @@ export function failure(
 }
 
 /**
- * Text a shaper wrote, quoted into a reason: scrubbed whole first, then cut, so no cut splits a
- * value. `redacted` says a value was removed, for the reply's mark.
+ * Each value as written, and as it reads inside a JSON string when that differs: a raw body
+ * that echoes `alpha\tsecret` in JSON holds the six characters `alpha\\tsecret`, which an exact
+ * match on the value as written never finds. Same name, so the marker is the same.
+ */
+function withJsonForms(resolved: readonly ResolvedValue[]): ResolvedValue[] {
+  return resolved.flatMap((entry) => {
+    const escaped = JSON.stringify(entry.value).slice(1, -1);
+    return escaped === entry.value ? [entry] : [entry, { name: entry.name, value: escaped }];
+  });
+}
+
+/**
+ * Text a shaper wrote, quoted into a reason: scrubbed on the text exactly as written, of each
+ * value and its JSON-escaped form, and only then flattened and cut. Flattening first would turn a
+ * value with a run of whitespace, such as `alpha  secret`, into one the exact match no longer
+ * finds; cutting first could split a value. `redacted` says a value was removed, for the mark.
  */
 export function quoted(text: string, resolved: readonly ResolvedValue[]): { text: string; redacted: boolean } {
-  const flat = text.replace(/\s+/g, " ").trim();
-  const clean = redactResolved(flat, resolved);
-  return { text: clean.length > QUOTED_CHARS ? `${clean.slice(0, QUOTED_CHARS)}…` : clean, redacted: holdsResolvedValue(flat, resolved) };
+  const forms = withJsonForms(resolved);
+  const clean = redactResolved(text, forms).replace(/\s+/g, " ").trim();
+  return { text: clean.length > QUOTED_CHARS ? `${clean.slice(0, QUOTED_CHARS)}…` : clean, redacted: holdsResolvedValue(text, forms) };
 }
+
+/**
+ * `headers` without the ones a transport owns, compared without case: `content-type` and
+ * `accept` for both, and for MCP the protocol's own session headers. A configured `Content-Type`
+ * kept beside the transport's `content-type` would be combined with it by the Headers API into
+ * a body type the endpoint refuses.
+ */
+export function withoutOwnedHeaders(headers: Readonly<Record<string, string>>, owned: readonly string[]): Record<string, string> {
+  const names = new Set(owned.map((name) => name.toLowerCase()));
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !names.has(name.toLowerCase())));
+}
+
+/** What the `http` transport sets itself. */
+export const HTTP_OWNED_HEADERS = ["content-type", "accept"] as const;
+/** What the MCP streamable-HTTP client sets itself. */
+export const MCP_OWNED_HEADERS = ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"] as const;
 
 /** Why a request threw, with the cause's code when Node gives one: "fetch failed" alone says nothing. */
 export function requestFailure(error: unknown): string {

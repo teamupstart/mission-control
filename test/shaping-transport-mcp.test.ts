@@ -420,6 +420,29 @@ test("a reply that echoes a resolved header value comes back redacted and marked
   } finally { await echo.close(); await error.close(); }
 });
 
+test("a tool error that echoes a value with runs of whitespace is scrubbed before it is flattened", async () => {
+  const error = await startGuidanceHttp({ mode: "error-header", args: ["x-api-key"] });
+  try {
+    const spaced = "alpha  secret\tvalue";
+    const reply = await withEnv({ [KEY_ENV]: spaced }, () =>
+      callMcp(request(false), shaper({ type: "http", url: error.url, headers: { "x-api-key": `{env:${KEY_ENV}}` } }), ctx()));
+    assert.deepEqual(reply, { kind: "failed", reason: `The tool returned an error: denied for [${KEY_ENV} redacted]`, redacted: true });
+  } finally { await error.close(); }
+});
+
+test("a configured Content-Type or Accept, in any case, does not break a streamable-HTTP call", async () => {
+  const http = await startGuidanceHttp({ mode: "echo" });
+  try {
+    const headers = { "Content-Type": "text/plain", ACCEPT: "text/html", "x-tenant": "kept" };
+    const seen = echoed(await callMcp(request(false), shaper({ type: "http", url: http.url, headers }), ctx()));
+    assert.equal(seen.headers?.["x-tenant"], "kept");
+    for (const { method, headers: sent } of http.requests.filter(({ method }) => method === "POST")) {
+      assert.equal(sent["content-type"], "application/json", `${method} keeps the client's body type`);
+      assert.match(String(sent.accept), /application\/json/);
+    }
+  } finally { await http.close(); }
+});
+
 test("a value a local server receives through env pass-through is removed from its replies, as for a command shaper", async () => {
   const reply = await withEnv({ [KEY_ENV]: KEY }, () =>
     callMcp(request(), shaper({ type: "stdio", mode: "echo-env", args: [KEY_ENV], env: [KEY_ENV] }), ctx()));

@@ -11,6 +11,8 @@ import { REMOTE_REPLY_BYTES } from "../src/server/shaping/transports/remote.ts";
 import type { ShaperOf, TransportContext, TransportReply } from "../src/server/shaping/transports/types.ts";
 
 const KEY_ENV = "SHAPING_HTTP_FIXTURE_KEY";
+/** A run of spaces, and a tab that a JSON error body echoes as the two characters `\t`. */
+const SPACED_KEYS = ["alpha  secret", "alpha  secret\tvalue \"quoted\""];
 const KEY = "fixture-key-8e1b42";
 const TRACE = { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", tracestate: "mc=launch" };
 const OK = { version: "v1.4.0", guidance: [{ id: "payments/idempotency", title: "Idempotent charges", body: "Use an idempotency key." }] };
@@ -218,6 +220,27 @@ test("a reply that echoes the trace context or the work unit id keeps it, unreda
   assert.equal(echoedHeaders.traceparent, TRACE.traceparent);
   assert.equal(echoedHeaders["x-work-unit-id"], "wu_01JD5Z");
   assert.equal(echoedHeaders["x-api-key"], `[${KEY_ENV} redacted]`, "only the resolved reference is redacted");
+});
+
+test("an echoed value with runs of whitespace, or JSON-escaped in the body, is redacted from a failure reason", async () => {
+  for (const key of SPACED_KEYS) {
+    const reply = await withKey(key, () => callHttp(request(), shaper("/status", { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
+    assert.equal(last().headers["x-api-key"], key, "the server received the value as written");
+    assert.equal(reply.kind, "failed");
+    assert.equal(reply.redacted, true, JSON.stringify(reply));
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason, `The shaper answered HTTP 503: {"error":"upstream unavailable for [${KEY_ENV} redacted]"}`);
+    for (const piece of ["alpha", "secret", "quoted"]) assert.equal(reason.includes(piece), false, `${piece} is not in the reason`);
+  }
+});
+
+test("a configured Content-Type or Accept, in any case, never replaces the JSON the transport sends", async () => {
+  const reply = await callHttp(request(), shaper("/ok", { "Content-Type": "text/plain", ACCEPT: "text/html", "x-tenant": "kept" }), ctx());
+  assert.deepEqual(data(reply), OK);
+  assert.equal(last().headers["content-type"], "application/json");
+  assert.equal(last().headers.accept, "application/json");
+  assert.equal(last().headers["x-tenant"], "kept", "other configured headers still ride the request");
+  assert.deepEqual(JSON.parse(last().body), request());
 });
 
 test("an echoed caller value resolved into a header comes back redacted and marked", async () => {

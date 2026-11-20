@@ -1,6 +1,9 @@
 import { fetchOnOrigin, readCappedBody } from "../../origin-fetch.ts";
 import type { ShapingTransport } from "./types.ts";
-import { callHeaders, callSignal, dataReply, egressRefusal, failure, quoted, REMOTE_REPLY_BYTES, requestFailure, seconds } from "./remote.ts";
+import {
+  callHeaders, callSignal, dataReply, egressRefusal, failure, HTTP_OWNED_HEADERS, quoted, REMOTE_REPLY_BYTES, requestFailure, seconds,
+  withoutOwnedHeaders,
+} from "./remote.ts";
 
 /**
  * The `http` transport: `POST` the request as JSON, read the result. Egress follows the resident
@@ -15,8 +18,8 @@ export const callHttp: ShapingTransport<"http"> = async (request, shaper, ctx) =
   const resolution = callHeaders(shaper.transport.headers, request, ctx);
   if (!resolution.ok) return { kind: "unavailable", reason: resolution.reason };
   const { resolved } = resolution;
-  // The body type is Mission Control's to state, whatever a configured header says.
-  const headers = { ...resolution.headers, "content-type": "application/json", accept: "application/json" };
+  // The body type is Mission Control's to state, whatever a configured header says, in any case.
+  const headers = { ...withoutOwnedHeaders(resolution.headers, HTTP_OWNED_HEADERS), "content-type": "application/json", accept: "application/json" };
   const signal = callSignal(ctx);
   const timedOut = () => failure("timed_out", `Timed out after ${seconds(ctx.timeoutMs)}.`, resolved);
   try {

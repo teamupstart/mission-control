@@ -12,7 +12,10 @@ import {
   credentialBearingValues, folderCommand, receivedValues, redactReceived, removeScratch, shaperCommandEnv, withTimeout,
   type ReceivedValues,
 } from "./command.ts";
-import { callHeaders, callSignal, dataReply, egressRefusal, failure, quoted, REMOTE_REPLY_BYTES, requestFailure, seconds } from "./remote.ts";
+import {
+  callHeaders, callSignal, dataReply, egressRefusal, failure, MCP_OWNED_HEADERS, quoted, REMOTE_REPLY_BYTES, requestFailure, seconds,
+  withoutOwnedHeaders,
+} from "./remote.ts";
 import type { ShaperOf, ShapingTransport, TransportContext } from "./types.ts";
 
 /**
@@ -224,7 +227,8 @@ async function openHttp(
   // The configured headers ride every request, only to the server's origin; the launch's trace
   // context and work unit id ride every request through `requestInit`, created once for the run.
   // `headers` already holds the carried ones beside the configured; only the configured go here.
-  const configured = withoutCarriedHeaders(headers);
+  // They are set over the client's own on every request, so any the client owns are left out.
+  const configured = withoutOwnedHeaders(withoutCarriedHeaders(headers), MCP_OWNED_HEADERS);
   const onOrigin = (input: string | URL | Request, init?: RequestInit) => fetchOnOrigin(url.origin, configured, input, { ...init, credentials: "omit" });
   const transport = new StreamableHTTPClientTransport(url, {
     fetch: cappedFetch(onOrigin, REMOTE_REPLY_BYTES, (_error: ResponseCapError) => {

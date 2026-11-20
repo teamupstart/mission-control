@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +33,38 @@ test("a new installation starts live without repository grants and keeps that de
 
   closeDb();
   assert.deepEqual(getInspectorConfig(), fresh);
+});
+
+test("a crash after creating app_config still lets a new installation start in Live mode", () => {
+  // The child inherits the test's isolated state directory and opens the same database.
+  // Kill it before the insert so SQLite recovery runs without the daemon's catch block.
+  const interrupted = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { writeSync } from "node:fs";
+    import { DatabaseSync } from "node:sqlite";
+
+    const prepare = DatabaseSync.prototype.prepare;
+    DatabaseSync.prototype.prepare = function (sql) {
+      const statement = prepare.call(this, sql);
+      if (sql.startsWith("INSERT INTO app_config")) {
+        assert.equal(prepare.call(this, "SELECT 1 FROM app_config WHERE key = 'inspector'").get(), undefined);
+        writeSync(1, "app_config created before the Inspector insert\\n");
+        process.kill(process.pid, "SIGKILL");
+      }
+      return statement;
+    };
+
+    const { openDb } = await import("./src/server/db.ts");
+    openDb();
+  `], { encoding: "utf8", timeout: 30_000 });
+
+  assert.ifError(interrupted.error);
+  assert.equal(interrupted.signal, "SIGKILL", interrupted.stderr);
+  assert.match(interrupted.stdout, /app_config created before the Inspector insert/);
+
+  const recovered = getInspectorConfig();
+  assert.equal(recovered.enabled, true);
+  assert.equal(recovered.mode, "live");
 });
 
 for (const version of [35, 0]) {

@@ -66,12 +66,14 @@ Nothing in this phase is gated.
    reader function. One is true for `plan` only and means "tasks this kind's session creates
    join its work unit". The other is false for `resident` only and means "a task of this
    kind has a work unit".
-7. **MCP `create_task`.** Add an optional `workUnit: "inherit" | "new"` to the tool and to
-   the daemon schema the three routes share. In `createMcpTask`, resolve the calling session
-   and its task on every call. `"new"` mints. `"inherit"` copies the caller's task's unit,
-   and is refused with a reason when the caller has no task or its task has no work unit. With no value, inherit when
-   the caller's task kind says so, otherwise mint. A caller that cannot be resolved, with
-   no value, is not an error: the task gets a new unit.
+7. **MCP `create_task`.** Add an optional `workUnit: "inherit" | "new"` to the tool and to the
+   daemon schema the three routes share. In `createMcpTask`, resolve the calling session and
+   its task on every call. `"new"` mints. `"inherit"` copies the caller's task's unit. When
+   that task predates the column and has no id yet, it is given one first, as step 5 says,
+   and the new task copies it. `"inherit"` is refused with a reason only when the caller has
+   no task, or when its task's kind has no work unit, which is a resident run. With no
+   value, inherit when the caller's task kind says so, otherwise mint. A caller that cannot
+   be resolved, with no value, is not an error: the task gets a new unit.
 8. **Other inheriting creators.** `createRetroFollowup` and `fileChatRetry` inherit from
    their source task. For a best-of-N run, the first member task mints, and every later
    member, retry and replacement inherits from a member task of the same run. If a run's
@@ -105,7 +107,8 @@ Nothing in this phase is gated.
   a different value keeps the first; a null value can be set once.
 - Creation, one case per row of the plan's inheritance table: a plan session's task
   inherits; a ship session's does not; `"inherit"` from a ship session does; `"inherit"`
-  with no task is refused; `"new"` from a plan session mints; a plan created by a plan and
+  with no task is refused; `"inherit"` from a session whose older task has no id gives that
+  task an id and copies it; `"new"` from a plan session mints; a plan created by a plan and
   its own child all share one; retro follow-up; chat retry; ensemble members are equal; a
   parent with no id gets one when a child inherits; dispatch and assign each give an older row an id;
   requeue keeps it; a recovered creation keeps it; a resident run's task has none, at
@@ -152,3 +155,6 @@ add a way for a request body to choose an id.
 - Inspector review of the plan's pull request: an older row gets its id at assign as well as
   at dispatch, because Phase 2's reuse guard compares it with the work unit an agent was
   started with.
+- Inspector review, round 2: explicit `"inherit"` gives an eligible older parent its id
+  first, as automatic inheritance does. It is refused only for a caller with no task and for
+  a resident run.

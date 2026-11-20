@@ -162,7 +162,7 @@ choose a work unit.
 | How the task is created | Its work unit |
 |---|---|
 | MCP `create_task`, called by a session whose own task is a plan task | The plan task's. This is how phase tasks inherit, with no change to the phasing skill (D1). |
-| MCP `create_task` with `workUnit: "inherit"`, from any session bound to a task | That task's. Refused, with the reason, when the session has no task or its task has no work unit. |
+| MCP `create_task` with `workUnit: "inherit"`, from any session bound to a task | That task's. A task that only predates the column is given its id first. Refused, with the reason, when the session has no task or its task's kind has no work unit (a resident run). |
 | MCP `create_task` with `workUnit: "new"`, or from a session whose task is not a plan task | A new one. |
 | A retro follow-up task | The source task's. |
 | A failed chat retried as a new task | The source task's. |
@@ -225,10 +225,11 @@ agent was started with.**
   the preview is on and the id is well formed, and none otherwise. This is the only place
   the flag is read.
 - Mission Control records the decision with the session, the way it already records the
-  standing instructions a launch delivered: keyed by the session's note key, replaced at
-  every launch, and moved whenever the key changes. A `/clear` or an assign starts a new
-  conversation and not a new process, so the record survives both. A launch that carries
-  none removes it.
+  standing instructions a launch delivered: keyed by the session's note key, replaced when a
+  launch succeeds, and moved whenever the key changes. A `/clear` or an assign starts a new
+  conversation and not a new process, so the record survives both. A successful launch that
+  carries none removes it. A launch that fails changes nothing, so the record always
+  describes the agent that is running.
 - Every later reader uses the record and never the flag. A session emits its recorded id
   while its task has that same id. Spans (section 6), the dashboard row (section 3) and
   shaping (section 7) read it.
@@ -443,6 +444,8 @@ flowchart LR
 - A reused agent: assign refuses an agent that was started for another work unit, with the
   preview on and with it off; an agent started with none takes the task, and the task then
   emits nothing.
+- A launch that fails: the record of the agent that is still running is unchanged, so the
+  reuse guard and the span attribute still follow that agent.
 - The OAuth check at the start of Phase 2 records what a local OAuth fixture received, and
   the config guide follows it.
 - Residents: a resident run's task has no id and its launch has no variable; for a pinned

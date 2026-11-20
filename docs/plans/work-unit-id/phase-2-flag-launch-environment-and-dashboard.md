@@ -175,15 +175,20 @@ that it can take another work unit's task (decision D7).
    - Storage: a table of its own, one row per session whose agent carries a work unit,
      keyed by the session's note key (`noteKeyFor`), with the id and the time. Keep it next
      to its upgrade path in `src/server/db.ts`, and take the next free schema number.
-   - Follow `Registry.recordStandingInstructions`. Write the row where a launch is
-     composed: `dispatcher.ts` and `sdk/supervisor.ts` record the standing instructions
-     there, and a resume, a restore and a transfer are launches too. Load the rows at daemon
-     start. Carry a row across every note-key rotation, at the sites that call
-     `moveStandingInstructionsKey`. A `/clear` or an assign starts a new conversation and
-     not a new process, so the row has to survive both.
-   - Every launch replaces the row. A launch that carries no work unit removes it, so a
-     resume after the flag is switched off leaves nothing behind. Prune rows as the
-     standing instructions snapshot is pruned.
+   - Follow `Registry.recordStandingInstructions`. `dispatcher.ts` and `sdk/supervisor.ts`
+     call it once the launched session exists. Write the launch record at those two
+     points, with the value the launch's environment was built from. A resume, a restore
+     and a transfer are launches too. Load the rows at daemon start. Carry a row across
+     every note-key rotation, at the sites that call `moveStandingInstructionsKey`. A
+     `/clear` or an assign starts a new conversation and not a new process, so the row has
+     to survive both.
+   - The record changes only when the new process has taken over the session. A launch
+     that succeeds replaces the row, or removes it when the launch carries no work unit, so
+     a resume after the flag is switched off leaves nothing behind. A launch that fails
+     changes nothing: the agent that is still running keeps the record it was started with,
+     whatever the failed launch decided. A runtime transfer writes the target's record when
+     the target is adopted, and leaves the source's alone. Prune rows as the standing
+     instructions snapshot is pruned.
    - Add `sessionWorkUnitId(session, task)` to `src/server/work-unit.ts`: the recorded id
      when the task's `workUnitId` is that same id, otherwise null. Every later reader uses
      it: the dashboard row here, capture in Phase 3, and the shaping seam in Phase 4 when a
@@ -273,7 +278,8 @@ that it can take another work unit's task (decision D7).
   guard never refuses.
 - Work in flight. A switch of the flag affects agents started afterwards. An agent that is
   running keeps its environment and its record, so its session keeps emitting, or keeps
-  not emitting, until its next start. A resume, a restore and a transfer are starts.
+  not emitting, until its next start. A resume, a restore and a transfer are starts. A
+  start that fails changes neither the environment nor the record.
 - A resident launch has no variable, because its task has no id. The catalog change only
   removes two effects of the reference: a launch is no longer refused for a Codex server
   that carries it, and a new Claude Code snapshot holds no header for it.
@@ -295,6 +301,10 @@ that it can take another work unit's task (decision D7).
   carries none removes it; the row survives a `/clear`, an assign and every note-key
   rotation the standing instructions snapshot survives; rows load at daemon start;
   `sessionWorkUnitId` is the id only while the task has that id.
+- A launch that fails: a resume, a restore and a transfer that fail after the flag is
+  switched off leave the row of the agent that is still running as it was, and `assign`
+  still refuses another work unit's task for that agent. A transfer that succeeds writes
+  the target's row and leaves the source's alone.
 - A switch in flight, in process: an agent started with the flag on keeps the variable and
   its `sessionWorkUnitId` after the flag is switched off, and loses both at its next start;
   one started with the flag off has neither after the flag is switched on, and gains both
@@ -344,7 +354,7 @@ that it can take another work unit's task (decision D7).
   flag is off the session detail is unchanged. The resident catalog rule in the last
   criterion below, and the reuse guard, apply with the flag on or off.
 - A switch of the flag takes effect at each agent's next start. Until then the agent's
-  environment and `sessionWorkUnitId` agree.
+  environment and `sessionWorkUnitId` agree, also when a replacement launch fails.
 - An agent that was started with one work unit is never handed a task of another.
 - The row shows and copies the id the session emits, covered by the browser spec.
 - The guide tells a config owner exactly what to write for each agent, and what not to.
@@ -391,3 +401,5 @@ not emit a work unit for a session that `sessionWorkUnitId` does not return.
   MCP calls (D7). The resident sign-in decision is made on the headers that remain. The
   phase starts with the OAuth check (D8). The steps were renumbered; other files name them
   instead of numbering them.
+- Inspector review, round 2: the launch record changes only when a launch succeeds, so a
+  failed replacement cannot leave it out of step with the agent that is still running.

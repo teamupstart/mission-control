@@ -162,9 +162,10 @@ flowchart LR
   flag is on and the id is well formed, and null otherwise.
 - **The launch record.** Phase 2 records, per session, the work unit its agent was started
   with, and adds `sessionWorkUnitId(session, task)`: the recorded id while the task has that
-  same id, and null otherwise. Phases 2, 3 and 4 emit only through these two functions and
-  never read the flag themselves. So a switch of the flag, or a reused agent, cannot make
-  spans, shaper calls and the agent's own MCP calls disagree.
+  same id, and null otherwise. The record changes only when a launch succeeds, so it always
+  describes the agent that is running. Phases 2, 3 and 4 emit only through these two
+  functions and never read the flag themselves. So a switch of the flag, or a reused agent,
+  cannot make spans, shaper calls and the agent's own MCP calls disagree.
 - **What is not gated.** Phase 1's behaviour (minting, inheritance, reads), Phase 2's resident
   catalog rule and Phase 2's reuse guard are the same with the flag on or off. Everything
   Mission Control emits follows the decision made when the agent was started.
@@ -215,6 +216,7 @@ After all four phases, with the flag on:
   does not.
 - A reused agent: assign refuses an agent that was started for another work unit, and a task
   on an agent started with none emits nothing.
+- A launch that fails leaves the record of the agent that is still running unchanged.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e` pass.
 
@@ -250,3 +252,7 @@ After all four phases, with the flag on:
   older row its id at assign as well as at dispatch. Every statement about the flag being
   off now says whether it means off when an agent is started, or switched off while one
   runs.
+- Inspector review, round 2: the launch record changes only when a launch succeeds (Phase
+  2). Phase 4's exit criteria follow the agent's launch record and not the flag at dispatch.
+  Phase 1's explicit `"inherit"` gives an eligible older parent its id first. Phase 3 is
+  unchanged.

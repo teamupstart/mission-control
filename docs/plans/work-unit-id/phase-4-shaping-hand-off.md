@@ -96,6 +96,10 @@ the transports' own design.
   task's id; with the flag off, it receives none; for a task that goes to an agent that is
   already running, it receives the id only when that agent was started with it; a dry run
   sends none.
+- A switch in between: an agent started with the flag on takes a task of its own work unit
+  after the flag is switched off, and the shaper still receives the id; an agent started
+  with the flag off takes a task after the flag is switched on, and the shaper receives
+  none.
 - Transports, one present case and one absent case each, unless the remote transports
   phase already has them: `http` header, with no work unit anywhere in its request body; streamable-HTTP `mcp` header on every request of
   a call and `_meta` on `tools/call`, with equal values; stdio `mcp` environment and
@@ -106,12 +110,15 @@ the transports' own design.
 
 ## Merge and exit criteria
 
-- Flag on, at dispatch, each transport carries the task's id as the table under "Outcome"
-  says: a fixture `get_guidance` shaper on an `mcp` server over streamable HTTP receives it
-  in the header and in `_meta`; an `http` shaper in the header only; a local `mcp` server in
-  its environment and in `_meta`; a `command` shaper in its environment.
-- Flag off at dispatch, a dry run, no id, or an agent that was started without the variable:
-  no call carries one.
+- When the task's agent carries the task's work unit, each transport carries that id as the
+  table under "Outcome" says: a fixture `get_guidance` shaper on an `mcp` server over
+  streamable HTTP receives it in the header and in `_meta`; an `http` shaper in the header
+  only; a local `mcp` server in its environment and in `_meta`; a `command` shaper in its
+  environment. That agent is a new one started with the flag on, or a running one whose
+  launch record holds the task's work unit, whatever the flag says when the task is handed
+  over.
+- When it does not, no call carries one: a new agent started with the flag off, a running
+  agent with no launch record, a task with no id, and a dry run.
 - Only the launch's own value is ever sent, never a configured one.
 
 ## Handoff
@@ -134,3 +141,6 @@ carries the work unit with no further change.
   only.
 - Inspector review of the plan's pull request: the seam passes the id the task's agent
   carries, so a shaper call never carries an id that the worker's own calls do not.
+- Inspector review, round 2: the exit criteria follow the agent's launch record, not the
+  flag at the moment of dispatch, and the tests cover a switch between an agent's start and
+  its next task.

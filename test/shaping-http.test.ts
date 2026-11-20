@@ -28,6 +28,9 @@ const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { SettingsBackupService } = await import("../src/server/settings-backups/service.ts");
 const { SettingsBackupStore } = await import("../src/server/settings-backups/store.ts");
 const { createSettingsBackupEnvelope } = await import("../src/server/settings-backups/format.ts");
+const { wireShapingConfigEvents } = await import("../src/server/shaping/events.ts");
+const { SHAPING_LIMITS, ShapingConfigSchema, shapingConfigView } = await import("../src/shared/shaping.ts");
+type ShapingFrame = { type: "shaping_config"; config: unknown };
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
 const repository = join(home, "repos", "billing-api");
@@ -706,4 +709,222 @@ test("a dry run never returns a caller identity resolved into a header and echoe
     assert.deepEqual(run.entries.map((entry) => entry.body), ["the server received [caller.user redacted]"]);
     assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]]);
   } finally { await server.close(); }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The `shaping_config` event and the snapshot's `shaping` field, both behind the flag.
+
+/** A daemon's wiring over a fresh Registry, recording every `shaping_config` frame. */
+function wired(): { registry: InstanceType<typeof Registry>; frames: ShapingFrame[]; stop: () => void } {
+  const registry = new Registry();
+  const frames: ShapingFrame[] = [];
+  const unsubscribe = registry.subscribe((event) => { if (event.type === "shaping_config") frames.push(event as ShapingFrame); });
+  const unwire = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+  return { registry, frames, stop: () => { unwire(); unsubscribe(); } };
+}
+
+test("with the flag off and shapers stored, no snapshot or frame carries the config", async () => {
+  assert.equal((await put({ kind: "upsert", shaper: fixture("stored", "gather", "ok") })).status, 200);
+  setFlag(false);
+  const { registry, frames, stop } = wired();
+  try {
+    assert.equal("shaping" in registry.snapshot(), false, "the snapshot has no shaping field");
+    assert.deepEqual(frames, [{ type: "shaping_config", config: null }], "only the startup clear");
+    // A change to the stored config while the flag is off - a settings restore, say - sends nothing.
+    setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, caller: { user: "restored" } });
+    shaping.reloadShaping();
+    assert.equal(shaping.applyShapingIntent({ kind: "settings", caller: { user: "offline" } }).ok, true);
+    assert.equal(frames.length, 1, "no frame while the flag is off");
+    assert.equal("shaping" in registry.snapshot(), false);
+  } finally {
+    stop();
+  }
+});
+
+test("turning the flag on emits the config to open windows, a write emits once, and turning it off clears it", async () => {
+  setFlag(false);
+  const { registry, frames, stop } = wired();
+  try {
+    assert.deepEqual(frames, [{ type: "shaping_config", config: null }]);
+    setFlag(true);
+    assert.deepEqual(frames.at(-1), { type: "shaping_config", config: shapingConfigView(SHAPING_CONFIG_DEFAULTS) });
+    assert.deepEqual(registry.snapshot().shaping, shapingConfigView(SHAPING_CONFIG_DEFAULTS), "and the snapshot carries it now");
+    const before = frames.length;
+    assert.equal((await put({ kind: "upsert", shaper: fixture("live", "gather", "ok") })).status, 200);
+    assert.equal(frames.length, before + 1, "one frame per committed write");
+    const written = frames.at(-1)!.config as { shapers: Array<{ id: string }>; overrides: Record<string, boolean> };
+    assert.deepEqual(written.shapers.map((entry) => entry.id), ["live"]);
+    assert.equal(written.overrides.live, false);
+    // Another flag's change restates nothing.
+    assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: "resident-active-hours", enabled: true }).ok, true);
+    assert.equal(frames.length, before + 1, "an unrelated flag sends no shaping frame");
+    assert.equal(flags.applyFeatureFlagIntent({ kind: "flag", id: "resident-active-hours", enabled: false }).ok, true);
+    setFlag(false);
+    assert.deepEqual(frames.at(-1), { type: "shaping_config", config: null });
+    assert.equal("shaping" in registry.snapshot(), false);
+    // The route is closed while the flag is off, so write through the store: no window hears it.
+    const count = frames.length;
+    assert.equal(shaping.applyShapingIntent({ kind: "settings", caller: { user: "offline" } }).ok, true);
+    assert.equal(frames.length, count, "no frame while the flag is off");
+    setFlag(true);
+    assert.equal((frames.at(-1)!.config as { caller: { user: string } }).caller.user, "offline", "the current config on the way back on");
+  } finally {
+    stop();
+  }
+});
+
+test("an import over an id a discovered shaper had switched on is saved off", async () => {
+  // A stored on for an id with no registered shaper is what switching a discovered one on leaves.
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, overrides: { "found-on-disk": true } });
+  shaping.reloadShaping();
+  const { frames, stop } = wired();
+  try {
+    const saved = await put({ kind: "upsert", shaper: fixture("found-on-disk", "select", "ok") });
+    assert.equal(saved.status, 200);
+    const body = await saved.json() as { config: { overrides: Record<string, boolean> } };
+    assert.equal(body.config.overrides["found-on-disk"], false);
+    assert.equal((frames.at(-1)!.config as { overrides: Record<string, boolean> }).overrides["found-on-disk"], false);
+    assert.equal((getAppConfig(APP_CONFIG_ENTRIES.shaping) as { overrides: Record<string, boolean> }).overrides["found-on-disk"], false);
+  } finally {
+    stop();
+  }
+});
+
+test("an import with a literal token in an authorization header is refused, stores nothing and sends no frame", async () => {
+  const { frames, stop } = wired();
+  try {
+    const before = frames.length;
+    const refused = await put({ kind: "upsert", shaper: { id: "leaky", label: "Leaky", stage: "select",
+      transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer sk-live-import-secret" } } } });
+    assert.equal(refused.status, 400);
+    assert.match(await refused.text(), /must be a reference such as \{env:NAME\}/);
+    assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), SHAPING_CONFIG_DEFAULTS, "nothing stored");
+    assert.equal(frames.length, before, "no shaping_config frame");
+  } finally {
+    stop();
+  }
+});
+
+test("a stored unsupported entry holding a literal token reaches the snapshot, a frame and the reply only as its id, label and reason", async () => {
+  const secret = "sk-live-unsupported-envelope-token";
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+    note: secret, transport: { type: "grpc", endpoint: "grpc://" + secret } }] });
+  shaping.reloadShaping();
+  setFlag(false);
+  const { registry, frames, stop } = wired();
+  try {
+    setFlag(true);
+    const view = [{ id: "future", label: "Future", unsupported: "stage: This build does not support the stage this entry names." }];
+    const snapshot = registry.snapshot().shaping;
+    assert.deepEqual(snapshot?.shapers, view);
+    assert.deepEqual((frames.at(-1)!.config as { shapers: unknown[] }).shapers, view);
+    const reply = await (await get()).text();
+    for (const text of [JSON.stringify(snapshot), JSON.stringify(frames), reply]) {
+      assert.equal(text.includes(secret), false, "the envelope's token never leaves the daemon");
+    }
+  } finally {
+    stop();
+  }
+});
+
+test("the shaping_config frame stays bounded at the stored maximum", () => {
+  // Every bound at once: 32 shapers of nearly 16 KiB each, and 128 choices of 64-character ids.
+  const longId = (n: number) => "s" + String(n).padStart(63, "0");
+  // An argument is at most 4,096 characters, so four of them fill most of an entry's 16 KiB.
+  const padding = Array.from({ length: 4 }, () => "x".repeat(3_950));
+  const shapers = Array.from({ length: SHAPING_LIMITS.shapers }, (_, n) => ({
+    id: longId(n), label: "Bounded", stage: "gather",
+    transport: { type: "command", command: "/usr/bin/true", args: padding },
+  }));
+  const overrides = Object.fromEntries(Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => [longId(n), n % 2 === 0]));
+  const order = Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => longId(n));
+  const view = shapingConfigView(ShapingConfigSchema.parse({ shapers, overrides, order }));
+  assert.equal(view.shapers.length, SHAPING_LIMITS.shapers);
+  assert.ok(view.shapers.every((entry) => !("unsupported" in entry)), "every entry is a known shaper at full size");
+  const bytes = Buffer.byteLength(JSON.stringify({ type: "shaping_config", config: view }));
+  assert.ok(bytes > SHAPING_LIMITS.shapers * 15 * 1024, "the fixture really is at the maximum, " + bytes + " bytes");
+  assert.ok(bytes < 560 * 1024, "the frame is " + bytes + " bytes");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Intents bound to the definition the sender showed, and moves applied to the stored order.
+
+test("enable, remove and a dry run that name a replaced definition answer 409 and change nothing", async () => {
+  assert.equal((await put({ kind: "upsert", shaper: fixture("bound", "gather", "ok") })).status, 200);
+  const shown = ((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0];
+  const { shapingEntryRevision } = await import("../src/shared/shaping.ts");
+  const revision = shapingEntryRevision(shown as never);
+  // Another window replaces it: same id, a different command line.
+  assert.equal((await put({ kind: "upsert", shaper: fixture("bound", "gather", "degraded") })).status, 200);
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  for (const intent of [
+    { kind: "enable", id: "bound", enabled: true, expect: revision },
+    { kind: "remove", id: "bound", expect: revision },
+  ]) {
+    const refused = await put(intent);
+    assert.equal(refused.status, 409, intent.kind);
+    assert.equal(((await refused.json()) as { error: string }).error, "shaper_changed");
+  }
+  const run = await dryRun({ id: "bound", repository, expect: revision });
+  assert.equal(run.status, 409);
+  assert.equal(((await run.json()) as { error: string }).error, "shaper_changed");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  // The definition actually stored goes through.
+  const current = shapingEntryRevision(((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0] as never);
+  assert.equal((await put({ kind: "enable", id: "bound", enabled: true, expect: current })).status, 200);
+});
+
+test("move places a shaper against the stored order, so moves from two windows in different stages both survive", async () => {
+  for (const [id, stage] of [["g1", "gather"], ["g2", "gather"], ["s1", "select"], ["s2", "select"]] as const) {
+    assert.equal((await put({ kind: "upsert", shaper: fixture(id, stage, "ok") })).status, 200);
+  }
+  // Each window saw the same order; each moves a shaper in its own stage. Neither sends an order.
+  assert.equal((await put({ kind: "move", id: "g2", after: null })).status, 200);
+  const second = await put({ kind: "move", id: "s2", after: null });
+  assert.equal(second.status, 200);
+  assert.deepEqual(((await second.json()) as { config: { order: string[] } }).config.order, ["g2", "g1", "s2", "s1"]);
+  // Repeating a move changes nothing.
+  assert.deepEqual(((await (await put({ kind: "move", id: "s2", after: null })).json()) as { config: { order: string[] } }).config.order,
+    ["g2", "g1", "s2", "s1"]);
+  // An anchor in another stage is refused.
+  const wrong = await put({ kind: "move", id: "g1", after: "s1" });
+  assert.equal(wrong.status, 400);
+  assert.equal(((await wrong.json()) as { error: string }).error, "unknown_shaper");
+});
+
+test("a replacement written while the dry run resolves its checkout is not what runs", async () => {
+  const { Hono } = await import("hono");
+  const { registerShapingRoutes } = await import("../src/server/shaping/routes.ts");
+  const { resolveRepoRoot, insideWorkTree } = await import("../src/server/repos.ts");
+  const { shapingEntryRevision } = await import("../src/shared/shaping.ts");
+  assert.equal((await put({ kind: "upsert", shaper: fixture("snapshot", "gather", "ok") })).status, 200);
+  const shown = ((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0];
+  const revision = shapingEntryRevision(shown as never);
+  // While Git is asked about the checkout, another window replaces the shaper with one that
+  // answers degraded. The revision check already passed; the engine must run what it checked.
+  let replaced = false;
+  const routes = new Hono();
+  registerShapingRoutes(routes, {
+    checkoutProbes: {
+      resolveRepoRoot: async (path) => {
+        if (!replaced) {
+          replaced = true;
+          assert.equal(shaping.applyShapingIntent({ kind: "upsert", shaper: fixture("snapshot", "gather", "degraded") as never }).ok, true);
+        }
+        return resolveRepoRoot(path);
+      },
+      insideWorkTree,
+    },
+  });
+  const response = await routes.request("/api/shaping/test", {
+    method: "POST", headers, body: JSON.stringify({ id: "snapshot", repository, expect: revision }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(replaced, true, "the replacement landed mid-request");
+  const run = await response.json() as { summary: { shapers: Array<{ outcome: string }> }; entries: Array<{ body: string }> };
+  assert.equal(run.summary.shapers[0]!.outcome, "ok", "the definition that was checked ran, not the replacement");
+  assert.ok(run.entries.every((entry) => entry.body !== "fallback entry"));
+  // And the store now holds the replacement, which a fresh dry run with the old revision refuses.
+  const again = await dryRun({ id: "snapshot", repository, expect: revision });
+  assert.equal(again.status, 409);
 });

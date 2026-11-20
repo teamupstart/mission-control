@@ -26,11 +26,16 @@ const { SETUP_DEPENDENCY_IDS, SETUP_DEPENDENCY_INFO, SETUP_FAMILY_IDS } = await 
 );
 const {
   SETTINGS_CATEGORIES,
-  VISIBLE_SETTINGS_CATEGORIES,
   settingsCategoriesIn,
   settingsCategoryAvailable,
+  settingsCategoryInBuild,
+  visibleSettingsCategories,
 } = await import("../src/web/lib/settings-registry.ts");
-const { SETTINGS_CONTROLS } = await import("../src/web/lib/settings-search.ts");
+const { settingsControls } = await import("../src/web/lib/settings-search.ts");
+// Every preview on, so the only category withheld is the one the build hides.
+const ALL_FLAGS_ON = { enableAll: true, overrides: {} };
+const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(ALL_FLAGS_ON);
+const SETTINGS_CONTROLS = settingsControls(ALL_FLAGS_ON);
 const { parseMissionRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 const { familyForAnchor } = await import("../src/web/components/SetupPanel.tsx");
 const { openDb } = await import("../src/server/db.ts");
@@ -112,15 +117,18 @@ test("the Setup rail cannot be deep-linked into the hidden Pipelines family", SH
 
 test("the Settings availability rule withholds only Conductor, and only while hidden", () => {
   assert.ok(SETTINGS_CATEGORIES.some((category) => category.id === "conductor"), "kept in the registry");
-  assert.equal(settingsCategoryAvailable("conductor", false), false);
-  assert.equal(settingsCategoryAvailable("conductor", true), true);
-  assert.equal(settingsCategoryAvailable("setup", false), true);
-  assert.equal(settingsCategoryAvailable("conductor"), CONDUCTOR_INTEGRATION_ENABLED);
+  assert.equal(settingsCategoryInBuild("conductor", false), false);
+  assert.equal(settingsCategoryInBuild("conductor", true), true);
+  assert.equal(settingsCategoryInBuild("setup", false), true);
+  assert.equal(settingsCategoryInBuild("conductor"), CONDUCTOR_INTEGRATION_ENABLED);
+  assert.equal(settingsCategoryAvailable("conductor", ALL_FLAGS_ON, false), false);
+  assert.equal(settingsCategoryAvailable("conductor", ALL_FLAGS_ON, true), true);
+  assert.equal(settingsCategoryAvailable("conductor", ALL_FLAGS_ON), CONDUCTOR_INTEGRATION_ENABLED);
 });
 
 test("Settings draws, routes, walks and searches no Conductor category", SHIPPED_HIDDEN, () => {
   assert.ok(!VISIBLE_SETTINGS_CATEGORIES.some((category) => category.id === "conductor"));
-  assert.ok(!settingsCategoriesIn("background").some((category) => category.id === "conductor"));
+  assert.ok(!settingsCategoriesIn("background", ALL_FLAGS_ON).some((category) => category.id === "conductor"));
   assert.equal(VISIBLE_SETTINGS_CATEGORIES.length, SETTINGS_CATEGORIES.length - 1);
 
   const route = parseMissionRoute("#/settings/conductor");

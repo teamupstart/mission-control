@@ -574,3 +574,15 @@ test("context is stored trimmed on create and on update", async () => {
   const updated = await (await post("/dispatch/drafts/" + created.draftId, { sessionId: "s1", context: "  other  \n" })).json() as any;
   assert.equal(updated.context, "other");
 });
+
+test("a start that throws still reports the filed task id", async () => {
+  await register("s1", repo);
+  mock.method(tasks, "dispatch", async () => { throw new Error("stacking failed"); });
+  const draft = (await createDraft({ kind: "scout", words: "x" })).body;
+  const res = await confirm(draft.draftId, "start");
+  assert.equal(res.status, 409);
+  const body = await res.json() as Record<string, unknown>;
+  assert.equal(body.error, "stacking failed");
+  assert.equal(body.started, false);
+  assert.equal(taskRow(body.taskId as string).status, "backlog");
+});

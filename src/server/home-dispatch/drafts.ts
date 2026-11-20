@@ -353,7 +353,9 @@ export const confirmDraftHandler: HomeDispatchHandler = (deps): Handler => async
   if (body.choice === "backlog") return c.json(result(filed.task.id, false));
 
   // The same call `dispatch_task` makes. Not the operator's, so a launch hold still stands.
-  const started = await deps.tasks.dispatch(filed.task.id, { overrideDisabled: true });
+  // An exception from the launch must not hide the task id: the task is already filed.
+  const started = await deps.tasks.dispatch(filed.task.id, { overrideDisabled: true })
+    .catch((error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }));
   if (!started.ok) {
     return c.json({ error: started.error, taskId: filed.task.id, started: false }, 409);
   }

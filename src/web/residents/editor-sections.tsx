@@ -3,7 +3,7 @@ import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.ts
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { resolveFeatureFlag, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import {
   RESIDENT_AGENTS,
   RESIDENT_LIMITS,
@@ -13,6 +13,7 @@ import {
   residentMarkerColor,
   residentMcpRefKey,
   type ResidentAgent,
+  type ResidentMcpNativeSources,
   type ResidentMcpServerRef,
   type ResidentProfileRevision,
   type ResidentProfileSectionId,
@@ -36,10 +37,11 @@ import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } fr
  */
 const RESIDENT_COMPACTION_FOCUS_HINT = "Added to the built-in focus, which asks the summary to keep the standing task and your instructions word for word. Claude Code uses it; Codex compacts without one. After any compaction, the next wake restates the standing task in full.";
 
-/** What every section editor is handed. Each writes only its own slice of the draft. */
+/** What every section editor is handed. Harness changes also set the native MCP mode. */
 export interface ResidentEditorSectionProps {
   draft: ResidentProfileRevision;
   update: <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]) => void;
+  changeHarness: (agent: ResidentAgent, nativeSources: ResidentMcpNativeSources) => void;
   personas: readonly PersonaView[];
   disabled: boolean;
   /** Resolved by the editor using the same default ladder as launch. */
@@ -158,10 +160,26 @@ function InstructionsSection({ draft, update, disabled }: ResidentEditorSectionP
   );
 }
 
-function ExecutionSection({ draft, update, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
+function residentNativeMcpSources(agent: ResidentAgent, flags: FeatureFlagsConfig) {
+  const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
+  return capability?.previewFlag && !resolveFeatureFlag(capability.previewFlag, flags) ? null : capability;
+}
+
+function ExecutionSection({ draft, update, changeHarness, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const { agent, model, effort } = draft.execution;
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const levels = capabilitiesFor(agent).effort?.levels ?? [];
+  const flags = useContext(FeatureFlagsContext);
+  const [pendingHarness, setPendingHarness] = useState<ResidentAgent | null>(null);
+  const pendingSources = pendingHarness && capabilitiesFor(pendingHarness).mcpSelection?.allNativeSources;
+  const chooseHarness = (next: ResidentAgent): void => {
+    if (next === agent) return;
+    if (draft.mcp.nativeSources === "all" && residentNativeMcpSources(next, flags)) {
+      setPendingHarness(next);
+    } else {
+      changeHarness(next, "pinned");
+    }
+  };
   return (
     <div className="resident-fields resident-fields-row">
       <label className="field">
@@ -171,8 +189,7 @@ function ExecutionSection({ draft, update, disabled, spendUnavailable }: Residen
             className="field-input"
             value={agent}
             disabled={disabled}
-            onChange={(event) =>
-              update("execution", { agent: event.target.value as ResidentAgent, model: null, effort: null })}
+            onChange={(event) => chooseHarness(event.target.value as ResidentAgent)}
           >
             {RESIDENT_AGENTS.map((id) => (
               <option key={id} value={id}>{AGENT_IDENTITY[id].label}</option>
@@ -219,6 +236,18 @@ function ExecutionSection({ draft, update, disabled, spendUnavailable }: Residen
         {spendUnavailable}
       </p>}
       <ModelCatalogNotice agent={agent} />
+      {pendingHarness && pendingSources && (
+        <McpAllSourcesConfirm
+          harness={AGENT_IDENTITY[pendingHarness].label}
+          sources={pendingSources.sources}
+          changingHarness
+          onClose={() => setPendingHarness(null)}
+          onConfirm={() => {
+            if (!disabled && residentNativeMcpSources(pendingHarness, flags)) changeHarness(pendingHarness, "all");
+            setPendingHarness(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -393,12 +422,11 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
   const label = AGENT_IDENTITY[agent].label;
   const mcp = draft.mcp;
   const selectable = residentMcpSelectable(catalog, agent);
-  // Whether this harness can start a resident on everything it loads natively. A profile that
-  // chose it on another harness still shows the choice, so the operator can see and undo it.
+  // A saved native profile still shows the choice when its preview is off, so it can be undone.
   const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources ?? null;
   const flags = useContext(FeatureFlagsContext);
-  const previewOff = capability?.previewFlag && !resolveFeatureFlag(capability.previewFlag, flags);
-  const allSources = previewOff ? null : capability;
+  const allSources = residentNativeMcpSources(agent, flags);
+  const previewOff = capability?.previewFlag && !allSources;
   const claudeConnectors = allSources?.mechanism === "lift-strict-mcp-config";
   const importsAll = mcp.nativeSources === "all";
   const chosen = new Set(mcp.selected.map(residentMcpRefKey));

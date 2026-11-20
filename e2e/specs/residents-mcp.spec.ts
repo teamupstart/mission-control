@@ -536,14 +536,16 @@ test("a profile that imports all native sources is confirmed first, says it is n
   await expect(all).toBeChecked();
   await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).toHaveCount(0);
   await expect(section).toContainText("The set is not pinned");
-  // A harness that cannot make the choice keeps it visible, disabled and explained, so it can be
-  // undone rather than silently dropped.
+  // An unavailable destination uses pinned sources. Consent from the previous harness is gone.
   await harnessSelect.selectOption({ label: "Codex" });
-  await expect(section.getByRole("alert")).toContainText("Enable Codex resident native MCP in Settings > Feature flags");
-  await expect(all).toBeDisabled();
-  await expect(all).toBeChecked();
+  await expect(confirm).toBeHidden();
+  await expect(all).toHaveCount(0);
+  await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).toBeChecked();
   await harnessSelect.selectOption({ label: "Claude Code" });
-  await expect(all).toBeEnabled();
+  await expect(pinned).toBeChecked();
+  await all.click();
+  await expect(confirm).toContainText("everything Claude Code loads");
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
   await expect(all).toBeChecked();
   const add = section.getByRole("combobox", { name: "Add an MCP server" });
   await expect(add.locator("option", { hasText: "github-global" })).toHaveCount(0);
@@ -661,4 +663,49 @@ test("editing a saved pinned profile into all native sources is confirmed, saved
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toContainText("MCP: all native sources (not pinned) · control: off · revision 2");
   await capture(dialog, "all-sources-edited-dispatch-summary");
+});
+
+test("changing the harness of an all-native profile requires destination consent", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  await page.getByRole("button", { name: "Codex resident native MCP: off" }).click();
+  await expect(page.getByRole("button", { name: "Codex resident native MCP: on" })).toBeVisible();
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const draft = page.getByRole("region", { name: "New resident profile" });
+  await draft.getByLabel("Name").fill("Harness Consent Resident");
+  await draft.getByLabel("Profile instructions").fill("Summarize the fleet.");
+  await draft.getByLabel("Spend per 24 hours (USD)").fill("");
+  const allSources = { name: "All native sources (not pinned)" };
+  const confirm = page.getByRole("dialog", { name: "Import all native MCP sources" });
+  await draft.getByRole("radio", allSources).click();
+  await expect(confirm).toContainText("everything Claude Code loads");
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
+  await draft.getByRole("button", { name: "Save" }).click();
+
+  const saved = page.getByRole("region", { name: "Resident profile Harness Consent Resident" });
+  await expect(saved).toContainText("Revision 1");
+  const harness = saved.getByRole("combobox", { name: "Harness" });
+  await harness.selectOption("codex");
+  await expect(confirm).toContainText("everything Codex loads", { timeout: 5_000 });
+  await expectContentClearsBorder(confirm);
+  await capture(confirm, "codex-harness-change-confirm");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(harness).toHaveValue("claude");
+  await expect(saved.getByRole("radio", allSources)).toBeChecked();
+  await expect(saved).not.toContainText("unsaved changes");
+
+  await harness.selectOption("codex");
+  await expect(confirm).toContainText("everything Codex loads");
+  await confirm.getByRole("button", { name: "Import all sources" }).click();
+  await expect(harness).toHaveValue("codex");
+  await expect(saved.getByRole("radio", allSources)).toBeChecked();
+  await expect(saved.getByRole("button", { name: "Save" })).toBeEnabled();
+  await saved.getByRole("button", { name: "Save" }).click();
+  await expect(saved).toContainText("Revision 2");
+
+  await harness.selectOption("claude");
+  await expect(confirm).toContainText("everything Claude Code loads");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(harness).toHaveValue("codex");
+  await expect(saved).not.toContainText("unsaved changes");
 });

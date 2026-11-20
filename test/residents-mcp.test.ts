@@ -791,6 +791,38 @@ test("entries carry no secret: global and secret-bearing servers are launcher en
   assert.notEqual(again[0]!.shape === "launcher" && again[0]!.args.at(-1), credential);
 });
 
+test("prepared launcher paths stay empty through slow preflight and receive fresh, single-use tickets", (t) => {
+  const runId = crypto.randomUUID();
+  seedRun(runId, [HTTP_SERVER]);
+  t.mock.timers.enable({ apis: ["Date"] });
+  const resident = launch.residentMcpLaunchForRun(runId, "all")!;
+  const start = resident.prepareStart();
+  const entry = start.entries[0]!;
+  assert.equal(entry.shape, "launcher");
+  const path = entry.args.at(-1)!;
+  assert.equal(existsSync(path), false);
+  t.mock.timers.tick(launch.RESIDENT_MCP_TICKET_TTL_MS + 1);
+  start.issue();
+  const { ticket, expiresAt } = JSON.parse(readFileSync(path, "utf8")) as { ticket: string; expiresAt: number };
+  assert.equal(expiresAt, Date.now() + launch.RESIDENT_MCP_TICKET_TTL_MS);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.throws(() => start.issue(), /already issued/);
+  const request = { ticket, runId, server: "web" };
+  assert.equal(launch.redeemResidentMcpTicket(request).ok, true);
+  assert.equal(launch.redeemResidentMcpTicket(request).ok, false);
+
+  const retry = resident.prepareStart();
+  const retryEntry = retry.entries[0]!;
+  assert.equal(retryEntry.shape, "launcher");
+  const retryPath = retryEntry.args.at(-1)!;
+  assert.notEqual(retryPath, path);
+  retry.issue();
+  const retryTicket = (JSON.parse(readFileSync(retryPath, "utf8")) as { ticket: string }).ticket;
+  retry.revoke();
+  assert.equal(existsSync(retryPath), false);
+  assert.equal(launch.redeemResidentMcpTicket({ ...request, ticket: retryTicket }).ok, false);
+});
+
 test("a ticket is redeemed once, by its own server, before it expires, for that server's definition alone", () => {
   const runId = crypto.randomUUID();
   seedRun(runId, [GLOBAL_SERVER, HTTP_SERVER]);

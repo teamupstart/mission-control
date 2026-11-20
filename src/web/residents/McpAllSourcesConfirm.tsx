@@ -4,13 +4,14 @@ import { Tooltip } from "../components/Tooltip.tsx";
 /**
  * Confirm giving a resident's pinned MCP set up for everything its harness loads natively.
  *
- * Asked once, when the operator turns the option on, because it is the one MCP choice that widens
+ * Asked when the operator turns the option on or changes harnesses, because this choice widens
  * what an autonomous, looping agent can reach: every connector's account-level access, outside
  * the snapshot, the connect check and the scoped launcher. Turning it off needs no confirmation.
  */
 export function McpAllSourcesConfirm({
   harness,
   sources,
+  changingHarness = false,
   onConfirm,
   onClose,
 }: {
@@ -18,9 +19,11 @@ export function McpAllSourcesConfirm({
   harness: string;
   /** What the harness loads on its own (`AllNativeMcpSourcesSpec.sources`). */
   sources: string;
+  changingHarness?: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }): React.JSX.Element {
+  const cancelLabel = changingHarness ? "Keep the current harness" : "Keep the pinned MCP set";
   return (
     <Overlay
       id={OVERLAY_IDS.residentMcpAllSources}
@@ -38,7 +41,7 @@ export function McpAllSourcesConfirm({
       >
         <header className="modal-head">
           <h2 tabIndex={-1} autoFocus>Import all native MCP sources</h2>
-          <Tooltip label="Keep the pinned set and close (Escape)">
+          <Tooltip label={`${cancelLabel} and close (Escape)`}>
             <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
               ✕
             </button>
@@ -70,7 +73,7 @@ export function McpAllSourcesConfirm({
         </div>
         <footer className="modal-foot">
           <span className="actions-spacer" />
-          <Tooltip label="Keep the pinned MCP set">
+          <Tooltip label={cancelLabel}>
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               Cancel
             </button>

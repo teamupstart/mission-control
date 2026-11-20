@@ -679,6 +679,9 @@ resume, and the resident can use the permissions of the harness's saved logins. 
 requires its own server and the selected custom servers. The harness handles native startup and
 sign-in according to its own configuration. Custom servers are snapshotted at launch, with their
 secret values handled by the [scoped launcher](#custom-mcp-servers).
+Changing harnesses on an all-native profile asks for confirmation for the destination harness.
+Cancel keeps the current harness. If the destination cannot use all native sources, switching
+selects **Pinned at launch**.
 
 With it chosen, **Inherit harness defaults** and the global servers in **Add an MCP server** are
 hidden because the harness loads its global servers itself. A global server already selected stays in the

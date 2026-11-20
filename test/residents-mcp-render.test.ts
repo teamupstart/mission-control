@@ -194,6 +194,7 @@ function residentLaunch(
       onStart();
       return built();
     },
+    prepareStart: () => ({ entries: built(), issue: () => { launch.forStart(); }, revoke: () => {} }),
     preview: () => built().map((entry) => (entry.shape === "launcher" ? { ...entry, args: [...entry.args.slice(0, -1), "unissued"] } : entry)),
   };
   return launch;
@@ -583,21 +584,28 @@ test("Codex native runs keep the normal home, attach the custom snapshot, and re
   const mission = { command: "native-mission", args: ["old"], env: { MISSION_PORT: "2" } };
   const glean = { url: "https://glean.example.test/mcp" };
   for (const resume of [null, "thread-1"]) {
+    const startsBeforePreflight = resident.starts;
     const current = resume ? { added: { command: "new" } } : {};
     const server = new ScriptedServer({
       initialize: () => ({}),
-      "config/read": () => ({
-        config: { developer_instructions: null, mcp_servers: { glean, ...current, "mission-control": {}, [name]: {} } },
-        layers: [{
-          ...flags,
-          config: { mcp_servers: { "mission-control": { required: true }, [name]: { required: true } } },
-        }, user({ glean, ...current, "mission-control": mission })],
-      }),
-      "thread/start": () => THREAD,
-      "thread/resume": () => THREAD,
+      "config/read": () => {
+        assert.equal(resident.starts, startsBeforePreflight, "preflight must not issue tickets");
+        return {
+          config: { developer_instructions: null, mcp_servers: { glean, ...current, "mission-control": {}, [name]: {} } },
+          layers: [{
+            ...flags,
+            config: { mcp_servers: { "mission-control": { required: true }, [name]: { required: true } } },
+          }, user({ glean, ...current, "mission-control": mission })],
+        };
+      },
+      [resume ? "thread/resume" : "thread/start"]: () => {
+        assert.equal(resident.starts, startsBeforePreflight + 1, "thread startup must have fresh tickets");
+        return THREAD;
+      },
       "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
     });
     const handle = await codexSdkSpec({ connect: async (args, _cwd, _home, options) => {
+      assert.equal(resident.starts, startsBeforePreflight, "connecting must not issue launcher tickets");
       assert.equal(options?.codexHome, undefined);
       assert.ok(args.includes("project_root_markers=[]"));
       const override = args.find((arg) => arg.startsWith("mcp_servers=")) ?? "";
@@ -677,6 +685,7 @@ for (const [failure, name, overrides, effective] of [
     });
     assert.equal(server.calls("thread/start").length, 0);
     assert.equal(server.calls("thread/resume").length, 0);
+    assert.equal(resident.starts, 0, "refused preflight must leave tickets unissued");
   });
 }
 

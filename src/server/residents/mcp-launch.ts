@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
@@ -284,18 +284,16 @@ function forget(key: string): void {
  * single-use ticket bound to this run, this server and this start, and its expiry. Removed by
  * the launcher when read, and by the daemon once the ticket expires unredeemed.
  */
-function issueCredential(runId: string, server: StoredMcpSnapshotServer, startId: string, now = Date.now()): string {
-  const dir = join(residentMcpRunDir(runId), "credentials");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+function issueCredential(runId: string, server: StoredMcpSnapshotServer, startId: string, path: string, now = Date.now()): string {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const ticket = randomBytes(32).toString("base64url");
-  const path = join(dir, `${randomBytes(12).toString("hex")}.json`);
   const expiresAt = now + RESIDENT_MCP_TICKET_TTL_MS;
   const file: ResidentMcpCredentialFile = { ticket, expiresAt, redeemUrl: `${BASE_URL}/api/residents/mcp/redeem` };
   writeFileSync(path, JSON.stringify(file), { mode: 0o600, flag: "wx" });
   const key = ticketKey(ticket);
   grants.set(key, { runId, source: server.source, server: server.name, startId, expiresAt, path });
   setTimeout(() => forget(key), RESIDENT_MCP_TICKET_TTL_MS + 1_000).unref();
-  return path;
+  return key;
 }
 
 /** Stands in for a credential in a preview: a path no file is ever written to. */
@@ -316,8 +314,8 @@ const UNISSUED_CREDENTIAL = "unissued";
  */
 export const RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS: readonly string[] = ["--use-system-ca"];
 
-/** One entry; `startId` null renders a preview whose launcher entries carry no credential. */
-function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: string | null): ResidentMcpEntry {
+/** Only launcher entries need a credential reference. */
+function entryFor(runId: string, server: StoredMcpSnapshotServer, credentialPath: () => string): ResidentMcpEntry {
   const { name, options, transport } = server;
   // A redacted definition renders as a launcher entry, whose redemption refuses it.
   if ((server.harnessLogin === true || !server.launcher) && transport.type !== "redacted") {
@@ -337,7 +335,7 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
       residentMcpLauncherPath(),
       "--run", runId,
       "--server", name,
-      "--credential", startId === null ? UNISSUED_CREDENTIAL : issueCredential(runId, server, startId),
+      "--credential", credentialPath(),
     ],
     // Only what the runtime itself needs (Electron's node mode); never the daemon's environment.
     env: Object.fromEntries(Object.entries(runtime.env).filter((pair): pair is [string, string] => pair[1] !== undefined)),
@@ -353,16 +351,42 @@ export function residentMcpLaunchForRun(runId: string, nativeSources: ResidentMc
   if (!runId) return null;
   const snapshot = runMcpSnapshot(runId);
   if (!snapshot) return null;
+  const prepareStart = (): ReturnType<ResidentMcpLaunch["prepareStart"]> => {
+    const startId = randomUUID();
+    const pending: Array<{ server: StoredMcpSnapshotServer; path: string }> = [];
+    const entries = snapshot.map((server) => entryFor(runId, server, () => {
+      const path = join(residentMcpRunDir(runId), "credentials", `${randomBytes(12).toString("hex")}.json`);
+      pending.push({ server, path });
+      return path;
+    }));
+    const keys: string[] = [];
+    const revoke = () => {
+      for (const key of keys) forget(key);
+    };
+    let issued = false;
+    return { entries, revoke, issue: () => {
+      if (issued) throw new Error("Resident MCP credentials were already issued for this start");
+      issued = true;
+      try {
+        for (const { server, path } of pending) keys.push(issueCredential(runId, server, startId, path));
+      } catch (error) {
+        revoke();
+        throw error;
+      }
+    } };
+  };
   return {
     nativeSources,
     disableClaudeAiConnectors,
     names: snapshot.map((server) => server.name),
     privateDir: residentMcpRunDir(runId),
     forStart: () => {
-      const startId = randomUUID();
-      return snapshot.map((server) => entryFor(runId, server, startId));
+      const start = prepareStart();
+      start.issue();
+      return start.entries;
     },
-    preview: () => snapshot.map((server) => entryFor(runId, server, null)),
+    prepareStart,
+    preview: () => snapshot.map((server) => entryFor(runId, server, () => UNISSUED_CREDENTIAL)),
   };
 }
 

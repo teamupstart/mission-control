@@ -329,17 +329,27 @@ function seedRun(runId: string, nativeSources: Launch["nativeSources"] = "pinned
 function observedLaunch(runId: string, nativeSources: Launch["nativeSources"] = "pinned"): Launch {
   const launch = residentMcpLaunchForRun(runId, nativeSources);
   assert.ok(launch, "the run has a snapshot");
+  const recordTickets = (entries: ReturnType<Launch["forStart"]>) => {
+    for (const entry of entries) {
+      if (entry.shape !== "launcher") continue;
+      const path = entry.args[entry.args.indexOf("--credential") + 1]!;
+      assert.equal(statSync(path).mode & 0o777, 0o600, "a credential file is owner-only");
+      tickets.push((JSON.parse(readFileSync(path, "utf8")) as { ticket: string }).ticket);
+    }
+  };
   return {
     ...launch,
     forStart: () => {
       const entries = launch.forStart();
-      for (const entry of entries) {
-        if (entry.shape !== "launcher") continue;
-        const path = entry.args[entry.args.indexOf("--credential") + 1]!;
-        assert.equal(statSync(path).mode & 0o777, 0o600, "a credential file is owner-only");
-        tickets.push((JSON.parse(readFileSync(path, "utf8")) as { ticket: string }).ticket);
-      }
+      recordTickets(entries);
       return entries;
+    },
+    prepareStart: () => {
+      const start = launch.prepareStart();
+      return { ...start, issue: () => {
+        start.issue();
+        recordTickets(start.entries);
+      } };
     },
   };
 }

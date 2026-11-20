@@ -289,6 +289,8 @@ the run, the server's name and a credential file:
   private directory: owner-only, created exclusively, holding a single-use ticket bound to that
   run, that server and that start, which expires 30 seconds later. The daemon removes any file left
   unredeemed once its ticket expires, and every such file at startup.
+- Native Codex launch flags name each start's credential path. The daemon issues those tickets
+  after the app-server handshake and configuration checks, immediately before opening the thread.
 - The launcher reads its file, removes it, and redeems the ticket over the loopback API
   (`POST /api/residents/mcp/redeem`). The ticket is the whole credential and is spent on first
   presentation, whatever the outcome. The answer is that one server's definition and values.

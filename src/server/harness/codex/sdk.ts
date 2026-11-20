@@ -1590,8 +1590,9 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       let overlayConfig: string | null = null;
       if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: previewEntries });
       // Native mode keeps the operator's home so Codex can use its own configuration and
-      // login store. Its custom servers travel in session flags, which must be set at spawn.
-      const nativeArgs = native ? codexNativeResidentMcpArgs(native.forStart(), opts.mcp) : [];
+      // login store. Flags name the credential paths at spawn. Tickets start aging after preflight.
+      const nativeStart = native?.prepareStart();
+      const nativeArgs = nativeStart ? codexNativeResidentMcpArgs(nativeStart.entries, opts.mcp) : [];
       const transport = await deps.connect(
         [...args, ...extraDirArgs, ...compactArgs, ...residentArgs, ...nativeArgs],
         opts.cwd,
@@ -1743,6 +1744,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
             throw new Error(`this resident's MCP servers cannot be pinned: ${final.kind === "refuse" ? final.reason : "another layer changed during the start"}`);
           }
         }
+        nativeStart?.issue();
         if (opts.resume) {
           const resumeParams: ThreadResumeParams = {
             threadId: opts.resume,
@@ -1785,6 +1787,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // only thing to unwind is the subprocess.
         await transport.close().catch(() => {});
         await pump.catch(() => {});
+        nativeStart?.revoke();
         throw err;
       }
       void pump.catch((err) => {

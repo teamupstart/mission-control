@@ -22,8 +22,11 @@ function setup() {
   return { key, observe, claim, pending };
 }
 
-test("old settings default off and patching preserves independent grants", () => {
-  assert.equal(ShippingConfigSchema.parse({ autoMerge: true }).codeRabbitAutoResolve, false);
+test("settings without a stored choice default on and patching preserves independent grants", () => {
+  assert.equal(ShippingConfigSchema.parse({ autoMerge: true }).codeRabbitAutoResolve, true);
+  setShippingConfig({ codeRabbitAutoResolve: false });
+  setShippingConfig({ soakMinutes: 11 });
+  assert.equal(getShippingConfig().codeRabbitAutoResolve, false, "an opt-out survives an unrelated save");
   setShippingConfig({ codeRabbitAutoResolve: true });
   assert.equal(getShippingConfig().autoMerge, false);
   setShippingConfig({ soakMinutes: 12 });

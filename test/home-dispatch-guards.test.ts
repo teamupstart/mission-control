@@ -34,11 +34,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
   // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
-  // `POST /api/tasks/:id/resume`.
+  // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
+  // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 421);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "d19c4da92cb9dc2f22e82810cf73e74a920440df7f0beae2cbbe7451b23a9878");
+    "e73e257f5aabc3ab60a9011280a14ef1a43ac55784f824cc3c87bf4acb188d28");
 });
 
 function sourceFiles(dir: string): string[] {

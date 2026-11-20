@@ -75,6 +75,11 @@ export interface TerminalHibernationDeps {
   /** Whether a recorded launch's lease is still live: its agent may be running, or about to. */
   launchLive: (launch: TaskHibernationLaunch) => boolean;
   /**
+   * How long a launch whose home was closed is given to end. Closing a home only signals its
+   * agent, and the guard releases the lease once the agent and its descendants are gone.
+   */
+  launchEndMs: number;
+  /**
    * Whether a stopped terminal agent's process has actually gone, waiting a bounded time for it.
    * A stop that was delivered is not one that took effect, and Hibernate's promise is the memory.
    */
@@ -160,6 +165,7 @@ export class HibernationManager {
       },
       backendFor: (task) => task.homeBackend ?? resolveDispatchTerminalBackend(task.agent),
       appearMs: 60_000,
+      launchEndMs: STOP_CONFIRM_MS,
       ...options.terminal,
     };
   }
@@ -411,7 +417,7 @@ export class HibernationManager {
     const stranded = record.failure?.launch ?? null;
     if (stranded && this.terminal.launchLive(stranded)) {
       const closed = await this.terminal.closeHome(stranded);
-      if (!closed.ok || this.terminal.launchLive(stranded)) {
+      if (!closed.ok || !(await this.launchEnded(stranded))) {
         return this.resumeFailed(
           task.id,
           `the agent an earlier attempt started in ${stranded.homeName} may still be running` +
@@ -502,8 +508,10 @@ export class HibernationManager {
 
   /**
    * Undo a launch that will not be bound. Revoking an unclaimed lease means its guard can never
-   * start the agent; closing the home ends one that already started. When neither is certain,
-   * the launch is recorded on the failure, and the next Resume will not launch beside it.
+   * start the agent. Closing the home of one that already started only signals it, so the
+   * launch counts as undone once its lease is released too - the guard's own word that the
+   * agent and everything it started have exited. Otherwise the launch is recorded on the
+   * failure, and the next Resume will not launch beside it.
    */
   private async abandonLaunch(taskId: string, reason: string, home: SpawnedHome, prepared: PreparedResume): Promise<HibernationResult> {
     let revoked = false;
@@ -512,8 +520,6 @@ export class HibernationManager {
     } catch {
       revoked = false;
     }
-    const closed = await this.terminal.closeHome(home);
-    if (revoked || closed.ok) return this.resumeFailed(taskId, reason);
     const launch: TaskHibernationLaunch = {
       homeName: home.homeName,
       homeBackend: home.homeBackend,
@@ -521,12 +527,28 @@ export class HibernationManager {
       leaseRoot: prepared.lease.root,
       leaseId: prepared.lease.id,
     };
+    const closed = await this.terminal.closeHome(home);
+    if (revoked || (closed.ok && await this.launchEnded(launch))) return this.resumeFailed(taskId, reason);
     return this.resumeFailed(
       taskId,
-      `${reason}, and ${home.homeName} could not be closed (${closed.error ?? "no reason given"}). ` +
-        "Its agent may still be running: close that terminal, then Retry",
+      closed.ok
+        ? `${reason}, and the agent it started was still running ${Math.round(this.terminal.launchEndMs / 1000)} seconds ` +
+          `after ${home.homeName} closed. Stop that agent, then Retry`
+        : `${reason}, and ${home.homeName} could not be closed (${closed.error ?? "no reason given"}). ` +
+          "Its agent may still be running: close that terminal, then Retry",
       launch,
     );
+  }
+
+  /** Whether a launch has ended, given `launchEndMs` for its lease to be released. */
+  private async launchEnded(launch: TaskHibernationLaunch): Promise<boolean> {
+    const deadline = Date.now() + this.terminal.launchEndMs;
+    while (this.terminal.launchLive(launch)) {
+      const left = deadline - Date.now();
+      if (left <= 0) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(200, left)));
+    }
+    return true;
   }
 
   /**

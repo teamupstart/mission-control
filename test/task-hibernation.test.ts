@@ -554,8 +554,10 @@ interface TerminalFleet {
     competitor: boolean;
     /** How many more closes of a launched terminal fail. */
     closeFailures: number;
-    /** Whether a recorded launch's lease is still live; closing it successfully ends it. */
+    /** Whether a launch's lease is still live. */
     live: boolean;
+    /** Whether closing a launch's home ends its agent, releasing the lease. */
+    closeEnds: boolean;
   };
 }
 
@@ -594,6 +596,7 @@ function terminalFleet(
     competitor: options.competitor ?? false,
     closeFailures: options.closeFailures ?? 0,
     live: false,
+    closeEnds: true,
   };
   let launches = 0;
   // Sessions that stay in every discovery sweep, whatever the test does to the others.
@@ -654,10 +657,11 @@ function terminalFleet(
           controls.closeFailures--;
           return { ok: false, error: "tmux: no server running" };
         }
-        controls.live = false;
+        if (controls.closeEnds) controls.live = false;
         return { ok: true };
       },
       launchLive: () => controls.live,
+      launchEndMs: 100,
       // The process is gone once the stop took effect; a survivor never goes.
       exited: async (session) => registry.getSession(session.id)?.state === "exited" || !registry.getSession(session.id),
       backendFor: () => "tmux",
@@ -790,6 +794,37 @@ test("a failed terminal Resume whose terminal cannot be closed refuses to launch
   assert.equal(f.spawned.length, 2);
   assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
   assert.equal(f.registry.getTask("term")?.hibernation ?? null, null);
+});
+
+test("a failed terminal Resume whose agent outlives its closed terminal keeps the launch recorded", async (t) => {
+  const f = terminalFleet(checkout("terminal-outlives-close"), { appears: false });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  // The launch's guard claims its lease, and the agent survives its terminal being closed.
+  f.controls.live = true;
+  f.controls.closeEnds = false;
+
+  const first = await f.hibernation.resume("term");
+  assert.match(first.ok ? "" : first.error,
+    /did not reopen the conversation.*and the agent it started was still running 0 seconds after Terminal task closed\. Stop that agent, then Retry/);
+  assert.deepEqual(f.closed, ["Terminal task"], "its terminal was closed");
+  const recorded = f.registry.getTask("term")!.hibernation!.failure!;
+  assert.equal(recorded.launch?.leaseId, "lease-1", "a closed terminal is not taken as proof the launch ended");
+  assert.equal(db.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1", "durably");
+
+  // Retry closes it again; while its lease is still held, nothing is launched beside it.
+  const blocked = await f.hibernation.resume("term");
+  assert.match(blocked.ok ? "" : blocked.error, /an earlier attempt started in Terminal task may still be running\. Close that terminal, then Retry/);
+  assert.equal(f.spawned.length, 1, "no second agent on the conversation");
+  assert.equal(f.prepared.length, 1);
+
+  // Once it ends, Retry launches and binds the agent it started.
+  f.controls.closeEnds = true;
+  f.controls.appear = true;
+  const retried = await f.hibernation.resume("term");
+  assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
+  assert.equal(f.spawned.length, 2);
+  assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
 });
 
 test("a session opened on the conversation by something other than the resume is never given the task", async (t) => {

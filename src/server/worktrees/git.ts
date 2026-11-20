@@ -115,6 +115,9 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
 /** What a reftable repository writes as its HEAD file, whatever HEAD really is. */
 const REFTABLE_HEAD_STUB = "ref: refs/heads/.invalid";
 
+/** `headFile`'s answer for a HEAD that is a symbolic link: its contents say nothing either. */
+const SYMLINK_HEAD = "(symbolic link)";
+
 /**
  * The trimmed contents of the checkout's own HEAD file, or null when it cannot be read. A
  * linked worktree's `.git` is a file naming its private git dir, relative paths included.
@@ -128,7 +131,11 @@ async function headFile(path: string): Promise<string | null> {
       if (!pointer.startsWith("gitdir: ")) return null;
       gitDir = resolve(path, pointer.slice("gitdir: ".length));
     }
-    return (await readFile(join(gitDir, "HEAD"), "utf8")).trim();
+    const head = join(gitDir, "HEAD");
+    // Git's symbolic-link form of HEAD (`core.preferSymlinkRefs`) names a branch by linking to
+    // it, and reading through the link yields that branch's commit - a detached HEAD's shape.
+    if ((await lstat(head)).isSymbolicLink()) return SYMLINK_HEAD;
+    return (await readFile(head, "utf8")).trim();
   } catch {
     return null;
   }
@@ -344,11 +351,12 @@ export class NativeWorktreeGit implements WorktreeGit {
     // `(detached)` is also a legal branch name, and status prints it identically. With the
     // files ref backend the HEAD file settles it without another process: a detached HEAD
     // holds a commit, a branch a ref. A reftable repository keeps only a fixed stub there
-    // (`ref: refs/heads/.invalid`), which says nothing, so it asks git instead.
+    // (`ref: refs/heads/.invalid`), and a symbolic-link HEAD reads as its branch's commit;
+    // neither says anything, so both ask git instead.
     if (branch === "(detached)") {
       const head = await headFile(path);
       if (head === null) return unanswered("whether HEAD is detached");
-      if (head === REFTABLE_HEAD_STUB) {
+      if (head === REFTABLE_HEAD_STUB || head === SYMLINK_HEAD) {
         const detached = await this.detachedAt(path);
         if (!detached.ok) return detached;
         if (!detached.value) branch = "(a branch named (detached))";

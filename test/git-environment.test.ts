@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -35,6 +35,22 @@ test("the xcrun shim bypass is a no-op where git is not Apple's shim", () => {
   const env: NodeJS.ProcessEnv = { PATH: ["/nonexistent", "/also-missing"].join(delimiter) };
   bypassXcrunGitShim(env);
   assert.equal(env.PATH, ["/nonexistent", "/also-missing"].join(delimiter));
+});
+
+test("an empty PATH component is the current directory, so a git there keeps the shim bypass off", { skip: process.platform !== "darwin" }, (t) => {
+  // `PATH=:/usr/bin` makes a shell run `./git` before Apple's. Reading that as "the first git is
+  // /usr/bin/git" would put the developer-directory git in front of the one this PATH selects.
+  const cwd = process.cwd();
+  const here = mkdtempSync(join(tmpdir(), "mission-git-environment-cwd-"));
+  t.after(() => {
+    process.chdir(cwd);
+    rmSync(here, { recursive: true, force: true });
+  });
+  writeFileSync(join(here, "git"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  process.chdir(here);
+  const env: NodeJS.ProcessEnv = { PATH: `${delimiter}/usr/bin` };
+  bypassXcrunGitShim(env);
+  assert.equal(env.PATH, `${delimiter}/usr/bin`);
 });
 
 test("the developer directory follows xcode-select's precedence and matches xcrun", { skip: process.platform !== "darwin" }, () => {

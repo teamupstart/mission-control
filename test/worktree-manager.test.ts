@@ -293,6 +293,23 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   } finally {
     renameSync(`${privateHead}.moved`, privateHead);
   }
+  // A symbolic-link HEAD (`core.preferSymlinkRefs`) names a branch by linking to it, and reading
+  // through the link yields a commit - a detached HEAD's shape. Git is asked instead.
+  renameSync(privateHead, `${privateHead}.moved`);
+  const linkTarget = `${privateHead}.target`;
+  writeFileSync(linkTarget, `${sha}\n`);
+  symlinkSync(linkTarget, privateHead);
+  try {
+    const symlinked = await new NativeWorktreeGit(async (_bin, args) =>
+      args.includes("symbolic-ref") ? known("refs/heads/(detached)\n") : known(header(sha, "(detached)")), noPause,
+    ).inspect(detachedTree);
+    assert.ok(symlinked.ok, symlinked.ok ? "" : symlinked.reason);
+    assert.equal(symlinked.value.detached, false, "a symbolic-link HEAD that git calls a branch is a branch");
+  } finally {
+    unlinkSync(privateHead);
+    unlinkSync(linkTarget);
+    renameSync(`${privateHead}.moved`, privateHead);
+  }
   const changed = await new NativeWorktreeGit(async () =>
     known(`${header(sha, "feature")}1 .M N... 100644 100644 100644 ${sha} ${sha} keep.txt\0`), noPause).inspect(clone);
   assert.ok(changed.ok);

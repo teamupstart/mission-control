@@ -14,6 +14,14 @@ import { dirname, join } from "node:path";
 // pays one `update-index --refresh` so the index's stat cache describes the new inodes.
 // What git does to the repository afterwards is untouched; only how it came to exist changes.
 
+/**
+ * How every fixture copy is made. `preserveTimestamps` keeps mtimes, which the index refresh
+ * compares. `verbatimSymlinks` keeps a committed relative symlink relative: by default Node
+ * resolves it against the source, so a copy's `alias -> keep.txt` would point into the first
+ * build and break once that is removed.
+ */
+const COPY = { recursive: true, preserveTimestamps: true, verbatimSymlinks: true } as const;
+
 /** Run git in `dir`, returning trimmed stdout. */
 export function gitIn(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();
@@ -146,7 +154,7 @@ function buildRepo(dir: string, seed: FullSeed): string[] {
  * the template's inodes. An empty commit has no index to refresh.
  */
 function copyRepo(from: string, dest: string): void {
-  cpSync(from, dest, { recursive: true, preserveTimestamps: true });
+  cpSync(from, dest, COPY);
   if (existsSync(join(dest, ".git", "index"))) gitIn(dest, "update-index", "-q", "--refresh");
 }
 
@@ -170,7 +178,7 @@ export function seedGitHistory(dir: string, seed: RepoSeed = {}): string[] {
   }
   const shas = buildRepo(dir, full);
   const path = templateDir();
-  cpSync(dir, path, { recursive: true, preserveTimestamps: true });
+  cpSync(dir, path, COPY);
   templates.set(key, { path, shas });
   return [...shas];
 }
@@ -226,11 +234,11 @@ export function cachedGitTree<T>(key: string, root: string, build: (root: string
   if (!cachedTree) {
     const value = build(destination);
     const path = templateDir();
-    cpSync(destination, path, { recursive: true, preserveTimestamps: true });
+    cpSync(destination, path, COPY);
     trees.set(full, { path, builtAt: destination, value: JSON.stringify(value) });
     return value;
   }
-  cpSync(cachedTree.path, destination, { recursive: true, preserveTimestamps: true });
+  cpSync(cachedTree.path, destination, COPY);
   for (const worktree of rerootTree(destination, cachedTree.builtAt, destination)) {
     if (existsSync(join(worktree, ".git", "index")) || !statSync(join(worktree, ".git")).isDirectory()) {
       gitIn(worktree, "update-index", "-q", "--refresh");

@@ -31,8 +31,8 @@ export function disableAutoMaintenance(env = process.env) {
 /** The first `name` on `path` that is executable, or null. Looked up without a process. */
 function onPath(name, path) {
   for (const directory of (path ?? "").split(delimiter)) {
-    if (!directory) continue;
-    const candidate = join(directory, name);
+    // An empty component is the current directory, which is where a shell would look.
+    const candidate = join(directory || ".", name);
     try {
       accessSync(candidate, constants.X_OK);
       return candidate;

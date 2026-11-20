@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { gitIn, mkOriginAndClone, seedGitHistory, seedGitRepo } from "./helpers/git-fixture.ts";
+import { cachedGitTree, gitIn, mkOriginAndClone, seedGitHistory, seedGitRepo } from "./helpers/git-fixture.ts";
 
 /** Run `body` with one more git config entry in this worker's environment, then remove it. */
 function withGitConfig(key: string, value: string, body: () => void): void {
@@ -72,6 +72,31 @@ test("an origin-and-clone copy fetches from its own origin, not the first one bu
     rmSync(first.root, { recursive: true, force: true });
     rmSync(second.root, { recursive: true, force: true });
   }
+});
+
+test("a committed relative symlink in a cached tree stays relative in every copy", (t) => {
+  const roots: string[] = [];
+  t.after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
+  const build = () => {
+    const root = mkdtempSync(join(tmpdir(), "mission-git-fixture-symlink-"));
+    roots.push(root);
+    return cachedGitTree("relative-symlink", root, (dir) => {
+      const repo = join(dir, "repo");
+      seedGitRepo(repo, { files: { "keep.txt": "kept\n" }, message: "symlink base" });
+      symlinkSync("keep.txt", join(repo, "alias"));
+      gitIn(repo, "add", "alias");
+      gitIn(repo, "commit", "-qm", "alias");
+      return { repo };
+    });
+  };
+  const first = build();
+  const copy = build();
+  // The first build is gone; a copy whose link was resolved against it would now dangle.
+  rmSync(roots[0]!, { recursive: true, force: true });
+  assert.equal(readlinkSync(join(copy.repo, "alias")), "keep.txt");
+  assert.equal(readFileSync(join(copy.repo, "alias"), "utf8"), "kept\n");
+  assert.equal(gitIn(copy.repo, "status", "--porcelain"), "");
+  assert.notEqual(copy.repo, first.repo);
 });
 
 test("fixtures still work when git defaults new repositories to reftable", { skip: !supportsReftable() }, (t) => {

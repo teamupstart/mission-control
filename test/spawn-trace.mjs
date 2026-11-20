@@ -73,38 +73,78 @@ if (dir) {
   const optionsOf = (callArgs) =>
     callArgs.slice(1).find((arg) => arg !== null && typeof arg === "object" && !Array.isArray(arg)) ?? {};
 
-  /**
-   * One spawn. `pid` is the child's, when the API hands one back, so the report can tell a
-   * node descendant its traced parent already counted from one a shell started. `shell` marks
-   * a command run through `/bin/sh`, which is one more exec than the program it names.
-   */
-  const record = (api, callArgs, child) => {
-    const [command, args] = callArgs;
-    const shellString = api === "exec" || api === "execSync";
-    const shell = shellString || Boolean(optionsOf(callArgs).shell);
-    const program = api === "fork" ? process.execPath : command;
-    const cmd = shellString
-      ? basename(String(command).trim().split(/\s+/)[0] ?? "")
-      : basename(String(program));
-    const argv = shellString
-      ? [String(command).slice(0, 200)]
-      : (api === "fork" ? [command] : Array.isArray(args) ? args : []).filter((a) => typeof a === "string").slice(0, 8);
-    write({ event: "spawn", file, api, cmd, argv, caller: caller(), shell, pid: child?.pid ?? null, ppid: process.pid });
+  /** Git's subcommand, past the global options that may precede it - and never their values. */
+  const gitSubcommand = (words) => {
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i];
+      if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"].includes(word)) {
+        i++;
+        continue;
+      }
+      if (word.startsWith("-")) continue;
+      return word;
+    }
+    return "(none)";
   };
 
+  /**
+   * Whether the call started a process. A missing or unrunnable executable still reaches the
+   * API, so the record says so rather than counting a process that never existed. Null when
+   * the API cannot tell (the *Sync output forms), which the report counts as started.
+   */
+  const LAUNCH_FAILURES = new Set(["ENOENT", "EACCES", "ENOTDIR", "E2BIG"]);
+  const launchedFrom = (outcome) => {
+    if (outcome === undefined || outcome === null || typeof outcome !== "object") return null;
+    if (outcome instanceof Error) return !LAUNCH_FAILURES.has(outcome.code);
+    if (outcome.error) return !LAUNCH_FAILURES.has(outcome.error.code);
+    if ("pid" in outcome) return typeof outcome.pid === "number" && outcome.pid > 0;
+    return null;
+  };
+
+  /**
+   * One spawn, recorded without its arguments: a command line can carry a credential, and the
+   * report needs only the executable and, for git, the subcommand. `pid` is the child's when
+   * the API hands one back, so the report can tell a node descendant its traced parent already
+   * counted from one a shell started.
+   */
+  const record = (api, callArgs, outcome) => {
+    const [command, args] = callArgs;
+    const shellString = api === "exec" || api === "execSync";
+    const words = shellString
+      ? String(command).trim().split(/\s+/)
+      : [String(api === "fork" ? process.execPath : command),
+        ...(api === "fork" ? [] : Array.isArray(args) ? args.filter((a) => typeof a === "string") : [])];
+    const cmd = basename(words[0] ?? "");
+    write({
+      event: "spawn", file, api, cmd,
+      sub: cmd === "git" ? gitSubcommand(words.slice(1)) : null,
+      caller: caller(),
+      shell: shellString || Boolean(optionsOf(callArgs).shell),
+      launched: launchedFrom(outcome),
+      pid: outcome && typeof outcome === "object" && typeof outcome.pid === "number" ? outcome.pid : null,
+      ppid: process.pid,
+    });
+  };
+
+  // One call is one record. `exec` calls the exported `execFile`, and the promisified forms call
+  // the plain ones, so only the outermost traced entry records; nested entries pass straight on.
+  let depth = 0;
   for (const api of ["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync", "fork"]) {
     const original = childProcess[api];
     const traced = function traced(...callArgs) {
+      if (depth > 0) return Reflect.apply(original, this, callArgs);
+      depth++;
       let result;
       try {
         result = Reflect.apply(original, this, callArgs);
       } catch (error) {
-        // execFileSync and execSync throw for a non-zero exit; the process still ran.
-        record(api, callArgs, { pid: error?.pid ?? null });
+        depth--;
+        // execFileSync and execSync throw for a non-zero exit too; the process still ran.
+        record(api, callArgs, error);
         throw error;
       }
-      // A ChildProcess and a spawnSync result both carry `pid`; the *Sync output forms do not.
-      record(api, callArgs, result && typeof result === "object" && "pid" in result ? result : null);
+      depth--;
+      record(api, callArgs, result);
       return result;
     };
     // `exec` and `execFile` carry a custom promisified form that resolves `{ stdout, stderr }`.
@@ -113,7 +153,14 @@ if (dir) {
     const custom = original[promisify.custom];
     if (typeof custom === "function") {
       traced[promisify.custom] = function tracedPromise(...callArgs) {
-        const promise = Reflect.apply(custom, this, callArgs);
+        if (depth > 0) return Reflect.apply(custom, this, callArgs);
+        depth++;
+        let promise;
+        try {
+          promise = Reflect.apply(custom, this, callArgs);
+        } finally {
+          depth--;
+        }
         record(api, callArgs, promise.child ?? null);
         return promise;
       };

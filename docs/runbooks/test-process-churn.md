@@ -36,9 +36,12 @@ node scripts/test-spawn-report.mjs "$trace" --top 25
 
 The report also ranks spawns by command, by test file, and by call site, and splits git
 between test fixtures and the code under test. Compare git across runs by its trace2 count
-(real git processes); the xcrun shim count is a separate, macOS-only figure. Name test files instead of the glob to measure one
-suite. `scripts/test-spawn-report.mjs` documents an optional `git` shim for PATH that also
-counts git started by shell scripts.
+(real git processes); the xcrun shim count is a separate, macOS-only figure. Name test files
+instead of the glob to measure one suite.
+
+The tracer records each spawn's executable, git subcommand and call site, never its arguments.
+Git's trace2 files are git's own and do record git's full command lines, including any `-c`
+values, so treat the trace directory as sensitive and delete it when the report is written.
 
 Tracing adds its own overhead, so measure wall-clock time with an untraced run.
 

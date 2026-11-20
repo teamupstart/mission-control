@@ -2,9 +2,9 @@
 
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.4, 7.11, 7.20.
 
-**1. Outcome.** From Claude Code a person can dispatch a task through the launcher, the fast path, the description and the confirm, or from mid-conversation through the `start_dispatch` tool, with the confirm showing a Codex warning when reviews depend on Codex.
+**1. Outcome.** From Claude Code a person can dispatch a task through the launcher, the fast path, the description and the confirm, or from mid-conversation through the `start_dispatch` tool, with the confirm showing a Codex warning when reviews depend on Codex. Branches (S10, S11): if S10 passed, the launcher opens from `classic.SessionStart`; if only S11 passed, it holds the first prompt; if both failed, the launcher is switched off, every other flow still works, and the owner decides.
 
-**2. Entry and dependencies.** Direct prerequisites: P8 (mod core and `paneOpen`), P5 (options and drafts), P7 (readiness route). Gate: S10 or S11 recorded in Commonroom before the launcher merges; if both fail, merge everything else with the launcher switched off and wait for the owner. S8, S12 and S15 are soft.
+**2. Entry and dependencies.** Direct prerequisites: P8 (mod core and `paneOpen`), P5 (options and drafts), P7 (readiness route). Gate: S10 or S11 recorded in Commonroom before the launcher merges; if both fail, merge everything else with the launcher switched off and wait for the owner; P13's `mctl claude` is unaffected, since it only starts a plain Claude session whether or not the launcher is on. S8, S12 and S15 are soft. S10 or S11 is a merge gate for the launcher part only. A merge gate is satisfied only by the owner's answer posted to Commonroom: read it, quote it in the pull request, and stop without merging if none exists. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded.
 
 **3. Scope.** `src/mod/flows/*`: `/mission-dispatch` (launcher, fast path, description, confirm, and the `inbox`, `check`, `pane` and task-id arguments, which call the host's `paneOpen` from P8 with the tab or task id and nothing else), the `start_dispatch` tool, the intent nudge, the `create_task` description sentence, and the confirm summary's Codex line from the readiness route (six rows, Start now always stays). Non-goals: pane contents (P12), anything that answers or approves.
 
@@ -16,8 +16,8 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **7. Tests.** Fake-host tests for each flow and dismissal path, the six confirm rows, the quick path; `claude plugin test` locally.
 
-**8. Merge and exit.** Dispatch works end to end against the fakes; launcher gated by the recorded S10 or S11 answer. Interim pane behavior: with the fake host each of `inbox`, `check`, `pane` and a task id records one `paneOpen` with the right target, and none errors while P8's placeholder view is the pane.
+**8. Merge and exit.** Dispatch works end to end against the fakes; launcher gated by the recorded S10 or S11 answer. Interim pane behavior: with the fake host each of `inbox`, `check`, `pane` and a task id records one `paneOpen` with the right target, and none errors while P8's placeholder view is the pane. Tests cover the launcher on (as recorded) and the launcher off, and in the off state the other flows are unaffected.
 
-**9. Handoff.** P15 owns subagent lines end to end (formatter, producer, field and the header slot fill in P12's pane); P12 replaces P8's placeholder view behind the same `paneOpen` calls.
+**9. Handoff.** P15 owns the subagent line formatter and the two slot fills in P12's pane (the data fields are filled by P4 and P9); P12 replaces P8's placeholder view behind the same `paneOpen` calls.
 
 **10. Cross-phase audit.** Registration lines do not collide with P12's. The Codex line matches P7's `CodexReadiness`.

@@ -1,6 +1,6 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 8). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 10). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
@@ -12,7 +12,9 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 8). Spec: Co
 - Review repairs (revision 4): widget placement is out of v1; P4 merges after P3; P8 owns `paneOpen` with a placeholder view that P12 replaces; P14 probes the installed mod version and reinstalls a stale build.
 - Review repairs (revision 5): P7 merges after P3; P10's `logs` has defined interim behavior until P9 lands; P13's launcher handoff is defined (`mctl claude` starts plain Claude until P11 and P14); P17 merges after P13; a failed mod reinstall has an honest recovery path, with no rollback claimed.
 - Review repairs (revision 6): P15 owns the one pane edit for subagent lines (the slot P12 reserves); S28a answers its questions on `main` and S28b's later findings land additively; P17 merges after P6 and P16.
-- Review repairs (revision 7): P15 also owns the producer of each task's `subagentLines` (daemon derivation, an additive field on the inbox `run` and tasks read, and an end-to-end test); P14 owns the one edit that makes the already-merged `mctl claude` use the shared `claude` detection (P14 now merges after P13).
+- Review repairs (revision 7): P14 owns the one edit that makes the already-merged `mctl claude` use the shared `claude` detection (P14 now merges after P13). The subagent chain it also repaired is restated in revision 10.
+- Review repairs (revision 9): P14 has one merge rule for the soft spikes S17 and S20 (warn until a recorded answer confirms the fact); P13's launcher outcome is conditional on P11's launcher being enabled.
+- Review repairs (revision 10): a sweep by class. Named paths: routes use their spec 2.3 paths and per-task subagent data is the `subagents` field on inbox items (P4) and the transcript response (P9), formatted by P15's `subagentLines`. Gates: one hard rule and one soft rule, repeated. Conditionals: both branches of each spike-dependent outcome in each downstream phase.
 - Review repairs (revision 8): a sweep of every file for stub, slot, optional-field and interim wording; P1 and P2 now name the owner of every route stub, CLI command, setup step, mod flow and pane; P12 names the fields its header and rows read; P15 names the source of the subagent events.
 
 ## 2. Findings from the repository
@@ -32,7 +34,8 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 8). Spec: Co
 5. One owner per file (spec 8.1). A contract change after P1 only adds, in its own `contract:` commit.
 6. No em dash in prose. Do not hand-edit generated files. Do not commit evidence artifacts.
 7. Open a reviewable pull request to `main` through the pull-request skill, and follow it until CI is green. Its merge releases dependents.
-8. A gate (S10 or S11, S16, S27) is satisfied only by the owner's answer posted to Commonroom. Read it, quote it in the pull request, and stop without merging if none exists.
+8. A merge gate is satisfied only by the owner's answer posted to Commonroom: read it, quote it in the pull request, and stop without merging if none exists. The merge gates are S10 or S11 (the launcher part of P11), S16 (P9 and P12) and S27 (P7).
+9. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded. The soft spikes are S4, S5, S8, S12, S14, S15, S17 to S26 (S18 and S19 included).
 
 ## 4. Sizing and phase count
 
@@ -77,15 +80,15 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 | P4 `phase-4-read-only-inbox-answers-and-approval` | WP2b | P3 | none |
 | P5 `phase-5-dispatch-options-drafts-and-banner` | WP3 | P2 | none |
 | P6 `phase-6-repository-task-skills` | WP8 | P2 | none |
-| P7 `phase-7-codex-readiness-and-fail-fast` | WP18 | P3 | S27 recorded; S24 to S26 |
-| P8 `phase-8-mod-core-and-glance-layer` | WP13 | P3, P4 | S14 |
-| P9 `phase-9-residents-and-chat-routes` | WP16 | P3, P4 | S16 |
+| P7 `phase-7-codex-readiness-and-fail-fast` | WP18 | P3 | S27 recorded (hard); S24 to S26 (soft) |
+| P8 `phase-8-mod-core-and-glance-layer` | WP13 | P3, P4 | S14 (soft) |
+| P9 `phase-9-residents-and-chat-routes` | WP16 | P3, P4 | S16 (hard) |
 | P10 `phase-10-mctl-client-and-reads` | WP6a | P4 | none |
-| P11 `phase-11-mod-dispatch-flows-and-tool` | WP14 | P8, P5, P7 | S10 or S11 |
-| P12 `phase-12-mission-control-pane` | WP17 | P8, P9 | S16; S21 to S23 |
+| P11 `phase-11-mod-dispatch-flows-and-tool` | WP14 | P8, P5, P7 | S10 or S11 (hard, launcher part only); S8, S12, S15 (soft) |
+| P12 `phase-12-mission-control-pane` | WP17 | P8, P9 | S16 (hard); S21 to S23 (soft) |
 | P13 `phase-13-mctl-run-claude-daemon` | WP6b | P10, P5 | none |
-| P14 `phase-14-setup-doctor-and-mod-install` | WP7 | P8, P10, P13 | S5, S14, S17, S18, S20 |
-| P15 `phase-15-subagents-and-agents-step` | WP11 | P11, P12, P14 | S4 |
+| P14 `phase-14-setup-doctor-and-mod-install` | WP7 | P8, P10, P13 | S5, S14, S17, S18, S20 (all soft) |
+| P15 `phase-15-subagents-and-agents-step` | WP11 | P11, P12, P14 | S4 (soft) |
 | P16 `phase-16-app-packaging-of-the-mod` | WP15 | P14 | none |
 | P17 `phase-17-docs` | WP9 | P14, P15, P12, P7, P13, P6, P16 | none |
 | P18 `phase-18-full-loop-and-flag-off-sweep` | WP12 | P6, P13, P16, P17 | none |
@@ -144,7 +147,7 @@ Concurrency: after P2, P3, P5 and P6 run together; P4 and P7 follow P3. After P4
 - P4 owns `src/shared/home-dispatch-inbox.ts` (`workflowStages`, `residentLoopLabel`); P12 asks P4's owner for changes.
 - P8 owns `src/mod/register.ts`, `host.ts`; P11 and P12 add flows and panes with one registration line each.
 - P14 owns `scripts/install-service.mjs` and the setup-step files except `agents.ts` (P15) and `codex.ts` (P7).
-- P12 reserves the `subagentLines` slot in `src/mod/pane/header.tsx`; P15 owns the formatter, the producer of `subagentLines` and the additive field that carries it, and fills that slot, and edits nothing else in the pane.
+- Subagent lines: P1 declares `subagents` on inbox items and on the transcript response; P4 creates `src/server/home-dispatch/subagent-state.ts` and fills the inbox counts; P9 fills the transcript lines from it; P12 reserves two slots in `src/mod/pane/header.tsx`; P15 owns `src/shared/subagent-lines.ts` (`subagentLines`) and fills both slots, editing nothing else in the pane.
 - P13 owns `src/cli/commands/claude.ts` and resolves `claude` from `PATH`; P14 owns `src/cli/claude-cli.ts` and the one edit that makes `mctl claude` call it.
 - P8 owns `paneOpen` and `paneClose` with a placeholder view; P12 replaces the view and changes no signature.
 - P14 owns the installed-version probe and stale-build reinstall; P16 relies on it.

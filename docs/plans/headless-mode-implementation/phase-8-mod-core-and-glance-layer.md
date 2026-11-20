@@ -4,7 +4,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **1. Outcome.** The mod loads, follows the flag, registers the session, polls the inbox, and shows toasts, the band with its `1` button, a quiet status entry, and the banner. It stays inert on a `modApi` mismatch.
 
-**2. Entry and dependencies.** Direct prerequisites: P3 (registration) and P4 (inbox). Soft spikes S14, S18, S19; record them in Commonroom, and where S14 fails use its documented fallback.
+**2. Entry and dependencies.** Direct prerequisites: P3 (registration) and P4 (inbox). Soft spikes S14, S18, S19; record them in Commonroom, and where S14 fails use its documented fallback. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded.
 
 **3. Scope.** `src/mod/register.ts`, `host.ts`, `client.ts`, `attention.ts`, `banner.ts`, `src/mod/types/index.d.ts`: the adapter (including the `Pane` render and `ui.close` seams), `ModHost`, the daemon client and token, flag following, the worker rule, the poll, toasts, the band, the status entry rules, the banner, the real `paneOpen` and `paneClose` host calls (open id `mission`, focus, size, close) drawing a placeholder view that reads `The Mission Control pane is not available in this build yet.`, and the `mod-calls` smoke check of plan 6.5. Non-goals: dialogs and the tool (P11), real pane content (P12), install (P14).
 

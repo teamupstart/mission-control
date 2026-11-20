@@ -12,7 +12,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **5. Steps.** Read spec 7.13. Implement the client with the `cli` surface header, then each read command against the inbox, config and transcript shapes. Print refusal text as written.
 
-**6. Data and API.** No new routes. Flags and output formats are documented in the command help.
+**6. Data and API.** No new routes. Flags and output formats are documented in the command help. `mctl get tasks` and `status` read `GET /dispatch/inbox` (with `repo=*` for `--all`), `config` reads `GET /dispatch/config`, and `logs` reads the transcript and stream routes of P9.
 
 **7. Tests.** Each command against the fake daemon; refusal cases; `logs` and `logs -f` against a daemon whose transcript routes answer 501 (the not-available message, exit 1, no retry); `logs -f` reconnect and exit; no command can send or answer.
 

@@ -16,7 +16,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **7. Tests.** `MISSION_TEST_CONCURRENCY=4 npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`, `npm run test:e2e`.
 
-**8. Merge and exit.** All checks green on `main`; the walkthrough is attached; the S28b scout task has reported or been consciously deferred by the owner.
+**8. Merge and exit.** All checks green on `main`; the walkthrough is attached; the S28b scout task has reported or been consciously deferred by the owner. Tests and the walkthrough cover each spike-dependent branch as recorded (launcher, chat path, readiness value, pane surfaces) rather than assuming one branch.
 
 **9. Handoff.** The feature is ready for alpha. Default-on and retirement of the flag are separate pull requests under `docs/feature-flags.md`.
 

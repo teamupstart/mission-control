@@ -16,7 +16,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **7. Tests.** Run any docs tests (`npm test` includes doc-contract tests if present) and `npm run lint`.
 
-**8. Merge and exit.** Every user-visible behavior of P3 to P16 is documented accurately; README and linked docs match the implementation.
+**8. Merge and exit.** Every user-visible behavior of P3 to P16 is documented accurately; README and linked docs match the implementation. Each spike-dependent behavior is documented as recorded: launcher on or off (S10, S11), chat direct or `chat_first` (S16), the `CODEX_AUTH_MTIME_RELIABLE` value (S27), the managed-policy install fallback (S17), and which surfaces the pane draws in (S22).
 
 **9. Handoff.** P18's walkthrough follows these docs.
 

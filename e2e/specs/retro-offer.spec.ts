@@ -85,6 +85,11 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
   return await response.json() as T;
 }
 
+test.beforeEach(async ({ daemon }) => {
+  // These specs seed review observations. Keep the Inspector worker off so it cannot race the fixture.
+  await api(daemon, "/api/inspector/config", { enabled: false, mode: "dry-run" }, "PUT");
+});
+
 interface SessionRow {
   id: string;
   agent: string;

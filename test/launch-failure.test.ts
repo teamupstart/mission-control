@@ -137,7 +137,7 @@ test("a backlog kind that fails while provisioning returns to the Backlog carryi
 for (const scenario of [
   { name: "origin probe timeout", step: "remote", secondary: false, script: "setInterval(() => {}, 1000)", timeoutMs: 80, exitCode: null, signal: "SIGTERM", timedOut: true },
   { name: "fetch timeout", step: "fetch", secondary: false, script: "setInterval(() => {}, 1000)", timeoutMs: 80, exitCode: null, signal: "SIGTERM", timedOut: true },
-  { name: "attached repository fetch refusal", step: "fetch", secondary: true, script: 'process.stderr.write("remote refused\\nsecond line\\n"); process.exit(128)', timeoutMs: 5000, exitCode: 128, signal: null, timedOut: false },
+  { name: "attached repository fetch refusal", step: "fetch", secondary: true, script: 'process.stderr.write("remote refused\\nsecond line\\n"); process.exit(128)', timeoutMs: 15_000, exitCode: 128, signal: null, timedOut: false },
   { name: "remote HEAD probe killed externally", step: "ls-remote", secondary: false, script: 'process.kill(process.pid, "SIGTERM")', timeoutMs: 5000, exitCode: null, signal: "SIGTERM", timedOut: false },
 ]) {
   test(`prepare logs process facts for ${scenario.name} before returning to Backlog`, async (t) => {
@@ -162,7 +162,8 @@ for (const scenario of [
         assert.equal(opts?.timeoutMs, scenario.step === "remote" ? 15_000 : 30_000,
           "the production local-probe and network budgets stay bounded");
         // Exercise the real executor's timeout, signal and exit handling with a local child.
-        // The shorter fixture budget avoids a 30-second wait or any network/agent access.
+        // The timeout fixtures finish quickly. A refusal fixture allows for cold Node startup
+        // under suite load so the executor can observe its actual exit status.
         return run(process.execPath, ["-e", scenario.script], { timeoutMs: scenario.timeoutMs });
       }
       if (args.includes("remote")) return stubRun({ code: 0, stdout: "origin\n", stderr: "" });

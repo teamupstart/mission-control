@@ -120,6 +120,7 @@ test("upgrading an install that stored the old default-off value turns follow-up
 });
 
 test("fake GitHub drives unresolved, zero and unknown in Shipping without Inspector or GitHub writes", async ({ dashboard, daemon }) => {
+  await api(daemon, "/api/inspector/config", { enabled: false }, "PUT");
   const pr: FakePullRequest = { cwd: daemon.repo, number: 27, url: "https://github.com/acme/mission-e2e/pull/27",
     state: "OPEN", createdAt: new Date().toISOString(), mergedAt: null, headRefOid: "head", reviewThreads: threads() };
   writeGhPullRequests(daemon.home, [pr]);

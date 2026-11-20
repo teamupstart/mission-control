@@ -464,3 +464,53 @@ test("a peer's newer write wins while this window's own write answer is still he
   expect((await shapingConfig(daemon)).overrides["race-notes"]).toBe(false);
   await page.unroute("**/api/shaping");
 });
+
+// A save sends only what this window typed. With an unsaved identity edit open here, the peer
+// changes both limits; this window's untouched fields follow the peer at once, and saving the
+// identity keeps the peer's newer limits rather than writing back this window's stale copy.
+test("saving one setting keeps another window's newer change to the fields left alone", async ({ dashboard: page, context, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const fields = (window: Page) => {
+    const form = window.getByRole("form", { name: "Caller identity and budgets" });
+    return {
+      identity: form.getByRole("textbox", { name: "Caller identity" }),
+      deadline: form.getByRole("spinbutton", { name: "Step deadline (ms)" }),
+      budget: form.getByRole("spinbutton", { name: "Context budget (KiB)" }),
+      save: form.getByRole("button", { name: "Save", exact: true }),
+    };
+  };
+  const here = fields(page);
+  const there = fields(peer);
+  await expect(here.deadline).toHaveValue("10000");
+  await expect(there.deadline).toHaveValue("10000");
+
+  // An unsaved identity edit here.
+  await here.identity.fill("first-window");
+  await expect(here.save).toBeEnabled();
+
+  // The peer changes both limits and saves.
+  await there.deadline.fill("20000");
+  await there.budget.fill("48");
+  await there.save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).limits).toMatchObject({ deadlineMs: 20_000, totalBytes: 48 * 1024 });
+
+  // This window shows the peer's limits in the fields it did not touch, and keeps its own draft.
+  await expect(here.deadline).toHaveValue("20000");
+  await expect(here.budget).toHaveValue("48");
+  await expect(here.identity).toHaveValue("first-window");
+
+  // Saving the identity sends the identity alone, so the peer's newer limits stay.
+  await here.save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("first-window");
+  const saved = await shapingConfig(daemon);
+  expect(saved.limits).toMatchObject({ deadlineMs: 20_000, totalBytes: 48 * 1024 });
+  for (const window of [here, there]) {
+    await expect(window.identity).toHaveValue("first-window");
+    await expect(window.deadline).toHaveValue("20000");
+    await expect(window.budget).toHaveValue("48");
+    await expect(window.save).toBeDisabled();
+  }
+});

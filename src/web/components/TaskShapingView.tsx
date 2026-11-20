@@ -35,7 +35,7 @@ export function TaskShapingView({
   onSet,
   onTest,
   repositories,
-  live = [],
+  live = null,
 }: {
   /** Null while the config has not arrived. */
   config: ShapingConfigView | null;
@@ -47,8 +47,11 @@ export function TaskShapingView({
   onTest: ShapingTestRunner;
   /** The repositories a dry run may pick from. */
   repositories: () => Promise<string[]>;
-  /** Ids of shapers that exist but the list does not draw, such as the folder's, so a move keeps their place. */
-  live?: readonly string[];
+  /**
+   * Ids of shapers that exist but the list does not draw, such as the folder's, so a move keeps
+   * their place. Null until that inventory is known; while it is null, no stored entry is dropped.
+   */
+  live?: readonly string[] | null;
 }): React.JSX.Element {
   const [importing, setImporting] = useState(false);
   const [testing, setTesting] = useState<{ id: string; label: string } | null>(null);
@@ -219,9 +222,18 @@ function kib(bytes: number): string {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
 }
 
+/** The form's three fields, as typed. */
+interface SettingsFields {
+  user: string;
+  deadlineMs: string;
+  totalKiB: string;
+}
+
 /**
- * The caller identity and the two budgets. Typed values are a draft until saved; with no draft
- * the fields show the confirmed config, so a change from another window appears here too.
+ * The caller identity and the two budgets. A field the operator types in holds a draft until it
+ * is saved; every other field keeps showing the confirmed config, so a change another window
+ * makes appears here at once. A save sends only the fields typed in here, so it never writes this
+ * window's stale copy of a value another window has changed since.
  */
 function ShapingSettingsForm({ config, busy, error, onSet }: {
   config: ShapingConfigView;
@@ -229,8 +241,9 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
   error: string | null;
   onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
 }): React.JSX.Element {
-  const [draft, setDraft] = useState<{ user: string; deadlineMs: string; totalKiB: string } | null>(null);
-  const shown = draft ?? { user: config.caller.user, deadlineMs: String(config.limits.deadlineMs), totalKiB: kib(config.limits.totalBytes) };
+  const [draft, setDraft] = useState<Partial<SettingsFields>>({});
+  const confirmed: SettingsFields = { user: config.caller.user, deadlineMs: String(config.limits.deadlineMs), totalKiB: kib(config.limits.totalBytes) };
+  const shown: SettingsFields = { ...confirmed, ...draft };
   const deadline = SHAPING_LIMIT_RANGES.deadlineMs;
   const total = SHAPING_LIMIT_RANGES.totalBytes;
   const deadlineMs = Number(shown.deadlineMs);
@@ -244,21 +257,27 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
   const totalProblem = shown.totalKiB.trim() === "" || !Number.isFinite(totalBytes) || totalBytes < total.min || totalBytes > total.max
     ? `From ${total.min / 1024} to ${total.max / 1024} KiB.` : null;
   const userProblem = shown.user.trim().length > 256 ? "At most 256 characters." : null;
-  const dirty = draft !== null && (
-    shown.user.trim() !== config.caller.user || deadlineMs !== config.limits.deadlineMs || totalBytes !== config.limits.totalBytes);
+  // Only a field typed in here counts as a change, so an untouched field is never sent.
+  const changed = {
+    user: draft.user !== undefined && shown.user.trim() !== config.caller.user,
+    deadlineMs: draft.deadlineMs !== undefined && deadlineMs !== config.limits.deadlineMs,
+    totalBytes: draft.totalKiB !== undefined && totalBytes !== config.limits.totalBytes,
+  };
+  const dirty = changed.user || changed.deadlineMs || changed.totalBytes;
+  const edited = Object.keys(draft).length > 0;
   const valid = !deadlineProblem && !totalProblem && !userProblem;
-  const edit = (patch: Partial<typeof shown>) => setDraft({ ...shown, ...patch });
+  const edit = (patch: Partial<SettingsFields>) => setDraft((current) => ({ ...current, ...patch }));
   const save = async (): Promise<void> => {
     const intent: SettingsIntent = { kind: "settings" };
-    if (shown.user.trim() !== config.caller.user) intent.caller = { user: shown.user.trim() };
+    if (changed.user) intent.caller = { user: shown.user.trim() };
     const limits: NonNullable<SettingsIntent["limits"]> = {};
-    if (deadlineMs !== config.limits.deadlineMs) limits.deadlineMs = deadlineMs;
-    if (totalBytes !== config.limits.totalBytes) limits.totalBytes = totalBytes;
+    if (changed.deadlineMs) limits.deadlineMs = deadlineMs;
+    if (changed.totalBytes) limits.totalBytes = totalBytes;
     if (Object.keys(limits).length > 0) intent.limits = limits;
     // Saved or refused, the fields go back to showing the daemon's config: a refusal is a
     // roll back, with its reason below.
     await onSet(intent, "settings");
-    setDraft(null);
+    setDraft({});
   };
   return (
     <form className="shaping-settings" aria-label="Caller identity and budgets"
@@ -297,7 +316,7 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
       {error && <p role="alert">{error}</p>}
       <div className="shaping-settings-actions">
         <Tooltip label="Put back the saved values">
-          <button type="button" className="btn btn-ghost" disabled={draft === null || busy} onClick={() => setDraft(null)}>Reset</button>
+          <button type="button" className="btn btn-ghost" disabled={!edited || busy} onClick={() => setDraft({})}>Reset</button>
         </Tooltip>
         <Tooltip label="Save the caller identity and budgets for every window">
           <button type="submit" className="btn" disabled={!dirty || !valid || busy}>Save</button>

@@ -16,7 +16,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
   const ready = state?.ready ?? false;
   const [references, setReferences] = useState<ShapingReferenceStatus>({});
   // The folder's shapers, which the list does not draw yet, so a move keeps their place in the order.
-  const [discovered, setDiscovered] = useState<string[]>([]);
+  const [discovered, setDiscovered] = useState<string[] | null>(null);
   const configKey = config ? canonicalJson(config) : null;
   useEffect(() => {
     if (!ready || configKey === null) return;
@@ -24,7 +24,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
     void api.getShaping().then((reply) => {
       if (!current || !reply.ok) return;
       if (reply.references) setReferences(reply.references);
-      if (reply.discovered) setDiscovered(reply.discovered.map((entry) => entry.id));
+      if (Array.isArray(reply.discovered)) setDiscovered(reply.discovered.map((entry) => entry.id));
     });
     return () => { current = false; };
   }, [ready, configKey]);

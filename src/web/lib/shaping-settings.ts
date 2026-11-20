@@ -103,14 +103,16 @@ export type ShaperMove = { ok: true; order: string[] } | { ok: false; reason: st
  * The stored order holds at most `SHAPING_LIMITS.choices` ids. When the move would pass that,
  * stored ids that name no shaper this window knows of are left out, the oldest kept first: they
  * place nothing, so dropping them changes no run order. `live` names the shapers the list does
- * not draw but that exist, such as the folder's, so their place is never dropped. If the order
- * still cannot fit, the move is refused with the reason, and nothing is sent.
+ * not draw but that exist, such as the folder's, so their place is never dropped. While `live` is
+ * null - the folder has not been read yet, or the read failed - no id's absence is established,
+ * so none is dropped. If the order cannot fit, the move is refused with the reason, and nothing
+ * is sent.
  */
 export function moveShaper(
   view: ShapingConfigView,
   id: string,
   offset: -1 | 1,
-  live: readonly string[] = [],
+  live: readonly string[] | null = null,
 ): ShaperMove | null {
   const groups = shapingList(view).filter((group) => group.stage !== null);
   const group = groups.find((candidate) => candidate.rows.some((row) => row.id === id));
@@ -125,6 +127,12 @@ export function moveShaper(
   const rest = [...new Set(view.order)].filter((other) => !stage.has(other));
   const limit = SHAPING_LIMITS.choices;
   if (rest.length + moved.length <= limit) return { ok: true, order: [...rest, ...moved] };
+  if (live === null) {
+    return {
+      ok: false,
+      reason: `The stored run order is full: it holds at most ${limit} shaper ids. The shapers folder has not been read yet, so no stored entry is dropped to make room. Try again in a moment.`,
+    };
+  }
   const known = new Set([...view.shapers.map((entry) => entry.id), ...live]);
   const kept = rest.filter((other) => known.has(other));
   let room = limit - moved.length - kept.length;

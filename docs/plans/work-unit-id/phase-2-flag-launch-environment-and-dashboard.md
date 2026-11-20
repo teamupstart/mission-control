@@ -144,33 +144,46 @@ that it can take another work unit's task (decision D7).
    - Record the versions, the method and the answers in `docs/work-units.md` and in the pull
      request. Remove the fixture and the config directory, and check that the operator's
      Claude Code and Codex configuration is unchanged.
-   - What the result decides. If a second work unit finds the sign-in, the guide recommends
-     the reference for every remote server. If it does not, the guide tells an owner not to
-     add the reference to a server that signs in with OAuth, names the alternative if the
-     third question found one, and says that a worker's calls to such a server carry no
-     work unit. The second answer tells whether a pinned resident keeps its sign-in after
-     the reference is added, and the guide says which.
+   - What the result decides. No answer blocks this phase: each one decides what the guide
+     and `docs/residents.md` say.
+     - The first answer. If a second work unit finds the sign-in, the guide recommends the
+       reference for every remote server. If it does not, the guide tells an owner not to
+       add the reference to a server that signs in with OAuth, names the alternative if the
+       third question found one, and says that a worker's calls to such a server carry no
+       work unit.
+     - The second answer. If a headerless entry finds the earlier sign-in, the guide says a
+       pinned resident keeps it. If it does not, the resident catalog step ships as written
+       all the same: the launcher presents no sign-in at all, so handing the server to the
+       harness cannot be worse. The guide and `docs/residents.md` then say that a pinned
+       resident loses that server's sign-in once the reference is added, and that an owner
+       should leave the reference off a server a pinned resident signs in to.
 2. **Flag.** In `src/shared/feature-flag-registry.ts` add `WORK_UNIT_ID_FLAG_ID =
    "work-unit-id"`, stage `preview`, label "Work unit id", with a description that says it
    tags a task's sessions with one id so its traces and MCP calls can be found together.
 3. **The decision.** In `src/server/work-unit.ts` add `launchWorkUnitId(task)`: the task's
-   id when the flag is on and the id is well formed, otherwise null. It is called where a
-   launch is built, which is also where a dispatch starts the shaping run, and nowhere
-   else. No other server code in this plan reads the flag.
+   id when the flag is on and the id is well formed, otherwise null. Call it once per
+   launch, where the launch begins: the start of a dispatch, a resume, a restore or a
+   transfer. Carry that one value through the launch and hand it to everything the launch
+   does: the shaping run a dispatch starts (Phase 4), the agent's environment, both hosts
+   of a pipeline dispatch, and the launch record when the launch succeeds. Nothing calls it
+   a second time for the same launch, so a switch of the flag while a launch is in flight
+   cannot give its parts different answers. No other server code in this plan reads the
+   flag.
 4. **The helper.** A pure module beside `agent-trace-context.ts` with
    `withWorkUnit(env, id)`: delete `WORK_UNIT_ID`, then set it when `id` is given.
 5. **Never inherit.** `agentSubprocessEnv` removes `WORK_UNIT_ID` from the inherited
    environment before it applies `extraEnv`. That covers terminal launches, resume,
    workflow checks and one-shot model calls, none of which may carry the daemon's own.
 6. **Embedded launches.** Add `workUnitId` to `SdkLaunchOptions`. `supervisor.start` and
-   the restore path fill it from the task through `launchWorkUnitId`. Apply `withWorkUnit`
+   the restore path fill it with the launch's decision (step 3). Apply `withWorkUnit`
    where each adapter applies `withAgentTraceContext`: the Claude adapter, the Codex
    app-server environment, and Pi's `toolEnv`. The Claude adapter's in-session relaunch
    reuses the environment of its launch, so it carries the same value and is not a new
    decision.
-7. **Terminal launches.** `Dispatcher.dispatch` adds the variable, from `launchWorkUnitId`,
-   to the extra environment it hands `spawnUniquely`. Do the same for both pipeline hosts,
-   for managed resume from the session's task, and for runtime transfer.
+7. **Terminal launches.** `Dispatcher.dispatch` adds the variable, from the launch's
+   decision (step 3), to the extra environment it hands `spawnUniquely`. Do the same for
+   both pipeline hosts, for managed resume from the session's task, and for runtime
+   transfer.
 8. **The launch record.** Record, per session, the work unit its agent was started with.
    - Storage: a table of its own, one row per session whose agent carries a work unit,
      keyed by the session's note key (`noteKeyFor`), with the id and the time. Keep it next
@@ -200,7 +213,8 @@ that it can take another work unit's task (decision D7).
    - `TaskManager.assign` refuses an agent whose record holds a work unit other than the
      task's. The refusal sits with the other session-scoped refusals, before the reset, and
      says: "that agent was started for another work unit, so its MCP calls would be tagged
-     with it".
+     with it". An older task has been given its id by then (Phase 1), so the comparison is
+     between the record and the task's id.
    - `agentIsFree`, the backlog's own selection, does not offer such an agent for that
      task. The backlog then treats it as it treats any agent that is not free.
    - An agent with no record takes any task. That task emits nothing until the agent's
@@ -283,6 +297,9 @@ that it can take another work unit's task (decision D7).
 - A resident launch has no variable, because its task has no id. The catalog change only
   removes two effects of the reference: a launch is no longer refused for a Codex server
   that carries it, and a new Claude Code snapshot holds no header for it.
+- An agent Mission Control did not start has no record, so nothing Mission Control emits
+  for it carries a work unit. Mission Control cannot see that agent's environment: a
+  `WORK_UNIT_ID` an operator exported in their own shell is theirs.
 - Upgrade. The new table starts empty: a session that was running before this phase has no
   record and emits nothing until its next start. A resident snapshot taken before this
   phase is not rewritten: a pinned run keeps its private copy. The empty header such a copy
@@ -309,6 +326,9 @@ that it can take another work unit's task (decision D7).
   its `sessionWorkUnitId` after the flag is switched off, and loses both at its next start;
   one started with the flag off has neither after the flag is switched on, and gains both
   at its next start.
+- A switch while a launch is in flight: the flag is switched after the launch's decision
+  and before the agent starts, in each direction. The agent's environment and its record
+  hold the value decided at the start, and `launchWorkUnitId` was called once.
 - Reuse guard: `assign` refuses an agent whose record holds another work unit, with the
   flag on and with it off; it accepts an agent with no record and one whose record holds
   the task's own work unit; `agentIsFree` does not offer the first for that task; a task on
@@ -346,9 +366,13 @@ that it can take another work unit's task (decision D7).
 
 ## Merge and exit criteria
 
-- The OAuth check ran, its answers are recorded, and the guide follows them.
+- The OAuth check ran, its answers are recorded, and the guide and `docs/residents.md`
+  follow them. No answer blocks this phase.
 - Flag on when an agent is started: every launch path for a task-bound session sets
-  `WORK_UNIT_ID` to the task's id and records it. A session with no task has none.
+  `WORK_UNIT_ID` to the task's id and, once the launch has succeeded, records it. A
+  session with no task has none.
+- One launch has one decision. Its agent's environment and its record never differ, also
+  when the flag is switched while the launch is in flight.
 - No child process ever carries a `WORK_UNIT_ID` inherited from the daemon's environment.
 - Flag off when an agent is started: the launch has no variable and no record. While the
   flag is off the session detail is unchanged. The resident catalog rule in the last
@@ -361,7 +385,8 @@ that it can take another work unit's task (decision D7).
 - A resident launch has no `WORK_UNIT_ID`. For a pinned resident, with the flag on and with
   it off: the reference no longer gets a launch refused; a snapshot taken after this phase
   holds no `x-work-unit-id` header for the reference; a Claude Code server whose only
-  header is the reference keeps its harness sign-in; and a run launched before this phase
+  header is the reference is handed to the harness headerless, with `harnessLogin`, as it
+  was before the reference was added; and a run launched before this phase
   stops sending the empty `x-work-unit-id` it holds, from its next start. The upgrade-path
   test above covers that last case. A non-empty header value an operator wrote themselves
   is outside this criterion: it is still sent as configured (the resident catalog step),
@@ -369,9 +394,10 @@ that it can take another work unit's task (decision D7).
 
 ## Handoff
 
-Phases 3 and 4 may rely on `WORK_UNIT_ID_FLAG_ID`, `launchWorkUnitId(task)` and
-`sessionWorkUnitId(session, task)`. They must not read the flag themselves, and they must
-not emit a work unit for a session that `sessionWorkUnitId` does not return.
+Phases 3 and 4 may rely on `WORK_UNIT_ID_FLAG_ID`, on the one decision a launch carries,
+and on `sessionWorkUnitId(session, task)`. They must not read the flag, must not call
+`launchWorkUnitId` themselves, and must not emit a work unit for a session that
+`sessionWorkUnitId` does not return.
 
 ## Cross-phase audit
 
@@ -380,7 +406,7 @@ not emit a work unit for a session that `sessionWorkUnitId` does not return.
   sets when a task is assigned as well as when it is dispatched.
 - Phase 3: touches no launch path and no file listed here except `docs/work-units.md`,
   where it adds its own section. It reads the launch record and never writes it.
-- Phase 4: uses `launchWorkUnitId` at the dispatch seam for a new agent, and
+- Phase 4: takes the launch's one decision at the dispatch seam for a new agent, and
   `sessionWorkUnitId` for an agent that is already running. The shaper transports set their
   own environment for shaper processes; this phase does not touch them.
 - Source plan: owns D2, D7, D8, R5, the environment half of R4 and the catalog half of D6.
@@ -403,3 +429,6 @@ not emit a work unit for a session that `sessionWorkUnitId` does not return.
   instead of numbering them.
 - Inspector review, round 2: the launch record changes only when a launch succeeds, so a
   failed replacement cannot leave it out of step with the agent that is still running.
+- Inspector review, round 3: one launch has one decision, computed once and shared by its
+  shaping run, its agent's environment and its record. No answer of the OAuth check blocks
+  the phase, and the resident exit criterion names the routing this phase controls.

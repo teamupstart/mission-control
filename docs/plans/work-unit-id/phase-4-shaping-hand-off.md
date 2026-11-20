@@ -58,16 +58,21 @@ the transports' own design.
    `ctx.workUnitId`. If the remote transports phase added the field under another name,
    keep that name.
 3. **Dispatch seam.** Where dispatch starts the shaping run for a task, pass the id the task's
-   agent carries: `launchWorkUnitId(task)` when the dispatch starts a new agent, and
-   `sessionWorkUnitId(session, task)` when the task goes to an agent that is already
-   running. Do not read the flag here.
+   agent carries. For a new agent that is the launch's one decision: Phase 2 computes it
+   once, at the start of the dispatch, and uses the same value for the agent's environment
+   and the launch record. Take that value. Do not call `launchWorkUnitId` again, and do not
+   read the flag. For a task that goes to an agent that is already running, pass
+   `sessionWorkUnitId(session, task)`.
 4. **Transports.** Confirm each one, and add what is missing:
    - `http` and `mcp` over streamable HTTP: header `x-work-unit-id` on every request;
    - every `mcp` `tools/call`, on both kinds of server: `params._meta.work_unit_id`;
    - `http` carries the header only. It has no `_meta`, and its request body does not
      change;
    - the header and the `_meta` key always carry the same value, the run's one work unit;
-   - `command`, and `mcp` over a local process: `WORK_UNIT_ID` in the environment;
+   - `command`, and `mcp` over a local process: `WORK_UNIT_ID` in the environment. Both first
+     remove the variable from the environment they have assembled, whether it came from the
+     daemon's own environment or from the shaper's configuration, and then set the run's id
+     when there is one;
    - a configured header or variable of the same name, compared without case, is removed
      first, with or without a work unit;
    - the value is not a reference and is never redacted.
@@ -100,11 +105,16 @@ the transports' own design.
   after the flag is switched off, and the shaper still receives the id; an agent started
   with the flag off takes a task after the flag is switched on, and the shaper receives
   none.
+- A switch while shaping is in flight: the flag is switched after the dispatch's decision
+  and before the agent starts, in each direction. The shaper and the agent hold the same
+  value.
 - Transports, one present case and one absent case each, unless the remote transports
   phase already has them: `http` header, with no work unit anywhere in its request body; streamable-HTTP `mcp` header on every request of
   a call and `_meta` on `tools/call`, with equal values; stdio `mcp` environment and
   `_meta`; `command` environment. A configured `x-work-unit-id` header is not sent when
   the run has no work unit. A reply that echoes the id comes back unredacted and unmarked.
+  An absent case for `command` and one for a local `mcp` server run with `WORK_UNIT_ID` set
+  in the daemon's environment, and the shaper process has none.
 - No browser spec: this phase has no dashboard surface.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`.
 
@@ -119,7 +129,10 @@ the transports' own design.
   over.
 - When it does not, no call carries one: a new agent started with the flag off, a running
   agent with no launch record, a task with no id, and a dry run.
-- Only the launch's own value is ever sent, never a configured one.
+- Only the launch's own value is ever sent, never a configured one, and never one a shaper
+  process inherited from the daemon's environment.
+- One dispatch has one decision: the shaper and the agent it starts never differ, also when
+  the flag is switched while shaping runs.
 
 ## Handoff
 
@@ -129,9 +142,9 @@ carries the work unit with no further change.
 ## Cross-phase audit
 
 - Phase 1: reads `task.workUnitId` and the shared constants.
-- Phase 2: uses `launchWorkUnitId` and `sessionWorkUnitId`, and never reads the flag. The
-  worker's `WORK_UNIT_ID` and a shaper process's `WORK_UNIT_ID` are set by different code
-  and carry the same value.
+- Phase 2: takes the launch's one decision and `sessionWorkUnitId`. This phase never reads the
+  flag and never calls `launchWorkUnitId`. The worker's `WORK_UNIT_ID` and a shaper
+  process's `WORK_UNIT_ID` are set by different code and carry the same value.
 - Phase 3: shares no file except `docs/work-units.md`, in a different place.
 - Task shaping: this phase adds an input and one call site. It reshapes neither the engine
   nor a transport.
@@ -141,6 +154,8 @@ carries the work unit with no further change.
   only.
 - Inspector review of the plan's pull request: the seam passes the id the task's agent
   carries, so a shaper call never carries an id that the worker's own calls do not.
-- Inspector review, round 2: the exit criteria follow the agent's launch record, not the
-  flag at the moment of dispatch, and the tests cover a switch between an agent's start and
-  its next task.
+- Inspector review, round 2: the exit criteria follow the agent's launch record, not the flag
+  at the moment of dispatch, and the tests cover a switch between an agent's start and its
+  next task.
+- Inspector review, round 3: shaping takes the launch's one decision and does not compute
+  its own, and a local shaper process never inherits the daemon's `WORK_UNIT_ID`.

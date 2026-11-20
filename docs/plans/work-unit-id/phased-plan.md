@@ -158,8 +158,10 @@ flowchart LR
   and for a row that predates the column and has not been dispatched since. Only
   `TaskManager` mints or copies. Later phases read.
 - **The gate.** Phase 2 adds the flag id `work-unit-id` and reads it in one place:
-  `launchWorkUnitId(task)`, called when a launch is built. It returns the task's id when the
-  flag is on and the id is well formed, and null otherwise.
+  `launchWorkUnitId(task)`, called once per launch, when the launch begins. It returns the
+  task's id when the flag is on and the id is well formed, and null otherwise. That one
+  value goes to the shaping run, the agent's environment and the launch record, and no later
+  phase calls the function again.
 - **The launch record.** Phase 2 records, per session, the work unit its agent was started
   with, and adds `sessionWorkUnitId(session, task)`: the recorded id while the task has that
   same id, and null otherwise. The record changes only when a launch succeeds, so it always
@@ -202,10 +204,10 @@ After all four phases, with the flag on:
 - A resident run's task has no `workUnitId`, its launch has no variable and its spans have no
   attribute. For a pinned resident the reference gets no launch refused and no header in a
   new snapshot. A run launched before Phase 2 stops sending the empty header at its next
-  start. A non-empty value an operator wrote themselves is still sent as configured. A
-  server whose only header was the reference keeps its harness sign-in.
-- The OAuth check's answers are recorded in `docs/work-units.md`, and the config guide
-  follows them.
+  start. A non-empty value an operator wrote themselves is still sent as configured. A server whose only header was the reference is handed to the
+  harness headerless, as before the reference was added.
+- The OAuth check's answers are recorded in `docs/work-units.md`, and the config guide follows
+  them. No answer blocks Phase 2.
 - With the flag off from the start, nothing is emitted: no launch has the variable, no span
   has the attribute, no shaper call carries the id and the dashboard shows no row. Task ids
   do not depend on the flag: tasks still get them, and a plan task and its phase tasks still
@@ -252,7 +254,11 @@ After all four phases, with the flag on:
   older row its id at assign as well as at dispatch. Every statement about the flag being
   off now says whether it means off when an agent is started, or switched off while one
   runs.
-- Inspector review, round 2: the launch record changes only when a launch succeeds (Phase
-  2). Phase 4's exit criteria follow the agent's launch record and not the flag at dispatch.
+- Inspector review, round 2: the launch record changes only when a launch succeeds (Phase 2).
+  Phase 4's exit criteria follow the agent's launch record and not the flag at dispatch.
   Phase 1's explicit `"inherit"` gives an eligible older parent its id first. Phase 3 is
   unchanged.
+- Inspector review, round 3: one launch has one decision, which Phase 2 computes once and
+  Phase 4 takes without calling the function again. A local shaper process never inherits
+  the daemon's own variable (Phase 4). No answer of the OAuth check blocks Phase 2, and its
+  resident criterion names the routing it controls. Phases 1 and 3 are unchanged.

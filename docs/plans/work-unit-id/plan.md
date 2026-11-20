@@ -221,9 +221,11 @@ An agent's environment is fixed when it starts, and it outlives a single task:
 everything Mission Control emits to the process. **A session emits only the work unit its
 agent was started with.**
 
-- The decision is made once, when a launch is built: the launch carries the task's id when
-  the preview is on and the id is well formed, and none otherwise. This is the only place
-  the flag is read.
+- The decision is made once per launch, when the launch begins: the launch carries the task's
+  id when the preview is on and the id is well formed, and none otherwise. That one value
+  goes to everything the launch does: the shaping run, the agent's environment and the
+  launch record. It is the only place the flag is read, so a switch while a launch is in
+  flight cannot give its parts different answers.
 - Mission Control records the decision with the session, the way it already records the
   standing instructions a launch delivered: keyed by the session's note key, replaced when a
   launch succeeds, and moved whenever the key changes. A `/clear` or an assign starts a new
@@ -302,10 +304,12 @@ Sign-in. On Claude Code a pinned resident reaches a server that has a header thr
 Control's launcher, which presents no harness sign-in, and it hands a headerless server to
 the harness as configured, so that the harness uses its own. That decision is made on the
 headers that remain after the reference is dropped. So a server whose only header was the
-reference stays headerless for a resident and keeps the sign-in it had before the reference
-was added: the harness looks it up under the same key. A server with another header stays on
-the launcher, as today. A run launched before the change keeps its pinned route until the
-resident is launched again.
+reference stays headerless for a resident, and the harness is handed the entry it had before
+the reference was added. By Claude Code's program text it then finds the sign-in it had
+before. The OAuth check in Phase 2 confirms or corrects that, and it does not gate the
+phase: the launcher presents no sign-in at all, so this route cannot be worse. A server with
+another header stays on the launcher, as today. A run launched before the change keeps its
+pinned route until the resident is launched again.
 
 A resident that loads all native sources reads the operator's config with the variable
 unset, like any session outside a work unit.
@@ -346,7 +350,8 @@ unset, like any session outside a work unit.
   in `params._meta.work_unit_id` on each `tools/call`; `mcp` over a local process in
   `WORK_UNIT_ID` and in `_meta` on each `tools/call`; `command` in `WORK_UNIT_ID`. An `http`
   shaper gets no `_meta`: it is not an MCP call. The transports remove a configured header
-  or variable of that name first, and never redact the value.
+  or variable of that name first, keep a shaper process from inheriting the daemon's own
+  `WORK_UNIT_ID`, and never redact the value.
 - This plan supplies the value. The shaping run's input gains `workUnitId`, beside the `trace`
   field the shaping core already defines. The dispatch seam fills it with the id the task's
   agent carries (section 4): the launch's decision for a new agent, and the session's
@@ -438,9 +443,11 @@ flowchart LR
   and a terminal launch each record their task's `WORK_UNIT_ID`; two standalone tasks record
   different ones; with the flag off a launch has none; the dashboard row shows and copies
   the id.
-- A switch in flight, in process: an agent started with the preview on keeps the variable
-  and the span attribute after it is switched off, and loses both at its next start; one
-  started with it off gains neither when it is switched on, until its next start.
+- A switch in flight, in process: an agent started with the preview on keeps the variable and
+  the span attribute after it is switched off, and loses both at its next start; one started
+  with it off gains neither when it is switched on, until its next start. A switch while a
+  launch is in flight changes nothing for that launch: its shaping run, its agent and its
+  record hold one value.
 - A reused agent: assign refuses an agent that was started for another work unit, with the
   preview on and with it off; an agent started with none takes the task, and the task then
   emits nothing.
@@ -450,7 +457,8 @@ flowchart LR
   the config guide follows it.
 - Residents: a resident run's task has no id and its launch has no variable; for a pinned
   resident the reference gets no launch refused and no header in a new snapshot; a server
-  whose only header was the reference keeps its harness sign-in; a run launched before the
+  whose only header was the reference is handed to the harness headerless, as before the
+  reference was added; a run launched before the
   change stops sending the empty header at its next start; a non-empty value an operator
   wrote themselves is still sent as configured.
 - The local telemetry stack test asserts the attribute on an exported span.

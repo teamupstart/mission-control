@@ -267,7 +267,11 @@ All three routes are behind the flag and answer 404 while it is off.
   gatherer runs at the path given. The repository is named after the checkout, or after the
   repository that owns it when the path is a linked worktree. It answers
   `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, whether
-  a credential value was removed from its reply (`redacted`), the section that would be injected, and each entry in it. The summary's optional
+  a value was removed from its reply or reason (`redacted`), the section that would be injected,
+  and each entry in it. `redacted` means a value the shaper was handed came back and was
+  scrubbed: a value resolved into one of its headers, a `{caller.*}` value included, or, for a
+  local shaper, a variable named in its `env` list or an inherited URL that carries a user name
+  and password. It does not by itself mean a credential was involved. The summary's optional
   `sessionId` stays unset here; dispatch stamps it when it delivers a record (Phase 2). A shaper that fails, times out or
   answers garbage is an outcome in a 200, never an error reply. A client that closes its
   connection before the reply stops the run, and with it each running shaper's process group.

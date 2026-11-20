@@ -245,7 +245,8 @@ export function TaskShapingView({
           onSave={async (shaper) => {
             const session = importSession.current;
             const saved = await onSet({ kind: "upsert", shaper }, "import");
-            if (saved && importSession.current === session) setImporting(false);
+            // Closing is the dialog's to do, and only for the dialog that sent this save.
+            return saved && importSession.current === session;
           }} />
       )}
       {testing && (

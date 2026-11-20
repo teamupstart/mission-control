@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
+import { ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
 import { DEFAULT_TASK_KIND } from "@shared/types.ts";
 import { registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
 import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
@@ -13,6 +13,7 @@ import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
+import { daemonShapingView, shapingReviser } from "./revisions.ts";
 import { referenceStatus } from "./references.ts";
 
 /**
@@ -81,7 +82,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
-    return c.json({ config: shapingConfigView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
+    return c.json({ config: daemonShapingView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
   });
 
   app.put("/api/shaping", gate, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
@@ -96,7 +97,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
         const conflict = result.error === "unreadable_config" || result.error === "shaper_changed";
         return c.json({ error: result.error, reason: result.reason }, conflict ? 409 : 400);
       }
-      return c.json({ config: shapingConfigView(result.config) });
+      return c.json({ config: daemonShapingView(result.config) });
     } catch (error) {
       return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
     }
@@ -113,7 +114,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     const config = getShapingConfig();
     // Bound to the definition the sender showed: a replacement written meanwhile is never run
     // under the name of the shaper the operator chose.
-    if (expect !== undefined && registeredShaperRevision(config, id) !== expect) {
+    if (expect !== undefined && registeredShaperRevision(config, id, shapingReviser) !== expect) {
       return c.json({
         error: "shaper_changed",
         reason: `"${id}" changed in another window since it was shown here, so it was not run. Review it again first.`,

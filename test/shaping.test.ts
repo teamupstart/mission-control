@@ -29,7 +29,6 @@ import {
   shapedByDefault,
   shapingSlot,
   ShapingRequestSchema,
-  shapingConfigView,
   TaskShapingSchema,
   ShaperSchema,
   shaperSchemaForStages,
@@ -51,6 +50,7 @@ import {
   type ShapingIntent,
   type StoredShaper,
 } from "../src/shared/shaping.ts";
+import { daemonShapingView } from "../src/server/shaping/revisions.ts";
 
 const command = (id: string, stage: "gather" | "select" = "gather", extra: Record<string, unknown> = {}) => ShaperSchema.parse({
   id, label: id.toUpperCase(), stage, transport: { type: "command", command: "/usr/bin/true" }, ...extra,
@@ -575,7 +575,7 @@ test("the config view shows known shapers in full and an unsupported entry only 
     note: "sk-live-in-envelope", transport: { type: "grpc", endpoint: "grpc://sk-live-in-endpoint", custom: { token: "sk-live-nested" } } });
   const bad = StoredShaperSchema.parse({ id: "bad", label: "Bad", stage: "sk-live-as-stage", transport: { type: "command", command: "/bin/x" } });
   const stored = config({ shapers: [command("known"), future, bad], overrides: { known: true } });
-  const view = shapingConfigView(stored);
+  const view = daemonShapingView(stored);
   assert.deepEqual(view.shapers[0], ShaperSchema.parse(command("known")), "a known shaper in full");
   assert.deepEqual(view.shapers[1], { id: "skill-router", label: "Skill router", unsupported: "stage: This build does not support the stage this entry names." });
   assert.deepEqual(Object.keys(view.shapers[2]!).sort(), ["id", "label", "unsupported"]);
@@ -655,7 +655,7 @@ test("a registered shaper cannot name a ./ command; a manifest in the shapers fo
 
 test("an unsupported reason never names an unrecognised key, which a writer could have chosen", () => {
   const entry = StoredShaperSchema.parse({ ...command("extra"), "sk-live-key-as-name": true });
-  const view = shapingConfigView(config({ shapers: [entry] }));
+  const view = daemonShapingView(config({ shapers: [entry] }));
   const row = view.shapers[0] as { unsupported: string };
   assert.equal(row.unsupported, "This build does not recognise a field this entry names.");
   assert.equal(JSON.stringify(view).includes("sk-live-key-as-name"), false);

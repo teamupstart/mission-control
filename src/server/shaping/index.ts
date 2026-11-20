@@ -10,6 +10,7 @@ import {
   type ShapingIntentResult,
 } from "@shared/shaping.ts";
 import { getAppConfig, hasAppConfigRow, openDb, setAppConfig } from "../db.ts";
+import { shapingReviser } from "./revisions.ts";
 
 /**
  * The daemon's one owner of `app_config.shaping`, built the way the feature-flag store is: a
@@ -141,7 +142,7 @@ export function applyShapingIntent(intent: ShapingIntent, discovered: readonly D
       reason: "The stored task shaping config cannot be read by this build, so it is not overwritten.",
     };
   }
-  const result = applyIntent(state.config, intent, discovered);
+  const result = applyIntent(state.config, intent, discovered, { revise: shapingReviser });
   if (!result.ok) return result;
   // Enforce the stored bounds on the whole record, not only the intent.
   const config = ShapingConfigSchema.parse(result.config);

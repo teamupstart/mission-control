@@ -15,12 +15,11 @@ import {
   SHAPING_LIMITS,
   ShaperSchema,
   ShapingConfigSchema,
-  shapingStoredRevision,
-  shapingConfigView,
   shapingViewRevision,
   type ShapingConfigView,
   type ShapingIntent,
 } from "../src/shared/shaping.ts";
+import { daemonShapingView, shapingReviser } from "../src/server/shaping/revisions.ts";
 import {
   moveIntent,
   previewShapingIntent,
@@ -46,7 +45,7 @@ const remote = {
 const unsupported = { id: "future", label: "Future shaper", stage: "route", transport: { type: "grpc" } };
 
 function view(input: Record<string, unknown>): ShapingConfigView {
-  return shapingConfigView(ShapingConfigSchema.parse(input));
+  return daemonShapingView(ShapingConfigSchema.parse(input));
 }
 
 function render(config: ShapingConfigView | null, references: Record<string, "set" | "unset"> = {}): string {
@@ -58,7 +57,7 @@ function render(config: ShapingConfigView | null, references: Record<string, "se
 }
 
 test("an empty config says how to add a shaper and still offers the identity and budgets", () => {
-  const html = render(shapingConfigView(SHAPING_CONFIG_DEFAULTS));
+  const html = render(daemonShapingView(SHAPING_CONFIG_DEFAULTS));
   assert.match(html, /No shapers registered\. Import a manifest to add one\./);
   assert.match(html, /<span class="settings-pane-count">0<\/span>/);
   assert.match(html, /aria-label="Caller identity and budgets"/);
@@ -136,7 +135,7 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
   assert.deepEqual(groups[1]!.rows.map((row) => row.id), ["acme-guidance"]);
   assert.deepEqual(groups[2]!.rows, [{
     id: "future", label: "Future shaper", shaper: null, on: false,
-    problem: "stage: This build does not support the stage this entry names.", revision: shapingStoredRevision(unsupported as never),
+    problem: "stage: This build does not support the stage this entry names.", revision: shapingReviser([unsupported as never]),
     duplicate: false, repeats: 0,
   }]);
 });
@@ -172,7 +171,7 @@ test("a move keeps a hidden shaper's slot, composes with another window's move, 
   assert.ok(first.ok);
   const second = applyShapingIntent(first.config, { kind: "move", id: "s2", after: null });
   assert.ok(second.ok);
-  const list = shapingList(shapingConfigView(second.config));
+  const list = shapingList(daemonShapingView(second.config));
   assert.deepEqual(list[0]!.rows.map((row) => row.id), ["b", "a"]);
   assert.deepEqual(list[1]!.rows.map((row) => row.id), ["s2", "s1"]);
   // The daemon refuses an anchor that is not another shaper of the same stage.
@@ -194,25 +193,25 @@ test("a move keeps a hidden shaper's slot, composes with another window's move, 
   const refused = applyShapingIntent(full, { kind: "move", id: "b", after: null }, [...folder, ...everyLive]);
   assert.equal(refused.ok ? "" : refused.error, "order_full");
   // The panel draws nothing it would have to prune for: only the daemon knows the folder.
-  assert.deepEqual(previewShapingIntent(shapingConfigView(full), { kind: "move", id: "b", after: null }).order, full.order);
+  assert.deepEqual(previewShapingIntent(daemonShapingView(full), { kind: "move", id: "b", after: null }).order, full.order);
 });
 
 test("an intent bound to a revision is refused once another window replaces the shaper, and a removal keeps a folder shaper off", () => {
   const config = ShapingConfigSchema.parse({ shapers: [gatherer("a")], overrides: { a: false } });
-  const shown = shapingConfigView(config).revisions.a!;
-  assert.equal(registeredShaperRevision(config, "a"), shown);
+  const shown = daemonShapingView(config).revisions.a!;
+  assert.equal(registeredShaperRevision(config, "a", shapingReviser), shown);
   assert.match(shown, /^[0-9a-f]{16}$/);
   const replaced = applyShapingIntent(config, { kind: "upsert", shaper: ShaperSchema.parse(gatherer("a", { label: "Replacement" })) });
   assert.ok(replaced.ok);
-  assert.notEqual(registeredShaperRevision(replaced.config, "a"), shown);
+  assert.notEqual(registeredShaperRevision(replaced.config, "a", shapingReviser), shown);
   for (const intent of [
     { kind: "enable", id: "a", enabled: true, expect: shown },
     { kind: "remove", id: "a", expect: shown },
   ] as const) {
-    const result = applyShapingIntent(replaced.config, intent);
+    const result = applyShapingIntent(replaced.config, intent, [], { revise: shapingReviser });
     assert.equal(result.ok ? "" : result.error, "shaper_changed", intent.kind);
     // Against the definition actually stored, the same intent goes through.
-    assert.equal(applyShapingIntent(replaced.config, { ...intent, expect: registeredShaperRevision(replaced.config, "a")! }).ok, true);
+    assert.equal(applyShapingIntent(replaced.config, { ...intent, expect: registeredShaperRevision(replaced.config, "a", shapingReviser)! }, [], { revise: shapingReviser }).ok, true);
   }
   // Removing a registration that shadows a folder shaper of the same id stores it off, in place.
   const shadowing = ShapingConfigSchema.parse({ shapers: [gatherer("a")], overrides: { a: true }, order: ["a"] });
@@ -447,9 +446,9 @@ test("a write is confirmed by the outcome it asked for, not by the preview match
 
 test("an id that names an inherited property still gets its own revision, through JSON too", () => {
   const stored = ShapingConfigSchema.parse({ shapers: [gatherer("constructor"), unsupported] });
-  const shown = shapingConfigView(stored);
+  const shown = daemonShapingView(stored);
   assert.ok(Object.hasOwn(shown.revisions, "constructor"), "the revision is an own key");
-  assert.equal(shown.revisions.constructor, registeredShaperRevision(stored, "constructor"));
+  assert.equal(shown.revisions.constructor, registeredShaperRevision(stored, "constructor", shapingReviser));
   // The browser reads the view as JSON gives it, where the map is an ordinary object again.
   const wire = JSON.parse(JSON.stringify(shown)) as ShapingConfigView;
   const row = shapingList(wire).flatMap((group) => group.rows).find((entry) => entry.id === "constructor")!;
@@ -462,11 +461,11 @@ test("an id that names an inherited property still gets its own revision, throug
 test("a repeated id is drawn for information only, and its owner says removing it removes the repeat", () => {
   const repeat = gatherer("notes", { label: "Second notes", transport: { type: "command", command: "/usr/local/bin/other" } });
   const stored = ShapingConfigSchema.parse({ shapers: [gatherer("notes"), repeat] });
-  const shown = shapingConfigView(stored);
+  const shown = daemonShapingView(stored);
   const rows = shapingList(shown).flatMap((group) => group.rows);
   const owner = rows.find((entry) => entry.id === "notes" && !entry.duplicate)!;
   const copy = rows.find((entry) => entry.duplicate)!;
-  assert.equal(owner.revision, registeredShaperRevision(stored, "notes"));
+  assert.equal(owner.revision, registeredShaperRevision(stored, "notes", shapingReviser));
   assert.equal(owner.repeats, 1);
   assert.deepEqual([copy.label, copy.revision, copy.on, copy.repeats], ["Second notes", null, false, 0]);
   assert.equal(copy.problem, 'Another stored shaper already has the id "notes".');
@@ -492,20 +491,20 @@ test("a refusal that a newer write followed names the earlier action", () => {
 test("a remove is bound to every entry stored under its id, a repeat included", () => {
   const repeat = (command: string) => gatherer("notes", { label: "Second notes", transport: { type: "command", command } });
   const stored = ShapingConfigSchema.parse({ shapers: [gatherer("notes"), repeat("/usr/local/bin/first")] });
-  const shown = shapingConfigView(stored).revisions.notes!;
+  const shown = daemonShapingView(stored).revisions.notes!;
   // A restore changes only the repeat; the owner is exactly as it was.
   const restored = ShapingConfigSchema.parse({ shapers: [gatherer("notes"), repeat("/usr/local/bin/second")] });
-  assert.equal(shapingStoredRevision(restored.shapers[0]!), shapingStoredRevision(stored.shapers[0]!), "the owner is unchanged");
-  assert.notEqual(shapingConfigView(restored).revisions.notes, shown, "yet the id's revision changed");
-  const refused = applyShapingIntent(restored, { kind: "remove", id: "notes", expect: shown });
+  assert.equal(shapingReviser([restored.shapers[0]!]), shapingReviser([stored.shapers[0]!]), "the owner is unchanged");
+  assert.notEqual(daemonShapingView(restored).revisions.notes, shown, "yet the id's revision changed");
+  const refused = applyShapingIntent(restored, { kind: "remove", id: "notes", expect: shown }, [], { revise: shapingReviser });
   assert.equal(refused.ok, false);
   assert.equal(refused.ok ? "" : refused.error, "shaper_changed");
-  const current = shapingConfigView(restored).revisions.notes!;
-  const removed = applyShapingIntent(restored, { kind: "remove", id: "notes", expect: current });
+  const current = daemonShapingView(restored).revisions.notes!;
+  const removed = applyShapingIntent(restored, { kind: "remove", id: "notes", expect: current }, [], { revise: shapingReviser });
   assert.equal(removed.ok && removed.config.shapers.length, 0, "both entries go");
   // A single entry's revision is its own, as before.
   const single = ShapingConfigSchema.parse({ shapers: [gatherer("solo")] });
-  assert.equal(shapingConfigView(single).revisions.solo, shapingStoredRevision(single.shapers[0]!));
+  assert.equal(daemonShapingView(single).revisions.solo, shapingReviser([single.shapers[0]!]));
 });
 
 test("the view says which unsupported entries an import may replace, by the daemon's rule", () => {

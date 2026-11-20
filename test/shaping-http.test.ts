@@ -29,7 +29,8 @@ const { SettingsBackupService } = await import("../src/server/settings-backups/s
 const { SettingsBackupStore } = await import("../src/server/settings-backups/store.ts");
 const { createSettingsBackupEnvelope } = await import("../src/server/settings-backups/format.ts");
 const { wireShapingConfigEvents } = await import("../src/server/shaping/events.ts");
-const { SHAPING_LIMITS, ShapingConfigSchema, shapingConfigView } = await import("../src/shared/shaping.ts");
+const { SHAPING_LIMITS, ShapingConfigSchema } = await import("../src/shared/shaping.ts");
+const { daemonShapingView } = await import("../src/server/shaping/revisions.ts");
 type ShapingFrame = { type: "shaping_config"; config: unknown };
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
@@ -74,7 +75,7 @@ test("with the flag off all three routes answer 404 and write nothing", async ()
 test("GET returns the config and the final reply shape", async () => {
   const response = await get();
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { config: shapingConfigView(SHAPING_CONFIG_DEFAULTS), discovered: [], references: {} });
+  assert.deepEqual(await response.json(), { config: daemonShapingView(SHAPING_CONFIG_DEFAULTS), discovered: [], references: {} });
 });
 
 test("each intent persists, notifies and is reflected by GET", async () => {
@@ -92,7 +93,7 @@ test("each intent persists, notifies and is reflected by GET", async () => {
     assert.deepEqual(config.overrides, { "gather-one": true, "select-one": false }, "an upsert stores an explicit off");
     assert.deepEqual(config.order, ["select-one", "gather-one"]);
     assert.deepEqual([config.caller.user, config.limits.deadlineMs], ["declared-user", 20_000]);
-    assert.deepEqual(shapingConfigView(getAppConfig(APP_CONFIG_ENTRIES.shaping)!), config, "the reply is the view of what was stored");
+    assert.deepEqual(daemonShapingView(getAppConfig(APP_CONFIG_ENTRIES.shaping)!), config, "the reply is the view of what was stored");
     assert.deepEqual(((await (await get()).json()) as { config: unknown }).config, config);
     // Replacing a shaper that is on stores an explicit off, in the reply and in storage.
     const replaced = await put({ kind: "upsert", shaper: fixture("gather-one", "gather", "degraded") });
@@ -671,8 +672,8 @@ test("turning the flag on emits the config to open windows, a write emits once, 
   try {
     assert.deepEqual(frames, [{ type: "shaping_config", config: null }]);
     setFlag(true);
-    assert.deepEqual(frames.at(-1), { type: "shaping_config", config: shapingConfigView(SHAPING_CONFIG_DEFAULTS) });
-    assert.deepEqual(registry.snapshot().shaping, shapingConfigView(SHAPING_CONFIG_DEFAULTS), "and the snapshot carries it now");
+    assert.deepEqual(frames.at(-1), { type: "shaping_config", config: daemonShapingView(SHAPING_CONFIG_DEFAULTS) });
+    assert.deepEqual(registry.snapshot().shaping, daemonShapingView(SHAPING_CONFIG_DEFAULTS), "and the snapshot carries it now");
     const before = frames.length;
     assert.equal((await put({ kind: "upsert", shaper: fixture("live", "gather", "ok") })).status, 200);
     assert.equal(frames.length, before + 1, "one frame per committed write");
@@ -762,7 +763,7 @@ test("the shaping_config frame stays bounded at the stored maximum", () => {
   }));
   const overrides = Object.fromEntries(Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => [longId(n), n % 2 === 0]));
   const order = Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => longId(n));
-  const view = shapingConfigView(ShapingConfigSchema.parse({ shapers, overrides, order }));
+  const view = daemonShapingView(ShapingConfigSchema.parse({ shapers, overrides, order }));
   assert.equal(view.shapers.length, SHAPING_LIMITS.shapers);
   assert.ok(view.shapers.every((entry) => !("unsupported" in entry)), "every entry is a known shaper at full size");
   const bytes = Buffer.byteLength(JSON.stringify({ type: "shaping_config", config: view }));

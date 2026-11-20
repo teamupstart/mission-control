@@ -1091,3 +1091,37 @@ test("a refusal that arrives late never replaces the newer refusal under the sam
   await expect(alert).toHaveText(changed);
   await page.unroute("**/api/shaping");
 });
+
+test("a save that answers late keeps a manifest pasted into the same dialog after it", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await countReadWrites(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // The import reaches the daemon at once; only its answer is held, so the frame frees the dialog.
+  const answer = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const response = await route.fetch();
+    await answer.opened;
+    await route.fulfill({ response });
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  await manifest.fill(JSON.stringify(commandShaper("saved-notes", "Saved notes")));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(pill(page, "Saved notes")).toHaveAccessibleName("Saved notes: off");
+  // Freed by the frame, the same dialog takes the next manifest before the answer lands.
+  await expect(manifest).toBeEnabled();
+  const next = JSON.stringify(commandShaper("next-notes", "Next notes"));
+  await manifest.fill(next);
+  answer.open();
+  await writesHandled(page, 1);
+  await expect(dialog).toBeVisible();
+  await expect(manifest).toHaveValue(next);
+  await expect(dialog.getByRole("region", { name: "What this shaper runs or calls" })).toContainText("Next notes");
+  await page.unroute("**/api/shaping");
+  // Unchanged since its own save, the dialog closes when that one lands.
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(pill(page, "Next notes")).toHaveAccessibleName("Next notes: off");
+});

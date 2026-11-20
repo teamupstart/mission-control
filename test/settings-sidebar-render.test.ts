@@ -13,7 +13,8 @@ import {
 } from "../src/web/lib/settings-registry.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
-import { SHAPING_CONFIG_DEFAULTS, shapingConfigView, type ShapingConfigView } from "../src/shared/shaping.ts";
+import { SHAPING_CONFIG_DEFAULTS, type ShapingConfigView } from "../src/shared/shaping.ts";
+import { daemonShapingView } from "../src/server/shaping/revisions.ts";
 import type { ShapingSettings } from "../src/web/useShapingSettings.ts";
 
 /**
@@ -24,7 +25,7 @@ const FLAGS_ON: FeatureFlagsConfig = { enableAll: true, overrides: {} };
 const FLAGS_OFF: FeatureFlagsConfig = { enableAll: false, overrides: {} };
 const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FLAGS_ON);
 
-function shapingSettings(config: ShapingConfigView | null = shapingConfigView(SHAPING_CONFIG_DEFAULTS)): ShapingSettings {
+function shapingSettings(config: ShapingConfigView | null = daemonShapingView(SHAPING_CONFIG_DEFAULTS)): ShapingSettings {
   return { config, confirmed: config, pending: null, pendingKey: null, errors: {}, earlier: {}, ready: true, set: async () => true };
 }
 import { LAYOUTS } from "../src/web/lib/layout.ts";

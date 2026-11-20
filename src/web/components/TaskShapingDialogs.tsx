@@ -89,7 +89,11 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, onCl
   /** Refusals of earlier saves that arrived after a newer one went out. */
   earlier?: readonly string[];
   onClose: () => void;
-  onSave: (shaper: Shaper) => Promise<void>;
+  /**
+   * Store the reviewed shaper. Resolves true when it was saved and this dialog is still the one
+   * that sent it, so it may close.
+   */
+  onSave: (shaper: Shaper) => Promise<boolean>;
 }): React.JSX.Element {
   const [text, setText] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
@@ -186,7 +190,15 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, onCl
         </Tooltip>
         <Tooltip label="Store this shaper switched off in every window">
           <button type="button" className="btn" disabled={!reading?.ok || readingFile !== null || busy}
-            onClick={() => { if (reading?.ok) { setSaved(true); void onSave(reading.shaper); } }}>Save switched off</button>
+            onClick={() => {
+              if (!reading?.ok) return;
+              setSaved(true);
+              // The stream can free this dialog before the answer lands, and the operator may
+              // paste another manifest or choose another file meanwhile: a late success closes the
+              // dialog only while it still shows what was saved.
+              const submitted = generation.current;
+              void onSave(reading.shaper).then((close) => { if (close && generation.current === submitted) onClose(); });
+            }}>Save switched off</button>
         </Tooltip>
       </footer>
     </Overlay>

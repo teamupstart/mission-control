@@ -251,6 +251,10 @@ routes use, so a page on another site cannot store an intent or run a shaper.
   backup, and `PUT` replies with the same view. The view also carries `revisions`, one opaque
   revision per stored shaper id, which the daemon derives from the stored entry itself, so two
   unsupported entries that show the same id, label and reason still have different revisions.
+  A revision is an HMAC-SHA256 under a random key the daemon process holds and never writes
+  (`src/server/shaping/revisions.ts`), cut to 16 hex digits. It can be compared but not
+  recomputed, so it cannot confirm a guess at a field the view hides, and a daemon restart
+  changes every revision: an intent sent across a restart is refused with `shaper_changed`.
   An id has one revision, over every entry stored under it, so a remove, which deletes them all,
   is refused once any of them has changed. A client reads only own, string-valued
   keys of `revisions` (`shapingViewRevision`), so an id such as `constructor` never resolves to

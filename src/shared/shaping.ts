@@ -982,7 +982,7 @@ export interface UnsupportedShaperView {
 export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
   shapers: Array<Shaper | UnsupportedShaperView>;
   /**
-   * Each registered id's `shapingIdRevision`, derived by the daemon from every definition stored
+   * Each registered id's revision, derived by the daemon's keyed `ShapingReviser` from every definition stored
    * under it. A window sends it back as `expect` with an intent that acts on a shaper it showed.
    * Opaque to the browser: two stored definitions that look the same in the view - an unsupported
    * entry's id, label and reason, say - still have different revisions.
@@ -998,6 +998,7 @@ export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & {
  */
 export function shapingConfigView(
   config: ShapingConfig,
+  revise: ShapingReviser,
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ShapingConfigView {
   const classified = classifyShapers(config, definitions);
@@ -1011,7 +1012,7 @@ export function shapingConfigView(
     if (group) group.push(entry.stored);
     else groups.set(entry.stored.id, [entry.stored]);
   }
-  const owned = new Map([...groups].map(([id, entries]) => [id, shapingIdRevision(entries)] as const));
+  const owned = new Map([...groups].map(([id, entries]) => [id, revise(entries)] as const));
   return {
     ...config,
     shapers: classified.map((entry) => entry.kind === "known"
@@ -1036,42 +1037,19 @@ export function shapingViewRevision(view: Pick<ShapingConfigView, "revisions">, 
 }
 
 /**
- * A short, stable revision of one stored definition: FNV-1a (64-bit) over the canonical JSON of
- * the envelope exactly as stored, so any change to what is stored - a field the view never shows
- * included - changes it. Only the daemon computes it, and the view carries it in `revisions`.
- * The daemon refuses an intent whose `expect` no longer matches, so a click can never act on a
- * replacement written in the meantime by another window or a settings restore. It identifies a
- * definition; it does not protect one, so it is not a security hash.
+ * Derives the revision of everything stored under one id, given those entries in stored order.
+ * Only the daemon holds one (`src/server/shaping/revisions.ts`): it is keyed with a secret of the
+ * daemon's, so a revision published in the view can be compared but never recomputed, and so
+ * cannot confirm a guess at a field the view hides. Any change to what is stored under the id -
+ * a field the view never shows, or a repeat - changes it. The daemon refuses an intent whose
+ * `expect` no longer matches, so a click never acts on a replacement written meanwhile.
  */
-export function shapingStoredRevision(stored: StoredShaper): string {
-  return fnv64(canonicalJson(stored));
-}
+export type ShapingReviser = (entries: readonly StoredShaper[]) => string;
 
-/**
- * The revision of everything stored under one id: the single entry's own revision, or, when a
- * restore left repeats, one revision over every entry in stored order. A remove deletes them all,
- * so a change to any of them - a repeat included - must refuse an intent bound to the old ones.
- */
-export function shapingIdRevision(entries: readonly StoredShaper[]): string {
-  return entries.length === 1 ? shapingStoredRevision(entries[0]!) : fnv64(canonicalJson(entries));
-}
-
-/** FNV-1a 64 over a string's UTF-16 code units, as 16 lowercase hex digits. */
-function fnv64(text: string): string {
-  let hash = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  const mask = 0xffffffffffffffffn;
-  for (let at = 0; at < text.length; at++) {
-    hash ^= BigInt(text.charCodeAt(at));
-    hash = (hash * prime) & mask;
-  }
-  return hash.toString(16).padStart(16, "0");
-}
-
-/** The revision of every stored entry with this id (`shapingIdRevision`), or null when none is stored. */
-export function registeredShaperRevision(config: ShapingConfig, id: string): string | null {
+/** The revision of every stored entry with this id, or null when none is stored. */
+export function registeredShaperRevision(config: ShapingConfig, id: string, revise: ShapingReviser): string | null {
   const entries = config.shapers.filter((stored) => stored.id === id);
-  return entries.length > 0 ? shapingIdRevision(entries) : null;
+  return entries.length > 0 ? revise(entries) : null;
 }
 
 /** What moving one shaper within its stage comes to: the order to store, or why it cannot be. */
@@ -1246,16 +1224,25 @@ export function applyShapingIntent(
   config: ShapingConfig,
   intent: ShapingIntent,
   discovered: readonly DiscoveredShaper[] = [],
-  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
+  options: {
+    /** The daemon's reviser. Required for an intent that carries `expect`. */
+    revise?: ShapingReviser;
+    definitions?: ShapingDefinitions;
+  } = {},
 ): ShapingIntentResult {
+  const { revise, definitions = SHAPING_DEFINITIONS } = options;
   const refuse = (error: ShapingIntentError, reason: string): ShapingIntentResult => ({ ok: false, error, reason });
   const shapers = [...config.shapers];
   const overrides = { ...config.overrides };
   let order = [...config.order];
   const index = (id: string) => shapers.findIndex((entry) => entry.id === id);
   /** Whether the registered entry differs from the revision the sender showed. */
-  const stale = (id: string, expect: string | undefined): boolean =>
-    expect !== undefined && registeredShaperRevision(config, id) !== expect;
+  const stale = (id: string, expect: string | undefined): boolean => {
+    if (expect === undefined) return false;
+    // A programming error, never an operator's: a revision is only ever checked by the daemon.
+    if (!revise) throw new Error("A revision-bound shaping intent needs the daemon's reviser.");
+    return registeredShaperRevision(config, id, revise) !== expect;
+  };
   const changed = (id: string): ShapingIntentResult => refuse("shaper_changed",
     `"${id}" changed in another window since it was shown here, so nothing was done. Review it again first.`);
   /** Choices for ids that no longer exist make room before a live one is stored. */

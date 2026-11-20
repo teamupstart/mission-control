@@ -1005,3 +1005,22 @@ agents without task-owned worktrees:
 Provider or archive failures preserve the unreturned resource records. See
 [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for safe Kill returns,
 manual reconciliation, quarantine, and the unchanged 30-day fallback.
+
+## Automatic PR branch updates (preview)
+
+Enable **Automatic PR branch updates** in Settings > Feature flags. The daemon's PR
+poller then updates an open, non-draft PR only when GitHub reports `BEHIND` and its checks
+and required reviews are ready. This works with Inspector and automatic shipping disabled,
+including PRs you intend to merge by hand. Enabling it never grants merge permission.
+
+The PR link shows **Updating branch** until GitHub reports a new head, then **Waiting for
+checks** or **Waiting for review** as that commit is evaluated. A refusal shows GitHub's
+reason. Conflicts offer **Send to session to resolve** when the owning session can receive
+messages; that action asks the agent to resolve and push, explicitly without merging the PR.
+
+Each PR/head/target-commit pair is attempted at most once, including across daemon restarts
+and lost responses. A changed head or target commit is read again before
+another attempt. GitHub's expected-head guard protects the write. The update happens on
+GitHub, without editing the agent's local worktree. Disabling the preview stops new attempts
+and hides its status; an update GitHub already accepted may still finish. The poller follows
+PRs associated with live sessions and their attached repositories.

@@ -744,6 +744,7 @@ export class SdkSupervisor {
     });
     const session = this.registry.registerSdkSession({
       ...registration,
+      taskId: durable.taskId,
       configuredModel: durable.model,
       agentSessionId: durable.agentSessionId ?? null,
     });
@@ -1861,6 +1862,7 @@ export class SdkSupervisor {
       this.registry.registerSdkSession({
         id: row.id,
         agent: row.agent,
+        taskId: row.taskId,
         name: restoredName(row, task?.title ?? null),
         cwd: row.cwd,
         permissionMode: row.permissionMode,

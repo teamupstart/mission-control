@@ -914,6 +914,8 @@ export interface Session {
    * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
    * `failing` is surfaced on the card - as an alert next to the PR chip.
    */
+  /** Latest branch-update feedback for this session’s owned pull requests. */
+  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   prChecks: PrChecks | null;
   /**
    * The Inspector's state for this session's pull request, or null when there is no PR

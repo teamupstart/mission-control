@@ -9,6 +9,8 @@ test("shipped preview, live master and individual changes, reload, search and al
   const nativeOff = { name: "Codex resident native MCP: off" };
   const nativeOn = { name: "Codex resident native MCP: on" };
   await expect(page.getByRole("button", nativeOff)).toBeVisible();
+  const prOff = { name: "Automatic PR branch updates: off" };
+  await expect(page.getByRole("button", prOff)).toHaveAttribute("aria-pressed", "false");
   // Resident active hours ships as a preview too, off until the operator chooses it.
   const activeHours = page.getByRole("button", { name: /^Resident active hours:/ });
   await expect(activeHours).toHaveAttribute("aria-pressed", "false");
@@ -24,6 +26,8 @@ test("shipped preview, live master and individual changes, reload, search and al
   await expect(master).not.toBeChecked();
   await master.check();
   await expect(peerMaster).toBeChecked();
+  await expect(peer.getByRole("button", nativeOn)).toBeVisible();
+  await expect(peer.getByRole("button", { name: "Automatic PR branch updates: on" })).toBeVisible();
   await expect(peerActiveHours).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
@@ -32,6 +36,7 @@ test("shipped preview, live master and individual changes, reload, search and al
   await expect(peerMaster).not.toBeChecked();
   await page.getByRole("button", nativeOff).click();
   await expect(peer.getByRole("button", nativeOn)).toBeVisible();
+  await expect(peer.getByRole("button", prOff)).toHaveAttribute("aria-pressed", "false");
   await page.getByRole("button", nativeOn).click();
   await expect(peer.getByRole("button", nativeOff)).toBeVisible();
   // Toggling Resident active hours in one window changes the other without a reload.

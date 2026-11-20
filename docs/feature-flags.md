@@ -1,8 +1,9 @@
 # Feature flags
 
-The flag core stores one set of operator choices for this machine. The registry ships three
-previews: `codex-resident-native-mcp` (below), `resident-active-hours`,
-[resident active hours](residents.md#active-hours), and `task-hibernation` (below).
+The flag core stores one set of operator choices for this machine. The registry includes
+**Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
+[Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview)
+and **Hibernate tasks** (below) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -10,7 +11,8 @@ Settings > Feature flags controls these choices. The ai-conductor integration sw
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
 searchable list; filter by name, description, keyword or id. Every click applies immediately
 in every open window, with no Save button or restart. A refused write rolls back and shows an
-inline error. With no preview declared the panel shows its empty state instead of a list.
+inline error. Preview features are off until enabled individually or through the master switch.
+With no preview declared the panel shows its empty state instead of a list.
 
 **Codex resident native MCP** exposes [All native sources](residents.md#all-native-sources) in
 Codex resident profiles. Turning it off prevents new saves and launches in that mode. Existing

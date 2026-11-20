@@ -50,9 +50,34 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
-/** `source` with comments blanked, so a comment between import tokens, or a commented-out import, cannot hide or fake one. */
+/**
+ * `source` with comments blanked, so a comment between import tokens, or a commented-out import,
+ * cannot hide or fake one. String literals are copied through untouched, so a `"/*"` in one string
+ * and a `"*\/"` in a later one cannot swallow the import between them. Regex literals are not
+ * parsed; none of the guarded files needs one before its imports.
+ */
 function withoutComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|\s)\/\/[^\n]*/g, "$1");
+  let out = "";
+  for (let i = 0; i < source.length;) {
+    const c = source[i]!;
+    const next = source[i + 1];
+    if (c === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      i = end < 0 ? source.length : end + 2;
+      out += " ";
+    } else if (c === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+    } else if (c === '"' || c === "'" || c === "`") {
+      const start = i++;
+      while (i < source.length && source[i] !== c) i += source[i] === "\\" ? 2 : 1;
+      i++;
+      out += source.slice(start, i);
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
 }
 
 /** Every module specifier a file imports, re-exports or dynamically imports. */
@@ -113,4 +138,8 @@ test("guard 3 rejects a violating file and accepts the allowed import", () => {
   assert.deepEqual(terminalViolations(`import { x } from /* rationale */ "../terminal/tmux.ts";`), ["../terminal/tmux.ts"], "terminal import with a comment");
   assert.deepEqual(terminalViolations(`// import { x } from "../terminal/tmux.ts";`), [], "commented-out import");
   assert.deepEqual(actionsViolations("src/mod/x.ts", `/* import { focus } from "../actions.ts"; */`), [], "block-commented import");
+  // Comment markers inside strings do not hide the import between them.
+  const quoted = 'const start = "/*";\nimport { focus } from "../actions.ts";\nconst end = "*/";\n';
+  assert.equal(actionsViolations("src/mod/x.ts", quoted).length, 1, "import between strings holding comment markers");
+  assert.deepEqual(terminalViolations('const a = "/*";\nimport { x } from "../terminal/tmux.ts";\nconst b = "*/";\n'), ["../terminal/tmux.ts"]);
 });

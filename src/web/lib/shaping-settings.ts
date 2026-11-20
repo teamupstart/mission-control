@@ -11,7 +11,8 @@ import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import {
   canonicalJson,
   compareShapingOrder,
-  SHAPING_LIMITS,
+  moveInShapingOrder,
+  shapingEntryRevision,
   ShaperManifestSchema,
   ShaperSchema,
   shaperIsLocal,
@@ -45,6 +46,8 @@ export interface ShapingListRow {
   on: boolean;
   /** Why it cannot run, or null when it can. */
   problem: string | null;
+  /** The entry's `shapingEntryRevision`, sent with any intent that acts on what this row shows. */
+  revision: string;
 }
 
 /** Rows for one stage, in run order, or the entries that cannot run (`stage: null`). */
@@ -65,13 +68,13 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
     if (isUnsupportedShaper(entry)) {
       unsupported.push({
         id: entry.id, label: entry.label, shaper: null,
-        on: view.overrides[entry.id] === true, problem: entry.unsupported,
+        on: view.overrides[entry.id] === true, problem: entry.unsupported, revision: shapingEntryRevision(entry),
       });
       return;
     }
     known.push({
       id: entry.id, label: entry.label, shaper: entry, stage: entry.stage, position,
-      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null,
+      on: shaperSwitchedOn(view, entry.id, "registered"), problem: null, revision: shapingEntryRevision(entry),
     });
   });
   known.sort(compareShapingOrder(view.order));
@@ -83,62 +86,23 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
   return groups;
 }
 
-/** What moving a shaper comes to: the order to store, or why it cannot be stored. */
-export type ShaperMove = { ok: true; order: string[] } | { ok: false; reason: string };
-
 /**
- * The stored order after moving one shaper a step within its stage, or null when it cannot move
- * that way (already first or last, or not a row the list draws).
- *
- * Only the moved shaper's stage is rewritten: its rows, in their new order, follow every other id
- * already stored. The ordering rule compares stage first, so this changes nothing in any other
- * stage, and every id the list does not draw - a discovered shaper's, or one removed in another
- * window - keeps its place.
- *
- * The stored order holds at most `SHAPING_LIMITS.choices` ids. When the move would pass that,
- * stored ids that name no shaper this window knows of are left out, the oldest kept first: they
- * place nothing, so dropping them changes no run order. `live` names the shapers the list does
- * not draw but that exist, such as the folder's, so their place is never dropped. While `live` is
- * null - the folder has not been read yet, or the read failed - no id's absence is established,
- * so none is dropped. If the order cannot fit, the move is refused with the reason, and nothing
- * is sent.
+ * The intent that moves one shaper a step within its stage, or null when it cannot move that way
+ * (already first or last, or not a row the list draws). It names where the shaper goes - right
+ * after a neighbour, or first - rather than a whole order, and the daemon applies it to the order
+ * as stored when it arrives. So a move made in another window meanwhile is kept, a repeated
+ * intent changes nothing, a shaper the list does not draw keeps its slot, and the daemon, which
+ * knows the folder's shapers, decides what may make room when the order is full.
  */
-export function moveShaper(
-  view: ShapingConfigView,
-  id: string,
-  offset: -1 | 1,
-  live: readonly string[] | null = null,
-): ShaperMove | null {
-  const groups = shapingList(view).filter((group) => group.stage !== null);
-  const group = groups.find((candidate) => candidate.rows.some((row) => row.id === id));
+export function moveIntent(view: ShapingConfigView, id: string, offset: -1 | 1): Extract<ShapingIntent, { kind: "move" }> | null {
+  const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === id));
   if (!group) return null;
-  const at = group.rows.findIndex((row) => row.id === id);
+  const rows = group.rows.map((row) => row.id);
+  const at = rows.indexOf(id);
   const to = at + offset;
-  if (to < 0 || to >= group.rows.length) return null;
-  const rows = [...group.rows];
-  [rows[at], rows[to]] = [rows[to]!, rows[at]!];
-  const moved = rows.map((row) => row.id);
-  const stage = new Set(moved);
-  const rest = [...new Set(view.order)].filter((other) => !stage.has(other));
-  const limit = SHAPING_LIMITS.choices;
-  if (rest.length + moved.length <= limit) return { ok: true, order: [...rest, ...moved] };
-  if (live === null) {
-    return {
-      ok: false,
-      reason: `The stored run order is full: it holds at most ${limit} shaper ids. Mission Control could not read which shapers are in the shapers folder, so no stored entry is dropped to make room. Try again in a moment.`,
-    };
-  }
-  const known = new Set([...view.shapers.map((entry) => entry.id), ...live]);
-  const kept = rest.filter((other) => known.has(other));
-  let room = limit - moved.length - kept.length;
-  if (room < 0) {
-    return {
-      ok: false,
-      reason: `The stored run order is full: it holds at most ${limit} shaper ids, and this move needs ${kept.length + moved.length}.`,
-    };
-  }
-  const order = rest.filter((other) => known.has(other) || room-- > 0);
-  return { ok: true, order: [...order, ...moved] };
+  if (to < 0 || to >= rows.length) return null;
+  const others = rows.filter((row) => row !== id);
+  return { kind: "move", id, after: to === 0 ? null : others[to - 1]! };
 }
 
 /**
@@ -172,6 +136,14 @@ export function previewShapingIntent(view: ShapingConfigView, intent: ShapingInt
       return { ...view, overrides };
     case "reorder":
       return { ...view, order: [...new Set(intent.order)] };
+    case "move": {
+      const group = shapingList(view).find((candidate) => candidate.stage !== null && candidate.rows.some((row) => row.id === intent.id));
+      if (!group) return view;
+      // No pruning here: only the daemon knows which stored ids still name a shaper. A move it
+      // has to make room for draws nothing until its frame arrives.
+      const placed = moveInShapingOrder({ rows: group.rows.map((row) => row.id), order: view.order, id: intent.id, after: intent.after });
+      return placed.ok ? { ...view, order: placed.order } : view;
+    }
     case "settings":
       return {
         ...view,
@@ -321,7 +293,11 @@ export function shaperReceives(shaper: Shaper): { remote: boolean; sent: string[
       "The launch's trace context, when it has one",
       "The headers above, each {env:NAME} resolved when it is called",
     ],
-    never: "Never sent: local paths, any other file contents, or any other token.",
+    // Scoped to the fields the transport leaves out. The prompt, the title and a gatherer's facts
+    // and summary are free text, so they carry whatever was typed or read into them.
+    never: "Mission Control leaves out the repositories' local paths and every credential except the header references above. "
+      + "The text it does send is passed on as written: a prompt, title, fact or summary that contains a path, "
+      + "file contents or a secret sends that too.",
   };
 }
 

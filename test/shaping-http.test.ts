@@ -761,3 +761,49 @@ test("the shaping_config frame stays bounded at the stored maximum", () => {
   assert.ok(bytes > SHAPING_LIMITS.shapers * 15 * 1024, "the fixture really is at the maximum, " + bytes + " bytes");
   assert.ok(bytes < 560 * 1024, "the frame is " + bytes + " bytes");
 });
+
+// ---------------------------------------------------------------------------------------------
+// Intents bound to the definition the sender showed, and moves applied to the stored order.
+
+test("enable, remove and a dry run that name a replaced definition answer 409 and change nothing", async () => {
+  assert.equal((await put({ kind: "upsert", shaper: fixture("bound", "gather", "ok") })).status, 200);
+  const shown = ((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0];
+  const { shapingEntryRevision } = await import("../src/shared/shaping.ts");
+  const revision = shapingEntryRevision(shown as never);
+  // Another window replaces it: same id, a different command line.
+  assert.equal((await put({ kind: "upsert", shaper: fixture("bound", "gather", "degraded") })).status, 200);
+  const before = getAppConfig(APP_CONFIG_ENTRIES.shaping);
+  for (const intent of [
+    { kind: "enable", id: "bound", enabled: true, expect: revision },
+    { kind: "remove", id: "bound", expect: revision },
+  ]) {
+    const refused = await put(intent);
+    assert.equal(refused.status, 409, intent.kind);
+    assert.equal(((await refused.json()) as { error: string }).error, "shaper_changed");
+  }
+  const run = await dryRun({ id: "bound", repository, expect: revision });
+  assert.equal(run.status, 409);
+  assert.equal(((await run.json()) as { error: string }).error, "shaper_changed");
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.shaping), before, "nothing was stored");
+  // The definition actually stored goes through.
+  const current = shapingEntryRevision(((await (await get()).json()) as { config: { shapers: unknown[] } }).config.shapers[0] as never);
+  assert.equal((await put({ kind: "enable", id: "bound", enabled: true, expect: current })).status, 200);
+});
+
+test("move places a shaper against the stored order, so moves from two windows in different stages both survive", async () => {
+  for (const [id, stage] of [["g1", "gather"], ["g2", "gather"], ["s1", "select"], ["s2", "select"]] as const) {
+    assert.equal((await put({ kind: "upsert", shaper: fixture(id, stage, "ok") })).status, 200);
+  }
+  // Each window saw the same order; each moves a shaper in its own stage. Neither sends an order.
+  assert.equal((await put({ kind: "move", id: "g2", after: null })).status, 200);
+  const second = await put({ kind: "move", id: "s2", after: null });
+  assert.equal(second.status, 200);
+  assert.deepEqual(((await second.json()) as { config: { order: string[] } }).config.order, ["g2", "g1", "s2", "s1"]);
+  // Repeating a move changes nothing.
+  assert.deepEqual(((await (await put({ kind: "move", id: "s2", after: null })).json()) as { config: { order: string[] } }).config.order,
+    ["g2", "g1", "s2", "s1"]);
+  // An anchor in another stage is refused.
+  const wrong = await put({ kind: "move", id: "g1", after: "s1" });
+  assert.equal(wrong.status, 400);
+  assert.equal(((await wrong.json()) as { error: string }).error, "unknown_shaper");
+});

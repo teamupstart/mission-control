@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Shaper, ShapingConfigView, ShapingRun } from "@shared/shaping.ts";
+import { SHAPING_LIMITS, type Shaper, type ShapingConfigView, type ShapingRun } from "@shared/shaping.ts";
 import {
   isUnsupportedShaper,
   readShaperManifest,
@@ -13,9 +13,16 @@ import { Tooltip } from "./Tooltip.tsx";
 
 const STAGE_LABEL: Record<string, string> = { gather: "Gather", select: "Select" };
 
+/**
+ * The most manifest text the dialog takes, pasted or from a file, before anything parses it. A
+ * stored definition is at most `SHAPING_LIMITS.entryJsonBytes` of JSON; this leaves room for a
+ * pretty-printed manifest and refuses a document that would stall the window while parsing.
+ */
+const MANIFEST_INPUT_MAX_CHARS = 4 * SHAPING_LIMITS.entryJsonBytes;
+
 /** Runs one dry run for the dialog. A failed request, as opposed to a failed shaper, is `ok: false`. */
 export type ShapingTestRunner = (
-  request: { id: string; repository: string; prompt: string },
+  request: { id: string; repository: string; prompt: string; expect: string },
   signal: AbortSignal,
 ) => Promise<{ ok: true; run: ShapingRun } | { ok: false; aborted: boolean; reason: string }>;
 
@@ -57,33 +64,56 @@ export function ShaperReview({ shaper }: { shaper: Shaper }): React.JSX.Element 
  * manifest says and whatever was stored for its id before. A manifest the schema refuses -
  * a literal credential included - shows its reason, and there is nothing to save.
  */
-export function ShapingImportDialog({ config, busy, error, onClose, onSave }: {
+export function ShapingImportDialog({ config, busy, saving, error, onClose, onSave }: {
   config: ShapingConfigView;
+  /** Whether Save is unavailable: a write in flight, or no connection to the daemon. */
   busy: boolean;
+  /** Whether this dialog's own save is in flight. Only that holds the dialog open. */
+  saving: boolean;
   /** The daemon's refusal of the last save, if any. */
   error: string | null;
   onClose: () => void;
   onSave: (shaper: Shaper) => Promise<void>;
 }): React.JSX.Element {
   const [text, setText] = useState("");
-  const [fileError, setFileError] = useState<string | null>(null);
+  const [inputError, setInputError] = useState<string | null>(null);
   // The daemon's refusal is shown only for a save made in this dialog, never one left over from
   // an earlier import.
   const [saved, setSaved] = useState(false);
+  // Bumped by every edit and every chosen file, so a file read that finishes late never replaces
+  // what the operator typed or chose after it.
+  const generation = useRef(0);
   const reading = text.trim() === "" ? null : readShaperManifest(text);
   const existing = reading?.ok ? config.shapers.find((entry) => entry.id === reading.shaper.id) : undefined;
+  const tooLarge = `A manifest is at most ${(MANIFEST_INPUT_MAX_CHARS / 1024).toLocaleString()} KiB of text here; a definition the daemon stores is at most ${SHAPING_LIMITS.entryJsonBytes / 1024} KiB.`;
+  const edit = (value: string): void => {
+    generation.current += 1;
+    if (value.length > MANIFEST_INPUT_MAX_CHARS) {
+      setInputError(tooLarge);
+      return;
+    }
+    setInputError(null);
+    setText(value);
+  };
   const choose = async (file: File | undefined): Promise<void> => {
     if (!file) return;
-    setFileError(null);
+    const mine = ++generation.current;
+    setInputError(null);
+    // Checked before reading, so a large file is never read into memory or parsed.
+    if (file.size > MANIFEST_INPUT_MAX_CHARS) {
+      setInputError(`${file.name} is ${file.size.toLocaleString()} bytes. ${tooLarge}`);
+      return;
+    }
     try {
-      setText(await file.text());
+      const content = await file.text();
+      if (mine === generation.current) setText(content);
     } catch (cause) {
-      setFileError(`Could not read ${file.name}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      if (mine === generation.current) setInputError(`Could not read ${file.name}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
   };
   return (
     <Overlay id={OVERLAY_IDS.shapingImport} className="modal shaping-dialog" role="dialog" ariaModal ariaLabel="Import a shaper"
-      onClose={onClose} closable={!busy}>
+      onClose={onClose} closable={!saving}>
       <header className="modal-head"><h3>Import a shaper</h3></header>
       <div className="modal-body">
         <p className="shaping-dialog-lede">
@@ -93,14 +123,14 @@ export function ShapingImportDialog({ config, busy, error, onClose, onSave }: {
         <label className="shaping-field" htmlFor="shaping-manifest">
           <span>Manifest</span>
           <textarea id="shaping-manifest" className="field-input field-textarea shaping-manifest" rows={8} spellCheck={false} value={text} placeholder='{ "id": "repo-notes", "label": "Repository notes", … }'
-            onChange={(event) => setText(event.target.value)} />
+            onChange={(event) => edit(event.target.value)} />
         </label>
         <label className="shaping-file">
           <span className="btn btn-ghost">Choose a file…</span>
           <input type="file" accept=".json,application/json" aria-label="Choose a manifest file" className="sr-only"
             onChange={(event) => { void choose(event.target.files?.[0]); event.target.value = ""; }} />
         </label>
-        {fileError && <p role="alert">{fileError}</p>}
+        {inputError && <p role="alert" className="shaping-refusal">{inputError}</p>}
         {reading && !reading.ok && <p role="alert" className="shaping-refusal">{reading.reason}</p>}
         {reading?.ok && (
           <>
@@ -121,7 +151,7 @@ export function ShapingImportDialog({ config, busy, error, onClose, onSave }: {
       </div>
       <footer className="modal-foot">
         <Tooltip label="Close without saving anything">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
         </Tooltip>
         <Tooltip label="Store this shaper switched off in every window">
           <button type="button" className="btn" disabled={!reading?.ok || busy}
@@ -140,9 +170,13 @@ const OUTCOME_LABEL: Record<string, string> = {
  * Dry-run one shaper against a repository Mission Control knows: whatever its stored choice,
  * nothing is saved, and closing the dialog stops the run.
  */
-export function ShapingTestDialog({ id, label, repositories, onTest, onClose }: {
+export function ShapingTestDialog({ id, label, revision, current, repositories, onTest, onClose }: {
   id: string;
   label: string;
+  /** The revision of the definition the operator chose to dry-run. Sent with the run. */
+  revision: string;
+  /** The revision stored for this id now, or null once it is gone. */
+  current: string | null;
   repositories: () => Promise<string[]>;
   onTest: ShapingTestRunner;
   onClose: () => void;
@@ -171,13 +205,17 @@ export function ShapingTestDialog({ id, label, repositories, onTest, onClose }: 
     setRunning(true);
     setError(null);
     setResult(null);
-    const answer = await onTest({ id, repository: repository.trim(), prompt }, abort.signal);
+    // Bound to the definition this dialog was opened for: the daemon refuses the run if it has
+    // been replaced since, so a replacement is never run under this name.
+    const answer = await onTest({ id, repository: repository.trim(), prompt, expect: revision }, abort.signal);
     if (abort.signal.aborted) return;
     setRunning(false);
     if (answer.ok) setResult(answer.run);
     else setError(answer.reason);
   };
   const summary = result?.summary?.shapers.find((entry) => entry.id === id) ?? result?.summary?.shapers[0] ?? null;
+  // Another window replaced or removed this shaper while the dialog was open.
+  const replaced = current !== revision;
   return (
     <Overlay id={OVERLAY_IDS.shapingTest} className="modal shaping-dialog" role="dialog" ariaModal ariaLabel={`Dry-run ${label}`}
       onClose={onClose}>
@@ -197,6 +235,13 @@ export function ShapingTestDialog({ id, label, repositories, onTest, onClose }: 
           <textarea id="shaping-test-prompt" className="field-input field-textarea" rows={3} value={prompt} disabled={running}
             placeholder="What the task asks for, as a worker would receive it" onChange={(event) => setPrompt(event.target.value)} />
         </label>
+        {replaced && (
+          <p role="alert" className="shaping-refusal">
+            {current === null
+              ? `${label} was removed in another window, so it cannot be dry-run.`
+              : `${label} was replaced in another window since this dialog opened. Close it and dry-run the new definition from its row.`}
+          </p>
+        )}
         {error && <p role="alert" className="shaping-refusal">{error}</p>}
         {running && <p className="shaping-note" role="status">Running {label}…</p>}
         {result && (
@@ -232,7 +277,7 @@ export function ShapingTestDialog({ id, label, repositories, onTest, onClose }: 
           <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
         </Tooltip>
         <Tooltip label="Run this shaper once against the repository">
-          <button type="button" className="btn" disabled={running || repository.trim() === ""} onClick={() => void run()}>
+          <button type="button" className="btn" disabled={running || replaced || repository.trim() === ""} onClick={() => void run()}>
             {running ? "Running…" : "Run"}
           </button>
         </Tooltip>

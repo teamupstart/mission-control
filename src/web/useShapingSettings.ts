@@ -4,6 +4,9 @@ import { api } from "./lib/api.ts";
 import { previewShapingIntent, shapingIntentReflected } from "./lib/shaping-settings.ts";
 import type { MissionState } from "./useEventStream.ts";
 
+/** How long one write may wait for the daemon's answer before the panel stops waiting. */
+export const SHAPING_WRITE_TIMEOUT_MS = 15_000;
+
 /**
  * Task shaping's settings: the confirmed config view from the event stream, one write at a time,
  * and a click drawn at once. Built the way `useFeatureFlagsSettings` is: optimism is temporary,
@@ -26,11 +29,14 @@ export function useShapingSettings(
   } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const writing = useRef<ShapingIntent | null>(null);
+  // The last request a frame confirmed, so a reply that never arrives cannot report it unsaved.
+  const confirmedByStream = useRef<ShapingIntent | null>(null);
   useEffect(() => subscribe((config) => {
     const request = writing.current;
     if (!request || !config) return;
     // Keep the receipt even when a peer's later write replaces this config in the same render.
     if (shapingIntentReflected(config, request)) {
+      confirmedByStream.current = request;
       setPending((current) => current?.intent === request ? { ...current, observed: true } : current);
     }
   }), [subscribe]);
@@ -39,11 +45,14 @@ export function useShapingSettings(
   const live = ready && confirmed !== null;
   useEffect(() => {
     if (!pending || writing.current !== pending.intent) return;
-    // Either response order is valid. Once observed, later peer writes remain authoritative.
-    if (!live || (pending.accepted && (pending.observed || reflected))) {
+    // A frame showing the write is the confirmation: the panel takes the next edit at once rather
+    // than waiting on an HTTP answer that may be slow. Either order is valid, and once observed,
+    // later peer writes remain authoritative.
+    if (!live || pending.observed || (pending.accepted && reflected)) {
       writing.current = null;
       setPending(null);
-    } else if (reflected && !pending.observed) {
+    } else if (reflected) {
+      confirmedByStream.current = pending.intent;
       setPending((current) => current?.intent === pending.intent ? { ...current, observed: true } : current);
     }
   }, [pending, reflected, live]);
@@ -62,12 +71,21 @@ export function useShapingSettings(
     writing.current = request;
     setErrors({});
     setPending({ intent: request, key, accepted: false, observed: false });
+    // Bounded, so a daemon that stops answering never leaves every control disabled. On the
+    // timeout the optimism goes and the panel shows the stream's config, which is the daemon's.
+    const timeout = AbortSignal.timeout(SHAPING_WRITE_TIMEOUT_MS);
     try {
-      const result = await api.setShaping(request);
-      if (!result.ok) throw new Error(result.reason ?? result.error ?? "Could not save task shaping.");
+      const result = await api.setShaping(request, { signal: timeout });
+      if (!result.ok) {
+        throw new Error(timeout.aborted
+          ? `The daemon did not answer within ${SHAPING_WRITE_TIMEOUT_MS / 1000} seconds. This shows its current settings; make the change again if it is missing.`
+          : result.reason ?? result.error ?? "Could not save task shaping.");
+      }
       if (writing.current === request) setPending((current) => current && { ...current, accepted: true });
       return true;
     } catch (error) {
+      // A frame already confirmed it: saved, whatever became of the reply.
+      if (confirmedByStream.current === request) return true;
       // A disconnect cancels local optimism; a late response must not revive that request.
       if (writing.current !== request) return false;
       setErrors({ [key]: error instanceof Error ? error.message : String(error) });
@@ -79,6 +97,8 @@ export function useShapingSettings(
 
   return {
     config: pending && !pending.observed && optimistic ? optimistic : confirmed,
+    /** The daemon's config as the event stream last confirmed it, without this window's optimism. */
+    confirmed,
     pending: pending?.intent ?? null,
     pendingKey: pending?.key ?? null,
     errors,

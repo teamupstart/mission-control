@@ -8,16 +8,20 @@ import { TaskShapingView } from "../src/web/components/TaskShapingView.tsx";
 import { ShaperReview } from "../src/web/components/TaskShapingDialogs.tsx";
 import { SHAPING_STAGES } from "../src/shared/shaping-registry.ts";
 import {
+  applyShapingIntent,
+  moveInShapingOrder,
+  registeredShaperRevision,
   SHAPING_CONFIG_DEFAULTS,
   SHAPING_LIMITS,
+  ShaperSchema,
   ShapingConfigSchema,
-  ShapingIntentSchema,
+  shapingEntryRevision,
   shapingConfigView,
   type ShapingConfigView,
   type ShapingIntent,
 } from "../src/shared/shaping.ts";
 import {
-  moveShaper,
+  moveIntent,
   previewShapingIntent,
   readShaperManifest,
   readShapingRun,
@@ -130,52 +134,96 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
   assert.deepEqual(groups[1]!.rows.map((row) => row.id), ["acme-guidance"]);
   assert.deepEqual(groups[2]!.rows, [{
     id: "future", label: "Future shaper", shaper: null, on: false,
-    problem: "stage: This build does not support the stage this entry names.",
+    problem: "stage: This build does not support the stage this entry names.", revision: shapingEntryRevision({ id: "future", label: "Future shaper", unsupported: "stage: This build does not support the stage this entry names." }),
   }]);
 });
 
-test("moving a shaper rewrites only its stage and keeps every other stored id in place", () => {
-  const config = view({ shapers: [gatherer("a"), gatherer("b"), remote], order: ["found-on-disk", "acme-guidance"] });
-  assert.deepEqual(moveShaper(config, "b", -1), { ok: true, order: ["found-on-disk", "acme-guidance", "b", "a"] });
-  assert.equal(moveShaper(config, "a", -1), null, "already first in its stage");
-  assert.equal(moveShaper(config, "acme-guidance", 1), null, "alone in its stage");
-  assert.equal(moveShaper(config, "nobody", 1), null);
-  // The new order sorts exactly as the move drew it.
-  const moved = moveShaper(config, "b", -1);
-  assert.ok(moved?.ok);
-  const after = shapingList({ ...config, order: moved.order });
-  assert.deepEqual(after[0]!.rows.map((row) => row.id), ["b", "a"]);
-  assert.deepEqual(after[1]!.rows.map((row) => row.id), ["acme-guidance"]);
+test("a move is an intent naming where the shaper goes, and the panel draws it as the daemon applies it", () => {
+  const config = view({ shapers: [gatherer("a"), gatherer("b"), gatherer("c"), remote], order: ["found-on-disk", "acme-guidance"] });
+  assert.deepEqual(moveIntent(config, "b", -1), { kind: "move", id: "b", after: null }, "up to first");
+  assert.deepEqual(moveIntent(config, "a", 1), { kind: "move", id: "a", after: "b" }, "down past its neighbour");
+  assert.deepEqual(moveIntent(config, "c", -1), { kind: "move", id: "c", after: "a" });
+  assert.equal(moveIntent(config, "a", -1), null, "already first in its stage");
+  assert.equal(moveIntent(config, "c", 1), null, "already last");
+  assert.equal(moveIntent(config, "acme-guidance", 1), null, "alone in its stage");
+  assert.equal(moveIntent(config, "nobody", 1), null);
+  const drawn = previewShapingIntent(config, moveIntent(config, "b", -1)!);
+  // Other stages and ids the list does not draw keep their slots; the moved stage follows them.
+  assert.deepEqual(drawn.order, ["found-on-disk", "acme-guidance", "b", "a", "c"]);
+  assert.deepEqual(shapingList(drawn)[0]!.rows.map((row) => row.id), ["b", "a", "c"]);
+  // Idempotent: once applied, the same intent is reflected and changes nothing.
+  assert.equal(shapingIntentReflected(drawn, moveIntent(config, "b", -1)!), true);
 });
 
-test("a move within the order's bound drops only stored ids that place nothing, and says so when it cannot fit", () => {
-  const unseen = Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => `gone-${n}`);
-  const config = view({ shapers: [gatherer("a"), gatherer("b")], order: unseen });
-  // Without a current read of the folder, no stored id is known to be absent, so none is dropped.
-  const unread = moveShaper(config, "b", -1);
-  assert.equal(unread?.ok, false);
-  assert.match(unread && !unread.ok ? unread.reason : "", /could not read which shapers are in the shapers folder, so no stored entry is dropped/);
-  assert.deepEqual(moveShaper(config, "b", -1, null), unread);
-  // Once it has been read and is empty: 128 stored ids that name no shaper, plus the two moved,
-  // keep the oldest first and stay at 128.
-  const moved = moveShaper(config, "b", -1, []);
-  assert.ok(moved?.ok);
-  assert.equal(moved.order.length, SHAPING_LIMITS.choices);
-  assert.deepEqual(moved.order.slice(-2), ["b", "a"]);
-  assert.deepEqual(moved.order.slice(0, -2), unseen.slice(0, SHAPING_LIMITS.choices - 2));
-  assert.ok(ShapingIntentSchema.safeParse({ kind: "reorder", order: moved.order }).success, "the route accepts it");
-  // A folder shaper the list does not draw keeps its place, wherever it sits.
-  const withFolder = moveShaper(config, "b", -1, ["gone-127"]);
-  assert.ok(withFolder?.ok);
-  assert.equal(withFolder.order.length, SHAPING_LIMITS.choices);
-  assert.ok(withFolder.order.includes("gone-127"));
-  assert.ok(!withFolder.order.includes("gone-125"), "the newest id that places nothing makes the room");
+test("a move keeps a hidden shaper's slot, composes with another window's move, and stays within the order's bound", () => {
+  // Stored order A, X, B in one stage, with X a shaper the list does not draw: moving B up puts B
+  // in A's slot and A in B's, so X still runs between them rather than first.
+  assert.deepEqual(
+    moveInShapingOrder({ rows: ["a", "b"], order: ["a", "x", "b"], id: "b", after: null }),
+    { ok: true, order: ["b", "x", "a"] },
+  );
+  // Two windows that each saw the same order move shapers in different stages: applied in turn to
+  // the stored order, both moves survive.
+  const base = ShapingConfigSchema.parse({ shapers: [gatherer("a"), gatherer("b"), { ...remote, id: "s1" }, { ...remote, id: "s2" }] });
+  const first = applyShapingIntent(base, { kind: "move", id: "b", after: null });
+  assert.ok(first.ok);
+  const second = applyShapingIntent(first.config, { kind: "move", id: "s2", after: null });
+  assert.ok(second.ok);
+  const list = shapingList(shapingConfigView(second.config));
+  assert.deepEqual(list[0]!.rows.map((row) => row.id), ["b", "a"]);
+  assert.deepEqual(list[1]!.rows.map((row) => row.id), ["s2", "s1"]);
+  // The daemon refuses an anchor that is not another shaper of the same stage.
+  const wrong = applyShapingIntent(base, { kind: "move", id: "b", after: "s1" });
+  assert.equal(wrong.ok ? "" : wrong.error, "unknown_shaper");
+  // A full order: 127 ids that name nothing and a folder shaper's, last. The daemon knows the
+  // folder, so the folder shaper keeps its place and the room comes from the ids that name nothing.
+  const stale = Array.from({ length: SHAPING_LIMITS.choices - 1 }, (_, n) => `gone-${n}`);
+  const full = ShapingConfigSchema.parse({ shapers: [gatherer("a"), gatherer("b")], order: [...stale, "disk"] });
+  const folder = [{ id: "disk", path: "/shapers/disk", state: "ok" as const, problem: null, sha256: null, shaper: null }];
+  const pruned = applyShapingIntent(full, { kind: "move", id: "b", after: null }, folder);
+  assert.ok(pruned.ok);
+  assert.equal(pruned.config.order.length, SHAPING_LIMITS.choices);
+  assert.ok(pruned.config.order.includes("disk"));
+  assert.deepEqual(pruned.config.order.slice(-2), ["b", "a"]);
+  assert.ok(!pruned.config.order.includes("gone-126"), "the newest id that names nothing makes the room");
   // Every stored id names a live shaper, so nothing can be dropped: the move is refused with why.
-  const full = moveShaper(config, "b", -1, unseen);
-  assert.deepEqual(full, {
-    ok: false,
-    reason: `The stored run order is full: it holds at most ${SHAPING_LIMITS.choices} shaper ids, and this move needs ${SHAPING_LIMITS.choices + 2}.`,
-  });
+  const everyLive = stale.map((id) => ({ ...folder[0]!, id }));
+  const refused = applyShapingIntent(full, { kind: "move", id: "b", after: null }, [...folder, ...everyLive]);
+  assert.equal(refused.ok ? "" : refused.error, "order_full");
+  // The panel draws nothing it would have to prune for: only the daemon knows the folder.
+  assert.deepEqual(previewShapingIntent(shapingConfigView(full), { kind: "move", id: "b", after: null }).order, full.order);
+});
+
+test("an intent bound to a revision is refused once another window replaces the shaper, and a removal keeps a folder shaper off", () => {
+  const config = ShapingConfigSchema.parse({ shapers: [gatherer("a")], overrides: { a: false } });
+  const shown = shapingEntryRevision(shapingConfigView(config).shapers[0]!);
+  assert.equal(registeredShaperRevision(config, "a"), shown);
+  assert.match(shown, /^[0-9a-f]{16}$/);
+  const replaced = applyShapingIntent(config, { kind: "upsert", shaper: ShaperSchema.parse(gatherer("a", { label: "Replacement" })) });
+  assert.ok(replaced.ok);
+  assert.notEqual(registeredShaperRevision(replaced.config, "a"), shown);
+  for (const intent of [
+    { kind: "enable", id: "a", enabled: true, expect: shown },
+    { kind: "remove", id: "a", expect: shown },
+  ] as const) {
+    const result = applyShapingIntent(replaced.config, intent);
+    assert.equal(result.ok ? "" : result.error, "shaper_changed", intent.kind);
+    // Against the definition actually stored, the same intent goes through.
+    assert.equal(applyShapingIntent(replaced.config, { ...intent, expect: registeredShaperRevision(replaced.config, "a")! }).ok, true);
+  }
+  // Removing a registration that shadows a folder shaper of the same id stores it off, in place.
+  const shadowing = ShapingConfigSchema.parse({ shapers: [gatherer("a")], overrides: { a: true }, order: ["a"] });
+  const folder = [{ id: "a", path: "/shapers/a", state: "ok" as const, problem: null, sha256: null, shaper: null }];
+  const removed = applyShapingIntent(shadowing, { kind: "remove", id: "a" }, folder);
+  assert.ok(removed.ok);
+  assert.deepEqual(removed.config.shapers, []);
+  assert.equal(removed.config.overrides.a, false);
+  assert.deepEqual(removed.config.order, ["a"]);
+  // With no folder shaper behind it, removal clears its choice and its place as before.
+  const plain = applyShapingIntent(shadowing, { kind: "remove", id: "a" });
+  assert.ok(plain.ok);
+  assert.equal(Object.hasOwn(plain.config.overrides, "a"), false);
+  assert.deepEqual(plain.config.order, []);
 });
 
 test("an untouched budget keeps its exact stored bytes when another setting is saved", () => {
@@ -239,7 +287,9 @@ test("the review states what a shaper runs or calls, the variables it names and 
   assert.equal(shaperReceives(local).remote, false);
   const sent = shaperReceives(http);
   assert.equal(sent.remote, true);
-  assert.match(sent.never ?? "", /Never sent: local paths/);
+  // Scoped to what the transport leaves out, and honest that forwarded text carries what it holds.
+  assert.match(sent.never ?? "", /leaves out the repositories. local paths and every credential except the header references above/);
+  assert.match(sent.never ?? "", /The text it does send is passed on as written/);
 });
 
 // Every transport's review, as a table: what the review promises is exactly what the shaper runs
@@ -321,7 +371,7 @@ for (const row of TRANSPORT_REVIEWS) {
     for (const name of row.environment) assert.ok(html.includes(`<code>${name}</code>`), `${row.name}: the review omits ${name}`);
     if (row.environment.length === 0) assert.match(html, /<dt>Environment variables<\/dt><dd>None<\/dd>/);
     assert.match(html, row.remote ? /<h4>What it is sent<\/h4>/ : /<h4>What it can reach<\/h4>/);
-    if (row.remote) assert.match(html, /Never sent: local paths/);
+    if (row.remote) assert.match(html, /The text it does send is passed on as written/);
   });
 }
 
@@ -354,4 +404,18 @@ test("a dry run's reply is read whole, and an incomplete one is refused rather t
   ]) {
     assert.equal(readShapingRun(broken), null, JSON.stringify(broken));
   }
+});
+
+test("a registered row states its full transport, so two MCP shapers on one server never look the same", () => {
+  const server = { type: "http", url: "https://mcp.acme.example/mcp", headers: {} };
+  const html = render(view({ shapers: [
+    { id: "guidance", label: "Guidance", stage: "select", transport: { type: "mcp", server, tool: "get_guidance" } },
+    { id: "lessons", label: "Lessons", stage: "select", transport: { type: "mcp", server, tool: "get_lessons", contextDelivery: "argument" } },
+  ] }));
+  const row = (id: string) => html.slice(html.indexOf(`data-anchor="task-shaping/${id}"`)).split('class="shaping-row-actions"')[0]!;
+  assert.match(row("guidance"), /Calls MCP server: https:\/\/mcp\.acme\.example\/mcp/);
+  assert.match(row("guidance"), /Tool: get_guidance/);
+  assert.match(row("guidance"), /Context: Folded into the task argument/);
+  assert.match(row("lessons"), /Tool: get_lessons/);
+  assert.match(row("lessons"), /Context: As a fourth argument, context/);
 });

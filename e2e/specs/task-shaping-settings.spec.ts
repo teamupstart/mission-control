@@ -315,7 +315,8 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
     await expect(save).toBeDisabled();
   }
   await deadline.fill("20000");
-  for (const bad of ["0.5", "65", ""]) {
+  // 64.0001 KiB rounds to the maximum in bytes, but is above the field's own bound, so it is refused too.
+  for (const bad of ["0.5", "65", "", "64.0001"]) {
     await budget.fill(bad);
     await expect(budgetProblem).toBeVisible();
     await expect(save).toBeDisabled();
@@ -411,6 +412,23 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   await capture(page, "dry-run-failed");
   await dialog.getByRole("button", { name: "Close" }).click();
 
+  // Another window replaces On notes, with the same id and label, while its dry-run dialog is open:
+  // the dialog says so and will not run the replacement under the name it opened with.
+  dialog = await openDryRun("On notes");
+  await putShaping(daemon, { kind: "upsert", shaper: modeShaper("on-notes", "On notes", "degraded") });
+  await expect(dialog.getByRole("alert")).toContainText("was replaced in another window since this dialog opened");
+  await expect(dialog.getByRole("button", { name: "Run", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Close" }).click();
+
+  // The same for a removal awaiting confirmation: it was opened for the earlier definition, so it
+  // closes rather than deleting the replacement.
+  await page.getByRole("button", { name: "Remove On notes" }).click();
+  await expect(page.getByRole("button", { name: "Confirm removing On notes" })).toBeVisible();
+  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("on-notes", "On notes") });
+  await expect(page.getByRole("button", { name: "Confirm removing On notes" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Remove On notes" })).toBeVisible();
+  expect((await shapingConfig(daemon)).shapers.map((entry) => entry.id)).toContain("on-notes");
+
   // Closing the dialog while a dry run is still going cancels its request, and the daemon stops
   // the shaper with it: the process is gone long before the 25 s it would otherwise take.
   dialog = await openDryRun("Slow notes");
@@ -457,8 +475,10 @@ test("a peer's newer write wins while this window's own write answer is still he
   await reachedDaemon;
   await expect.poll(async () => (await shapingConfig(daemon)).overrides["race-notes"]).toBe(true);
   await expect(pill(peer, "Race notes")).toHaveAccessibleName("Race notes: on");
-  // This window is still waiting for its answer, so its controls wait too.
-  await expect(pill(page, "Race notes")).toBeDisabled();
+  // The stream's frame already confirmed the write, so this window takes its next edit at once
+  // instead of waiting on the held answer.
+  await expect(pill(page, "Race notes")).toHaveAccessibleName("Race notes: on");
+  await expect(pill(page, "Race notes")).toBeEnabled();
 
   // The peer writes the newer state while the first answer is still held.
   await pill(peer, "Race notes").click();
@@ -527,54 +547,48 @@ test("saving one setting keeps another window's newer change to the fields left 
   }
 });
 
-// A move that must drop stored order entries reads the folder at that moment. Here a shaper
-// appears on disk after the panel loaded, with no config write to tell it so; the move still
-// keeps that shaper's place, and when the read fails nothing is dropped and the row says why.
-test("a full-order move reads the shapers folder afresh, so a shaper that appeared on disk keeps its place", async ({ dashboard: page, daemon }) => {
+// A move is an intent the daemon applies to the order as stored. A shaper the list does not draw
+// keeps its slot between the two it sat between, moves from two windows in different stages both
+// stick, and a daemon that never answers a save stops holding the panel after a bounded wait.
+test("a move keeps a hidden shaper's slot and composes with another window's move, and a save that is never answered stops waiting", async ({ dashboard: page, context, daemon }) => {
+  test.setTimeout(90_000);
   await setFlag(daemon, true);
-  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("a-notes", "A notes") });
-  await putShaping(daemon, { kind: "upsert", shaper: commandShaper("b-notes", "B notes") });
-  // A full stored order: 127 ids that name no shaper, then the folder shaper's, last, where a
-  // move that judged it absent would drop it first.
-  const stale = Array.from({ length: 127 }, (_, n) => `gone-${n}`);
-  await putShaping(daemon, { kind: "reorder", order: [...stale, "disk-notes"] });
+  for (const [id, label, stage] of [["a-notes", "A notes", "gather"], ["b-notes", "B notes", "gather"], ["s1-notes", "S1 notes", "select"], ["s2-notes", "S2 notes", "select"]] as const) {
+    await putShaping(daemon, { kind: "upsert", shaper: commandShaper(id, label, { stage }) });
+  }
+  // Stored order A, X, B, with X a shaper the list does not draw.
+  await putShaping(daemon, { kind: "reorder", order: ["a-notes", "hidden-x", "b-notes"] });
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const peer = await context.newPage();
+  await peer.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(gatherRows(page)).toHaveText(["A notes", "B notes"]);
+  const selectRows = (window: Page) => panel(window).getByRole("group", { name: "Select" }).locator(".shaping-row strong");
+  await expect(selectRows(peer)).toHaveText(["S1 notes", "S2 notes"]);
 
-  // The folder read fails: the move is refused with its reason, and the order is untouched.
-  let reads = 0;
-  await page.route("**/api/shaping", async (route) => {
-    if (route.request().method() !== "GET") return route.fallback();
-    reads += 1;
-    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
-  });
+  // This window moves B up; the peer moves S2 up. Each sends where its shaper goes, not an order.
   await page.getByRole("button", { name: "Move B notes up" }).click();
-  await expect(row(page, "B notes").getByRole("alert")).toContainText("could not read which shapers are in the shapers folder");
-  expect(reads, "the move read the folder when it needed to drop entries").toBe(1);
-  expect((await shapingConfig(daemon)).order).toEqual([...stale, "disk-notes"]);
-  await page.unroute("**/api/shaping");
-
-  // Now the folder holds disk-notes, a change no config write announced. The read taken for the
-  // move sees it, so its place survives and the room comes from ids that name nothing.
-  const requests: string[] = [];
-  await page.route("**/api/shaping", async (route) => {
-    requests.push(route.request().method());
-    if (route.request().method() !== "GET") return route.fallback();
-    const response = await route.fetch();
-    const body = await response.json() as { discovered: unknown[] };
-    body.discovered = [{ id: "disk-notes", path: "/shapers/disk-notes", state: "ok", problem: null, sha256: null, shaper: null }];
-    await route.fulfill({ response, json: body });
-  });
-  await page.getByRole("button", { name: "Move B notes up" }).click();
-  await expect(gatherRows(page)).toHaveText(["B notes", "A notes"]);
-  // The folder was read for this move, before its write: the panel's own refresh after the write
-  // comes later and plays no part in the decision.
-  expect(requests.slice(0, 2)).toEqual(["GET", "PUT"]);
+  await peer.getByRole("button", { name: "Move S2 notes up" }).click();
+  for (const window of [page, peer]) {
+    await expect(gatherRows(window)).toHaveText(["B notes", "A notes"]);
+    await expect(selectRows(window)).toHaveText(["S2 notes", "S1 notes"]);
+  }
+  // X kept its slot between them, rather than being pushed to run first.
   const order = (await shapingConfig(daemon)).order;
-  expect(order).toHaveLength(128);
-  expect(order).toContain("disk-notes");
-  expect(order.slice(-2)).toEqual(["b-notes", "a-notes"]);
-  expect(order).not.toContain("gone-126");
-  await expect(row(page, "B notes").getByRole("alert")).toHaveCount(0);
+  expect(order.slice(0, 3)).toEqual(["b-notes", "hidden-x", "a-notes"]);
+  expect(order).toEqual(expect.arrayContaining(["s2-notes", "s1-notes"]));
+  expect(order.indexOf("s2-notes")).toBeLessThan(order.indexOf("s1-notes"));
+
+  // A save the daemon never answers, and never receives: after its bounded wait the panel stops
+  // waiting, says so, and shows the daemon's settings again.
+  await page.route("**/api/shaping", (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    // Held without an answer until the browser gives up on it.
+  });
+  await pill(page, "A notes").click();
+  await expect(pill(page, "A notes")).toHaveAccessibleName("A notes: on");
+  await expect(row(page, "A notes").getByRole("alert")).toContainText("did not answer within 15 seconds", { timeout: 25_000 });
+  await expect(pill(page, "A notes")).toHaveAccessibleName("A notes: off");
+  await expect(pill(page, "A notes")).toBeEnabled();
+  expect((await shapingConfig(daemon)).overrides["a-notes"]).toBe(false);
   await page.unroute("**/api/shaping");
 });

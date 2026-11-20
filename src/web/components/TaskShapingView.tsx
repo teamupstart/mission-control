@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { SHAPING_LIMIT_RANGES, type ShapingConfigView, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
 import {
-  moveShaper,
+  moveIntent,
   shaperEnvironmentStatus,
-  shaperReachSummary,
+  shaperReach,
   shapingList,
   type ShapingListGroup,
   type ShapingListRow,
@@ -35,7 +35,7 @@ export function TaskShapingView({
   onSet,
   onTest,
   repositories,
-  readLive,
+  readFolderIds,
 }: {
   /** Null while the config has not arrived. */
   config: ShapingConfigView | null;
@@ -48,42 +48,25 @@ export function TaskShapingView({
   /** The repositories a dry run may pick from. */
   repositories: () => Promise<string[]>;
   /**
-   * Reads, now, the ids of shapers that exist but the list does not draw, such as the folder's,
-   * or null when the read fails. Asked only when a move has to drop stored order entries, so the
-   * answer is current: a shaper that appeared on disk since the panel opened is never judged
-   * absent. Without it, or when it answers null, no stored entry is dropped.
+   * Reads, now, the ids of the shapers folder's shapers, or null when the read fails. Asked when
+   * a removal is confirmed, so the confirmation can say that a folder shaper with the same id
+   * stays switched off rather than taking over.
    */
-  readLive?: () => Promise<readonly string[] | null>;
+  readFolderIds?: () => Promise<readonly string[] | null>;
 }): React.JSX.Element {
   const [importing, setImporting] = useState(false);
-  const [testing, setTesting] = useState<{ id: string; label: string } | null>(null);
-  const [removing, setRemoving] = useState<string | null>(null);
-  // A move the stored order cannot hold, refused here before anything is sent.
-  const [moveProblem, setMoveProblem] = useState<{ id: string; reason: string } | null>(null);
-  const [reading, setReading] = useState(false);
-  const move = async (id: string, offset: -1 | 1): Promise<void> => {
-    if (!config) return;
-    // First without dropping anything: most moves fit the order as it is.
-    let result = moveShaper(config, id, offset, null);
-    if (!result) return;
-    if (!result.ok && readLive) {
-      // This move has to drop stored entries to fit, so decide which from a read taken now.
-      setReading(true);
-      try {
-        result = moveShaper(config, id, offset, await readLive()) ?? result;
-      } finally {
-        setReading(false);
-      }
-    }
-    if (!result.ok) {
-      setMoveProblem({ id, reason: result.reason });
-      return;
-    }
-    setMoveProblem(null);
-    void onSet({ kind: "reorder", order: result.order }, `row:${id}`);
+  // Each of these is bound to the revision of the entry the operator was shown: when another
+  // window replaces that shaper, the confirmation or dialog no longer applies to what is stored,
+  // and the daemon refuses any intent still carrying the old revision.
+  const [testing, setTesting] = useState<{ id: string; label: string; revision: string } | null>(null);
+  const [removing, setRemoving] = useState<{ id: string; revision: string; folder: boolean | null } | null>(null);
+  const confirmRemoval = (entry: ShapingListRow): void => {
+    setRemoving({ id: entry.id, revision: entry.revision, folder: null });
+    if (!readFolderIds) return;
+    void readFolderIds().then((ids) => setRemoving((current) => current?.id === entry.id && current.revision === entry.revision
+      ? { ...current, folder: ids === null ? null : ids.includes(entry.id) } : current));
   };
-  // A move waiting on its folder read counts as a write in flight: one change at a time.
-  const busy = !ready || pending !== null || config === null || reading;
+  const busy = !ready || pending !== null || config === null;
   const groups = config ? shapingList(config) : [];
   const count = config?.shapers.length ?? 0;
 
@@ -93,7 +76,8 @@ export function TaskShapingView({
     const environment = shaper ? shaperEnvironmentStatus(shaper, references) : [];
     // An entry that cannot run may only be switched off, never on (`plan.md`).
     const canSwitch = entry.on || entry.problem === null;
-    const confirmRemove = removing === entry.id;
+    // A confirmation opened for an earlier definition of this id does not apply to its replacement.
+    const confirmRemove = removing?.id === entry.id && removing.revision === entry.revision;
     return (
       <div className="shaping-row" key={entry.id} data-anchor={`task-shaping/${entry.id}`} role="group" aria-label={entry.label}>
         <div className="shaping-row-copy">
@@ -103,7 +87,9 @@ export function TaskShapingView({
             <span className="shaping-chip">Registered</span>
             {shaper && <span className="shaping-chip">{TRANSPORT_LABEL[shaper.transport.type]}</span>}
           </div>
-          {shaper && <p className="shaping-row-reach">{shaperReachSummary(shaper)}</p>}
+          {shaper && shaperReach(shaper).map((line) => (
+            <p className="shaping-row-reach" key={line.label + ":" + line.value}>{line.label + ": " + line.value}</p>
+          ))}
           {environment.length > 0 && (
             <ul className="shaping-env" aria-label={`Environment variables ${entry.label} names`}>
               {environment.map(({ name, status }) => (
@@ -116,7 +102,12 @@ export function TaskShapingView({
           )}
           {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
           {errors[key] && <p role="alert">{errors[key]}</p>}
-          {moveProblem?.id === entry.id && <p role="alert">{moveProblem.reason}</p>}
+          {confirmRemove && removing.folder && (
+            <p className="shaping-row-note">
+              A shaper in the shapers folder also has the id {entry.id}. Removing this registration leaves that one
+              switched off; switch it on afterwards if you want it to run.
+            </p>
+          )}
         </div>
         <div className="shaping-row-actions">
           {group.stage !== null && (
@@ -124,16 +115,16 @@ export function TaskShapingView({
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
                   disabled={busy || at === 0}
-                  onClick={() => void move(entry.id, -1)}>↑</button>
+                  onClick={() => { const intent = config && moveIntent(config, entry.id, -1); if (intent) void onSet(intent, key); }}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
                   disabled={busy || at === group.rows.length - 1}
-                  onClick={() => void move(entry.id, 1)}>↓</button>
+                  onClick={() => { const intent = config && moveIntent(config, entry.id, 1); if (intent) void onSet(intent, key); }}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
                 <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready}
-                  onClick={() => setTesting({ id: entry.id, label: entry.label })}>Dry run</button>
+                  onClick={() => setTesting({ id: entry.id, label: entry.label, revision: entry.revision })}>Dry run</button>
               </Tooltip>
             </>
           )}
@@ -144,13 +135,13 @@ export function TaskShapingView({
               </Tooltip>
               <Tooltip label="Delete this shaper's stored definition and its on or off choice">
                 <button type="button" className="btn btn-danger" aria-label={`Confirm removing ${entry.label}`} disabled={busy}
-                  onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id }, key); }}>Remove</button>
+                  onClick={() => { setRemoving(null); void onSet({ kind: "remove", id: entry.id, expect: entry.revision }, key); }}>Remove</button>
               </Tooltip>
             </>
           ) : (
             <Tooltip label="Remove this shaper. Asks once more first.">
               <button type="button" className="btn btn-ghost" aria-label={`Remove ${entry.label}`} disabled={busy}
-                onClick={() => setRemoving(entry.id)}>Remove</button>
+                onClick={() => confirmRemoval(entry)}>Remove</button>
             </Tooltip>
           )}
           <Tooltip label={!canSwitch
@@ -160,7 +151,7 @@ export function TaskShapingView({
               : `Switch ${entry.label} ${entry.on ? "off" : "on"} immediately in every window.`}>
             <button type="button" className={`settings-grant ${entry.on ? "is-on" : "is-off"}`}
               disabled={busy || !canSwitch} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
-              onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on }, key)}>
+              onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision }, key)}>
               <span className="settings-grant-dot" aria-hidden />{entry.on ? "On" : "Off"}
             </button>
           </Tooltip>
@@ -209,7 +200,7 @@ export function TaskShapingView({
         })}
       </div>
       {importing && config && (
-        <ShapingImportDialog config={config} busy={busy} error={errors.import ?? null}
+        <ShapingImportDialog config={config} busy={busy} saving={pending?.kind === "upsert"} error={errors.import ?? null}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {
             const saved = await onSet({ kind: "upsert", shaper }, "import");
@@ -217,8 +208,9 @@ export function TaskShapingView({
           }} />
       )}
       {testing && (
-        <ShapingTestDialog id={testing.id} label={testing.label} repositories={repositories} onTest={onTest}
-          onClose={() => setTesting(null)} />
+        <ShapingTestDialog id={testing.id} label={testing.label} revision={testing.revision}
+          current={groups.flatMap((group) => group.rows).find((entry) => entry.id === testing.id)?.revision ?? null}
+          repositories={repositories} onTest={onTest} onClose={() => setTesting(null)} />
       )}
     </section>
   );
@@ -268,7 +260,11 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
     : Math.round(Number(shown.totalKiB) * 1024);
   const deadlineProblem = shown.deadlineMs.trim() === "" || !Number.isInteger(deadlineMs) || deadlineMs < deadline.min || deadlineMs > deadline.max
     ? `A whole number of milliseconds from ${deadline.min} to ${deadline.max.toLocaleString()}.` : null;
-  const totalProblem = shown.totalKiB.trim() === "" || !Number.isFinite(totalBytes) || totalBytes < total.min || totalBytes > total.max
+  // The typed KiB is checked against the input's own bounds before rounding: 64.0001 rounds to
+  // the maximum in bytes, but the browser still refuses to submit a field above its max.
+  const typedKiB = Number(shown.totalKiB);
+  const totalProblem = shown.totalKiB.trim() === "" || !Number.isFinite(typedKiB)
+    || typedKiB < total.min / 1024 || typedKiB > total.max / 1024 || totalBytes < total.min || totalBytes > total.max
     ? `From ${total.min / 1024} to ${total.max / 1024} KiB.` : null;
   const userProblem = shown.user.trim().length > 256 ? "At most 256 characters." : null;
   // Only a field typed in here counts as a change, so an untouched field is never sent.

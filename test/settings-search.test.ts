@@ -38,6 +38,7 @@ const SETTINGS_CONTROLS = settingsControls(FLAGS_ON);
 const VISIBLE_SETTINGS_CATEGORIES = visibleSettingsCategories(FLAGS_ON);
 const SHAPING: ShapingSettings = {
   config: shapingConfigView(SHAPING_CONFIG_DEFAULTS),
+  confirmed: shapingConfigView(SHAPING_CONFIG_DEFAULTS),
   pending: null,
   pendingKey: null,
   errors: {},

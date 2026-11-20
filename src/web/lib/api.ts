@@ -2365,8 +2365,8 @@ export const api = {
   getShaping: () =>
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
-  setShaping: (intent: ShapingIntent) =>
-    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent),
+  setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal }) =>
+    put<ActionResult & { config?: ShapingConfigView; reason?: string }>("/api/shaping", intent, options),
   /**
    * Dry-run one shaper against a checkout. A shaper that fails is an outcome in the reply, not an
    * error. Aborting `signal` closes the request, and the daemon stops the shaper with it.

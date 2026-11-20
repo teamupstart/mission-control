@@ -185,6 +185,20 @@ test("the step deadline bounds both stages; a selector with no time left is time
   assert.match(result.summary!.shapers[1]!.reason!, /ran out of time/);
 });
 
+test("a selector is not started when the step has no usable time left", async () => {
+  // The gather call's own timeout ends 5 ms before the step's deadline, so the select stage
+  // would otherwise start a call with a 5 ms budget.
+  const config = configWith([shaper("g", "gather", { timeoutMs: 295 }), shaper("s", "select")], { limits: { deadlineMs: 300 } });
+  const called: string[] = [];
+  const result = await run(config, async (_request, entry, ctx) => {
+    called.push(entry.id);
+    await new Promise((done) => ctx.signal.addEventListener("abort", done, { once: true }));
+    return { kind: "timed_out", reason: "stopped" };
+  }, input(1));
+  assert.deepEqual(called, ["g"]);
+  assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome]), [["g", "timed_out"], ["s", "timed_out"]]);
+});
+
 test("every outcome: ok, degraded, failed, timed_out, invalid and unavailable", async () => {
   const replies: Record<string, Handler> = {
     ok: () => data({ version: "v2", guidance: [{ id: "a", title: "A", body: "alpha" }] }),

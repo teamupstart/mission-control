@@ -97,6 +97,18 @@ switch (mode) {
     await sleep(60_000);
     break;
   }
+  case "escape-answer": {
+    // A helper outside this shaper's group holds both pipes, so reaping the group cannot close
+    // them; the shaper answers shortly before the call's deadline and exits.
+    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true, stdio: ["ignore", "inherit", "inherit"],
+    });
+    writeFileSync(rest[0], String(helper.pid));
+    helper.unref();
+    await sleep(Math.max(0, Number(rest[1]) - Date.now()));
+    reply({ guidance: [{ id: "on-time", body: "answered just before the deadline" }] });
+    break;
+  }
   case "pipe-helper": {
     // A helper in this shaper's process group that inherits its stdout and stderr and keeps
     // them open, while the shaper itself answers and exits successfully.

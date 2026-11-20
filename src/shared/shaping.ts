@@ -380,10 +380,11 @@ const COOKIE_FLAGS = new Set(["b", "cookie"]);
 /** Short flags that may carry their value attached, as in `-HAuthorization: x` or `-dtoken=x`. */
 const ATTACHED_FLAGS = new Set(["H", "u", "U", "d", "F"]);
 /**
- * For curl, `-b` attaches its cookie as well: `-bsession=x`. Only for curl, because for any other
+ * For curl, `-b` attaches its cookie and `-x` its proxy URL as well: `-bsession=x`,
+ * `-xsocks5://user:pass@host`. Only for curl, because for any other
  * program `-backup=x` is a flag of its own and reading it as a cookie would refuse it wrongly.
  */
-const CURL_ATTACHED_FLAGS = new Set([...ATTACHED_FLAGS, "b"]);
+const CURL_ATTACHED_FLAGS = new Set([...ATTACHED_FLAGS, "b", "x"]);
 
 /** Whether a command names curl, by its file name, wherever it is installed. */
 function isCurl(command: unknown): boolean {
@@ -421,9 +422,10 @@ function argumentParts(
   return null;
 }
 
-/** Whether `value` is an http(s) URL that carries userinfo or a credential query parameter. */
+/** Whether `value` is a URL, of any scheme, that carries userinfo or a credential query parameter. */
 function urlCarriesCredential(value: string): boolean {
-  if (!/^https?:\/\//i.test(value)) return false;
+  // Any scheme: a proxy URL such as socks5://user:pass@host carries credentials as well as http.
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return false;
   try {
     const url = new URL(value);
     return Boolean(url.username || url.password) || Array.from(url.searchParams.keys()).some(credentialBearingName);

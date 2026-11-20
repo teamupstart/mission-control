@@ -89,6 +89,9 @@ export interface ShapeTaskDeps {
 }
 
 /** A fresh empty run for every caller: nothing a caller does to one can leak into the next. */
+/** A call with this little time left is recorded as out of time rather than started. */
+const MIN_CALL_MS = 10;
+
 function emptyRun(): ShapingRun {
   return { summary: null, section: "", entries: [] };
 }
@@ -239,7 +242,9 @@ async function runShaping(
 
     const left = deadline - callStart;
     const timeoutMs = Math.min(entry.shaper.timeoutMs ?? config.limits.timeoutMs, left);
-    if (run.signal.aborted || timeoutMs <= 0) return stopped();
+    // A call that would start with no usable budget is not started at all: the step's deadline
+    // and an earlier call's own timeout fall due together, and either can fire first.
+    if (run.signal.aborted || timeoutMs <= MIN_CALL_MS) return stopped();
     const local = shaperIsLocal(entry.shaper);
     const request: ShapingRequest = {
       protocol: SHAPING_PROTOCOL,

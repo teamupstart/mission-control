@@ -342,6 +342,25 @@ test("a successful reply is kept when a helper in the group still holds the pipe
   }
 });
 
+test("a reply that arrives just before the deadline is kept, though a helper outside the group holds the pipes", async () => {
+  const pidFile = join(scratch, "escape-answer.pid");
+  rmSync(pidFile, { force: true });
+  const timeoutMs = 6_000;
+  const started = Date.now();
+  // The shaper answers 300 ms before the call's deadline, inside the drain the old code waited.
+  const answerAt = started + timeoutMs - 300;
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "escape-answer", pidFile, String(answerAt)]), ctx(timeoutMs));
+    assert.equal(reply.kind, "data", JSON.stringify(reply).slice(0, 200));
+    assert.match((reply as { data: string }).data, /answered just before the deadline/);
+    assert.ok(Date.now() - started < timeoutMs, `returned within the call's budget (${Date.now() - started} ms)`);
+  } finally {
+    if (existsSync(pidFile)) {
+      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
+    }
+  }
+});
+
 test("a cleanup failure is logged through the call's redactor", async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));

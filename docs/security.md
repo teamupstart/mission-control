@@ -415,7 +415,8 @@ started outside its process group cannot keep them open after the group is kille
 kills what is left of the shaper's own process group, even after a successful reply, so a
 helper the shaper started in its group cannot outlive the call. That happens as soon as the
 shaper exits, so a helper holding its pipes cannot turn a complete reply into a timeout; a
-bounded drain then answers with what was read. A
+bounded drain then answers with what was read. The drain ends before the call's own deadline,
+so a reply that arrived on time is returned on time. A
 selector's scratch directory is removed in the background after the call has answered, never
 before it. A large tree left behind costs disk work, not the dry run's latency or the event
 loop's. A removal that fails is logged through the call's redactor, because a path in the tree
@@ -438,7 +439,8 @@ credential header (`-H "Authorization: …"`, `--header`), a credential flag suc
 `--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
 field named as a credential (`-d token=…`, `--form password=…`), a cookie (`-b`, `--cookie`,
 and for curl `-bname=value` attached), or
-a URL with userinfo or a credential query parameter, alone or as a flag's value. Arguments are never resolved, so name the variable in
+a URL of any scheme, including a proxy such as `socks5://`, with userinfo or a credential
+query parameter, alone or as a flag's value (for curl also attached to `-x`). Arguments are never resolved, so name the variable in
 `env` instead.
 Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
 definition that breaks these rules is

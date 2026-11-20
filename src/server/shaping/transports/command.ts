@@ -34,6 +34,8 @@ const STDERR_TAIL_CHARS = 2_000;
 const DRAIN_MS = 1_000;
 /** After the shaper exits, how long its pipes get to deliver the rest of its output. */
 const EXIT_DRAIN_MS = 500;
+/** How far before the call's deadline a drain ends, so its reply still counts as on time. */
+const EXIT_DEADLINE_MARGIN_MS = 50;
 
 /** Variables a shaper can never receive, even by naming them. */
 const NEVER_PASSED = new Set<string>([
@@ -294,6 +296,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     let stderrDropped = false;
     const stderrDecoder = new StringDecoder("utf8");
     let ending: "timed_out" | "overflow" | null = null;
+    let exited: { code: number | null; signal: NodeJS.Signals | null } | null = null;
     let settled = false;
     const timers: Array<ReturnType<typeof setTimeout>> = [];
     let child: ChildProcess;
@@ -314,6 +317,9 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     };
     const end = (why: "timed_out" | "overflow"): void => {
       if (ending || settled) return;
+      // The shaper already exited inside its budget: its reply is complete, so a timer that
+      // fires during the drain answers with it rather than turning it into a timeout.
+      if (why === "timed_out" && exited) return complete(exited.code, exited.signal);
       ending = why;
       killGroup(child);
       timers.push(setTimeout(() => finish(why === "timed_out"
@@ -378,8 +384,12 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     // answers with what was read if something outside the group still holds a pipe.
     child.once("exit", (code, signal) => {
       if (ending || settled) return;
+      exited = { code, signal };
       reapGroup(child);
-      timers.push(setTimeout(() => complete(code, signal), EXIT_DRAIN_MS));
+      // The drain never outlasts the call: a reply that arrived on time is returned on time,
+      // with a margin so it reaches the engine before the deadline it enforces.
+      const left = started + ctx.timeoutMs - Date.now() - EXIT_DEADLINE_MARGIN_MS;
+      timers.push(setTimeout(() => complete(code, signal), Math.max(0, Math.min(EXIT_DRAIN_MS, left))));
     });
     child.once("close", (code, signal) => complete(code, signal));
     timers.push(setTimeout(() => end("timed_out"), remaining));

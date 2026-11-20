@@ -262,6 +262,13 @@ test("curl's attached cookie is refused and stripped, and -b stays an ordinary f
     assert.equal(run(command, ["-bcookies.txt"]).success, true, `${command}, a cookie file holds no secret inline`);
   }
   assert.equal(run("/usr/local/bin/backup-tool", ["-backup=x"]).success, true, "another program's -backup=x is its own flag");
+  // A proxy URL of any scheme, alone, as a flag's value, or attached to curl's -x.
+  for (const args of [["--proxy", "socks5://u:p@proxy.example:1080"], ["--proxy=socks5h://u:p@proxy.example"], ["-x", "socks4a://u@proxy.example"],
+    ["socks5://u:p@proxy.example"], ["--preproxy", "ftp://u:p@files.example"]]) {
+    assert.equal(run("/usr/bin/curl", args).success, false, args.join(" "));
+  }
+  assert.equal(run("curl", ["-xsocks5://u:p@proxy.example"]).success, false, "curl's attached -x proxy URL");
+  assert.equal(run("curl", ["--proxy", "socks5://proxy.example:1080"]).success, true, "a proxy without credentials is fine");
   assert.equal(run("curly", ["-bsession=abc"]).success, true, "only curl itself");
   const stored = ShapingConfigSchema.parse({ shapers: [{ id: "c", label: "C", stage: "gather",
     transport: { type: "command", command: "/usr/bin/curl", args: ["-s", "-bsession=sk-live-cookie", "https://context.example/x"] } }] });

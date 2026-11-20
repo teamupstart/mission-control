@@ -48,6 +48,8 @@ export const SHAPING_LIMITS = {
   replyText: 256 * KIB,
   /** The bound on a reason recorded for an outcome. */
   reasonChars: 500,
+  /** The bound on a version, declared or reported, and on the version recorded for a call. */
+  versionChars: 256,
   /** Facts one repository may carry, and values in one list-valued fact. */
   facts: 64,
   /** Repositories one task may carry into a request. */
@@ -292,7 +294,7 @@ function shaperFields<const Stages extends readonly [string, ...string[]]>(stage
     /** This shaper's own share of the context budget. Absent means the config's default. */
     maxBytes: z.number().int().min(SHAPING_LIMIT_RANGES.maxBytes.min).max(SHAPING_LIMIT_RANGES.maxBytes.max).optional(),
     /** An optional content pin, sent as the request's `version`. */
-    version: z.string().min(1).max(256).nullable().default(null),
+    version: z.string().min(1).max(SHAPING_LIMITS.versionChars).nullable().default(null),
   };
 }
 
@@ -1206,7 +1208,7 @@ export const ShapingRequestSchema = z.object({
     facts: ShapingFactsSchema.optional(),
     summary: z.string().max(SHAPING_LIMITS.summaryBytes).optional(),
   }),
-  version: z.string().max(256).optional(),
+  version: z.string().max(SHAPING_LIMITS.versionChars).optional(),
   context: ShapingContextSchema,
   limits: z.object({ maxBytes: z.number().int().positive(), deadlineMs: z.number().int().nonnegative() }),
 });
@@ -1226,7 +1228,7 @@ export type ShapingEntry = z.output<typeof ShapingEntrySchema>;
  * plus fields a shaper may omit. Unknown fields are ignored (`protocol: 1` compatibility).
  */
 export const ShapingResultSchema = z.object({
-  version: z.string().max(256).nullable().optional(),
+  version: z.string().max(SHAPING_LIMITS.versionChars).nullable().optional(),
   guidance: z.array(ShapingEntrySchema).max(SHAPING_LIMITS.replyEntries).default([]),
   truncated: z.boolean().optional(),
   degraded: z.boolean().optional(),
@@ -1263,7 +1265,7 @@ export const ShapingShaperSummarySchema = z.object({
   entries: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
   truncated: z.boolean(),
-  version: z.string().max(256).nullable(),
+  version: z.string().max(SHAPING_LIMITS.versionChars).nullable(),
 });
 export type ShapingShaperSummary = z.output<typeof ShapingShaperSummarySchema>;
 

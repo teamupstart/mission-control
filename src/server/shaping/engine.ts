@@ -246,7 +246,9 @@ async function runShaping(
       : empty("timed_out", "The shaping step ran out of time before this call could finish.");
 
     const left = deadlineMono - callStart;
-    const timeoutMs = Math.min(entry.shaper.timeoutMs ?? config.limits.timeoutMs, left);
+    // Whole milliseconds: the request's `limits.deadlineMs` is an integer on the wire, and a
+    // floor keeps the call inside the step's monotonic deadline rather than past it.
+    const timeoutMs = Math.floor(Math.min(entry.shaper.timeoutMs ?? config.limits.timeoutMs, left));
     // A call that would start with no usable budget is not started at all: the step's deadline
     // and an earlier call's own timeout fall due together, and either can fire first.
     if (run.signal.aborted || timeoutMs <= MIN_CALL_MS) return stopped();
@@ -321,10 +323,15 @@ async function runShaping(
     if (!parsed.success) return empty("invalid", scrub(describeInvalidResult(parsed.error)));
     const result = parsed.data;
     const notes = scrub(result.notes?.filter((note) => note.trim()).join(" ") ?? "");
+    // The version is the shaper's text too, recorded and returned, so it is scrubbed as an
+    // identifier (a named credential and any long value go, `v1.4.0` keeps an inherited "0"),
+    // then held to its bound: a replacement can be longer than what it replaced.
+    const version = result.version == null ? null
+      : (reply.redact ? reply.redact(result.version, { identifier: true }) : result.version).slice(0, SHAPING_LIMITS.versionChars);
     return {
       record: result.degraded
-        ? record("degraded", notes || "The shaper reported that it is degraded.", result.version ?? null)
-        : record("ok", null, result.version ?? null),
+        ? record("degraded", notes || "The shaper reported that it is degraded.", version)
+        : record("ok", null, version),
       entries: result.guidance.map((guidance) => ({
         id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
         body: guidance.body, truncated: guidance.truncated === true,

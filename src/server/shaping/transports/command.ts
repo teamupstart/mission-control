@@ -319,6 +319,11 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
   // What the child is spawned with, which is what its output may repeat.
   const received = receivedValues(executable.env, transport.env);
   const longestValue = received.values[0]?.length ?? 0;
+  // For identifiers: everything but the short inherited values only whole-token rules apply to.
+  const identifierValues: ReceivedValues = {
+    values: received.values.filter((value) => value.length >= SHORT_VALUE_CHARS || received.named.has(value)),
+    named: received.named,
+  };
   return await new Promise<TransportReply>((settle) => {
     const out: Buffer[] = [];
     let outBytes = 0;
@@ -401,7 +406,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
           kind: "data",
           data: Buffer.concat(out).toString("utf8"),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
-          redact: (text) => redactReceived(text, received),
+          redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),
         });
       }
       // Only the child's own text is redacted, never the sentence Mission Control wraps it in.

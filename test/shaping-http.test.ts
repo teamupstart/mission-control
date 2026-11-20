@@ -226,7 +226,7 @@ test("a client that disconnects from a dry run stops the shaper's process group"
   }
 });
 
-test("a structured error or a degraded note that repeats a passed value is redacted in the dry run", async () => {
+test("a structured error, a degraded note or a version that repeats a passed value is redacted in the dry run", async () => {
   const saved = process.env.SHAPER_FIXTURE_SECRET;
   process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
   try {
@@ -235,6 +235,7 @@ test("a structured error or a degraded note that repeats a passed value is redac
     for (const [id, mode, outcome, reason] of [
       ["error-leak", "reply-error-leak", "failed", "denied: rejected credential [redacted]"],
       ["notes-leak", "reply-notes-leak", "degraded", "fell back after [redacted] was refused"],
+      ["version-leak", "version-leak", "ok", null],
     ] as const) {
       const shaper = fixture(id, "select", mode);
       await put({ kind: "upsert", shaper: { ...shaper, transport: { ...named.transport, args: [FIXTURE, mode, "SHAPER_FIXTURE_SECRET"] } } });
@@ -242,8 +243,9 @@ test("a structured error or a degraded note that repeats a passed value is redac
       assert.equal(response.status, 200);
       const text = await response.text();
       assert.equal(text.includes("s3cret-passed-value"), false, `${id}: the value appears nowhere in the reply`);
-      const run = JSON.parse(text) as { summary: { shapers: Array<{ outcome: string; reason: string }> } };
+      const run = JSON.parse(text) as { summary: { shapers: Array<{ outcome: string; reason: string; version: string | null }> } };
       assert.deepEqual([run.summary.shapers[0]!.outcome, run.summary.shapers[0]!.reason], [outcome, reason]);
+      if (id === "version-leak") assert.equal(run.summary.shapers[0]!.version, "v2-[redacted]", "the recorded version is scrubbed");
     }
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;

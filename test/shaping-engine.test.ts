@@ -8,6 +8,7 @@ import {
   canonicalJson,
   ShaperSchema,
   ShapingConfigSchema,
+  ShapingRequestSchema,
   SHAPING_SECTION_PREAMBLE,
   utf8Length,
   type Shaper,
@@ -186,6 +187,24 @@ test("a slow call is abandoned at its timeout, and the others' entries are kept"
   assert.deepEqual(result.summary?.shapers.map((entry) => [entry.id, entry.outcome]), [["slow", "timed_out"], ["fast", "ok"]]);
   assert.equal(result.summary?.state, "degraded");
   assert.deepEqual(result.entries.map((entry) => entry.id), ["kept"]);
+});
+
+test("a call cut short by the step deadline gets a whole-millisecond deadline that a strict shaper accepts", async () => {
+  // A selector's own timeout exceeds what is left of the step once gather has taken a fraction
+  // of a millisecond more than a whole number, so its deadline comes from the step.
+  const config = configWith([shaper("g", "gather"), shaper("s", "select", { timeoutMs: 30_000 })], { limits: { deadlineMs: 2_000 } });
+  const seen: Array<{ request: ShapingRequest; timeoutMs: number }> = [];
+  await run(config, async (request, entry, ctx) => {
+    seen.push({ request, timeoutMs: ctx.timeoutMs });
+    if (entry.id === "g") await sleep(23.4);
+    return data({ guidance: [] });
+  }, input(1));
+  const select = seen.find(({ request }) => request.stage === "select")!;
+  assert.ok(select.request.limits.deadlineMs < 2_000, "the step's remaining time applied");
+  assert.equal(Number.isInteger(select.request.limits.deadlineMs), true, String(select.request.limits.deadlineMs));
+  assert.equal(select.timeoutMs, select.request.limits.deadlineMs, "the transport's timeout is the same whole value");
+  const strict = ShapingRequestSchema.safeParse(select.request);
+  assert.equal(strict.success, true, strict.success ? "" : JSON.stringify(strict.error.issues));
 });
 
 test("a wall-clock jump during the step neither discards an on-time reply nor skips the select stage", async () => {

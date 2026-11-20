@@ -88,6 +88,10 @@ switch (mode) {
     // A structured error on stdout, exit 0, that repeats the value it was handed.
     reply({ error: { code: "denied", message: `rejected credential ${process.env[rest[0]] ?? "<unset>"}` } });
     break;
+  case "version-leak":
+    // A version string that repeats the value it was handed, on an otherwise good reply.
+    reply({ version: `v2-${process.env[rest[0]] ?? "<unset>"}`, guidance: [{ id: "v", body: "versioned entry" }] });
+    break;
   case "reply-notes-leak":
     reply({ degraded: true, notes: [`fell back after ${process.env[rest[0]] ?? "<unset>"} was refused`], guidance: [] });
     break;

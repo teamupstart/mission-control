@@ -5,6 +5,16 @@ import type { Shaper, ShapingRequest, ShapingTransportId } from "@shared/shaping
  * engine parses as JSON, or an already-decoded value), and the engine owns validation, caps,
  * de-duplication, the outcome and the record. A transport never throws.
  */
+/** How a reply's redactor treats the text it is given. */
+export interface RedactOptions {
+  /**
+   * The text is an identifier, such as a version: values the shaper inherited that are too short
+   * to be redacted anywhere are left alone, so `v1.4.0` keeps its `0`. Values the operator named,
+   * and every inherited value long enough to be redacted anywhere, are still removed.
+   */
+  identifier?: boolean;
+}
+
 export type TransportReply =
   | {
     kind: "data";
@@ -13,9 +23,10 @@ export type TransportReply =
      * Removes values the shaper was handed from text derived from this reply. The engine runs
      * every reason it builds from `data` through it (an `error` the reply states, its `notes`,
      * a validation failure) before recording one, because the shaper wrote that text too.
+     * It runs a reported `version` through it too, as an identifier (see `RedactOptions`).
      * Absent means the transport handed the shaper nothing secret.
      */
-    redact?: (text: string) => string;
+    redact?: (text: string, options?: RedactOptions) => string;
   }
   | { kind: "failed" | "timed_out" | "unavailable"; reason: string };
 

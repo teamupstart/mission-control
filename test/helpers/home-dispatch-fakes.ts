@@ -50,7 +50,7 @@ import {
   type HomeDispatchTranscript,
   type HomeSessionRegistrationAnswer,
 } from "../../src/shared/home-dispatch.ts";
-import { DAEMON_PROTOCOL_CAPABILITIES } from "../../src/shared/daemon-protocol.ts";
+import { advertisedDaemonCapabilities } from "../../src/shared/daemon-protocol.ts";
 import type {
   ModAskAnswer,
   ModAskQuestion,
@@ -340,6 +340,8 @@ export interface FakeDaemon {
   /** Replaces one route's reply for the rest of the test. */
   override: (key: FakeAnyRouteKey, route: FakeRoute) => void;
   requests: FakeDaemonRequestRecord[];
+  /** The messages of request errors (a client that dropped mid-request) the socket server handled. */
+  requestErrors: string[];
 }
 
 const HEALTH: FakeRoute = (request) => ({
@@ -348,10 +350,7 @@ const HEALTH: FakeRoute = (request) => ({
     service: "mission-control",
     version: CANNED_REGISTRATION.daemonVersion,
     pid: 0,
-    capabilities: [
-      ...Object.values(DAEMON_PROTOCOL_CAPABILITIES).filter((c) => c !== DAEMON_PROTOCOL_CAPABILITIES.homeDispatch),
-      ...(request.headers["x-fake-flag"] === "on" ? [DAEMON_PROTOCOL_CAPABILITIES.homeDispatch] : []),
-    ],
+    capabilities: advertisedDaemonCapabilities({ headlessMode: request.headers["x-fake-flag"] === "on" }),
   },
 });
 
@@ -369,6 +368,7 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
   let down = false;
   const token = options.token === undefined ? FAKE_TOKEN : options.token;
   const requests: FakeDaemonRequestRecord[] = [];
+  const requestErrors: string[] = [];
 
   const table = new Map<string, FakeRoute>(Object.entries(CANNED_ROUTES));
   table.set("GET /api/health", HEALTH);
@@ -418,13 +418,17 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
   return {
     handle,
     requests,
+    requestErrors,
     setFlag: (enabled) => { flag = enabled; },
     setDown: (value) => { down = value; },
     override: (key, route) => { table.set(key, route); },
     listen: async () => {
+      if (server) throw new Error("fake daemon is already listening");
       server = createServer((req, res) => {
         if (down) { req.socket.destroy(); return; }
         const chunks: Buffer[] = [];
+        // A client that drops mid-request must fail that request, not crash the test worker.
+        req.on("error", (error) => { requestErrors.push(error.message); req.socket.destroy(); });
         req.on("data", (chunk: Buffer) => chunks.push(chunk));
         req.on("end", () => {
           const text = Buffer.concat(chunks).toString("utf8");
@@ -479,6 +483,8 @@ export interface FakeModHostOptions {
   /** Routes `fetch` to this daemon in process. Without one, `fetch` rejects. */
   daemon?: FakeDaemon;
   initialState?: Partial<ModState>;
+  /** The `x-harness-token` the host sends. Default `FAKE_TOKEN`; set it to match, or mismatch, a daemon built with another token. */
+  token?: string;
   /** What `paneOpen` reports as `isPlaced`. Default true. */
   placed?: boolean;
 }
@@ -543,14 +549,19 @@ export function createFakeModHost(options: FakeModHostOptions = {}): FakeModHost
       out.fetches.push({ path, init });
       if (!options.daemon) throw new Error("fake host has no daemon");
       const reply = await options.daemon.handle(init?.method ?? "GET", path, init?.body, {
-        "x-harness-token": FAKE_TOKEN,
+        "x-harness-token": options.token ?? FAKE_TOKEN,
         "x-harness-surface": "mod",
       });
       return { status: reply.status, text: reply.text };
     },
     env: (name) => options.env?.[name],
     modelWrite: (write) => { record({ type: "modelWrite", write }); out.modelWrites.push(write); },
-    clockEvery: (_ms, tick) => { clocks.add(tick); return () => { clocks.delete(tick); }; },
+    clockEvery: (_ms, tick) => {
+      // A fresh entry per call, so registering the same callback twice gives two independent clocks.
+      const entry = () => tick();
+      clocks.add(entry);
+      return () => { clocks.delete(entry); };
+    },
     paneOpen: async (opts) => {
       record({ type: "paneOpen", opts });
       out.paneOpens.push(opts);

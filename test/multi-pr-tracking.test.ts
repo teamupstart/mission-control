@@ -686,7 +686,7 @@ test("the session card's Inspector summary is the shared projection, CodeRabbit 
   assert.deepEqual(summary, {
     prKey: key,
     url: PR_A,
-    mode: "dry-run",
+    mode: "live",
     open: 1,
     postedOpen: 0,
     round: 0,
@@ -698,7 +698,7 @@ test("the session card's Inspector summary is the shared projection, CodeRabbit 
   });
   assert.equal(codeRabbit?.unresolved, 1);
   assert.deepEqual(
-    inspectorSummaryOf(getInspectorInspection(key)!, { mode: "dry-run" }, codeRabbit),
+    inspectorSummaryOf(getInspectorInspection(key)!, { mode: "live" }, codeRabbit),
     { ...summary, codeRabbit },
     "the worker's projection of the same row matches the card",
   );

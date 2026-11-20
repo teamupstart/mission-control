@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runCli, usageText } from "../src/cli/index.ts";
 import { COMMANDS, findCommand, type CliIo } from "../src/cli/commands/index.ts";
@@ -60,8 +61,12 @@ test("help lists every command, and an unknown or missing command is a usage err
   assert.equal(findCommand("frobnicate"), undefined);
 });
 
+// P2's handoff: P14 owns the step bodies except `agents` (P15) and `codex` (P7).
+const STEP_OWNERS = { daemon: "P14", flag: "P14", mod: "P14", agents: "P15", codex: "P7", doctor: "P14" };
+
 test("the setup steps are the spec 7.14 list in order, each a stub taking { live }", async () => {
   assert.deepEqual(SETUP_STEPS.map((s) => s.id), [...SETUP_STEP_IDS]);
+  assert.deepEqual(Object.fromEntries(SETUP_STEPS.map((s) => [s.id, s.owner])), STEP_OWNERS);
   assert.deepEqual([...SETUP_STEP_IDS], ["daemon", "flag", "mod", "agents", "codex", "doctor"]);
   for (const step of SETUP_STEPS) {
     assert.equal(step.implemented, false, `${step.id} stub exports implemented: false`);
@@ -78,7 +83,7 @@ test("the setup steps are the spec 7.14 list in order, each a stub taking { live
 });
 
 test("the built mctl bundle that bin.mctl names runs: help exits 0, a stub exits 1, an unknown command exits 2", () => {
-  const root = new URL("..", import.meta.url).pathname;
+  const root = fileURLToPath(new URL("..", import.meta.url));
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
     bin: Record<string, string>;
     scripts: Record<string, string>;

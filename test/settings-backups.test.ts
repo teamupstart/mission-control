@@ -45,7 +45,7 @@ const workflowStore = new WorkflowStore(db);
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => {
   clearWorkflowTables(db);
-  db.exec("DELETE FROM app_config");
+  db.exec("DELETE FROM app_config WHERE key <> 'inspector'");
 });
 
 test("the default backup root follows the isolated daemon state home", () => {
@@ -191,6 +191,12 @@ test("daily capture includes archived operator catalogs and excludes built-ins a
   assert.equal(first.status, "ready");
   if (first.status !== "ready") return;
   assert.equal(first.snapshot.appVersion, "1.2.3-test");
+  assert.deepEqual(first.snapshot.domains.find((entry) => entry.domain === "inspector")?.payload, {
+    enabled: true,
+    mode: "live",
+    repoAllowlist: [],
+    maxCommentsPerRound: 8,
+  });
   assert.equal(first.snapshot.counts.personas, 1);
   assert.equal(first.snapshot.counts.sessionActions, 1);
   assert.equal(first.snapshot.counts.workflowDefinitions, 1);

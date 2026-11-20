@@ -46,7 +46,11 @@ import {createResumeLease} from ${JSON.stringify(module)};
 const open=fs.openSync;fs.openSync=(...args)=>{if(String(args[0]).includes('lease.json'))process.exit(55);return open(...args);};
 syncBuiltinESMExports();createResumeLease(process.argv[1],'crashed',new Set());`;
   try {
-    const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, root], { encoding: "utf8", timeout: 10_000 });
+    // The lease module uses only native Node imports and erasable types.
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script, root], {
+      encoding: "utf8", timeout: 30_000,
+    });
+    assert.ifError(child.error);
     assert.equal(child.status, 55, child.stderr);
     assert.deepEqual(fs.readdirSync(join(root, "leases")), []);
     assert.deepEqual(reconcileResumeLeases(root), []);

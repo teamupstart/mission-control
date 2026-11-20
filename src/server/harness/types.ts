@@ -824,6 +824,12 @@ export interface ResidentMcpLaunch {
    * relaunch - immediately before the harness reads its configuration.
    */
   forStart(): ResidentMcpEntry[];
+  /** Reserve paths for launch flags and issue their single-use tickets after preflight. */
+  prepareStart(): {
+    entries: ResidentMcpEntry[];
+    issue(): void;
+    revoke(): void;
+  };
   /**
    * The same entries without credentials, for configuration that is checked before any server
    * starts. Mints nothing, so a slow check cannot outlive a ticket: a driver that verifies first

@@ -1044,8 +1044,12 @@ export class Dispatcher {
       // session holds right now (almost always the synthetic id - hooks have not fired
       // yet) and the registry's rotation move carries it to the agent-session key when
       // the binding arrives. The embedded branch above needs no row: an SDK session is
-      // invited by its runtime.
-      this.registry.setForemanInvite(discovered.id, "dispatch");
+      // invited by its runtime. A kind that launches uninvited
+      // (`TASK_KIND_BEHAVIOR[kind].foremanInvite`) writes no row, so its session resolves
+      // to null like a discovered one until the operator invites Foreman.
+      if (TASK_KIND_BEHAVIOR[task.kind].foremanInvite) {
+        this.registry.setForemanInvite(discovered.id, "dispatch");
+      }
       if (await this.abortIfSettled(taskId)) return;
 
       // Discovery only proves the process exists. Hooked agents prove they can READ before

@@ -2,11 +2,11 @@
 // `$.state` contract mirrors the shared schemas, and `build:mod` produces an installable folder.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   MissionControlInbox,
   MissionControlModState,
@@ -27,7 +27,7 @@ import type {
 } from "../src/shared/home-dispatch.ts";
 import { createFakeModHost } from "./helpers/home-dispatch-fakes.ts";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 test("every flow is a stub that tells the person it is not implemented", async () => {
   const fake = createFakeModHost();
@@ -80,6 +80,23 @@ test("build:mod refuses an output directory outside dist/ and the temp directory
   } finally {
     rmSync(linkDir, { recursive: true, force: true });
     rmSync(sentinel, { recursive: true, force: true });
+  }
+});
+
+test("build:mod writes through a symlinked output directory into the directory it resolves to", () => {
+  const real = mkdtempSync(join(tmpdir(), "mission-mod-real-"));
+  const holder = mkdtempSync(join(tmpdir(), "mission-mod-link-"));
+  const link = join(holder, "out");
+  symlinkSync(real, link);
+  try {
+    execFileSync(process.execPath, ["--import", "tsx", "scripts/build-mod.ts"], {
+      cwd: root, env: { ...process.env, MISSION_MOD_OUT_DIR: link }, stdio: "pipe",
+    });
+    assert.ok(existsSync(join(real, "mission-control", ".claude-plugin", "plugin.json")), "built into the resolved directory");
+    assert.equal(lstatSync(link).isSymbolicLink(), true, "the symlink itself was not replaced");
+  } finally {
+    rmSync(holder, { recursive: true, force: true });
+    rmSync(real, { recursive: true, force: true });
   }
 });
 

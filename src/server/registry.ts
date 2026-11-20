@@ -1,6 +1,6 @@
 import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { getFeatureFlagsConfig } from "./feature-flags/index.ts";
-import { taskHasRepository } from "@shared/task.ts";
+import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
@@ -449,6 +449,15 @@ export interface SdkSessionRegistration {
    * requiring a harness to manufacture an idle frame.
    */
   initialState?: "starting" | "idle";
+  /**
+   * The task this runtime was launched for, from its durable `sdk_sessions` row.
+   *
+   * Carried because the session registers BEFORE the task's `sessionId` points at it, so
+   * the card's task chip can still be empty on the first frame. The Foreman invite is
+   * policy that has to be right on that frame: a resident must never publish the implicit
+   * `"sdk"` grant even briefly (see `foremanInviteFor`).
+   */
+  taskId?: string | null;
   pid?: number;
   permissionMode?: PermissionMode | null;
   gitBranch?: string | null;
@@ -1006,6 +1015,14 @@ export class Registry extends EventEmitter {
    * tombstones included - resolution, not storage, is where the tombstone becomes null.
    */
   private invites = new Map<string, ForemanInviteRow>();
+  /**
+   * The task each SDK runtime was launched for, keyed by session id, from
+   * `SdkSessionRegistration.taskId`, with that task's kind captured at registration. Read
+   * only by `foremanInviteFor`; forgotten when the session row goes. The kind is held here
+   * rather than looked up later because `this.tasks` is a prunable cache
+   * (`pruneTerminalTasks`): a resident whose launch task was evicted must stay uninvited.
+   */
+  private sdkLaunchTasks = new Map<string, { taskId: string; kind: Task["kind"] | null }>();
   /**
    * The cwd of every session the last completed sweep refused (`discoveryAdmission`). A
    * hidden session has no card, but it still runs hooks, so `findSessionByEnv`'s unique-cwd
@@ -2909,6 +2926,7 @@ export class Registry extends EventEmitter {
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
+      prBranchUpdates: prev?.prBranchUpdates,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
       pendingEffort: prev?.pendingEffort ?? null,
@@ -3060,6 +3078,10 @@ export class Registry extends EventEmitter {
     if (refusal) throw new Error(refusal);
     const now = input.now ?? Date.now();
     this.driverDialogs.delete(input.id);
+    if (input.taskId) {
+      const launched = this.tasks.get(input.taskId) ?? getDurableTask(input.taskId);
+      this.sdkLaunchTasks.set(input.id, { taskId: input.taskId, kind: launched?.kind ?? null });
+    } else this.sdkLaunchTasks.delete(input.id);
     const s: Session = {
       id: input.id,
       agent: input.agent,
@@ -5384,6 +5406,21 @@ export class Registry extends EventEmitter {
    * with it). Everything else is a candidate - the poller decides which actually
    * warrant a `gh` call, and any candidate left without a match is cleared.
    */
+  /** Publish only while this session still owns the URL observed by the updater. */
+  setPrBranchUpdate(id: string, url: string, update: import("@shared/pr-branch-update.ts").PrBranchUpdate | null): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const owned = session.prUrl === url || session.task?.repoPrs?.some(pr => pr.prUrl === url);
+    if (!owned) return;
+    const updates = { ...session.prBranchUpdates };
+    if (update) updates[url] = update;
+    else delete updates[url];
+    if (JSON.stringify(updates) === JSON.stringify(session.prBranchUpdates ?? {})) return;
+    const next = { ...session, prBranchUpdates: updates };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+  }
+
   prPollTargets(): {
     id: string;
     cwd: string;
@@ -7066,6 +7103,7 @@ export class Registry extends EventEmitter {
     // Held until the ROW goes, not until the agent stopped - see `retroCorrections`. This is
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);
+    this.sdkLaunchTasks.delete(id);
     if (!this.sessions.delete(id)) return;
     this.sessionControlGrants.delete(id);
     this.emitEvent({ type: "session_remove", id });
@@ -8286,14 +8324,18 @@ export class Registry extends EventEmitter {
     const summary = this.taskSummaryFor(id, s.cwd);
     const workspace = this.workspaceFor(id, s.cwd, s.runtime);
     const name = this.emulatorDisplayName(s);
+    // The invite depends on the task's kind (see `foremanInviteFor`), so a chip that just
+    // arrived or moved re-resolves it in the same frame.
+    const foremanInvite = this.foremanInviteFor({ ...s, task: summary });
     if (
       terminalsEqual(observed.terminals, s.terminals) &&
       s.name === name &&
       JSON.stringify(s.task) === JSON.stringify(summary) &&
+      s.foremanInvite === foremanInvite &&
       s.workspaceRoot === workspace.root &&
       JSON.stringify(s.workspace ?? null) === JSON.stringify(workspace.view)
     ) return;
-    const next = { ...s, name, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
+    const next = { ...s, name, task: summary, foremanInvite, workspaceRoot: workspace.root, workspace: workspace.view };
     this.sessions.set(id, next);
     this.emitSession(next);
   }
@@ -9619,11 +9661,36 @@ export class Registry extends EventEmitter {
    * Resolve a session's invite state: a `'withdrawn'` row means `null` (the tombstone
    * beats even the implicit grant); any other row speaks for itself; no row means the
    * runtime decides - an SDK session is invited by construction, everything else is not.
+   * The one exception to the implicit grant is a task kind that launches uninvited
+   * (`TASK_KIND_BEHAVIOR[kind].foremanInvite`, false for residents): its SDK session
+   * resolves to `null` until the operator invites Foreman, which writes `'operator'`.
+   * Only two facts can override the SDK default: a task explicitly bound to this session
+   * (its `sessionId` names it), then the task the runtime was launched for. A chip matched
+   * only by working directory never decides, in either direction - it may be a DIFFERENT
+   * task sharing the directory, so a resident chip must not strip an unrelated session's
+   * grant, and a non-resident chip must not give a resident one before its own task binds.
+   * `resyncSessionTask` re-resolves it whenever the chip moves.
    */
   private foremanInviteFor(s: Session): ForemanInvite | null {
     const row = this.invites.get(noteKeyFor(s));
     if (row) return row.source === "withdrawn" ? null : row.source;
-    return s.runtime === "sdk" ? "sdk" : null;
+    if (s.runtime !== "sdk") return null;
+    const kind = this.inviteTaskKindFor(s);
+    return kind && !TASK_KIND_BEHAVIOR[kind].foremanInvite ? null : "sdk";
+  }
+
+  /**
+   * The task kind whose `foremanInvite` decides an SDK session's implicit grant, or
+   * undefined when nothing ties the session to a task and the SDK default stands.
+   */
+  private inviteTaskKindFor(s: Session): Task["kind"] | undefined {
+    const chip = s.task ? this.tasks.get(s.task.id) : undefined;
+    if (chip?.sessionId === s.id) return chip.kind;
+    const launch = this.sdkLaunchTasks.get(s.id);
+    // Captured at registration; refreshed from the cache when the row was not loadable then.
+    const launchKind = launch ? (launch.kind ?? this.tasks.get(launch.taskId)?.kind ?? null) : null;
+    if (launch && launch.kind === null && launchKind !== null) launch.kind = launchKind;
+    return launchKind ?? undefined;
   }
 
   /**
@@ -9681,7 +9748,10 @@ export class Registry extends EventEmitter {
    *    grants resume - a withdrawn SDK session gets `"sdk"` back (backlog eligibility
    *    included, once phase 2 reads the field) rather than a permanent, invisible
    *    `"operator"` downgrade.
-   * 3. Still `null` after that: write `'operator'`. One documented residue: a
+   * 3. Still `null` after that: write `'operator'`. This is also how a withdrawn
+   *    resident comes back in one click - its kind has no implicit grant to restore
+   *    (`TASK_KIND_BEHAVIOR.resident.foremanInvite`), so step 2 leaves it null and the
+   *    explicit row is what persists the invite. One documented residue: a
    *    withdrawn, previously dispatched terminal re-invites as `"operator"` (its
    *    `'dispatch'` row was replaced by the tombstone) until a fresh dispatch restores
    *    `"dispatch"`.
@@ -11037,6 +11107,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   steerReceipts: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
+  prBranchUpdates: byJson,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
   // that all change together at the end of a review round.
   inspector: byJson,

@@ -7,7 +7,9 @@
 //   dist/mod/mission-control/hooks/register.js    the bundled hooks module
 //   dist/mod/mission-control/types/index.d.ts     the `$.state` contract, named in plugin.json
 //
-// This script only builds under `dist/`. Staging into `{stateDir}/mod/` and installing are P14's.
+// It writes to `dist/mod` by default. `MISSION_MOD_OUT_DIR` may name another directory, but only one
+// inside `dist/` or the temp directory, and never the checkout, one of its ancestors, or a path inside
+// it outside `dist/` (see `resolveOutRoot`). Staging into `{stateDir}/mod/` and installing are P14's.
 import { build } from "esbuild";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
@@ -38,15 +40,23 @@ function resolveOutRoot(): string {
   const override = process.env.MISSION_MOD_OUT_DIR;
   if (!override) return join(root, "dist", "mod");
   const target = realPathOfNearest(override);
-  const allowed = [realPathOfNearest(join(root, "dist")), realPathOfNearest(tmpdir())];
-  const inside = allowed.some((base) => {
-    const rel = relative(base, target);
+  const strictlyInside = (base: string, path: string) => {
+    const rel = relative(base, path);
     return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-  });
-  if (!inside) {
-    throw new Error(`MISSION_MOD_OUT_DIR ${override} resolves to ${target}, which is not inside dist/ or the temp directory; refusing to replace it`);
+  };
+  const checkout = realPathOfNearest(root);
+  const dist = realPathOfNearest(join(root, "dist"));
+  // Under dist/ is always fine. Under the temp directory is fine too, unless that would delete
+  // the checkout (the target is the checkout or one of its ancestors) or a path inside it that is
+  // not under dist/, which matters when the checkout itself lives under the temp directory.
+  const underDist = strictlyInside(dist, target);
+  const underTmp = strictlyInside(realPathOfNearest(tmpdir()), target);
+  const touchesCheckout = target === checkout || strictlyInside(target, checkout) || strictlyInside(checkout, target);
+  if (!(underDist || (underTmp && !touchesCheckout))) {
+    throw new Error(`MISSION_MOD_OUT_DIR ${override} resolves to ${target}, which is not inside dist/ or a temp directory outside the checkout; refusing to replace it`);
   }
-  return resolve(override);
+  // The checked path is the one acted on: a symlinked override would otherwise be unlinked, not replaced.
+  return target;
 }
 const outRoot = resolveOutRoot();
 const pluginDir = join(outRoot, MOD_NAME);
@@ -84,6 +94,8 @@ await writeFile(
       description: DESCRIPTION,
       author: { name: "Mission Control" },
       modApi: MOD_API,
+      // Relative to the plugin root, not to .claude-plugin/: `claude plugin validate` requires a "./"
+      // prefix and rejects "..", so "../types/index.d.ts" is invalid.
       types: "./types/index.d.ts",
     },
     null,

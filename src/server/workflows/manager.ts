@@ -3391,7 +3391,10 @@ export class WorkflowManager {
         message: "This GitHub Inspector gate is already terminal",
       };
     }
-    const canEvaluate = inspectorRecoveryCanRecheck({ status: run.status, phase: run.currentPhase });
+    const canEvaluate = inspectorRecoveryCanRecheck({
+      status: run.status, phase: run.currentPhase,
+      recoverableInspectorFeedback: this.store.recoverableInspectorFeedback(run) !== null,
+    });
     if (!canEvaluate) {
       return {
         ok: false,
@@ -4467,10 +4470,7 @@ export class WorkflowManager {
         || state.waitReason !== "findings" || !state.targetHeadSha
         || state.targetHeadSha !== state.failedHeadSha || !state.prKey) return false;
     const binding = this.store.getBinding(run.bindingId);
-    const latest = this.store.latestSubmission(run.id);
-    const delivery = this.store.listDeliveries(run.id).find((item) =>
-      item.kind === "inspector_feedback" && item.submissionId === latest?.id
-      && item.state === "prepared" && item.deliveredAt === null);
+    const delivery = this.store.recoverableInspectorFeedback(run);
     if (binding?.deliveryMode !== "live" || !delivery || this.deliveryBlock(delivery)
         || this.registry.getSession(delivery.sessionId)?.pause) return false;
     const session = this.registry.getSession(delivery.sessionId)!;

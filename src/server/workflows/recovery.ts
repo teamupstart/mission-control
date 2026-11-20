@@ -90,9 +90,13 @@ export interface WorkflowRecoveryContext {
   gate: WorkflowInspectorGateState | null;
   completionPolicy: WorkflowCompletionPolicy | null;
   bindingHasOtherRun: boolean;
+  /** The current block owns a prepared, unsent Inspector feedback packet. */
+  recoverableInspectorFeedback?: boolean;
 }
 
-export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "status" | "phase">): boolean {
+export function inspectorRecoveryCanRecheck(
+  run: Pick<WorkflowRecoveryContext, "status" | "phase" | "recoverableInspectorFeedback">,
+): boolean {
   if (!workflowRunPhaseRecognized(run.phase)) return false;
   return run.status === "waiting_for_pr"
     || run.status === "waiting_for_inspector"
@@ -104,7 +108,8 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
     // really closed changes nothing. See `reopenClosedInspectorGate`.
     || (run.status === "blocked" && run.phase === "inspector_pr_closed")
     // The manager reconciles only positively unsent feedback; other packets stay held.
-    || (run.status === "blocked" && run.phase === "delivery_blocked");
+    || (run.status === "blocked" && run.phase === "delivery_blocked"
+      && run.recoverableInspectorFeedback === true);
 }
 
 export function infrastructureRecoveryAvailable(

@@ -348,9 +348,25 @@ test("session return releases unsent feedback for a superseded clean Inspector h
       observed_head_sha = ?, head_sha = ?, clean_review_head_sha = ?, observed_at = ? WHERE key = ?`)
       .run(head, head, head, Date.now(), PR_KEY);
   });
+  // A carried Inspector gate must not offer its action for another packet's block.
+  withDaemonDb(daemon, (db) => db.prepare(
+    "UPDATE workflow_deliveries SET kind = 'evidence_capture_repair' WHERE id = 'unsent-inspector'",
+  ).run());
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const header = dashboard.locator("header.wf-run-head");
   await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  await expect(header.getByRole("button", { name: "Check again" })).toHaveCount(0);
+  const refused = await fetch(`${daemon.baseURL}/api/workflow-runs/${runId}/recheck-inspector`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ requestId: "not-inspector-feedback" }),
+  });
+  expect(refused.status).toBe(409);
+  expect(await eventCount(daemon, runId, "inspector_recheck_requested")).toBe(0);
+  await shoot(dashboard, header, "05-evidence-repair-no-inspector-recheck");
+  withDaemonDb(daemon, (db) => db.prepare(
+    "UPDATE workflow_deliveries SET kind = 'inspector_feedback' WHERE id = 'unsent-inspector'",
+  ).run());
+  await dashboard.reload();
   const checkAgain = header.getByRole("button", { name: "Check again" });
   await expect(checkAgain).toBeVisible();
   await checkAgain.click();

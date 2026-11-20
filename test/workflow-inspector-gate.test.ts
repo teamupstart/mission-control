@@ -2653,3 +2653,32 @@ test("startup reconciles a blocked unsent packet using the durable observed head
     await manager.stop();
   }
 });
+
+
+for (const kind of ["evidence_capture_repair", "persona_feedback", "pr_handoff", "inspector_feedback"] as const) {
+  test(`Inspector recheck is limited to the recoverable blocked packet: ${kind}`, async () => {
+    const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+    try {
+      const { packet } = await blockUnsentFeedback(seeded);
+      db.prepare("UPDATE workflow_deliveries SET kind = ? WHERE id = ?").run(kind, packet.id);
+      const expected = kind === "inspector_feedback";
+      const recovery = seeded.store.runSummary(seeded.ids.run)!.recovery!;
+      assert.equal(recovery.operations.includes("recheck-inspector"), expected);
+      assert.equal(recovery.primary === "recheck-inspector", expected);
+      assert.equal(seeded.manager.recheckInspector(seeded.ids.run, "packet-kind").ok, expected);
+      await settleGate(seeded);
+      assert.equal(phaseOf(seeded), "blocked/delivery_blocked");
+      assert.equal(seeded.store.getDelivery(packet.id)?.state, "prepared");
+      assert.deepEqual(seeded.injected, []);
+      if (expected) {
+        for (const state of ["refused", "uncertain", "delivered", "cancelled"] as const) {
+          seeded.store.setDeliveryState(packet.id, state, null);
+          assert.equal(seeded.store.runSummary(seeded.ids.run)!.recovery!.operations.includes("recheck-inspector"), false, state);
+          assert.equal(seeded.manager.recheckInspector(seeded.ids.run, `packet-${state}`).ok, false, state);
+        }
+      }
+    } finally {
+      await seeded.manager.stop();
+    }
+  });
+}

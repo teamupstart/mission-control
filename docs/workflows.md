@@ -2721,8 +2721,8 @@ observation. An unchanged head receives the original bytes once. A newer head ca
 unsent packet without a delivery timestamp: `inspector_only` evaluates it through the existing
 gate, while `restart_workflow` captures a full resubmission, preserving evidence readiness and
 Persona review. Recovery requires the same active attachment, live delivery authorization and
-an unpaused session. **Check again** is also available from the delivery block and asks
-Inspector for a fresh remote observation. Uncertain sends remain held for explicit resolution.
+an unpaused session. **Check again** is available only when the delivery block holds a
+recoverable prepared Inspector feedback packet, and asks Inspector for a fresh remote observation. Uncertain sends remain held for explicit resolution.
 
 The packet's findings section comes from a pure, shared renderer
 (`src/server/inspector/findings-text.ts`). Foreman's review follow-through relay and the

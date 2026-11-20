@@ -419,6 +419,7 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
     setDown: (value) => { down = value; },
     override: (key, route) => { table.set(key, route); },
     listen: async () => {
+      if (server) throw new Error("fake daemon is already listening");
       server = createServer((req, res) => {
         if (down) { req.socket.destroy(); return; }
         const chunks: Buffer[] = [];
@@ -547,7 +548,12 @@ export function createFakeModHost(options: FakeModHostOptions = {}): FakeModHost
     },
     env: (name) => options.env?.[name],
     modelWrite: (write) => { record({ type: "modelWrite", write }); out.modelWrites.push(write); },
-    clockEvery: (_ms, tick) => { clocks.add(tick); return () => { clocks.delete(tick); }; },
+    clockEvery: (_ms, tick) => {
+      // A fresh entry per call, so registering the same callback twice gives two independent clocks.
+      const entry = () => tick();
+      clocks.add(entry);
+      return () => { clocks.delete(entry); };
+    },
     paneOpen: async (opts) => {
       record({ type: "paneOpen", opts });
       out.paneOpens.push(opts);

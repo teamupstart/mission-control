@@ -70,6 +70,17 @@ for (const c of DAEMON_CASES) {
   });
 }
 
+test("fake daemon table: a second listen is refused and the first listener stays usable", async () => {
+  const daemon = createFakeDaemon({ token: null });
+  const { url } = await daemon.listen();
+  try {
+    await assert.rejects(daemon.listen(), /already listening/);
+    assert.equal((await fetch(url + "/api/health")).status, 200);
+  } finally {
+    await daemon.close();
+  }
+});
+
 test("fake daemon table: setDown over HTTP and in process, setFlag, override and close", async () => {
   const daemon = createFakeDaemon({ token: null });
   const { url } = await daemon.listen();
@@ -202,6 +213,18 @@ test("fake host table: clocks, drawPane and press, with their failure mode", asy
   assert.equal(ticks, 21);
   stopB();
   assert.equal(fake.activeClocks(), 0);
+
+  // Registering one callback twice gives two independent clocks.
+  let shared = 0;
+  const tickShared = () => { shared += 1; };
+  const stopFirst = fake.host.clockEvery(1000, tickShared);
+  const stopSecond = fake.host.clockEvery(1000, tickShared);
+  await fake.tick();
+  stopFirst();
+  assert.equal(fake.activeClocks(), 1);
+  await fake.tick();
+  assert.equal(shared, 3);
+  stopSecond();
 
   await assert.rejects(fake.press("Open"), /no button "Open"/);
   const view = fake.drawPane({ tab: "tasks", placement: "inline", bodyColumns: 40 });

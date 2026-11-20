@@ -38,13 +38,20 @@ function resolveOutRoot(): string {
   const override = process.env.MISSION_MOD_OUT_DIR;
   if (!override) return join(root, "dist", "mod");
   const target = realPathOfNearest(override);
-  const allowed = [realPathOfNearest(join(root, "dist")), realPathOfNearest(tmpdir())];
-  const inside = allowed.some((base) => {
-    const rel = relative(base, target);
+  const strictlyInside = (base: string, path: string) => {
+    const rel = relative(base, path);
     return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-  });
-  if (!inside) {
-    throw new Error(`MISSION_MOD_OUT_DIR ${override} resolves to ${target}, which is not inside dist/ or the temp directory; refusing to replace it`);
+  };
+  const checkout = realPathOfNearest(root);
+  const dist = realPathOfNearest(join(root, "dist"));
+  // Under dist/ is always fine. Under the temp directory is fine too, unless that would delete
+  // the checkout (the target is the checkout or one of its ancestors) or a path inside it that is
+  // not under dist/, which matters when the checkout itself lives under the temp directory.
+  const underDist = strictlyInside(dist, target);
+  const underTmp = strictlyInside(realPathOfNearest(tmpdir()), target);
+  const touchesCheckout = target === checkout || strictlyInside(target, checkout) || strictlyInside(checkout, target);
+  if (!(underDist || (underTmp && !touchesCheckout))) {
+    throw new Error(`MISSION_MOD_OUT_DIR ${override} resolves to ${target}, which is not inside dist/ or a temp directory outside the checkout; refusing to replace it`);
   }
   return resolve(override);
 }

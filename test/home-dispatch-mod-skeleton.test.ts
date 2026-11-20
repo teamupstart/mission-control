@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   MissionControlInbox,
   MissionControlModState,
@@ -27,7 +27,7 @@ import type {
 } from "../src/shared/home-dispatch.ts";
 import { createFakeModHost } from "./helpers/home-dispatch-fakes.ts";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 test("every flow is a stub that tells the person it is not implemented", async () => {
   const fake = createFakeModHost();

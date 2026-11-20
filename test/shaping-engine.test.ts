@@ -269,17 +269,20 @@ test("the summary records origin and the SHA-256 of the canonical definition", a
 });
 
 test("a reply that arrives after its call's timeout contributes nothing, though step time is left", async () => {
-  let abortedAfter = -1;
+  // Ordering, not wall-clock bounds: a stalled runner can deliver both timers late, but the
+  // 100 ms abort is still due before the 125 ms reply.
+  const events: string[] = [];
   const result = await run(configWith([shaper("late", "select", { timeoutMs: 100 })], { limits: { deadlineMs: 5_000 } }), async (_r, _e, ctx) => {
-    const started = Date.now();
-    ctx.signal.addEventListener("abort", () => { abortedAfter = Date.now() - started; }, { once: true });
+    ctx.signal.addEventListener("abort", () => { events.push("aborted"); }, { once: true });
     await sleep(125);
+    events.push("replied");
     return data({ guidance: [{ id: "late", body: "should not be injected" }] });
   }, input(1));
   assert.deepEqual([result.summary!.shapers[0]!.outcome, result.summary!.shapers[0]!.reason], ["timed_out", "Timed out after 0.1 s."]);
   assert.deepEqual(result.entries, [], "no guidance from a late reply");
   assert.equal(result.section, "");
-  assert.ok(abortedAfter >= 90 && abortedAfter < 125, `the call's signal is aborted at its own deadline, not after the grace (${abortedAfter} ms)`);
+  await sleep(50);
+  assert.deepEqual(events.slice(0, 2), ["aborted", "replied"], "the call's signal is aborted at its own deadline, before the late reply");
 });
 
 test("a validation diagnostic is redacted whole before it is cut, so no fragment of a value survives", async () => {

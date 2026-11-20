@@ -437,7 +437,11 @@ also empties any literal credential it finds in an entry, including one this bui
 run: a header value, a URL's userinfo or credential query parameter, or a credential
 argument. Every read, settings restore and backup capture goes through that schema, so an
 entry handed over another way, such as a foreign snapshot, still cannot carry secret text
-into the daemon or into a snapshot.
+into the daemon or into a snapshot. An entry it emptied anything in is marked
+`credentialsRemoved` and is unsupported. It never runs, dry-runs or switches on with its
+changed arguments or headers, until the operator registers a valid replacement for its id,
+which is stored off. An argument is judged by its name, split at the first `=`, so a value
+with line breaks in it is recognised as well.
 
 **What a shaper is sent.** The operator's prompt, the task's title, kind, labels, priority,
 harness, runtime and after-work workflow, the attached repositories' names, roles, branches and

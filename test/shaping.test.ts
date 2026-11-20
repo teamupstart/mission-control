@@ -21,6 +21,7 @@ import {
   SHAPING_SECTION_PREAMBLE,
   credentialBearingName,
   credentialValueIsReferenced,
+  credentialsWereRemoved,
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
@@ -220,6 +221,28 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
   assert.deepEqual(cmd!.transport.args, ["--json", "", "--api-key", ""]);
   assert.deepEqual(untouched, StoredShaperSchema.parse(shaperEntry()), "an entry with no literal credential is unchanged");
   assert.equal(withoutLiteralCredentials(untouched as StoredShaper), untouched, "and is not even copied");
+  assert.equal(credentialsWereRemoved(untouched as StoredShaper), false);
+
+  // A definition that lost a credential no longer says what its author wrote, so it never runs,
+  // even switched on, until the operator registers a replacement.
+  const sanitized = cmd as unknown as StoredShaper;
+  assert.equal(credentialsWereRemoved(sanitized), true);
+  const classified = classifyShaper(sanitized);
+  assert.equal(classified.kind, "unsupported");
+  assert.match((classified as { reason: string }).reason, /literal credential was removed/);
+  const stored = ShapingConfigSchema.parse({ ...parsed, overrides: { cmd: true } });
+  assert.equal(resolveShapers(stored, [], task).some((entry) => entry.shaper.id === "cmd"), false,
+    "the sanitized command is not resolved, though stored on");
+  assert.equal(resolveShaperById(stored, [], "cmd", task).ok, false, "nor dry-run");
+  assert.equal(applyShapingIntent(stored, { kind: "enable", id: "cmd", enabled: true }).ok, false, "nor switched on");
+  const replaced = applyShapingIntent(stored, { kind: "upsert", shaper: ShaperSchema.parse({ id: "cmd", label: "Cmd", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args: ["--json"], env: ["ACME_TOKEN"] } }) });
+  assert.equal(replaced.ok, true, "a valid replacement is accepted");
+  const after = (replaced as { config: ShapingConfig }).config;
+  assert.equal(classifyShaper(after.shapers.find((entry) => entry.id === "cmd")!).kind, "known");
+  assert.equal(Object.hasOwn(after.overrides, "cmd"), false, "and stored off, like a new definition");
+  assert.equal(ShapingConfigSchema.parse(JSON.parse(JSON.stringify(stored))).shapers.filter(credentialsWereRemoved).length, 2,
+    "the mark survives a round trip");
 });
 
 function shaperEntry() {
@@ -232,7 +255,8 @@ test("an argument never hands over a credential as literal text; it is named in 
     transport: { type: "command", command: "/usr/local/bin/shaper", args, env: ["ACME_TOKEN"] } });
   const stdio = (args: string[]) => ShaperSchema.safeParse({ id: "m", label: "M", stage: "select",
     transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: "guide-server", args } } });
-  for (const args of [["--token=sk-live-1"], ["--api-key", "sk-live-1"], ["api_key=sk-live-1"], ["-password", "hunter2"], ["--clientSecret=x"]]) {
+  for (const args of [["--token=sk-live-1"], ["--api-key", "sk-live-1"], ["api_key=sk-live-1"], ["-password", "hunter2"], ["--clientSecret=x"],
+    ["--token=line one\nsk-live-2"], ["--api-key=\nsk-live-3"], ["password=a=b=c"]]) {
     const refused = command(args);
     assert.equal(refused.success, false, args.join(" "));
     assert.match(refused.error!.issues[0]!.message, /Name the variable in env instead/);

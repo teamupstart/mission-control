@@ -317,6 +317,18 @@ export function credentialBearingName(name: string): boolean {
     || /(token|secret|password|passwd|apikey|credentials?)$/.test(name.toLowerCase());
 }
 
+/**
+ * The field the stored config sets on an entry it removed a literal credential from. Such an
+ * entry is unsupported: never resolved, run or dry-run, until the operator registers a valid
+ * replacement for its id.
+ */
+export const CREDENTIALS_REMOVED = "credentialsRemoved";
+
+/** Whether the stored config removed a literal credential from this entry. */
+export function credentialsWereRemoved(stored: StoredShaper): boolean {
+  return (stored as Record<string, unknown>)[CREDENTIALS_REMOVED] === true;
+}
+
 /** Headers that carry an HTTP authentication scheme before their credential. */
 const SCHEME_HEADERS = new Set(["authorization", "proxy-authorization"]);
 /** The schemes such a header may name. Any other leading word is treated as the secret itself. */
@@ -358,8 +370,13 @@ function credentialArgumentName(name: string): boolean {
 function literalCredentialArguments(args: readonly string[]): number[] {
   const found: number[] = [];
   args.forEach((arg, index) => {
-    const assigned = /^-{0,2}([A-Za-z][A-Za-z0-9_.-]*)=(.+)$/.exec(arg);
-    if (assigned && credentialArgumentName(assigned[1]!)) found.push(index);
+    // Split at the first "=" and judge the name alone: a value may hold anything, line breaks
+    // included, and must not be what decides whether the argument is recognised.
+    const equals = arg.indexOf("=");
+    if (equals > 0) {
+      const name = /^-{0,2}([A-Za-z][A-Za-z0-9_.-]*)$/.exec(arg.slice(0, equals));
+      if (name && credentialArgumentName(name[1]!) && arg.length > equals + 1) found.push(index);
+    }
     const flag = /^-{1,2}([A-Za-z][A-Za-z0-9_.-]*)$/.exec(arg);
     const next = args[index + 1];
     if (flag && credentialArgumentName(flag[1]!) && next !== undefined && !next.startsWith("-")) found.push(index + 1);
@@ -421,7 +438,9 @@ export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
   }
   if (!changed) return stored;
   const nextTransport = fromServer ? { ...transport, server: holder } : { ...transport, ...holder };
-  return { ...stored, transport: nextTransport as StoredShaper["transport"] };
+  // Marked, because the definition no longer says what its author wrote: an emptied argument or
+  // header would otherwise run with changed meaning. It stays unsupported until replaced.
+  return { ...stored, transport: nextTransport as StoredShaper["transport"], [CREDENTIALS_REMOVED]: true };
 }
 
 /** The credential rule over a whole definition's headers, URLs and arguments. */
@@ -531,6 +550,12 @@ export function classifyShaper(
   stored: StoredShaper,
   definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
 ): ClassifiedShaper {
+  if (credentialsWereRemoved(stored)) {
+    return {
+      kind: "unsupported", stored,
+      reason: "A literal credential was removed from this shaper's definition when it was stored, so it no longer runs as written. Register a replacement that names the secret as {env:NAME}.",
+    };
+  }
   if (!definitions.stages.includes(stored.stage)) {
     return { kind: "unsupported", stored, reason: `This build does not support the "${stored.stage}" stage.` };
   }
@@ -686,9 +711,12 @@ export function applyShapingIntent(
         delete overrides[parsed.data.id];
       } else {
         const existing = classifyShaper(shapers[at]!, definitions);
-        if (existing.kind === "unsupported") {
+        if (existing.kind === "unsupported" && !credentialsWereRemoved(shapers[at]!)) {
           return refuse("unsupported_shaper", `"${parsed.data.id}" is stored in a form this build does not understand, so it can only be switched off or removed. ${existing.reason}`);
         }
+        // A replacement for an entry whose credential was removed is a new definition the
+        // operator has not yet switched on, so it is stored off like a new one.
+        if (existing.kind === "unsupported") delete overrides[parsed.data.id];
         shapers[at] = stored.data;
       }
       break;

@@ -538,9 +538,10 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   ends it; any other response, an error labelled as an event stream included, is counted as a
   whole body, because the client reads it whole. A request whose own response stream ends
   before its reply fails that call at once and leaves the shared connection, and its other
-  calls, alone, unless the stream carried an event id: the server may close such a stream before
-  replying, as MCP allows, and the client resumes it from that id, at most twice and within the
-  call's own budget.
+  calls, alone, unless the stream carried a non-empty event id: the server may close such a
+  stream before replying, as MCP allows, and the client resumes it from that id, at most twice
+  and within the call's own budget. A shared connection's handshake is bounded by the longest
+  step, not by whichever call opened it, and each call waits on it only for its own budget.
 - **Writes and dry runs take loopback JSON only.** `PUT /api/shaping` and
   `POST /api/shaping/test` answer 403 unless the body is `application/json` and any `Origin` is
   this machine's loopback over http. A cross-site page can send a `text/plain` POST with no
@@ -569,7 +570,9 @@ the same helpers (`plaintextCredentialProblem` and `fetchOnOrigin`):
   engine scrubs a shaper's notes and errors before and after collapsing them the same way. A
   value with inner whitespace is also found written with other whitespace there (`Jane   Doe`
   for `Jane Doe`), in every field, because a section heading or a recorded reason collapses
-  whitespace and would turn that spelling back into the value.
+  whitespace and would turn that spelling back into the value. A value spelled with any JSON
+  escape inside reply text (`\u0074ok` for `tok`) is found too, and only the span that spells it
+  is replaced.
 - **One spelling per header.** A shaper that configures one header name twice in different
   letter case, such as `Authorization` and `authorization`, is not called: which value is sent
   would depend on their order, and two shapers sharing a connection could send each other's

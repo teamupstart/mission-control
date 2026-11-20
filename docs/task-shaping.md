@@ -253,7 +253,8 @@ All three routes are behind the flag and answer 404 while it is off.
   a locally started MCP server passes through in `env`, as `set` or `unset` in the daemon's
   environment, never a value. A name is `set` only when a call would send it, so Mission
   Control's own token and state directory, an empty value and a value carrying the daemon's
-  token read `unset`.
+  token read `unset`. A variable named only in a header the transport replaces, such as
+  `Accept`, or in a trace or work unit header, is never needed by a call and is not listed.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,

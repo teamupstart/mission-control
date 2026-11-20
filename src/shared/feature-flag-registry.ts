@@ -1,5 +1,8 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
 
+/** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
+export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: "codex-resident-native-mcp",
@@ -21,6 +24,13 @@ export const FEATURE_FLAGS = [
     description: "Update otherwise ready PR branches when GitHub requires them to catch up. Never authorizes a merge.",
     stage: "preview",
     keywords: ["github", "pull request", "branch", "checks"],
+  },
+  {
+    id: HEADLESS_MODE_FLAG_ID,
+    label: "Headless mode",
+    description: "Dispatch work to Mission Control from a Claude Code terminal session.",
+    stage: "preview",
+    keywords: ["headless", "terminal", "cli", "dispatch"],
   },
   {
     id: "task-shaping",

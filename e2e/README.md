@@ -2277,9 +2277,9 @@ symlink discovery, and tears down only that task's tmux session. Screenshots are
 
 `feature-flags.spec.ts` covers the shipped registry: the **Codex resident native MCP**,
 **Resident active hours** and **Task shaping** rows appear, and toggling each of the first two in
-one window changes a second window without a reload. `task-shaping-flag.spec.ts` asserts that
-the Task shaping row's toggle reaches a second window without a reload, with the daemon's
-`/api/shaping` gate following it. `feature-flags-populated.spec.ts`
+one window changes a second window without a reload. `headless-mode-flag.spec.ts` covers the
+`headless-mode` row, its second window and its daemon gates, and `task-shaping-flag.spec.ts` does
+the same for the Task shaping row and the daemon's `/api/shaping` gate. `feature-flags-populated.spec.ts`
 uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
 `feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
 Use this build when a spec needs populated flag controls, search, palette or daemon writes.

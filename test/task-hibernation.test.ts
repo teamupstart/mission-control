@@ -1163,6 +1163,42 @@ test("an Agent SDK Resume rereads the task after its driver confirms, and never 
   }
 });
 
+test("an Agent SDK driver that starts but does not register is stopped before Resume says so", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const id = "sdk-unregistered";
+  const sessionId = await hibernated(f, t, id, checkout(id));
+  const woken = boundTo(fakeHandle(), `conv-${id}`);
+  const fake = withFakeDriver(async () => woken);
+  t.after(fake.restore);
+  // The driver is adopted, but its session is gone from the registry by the time wake looks.
+  type Internals = { resume: (row: unknown) => Promise<void> };
+  const internals = f.supervisor as unknown as Internals;
+  const resume = internals.resume.bind(f.supervisor);
+  const lookup = f.registry.getSession.bind(f.registry);
+  let hidden = false;
+  internals.resume = async (row) => {
+    await resume(row);
+    hidden = true;
+  };
+  f.registry.getSession = (sid: string) => (hidden && sid === sessionId ? undefined : lookup(sid));
+  t.after(() => {
+    internals.resume = resume;
+    f.registry.getSession = lookup;
+  });
+
+  const refused = await f.hibernation.resume(id);
+  hidden = false;
+  assert.match(refused.ok ? "" : refused.error, /its agent started but did not register\./);
+  assert.equal(woken.stopped, true, "the running driver is stopped, not left on the conversation");
+  assert.equal(f.supervisor.handleFor(sessionId), null, "and drained");
+  await drain();
+  assert.equal(getSdkSession(sessionId)?.status, "hibernated", "its row stays resumable");
+  const task = f.registry.getTask(id)!;
+  assert.equal(task.status, "hibernated");
+  assert.equal(task.sessionId, null);
+});
+
 test("an Agent SDK driver that moves to another conversation after reporting the saved one is never bound", async (t) => {
   const f = fleet();
   t.after(() => f.tasks.stopMissionSessionClosures());

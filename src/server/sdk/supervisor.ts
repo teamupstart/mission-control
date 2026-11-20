@@ -1266,8 +1266,21 @@ export class SdkSupervisor {
     }
     const session = this.registry.getSession(id);
     if (!session) {
+      // Its driver may be running though no card holds it. It is stopped and drained before this
+      // fails, so no agent is left on the conversation with nothing to show or end it. Its end is
+      // written `hibernated` (`unboundWakes`), and so is the row here, whatever the stop did.
+      let stopFailure: string | null = null;
+      if (this.handles.has(id)) {
+        try {
+          await this.stop(id);
+        } catch (error) {
+          stopFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
       setSdkSessionStatus(id, "hibernated");
-      throw new Error("its agent started but did not register");
+      throw new Error(stopFailure === null
+        ? "its agent started but did not register"
+        : `its agent started but did not register, and could not be stopped (${stopFailure}). It may still be running: Retry stops it first`);
     }
     return session;
   }

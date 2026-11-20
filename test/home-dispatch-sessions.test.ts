@@ -205,21 +205,35 @@ test("repeat registrations of one session id in one process create one row and o
   assert.equal(rows.n, 1);
 });
 
-test("a registration reads, decides and writes inside one BEGIN IMMEDIATE transaction", async () => {
+test("a registration reads, decides and writes while a transaction is open", async () => {
   const db = openDb();
-  const originalExec = db.exec.bind(db);
-  const statements: string[] = [];
-  db.exec = ((sql: string) => { statements.push(sql.trim().toUpperCase()); return originalExec(sql); }) as typeof db.exec;
+  const originalPrepare = db.prepare.bind(db);
+  const openWhenPrepared: Record<string, boolean> = {};
+  db.prepare = ((sql: string) => {
+    // Every statement of a registration is prepared inside the callback `inTransaction` runs.
+    if (/home_dispatch_sessions/.test(sql)) openWhenPrepared[(sql.trim().split(/\s+/)[0] ?? "").toUpperCase()] = db.isTransaction;
+    return originalPrepare(sql);
+  }) as typeof db.prepare;
   try {
     const res = await register(registration({ sessionId: "in-transaction" }));
     assert.equal(res.status, 200);
   } finally {
-    db.exec = originalExec;
+    db.prepare = originalPrepare;
   }
-  const begin = statements.indexOf("BEGIN IMMEDIATE");
-  const commit = statements.indexOf("COMMIT");
-  assert.ok(begin >= 0 && commit > begin, "expected BEGIN IMMEDIATE then COMMIT, saw " + JSON.stringify(statements));
+  assert.equal(openWhenPrepared.SELECT, true, "the existing-row read runs inside the transaction");
+  assert.equal(openWhenPrepared.INSERT, true, "the write runs inside the transaction");
+  assert.equal(db.isTransaction, false, "and it is committed afterwards");
   assert.ok(sessions.getHomeSession("in-transaction"), "and the row was written");
+});
+
+test("a registered session whose cwd later stops resolving keeps working; re-registering from it is refused", async () => {
+  const gone = join(home, "will-vanish");
+  mkdirSync(gone);
+  assert.equal((await register(registration({ sessionId: "vanishing", cwd: gone }))).status, 200);
+  rmSync(gone, { recursive: true });
+  const deps = depsWith({});
+  assert.equal(sessions.requireHomeSession(deps, "vanishing").ok, true, "a standing session is not locked out by a vanished directory");
+  assert.equal((await register(registration({ sessionId: "vanishing", cwd: gone }))).status, 403, "but a registration from it is still refused");
 });
 
 test("a malformed registration is a 400 and writes nothing", async () => {

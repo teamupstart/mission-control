@@ -91,6 +91,7 @@ export function workerRefusal(
   deps: Pick<HomeDispatchDeps, "registry">,
   sessionId: string,
   cwd: string | undefined,
+  options: { onUnresolvableCwd?: "refuse" | "skip" } = {},
 ): HomeSessionRefusal | null {
   const { registry } = deps;
   const known =
@@ -107,11 +108,16 @@ export function workerRefusal(
     }
   }
   if (cwd) {
-    // One fail-closed rule: a cwd that `realpathSync` cannot fully resolve (it is missing, a
-    // dangling or looping link, or unreadable) cannot be shown to lie outside a worker's
-    // worktree, so it is refused rather than compared by its unresolved spelling.
+    // One fail-closed rule at registration: a cwd that `realpathSync` cannot fully resolve (it
+    // is missing, a dangling or looping link, or unreadable) cannot be shown to lie outside a
+    // worker's worktree, so it is refused rather than compared by its unresolved spelling. A
+    // later call for an already registered session passes `skip`: its cwd was verified when it
+    // registered, and a directory that has since vanished must not lock the session out.
     const real = realPath(cwd);
-    if (real === null) return workerDeny("this session's working directory cannot be resolved, so it cannot be verified");
+    if (real === null) {
+      if (options.onUnresolvableCwd === "skip") return null;
+      return workerDeny("this session's working directory cannot be resolved, so it cannot be verified");
+    }
     for (const task of tasks) {
       if (isTerminalTask(task.status)) continue;
       const trees = [task.worktreePath, ...task.extraRepos.map((r) => r.worktreePath)];
@@ -170,7 +176,7 @@ export function requireHomeSession(
 ): { ok: true; session: HomeSessionRow } | { ok: false; refusal: HomeSessionRefusal } {
   const session = getHomeSession(sessionId);
   if (!session) return { ok: false, refusal: deny("this session is not registered as a home session") };
-  const worker = workerRefusal(deps, sessionId, session.cwd);
+  const worker = workerRefusal(deps, sessionId, session.cwd, { onUnresolvableCwd: "skip" });
   return worker ? { ok: false, refusal: worker } : { ok: true, session };
 }
 

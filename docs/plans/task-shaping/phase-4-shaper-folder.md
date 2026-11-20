@@ -79,7 +79,8 @@ non-goal), any sandbox.
   schema failure, an id that differs from the folder name, an oversize manifest, a manifest
   that is not a regular file, a symlinked folder, a group-writable folder (refused), 33 folders,
   a re-read after a change, a replacement of the same size that keeps the old modification
-  time, a `./` command that escapes.
+  time, a `./` command that escapes, a manifest with a literal credential in a header,
+  which is invalid, with a problem that names the header and never its value.
 - Engine tests: a discovered shaper runs with no settings write; a stored off wins; a manifest
   with `"enabled": false` does not run until the operator switches it on, and then does; a
   shadowed one does not run; `origin` and `sha256` are

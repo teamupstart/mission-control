@@ -239,8 +239,10 @@ mapping and the record. A new transport cannot change those semantics.
   context has one. A `command` shaper, and an `mcp` server started as a local process, get
   `TRACEPARENT` and `TRACESTATE` in their environment, the variables agents already get, and
   never a value inherited from the daemon. Every `mcp` `tools/call` also carries the two
-  values in `params._meta`. A `builtin` runs in the daemon and needs no carrier. These
-  values replace a configured header or variable of the same name. A trace value is not a
+  values in `params._meta`. A `builtin` runs in the daemon and needs no carrier. A
+  configured header or variable named `traceparent` or `tracestate`, compared without case,
+  is always removed first, with or without a launch context, so only the launch's own
+  values are ever sent. A trace value is not a
   credential and not a reference, so it is never redacted. Nothing about it is configured
   per shaper or per company.
 
@@ -454,6 +456,14 @@ reference is resolved at call time.
 | `{env:NAME}` | The daemon's environment variable `NAME` at call time | Nowhere. The value is never stored, logged or sent to the browser. |
 
 - Header names are config, so a company's header never appears in Mission Control's code.
+- A credential is never written into config. A header named `authorization`,
+  `proxy-authorization` or `cookie`, or whose name contains `token`, `secret`, `key`,
+  `password`, `auth` or `credential`, compared without case, may hold only `{env:NAME}`
+  references, optionally after a fixed scheme word such as `Bearer`. A URL may not carry a
+  username, password or query string. The strict shaper schema refuses anything else, so a
+  literal credential is never stored or sent to a dashboard, whether it arrives through the
+  API, a Settings import or a folder manifest. The rule goes by header name, so a credential
+  under an innocent-looking name is not caught.
 - A reference that resolves to nothing fails closed: the shaper is not called and is recorded
   as `unavailable`, with a reason that names the missing reference.
 - A shaper cannot hand a value back. Before a reply reaches the engine, the transport

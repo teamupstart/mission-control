@@ -102,8 +102,11 @@ identity, stored secrets.
    transport's `requestInit` headers, created once per run with the run's context. `mcp`
    over stdio starts the server with `TRACEPARENT` and `TRACESTATE` in its environment,
    through `withAgentTraceContext`. For both server types each `tools/call` also carries the
-   two values in `params._meta`. They replace a configured header of the same name, compared
-   without case. They are not references: `resolveReferences` and `referenceStatus` never
+   two values in `params._meta`. Before they are added, a configured header named
+   `traceparent` or `tracestate`, compared without case, is removed, and so is a
+   `TRACEPARENT` or `TRACESTATE` that a shaper's `env` list would pass through. That happens
+   with or without a launch context, so only the launch's own values are ever sent. They
+   are not references: `resolveReferences` and `referenceStatus` never
    see them, `scrubResolved` never redacts them, and a reply that echoes one keeps it.
 6. **Reply field.** `GET /api/shaping` returns `references` from `referenceStatus`.
 7. **Docs.** Fill "Remote shapers" in `docs/task-shaping.md`, with a worked example that
@@ -120,6 +123,8 @@ identity, stored secrets.
   `context.repositories`, and a remote server does not. Add a test that pins this for both
   transports here.
 - Nothing company-specific: header names, tool names and URLs are all configuration.
+- A literal credential never reaches these transports: Phase 1's schema requires references
+  for credential-looking headers and refuses credentials in a URL.
 
 ## Tests and verification
 
@@ -155,8 +160,10 @@ identity, stored secrets.
   `traceparent` header, and `tracestate` only when the context has one; streamable-HTTP `mcp`
   sends it on every request of a call; stdio `mcp` starts the server with `TRACEPARENT`, and
   each `tools/call` carries `params._meta.traceparent`. With none, no call carries either
-  value. A configured `traceparent` header is replaced, and a reply that echoes the trace
-  value comes back unredacted and unmarked.
+  value. Configured `traceparent` and `tracestate` headers, in any letter case, are
+  removed: with no launch trace neither is sent, and with a `traceparent` but no
+  `tracestate` the configured `tracestate` is not sent. A reply that echoes the trace value
+  comes back unredacted and unmarked.
 - `test/shaping-http.test.ts` gains the `references` field and a dry-run of the fixture
   selector, including one in echo mode whose reply carries `[NAME redacted]` and never the
   value.
@@ -222,3 +229,6 @@ free of shaping-specific assumptions where that is cheap.
 - Trace context, 2026-11-19, the operator's choice: step 5 carries the launch's W3C trace
   context on every `http` and `mcp` call, so a server such as a `get_guidance` tool can
   join the session's trace. It is not a credential and never redacted.
+- Review of the plan pull request, round 7, 2026-11-19: a configured `traceparent` or
+  `tracestate` survived when the launch had no trace context, or had no `tracestate`. Both
+  are now always removed first, and the tests cover both cases.

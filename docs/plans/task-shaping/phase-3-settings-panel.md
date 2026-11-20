@@ -62,7 +62,9 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
    `ShaperManifestSchema`, and shows before saving: the command and arguments or the URL, the
    environment variables it names, and the list of what a remote shaper is sent. Saving stores
    it disabled: the save is one `upsert`, which also stores off for its id, so a stored on
-   left by a discovered shaper with the same id does not switch the import on.
+   left by a discovered shaper with the same id does not switch the import on. A manifest
+   that breaks the credential rule in `plan.md` is refused with its reason, so nothing is
+   saved and nothing reaches another window.
 5. **Test.** Pick a repository Mission Control knows, run `POST /api/shaping/test`, and show
    the outcome, the duration and the entries that would be injected.
 6. **Caller identity and limits.** A text field for `caller.user`, and the step deadline and
@@ -82,8 +84,9 @@ Not here: Found on disk rows (Phase 4), and the data behind the references note 
 
 - `test/shaping-http.test.ts` gains the emitted event and the snapshot field: both absent
   while the flag is off with shapers stored, the config emitted when the flag turns on and
-  cleared when it turns off, and an import over an id whose discovered shaper was switched
-  on, which is saved off.
+  cleared when it turns off, an import over an id whose discovered shaper was switched on,
+  which is saved off, and an import with a literal token in an `authorization` header,
+  refused with 400, with nothing stored and no `shaping_config` frame sent.
 - `test/settings-sidebar-render.test.ts`, `test/settings-search.test.ts`,
   `test/palette-index.test.ts` and `test/settings-backup-coverage.test.ts` gain the category,
   its anchors and its domain, with the flag off and on.

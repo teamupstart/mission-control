@@ -57,7 +57,12 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    `transport.type` as bounded strings, every other field kept as bounded JSON, at most 16 KiB
    per entry. An unknown stage or transport id is valid in it. `ShaperSchema` is the strict
    definition: `stage` from `SHAPING_STAGES`, and a discriminated `transport` for all four
-   ids, with header and env reference syntax checked but not resolved. The `mcp` config's
+   ids, with header and env reference syntax checked but not resolved. It also enforces the
+   credential rule in `plan.md`: a header whose name looks like a credential (`authorization`,
+   `proxy-authorization`, `cookie`, or a name containing `token`, `secret`, `key`,
+   `password`, `auth` or `credential`, without case) may hold only `{env:NAME}` references
+   after an optional scheme word such as `Bearer`, and a URL may carry no username, password
+   or query string. A refusal names the field, never its value. The `mcp` config's
    `contextDelivery` is `folded` or `argument`, with no value that omits the context.
    `classifyShaper(stored)` returns a known shaper, or an unsupported entry with its reason.
    `ShaperManifestSchema` is the strict definition plus an optional `enabled`.
@@ -130,7 +135,11 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
   `plan.md`, row for row; an entry with an unknown stage or transport id that survives a
   parse and every intent unchanged, is never resolved, cannot be switched on, and cannot be
   written by `upsert`; an `upsert` over an id whose stored choice is on, left there by a
-  discovered shaper, which leaves it off; the id rules; no `node:` import in the shared
+  discovered shaper, which leaves it off; a literal credential in a credential-looking
+  header, and a URL with a username, password or query string, refused by `upsert` and by
+  `ShaperManifestSchema` before anything is stored, with a reason that does not contain the
+  value; `Bearer {env:NAME}` and a static non-secret header accepted; the id rules; no
+  `node:` import in the shared
   modules.
 - `test/shaping-engine.test.ts`: stage order, parallel calls, the hand-off, the summary cut,
   timeouts and the deadline, partial results, each outcome, and a `redacted` mark carried
@@ -203,5 +212,8 @@ reshape them. They replace the contents of their own transport file, `discovery.
 - Trace context, 2026-11-19, the operator's choice: `input.trace`, `ctx.trace` and the
   `command` carrier are here, so every `command` shaper, registered or found on disk, gets
   the launch's trace context, and Phases 4 and 5 add only what their transports need.
+- Review of the plan pull request, round 7, 2026-11-19, the operator's choice: the strict
+  schema now requires references for credential-looking headers and refuses credentials in
+  a URL, so a literal credential can never be stored or broadcast to a dashboard.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

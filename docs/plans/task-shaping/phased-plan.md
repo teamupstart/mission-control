@@ -100,7 +100,13 @@ Each phase document cites the findings it depends on. The ones that shaped the s
     `command` carrier, so registered and folder `command` shapers get it alike and Phase 4
     adds nothing. Phase 2 passes it in. Phase 5 owns the `mcp` and `http` carriers. A trace
     value is never a credential and never redacted. A Mission Control span for the shaping
-    run is later work.
+    run is later work. A configured `traceparent` or `tracestate` is always removed first.
+15. **A credential is never literal in config.** The operator chose on 2026-11-19, from the
+    review of the plan pull request, to require references for credential-looking headers.
+    Phase 1's strict shaper schema enforces it, so the API, a Settings import and a folder
+    manifest are covered alike: such a header may hold only `{env:NAME}` references after an
+    optional scheme word, and a URL may carry no username, password or query string. Nothing
+    that breaks the rule is stored or reaches a dashboard.
 
 ## Size and phase count
 
@@ -166,7 +172,7 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Event | 3 | `shaping_config`, and the snapshot field `shaping`, both sent only while the flag is on. Turning the flag on emits the config to open windows, and turning it off emits a cleared one. |
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
 | Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts`. Every scan reads and hashes every manifest, and only parsing is cached. |
-| References | 5 | `resolveReferences`, `referenceStatus` and `scrubResolved` in `src/server/shaping/references.ts`. Every reply and reason is scrubbed of resolved `{env:NAME}` values before it reaches the engine. Schema keys are never changed, and a fact name or entry id that contains a value is dropped, not renamed. |
+| References | 5 | `resolveReferences`, `referenceStatus` and `scrubResolved` in `src/server/shaping/references.ts`. Every reply and reason is scrubbed of resolved `{env:NAME}` values before it reaches the engine. Schema keys are never changed, and a fact name or entry id that contains a value is dropped, not renamed. A literal credential never reaches a transport, because Phase 1's schema requires references for credential-looking headers. |
 | MCP context delivery | 1 (schema), 5 (behaviour) | `contextDelivery` is `folded` or `argument`. `folded` calls the tool with exactly three arguments, `{ task, repo, version? }`, with every field of `context` except local paths rendered into `task` by one pure function. `argument` calls it with four, `{ task, repo, version?, context }`. Both deliver the complete collected input, and no mode omits it. |
 | Guide | 1 | `docs/task-shaping.md`, one section per phase |
 

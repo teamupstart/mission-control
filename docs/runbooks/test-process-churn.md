@@ -2,9 +2,11 @@
 
 Endpoint security agents on developer Macs (CrowdStrike Falcon, Jamf Protect, Cyberhaven)
 inspect every process exec and file write. Their CPU cost scales with how many short-lived
-processes a workload starts, not with how heavy each one is, so a test suite that starts
-tens of thousands of `git` processes drives them to several hundred percent CPU while it
-runs. This runbook covers measuring that churn and keeping it down.
+processes a workload starts, not with how heavy each one is. On 2026-11-19, with three
+worktrees running the suite at once, a 10-second poll of the process table saw about 420 new
+processes - 187 of them `git` - while those agents ran at 250-530% CPU. That is one
+observation under concurrent load, not a figure for every run, and a poll undercounts
+short-lived processes. This runbook covers measuring that churn and keeping it down.
 
 ## Measuring
 

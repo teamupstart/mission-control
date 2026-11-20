@@ -2548,6 +2548,41 @@ test("session return refreshes unsent Inspector feedback once and holds queued s
   }
 });
 
+for (const ending of ["cancelled", "completed", "failed", "reset"] as const) {
+  test(`failed feedback refresh releases its hold when the run is ${ending}`, async () => {
+    const seeded = await seed({ policy: "inspector_only", deliveryMode: "live",
+      reobservePullRequest: async () => ({ ok: false, error: "scripted failure" }),
+    });
+    try {
+      const { session } = await blockUnsentFeedback(seeded);
+      session.state = "idle";
+      recheck(seeded, "failed-refresh-cleanup");
+      await settleGate(seeded);
+      const manager = seeded.manager as unknown as {
+        inspectorFeedbackRefreshes: Map<string, { pending: boolean }>;
+        publishRun(id: string): void;
+      };
+      assert.equal(manager.inspectorFeedbackRefreshes.get(seeded.ids.run)?.pending, false);
+      manager.publishRun(seeded.ids.run);
+      assert.equal(manager.inspectorFeedbackRefreshes.has(seeded.ids.run), true,
+        "publishing a blocked run must retain the failed-read hold");
+      if (ending === "cancelled") {
+        assert.equal(seeded.manager.cancel(seeded.ids.run, "cancel-held-refresh").ok, true);
+      } else if (ending === "reset") {
+        const noteKey = seeded.store.getBinding(seeded.ids.binding)!.noteKey;
+        seeded.registry.clearWorkflowState(noteKey);
+        assert.equal(seeded.store.getRun(seeded.ids.run), null);
+      } else {
+        seeded.store.setRunState(seeded.ids.run, ending, ending === "completed" ? "complete" : "failed", null);
+        manager.publishRun(seeded.ids.run);
+      }
+      assert.equal(manager.inspectorFeedbackRefreshes.has(seeded.ids.run), false);
+    } finally {
+      await seeded.manager.stop();
+    }
+  });
+}
+
 for (const failedFirst of [false, true]) {
   for (const newerHead of [false, true]) {
     test(`successful feedback refresh accepts the same millisecond: failedFirst=${failedFirst}, newer=${newerHead}`, async (t) => {

@@ -501,7 +501,7 @@ const UNDELIVERED_DELIVERY_STATES = ["prepared", "sending", "uncertain"] as cons
  */
 const UNCHANGED_EVIDENCE_NUDGE_LIMIT = 2;
 
-function runIsTerminal(run: WorkflowRun): boolean {
+function runIsTerminal(run: Pick<WorkflowRun, "status">): boolean {
   return ["completed", "cancelled", "failed"].includes(run.status);
 }
 
@@ -738,7 +738,10 @@ export class WorkflowManager {
       this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
-      for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
+      for (const id of removed.runIds) {
+        this.inspectorFeedbackRefreshes.delete(id);
+        this.registry.removeWorkflowRun(id);
+      }
       // The bindings too. A reset deletes them in the same transaction as the runs, and
       // retiring only the runs left the stream publishing a binding whose row was gone - so a
       // reset session's chip kept naming a workflow that no longer existed and could never
@@ -8667,6 +8670,7 @@ export class WorkflowManager {
 
   private publishRun(runId: string): void {
     const summary = this.store.runSummary(runId);
+    if (!summary || runIsTerminal(summary)) this.inspectorFeedbackRefreshes.delete(runId);
     if (summary) this.registry.upsertWorkflowRun(summary);
   }
 

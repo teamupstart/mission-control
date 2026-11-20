@@ -115,10 +115,16 @@ function boundTo(handle: FakeHandle, conversation: string): FakeHandle {
   return handle;
 }
 
-/** Point Claude's harness slot at a scripted driver for the duration of one test. */
+/** Claude's real driver, captured once: every restore puts back THIS one, in whatever order. */
+const REAL_CLAUDE_SDK = HARNESSES.claude.sdk;
+
+/**
+ * Point Claude's harness slot at a scripted driver for the duration of one test. `restore`
+ * always reinstalls the real driver, never the previous fake, so restores registered with
+ * `t.after` (which run in registration order) cannot leave a fake installed for the next test.
+ */
 function withFakeDriver(launch: (opts: LaunchOptions) => Promise<Handle>): { restore: () => void; calls: LaunchOptions[] } {
   const calls: LaunchOptions[] = [];
-  const real = HARNESSES.claude.sdk;
   HARNESSES.claude.sdk = {
     answersRequests: true,
     launch: (opts) => {
@@ -126,7 +132,7 @@ function withFakeDriver(launch: (opts: LaunchOptions) => Promise<Handle>): { res
       return launch(opts);
     },
   };
-  return { restore: () => (HARNESSES.claude.sdk = real), calls };
+  return { restore: () => (HARNESSES.claude.sdk = REAL_CLAUDE_SDK), calls };
 }
 
 async function drain(turns = 20): Promise<void> {
@@ -345,15 +351,19 @@ test("hibernate is refused while the preview is off, mid-turn, or when the stop 
 async function hibernated(f: Fleet, t: import("node:test").TestContext, id: string, cwd: string): Promise<string> {
   const handle = fakeHandle();
   const first = withFakeDriver(async () => handle);
-  const { sessionId } = await idleTask(f, handle, id, cwd);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const result = await f.hibernation.hibernate(sessionId);
-  assert.equal(result.ok, true);
-  await drain();
-  t.mock.timers.tick(9_000);
-  await drain();
-  t.mock.timers.reset();
-  first.restore();
+  let sessionId: string;
+  try {
+    ({ sessionId } = await idleTask(f, handle, id, cwd));
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const result = await f.hibernation.hibernate(sessionId);
+    assert.equal(result.ok, true);
+    await drain();
+    t.mock.timers.tick(9_000);
+    await drain();
+    t.mock.timers.reset();
+  } finally {
+    first.restore();
+  }
   assert.equal(f.registry.getSession(sessionId), undefined);
   return sessionId;
 }
@@ -483,7 +493,7 @@ test("a failed resume says why, keeps the task hibernated, and a retry succeeds"
   assert.match(gone.ok ? "" : gone.error, /no longer exists/);
   assert.equal(launches.calls.length, 0, "nothing was launched into a missing checkout");
   assert.match(f.registry.getTask("retry")?.hibernation?.failure?.reason ?? "", /no longer exists/);
-  assert.equal(db.getTask("retry")?.hibernation?.failure !== null, true, "the reason is durable");
+  assert.match(db.getTask("retry")?.hibernation?.failure?.reason ?? "", /no longer exists/, "the reason is durable");
   launches.restore();
   renameSync(aside, cwd);
 
@@ -606,6 +616,8 @@ interface TerminalFleet {
     closeEnds: boolean;
     /** Whether a launch's lease is still unclaimed, so `dispose` revokes it: no agent can start. */
     revocable: boolean;
+    /** Runs after a home closes successfully: what discovery sees once that terminal is gone. */
+    onClose: (() => void) | null;
   };
 }
 
@@ -632,6 +644,8 @@ function terminalFleet(
     afterProof?: "switch" | "exit" | "delete" | "cancel";
     /** The checkout is removed and recreated at its path while the launch comes up. */
     replaceDuringLaunch?: boolean;
+    /** What happens while the managed resume is being prepared, before anything launches. */
+    duringPrepare?: "replace" | "cancel";
   } = {},
 ): TerminalFleet {
   const registry = new Registry();
@@ -650,6 +664,7 @@ function terminalFleet(
     live: false,
     closeEnds: true,
     revocable: false,
+    onClose: null,
   };
   let launches = 0;
   // Sessions that stay in every discovery sweep, whatever the test does to the others.
@@ -664,6 +679,10 @@ function terminalFleet(
       },
       prepare: async (source) => {
         if (options.prepareFails) throw new Error(options.prepareFails);
+        if (options.duringPrepare === "replace") replaceCheckout(cwd);
+        if (options.duringPrepare === "cancel") {
+          registry.upsertTask({ ...registry.getTask("term")!, status: "cancelled", hibernation: null });
+        }
         prepared.push({ agentSessionId: source.agentSessionId, permissionMode: source.permissionMode ?? null, cwd: source.cwd });
         // `dispose` answers false: the guard claimed the lease, so the agent did start and only
         // closing its terminal can end it.
@@ -714,6 +733,7 @@ function terminalFleet(
           return { ok: false, error: "tmux: no server running" };
         }
         if (controls.closeEnds) controls.live = false;
+        controls.onClose?.();
         return { ok: true };
       },
       launchLive: () => controls.live,
@@ -949,6 +969,63 @@ test("a failed terminal Resume whose agent outlives its closed terminal keeps th
   assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
   assert.equal(f.spawned.length, 2);
   assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
+});
+
+test("Retry closes a recorded launch whose own agent holds the conversation before asking who holds it", async (t) => {
+  const cwd = checkout("terminal-stranded-holder");
+  const f = terminalFleet(cwd, { appears: false, closeFailures: 1 });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  assert.equal((await f.hibernation.resume("term")).ok, false);
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1");
+  // That launch's agent did come up after all, and discovery lists it on the conversation, with
+  // someone else's agent on it too.
+  f.controls.live = true;
+  const stranded = discovered(`proc-stranded-${basename(cwd)}`, cwd, "%8", 80);
+  const hand = discovered(`proc-hand-${basename(cwd)}`, cwd, "%9", 90);
+  f.registry.applyDiscovery([stranded, hand]);
+  started(f.registry, cwd, "%8", "conv-t");
+  started(f.registry, cwd, "%9", "conv-t");
+  // Closing that terminal ends its agent; discovery then sees only the other one.
+  f.controls.onClose = () => f.registry.applyDiscovery([hand]);
+
+  // The recorded launch is closed first. The other agent still holds the conversation, so
+  // nothing is launched beside it.
+  const held = await f.hibernation.resume("term");
+  assert.match(held.ok ? "" : held.error, /its conversation is already open in "work"/);
+  assert.deepEqual(f.closed, ["Terminal task", "Terminal task"], "the recorded launch was closed before the check");
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch ?? null, null, "and let go of once it ended");
+  assert.equal(f.spawned.length, 1, "nothing launched beside the other agent");
+
+  // With that one gone too, Retry reopens the conversation.
+  f.controls.onClose = null;
+  f.registry.applyDiscovery([]);
+  f.controls.appear = true;
+  const retried = await f.hibernation.resume("term");
+  assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
+  assert.equal(f.spawned.length, 2);
+});
+
+test("a task or checkout that changes while the resume is prepared launches nothing", async (t) => {
+  // Cancelled while preparing: nothing is spawned, the preparation is released, the task is left as it is.
+  const cancelled = terminalFleet(checkout("terminal-cancel-while-preparing"), { duringPrepare: "cancel" });
+  t.after(() => cancelled.tasks.stopMissionSessionClosures());
+  assert.equal((await cancelled.hibernation.hibernate(cancelled.old)).ok, true);
+  const changed = await cancelled.hibernation.resume("term");
+  assert.equal(changed.ok ? "" : changed.error, "The task changed while it was resuming.");
+  assert.equal(cancelled.spawned.length, 0, "no agent is started for a task that changed");
+  assert.deepEqual(cancelled.disposed, ["lease-1"], "and its preparation is released");
+  assert.equal(cancelled.registry.getTask("term")?.status, "cancelled");
+
+  // The checkout replaced while preparing: refused before launch, and the task stays hibernated.
+  const replaced = terminalFleet(checkout("terminal-replace-while-preparing"), { duringPrepare: "replace" });
+  t.after(() => replaced.tasks.stopMissionSessionClosures());
+  assert.equal((await replaced.hibernation.hibernate(replaced.old)).ok, true);
+  const refused = await replaced.hibernation.resume("term");
+  assert.match(refused.ok ? "" : refused.error, /is not the one it was hibernated in/);
+  assert.equal(replaced.spawned.length, 0, "nothing is launched into a replaced checkout");
+  assert.deepEqual(replaced.disposed, ["lease-1"]);
+  assert.equal(replaced.registry.getTask("term")?.status, "hibernated");
 });
 
 test("a launch whose lease was revoked but whose terminal would not close stays recorded, and never blocks Retry", async (t) => {
@@ -1269,6 +1346,31 @@ test("an Agent SDK driver that starts but does not register is stopped before Re
   assert.equal(task.sessionId, null);
 });
 
+test("a turn sent to a woken Agent SDK session is refused until its task is bound to it", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const id = "sdk-send-while-waking";
+  const sessionId = await hibernated(f, t, id, checkout(id));
+  const woken = boundTo(fakeHandle(), `conv-${id}`);
+  const fake = withFakeDriver(async () => woken);
+  t.after(fake.restore);
+  let early: unknown = null;
+  const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
+  f.supervisor.reportedConversation = async (session, timeoutMs) => {
+    // While Resume still waits to learn which conversation the driver opened.
+    early = await f.supervisor.send(session, { text: "too soon" }).then(() => null, (error: unknown) => error);
+    return confirm(session, timeoutMs);
+  };
+  const resumed = await f.hibernation.resume(id);
+  f.supervisor.reportedConversation = confirm;
+  assert.equal(resumed.ok, true, resumed.ok ? "" : resumed.error);
+  assert.match(early instanceof Error ? early.message : "", /its conversation is still being reopened/);
+  assert.equal(woken.sent.length, 0, "nothing reached the driver before it was bound");
+  // Bound now: turns go through.
+  assert.equal(await f.supervisor.send(sessionId, { text: "now" }), "started");
+  assert.deepEqual(woken.sent.map((turn) => turn.text), ["now"]);
+});
+
 test("an Agent SDK driver that moves to another conversation after reporting the saved one is never bound", async (t) => {
   const f = fleet();
   t.after(() => f.tasks.stopMissionSessionClosures());
@@ -1379,22 +1481,26 @@ test("a launch Resume could not close stays recorded through later failures unti
   assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1");
   f.controls.live = true;
 
-  // A later Retry fails on something else first - the checkout is gone - and the launch that
-  // may still be running stays recorded, durably.
-  const aside = `${cwd}-aside`;
-  renameSync(cwd, aside);
-  const missing = await f.hibernation.resume("term");
-  assert.match(missing.ok ? "" : missing.error, /no longer exists/);
+  // A later Retry fails on something else first - the original agent is listed again - and the
+  // launch that may still be running stays recorded, durably.
+  f.registry.applyDiscovery([discovered(f.old, cwd, "%1", 1)]);
+  const original = await f.hibernation.resume("term");
+  assert.match(original.ok ? "" : original.error, /its original agent in .* is still running/);
   const kept = f.registry.getTask("term")!.hibernation!.failure!;
-  assert.match(kept.reason, /no longer exists/, "the newer reason is shown");
+  assert.match(kept.reason, /is still running/, "the newer reason is shown");
   assert.equal(kept.launch?.leaseId, "lease-1", "and the unclosed launch is still recorded");
   assert.equal(db.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1", "durably");
+  f.registry.applyDiscovery([]);
 
-  // With the checkout back, Retry still refuses to launch beside it while it cannot be closed.
-  renameSync(aside, cwd);
+  // With the checkout gone as well, the recorded launch is still dealt with first, and kept: it
+  // will not close, so nothing is launched beside it.
+  const aside = `${cwd}-aside`;
+  renameSync(cwd, aside);
   const blocked = await f.hibernation.resume("term");
-  assert.match(blocked.ok ? "" : blocked.error, /an earlier attempt started in Terminal task may still be running/);
+  assert.match(blocked.ok ? "" : blocked.error, /an earlier attempt started in Terminal task may still be running and could not be closed/);
   assert.equal(f.spawned.length, 1, "nothing was launched beside it");
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1");
+  renameSync(aside, cwd);
 
   // Once it closes, the record is let go of and Retry launches.
   f.controls.appear = true;

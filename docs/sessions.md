@@ -959,10 +959,13 @@ still blocked if it was blocked, and the task is bound back to it and returns to
 Hibernate records the checkout the conversation ran in, as the filesystem identifies that
 directory. Before Resume starts anything, it checks that the directory at that path is still
 the same one. A worktree moved away and back passes. If the worktree was removed and another
-directory now stands at its path, Resume refuses and says so, so the conversation is never
-reopened in a different checkout. The check runs again after the agent has started, immediately
-before the task is bound, so a checkout replaced during the launch is caught too: the launch is
-undone, or an Agent SDK session is hibernated again.
+directory now stands at its path, Resume refuses and says so, so the conversation is not
+reopened in a different checkout. That rests on the filesystem's directory ids: APFS, on the
+macOS Mission Control supports, does not hand a removed directory's id to a new one, but a
+filesystem that does (such as Linux's ext4) can make a directory removed and recreated at once
+look like the same checkout. The check is repeated just before a terminal agent is launched,
+and once more immediately before the task is bound, so a checkout replaced during the launch is
+caught too: the launch is undone, or an Agent SDK session is put back to sleep.
 
 Resume refuses a conversation that is already open in another session, so two processes never
 write one conversation at once. That includes the hibernated session's own agent: if it is still

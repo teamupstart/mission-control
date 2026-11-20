@@ -30,10 +30,10 @@ function discovered(id: string, cwd: string, pane: string, pid: number): Discove
   } as Discovered;
 }
 
-function started(registry: InstanceType<typeof Registry>, cwd: string, pane: string, conversation: string): void {
+function started(registry: InstanceType<typeof Registry>, cwd: string, pane: string, conversation: string, permissionMode?: string): void {
   for (const event of ["SessionStart", "Stop"]) {
     registry.applyHook({ agent: "claude", event, sessionId: conversation, cwd, transcriptPath: null,
-      env: { tmuxPane: pane } } as never);
+      env: { tmuxPane: pane }, ...(permissionMode ? { permissionMode } : {}) } as never);
   }
 }
 
@@ -70,7 +70,9 @@ test("a terminal Resume launches the managed resume of the same conversation in 
     },
   });
   registry.applyDiscovery([discovered("proc-old", cwd, "%1", 1)]);
-  started(registry, cwd, "%1", "conv-real");
+  // Running in a non-default permission mode, which the resumed agent has to come back in.
+  started(registry, cwd, "%1", "conv-real", "acceptEdits");
+  assert.equal(registry.getSession("proc-old")?.permissionMode, "acceptEdits");
   registry.upsertTask(mkTask({ id: "real", title: "Real resume", status: "running", sessionId: "proc-old", worktreePath: cwd, repoRoot: cwd }));
 
   assert.equal((await hibernation.hibernate("proc-old")).ok, true);
@@ -83,6 +85,9 @@ test("a terminal Resume launches the managed resume of the same conversation in 
     const resumeAt = prepared.argv.indexOf("--resume");
     assert.ok(resumeAt > 0, prepared.argv.join(" "));
     assert.equal(prepared.argv[resumeAt + 1], "conv-real", "reopening the same conversation");
+    const modeAt = prepared.argv.indexOf("--permission-mode");
+    assert.ok(modeAt > 0, `the saved permission mode rides the resume: ${prepared.argv.join(" ")}`);
+    assert.equal(prepared.argv[modeAt + 1], "acceptEdits");
     assert.equal(registry.getTask("real")?.sessionId, "proc-new");
     assert.equal(registry.getTask("real")?.status, "running");
   } finally {

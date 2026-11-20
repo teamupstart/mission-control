@@ -316,9 +316,24 @@ export class HibernationManager {
             "Stop that session, or wait for it to exit, then Retry",
         );
       }
+      // An earlier terminal attempt's launch that could not be confirmed undone is settled
+      // first: its own agent may be what holds the conversation, and only closing it frees it.
+      let closedStranded = false;
+      if (record.runtime === "terminal") {
+        const settled = await this.settleStrandedLaunch(task, record);
+        if ("refused" in settled) return settled.refused;
+        closedStranded = settled.closed;
+      }
       // One already open elsewhere: resumed by hand, or by an earlier attempt whose outcome was
-      // not known.
-      const open = sessions.find((s) => s.agentSessionId === record.agentSessionId);
+      // not known. Read again, after any settling above.
+      let open: Session | undefined;
+      for (const holder of live().filter((s) => s.agentSessionId === record.agentSessionId)) {
+        // The agent of a launch closed just now can stay listed until discovery next looks;
+        // one whose process is gone holds nothing. Anything else on the conversation does.
+        if (closedStranded && holder.runtime === "terminal" && (await this.terminal.exited(holder))) continue;
+        open = holder;
+        break;
+      }
       if (open) return this.resumeFailed(taskId, `its conversation is already open in "${open.name}"`);
       return record.runtime === "sdk"
         ? await this.resumeEmbedded(taskId, record)
@@ -448,21 +463,14 @@ export class HibernationManager {
   }
 
   /**
-   * Reopen a terminal conversation: the managed terminal resume, in a new home in the task's
-   * worktree, then the task, its work episode and its armed workflow follow the new session.
+   * Settle the launch an earlier terminal Resume recorded because it could not be confirmed
+   * undone. Runs before anything looks at who holds the conversation: that launch's own agent
+   * may be the holder, and only closing it can let go of the conversation.
    *
-   * Never two processes on one conversation. An earlier attempt whose terminal could not be
-   * closed is closed (or found gone) before anything launches; only the session THIS launch
-   * started is bound; and a launch that fails, or meets the conversation already reopened
-   * elsewhere, is revoked or closed - or, when it cannot be, recorded so the next Resume
-   * refuses to launch beside it.
+   * Answers the refusal when that launch may still be running, or whether it closed a launch
+   * just now (so a holder still listed may be the agent that has just gone).
    */
-  private async resumeTerminal(task: Task, record: TaskHibernation): Promise<HibernationResult> {
-    // The directory the conversation ran in, verified to still be that directory: the task's
-    // own worktree path is not consulted, because it is not what the conversation is filed under.
-    const mismatch = checkoutMismatch(record.checkout);
-    if (mismatch) return this.resumeFailed(task.id, mismatch);
-    const cwd = record.checkout!.path;
+  private async settleStrandedLaunch(task: Task, record: TaskHibernation): Promise<{ refused: HibernationResult } | { closed: boolean }> {
     const stranded = record.failure?.launch ?? null;
     const strandedLive = stranded !== null && this.terminal.launchLive(stranded);
     let strandedHomeOpen = false;
@@ -480,28 +488,47 @@ export class HibernationManager {
       if (stranded.homeName === null || stranded.homeBackend === null) {
         // Its launcher failed before naming a home, so there is no terminal to close: only the
         // lease being released says that agent has ended.
-        return this.resumeFailed(
+        return { refused: this.resumeFailed(
           task.id,
           "the agent an earlier attempt may have started is still running, and Mission Control does not know its " +
             "terminal. Stop that agent, then Retry",
           stranded,
-        );
+        ) };
       }
       const home = { homeName: stranded.homeName, homeBackend: stranded.homeBackend, terminalResourceId: stranded.terminalResourceId };
       const closed = await this.terminal.closeHome(home);
       if (!closed.ok || !(await this.launchEnded(stranded))) {
-        return this.resumeFailed(
+        return { refused: this.resumeFailed(
           task.id,
           `the agent an earlier attempt started in ${stranded.homeName} may still be running` +
             `${closed.ok ? "" : ` and could not be closed (${closed.error ?? "no reason given"})`}. ` +
             "Close that terminal, then Retry",
           stranded,
-        );
+        ) };
       }
     }
     // Confirmed gone or closed: the only place a recorded launch is let go of. Every failure
     // before this point kept it (see `resumeFailed`), and so does a terminal still open.
     if (stranded && !strandedHomeOpen) this.forgetLaunch(task.id);
+    return { closed: stranded !== null && strandedLive };
+  }
+
+  /**
+   * Reopen a terminal conversation: the managed terminal resume, in a new home in the task's
+   * worktree, then the task, its work episode and its armed workflow follow the new session.
+   *
+   * Never two processes on one conversation. An earlier attempt whose terminal could not be
+   * closed is closed (or found gone) before anything launches; only the session THIS launch
+   * started is bound; and a launch that fails, or meets the conversation already reopened
+   * elsewhere, is revoked or closed - or, when it cannot be, recorded so the next Resume
+   * refuses to launch beside it.
+   */
+  private async resumeTerminal(task: Task, record: TaskHibernation): Promise<HibernationResult> {
+    // The directory the conversation ran in, verified to still be that directory: the task's
+    // own worktree path is not consulted, because it is not what the conversation is filed under.
+    const mismatch = checkoutMismatch(record.checkout);
+    if (mismatch) return this.resumeFailed(task.id, mismatch);
+    const cwd = record.checkout!.path;
     const source: ResumeSource = {
       id: record.sessionId,
       agent: task.agent,
@@ -516,6 +543,18 @@ export class HibernationManager {
       prepared = await this.terminal.prepare(source, task);
     } catch (error) {
       return this.resumeFailed(task.id, error instanceof Error ? error.message : String(error));
+    }
+    // Preparing takes long enough for either to change, and once spawned an agent is running:
+    // the task and its checkout are read again first, and a launch neither still wants is never
+    // started - its lease is unclaimed here, so revoking it is the whole undo.
+    if (!this.stillHibernated(task.id, record)) {
+      this.disposePrepared(prepared);
+      return { ok: false, status: 409, error: `${TASK_CHANGED}.` };
+    }
+    const replacedWhilePreparing = checkoutMismatch(record.checkout);
+    if (replacedWhilePreparing) {
+      this.disposePrepared(prepared);
+      return this.resumeFailed(task.id, replacedWhilePreparing);
     }
     const backend = this.terminal.backendFor(task);
     // Watched from BEFORE the launch, so an agent that reports its conversation while the
@@ -535,12 +574,7 @@ export class HibernationManager {
       // No home came back to close, but the preparation is this attempt's to release: revoking
       // its lease means no guard can start the agent late. A lease a guard already claimed cannot
       // be revoked; lease admission then refuses the next launch until that agent has ended.
-      let revoked = false;
-      try {
-        revoked = prepared.dispose();
-      } catch {
-        revoked = false;
-      }
+      const revoked = this.disposePrepared(prepared);
       const claimed = { homeName: null, homeBackend: null, terminalResourceId: null, leaseRoot: prepared.lease.root, leaseId: prepared.lease.id };
       if (revoked || !this.terminal.launchLive(claimed)) return this.resumeFailed(task.id, reason);
       // A guard claimed the lease before the launcher failed: its agent may be running, so the
@@ -623,12 +657,7 @@ export class HibernationManager {
     home: SpawnedHome,
     prepared: PreparedResume,
   ): Promise<{ ok: true } | { ok: false; launch: TaskHibernationLaunch; detail: string }> {
-    let revoked = false;
-    try {
-      revoked = prepared.dispose();
-    } catch {
-      revoked = false;
-    }
+    const revoked = this.disposePrepared(prepared);
     const launch: TaskHibernationLaunch = {
       homeName: home.homeName,
       homeBackend: home.homeBackend,
@@ -657,6 +686,15 @@ export class HibernationManager {
         : `${home.homeName} could not be closed (${closed.error ?? "no reason given"}). ` +
           "Its agent may still be running: close that terminal",
     };
+  }
+
+  /** Release a preparation nothing will launch: answers whether its lease was revoked. */
+  private disposePrepared(prepared: PreparedResume): boolean {
+    try {
+      return prepared.dispose();
+    } catch {
+      return false;
+    }
   }
 
   /** Whether a launch has ended, given `launchEndMs` for its lease to be released. */

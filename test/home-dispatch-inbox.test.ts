@@ -26,6 +26,7 @@ const { HookIngestSchema } = await import("../src/shared/protocol.ts");
 const { reviewerRowsFor, reviewerFailureClass, runChecksFor } = await import("../src/server/home-dispatch/reviewers.ts");
 const { setLauncherPrompt } = await import("../src/server/home-dispatch/config.ts");
 const { revisionHashFor } = await import("../src/server/home-dispatch/approval.ts");
+const { buildInbox } = await import("../src/server/home-dispatch/inbox.ts");
 
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 
@@ -112,6 +113,8 @@ test("inboxStateFor maps task facts to the seven states and drops what has aged 
   assert.equal(f({ hasPending: true, runStatus: "blocked" }), "waiting", "a pending question comes first");
   assert.equal(f({ taskStatus: "backlog" }), "queued");
   assert.equal(f({ taskStatus: "backlog", enabled: false }), "shelved");
+  assert.equal(f({ taskStatus: "hibernated" }), "shelved", "a hibernated task is parked until the operator resumes it");
+  assert.equal(f({ taskStatus: "hibernated", hasPending: true }), "waiting");
   assert.equal(f({ taskStatus: "done" }), "ready");
   assert.equal(f({ taskStatus: "done", hasPending: true }), "waiting", "a finished task with an open request needs the person");
   assert.equal(f({ taskStatus: "done", hasPending: true, runStatus: "blocked" }), "waiting");
@@ -246,6 +249,22 @@ test("the inbox lists a repository's tasks by state, with needs-you ordered by a
     { kind: pending.kind, question: pending.question, options: pending.options, allowsText: pending.allowsText, dashboardOnly: pending.dashboardOnly },
     { kind: "question", question: "Keep or delete?", options: ["Keep", "Delete"], allowsText: false, dashboardOnly: false },
   );
+});
+
+test("an item carries task shaping's state when the source has one, and nothing until then", async () => {
+  const h = await homeIn("shaping");
+  addTask({ id: "t-shaped", status: "running" }, { surface: "home-session", repo: h.repo, session: h.sessionId });
+  addTask({ id: "t-plain", status: "running" }, { surface: "home-session", repo: h.repo, session: h.sessionId });
+  // The stub (task-shaping Phase 2 is not on main): no item has the field, and the response still parses.
+  const stub = await inboxFor(h);
+  for (const item of stub.items) assert.equal("shaping" in item, false, item.taskId);
+
+  const resolved = { caller: { surface: "home-session" as const, sessionId: h.sessionId, repoRoot: h.repo }, sessionId: h.sessionId, allRepos: false };
+  const shaped = buildInbox({ registry, workflows: undefined }, resolved, Date.now(),
+    (task) => (task.id === "t-shaped" ? { state: "shaping-context", summary: "Shaping context" } : undefined));
+  const parsed = HomeDispatchInboxSchema.parse(shaped);
+  assert.deepEqual(parsed.items.find((i) => i.taskId === "t-shaped")?.shaping, { state: "shaping-context", summary: "Shaping context" });
+  assert.equal("shaping" in parsed.items.find((i) => i.taskId === "t-plain")!, false, "absent, never null or empty");
 });
 
 test("the inbox is a pure read: polling it settles nothing and writes nothing", async () => {

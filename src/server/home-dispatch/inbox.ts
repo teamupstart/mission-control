@@ -19,6 +19,7 @@ import { resolveCaller, taskOrigins, type ResolvedCaller } from "./caller.ts";
 import { reviewerRowsFor, runChecksFor } from "./reviewers.ts";
 import { canReadTask, type TaskOrigin } from "./sessions.ts";
 import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
+import { shapingFor, type InboxShaping } from "./shaping.ts";
 import { subagentCountsFor } from "./subagent-state.ts";
 
 // Owner: P4. `GET /dispatch/inbox` (spec 7.7), and the counts the registration answer carries.
@@ -176,6 +177,8 @@ export function buildInbox(
   deps: Pick<HomeDispatchDeps, "registry" | "workflows">,
   resolved: ResolvedCaller,
   now: number = Date.now(),
+  /** Where an item's `shaping` comes from; the stub until task-shaping Phase 2 lands. Tests inject their own. */
+  shapingOf: (task: Task) => InboxShaping | undefined = shapingFor,
 ): HomeDispatchInbox {
   const { caller } = resolved;
   const tasks = deps.registry.listTasks();
@@ -229,6 +232,7 @@ export function buildInbox(
     const costUsd = session?.cost?.costUsd ?? undefined;
     const subagents = subagentCountsFor(session);
     const pr = prBlock(task, session);
+    const shaping = shapingOf(task);
     items.push({
       taskId: task.id,
       title: task.title,
@@ -247,6 +251,7 @@ export function buildInbox(
       ...(run ? { run: runBlock(run) } : {}),
       ...(pending ? { pending: pendingFor(pending, resident !== undefined) } : {}),
       ...(resident ? { resident: { runId: resident.run.id, name: resident.name } } : {}),
+      ...(shaping ? { shaping } : {}),
     });
   }
 

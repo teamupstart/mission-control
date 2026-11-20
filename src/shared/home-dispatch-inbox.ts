@@ -60,6 +60,10 @@ export function inboxStateFor(facts: InboxStateFacts): InboxState | null {
       if (runBlocked) return "blocked";
       if (runOpen) return "running";
       return facts.now - facts.settledAt <= INBOX_READY_WINDOW_MS ? "ready" : null;
+    case "hibernated":
+      // The operator stopped its agent on purpose and it resumes only when they say so: parked, like
+      // a shelved task, unless a request is still open on it.
+      return facts.hasPending ? "waiting" : "shelved";
     case "failed":
     case "cancelled":
       // A request still open on a failed or cancelled task is still owed an answer, however old.

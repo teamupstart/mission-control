@@ -9,15 +9,22 @@ test("shipped preview, live master and individual changes, reload, search and al
   const nativeOff = { name: "Codex resident native MCP: off" };
   const nativeOn = { name: "Codex resident native MCP: on" };
   await expect(page.getByRole("button", nativeOff)).toBeVisible();
+  // Resident active hours ships as a preview too, off until the operator chooses it.
+  const activeHours = page.getByRole("button", { name: /^Resident active hours:/ });
+  await expect(activeHours).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
   const peer = await context.newPage();
   await peer.goto(page.url());
+  let peerNavigations = 0;
+  peer.on("framenavigated", frame => { if (frame === peer.mainFrame()) peerNavigations++; });
+  const peerActiveHours = peer.getByRole("button", { name: /^Resident active hours:/ });
   const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
   const peerMaster = peer.getByRole("checkbox", { name: /Enable all feature flags/ });
   await expect(peerMaster).toBeEnabled();
   await expect(master).not.toBeChecked();
   await master.check();
   await expect(peerMaster).toBeChecked();
+  await expect(peerActiveHours).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(master).toBeChecked();
@@ -27,6 +34,13 @@ test("shipped preview, live master and individual changes, reload, search and al
   await expect(peer.getByRole("button", nativeOn)).toBeVisible();
   await page.getByRole("button", nativeOn).click();
   await expect(peer.getByRole("button", nativeOff)).toBeVisible();
+  // Toggling Resident active hours in one window changes the other without a reload.
+  await expect(peerActiveHours).toHaveAttribute("aria-pressed", "false");
+  await activeHours.click();
+  await expect(peerActiveHours).toHaveAttribute("aria-pressed", "true");
+  await activeHours.click();
+  await expect(peerActiveHours).toHaveAttribute("aria-pressed", "false");
+  expect(peerNavigations, "the peer window never reloaded").toBe(0);
   await page.getByRole("button", { name: "Search everything" }).click();
   await page.getByRole("combobox", { name: "Search everything" }).fill("Enable all feature flags");
   await page.getByRole("option", { name: /Enable all feature flags, setting/ }).click();

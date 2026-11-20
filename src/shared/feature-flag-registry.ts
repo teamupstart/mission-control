@@ -9,6 +9,13 @@ export const FEATURE_FLAGS = [
     keywords: ["residents", "oauth", "global servers"],
   },
   {
+    id: "resident-active-hours",
+    label: "Resident active hours",
+    description: "Choose the days and hours a resident's loop may wake it. Outside them the resident keeps running but sleeps: no loop prompt and no tokens until the next window opens.",
+    stage: "preview",
+    keywords: ["residents", "schedule", "sleep", "working hours", "weekdays"],
+  },
+  {
     id: "task-hibernation",
     label: "Hibernate tasks",
     description:

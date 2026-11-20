@@ -5483,6 +5483,7 @@ export class WorkflowStore {
           gate: gateState,
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
+          recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
         }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
@@ -9205,6 +9206,58 @@ export class WorkflowStore {
       return Number(result.changes) === 1 ? this.getDelivery(id) : null;
 
     }, (result) => result ? { kind: "delivery", id, now } : null);
+  }
+
+  /** The packet the current delivery block can actually reconcile, shared by UI and runtime. */
+  recoverableInspectorFeedback(run: WorkflowRun): WorkflowDelivery | null {
+    if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked") return null;
+    const gate = inspectorGateState(run);
+    if (gate?.waitReason !== "findings" || !gate.prKey || !gate.targetHeadSha
+        || gate.targetHeadSha !== gate.failedHeadSha) return null;
+    const version = this.getWorkflowVersionById(run.workflowVersionId);
+    const binding = this.getBinding(run.bindingId);
+    if (version?.completionPolicy.kind !== "inspector" || binding?.state !== "active"
+        || binding.deliveryMode !== "live" || !binding.sessionId) return null;
+    const latest = this.latestSubmission(run.id);
+    const delivery = this.listDeliveries(run.id)
+      .filter((item) => item.submissionId === latest?.id).at(-1);
+    if (delivery?.kind !== "inspector_feedback" || delivery.state !== "prepared"
+        || delivery.deliveredAt !== null || delivery.sessionId !== binding.sessionId
+        || delivery.noteKey !== binding.noteKey) return null;
+    return delivery;
+  }
+
+  /** Restore an unsent Inspector packet's wait and retire obsolete bytes atomically. */
+  recoverInspectorFeedback(
+    deliveryId: string,
+    expectedState: WorkflowInspectorGateState,
+    state: WorkflowInspectorGateState,
+    superseded: boolean,
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(deliveryId);
+      const run = delivery ? this.getRun(delivery.runId) : null;
+      const version = run ? this.getWorkflowVersionById(run.workflowVersionId) : null;
+      if (!delivery || delivery.kind !== "inspector_feedback" || delivery.state !== "prepared"
+          || delivery.deliveredAt !== null || !run || run.status !== "blocked"
+          || run.currentPhase !== "delivery_blocked"
+          || this.latestSubmission(run.id)?.id !== delivery.submissionId
+          || version?.completionPolicy.kind !== "inspector") return null;
+      const updated = this.updateInspectorGate({
+        runId: run.id, expectedState, state,
+        status: version.completionPolicy.onFindings === "inspector_only"
+          ? "waiting_for_new_head" : "waiting_for_session",
+        phase: "inspector_findings", now,
+      });
+      if (!updated) return null;
+      if (superseded) this.setDeliveryState(deliveryId, "cancelled", "inspector_head_superseded", now);
+      this.appendEvent(run.id, "inspector_feedback_recovered", {
+        deliveryId, superseded, failedHeadSha: state.failedHeadSha,
+        observedHeadSha: state.observedHeadSha, policy: version.completionPolicy.onFindings,
+      }, now);
+      return updated;
+    });
   }
 
   refuseDeliveryBeforeSend(

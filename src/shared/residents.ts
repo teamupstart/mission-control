@@ -22,6 +22,7 @@ import { supportsEffort } from "./harness-capabilities.ts";
 import { ModelIdSchema } from "./model-id.ts";
 import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "./standing-instructions.ts";
 import { MAX_TASK_EXTRA_REPOS } from "./task.ts";
+import { ResidentScheduleSectionSchema } from "./resident-schedule.ts";
 import { THINKING_LEVELS } from "./types.ts";
 import type { AgentType } from "./types.ts";
 
@@ -410,6 +411,8 @@ export const RESIDENT_PROFILE_SECTIONS = {
   authority: ResidentAuthoritySectionSchema.prefault({}),
   loop: ResidentLoopSectionSchema.prefault({}),
   mcp: ResidentMcpSectionSchema.prefault({}),
+  /** Active hours: when the loop may wake the resident. Off by default: always awake. */
+  schedule: ResidentScheduleSectionSchema.prefault({}),
 } as const;
 
 export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;
@@ -584,7 +587,7 @@ export interface ResidentRun extends ResidentLoopStatus {
  * and workspace choices, and every section a later phase adds for the daemon alone (skills, MCP
  * servers) off this event, which is re-sent on every launch-state change of every live run.
  */
-export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board", "authority", "loop"] as const satisfies readonly ResidentProfileSectionId[];
+export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board", "authority", "loop", "schedule"] as const satisfies readonly ResidentProfileSectionId[];
 export type ResidentRunSummarySectionId = (typeof RESIDENT_RUN_SUMMARY_SECTIONS)[number];
 
 /** The pinned revision as a run summary carries it: only `RESIDENT_RUN_SUMMARY_SECTIONS`. */
@@ -620,9 +623,21 @@ export function residentRestartRequestId(runId: string): string {
 
 /** Project a pinned revision to the sections a run summary carries. */
 export function residentRunSummarySettings(settings: ResidentProfileRevision): ResidentRunSummarySettings {
-  return Object.fromEntries(
+  const projected = Object.fromEntries(
     RESIDENT_RUN_SUMMARY_SECTIONS.map((id) => [id, settings[id]]),
   ) as ResidentRunSummarySettings;
+  // A null zone means the daemon's own clock. Summaries are built on the daemon, so name that
+  // zone here: a browser in another zone then evaluates the schedule on the clock that governs it.
+  if (projected.schedule.timeZone === null) {
+    const zone = runtimeTimeZone();
+    if (zone) projected.schedule = { ...projected.schedule, timeZone: zone };
+  }
+  return projected;
+}
+
+/** The IANA zone this runtime's local clock follows, or null when the runtime cannot say. */
+function runtimeTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
 }
 
 /** The wire summary of a run, or null when the run is not live and leaves the collection. */

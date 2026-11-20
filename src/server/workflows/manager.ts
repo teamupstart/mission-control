@@ -7590,13 +7590,15 @@ export class WorkflowManager {
 
   /**
    * A hibernated terminal task resumed as a new process on its conversation: the bindings armed
-   * on the stopped session follow the new one. Only an armed binding moves - hibernation is
-   * refused while a run is open, so none has a delivery in flight - and only into the same
-   * checkout and agent, the compatibility `reattach` asks for.
+   * on the stopped session for THAT conversation (`noteKey`, the hibernation's) follow the new
+   * one. A binding the stopped session held for any other conversation stays where it is: it
+   * belongs to a conversation this Resume did not reopen. Only an armed binding moves -
+   * hibernation is refused while a run is open, so none has a delivery in flight - and only into
+   * the same checkout and agent, the compatibility `reattach` asks for.
    */
-  followResumedConversation(priorSessionId: string, session: Session, now = Date.now()): void {
+  followResumedConversation(priorSessionId: string, noteKey: string, session: Session, now = Date.now()): void {
     for (const binding of this.store.listBindings()) {
-      if (binding.sessionId !== priorSessionId || binding.state !== "active") continue;
+      if (binding.sessionId !== priorSessionId || binding.state !== "active" || binding.noteKey !== noteKey) continue;
       if ((binding.sessionAgent && binding.sessionAgent !== session.agent) || binding.sessionCwd !== session.cwd) continue;
       const updated = this.store.reattachBinding(binding.id, {
         noteKey: noteKeyFor(session),

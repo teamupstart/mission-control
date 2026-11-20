@@ -1139,6 +1139,20 @@ test("a hibernated task's armed binding survives its session leaving and a resta
     personas,
     workflows,
   });
+  // A binding the same session holds for ANOTHER conversation: Resume reopens only the
+  // hibernated one, so this one must never follow it. (The route arms one binding per
+  // conversation, so it is armed first and then moved to the other conversation's key.)
+  const second = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-hib" });
+  assert.equal(second.status, 201);
+  const other = await second.json() as { id: string; sessionAgent: string; sessionName: string; sessionCwd: string | null; sessionRepoRoot: string | null };
+  workflows.store.reattachBinding(other.id, {
+    noteKey: "conv-other",
+    sessionId: "session-hib",
+    sessionAgent: other.sessionAgent,
+    sessionName: other.sessionName,
+    sessionCwd: other.sessionCwd,
+    sessionRepoRoot: other.sessionRepoRoot,
+  });
   const created = await request(app, "/api/workflow-bindings", { workflowVersionId: "v", sessionId: "session-hib" });
   assert.equal(created.status, 201);
   const binding = await created.json() as { id: string };
@@ -1168,11 +1182,13 @@ test("a hibernated task's armed binding survives its session leaving and a resta
     discovered({ syntheticId: "session-elsewhere", tty: "ttys23", cwd: "/other", gitRoot: "/other", repoRoot: "/other" }),
     discovered({ syntheticId: "session-resumed", tty: "ttys22" }),
   ]);
-  again.followResumedConversation("session-hib", restarted.getSession("session-elsewhere")!);
+  again.followResumedConversation("session-hib", noteKey, restarted.getSession("session-elsewhere")!);
   assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-hib", "another checkout does not take it");
-  again.followResumedConversation("session-hib", restarted.getSession("session-resumed")!);
+  again.followResumedConversation("session-hib", noteKey, restarted.getSession("session-resumed")!);
   assert.equal(again.store.getBinding(binding.id)?.state, "active");
   assert.equal(again.store.getBinding(binding.id)?.sessionId, "session-resumed");
+  assert.equal(again.store.getBinding(other.id)?.sessionId, "session-hib", "another conversation's binding stays put");
+  assert.equal(again.store.getBinding(other.id)?.noteKey, "conv-other");
   await again.stop();
 });
 

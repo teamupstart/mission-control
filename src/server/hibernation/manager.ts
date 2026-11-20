@@ -647,7 +647,9 @@ export class HibernationManager {
     const running: Task = { ...current, ...home, status: "running", sessionId: session.id, hibernation: null, updatedAt: at };
     this.registry.upsertTask(running);
     this.registry.bindTaskToWorkEpisode(current.id, session.id);
-    if (session.id !== record.sessionId) this.options.workflows?.followResumedConversation(record.sessionId, session, at);
+    if (session.id !== record.sessionId) {
+      this.options.workflows?.followResumedConversation(record.sessionId, record.noteKey, session, at);
+    }
     logEvent(session.id, at, "task_resumed", { taskId: current.id, runtime: record.runtime });
     return { ok: true, task: this.registry.getTask(current.id) ?? running };
   }

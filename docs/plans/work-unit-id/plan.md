@@ -1,9 +1,9 @@
 # Work unit id: mint, inherit and carry across sessions and MCP calls
 
 Status: decisions adopted in the plan review on 2026-11-20, phased the same day, and repaired
-after plan validation rounds 1 to 3 (decision D6 on residents, the `codex app-server`
+after plan validation rounds 1 to 4 (decision D6 on residents, the `codex app-server`
 checks, the flag-off wording, resident runs that already exist, shaper carriers by
-transport). Owner: Jordan. Planning task: "Work unit id - mint, carry and trace across Mission Control sessions
+transport, what the resident header rule covers). Owner: Jordan. Planning task: "Work unit id - mint, carry and trace across Mission Control sessions
 and MCP calls".
 
 ## Goal
@@ -219,13 +219,14 @@ Why Mission Control does not inject the header itself:
 
 Limits: cloud connectors and Pi, as above.
 
-Residents (D6). A resident run has no work unit, so nothing is sent for it. The resident
+Residents (D6). A resident run has no work unit, so Mission Control has no value to send
+for it. The resident
 catalog still has to learn the reference, because of what a pinned resident does today with
 the two remote-server lines above. It snapshots the Claude Code line as an empty header and
 sends that on every call. It finds a Codex server with that line unusable ("it uses
 env_http_headers, which residents cannot carry"), and a launch whose set includes an
 unusable server is refused. The catalog will accept exactly this reference and drop it, so
-a launch is not refused for it and no work unit header, empty or otherwise, is sent.
+a launch is not refused for it and a new snapshot holds no header for it.
 
 Runs that already exist. A pinned run keeps the private copy it took at launch, and that
 does not change. A Claude Code run launched earlier may hold `x-work-unit-id` with an empty
@@ -233,6 +234,14 @@ value in its copy. So Mission Control will leave out an empty `x-work-unit-id` e
 it hands a server's headers to a start, and the run stops sending it at its next start or
 resume, with no new snapshot. No Codex run can hold the refused state, because that launch
 never started: launching the profile again succeeds.
+
+What the rule covers. Both parts are about the reference. A header named
+`x-work-unit-id` with a non-empty value that an operator wrote themselves is left alone.
+Such a literal is kept in a new snapshot and sent, as any configured header is. A
+non-empty value that an earlier snapshot holds is sent as stored until the resident is
+launched again. An empty value is left out whoever wrote it: it carries nothing. Mission
+Control does not treat an operator's value as a work unit: a resident run has none (D6),
+so no task, launch or span carries it.
 
 One existing rule stays: on Claude Code a server with any header, this one included, is
 reached through Mission Control's launcher, which presents no harness login. A resident
@@ -310,7 +319,8 @@ A preview flag, `work-unit-id`, as the repository requires for a new user-facing
     shared by many people, and it must not break a pinned resident on a machine where the
     preview is off. This is the one launch-visible change that does not depend on the
     flag: a pinned resident's launch is no longer refused for a Codex server that
-    carries the reference, and no pinned resident sends an empty work unit header.
+    carries the reference, a new snapshot holds no header for the reference, and a run
+    launched earlier stops sending the empty header it holds.
 
 ## The flow
 
@@ -353,8 +363,9 @@ flowchart LR
   record different ones; with the flag off a launch has none; the dashboard row shows and
   copies the id.
 - Residents: a resident run's task has no id and its launch has no variable; for a pinned
-  resident the reference neither gets a launch refused nor sends an empty header, and a run
-  launched before the change stops sending the empty header at its next start.
+  resident the reference gets no launch refused and no header in a new snapshot; a run
+  launched before the change stops sending the empty header at its next start; a value an
+  operator wrote themselves is still sent as configured.
 - The local telemetry stack test asserts the attribute on an exported span.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e`.

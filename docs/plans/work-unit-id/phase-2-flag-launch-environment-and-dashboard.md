@@ -9,9 +9,10 @@ preview off, no launch carries the variable and the dashboard shows no row.
 
 One change in this phase does not depend on the flag: the resident catalog accepts the work
 unit reference and drops it. With the flag on or off, a pinned resident's
-launch is no longer refused for a Codex server that carries the reference, and no pinned
-resident sends an empty work unit header to a Claude Code server. That includes a run
-launched before this phase, from its next start.
+launch is no longer refused for a Codex server that carries the reference, a new snapshot
+holds no `x-work-unit-id` header for the reference, and a run launched before this phase
+stops sending the empty one it holds, from its next start. A non-empty header value an operator
+wrote themselves is not the reference, and is still sent as configured (step 9).
 
 ## Entry criteria and dependencies
 
@@ -119,6 +120,14 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
      A launcher process that is already running keeps what it redeemed until it restarts.
    - A Codex profile whose launch was refused for the reference needs nothing migrated: no
      run was created. Launching it again resolves the set with the new rule.
+   - What the rule covers. Every bullet above is about the reference. A header named
+     `x-work-unit-id` with a non-empty value that an operator wrote themselves is not the
+     reference, and nothing above removes it. Such a literal is kept in a new snapshot and
+     sent, as any configured header is. A non-empty value that an earlier snapshot holds,
+     which only an operator's own literal or own default can have produced, is returned as
+     stored until the resident is launched again. An empty value is left out at
+     redemption whoever wrote it: it carries nothing. Mission Control does not treat an
+     operator's value as a work unit: a resident run has none (D6).
    - A custom server's stored definition is not changed.
 10. **Docs.** In `docs/work-units.md` add "The launch environment" and "MCP servers the
     worker calls": the four config lines from the plan's section 5, the rule that Claude
@@ -155,12 +164,15 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
 - Resident catalog: the Claude Code reference is dropped with the variable set and with it
   unset in the daemon's environment, and the snapshot holds no header for it; a Codex
   server whose `env_http_headers` holds only the reference is available and has no header;
-  one with another entry is still unusable, with today's reason; a resident launch has no
-  variable.
+  one with another entry is still unusable, with today's reason; a literal,
+  non-empty `x-work-unit-id` value on a Claude Code server or a Codex server is kept in the
+  snapshot, as today; a resident launch has no variable.
 - Upgrade path, with a snapshot written in the shape a launch before this phase stored (a
   secret header `x-work-unit-id` whose value is empty, beside another secret header):
   redemption returns the other header and no `x-work-unit-id`; the stored copy is unchanged
-  afterwards; a non-empty `x-work-unit-id` value in a snapshot is still returned. And
+  afterwards; a non-empty `x-work-unit-id` value in a snapshot is still returned, because
+  only an operator's own literal or own default can have produced it (step 9, "What the
+  rule covers"). And
   `resolveResidentMcpSet` resolves a Codex profile whose inherited server carries only the
   reference, where the same server with any other `env_http_headers` entry is refused.
 - `e2e/specs/work-unit-id.spec.ts`, with the fake agents:
@@ -185,10 +197,12 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
   catalog rule in the last criterion below applies with the flag on or off.
 - The row shows and copies the id, covered by the browser spec.
 - The guide tells a config owner exactly what to write for each agent.
-- A resident launch has no `WORK_UNIT_ID`. For a pinned resident the reference no longer
-  gets a launch refused, and no work unit header, empty or otherwise, is sent. This holds
-  with the flag on and with it off, for a snapshot taken after this phase and, from its next
-  start, for a run launched before it. The upgrade-path test above covers the second case.
+- A resident launch has no `WORK_UNIT_ID`. For a pinned resident, with the flag on and with
+  it off: the reference no longer gets a launch refused; a snapshot taken after this phase
+  holds no `x-work-unit-id` header for the reference; and a run launched before this phase
+  stops sending the empty `x-work-unit-id` it holds, from its next start. The upgrade-path
+  test above covers that last case. A non-empty header value an operator wrote themselves is outside
+  this criterion: it is still sent as configured (step 9), and the same tests assert that.
 
 ## Handoff
 
@@ -211,3 +225,7 @@ not add a second gate or read the flag another way.
   records the observed `tools/call`.
 - Plan validation repair, round 3: step 9 and the compatibility notes say what happens to a
   resident run launched before this phase, and the tests cover that upgrade path.
+- Plan validation repair, round 4: step 9 states what the resident header rule covers. The
+  outcome, the tests and the exit criterion state the same two facts about the reference,
+  and that a non-empty value an operator wrote themselves is still sent as configured. No behaviour
+  changed.

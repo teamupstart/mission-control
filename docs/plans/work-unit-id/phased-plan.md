@@ -70,6 +70,8 @@ file stands on its own for an agent that arrives with only its path.
    that does not depend on the flag. D6 is recorded as Jordan's choice.
 7. Plan validation, round 3: Phase 2 covers a resident run launched before it, and Phase 4
    names the carrier of each transport.
+8. Plan validation, round 4: the resident header rule is about the reference. Phase 2 says
+   what it covers once, and every statement of it uses the same two facts.
 
 ## Sizing
 
@@ -165,9 +167,9 @@ After all four phases, with the flag on:
 - A fixture `get_guidance` shaper on an `mcp` server over streamable HTTP receives the
   header and the `_meta` value. An `http` shaper receives the header only.
 - A resident run's task has no `workUnitId`, its launch has no variable and its spans have
-  no attribute. For a pinned resident the reference neither gets a launch refused nor sends
-  an empty header, and a run launched before Phase 2 stops sending the empty header at its
-  next start.
+  no attribute. For a pinned resident the reference gets no launch refused and no header
+  in a new snapshot. A run launched before Phase 2 stops sending the empty header at its
+  next start. A non-empty value an operator wrote themselves is still sent as configured.
 - With the flag off, emission stops: no launch has the variable, no span has the attribute,
   no shaper call carries the id and the dashboard shows no row. Task ids do not depend on
   the flag: tasks still get them, and a plan task and its phase tasks still share one. The
@@ -197,3 +199,6 @@ After all four phases, with the flag on:
 - Plan validation repair, round 3: Phase 2 states what happens to a resident run launched
   before it and tests that path. Phase 4's outcome, steps, compatibility notes and exit
   criteria name the same carrier for each transport. Phases 1 and 3 are unchanged.
+- Plan validation repair, round 4: Phase 2's step 9 states what the resident header rule
+  covers, and its outcome, tests and exit criterion state the same two facts. The root
+  plan and this index follow. No behaviour changed. Phases 1, 3 and 4 are unchanged.

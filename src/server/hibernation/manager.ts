@@ -1,4 +1,5 @@
 import {
+  HIBERNATE_OPEN_RUN_REFUSAL,
   hibernateRefusal,
   hibernationPermissionMode,
   TASK_HIBERNATION_FLAG,
@@ -196,7 +197,7 @@ export class HibernationManager {
       return { ok: false, status: 409, error: "Its task is not running." };
     }
     if (this.openWorkflowRun(session)) {
-      return { ok: false, status: 409, error: "A workflow run is in progress for it. Let the run finish first." };
+      return { ok: false, status: 409, error: HIBERNATE_OPEN_RUN_REFUSAL };
     }
     if (session.runtime === "sdk" && !this.supervisor?.handleFor(session.id)) {
       return { ok: false, status: 409, error: "Its agent is not running in this Mission Control." };
@@ -555,6 +556,14 @@ export class HibernationManager {
     if (replacedWhilePreparing) {
       this.disposePrepared(prepared);
       return this.resumeFailed(task.id, replacedWhilePreparing);
+    }
+    // And who holds the conversation: one opened while preparing would have a second agent
+    // writing it the moment this one starts, before any later check could undo the launch.
+    const openedWhilePreparing = this.registry.snapshot().sessions
+      .find((s) => s.state !== "exited" && s.agentSessionId === record.agentSessionId);
+    if (openedWhilePreparing) {
+      this.disposePrepared(prepared);
+      return this.resumeFailed(task.id, `its conversation was opened in "${openedWhilePreparing.name}" while it was resuming`);
     }
     const backend = this.terminal.backendFor(task);
     // Watched from BEFORE the launch, so an agent that reports its conversation while the

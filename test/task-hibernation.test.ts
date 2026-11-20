@@ -645,7 +645,7 @@ function terminalFleet(
     /** The checkout is removed and recreated at its path while the launch comes up. */
     replaceDuringLaunch?: boolean;
     /** What happens while the managed resume is being prepared, before anything launches. */
-    duringPrepare?: "replace" | "cancel";
+    duringPrepare?: "replace" | "cancel" | "open";
   } = {},
 ): TerminalFleet {
   const registry = new Registry();
@@ -682,6 +682,11 @@ function terminalFleet(
         if (options.duringPrepare === "replace") replaceCheckout(cwd);
         if (options.duringPrepare === "cancel") {
           registry.upsertTask({ ...registry.getTask("term")!, status: "cancelled", hibernation: null });
+        }
+        if (options.duringPrepare === "open") {
+          // Someone opens the conversation by hand in another terminal.
+          registry.applyDiscovery([discovered(`proc-hand-${basename(cwd)}`, cwd, "%7", 77), ...resident]);
+          started(registry, cwd, "%7", "conv-t");
         }
         prepared.push({ agentSessionId: source.agentSessionId, permissionMode: source.permissionMode ?? null, cwd: source.cwd });
         // `dispose` answers false: the guard claimed the lease, so the agent did start and only
@@ -1016,6 +1021,16 @@ test("a task or checkout that changes while the resume is prepared launches noth
   assert.equal(cancelled.spawned.length, 0, "no agent is started for a task that changed");
   assert.deepEqual(cancelled.disposed, ["lease-1"], "and its preparation is released");
   assert.equal(cancelled.registry.getTask("term")?.status, "cancelled");
+
+  // The conversation opened elsewhere while preparing: refused before launch, never beside it.
+  const opened = terminalFleet(checkout("terminal-open-while-preparing"), { duringPrepare: "open" });
+  t.after(() => opened.tasks.stopMissionSessionClosures());
+  assert.equal((await opened.hibernation.hibernate(opened.old)).ok, true);
+  const taken = await opened.hibernation.resume("term");
+  assert.match(taken.ok ? "" : taken.error, /its conversation was opened in "work" while it was resuming/);
+  assert.equal(opened.spawned.length, 0, "no second agent is started on the conversation");
+  assert.deepEqual(opened.disposed, ["lease-1"]);
+  assert.equal(opened.registry.getTask("term")?.status, "hibernated");
 
   // The checkout replaced while preparing: refused before launch, and the task stays hibernated.
   const replaced = terminalFleet(checkout("terminal-replace-while-preparing"), { duringPrepare: "replace" });

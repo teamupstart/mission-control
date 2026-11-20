@@ -254,6 +254,20 @@ test("task rules: a home session sees its repository, the cli names one and answ
   assert.equal(sessions.canMessageTask(home1, other)?.status, 403);
 });
 
+test("task rules: a session outside a repository reads its own tasks and not another such session's", () => {
+  const bare = { surface: "home-session" as const, sessionId: "s-bare", repoRoot: null };
+  const mine = { originSurface: "home-session" as const, originRepo: null, originSessionId: "s-bare" };
+  const theirs = { originSurface: "home-session" as const, originRepo: null, originSessionId: "s-other" };
+  assert.equal(sessions.canReadTask(bare, mine), null);
+  assert.equal(sessions.canAnswerTask(bare, mine), null);
+  assert.equal(sessions.canMessageTask(bare, mine), null);
+  assert.equal(sessions.canReadTask(bare, theirs)?.status, 403);
+  assert.match(sessions.canReadTask(bare, theirs)?.reason ?? "", /outside a repository/);
+  assert.equal(sessions.canReadTask(bare, { originSurface: "home-session", originRepo: repo, originSessionId: "s-bare" })?.status, 403,
+    "a repository task is not read from outside a repository");
+  assert.equal(sessions.canReadTask({ surface: "cli", repoRoot: null }, mine)?.status, 403, "the cli must name a repository");
+});
+
 test("requireHomeSession refuses an unregistered id and a registered session that became a worker", async () => {
   const deps = depsWith({});
   const unknown = sessions.requireHomeSession(deps, "ghost");

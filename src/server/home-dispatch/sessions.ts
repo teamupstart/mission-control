@@ -31,6 +31,8 @@ export type HomeDispatchCaller =
 export interface TaskOrigin {
   originSurface: "home-session" | "mctl" | null;
   originRepo: string | null;
+  /** `tasks.origin_session_id`. Only a repository-less caller needs it (see `canReadTask`). */
+  originSessionId?: string | null;
 }
 
 /** A refusal is always a 403 with its reason, never a 404 that hides it (7.2). */
@@ -186,6 +188,13 @@ export function canReadTask(
   }
   if (options.residentVisible) return null;
   if (task.originSurface === null) return deny("a dashboard task is not readable from a home session");
+  if (caller.repoRoot === null && task.originRepo === null) {
+    // A session outside any repository has no repository to match on, and two such sessions are
+    // not the same context, so it reads only the tasks it started itself.
+    return task.originSessionId === caller.sessionId
+      ? null
+      : deny("the task was started from another session outside a repository");
+  }
   return sameRepo(caller.repoRoot, task.originRepo)
     ? null
     : deny("the task belongs to a different repository than this session");

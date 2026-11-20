@@ -5268,6 +5268,25 @@ export class Registry extends EventEmitter {
     return { task: next, displaced };
   }
 
+  /**
+   * The durable half of binding a resumed hibernated task (`HibernationManager`), inside the
+   * caller's transaction: its row and, when the session's work episode is recorded, the
+   * work-episode binding - so a failure after the commit cannot leave the task pointing at the
+   * stopped session's episode. Publishes nothing and touches no other task: the caller
+   * publishes with `publishPersistedTask` after the commit, then runs `bindTaskToWorkEpisode`
+   * for the dependency bookkeeping, which may upsert and broadcast other tasks.
+   */
+  persistResumedTask(task: Task, sessionId: string, at = Date.now()): string[] {
+    const displaced = dbUpsertTask(task);
+    const episode = sessionWorkEpisodeFor(sessionId);
+    if (episode && !episode.awaitingAgentRebind) {
+      dbBindTaskWorkEpisode({ taskId: task.id, sessionId, episodeId: episode.episodeId,
+        agentSessionId: episode.agentSessionId, branch: episode.branch, prUrl: episode.prUrl,
+        prHeadSha: episode.prHeadSha, mergedAt: episode.mergedAt, boundAt: at, updatedAt: at });
+    }
+    return displaced;
+  }
+
   publishRuntimeTransferSession(sessionId: string, home: SpawnedHome): void {
     if (home.terminalResourceId) this.verifiedLaunchesSinceDiscovery.add(home.terminalResourceId);
     this.resyncSessionTask(sessionId);
@@ -9068,6 +9087,11 @@ export class Registry extends EventEmitter {
     const liveKeys = new Set(
       [...this.sessions.values()].filter((s) => s.state !== "exited").map((s) => noteKeyFor(s)),
     );
+    // A hibernated task holds its conversation's key while nothing runs: Resume reopens that
+    // conversation, and it must come back still blocked however long it slept.
+    for (const task of this.tasks.values()) {
+      if (task.status === "hibernated" && task.hibernation) liveKeys.add(task.hibernation.noteKey);
+    }
     const held: string[] = [];
     let removed = 0;
     for (const [key, record] of this.blockers) {
@@ -10775,7 +10799,9 @@ export function summarizeQueue(
  *
  * `failed` and `cancelled` are in it because a merge UPGRADES them - the adopted decision
  * that a pull request which actually landed is the task's outcome, whatever was concluded
- * before anyone could see it merge. Only a merge does that; a closed-unmerged pull request
+ * before anyone could see it merge. `hibernated` is NOT in it: the operator parked that task
+ * and only their Resume moves it on, so a merge it shipped meanwhile waits until it is running
+ * again (issue #1547). Only a merge does that; a closed-unmerged pull request
  * changes nothing. `done` is not in it: its outcome is already recorded, and rewriting one
  * would overwrite what an operator typed. `backlog` is not either: a rescheduled task is
  * being re-run, so its previous attempt's merge is not this run's outcome.
@@ -10846,7 +10872,7 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * writes a note once it has read the transcript, by which point agentSessionId
  * is known, so a note is keyed on the agent id in practice.
  */
-export function noteKeyFor(s: Session): string {
+export function noteKeyFor(s: Pick<Session, "id" | "agentSessionId">): string {
   return s.agentSessionId ?? s.id;
 }
 

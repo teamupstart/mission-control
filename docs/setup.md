@@ -18,8 +18,8 @@ assets refuse installation. Existing source installs can be replaced in place by
 once assets are published, preserving their state and destination. Copied signed DMGs can enroll
 through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
 
-Alpha builds do not enable preview features. Choose them explicitly in **Settings > Feature flags**,
-individually or with Enable all.
+Switching on Alpha updates also switches on **Enable all feature flags**, so every preview
+feature comes on while keeping any you switched off. Adjust them in **Settings > Feature flags**.
 
 The commands below concern source development. Electron includes Node for the desktop app,
 updates and Mission-owned helpers. Independent agent CLIs and user projects keep their own

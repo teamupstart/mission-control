@@ -1,3 +1,4 @@
+import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
@@ -777,7 +778,8 @@ export class WorkflowManager {
             this.publishRun(delivery.runId);
           }
           for (const binding of this.store.listBindings()) {
-            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+              || this.hibernationHoldsBinding(binding)) continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
             if (active) {
               this.publishBinding(active.id);
@@ -805,6 +807,10 @@ export class WorkflowManager {
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
           if (binding.noteKey === noteKeyFor(event.session)) continue;
+          // A hibernated task's binding waits for its own conversation: a woken driver that
+          // reported another one is refused and put back to sleep (`HibernationManager`), and
+          // delivery refuses a mismatched conversation anyway, so it is not paused for that.
+          if (this.hibernationHoldsBinding(binding)) continue;
           for (const delivery of this.store.markSendingUncertainForSession(
             event.session.id,
             "conversation_changed",
@@ -1629,7 +1635,7 @@ export class WorkflowManager {
   }
 
   /** Resume obligations include secondary repository bindings and exited projections. */
-  resumeNeedsEvidence(session: Session): boolean {
+  resumeNeedsEvidence(session: Pick<Session, "id" | "agentSessionId">): boolean {
     const noteKey = noteKeyFor(session);
     return this.store.listBindings().some((binding) => {
       if (binding.noteKey !== noteKey || binding.state !== "active") return false;
@@ -7739,7 +7745,8 @@ export class WorkflowManager {
 
   private reconcileBindingsAfterDiscovery(): void {
     for (const binding of this.store.listBindings()) {
-      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+        || this.hibernationHoldsBinding(binding)) continue;
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const updated = !session || session.state === "exited"
         ? this.store.orphanBinding(binding.id, "session_disappeared")
@@ -7751,6 +7758,76 @@ export class WorkflowManager {
       const run = this.store.activeRunForBinding(updated.id);
       if (run) this.publishRun(run.id);
     }
+  }
+
+  /**
+   * A hibernated terminal task resumed as a new process on its conversation: the bindings armed
+   * on the stopped session for THAT conversation (`noteKey`, the hibernation's) follow the new
+   * one. A binding the stopped session held for any other conversation stays where it is: it
+   * belongs to a conversation this Resume did not reopen. Only an armed binding moves -
+   * hibernation is refused while a run is open, so none has a delivery in flight - and only to
+   * the same agent.
+   *
+   * The conversation's own binding (no `repoRoot`) moves only into the same checkout, the
+   * compatibility `reattach` asks for. Each secondary repository's binding (`ensureRepoBinding`)
+   * reviews its own worktree rather than the session's, so it moves with the session and keeps
+   * that worktree: its `sessionCwd` never equals the session's, and requiring it to would leave
+   * it on the stopped session where no review could find a live one.
+   *
+   * A conversation armed in another checkout than the one it reopened in (the session changed
+   * directory after its workflow was armed) carries none of them into a checkout they were not
+   * armed for. Nor are they left active on the stopped session: they are orphaned, as any
+   * binding whose session leaves is, so the workflow reads as detached and the operator can
+   * reattach it.
+   *
+   * Writes only, and answers the bindings it moved or orphaned: Resume makes these moves in the same
+   * transaction as the task's own row, and publishes them with `announceBindings` once it has
+   * committed.
+   */
+  followResumedConversation(priorSessionId: string, noteKey: string, session: Session, now = Date.now()): string[] {
+    const held = this.store.listBindings().filter((binding) =>
+      binding.sessionId === priorSessionId && binding.state === "active" && binding.noteKey === noteKey
+      && !(binding.sessionAgent && binding.sessionAgent !== session.agent));
+    const own = held.filter((binding) => !binding.repoRoot);
+    if (own.some((binding) => binding.sessionCwd !== session.cwd)) {
+      return held.flatMap((binding) => {
+        const orphaned = this.store.orphanBinding(binding.id, "session_disappeared", now);
+        return orphaned ? [orphaned.id] : [];
+      });
+    }
+    const moved: string[] = [];
+    for (const binding of held) {
+      const secondary = Boolean(binding.repoRoot);
+      const updated = this.store.reattachBinding(binding.id, {
+        noteKey: noteKeyFor(session),
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: secondary ? binding.sessionCwd : session.cwd,
+        sessionRepoRoot: secondary ? binding.sessionRepoRoot : session.repoRoot,
+      }, now);
+      if (updated) moved.push(updated.id);
+    }
+    return moved;
+  }
+
+  /**
+   * Publish bindings a caller moved inside its own transaction (`followResumedConversation`),
+   * once that has committed, so no dashboard is shown a move that was then rolled back.
+   */
+  announceBindings(ids: readonly string[]): void {
+    for (const id of ids) this.publishBinding(id);
+  }
+
+  /**
+   * A hibernated task's binding is not orphaned by its session leaving: Resume reopens the same
+   * conversation (`@shared/hibernation.ts`) - under the same session id for an Agent SDK session,
+   * and through `followResumedConversation` for a terminal one - so the armed workflow is still
+   * the one that will judge its work. Only the binding for THAT conversation is held: one the
+   * session held for another conversation is orphaned as usual, since no Resume carries it.
+   */
+  private hibernationHoldsBinding(binding: WorkflowBinding): boolean {
+    return hibernationHoldsConversation(this.registry.listTasks(), binding.sessionId, binding.noteKey);
   }
 
   private localPlanOwnsBinding(binding: WorkflowBinding): boolean {

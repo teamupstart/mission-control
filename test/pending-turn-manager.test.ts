@@ -2709,6 +2709,44 @@ test("with no turn end, a captured SDK follow-up stops absorbing echoes once it 
   f.manager.stop();
 });
 
+test("a woken session's queued message waits until its task is bound, then is delivered once", async () => {
+  // A hibernated task's woken driver has not yet shown it reopened the task's conversation
+  // (`SdkSupervisor.holdsDelivery`): rows stay queued without a single attempt, so nothing is
+  // retried in a loop, and the binding's `session_upsert` releases them.
+  let held = true;
+  const registry = new Registry();
+  const id = "sdk:held-wake";
+  registry.registerSdkSession({ id, agent: "claude", name: "held-wake", cwd: "/repo/held-wake", agentSessionId: "conversation:held-wake" });
+  const calls: string[] = [];
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        calls.push(turn.text);
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        return "started";
+      },
+      holdsDelivery: () => held,
+    },
+    { idleSettleMs: 0, pickupTimeoutMs: 15 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "while it wakes");
+  await tick(60);
+  assert.deepEqual(calls, [], "nothing reaches a driver that has not reopened its conversation");
+  assert.equal(registry.getSession(id)?.pendingTurns.length, 1, "the row stays queued");
+
+  held = false;
+  registry.emit("event", { type: "session_upsert", session: registry.getSession(id)! });
+  await until(() => calls.length === 1, "delivery once the task is bound");
+  await tick(60);
+  assert.deepEqual(calls, ["while it wakes"], "delivered exactly once");
+  manager.stop();
+});
+
 /** The operator's pause, as `PauseManager` publishes it onto the session. */
 function pauseSession(registry: InstanceType<typeof Registry>, id: string, since: number): void {
   registry.setSessionPause(id, { reason: "operator", phase: "frozen", since, interrupted: null, stopped: true });

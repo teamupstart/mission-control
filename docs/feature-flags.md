@@ -3,7 +3,7 @@
 The flag core stores one set of operator choices for this machine. The registry includes
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
-**Headless mode** (`headless-mode`) and [Task shaping](task-shaping.md) as previews.
+**Headless mode** (`headless-mode`), **Hibernate tasks** (below) and [Task shaping](task-shaping.md) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -24,6 +24,10 @@ a Claude Code terminal session. It ships off until chosen. With it on, every `/d
 answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
 route answers 404 and the `home-dispatch-v1` health capability is absent.
 
+**Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
+task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
+Backlog and can still be resumed, so switching the preview off never strands a conversation.
+
 **Enable all feature flags** opts in to current and future preview features while preserving
 individual choices. If you previously switched anything off, enabling it asks: **Keep them
 off**, **Turn them on too**, or **Cancel**. Cancel and Escape write nothing. Turning the master
@@ -31,8 +35,15 @@ off keeps individually enabled flags on. **Advanced** starts collapsed and conta
 that are on by default, with a count of those switched off. A filter matching only Advanced
 opens it. Settings search can toggle individual flags; the master result opens its panel.
 
-Alpha builds do not enable preview features. Choose individual flags or Enable all on any
-update channel.
+Switching on **Alpha updates** in **Settings > Setup > Application updates** also switches on
+Enable all, so an alpha operator gets every current and future preview feature by default. It is
+the same write as the master switch without "Turn them on too": flags you switched off stay off.
+Switching alpha off changes no flag, and you can still switch Enable all or any flag off while
+on alpha. Alpha is saved first and stays on if that write fails, because the alpha
+switch must keep working while the daemon is down; the Application updates section then says
+Enable all could not be switched on and offers **Retry**. That failure survives moving between
+Settings categories, and a pending write never locks the alpha switch. A write that gets no
+answer within 10 seconds counts as failed, so Retry is never stuck behind a stalled request.
 
 ## Definition and resolution
 
@@ -61,9 +72,10 @@ choice, even if it matches its default. On then off with the master off therefor
 explicit off, which a later master-on keeps. `explicitlyDisabledFeatureFlags` lists known
 flags with that stored false for the confirmation dialog.
 
-The update channel never changes a flag; on every channel a preview feature is on only because
-the operator switched that flag on or switched on Enable all; only Enable all makes new preview
-features come on by themselves.
+Resolution never reads the update channel. Opting in to alpha changes flags only through the
+dashboard, which follows a successful alpha opt-in with the `{ kind: "master", enabled: true }`
+intent below; the daemon still has no reader for the desktop's update preferences. Only Enable
+all makes new preview features come on by themselves.
 
 Unknown ids never enable a feature, but their stored choices survive writes, so downgrading
 and upgrading does not erase preferences. Retired ids are dropped on the next write and must

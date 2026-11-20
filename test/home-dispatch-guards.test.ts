@@ -29,14 +29,16 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 419 entries outside /dispatch (refreshed when one last changed deliberately: the three
-  // flag-gated /api/shaping routes of task shaping), hashed key-sorted. Any added, removed
+  // The 421 entries outside /dispatch: the 418 `main` records, plus the three flag-gated
+  // /api/shaping routes of task shaping (refreshed when one last changed), hashed key-sorted. Any added, removed
   // or changed non-dispatch entry changes the digest, so a route change outside /dispatch must
-  // be a deliberate edit of this value, never a side effect of regenerating the oracle.
+  // be a deliberate edit of this value, never a side effect of regenerating the oracle. Last
+  // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
+  // `POST /api/tasks/:id/resume`.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 419);
+  assert.equal(others.length, 421);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "266dbc7e5cce7cf45fe406d028e08c896162e22c5b810dd1fb45a6fae98dde02");
+    "d19c4da92cb9dc2f22e82810cf73e74a920440df7f0beae2cbbe7451b23a9878");
 });
 
 function sourceFiles(dir: string): string[] {

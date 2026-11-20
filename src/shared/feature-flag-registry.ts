@@ -33,6 +33,14 @@ export const FEATURE_FLAGS = [
     keywords: ["headless", "terminal", "cli", "dispatch"],
   },
   {
+    id: "task-hibernation",
+    label: "Hibernate tasks",
+    description:
+      "Adds Hibernate to a task session's pause menu: the agent stops and frees its memory, and the task waits in the Backlog until you resume its conversation.",
+    stage: "preview",
+    keywords: ["hibernate", "resume", "memory", "pause", "sleep", "backlog"],
+  },
+  {
     id: "task-shaping",
     label: "Task shaping",
     description: "Register shapers and dry-run them through the API to see the context they would add to a worker's first prompt. Dispatch does not call them yet.",

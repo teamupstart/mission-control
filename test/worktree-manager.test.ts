@@ -310,6 +310,18 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     unlinkSync(linkTarget);
     renameSync(`${privateHead}.moved`, privateHead);
   }
+  // Git reads `ref:` followed by any whitespace as a symbolic ref, a tab included, so a HEAD
+  // written that way names the branch - here one called `(detached)` - and is not detached.
+  renameSync(privateHead, `${privateHead}.moved`);
+  writeFileSync(privateHead, "ref:\trefs/heads/(detached)\n");
+  try {
+    const tabbed = await new NativeWorktreeGit(async () => known(header(sha, "(detached)")), noPause).inspect(detachedTree);
+    assert.ok(tabbed.ok, tabbed.ok ? "" : tabbed.reason);
+    assert.equal(tabbed.value.detached, false, "`ref:<tab>` is a symbolic ref, so the slot holds a branch");
+  } finally {
+    unlinkSync(privateHead);
+    renameSync(`${privateHead}.moved`, privateHead);
+  }
   const changed = await new NativeWorktreeGit(async () =>
     known(`${header(sha, "feature")}1 .M N... 100644 100644 100644 ${sha} ${sha} keep.txt\0`), noPause).inspect(clone);
   assert.ok(changed.ok);

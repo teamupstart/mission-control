@@ -112,8 +112,8 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
   return registrations;
 }
 
-/** What a reftable repository writes as its HEAD file, whatever HEAD really is. */
-const REFTABLE_HEAD_STUB = "ref: refs/heads/.invalid";
+/** Where a reftable repository's HEAD file points, whatever HEAD really is. */
+const REFTABLE_HEAD_TARGET = "refs/heads/.invalid";
 
 /** `headFile`'s answer for a HEAD that is a symbolic link: its contents say nothing either. */
 const SYMLINK_HEAD = "(symbolic link)";
@@ -356,12 +356,14 @@ export class NativeWorktreeGit implements WorktreeGit {
     if (branch === "(detached)") {
       const head = await headFile(path);
       if (head === null) return unanswered("whether HEAD is detached");
-      if (head === REFTABLE_HEAD_STUB || head === SYMLINK_HEAD) {
+      // Git reads `ref:` followed by any ASCII whitespace as a symbolic ref, not just one space.
+      const symbolic = /^ref:[ \t\n\v\f\r]*(.+)$/.exec(head);
+      if (head === SYMLINK_HEAD || symbolic?.[1] === REFTABLE_HEAD_TARGET) {
         const detached = await this.detachedAt(path);
         if (!detached.ok) return detached;
         if (!detached.value) branch = "(a branch named (detached))";
-      } else if (head.startsWith("ref: ")) {
-        branch = head.slice("ref: ".length);
+      } else if (symbolic) {
+        branch = symbolic[1]!;
       }
     }
     const status = tracked

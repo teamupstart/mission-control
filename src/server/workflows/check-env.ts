@@ -146,9 +146,10 @@ function completeGitConfigFamily(env: NodeJS.ProcessEnv): boolean {
   if (count === undefined) return true;
   // The spelling git reads, not the one `Number` reads: git takes decimal digits, zero-padded
   // or not, after optional leading space and `+` ("01", "+1", " 1"), and refuses "0.0", "1e0"
-  // and "0x1" at startup though `Number` reads each as an integer. Anything else takes the
-  // family with it, which costs the Command those settings, not git.
-  if (!/^\s*\+?[0-9]+$/.test(count)) return false;
+  // and "0x1" at startup though `Number` reads each as an integer. Its space is C's ASCII
+  // whitespace: JavaScript's `\s` (and `Number`) also accept a no-break space, which git does
+  // not. Anything else takes the family with it, which costs the Command those settings, not git.
+  if (!/^[ \t\n\v\f\r]*\+?[0-9]+$/.test(count)) return false;
   // Bounded before the loop as well as by it. The loop already stops at the first missing
   // entry, so even a long digit string that converts to Infinity ends at once; this states the
   // limit outright. A complete family needs a KEY and a VALUE variable per entry, so a count

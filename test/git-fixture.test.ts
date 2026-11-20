@@ -44,11 +44,13 @@ test("a seeded copy is the same repository, clean and on its branch", (t) => {
   assert.equal(copy, first, "one seed, one commit");
   for (const dir of ["first", "copy"]) {
     const repo = join(root, dir);
+    // First, before anything that refreshes the index: plumbing reads the stat cache as it is,
+    // so a copy whose cache still described the template's inodes would list every file here.
+    // `git status` rewrites the index, and would hide that if it ran first.
+    assert.equal(gitIn(repo, "diff-index", "--name-only", "HEAD"), "");
     assert.equal(gitIn(repo, "rev-parse", "HEAD"), first);
     assert.equal(gitIn(repo, "symbolic-ref", "--short", "HEAD"), "main");
     assert.equal(gitIn(repo, "status", "--porcelain"), "");
-    // Plumbing does not refresh the index: a stale stat cache would list every file here.
-    assert.equal(gitIn(repo, "diff-index", "--name-only", "HEAD"), "");
     assert.equal(gitIn(repo, "config", "user.email"), "t@test");
   }
   const [base, second] = seedGitHistory(join(root, "history"), {

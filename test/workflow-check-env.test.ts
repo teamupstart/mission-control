@@ -235,7 +235,7 @@ test("an inherited GIT_CONFIG family that is already incomplete is removed whole
 
 test("an inherited GIT_CONFIG_COUNT that git cannot read as a count removes the whole family", () => {
   // Including spellings JavaScript's `Number` reads as integers and git still refuses.
-  for (const count of ["two", "-1", "1.5", "0.0", "1e0", "0x1"]) {
+  for (const count of ["two", "-1", "1.5", "0.0", "1e0", "0x1", "\u00a01"]) {
     const env: NodeJS.ProcessEnv = {
       PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8",
       GIT_CONFIG_COUNT: count, GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true",

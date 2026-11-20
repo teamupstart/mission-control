@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Shaper, ShapingRequest } from "../src/shared/shaping.ts";
-import { ShaperSchema } from "../src/shared/shaping.ts";
+import { ShaperManifestSchema, ShaperSchema } from "../src/shared/shaping.ts";
 import {
   callCommand, COMMAND_OUTPUT_BYTES, receivedValues, redactReceived, removeScratch, shaperCommandEnv,
 } from "../src/server/shaping/transports/command.ts";
@@ -20,10 +20,13 @@ mkdirSync(worktree);
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
 function shaper(args: string[], extra: { env?: string[]; command?: string; stage?: "gather" | "select" } = {}): ShaperOf<"command"> {
-  return ShaperSchema.parse({
+  const definition = {
     id: "fixture", label: "Fixture", stage: extra.stage ?? "gather",
     transport: { type: "command", command: extra.command ?? process.execPath, args, env: extra.env ?? [] },
-  }) as ShaperOf<"command">;
+  };
+  // A `./` command is a discovered shaper's: only a manifest may name one.
+  const schema = definition.transport.command.startsWith("./") ? ShaperManifestSchema : ShaperSchema;
+  return schema.parse(definition) as ShaperOf<"command">;
 }
 function request(stage: "gather" | "select" = "gather"): ShapingRequest {
   return {
@@ -549,7 +552,28 @@ test("a gatherer with no local worktree is unavailable", async () => {
   assert.equal((await callCommand(remote, shaper([FIXTURE, "echo"]), ctx())).kind, "unavailable");
 });
 
+test("an overflow settles as soon as the cap is crossed, though a helper outside the group holds the pipes", async () => {
+  const pidFile = join(scratch, "overflow-helper.pid");
+  const startedFile = join(scratch, "overflow-started");
+  rmSync(pidFile, { force: true });
+  rmSync(startedFile, { force: true });
+  let pid = 0;
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "escape-overflow", pidFile, startedFile]), ctx(30_000));
+    const answered = Date.now();
+    pid = Number(readFileSync(pidFile, "utf8"));
+    assert.deepEqual(reply, { kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
+    // The drain this replaces waited a full second after the cap; the answer now comes at once.
+    const sinceOutput = answered - Number(readFileSync(startedFile, "utf8"));
+    assert.ok(sinceOutput < 900, `answered ${sinceOutput} ms after the shaper started writing`);
+  } finally {
+    if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* Already gone. */ } }
+  }
+});
+
 test("a ./ command needs a shaper folder and stays inside it", async () => {
+  // Registration refuses a ./ command; the transport still refuses one with no folder, so an
+  // entry stored by any other path cannot run it either.
   const relative = shaper([FIXTURE, "echo"], { command: "./run" });
   const registered = await callCommand(request(), relative, ctx());
   assert.equal(registered.kind, "unavailable");

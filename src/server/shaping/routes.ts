@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Hono } from "hono";
-import { ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
+import { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
 import { DEFAULT_TASK_KIND } from "@shared/types.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
@@ -25,7 +25,8 @@ export function registerShapingRoutes(app: Hono): void {
 
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
-    return c.json({ config, discovered: await discoverShapers(), references: referenceStatus(config) });
+    // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
+    return c.json({ config: shapingConfigView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
   });
 
   app.put("/api/shaping", gate, async (c) => {
@@ -34,7 +35,7 @@ export function registerShapingRoutes(app: Hono): void {
     try {
       const result = applyShapingIntent(parsed.data, await discoverShapers());
       if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unreadable_config" ? 409 : 400);
-      return c.json({ config: result.config });
+      return c.json({ config: shapingConfigView(result.config) });
     } catch (error) {
       return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
     }

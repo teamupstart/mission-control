@@ -26,6 +26,7 @@ import {
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
+  shapingConfigView,
   TaskShapingSchema,
   ShaperSchema,
   shaperSchemaForStages,
@@ -534,9 +535,10 @@ test("an entry with an unknown stage or transport survives every read and write,
   assert.deepEqual(stored.shapers[0], future, "parsing keeps every field, unknown ones included");
   const classified = classifyShaper(future);
   assert.equal(classified.kind, "unsupported");
-  assert.match((classified as { reason: string }).reason, /"route" stage/);
+  assert.equal((classified as { reason: string }).reason, "stage: This build does not support the stage this entry names.",
+    "the reason names the field, never the stored value");
   const unknownTransport = classifyShaper({ ...future, stage: "select" });
-  assert.match((unknownTransport as { reason: string }).reason, /"grpc" transport/);
+  assert.equal((unknownTransport as { reason: string }).reason, "transport.type: This build does not support the transport this entry names.");
   assert.deepEqual(ids(resolveShapers(stored, [], task)), ["known"], "a stored on never runs it");
 
   const intents: ShapingIntent[] = [
@@ -554,7 +556,7 @@ test("an entry with an unknown stage or transport survives every read and write,
     assert.deepEqual(ShapingConfigSchema.parse(JSON.parse(JSON.stringify(next))).shapers[0], future, "and survives a round trip");
   }
   assert.deepEqual(applyShapingIntent(stored, { kind: "enable", id: "skill-router", enabled: true }), {
-    ok: false, error: "unsupported_shaper", reason: 'This build does not support the "route" stage.',
+    ok: false, error: "unsupported_shaper", reason: "stage: This build does not support the stage this entry names.",
   });
   const replaced = applyShapingIntent(stored, { kind: "upsert", shaper: { ...command("skill-router") } });
   assert.equal(replaced.ok, false, "upsert cannot overwrite what this build does not understand");
@@ -562,6 +564,73 @@ test("an entry with an unknown stage or transport survives every read and write,
   assert.equal(ShapingIntentSchema.safeParse({ kind: "upsert", shaper: future }).success, false, "nor write one");
   assert.equal(apply(stored, { kind: "remove", id: "skill-router" }).shapers.some((entry) => entry.id === "skill-router"), false,
     "remove works on any id");
+});
+
+test("the config view shows known shapers in full and an unsupported entry only as id, label and reason", () => {
+  // An envelope this build cannot run, holding a token in fields no rule inspects.
+  const future = StoredShaperSchema.parse({ id: "skill-router", label: "Skill router", stage: "route",
+    note: "sk-live-in-envelope", transport: { type: "grpc", endpoint: "grpc://sk-live-in-endpoint", custom: { token: "sk-live-nested" } } });
+  const bad = StoredShaperSchema.parse({ id: "bad", label: "Bad", stage: "sk-live-as-stage", transport: { type: "command", command: "/bin/x" } });
+  const stored = config({ shapers: [command("known"), future, bad], overrides: { known: true } });
+  const view = shapingConfigView(stored);
+  assert.deepEqual(view.shapers[0], ShaperSchema.parse(command("known")), "a known shaper in full");
+  assert.deepEqual(view.shapers[1], { id: "skill-router", label: "Skill router", unsupported: "stage: This build does not support the stage this entry names." });
+  assert.deepEqual(Object.keys(view.shapers[2]!).sort(), ["id", "label", "unsupported"]);
+  const text = JSON.stringify(view);
+  assert.equal(/sk-live/.test(text), false, "no stored value of an unsupported entry leaves, its stage included");
+  assert.deepEqual({ ...view, shapers: [] }, { ...stored, shapers: [] }, "every other field is the config's own");
+});
+
+test("a positional argument holding a well-known credential is refused, and stripped when stored", () => {
+  const run = (args: string[]) => ShaperSchema.safeParse({ id: "p", label: "P", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args } });
+  const tokens = [
+    `ghp_${"a".repeat(36)}`, `github_pat_${"b".repeat(40)}`, `sk-${"c".repeat(48)}`, `sk-ant-api03-${"d".repeat(32)}`,
+    "AKIAIOSFODNN7EXAMPLE", `AIza${"e".repeat(35)}`, `xoxb-${"1".repeat(12)}-${"f".repeat(24)}`, `glpat-${"g".repeat(20)}`,
+    `npm_${"h".repeat(36)}`, `eyJ${"i".repeat(12)}.eyJ${"j".repeat(12)}.${"k".repeat(16)}`, "-----BEGIN RSA PRIVATE KEY-----",
+  ];
+  for (const token of tokens) {
+    const refused = run(["--verbose", token]);
+    assert.equal(refused.success, false, token);
+    assert.deepEqual(refused.error!.issues[0]!.path, ["transport", "args", 1]);
+    assert.equal(JSON.stringify(refused.error!.issues).includes(token), false, "the refusal never names the value");
+    assert.equal(run([`prefix:${token}`]).success, false, `${token}, inside a larger argument`);
+  }
+  // Ordinary positional values are configuration, and stay as written.
+  for (const args of [["billing-api"], ["--repo", "billing-api", "main"], ["sk-live-test"], ["eyJ"], ["AKIA"], ["deadbeef".repeat(8)]]) {
+    assert.equal(run(args).success, true, args.join(" "));
+  }
+  const stored = ShapingConfigSchema.parse({ shapers: [{ id: "p", label: "P", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args: ["billing-api", tokens[0]] } }] });
+  const entry = stored.shapers[0] as unknown as StoredShaper & { transport: { args: string[] } };
+  assert.deepEqual(entry.transport.args, ["billing-api", ""], "stripped when read from a stored definition");
+  assert.equal(credentialsWereRemoved(entry), true);
+});
+
+test("a built-in is registered only at a stage its registry entry declares", () => {
+  const builtin = (stage: string) => ({ id: "files", label: "Files", stage, transport: { type: "builtin", builtin: "repository-files", options: {} } });
+  assert.equal(ShaperSchema.safeParse(builtin("gather")).success, true);
+  const refused = ShaperSchema.safeParse(builtin("select"));
+  assert.equal(refused.success, false);
+  assert.deepEqual(refused.error!.issues[0]!.path, ["stage"]);
+  assert.match(refused.error!.issues[0]!.message, /runs only at the gather stage/);
+  assert.equal(ShaperManifestSchema.safeParse(builtin("select")).success, false, "a manifest follows the same rule");
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "upsert", shaper: builtin("select") }).success, false, "and so does upsert");
+});
+
+test("a registered shaper cannot name a ./ command; a manifest in the shapers folder can", () => {
+  const registered = ShaperSchema.safeParse({ id: "run", label: "Run", stage: "gather", transport: { type: "command", command: "./run" } });
+  assert.equal(registered.success, false);
+  assert.deepEqual(registered.error!.issues[0]!.path, ["transport", "command"]);
+  assert.match(registered.error!.issues[0]!.message, /no folder to resolve a \.\/ command against/);
+  const stdio = ShaperSchema.safeParse({ id: "m", label: "M", stage: "select",
+    transport: { type: "mcp", tool: "t", server: { type: "stdio", command: "./server" } } });
+  assert.equal(stdio.success, false, "nor a local mcp server's command");
+  assert.deepEqual(stdio.error!.issues[0]!.path, ["transport", "server", "command"]);
+  assert.equal(ShaperManifestSchema.safeParse({ id: "run", label: "Run", stage: "gather", transport: { type: "command", command: "./run" } }).success, true);
+  for (const command of ["/usr/local/bin/run", "run"]) {
+    assert.equal(ShaperSchema.safeParse({ id: "run", label: "Run", stage: "gather", transport: { type: "command", command } }).success, true, command);
+  }
 });
 
 test("a build that knows a later stage reads the same entry as known", () => {

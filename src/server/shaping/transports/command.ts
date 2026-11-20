@@ -372,9 +372,15 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       if (why === "timed_out" && exited) return complete(exited.code, exited.signal);
       ending = why;
       killGroup(child);
-      timers.push(setTimeout(() => finish(why === "timed_out"
-        ? { kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` }
-        : { kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` }), DRAIN_MS));
+      // An overflow is known the moment the cap is crossed, and nothing more the pipes could
+      // deliver changes it, so it settles at once. Waiting out the drain would let the engine's
+      // deadline land first and record a timeout in place of the output limit. `finish` still
+      // releases the pipes and reaps the group, whoever holds them.
+      if (why === "overflow") {
+        finish({ kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
+        return;
+      }
+      timers.push(setTimeout(() => finish({ kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` }), DRAIN_MS));
     };
     const onAbort = (): void => end("timed_out");
     try {

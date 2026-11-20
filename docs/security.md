@@ -462,6 +462,11 @@ password (`--cert file:password`, `-E file:password`), or
 a URL of any scheme, including a proxy such as `socks5://`, with userinfo or a credential
 query parameter, alone or as a flag's value (for curl also attached to `-x`). Arguments are never resolved, so name the variable in
 `env` instead.
+Any argument, a positional one included, that holds a well-known credential's shape is refused as
+well: a GitHub, AWS, Slack, Google, GitLab, npm, Anthropic or OpenAI token, a JWT, or a private
+key header. The shapes live in `src/shared/secret-shapes.ts`, which the Inspector's outbound
+scrubber reads too. A bare value that matches no known shape cannot be told apart from
+configuration, such as a repository name, so it stays the operator's to name in `env`.
 Arguments that only say where a credential lives, such as `--token-file`, are allowed. A
 definition that breaks these rules is
 refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every

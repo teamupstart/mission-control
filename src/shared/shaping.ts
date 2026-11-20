@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { holdsSecretShape } from "./secret-shapes.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import {
   SHAPING_BUILTINS,
@@ -588,13 +589,17 @@ function urlCarriesCredential(value: string): boolean {
  *   `-svuname:pass`, `-bsession=x`, `-xsocks5://user:pass@host`, read as curl reads them, and
  *   as a long option's next argument even when it starts with a dash, `--user -name:pass`;
  * - for curl, a key passphrase, `--pass x`, and a certificate password, `--cert file:x`, `-E file:x`;
- * - a URL with a user name, a password or a credential query parameter, alone or as a value.
+ * - a URL with a user name, a password or a credential query parameter, alone or as a value;
+ * - any argument, positional ones included, that holds a well-known credential's shape, such
+ *   as a GitHub, AWS, Slack or OpenAI token or a private key header. A bare value that matches
+ *   no known shape cannot be told apart from configuration and stays the operator's to name in
+ *   `env`.
  */
 function literalCredentialArguments(args: readonly string[], command?: unknown): number[] {
   const found = new Set<number>();
   const curl = isCurl(command);
   args.forEach((arg, index) => {
-    if (urlCarriesCredential(arg)) found.add(index);
+    if (urlCarriesCredential(arg) || holdsSecretShape(arg)) found.add(index);
     const parts = argumentParts(args, index, curl);
     if (!parts || parts.value === undefined || parts.value === "") return;
     const name = parts.name;
@@ -734,26 +739,63 @@ function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   }
 }
 
+/** A built-in runs only at a stage its registry entry declares, such as `repository-files` at gather. */
+function builtinStageDeclared(value: unknown, ctx: z.RefinementCtx): void {
+  const { stage, transport } = value as { stage?: unknown; transport?: { type?: unknown; builtin?: unknown } };
+  if (transport?.type !== "builtin") return;
+  const declared = SHAPING_BUILTINS.find((builtin) => builtin.id === transport.builtin);
+  if (declared && !(declared.stages as readonly string[]).includes(String(stage))) {
+    ctx.addIssue({
+      code: "custom", path: ["stage"],
+      message: `This built-in runs only at the ${declared.stages.join(" or ")} stage.`,
+    });
+  }
+}
+
+/**
+ * A registered shaper has no folder, so a `./` command has nothing to resolve against and could
+ * never run. Only a manifest in the shapers folder may name one.
+ */
+function registeredCommandResolvable(value: unknown, ctx: z.RefinementCtx): void {
+  const transport = (value as { transport?: Record<string, unknown> }).transport;
+  const server = transport?.type === "mcp" ? transport.server as Record<string, unknown> | undefined : undefined;
+  const holder = server?.type === "stdio" ? server : transport?.type === "command" ? transport : undefined;
+  if (typeof holder?.command === "string" && holder.command.startsWith("./")) {
+    ctx.addIssue({
+      code: "custom", path: server ? ["transport", "server", "command"] : ["transport", "command"],
+      message: "A registered shaper has no folder to resolve a ./ command against. Use an absolute path or a command name; only a shaper in the shapers folder may use ./.",
+    });
+  }
+}
+
 const ShaperObjectSchema = z.strictObject(shaperFields(SHAPING_STAGES));
 
 /** The strict definition this build understands. Stored entries are checked against it. */
 export const ShaperSchema = ShaperObjectSchema
   .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
-  .superRefine(credentialsAreReferences);
+  .superRefine(credentialsAreReferences)
+  .superRefine(builtinStageDeclared)
+  .superRefine(registeredCommandResolvable);
 export type Shaper = z.output<typeof ShaperSchema>;
 
-/** A manifest in the shapers folder: the strict definition plus whether it starts switched on. */
+/**
+ * A manifest in the shapers folder: the strict definition plus whether it starts switched on.
+ * Unlike a registered shaper it may name a `./` command, resolved against its own folder.
+ */
 export const ShaperManifestSchema = ShaperObjectSchema
   .extend({ enabled: z.boolean().optional() })
   .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
-  .superRefine(credentialsAreReferences);
+  .superRefine(credentialsAreReferences)
+  .superRefine(builtinStageDeclared);
 export type ShaperManifest = z.output<typeof ShaperManifestSchema>;
 
 /** The strict definition over a different stage tuple, so a test can model another build. */
 export function shaperSchemaForStages(stages: readonly [string, ...string[]]): z.ZodType<Shaper> {
   return z.strictObject(shaperFields(stages))
     .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
-    .superRefine(credentialsAreReferences) as unknown as z.ZodType<Shaper>;
+    .superRefine(credentialsAreReferences)
+    .superRefine(builtinStageDeclared)
+    .superRefine(registeredCommandResolvable) as unknown as z.ZodType<Shaper>;
 }
 
 /** What a pure function reads from the registry. Tests pass their own. */
@@ -837,10 +879,10 @@ export function classifyShaper(
     };
   }
   if (!definitions.stages.includes(stored.stage)) {
-    return { kind: "unsupported", stored, reason: `This build does not support the "${stored.stage}" stage.` };
+    return { kind: "unsupported", stored, reason: "stage: This build does not support the stage this entry names." };
   }
   if (!(SHAPING_TRANSPORTS as readonly string[]).includes(stored.transport.type)) {
-    return { kind: "unsupported", stored, reason: `This build does not support the "${stored.transport.type}" transport.` };
+    return { kind: "unsupported", stored, reason: "transport.type: This build does not support the transport this entry names." };
   }
   const parsed = definitions.shaper.safeParse(stored);
   return parsed.success
@@ -859,6 +901,35 @@ export function classifyShapers(
     seen.add(stored.id);
     return classifyShaper(stored, definitions);
   });
+}
+
+/** An entry this build cannot run, as it may leave the daemon: never its raw envelope. */
+export interface UnsupportedShaperView {
+  id: string;
+  label: string;
+  /** Why, naming the failing field and never a stored value. */
+  unsupported: string;
+}
+
+/** The config as it leaves the daemon: the HTTP reply, and Phase 3's snapshot field and event. */
+export type ShapingConfigView = Omit<ShapingConfig, "shapers"> & { shapers: Array<Shaper | UnsupportedShaperView> };
+
+/**
+ * The config view: known shapers in full, and each unsupported entry reduced to its id, label
+ * and reason. The raw envelope of an entry this build cannot run may hold anything a newer
+ * build or a foreign snapshot wrote, so it stays in the daemon's storage and its settings
+ * backup and never leaves the daemon otherwise.
+ */
+export function shapingConfigView(
+  config: ShapingConfig,
+  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
+): ShapingConfigView {
+  return {
+    ...config,
+    shapers: classifyShapers(config, definitions).map((entry) => entry.kind === "known"
+      ? entry.shaper
+      : { id: entry.stored.id, label: entry.stored.label, unsupported: entry.reason }),
+  };
 }
 
 /** Whether a shaper may be sent local paths: it runs on this machine, as the operator. */
@@ -1407,6 +1478,13 @@ export interface BudgetItem {
   body: string;
   /** Bytes the item costs beyond its body, such as its heading. Counted, never cut. */
   overhead?: number;
+  /**
+   * What makes two items the same, such as an entry id or a body within one repository. An item
+   * whose key a kept item already claimed is skipped as a duplicate, neither kept nor dropped.
+   * Keys are claimed only when an item is kept, so a dropped one never hides a later copy that
+   * fits.
+   */
+  keys?: readonly string[];
 }
 
 export interface BudgetSlot<T extends BudgetItem> {
@@ -1434,7 +1512,8 @@ function truncationMarker(omitted: number): string {
  * shaper returned. Reads no config: a later step outside shaping (FR-06 lessons) calls it with
  * what the shaping stages left. An item is cut to at most `entryBytes`, to what is left of its
  * group and of the total, at the last line boundary that fits, and marked with how much was
- * omitted. An item that does not fit with less than `minEntryBytes` left is dropped.
+ * omitted. An item that does not fit with less than `minEntryBytes` left is dropped. An item
+ * that shares a key with one already kept is skipped as a duplicate.
  */
 export function allocateBudget<T extends BudgetItem>(
   items: readonly T[],
@@ -1446,8 +1525,10 @@ export function allocateBudget<T extends BudgetItem>(
   const kept: BudgetSlot<T>[] = [];
   const dropped: { item: T; bytes: number }[] = [];
   const groups = new Map<string, number>();
+  const claimed = new Set<string>();
   let used = 0;
   for (const item of items) {
+    if (item.keys?.some((key) => claimed.has(key))) continue;
     const overhead = Math.max(0, item.overhead ?? 0);
     const full = utf8Length(item.body);
     const groupUsed = groups.get(item.group) ?? 0;
@@ -1468,6 +1549,7 @@ export function allocateBudget<T extends BudgetItem>(
     const bytes = utf8Length(body) + overhead;
     used += bytes;
     groups.set(item.group, groupUsed + bytes);
+    for (const key of item.keys ?? []) claimed.add(key);
     kept.push({ item, body, bytes, truncated: omittedBytes > 0, omittedBytes });
   }
   return { kept, dropped, bytes: used };

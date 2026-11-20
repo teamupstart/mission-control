@@ -153,8 +153,10 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
   list order, then the order a shaper returned its entries. An entry that does not fit is cut at the last line
   boundary that does and marked `[truncated: N bytes omitted]`. An entry with less than 1 KiB
   left is dropped. Both are recorded.
-- The same entry id from the same shaper is injected once, and so is an identical body from two
-  shapers.
+- Entries are de-duplicated per repository: within one repository, the same entry id from the
+  same shaper is injected once, and so is an identical body from two shapers. Two repositories
+  whose entries share an id or a body each keep their own. Only a kept entry suppresses a later
+  copy, so an entry the budget dropped never hides an identical one that fits.
 
 ## The section a dry run reports
 
@@ -179,8 +181,10 @@ added only when the task has more than one. With no entries there is no section 
 A `command` shaper is any program. Mission Control runs it once per call:
 
 - **argv, no shell.** `command` is an absolute path, a bare name found on the daemon's search
-  path, or, for a shaper in the shapers folder, a `./` path inside its own folder. `args` are
-  passed exactly as written, and stored and backed up the same way. An argument that hands
+  path, or, for a shaper in the shapers folder, a `./` path inside its own folder. A registered
+  shaper has no folder, so registration refuses a `./` command. `args` are passed exactly as
+  written, and stored and backed up the same way. An argument that holds a well-known token's
+  shape, such as a GitHub or AWS token, is refused wherever it sits, a positional one included. An argument that hands
   over a credential, such as `--token=…`, `-H "Authorization: …"` or `--user name:pass`, is
   refused: name the variable in `env` instead.
 - **Working directory.** A gatherer runs in the repository's worktree. A selector runs in an
@@ -220,8 +224,11 @@ A registered shaper is stored switched off. Dry-run it before you switch it on.
 
 All three routes are behind the flag and answer 404 while it is off.
 
-- **`GET /api/shaping`** returns `{ config, discovered, references }`. `config` is the stored
-  `app_config.shaping` value: `caller`, `limits`, `shapers`, `overrides` and `order`.
+- **`GET /api/shaping`** returns `{ config, discovered, references }`. `config` is the config
+  view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
+  each known shaper appears in full and an entry this build cannot run appears only as
+  `{ id, label, unsupported }`. Its raw definition stays in the daemon's storage and settings
+  backup, and `PUT` replies with the same view.
   `discovered` and `references` are empty until the folder and the remote transports land.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
@@ -302,4 +309,5 @@ is `unavailable`.
 ## The built-in gatherer
 
 Arrives with `repository-files`. Its options, `include`, `summary` and `facts`, are already
-accepted, and until that phase lands its outcome is `unavailable`.
+accepted, and until that phase lands its outcome is `unavailable`. It runs at the `gather` stage
+only, so a definition that places it at `select` is refused.

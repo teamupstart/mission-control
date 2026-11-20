@@ -124,6 +124,19 @@ switch (mode) {
     reply({ guidance: [{ id: "on-time", body: "answered just before the deadline" }] });
     break;
   }
+  case "escape-overflow": {
+    // A helper outside this shaper's group holds both pipes, then the shaper crosses the stdout
+    // cap and keeps running. It notes when it starts writing, so a test can time the answer.
+    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true, stdio: ["ignore", "inherit", "inherit"],
+    });
+    writePid(rest[0], helper.pid);
+    helper.unref();
+    writeFileSync(rest[1], String(Date.now()));
+    process.stdout.write("x".repeat(300 * 1024));
+    await sleep(60_000);
+    break;
+  }
   case "pipe-helper": {
     // A helper in this shaper's process group that inherits its stdout and stderr and keeps
     // them open, while the shaper itself answers and exits successfully.

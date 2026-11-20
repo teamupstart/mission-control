@@ -388,6 +388,30 @@ test("a curl credential grouped after a switch, or dash-led after a long option,
   shaping.reloadShaping();
 });
 
+test("a well-known token as a positional argument is refused, and a stored one never reaches a snapshot", async () => {
+  const token = `ghp_${"z".repeat(36)}`;
+  const shaperWith = (id: string, args: string[]) => ({ id, label: "Positional", stage: "gather",
+    transport: { type: "command", command: "/usr/local/bin/shaper", args } });
+  const refused = await put({ kind: "upsert", shaper: shaperWith("positional", ["billing-api", token]) });
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.text()).includes(token), false, "the refusal never names the value");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [shaperWith("stored-positional", ["billing-api", token])] });
+  shaping.reloadShaping();
+  assert.equal(JSON.stringify(shaping.getShapingConfig()).includes(token), false, "the daemon's config holds no secret");
+  const backupStore = new SettingsBackupStore(join(home, "snapshots-positional"));
+  const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
+    () => new Date("2026-11-25T12:00:00Z"), "test", {
+      preflightSkills: () => [], preflightCost: () => {}, reconcileSkills: () => {}, reconcileCost: () => {},
+    });
+  const saved = await service.ensureDailySnapshot();
+  assert.equal(saved.status, "ready");
+  const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
+  assert.equal(snapshot.includes(token), false, "no snapshot carries the token");
+  assert.equal(snapshot.includes('"stored-positional"'), true, "the entry itself is kept, marked as stripped");
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
+});
+
 test("a stored entry at the size limit stays within it once a credential is stripped, and the config still saves", async () => {
   const limit = 16 * 1024;
   const entry = (padding: string) => ({ id: "at-limit", label: "At limit", stage: "select",
@@ -412,6 +436,25 @@ test("a stored entry at the size limit stays within it once a credential is stri
   assert.equal(row.shapers.length, 1, "the entry is kept");
   assert.ok(bytes(row.shapers[0]) <= limit);
   assert.equal(JSON.stringify(row).includes("sk-live-at-limit"), false);
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
+  shaping.reloadShaping();
+});
+
+test("GET and PUT /api/shaping return the config view, never an unsupported entry's raw envelope", async () => {
+  setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
+    note: "sk-live-envelope-note", transport: { type: "grpc", endpoint: "grpc://sk-live-envelope-endpoint" } }] });
+  shaping.reloadShaping();
+  const read = await get();
+  assert.equal(read.status, 200);
+  const text = await read.text();
+  assert.equal(text.includes("sk-live-envelope"), false, "the envelope's own values stay in the daemon");
+  const body = JSON.parse(text) as { config: { shapers: unknown[] } };
+  assert.deepEqual(body.config.shapers, [{ id: "future", label: "Future", unsupported: "stage: This build does not support the stage this entry names." }]);
+  const written = await put({ kind: "settings", limits: { timeoutMs: 6_000 } });
+  assert.equal(written.status, 200);
+  assert.equal((await written.text()).includes("sk-live-envelope"), false, "nor through a write's reply");
+  assert.equal(JSON.stringify(getAppConfig(APP_CONFIG_ENTRIES.shaping)).includes("sk-live-envelope-note"), true,
+    "the raw envelope is kept in storage, where its backup reads it");
   setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
   shaping.reloadShaping();
 });

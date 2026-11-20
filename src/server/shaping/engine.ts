@@ -398,19 +398,13 @@ async function runShaping(
     scope.close();
   }
 
-  // De-duplicate in pipeline order: one entry id per shaper, and one copy of any body.
-  const seenIds = new Set<string>();
-  const seenBodies = new Set<string>();
+  // Candidates in pipeline order. The allocator de-duplicates them by their keys as it keeps them.
   const candidates: Array<{
-    group: string; groupBytes: number; body: string; overhead: number;
+    group: string; groupBytes: number; body: string; overhead: number; keys: string[];
     entry: Omit<ShapingInjectedEntry, "body" | "truncated" | "omittedBytes">; sourceTruncated: boolean;
   }> = [];
   for (const { resolved: shaper, repo, result } of results) {
     for (const item of result.entries) {
-      const idKey = `${shaper.shaper.id}\u0000${item.id}`;
-      if (seenIds.has(idKey) || seenBodies.has(item.body)) continue;
-      seenIds.add(idKey);
-      seenBodies.add(item.body);
       const entry = {
         shaperId: shaper.shaper.id, label: shaper.shaper.label, stage: shaper.shaper.stage, repo: repo.name,
         id: item.id, title: item.title, path: item.path,
@@ -424,6 +418,10 @@ async function runShaping(
         overhead: utf8Length(heading) + 3,
         entry,
         sourceTruncated: item.truncated,
+        // De-duplicated per repository, and only against entries the budget keeps: the same id
+        // from the same shaper, or an identical body from any shaper, is injected once for that
+        // repository. Two repositories whose entries share an id both reach the section.
+        keys: [`id\u0000${repo.name}\u0000${shaper.shaper.id}\u0000${item.id}`, `body\u0000${repo.name}\u0000${item.body}`],
       });
     }
   }

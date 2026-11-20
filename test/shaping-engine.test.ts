@@ -379,8 +379,9 @@ test("entries are de-duplicated, budgeted and composed into one section", async 
     ? [{ id: "same", title: "Same", body: "shared body" }, { id: `own/${request.repo.name}`, body: long }]
     : [{ id: "dup", body: "shared body" }, { id: "b-own", body: "b body" }] }));
   assert.deepEqual(result.entries.map((entry) => [entry.shaperId, entry.id, entry.repo]), [
-    ["a", "same", "billing-api"], ["a", "own/billing-api", "billing-api"], ["b", "b-own", "billing-api"],
-  ], "same id from one shaper once, an identical body from two shapers once, and the second repo's long entry did not fit a's share");
+    ["a", "same", "billing-api"], ["a", "own/billing-api", "billing-api"], ["a", "same", "ledger"],
+    ["b", "b-own", "billing-api"], ["b", "b-own", "ledger"],
+  ], "per repository: an identical body from two shapers once in each, while each repository keeps its own copy, and the second repo's long entry did not fit a's share");
   assert.equal(result.entries[1]!.truncated, true);
   assert.ok(result.section.startsWith(SHAPING_SECTION_PREAMBLE));
   assert.match(result.section, /### A: Same \(billing-api\)\nshared body/);
@@ -471,13 +472,37 @@ test("a validation diagnostic is redacted whole before it is cut, so no fragment
 });
 
 test("an entry reported truncated still marks its shaper truncated when de-duplication drops it", async () => {
-  const result = await run(configWith([shaper("dup", "select")]), (request) => data({
-    guidance: [{ id: "shared", body: `body for ${request.repo.name}`, truncated: request.repo.name === "ledger" }],
-  }));
-  assert.deepEqual(result.entries.map((entry) => [entry.repo, entry.truncated]), [["billing-api", false]],
-    "the later repository's copy is the one de-duplicated");
+  const result = await run(configWith([shaper("dup", "select")]), () => data({
+    guidance: [{ id: "shared", body: "the first copy" }, { id: "shared", body: "the second copy", truncated: true }],
+  }), input(1));
+  assert.deepEqual(result.entries.map((entry) => [entry.body, entry.truncated]), [["the first copy", false]],
+    "the later copy of the id is the one de-duplicated");
   assert.equal(result.summary!.shapers[0]!.truncated, true, "its reported truncation still reaches the summary");
   assert.equal(result.summary!.truncated, true);
+});
+
+test("two repositories whose entries share an id but differ both reach the section", async () => {
+  const result = await run(configWith([shaper("conventions", "select")]), (request) => data({
+    guidance: [{ id: "style", body: `style rules for ${request.repo.name}` }, { id: "common", body: "the same text everywhere" }],
+  }));
+  assert.deepEqual(result.entries.map((entry) => [entry.repo, entry.id]), [
+    ["billing-api", "style"], ["billing-api", "common"], ["ledger", "style"], ["ledger", "common"],
+  ], "de-duplication is per repository, for ids and for bodies alike");
+});
+
+test("a duplicate is suppressed only by a kept entry: a dropped one never hides a later copy that fits", async () => {
+  // Shaper a's own share is spent by its first entry, so its copy of the shared body is dropped.
+  // Shaper b has room, and its identical entry must be kept rather than skipped as a duplicate.
+  const filler = Array.from({ length: 10 }, (_, i) => `line ${i}`.padEnd(99, ".")).join("\n");
+  const shared = Array.from({ length: 12 }, (_, i) => `shared ${i}`.padEnd(99, ".")).join("\n");
+  const config = configWith([shaper("a", "select", { maxBytes: 1024 + 64 }), shaper("b", "select")]);
+  const result = await run(config, (_request, entry) => data({ guidance: entry.id === "a"
+    ? [{ id: "filler", body: filler.slice(0, 1000) }, { id: "shared", body: shared }]
+    : [{ id: "shared", body: shared }] }), input(1));
+  assert.deepEqual(result.entries.map((entry) => [entry.shaperId, entry.id]), [["a", "filler"], ["b", "shared"]],
+    "b's copy is kept although a's identical one came first and was dropped");
+  assert.equal(result.entries[1]!.body, shared, "whole, not cut");
+  assert.equal(result.summary!.shapers.find((row) => row.id === "a")!.truncated, true, "a's drop is still recorded");
 });
 
 test("cleanup a transport registers after its call was abandoned still runs", async () => {

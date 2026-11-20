@@ -56,31 +56,48 @@ function specifiers(source: string): string[] {
 
 const GUARDED = ["src/mod", "src/cli", "src/server/home-dispatch"];
 
+/** The terminal-import rule: every specifier in `source` that reaches a `terminal` directory. */
+export function terminalViolations(source: string): string[] {
+  return specifiers(source).filter((specifier) => /(?:^|\/)terminal(?:\/|$)/.test(specifier));
+}
+
+/** The actions.ts rule: what `source`, living at `rel`, imports from actions.ts that it may not. */
+export function actionsViolations(rel: string, source: string): string[] {
+  const out: string[] = [];
+  const imports = [...source.matchAll(/import\s+(type\s+)?([^;]*?)\s+from\s+["']([^"']*\/actions\.ts)["']/gs)];
+  const reExports = [...source.matchAll(/export\s+[^;]*?from\s+["']([^"']*\/actions\.ts)["']/gs)];
+  const dynamic = [...source.matchAll(/import\s*\(\s*["'][^"']*\/actions\.ts["']\s*\)/g)];
+  if (reExports.length + dynamic.length > 0) out.push("re-export or dynamic import of actions.ts");
+  for (const [, typeOnly, clause] of imports) {
+    if (typeOnly) continue;
+    if (rel !== "src/server/home-dispatch/chat.ts") out.push(`${rel} imports actions.ts`);
+    else if (!/^\{\s*sendText\s*\}$/.test(clause!)) out.push(`imports more than sendText: ${clause}`);
+  }
+  return out;
+}
+
 test("guard 3: nothing headless imports src/server/terminal/", () => {
   for (const file of GUARDED.flatMap(sourceFiles)) {
-    for (const specifier of specifiers(readFileSync(file, "utf8"))) {
-      assert.doesNotMatch(specifier, /(?:^|\/)terminal(?:\/|$)/, `${relative(root, file)} imports ${specifier}`);
-    }
+    assert.deepEqual(terminalViolations(readFileSync(file, "utf8")), [], relative(root, file));
   }
 });
 
 test("guard 3: only chat.ts imports from actions.ts, and only sendText", () => {
   for (const file of GUARDED.flatMap(sourceFiles)) {
-    const source = readFileSync(file, "utf8");
-    const rel = relative(root, file);
-    const imports = [...source.matchAll(/import\s+(type\s+)?([^;]*?)\s+from\s+["']([^"']*\/actions\.ts)["']/gs)];
-    const reExports = [...source.matchAll(/export\s+[^;]*?from\s+["']([^"']*\/actions\.ts)["']/gs)];
-    const dynamic = [...source.matchAll(/import\s*\(\s*["'][^"']*\/actions\.ts["']\s*\)/g)];
-    assert.equal(reExports.length + dynamic.length, 0, `${rel} reaches actions.ts by re-export or dynamic import`);
-    for (const [, typeOnly, clause] of imports) {
-      if (typeOnly) continue;
-      assert.equal(rel, "src/server/home-dispatch/chat.ts", `${rel} imports actions.ts`);
-      assert.match(clause!, /^\{\s*sendText\s*\}$/, `${rel} imports more than sendText: ${clause}`);
-    }
+    assert.deepEqual(actionsViolations(relative(root, file), readFileSync(file, "utf8")), [], relative(root, file));
   }
 });
 
-test("guard 3 sees a violation when one exists", () => {
-  assert.deepEqual(specifiers(`import { focus } from "../actions.ts";\nawait import("../terminal/tmux.ts");`),
-    ["../actions.ts", "../terminal/tmux.ts"]);
+test("guard 3 rejects a violating file and accepts the allowed import", () => {
+  const chat = "src/server/home-dispatch/chat.ts";
+  assert.deepEqual(terminalViolations(`import { x } from "../terminal/tmux.ts";`), ["../terminal/tmux.ts"]);
+  assert.deepEqual(terminalViolations(`await import("../../server/terminal/herdr.ts");`), ["../../server/terminal/herdr.ts"]);
+  assert.deepEqual(terminalViolations(`import { z } from "zod";`), []);
+  assert.deepEqual(actionsViolations(chat, `import { sendText } from "../actions.ts";`), []);
+  assert.equal(actionsViolations(chat, `import { sendText, focus } from "../actions.ts";`).length, 1, "focus beside sendText");
+  assert.equal(actionsViolations(chat, `import { raiseThrough } from "../actions.ts";`).length, 1);
+  assert.equal(actionsViolations("src/server/home-dispatch/inbox.ts", `import { sendText } from "../actions.ts";`).length, 1, "only chat.ts may import it");
+  assert.equal(actionsViolations(chat, `export { focus } from "../actions.ts";`).length, 1, "re-export");
+  assert.equal(actionsViolations(chat, `const a = await import("../actions.ts");`).length, 1, "dynamic import");
+  assert.deepEqual(actionsViolations("src/mod/x.ts", `import type { Action } from "../actions.ts";`), [], "type-only imports are erased");
 });

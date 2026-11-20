@@ -659,8 +659,8 @@ LIMIT 20;
             <details class="family">
               <summary><strong>Headless mode</strong><span>2 tables</span></summary>
               <div class="table-list">
-                <div class="table-row"><code>home_dispatch_sessions</code><p>One row for each Claude Code terminal session that registered with headless mode: its working directory and resolved repository, the mod version, how the session started, and whether the launcher was offered or switched off. Written only while the <code>headless-mode</code> preview flag is on. Task origin lives on <code>tasks.origin_surface</code>, <code>origin_repo</code> and <code>origin_session_id</code>.</p></div>
-                <div class="table-row"><code>home_dispatch_receipts</code><p>One row for each review answered from a home session or from <code>mctl</code>, keyed by the review so a retried answer finds its own receipt. It stores what was sent and when, never a prompt, and expires after seven days.</p></div>
+                <div class="table-row"><code>home_dispatch_sessions</code><p>Reserved for headless mode (FR-05): one row for each Claude Code terminal session that registers as a home session, with its working directory and resolved repository, the mod version, how the session started, and whether the launcher was offered or switched off. The schema exists; nothing writes it yet, because the registration route is still a stub. Task origin lives on <code>tasks.origin_surface</code>, <code>origin_repo</code> and <code>origin_session_id</code>, also unwritten for now.</p></div>
+                <div class="table-row"><code>home_dispatch_receipts</code><p>Reserved for headless mode (FR-05): one row for each review answered from a home session, keyed by the review so a retried answer would find its own receipt, holding what was sent and when. The schema exists; nothing writes it yet, because the answers route is still a stub.</p></div>
               </div>
             </details>
 

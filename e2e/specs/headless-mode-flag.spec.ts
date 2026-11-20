@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
 // The first real preview flag owes the browser assertion `docs/feature-flags.md` asks for: its
 // Settings row appears, and switching it changes a second window without a reload. This spec
@@ -38,6 +39,13 @@ test("headless mode: its Settings row toggles a second window and gates the daem
   expect(on.status).toBe(501);
   expect(await on.json()).toEqual({ error: "not implemented", feature: "headless-mode" });
   expect((await fetch(`${daemon.baseURL}/dispatch/inbox`)).status).toBe(401);
+  if (process.env.MC_E2E_EVIDENCE) {
+    // The enabled row, in the window that clicked and in the one that followed without a reload.
+    const dir = artifactsDir("headless-mode-flag");
+    mkdirSync(dir, { recursive: true });
+    await page.screenshot({ path: `${dir}settings-row-enabled.png` });
+    await peer.screenshot({ path: `${dir}second-window-enabled.png` });
+  }
 
   // The choice survives a reload, and the peer can switch it back off.
   await page.reload();

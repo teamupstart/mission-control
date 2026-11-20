@@ -253,11 +253,17 @@ async function runShaping(
       limits: { maxBytes: entry.shaper.maxBytes ?? config.limits.maxBytes, deadlineMs: timeoutMs },
     };
 
-    // The call is abandoned at its own timeout even if its transport ignores the signal.
+    // The call's own deadline is exact: its signal is aborted at `timeoutMs`, and a reply that
+    // arrives after it contributes nothing. The short grace that follows only lets a transport
+    // say why it stopped; the call is abandoned at its end even if the transport ignores the
+    // signal, and at once when the whole run stops.
     const call = new AbortController();
     const onRunAbort = () => call.abort();
     run.signal.addEventListener("abort", onRunAbort, { once: true });
+    const expires = setTimeout(() => call.abort(), timeoutMs);
+    const timedOut = () => empty("timed_out", `Timed out after ${Math.round(timeoutMs / 100) / 10} s.`);
     let abandon: ReturnType<typeof setTimeout> | undefined;
+    let onStop: (() => void) | undefined;
     let reply: TransportReply | "abandoned";
     try {
       reply = await Promise.race([
@@ -265,20 +271,23 @@ async function runShaping(
           deadline, timeoutMs, signal: call.signal, scope, root: entry.root,
         }, transports),
         new Promise<"abandoned">((done) => {
-          // A little grace so a transport's own timeout reason wins over the generic one.
           abandon = setTimeout(() => done("abandoned"), timeoutMs + 50);
-          call.signal.addEventListener("abort", () => done("abandoned"), { once: true });
+          onStop = () => done("abandoned");
+          run.signal.addEventListener("abort", onStop, { once: true });
         }),
       ]);
     } finally {
+      clearTimeout(expires);
       clearTimeout(abandon);
       run.signal.removeEventListener("abort", onRunAbort);
+      if (onStop) run.signal.removeEventListener("abort", onStop);
       call.abort();
     }
-    if (reply === "abandoned") {
-      return run.signal.aborted ? stopped() : empty("timed_out", `Timed out after ${Math.round(timeoutMs / 100) / 10} s.`);
-    }
+    const late = Date.now() - callStart > timeoutMs;
+    if (reply === "abandoned") return run.signal.aborted ? stopped() : timedOut();
     if (reply.kind !== "data") return empty(reply.kind, reply.reason);
+    // Data that arrived after the call's deadline is not accepted, however much step time is left.
+    if (late) return run.signal.aborted ? stopped() : timedOut();
 
     // Every reason below is built from text the shaper wrote, so it is scrubbed of what the
     // transport handed the shaper before it is recorded, and before it is cut to length.

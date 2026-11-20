@@ -421,8 +421,10 @@ abandoned runs as soon as it is registered, so a late resource is still released
 
 **No secret is stored.** A header whose name says it carries a credential, such as
 `authorization`, `x-api-key`, a `cookie` or anything with a `token`, `secret` or `key`
-segment, must hold its secret as a reference such as `{env:NAME}`. Besides references it may
-carry only an auth scheme, as in `Bearer {env:ACME_TOKEN}`. A URL may not carry a user name,
+segment, must hold its secret as a reference: when it is not empty it is an optional auth
+scheme followed by references only, at least one of them `{env:NAME}`, as in
+`Bearer {env:ACME_TOKEN}`. A lone word, with or without whitespace after it, is the secret
+itself and is refused, and so is a value that names only a caller reference. A URL may not carry a user name,
 a password or a credential-shaped query parameter. An argument may not hand over a credential
 as literal text, as in `--token=…` or `--api-key …`; name the variable in `env` instead.
 Arguments that only say where a credential lives, such as `--token-file`, are allowed. A

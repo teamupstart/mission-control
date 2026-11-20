@@ -20,6 +20,7 @@ import {
   SHAPING_LIMITS,
   SHAPING_SECTION_PREAMBLE,
   credentialBearingName,
+  credentialValueIsReferenced,
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
@@ -29,6 +30,7 @@ import {
   ShapingIntentSchema,
   ShapingResultSchema,
   SHAPING_REFERENCE_SPELLINGS,
+  shapingEntryHeading,
   shapingReferences,
   shapingSummaryLine,
   StoredShaperSchema,
@@ -162,6 +164,15 @@ test("a credential is held only as a reference, so no secret text is ever stored
     assert.equal(mcp({ authorization: value }).success, false, value);
   }
   assert.equal(http({ "x-api-key": "plain-secret" }).success, false);
+  // A lone word is the secret itself, not an auth scheme, with or without whitespace after it,
+  // and a credential header needs an {env:NAME} reference, not only a caller one.
+  for (const value of ["sk-live-abc ", "sk-live-abc", "  sk-live-abc\t", "Bearer ", "Bearer {caller.user}", "{caller.user}"]) {
+    assert.equal(credentialValueIsReferenced(value), false, JSON.stringify(value));
+    assert.equal(http({ authorization: value }).success, false, JSON.stringify(value));
+  }
+  for (const value of ["", "   ", "{env:A}", " Bearer {env:A} ", "Bearer {env:A}{caller.user}"]) {
+    assert.equal(credentialValueIsReferenced(value), true, JSON.stringify(value));
+  }
   assert.equal(http({ "x-acme-user-id": "operator@example.test", accept: "application/json" }).success, true,
     "a header that carries no credential may hold literal text");
   assert.equal(http({}, "https://user:pass@context.example/shape").success, false, "no userinfo in a URL");
@@ -181,17 +192,18 @@ test("the stored config cannot hold a literal credential, whatever wrote the ent
   const future = {
     id: "future", label: "Future", stage: "route", note: { kept: true },
     transport: { type: "mcp", tool: "t", server: { type: "http", url: "https://user:pw@context.example/mcp?api_key=k1&page=2",
-      headers: { authorization: "Bearer sk-live-literal", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}" } } },
+      headers: { authorization: "Bearer sk-live-literal", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}",
+        "x-auth-token": "sk-live-trailing " } } },
   };
   const command = { id: "cmd", label: "Cmd", stage: "gather",
     transport: { type: "command", command: "/usr/local/bin/shaper", args: ["--json", "--token=sk-live-arg", "--api-key", "sk-live-next"] } };
   const parsed = ShapingConfigSchema.parse({ shapers: [future, command, shaperEntry()] });
   const text = JSON.stringify(parsed);
-  for (const secret of ["sk-live-literal", "sk-live-arg", "sk-live-next", "user:pw", "api_key", "k1"]) {
+  for (const secret of ["sk-live-literal", "sk-live-trailing", "sk-live-arg", "sk-live-next", "user:pw", "api_key", "k1"]) {
     assert.equal(text.includes(secret), false, secret);
   }
   const [stripped, cmd, untouched] = parsed.shapers as Array<Record<string, any>>;
-  assert.deepEqual(stripped!.transport.server.headers, { authorization: "", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}" },
+  assert.deepEqual(stripped!.transport.server.headers, { authorization: "", "x-acme-user-id": "operator", "x-api-key": "{env:ACME_KEY}", "x-auth-token": "" },
     "only the literal credential is emptied; a reference and an ordinary header are kept");
   assert.equal(stripped!.transport.server.url, "https://context.example/mcp?page=2");
   assert.deepEqual(stripped!.note, { kept: true }, "every other field of an unsupported entry is kept as written");
@@ -467,6 +479,14 @@ test("the budget: whole entries, a cut at a line boundary with a marker, a dropp
   const remainder = allocateBudget([{ group: "lessons", groupBytes: Infinity, body: line(30) }], 32_768 - 31_000);
   assert.ok(remainder.kept[0]!.truncated && remainder.bytes <= 1_768);
   assert.deepEqual(allocateBudget([{ group: "lessons", groupBytes: Infinity, body: line(30) }], 0).kept, []);
+});
+
+test("a blank title falls back to the id on one line, and a blank id to a fixed name", () => {
+  assert.equal(shapingEntryHeading({ label: "Acme", title: "   ", id: "rule\n## injected", repo: "r" }, false), "### Acme: rule ## injected");
+  assert.equal(shapingEntryHeading({ label: "Acme", title: "\t", id: " \n ", repo: "r" }, false), "### Acme: Untitled entry");
+  assert.equal(shapingEntryHeading({ label: "Acme", id: "plain", repo: "r" }, true), "### Acme: plain (r)");
+  const section = composeShapingSection([{ label: "Acme", title: " ", id: "a\n# top level", repo: "r", body: "Body." }], false);
+  assert.equal(section.split("\n").filter((line) => line.startsWith("#")).length, 2, "only the preamble and one entry heading");
 });
 
 test("the section: a labelled preamble, one heading per entry, the repository only for several", () => {

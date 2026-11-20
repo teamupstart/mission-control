@@ -317,12 +317,17 @@ export function credentialBearingName(name: string): boolean {
 
 /**
  * A credential-bearing value may hold its secret only as a reference, resolved at call time.
- * Besides references, it may carry at most an auth scheme such as `Bearer `. The config holds
- * no secret text, so no settings snapshot can carry one.
+ * Empty is fine. Anything else is an optional auth scheme such as `Bearer`, then nothing but
+ * references, at least one of them `{env:NAME}`: a lone word, with or without whitespace after
+ * it, is the secret itself rather than a scheme. The config holds no secret text, so no settings
+ * snapshot can carry one.
  */
-function credentialValueIsReferenced(value: string): boolean {
-  const literal = value.replace(/\{[^{}]*\}/g, "");
-  return /^\s*(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+)?$/.test(literal);
+export function credentialValueIsReferenced(value: string): boolean {
+  if (value.trim() === "") return true;
+  const shape = /^\s*(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+)?((?:\{[^{}]*\})+)\s*$/.exec(value);
+  if (!shape) return false;
+  const references = shapingReferences(shape[1]!);
+  return references !== null && references.some((reference) => reference.startsWith("env:"));
 }
 
 /** Name segments that say an argument names where a credential lives, not the credential itself. */
@@ -1155,7 +1160,10 @@ function headingText(value: string): string {
 
 /** The heading an entry is injected under. Its bytes are the entry's budget overhead. */
 export function shapingEntryHeading(entry: { label: string; title?: string; id: string; repo: string }, multiRepo: boolean): string {
-  const name = headingText(entry.title || entry.id) || entry.id;
+  // Title and id are normalized separately, so a blank title falls back to the id on one line,
+  // and a blank id to a fixed name. The raw id never reaches the heading: a newline in it would
+  // start a Markdown line of the shaper's choosing.
+  const name = headingText(entry.title ?? "") || headingText(entry.id) || "Untitled entry";
   return `### ${headingText(entry.label)}: ${name}${multiRepo ? ` (${headingText(entry.repo)})` : ""}`;
 }
 

@@ -268,6 +268,20 @@ test("the summary records origin and the SHA-256 of the canonical definition", a
   assert.equal(result.summary!.shapers[0]!.sha256, createHash("sha256").update(canonicalJson(stored)).digest("hex"));
 });
 
+test("a reply that arrives after its call's timeout contributes nothing, though step time is left", async () => {
+  let abortedAfter = -1;
+  const result = await run(configWith([shaper("late", "select", { timeoutMs: 100 })], { limits: { deadlineMs: 5_000 } }), async (_r, _e, ctx) => {
+    const started = Date.now();
+    ctx.signal.addEventListener("abort", () => { abortedAfter = Date.now() - started; }, { once: true });
+    await sleep(125);
+    return data({ guidance: [{ id: "late", body: "should not be injected" }] });
+  }, input(1));
+  assert.deepEqual([result.summary!.shapers[0]!.outcome, result.summary!.shapers[0]!.reason], ["timed_out", "Timed out after 0.1 s."]);
+  assert.deepEqual(result.entries, [], "no guidance from a late reply");
+  assert.equal(result.section, "");
+  assert.ok(abortedAfter >= 90 && abortedAfter < 125, `the call's signal is aborted at its own deadline, not after the grace (${abortedAfter} ms)`);
+});
+
 test("a validation diagnostic is redacted whole before it is cut, so no fragment of a value survives", async () => {
   const secret = "SECRET-VALUE-0123456789-abcdef";
   // The diagnostic's path carries this shaper-chosen key, and the value sits across the

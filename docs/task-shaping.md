@@ -136,9 +136,10 @@ several repositories, its outcome is the worst of its calls. Truncation is not d
 | One shaper's share (`maxBytes`, per shaper or the config default) | 16 KiB | 64 KiB |
 | The whole section (`limits.totalBytes`) | 32 KiB | 64 KiB |
 
-- A call's timeout is the smaller of its own and the time left in the step. At the deadline,
-  calls still running are abandoned and recorded as `timed_out`. Entries that already arrived
-  are kept.
+- A call's timeout is the smaller of its own and the time left in the step. Its signal is
+  aborted at exactly that timeout, and a reply that arrives later is `timed_out` and contributes
+  nothing, however much step time is left. At the step's deadline, calls still running are
+  abandoned and recorded as `timed_out`. Entries that already arrived are kept.
 - One entry is at most 16 KiB. The budget is filled in stage order, then list order, then the
   order a shaper returned its entries. An entry that does not fit is cut at the last line
   boundary that does and marked `[truncated: N bytes omitted]`. An entry with less than 1 KiB
@@ -268,8 +269,9 @@ Arrives with the `mcp` and `http` transports. Their config shapes are already ac
 shaper names its `server`, its `tool` and a `contextDelivery` of `folded` or `argument`, and an
 `http` shaper names its `url` and `headers`. Header values may reference `{caller.user}`,
 `{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. A credential is always a
-reference: a header such as `authorization` or `x-api-key` holds its secret as `{env:NAME}`,
-with at most an auth scheme beside it (`Bearer {env:ACME_TOKEN}`). A URL carries no user name,
+reference: a header such as `authorization` or `x-api-key` that is not empty holds an
+`{env:NAME}` reference, with at most an auth scheme before it (`Bearer {env:ACME_TOKEN}`). A
+lone word is refused as the secret itself, with or without trailing whitespace. A URL carries no user name,
 password or credential-shaped query parameter. A definition with literal secret text is
 refused, so it is never stored or backed up. Until that phase lands, such a shaper's outcome
 is `unavailable`.

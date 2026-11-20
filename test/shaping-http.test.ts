@@ -217,6 +217,7 @@ test("a literal credential is refused, so a settings snapshot holds only the ref
   const refused = await put(remote("Bearer sk-live-literal-secret"));
   assert.equal(refused.status, 400);
   assert.match(await refused.text(), /must be a reference such as \{env:NAME\}/);
+  assert.equal((await put(remote("sk-live-lone-word "))).status, 400, "a lone word with trailing whitespace is a secret, not a scheme");
   assert.equal((await put(remote("Bearer {env:ACME_CONTEXT_TOKEN}"))).status, 200);
   const backupStore = new SettingsBackupStore(join(home, "snapshots-credentials"));
   const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
@@ -234,11 +235,13 @@ test("an entry stored by another path cannot carry a literal credential into a s
   // Written straight into app_config, as a restore or a newer build would, past the API's check.
   setAppConfig(APP_CONFIG_ENTRIES.shaping, { ...SHAPING_CONFIG_DEFAULTS, shapers: [{
     id: "future", label: "Future", stage: "route",
-    transport: { type: "grpc", url: "https://user:pw-literal@context.example/x", headers: { authorization: "Bearer sk-live-bypass" } },
+    transport: { type: "grpc", url: "https://user:pw-literal@context.example/x",
+      headers: { authorization: "Bearer sk-live-bypass", "x-api-key": "sk-live-trailing " } },
   }] });
   shaping.reloadShaping();
   const held = JSON.stringify(shaping.getShapingConfig());
-  assert.equal(held.includes("sk-live-bypass") || held.includes("pw-literal"), false, "the daemon's config holds no secret");
+  assert.equal(held.includes("sk-live-bypass") || held.includes("pw-literal") || held.includes("sk-live-trailing"), false,
+    "the daemon's config holds no secret, a lone word with trailing whitespace included");
   const backupStore = new SettingsBackupStore(join(home, "snapshots-bypass"));
   const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
     () => new Date("2026-11-22T12:00:00Z"), "test", {
@@ -247,7 +250,7 @@ test("an entry stored by another path cannot carry a literal credential into a s
   const saved = await service.ensureDailySnapshot();
   assert.equal(saved.status, "ready");
   const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
-  assert.equal(snapshot.includes("sk-live-bypass") || snapshot.includes("pw-literal"), false, "nor does the snapshot");
+  assert.equal(snapshot.includes("sk-live-bypass") || snapshot.includes("pw-literal") || snapshot.includes("sk-live-trailing"), false, "nor does the snapshot");
   assert.equal(snapshot.includes('"future"'), true, "the unsupported entry itself is still kept");
   // A snapshot that itself carries a literal credential, as a hand-edited or foreign one could,
   // is restored as the parsed value: the row the restore writes holds no secret either.
@@ -257,14 +260,14 @@ test("an entry stored by another path cannot carry a literal credential into a s
   const crafted = createSettingsBackupEnvelope({ ...body, id: "daily-2026-11-21", localDate: "2026-11-21",
     domains: body.domains.map((domain) => domain.domain !== "shaping" ? domain : { ...domain, payload: {
       ...SHAPING_CONFIG_DEFAULTS, shapers: [{ id: "future", label: "Future", stage: "route",
-        transport: { type: "grpc", headers: { authorization: "Bearer sk-live-in-snapshot" } } }],
+        transport: { type: "grpc", headers: { authorization: "Bearer sk-live-in-snapshot", "x-api-key": "sk-live-restore-trailing " } } }],
     } }) });
   backupStore.write(crafted);
   setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
   shaping.reloadShaping();
   assert.equal((await service.restore(crafted.id, crafted.digest)).status, "restored");
   const row = JSON.stringify(getAppConfig(APP_CONFIG_ENTRIES.shaping));
-  assert.equal(row.includes("sk-live-in-snapshot"), false, "the restored row holds no secret");
+  assert.equal(row.includes("sk-live-in-snapshot") || row.includes("sk-live-restore-trailing"), false, "the restored row holds no secret");
   assert.equal(row.includes('"future"'), true, "the entry itself is restored");
   assert.equal(JSON.stringify(shaping.getShapingConfig()).includes("sk-live-in-snapshot"), false);
 });

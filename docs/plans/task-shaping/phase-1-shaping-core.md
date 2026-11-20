@@ -84,7 +84,9 @@ Not here: the dispatcher, any dashboard surface other than the flag's own row, t
    it for that shaper.
    Each call's timeout is the smaller of the shaper's and the time left in the step. Paths are
    put in a request only when `shaperIsLocal`. The summary records each shaper's origin and
-   the SHA-256 of its definition, taken over canonical JSON for a registered shaper.
+   the SHA-256 of its definition, taken over canonical JSON for a registered shaper. The
+   `TaskShaping` type also declares an optional `sessionId`, which the engine leaves unset
+   and Phase 2 sets when it commits the record.
 7. **Transports.** `transports/index.ts` holds the exhaustive `Record`. Every `call` receives a
    `ctx` with the deadline, an abort signal, and a per-run scope (a `shared` map and `defer`)
    so a transport can reuse one connection during a run and close it afterwards. `command.ts` runs argv
@@ -167,5 +169,8 @@ reshape them. They replace the contents of their own transport file, `discovery.
   removed credential value without reshaping a Phase 1 contract afterwards.
 - Review of the plan pull request, round 2, 2026-11-19: the mark is allowed on a failure
   reply too. A scrubbed failure reason could not otherwise be reported.
+- Review of the plan pull request, round 4, 2026-11-19: `TaskShaping` declares an optional
+  `sessionId` now, so Phase 2 can stamp each record with its session without reshaping a
+  Phase 1 type afterwards.
 - Complete-set audit: every decision in `plan.md` is owned by exactly one phase. D1, D2, D8,
   D9 and the engine half of D3 are here.

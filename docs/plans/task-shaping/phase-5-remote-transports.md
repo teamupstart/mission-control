@@ -69,15 +69,17 @@ identity, stored secrets.
    complete collected input reaches the tool, and there is no mode that omits it.
    - `folded` (default): exactly three arguments,
      `{ task, repo: { name, facts?, summary? }, version? }`, the FR-02 `get_guidance` input.
-     `task` is the prompt followed by one fixed block that states every other collected
-     field: title, kind, harness and runtime, after-work step, labels, priority, and each
-     attached repository with its role and branch.
+     `task` is the prompt followed by one fixed block that states every field of the
+     request's `context` except local paths: the task id, title, kind, harness and runtime,
+     the after-work step with its workflow id, labels, priority, the caller, and each
+     attached repository with its role, branch and base commit.
    - `argument`: four arguments,
      `{ task, repo: { name, facts?, summary? }, version?, context }`. `task` is the prompt
      alone, and `context` is the request's whole `context` object.
 
-   Render the folded block with one pure function, so a test can pin its text. Read the reply from the
-   structured content when it is an object, otherwise from the first text content parsed as
+   Render the folded block from the `context` object with one pure function, so a test can
+   pin its text, and a second test that walks the context schema fails when a field has no
+   line in the block. Read the reply from the structured content when it is an object, otherwise from the first text content parsed as
    JSON. A tool error is `failed`, with its text, bounded.
 5. **Reply field.** `GET /api/shaping` returns `references` from `referenceStatus`.
 6. **Docs.** Fill "Remote shapers" in `docs/task-shaping.md`, with a worked example that
@@ -110,8 +112,10 @@ identity, stored secrets.
 - `test/shaping-transport-mcp.test.ts`, against `test/fixtures/fake-guidance-mcp.mjs` (a local
   server with a `get_guidance` tool): exactly three arguments in `folded` mode and exactly four, the fourth being `context`, in
   `argument` mode,
-  that every collected field of a two-repository task (title, kind, harness, runtime,
-  after-work step, labels, priority, both repositories) reaches the tool in each mode,
+  that every collected field of a two-repository task (task id, title, kind, harness,
+  runtime, the after-work step and its workflow id, labels, priority, the caller, and both
+  repositories on the same branch name with different base commits, so a test can tell
+  them apart) reaches the tool in each mode,
   structured and text replies, a tool error, a timeout, a `degraded: true` reply passed
   through, one server process for a run over two repositories, and the same calls over
   streamable HTTP. Over streamable HTTP the fixture also has an echo mode that returns a
@@ -166,3 +170,7 @@ free of shaping-specific assumptions where that is cheap.
   said a credential header is never sent over plain HTTP, while this phase reused the
   resident MCP helpers, which allow plain HTTP to loopback. The operator chose the resident
   rule. `plan.md` now states it, and step 3, the HTTP test and an exit criterion pin it.
+- Review of the plan pull request, round 4, 2026-11-19: the `folded` block listed some
+  fields of `context` and left out others, such as each repository's base commit and the
+  after-work workflow id. It now renders every field except local paths, a schema-walking
+  test keeps it complete, and the MCP test tells apart two repositories on one branch name.

@@ -51,11 +51,17 @@ is not a built-in at all (see Handoff).
      be free of symbolic links and inside the worktree, and it must name the same device and
      inode as the handle. This is an identity check, not a second path check. If a directory
      on the way was swapped while the open ran, the handle is some other file, its inode
-     differs from the one inside the worktree, and the read is refused. The two can agree
-     only when the handle is the file that sits inside the worktree. Node has no `openat`,
-     so this is how containment is tied to the opened file on every platform, and it is
-     stricter than the daemon's other worktree readers. A file that is moved or hard-linked
-     into the worktree is a worktree file.
+     differs from the one inside the worktree, and the read is refused. A file that is moved
+     or hard-linked into the worktree is a worktree file.
+   - **What this guarantees.** The checks are portable: Node has no `openat`, `openat2` or
+     `O_NOFOLLOW_ANY`, and no other worktree reader in the daemon uses native code. They
+     prove that no file outside the worktree is read while the worktree's directories are
+     not being rearranged during the read. A process running as the operator that swaps a
+     directory on the path between the lookup and the identity check, in a tight race, can
+     still get an outside file read. That is outside the threat model, because such a
+     process can read that file itself, and `plan.md` does not treat processes running as
+     the operator as a boundary. The operator chose to state this rather than add a native
+     open, on 2026-11-19.
    - **Read.** Read from the handle with a hard limit, so a file that grows meanwhile is
      still cut off. Replace invalid UTF-8, drop a byte order mark, and cut at the last line
      boundary within the cap.
@@ -98,8 +104,9 @@ is not a built-in at all (see Handoff).
 
 - A registered `repository-files` gatherer dry-runs against a repository and returns the
   entries, summary and facts its options name.
-- No file outside the worktree is ever read, and no read exceeds its limit: both are
-  verified on the opened file, not on a path checked beforehand.
+- No read exceeds its limit, and no file outside the worktree is read while the worktree's
+  directories are not being rearranged during the read. Both are checked on the opened file,
+  not on a path checked beforehand. Step 2 states the one race that remains.
 
 ## Handoff
 
@@ -128,3 +135,8 @@ the same budget. Do not add it to `SHAPING_BUILTINS` or serve it through this tr
   The reviewer also kept the containment finding open, because `O_NOFOLLOW` covers only the
   last path component. Step 2 now states that the check after the open is an identity check
   on the handle, which a swapped directory cannot pass, and the tests add that case.
+- Review of the plan pull request, round 4, 2026-11-19, the operator's choice: the reviewer
+  showed that a directory can also be swapped between the lookup and the identity check, so
+  round 3's claim that a swapped directory cannot pass was too strong. Step 2 and the exit
+  criterion now state the guarantee the portable checks give, and why the remaining race is
+  outside the threat model. No native open is added.

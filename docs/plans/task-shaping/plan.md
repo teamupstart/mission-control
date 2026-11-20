@@ -213,10 +213,12 @@ mapping and the record. A new transport cannot change those semantics.
   - `folded` (default). The tool is called with exactly three arguments,
     `{ task, repo: { name, facts?, summary? }, version? }`. That is the FR-02 `get_guidance`
     input, so an existing tool is called unchanged. `task` is the operator's prompt followed
-    by one fixed, labelled block that states every other collected field: title, kind, harness
-    and runtime, after-work step, labels, priority, and each attached repository with its role
-    and branch. This is the folding FR-02 section 5a proposes, applied to the whole input
-    instead of three fields.
+    by one fixed, labelled block that states every field of the request's `context` except
+    local paths: the task id, title, kind, harness and runtime, the after-work step with its
+    workflow id, labels, priority, the caller, and each attached repository with its role,
+    branch and base commit. One pure function renders it from the `context` object, and a
+    test that walks the context schema fails when a field has no line in the block. This is
+    the folding FR-02 section 5a proposes, applied to the whole input instead of three fields.
   - `argument`. The tool is called with four arguments,
     `{ task, repo: { name, facts?, summary? }, version?, context }`. `task` is the prompt
     alone, and `context` is the request's whole `context` object. This is not the FR-02 call.
@@ -232,13 +234,15 @@ The block that `folded` appends to the prompt, for a task with two repositories:
 
 ```text
 Task context from Mission Control:
+- Task: t_123
 - Title: Retry failed charges
 - Kind: ship
 - Harness: claude (sdk)
-- After-work step: Review and merge
+- After-work step: Review and merge (workflow wf_1)
 - Labels: payments
 - Priority: high
-- Repositories: billing-api (primary, branch task/retry), ledger (additional, branch task/retry)
+- Caller: declared-user (agent claude, conversation t_123)
+- Repositories: billing-api (primary, branch task/retry, base abc123), ledger (additional, branch task/retry, base def456)
 ```
 
 ### Registry, config and wire
@@ -474,7 +478,7 @@ cannot relax their authorization, plan or workflow rules.
   "Provisioning its worktree" and "Launching claude".
 - **On the task.** A bounded summary is stored on the task record and travels with
   `task_upsert`:
-  `{ state, at, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, redacted, version }] }`.
+  `{ state, at, sessionId, durationMs, entries, bytes, truncated, shapers: [{ id, label, stage, origin, sha256, outcome, reason, durationMs, entries, bytes, truncated, redacted, version }] }`.
   `state` is `ok` or `degraded`. `origin` is `registered` or `discovered`. `outcome` is one of
   `ok`, `degraded`, `failed`, `timed_out`, `invalid`, `unavailable`. The field is absent when
   no shaper applied. The record describes the latest launch that reached a worker, and nothing
@@ -483,6 +487,9 @@ cannot relax their authorization, plan or workflow rules.
   text is replaced, or deleted when this launch's section is empty. A dispatch that fails
   before that point writes nothing. A launch whose shapers all failed therefore keeps its
   `degraded` summary and has no text, and a retry never shows an earlier launch's context.
+  Each record names the session it was delivered to, `sessionId`, and follows that session
+  across a resume. The chip and the viewer show a record only for the session it names, so
+  if a commit fails, the new session shows no context rather than the previous launch's.
 - **In the dashboard.** A chip in the session header beside the standing-instructions chip:
   "Context: 3 entries", or an amber "Context degraded". It opens a viewer, "Context this
   session received", listing each shaper's origin, outcome, reason, duration and version,
@@ -491,7 +498,7 @@ cannot relax their authorization, plan or workflow rules.
   row, where claim warnings show today.
 - **Headless and `mctl`.** The summary is part of every task read: `GET /api/tasks`, and the
   Mission Control MCP tools `get_task` and `list_tasks`, whose records gain a `shaping` field
-  with a one-line `summary` such as `degraded: acme-guidance timed out after 5 s`. FR-05
+  with the `sessionId` it describes and a one-line `summary` such as `degraded: acme-guidance timed out after 5 s`. FR-05
   surfaces read the task record and need no shaping-specific endpoint.
 - **Never.** No dialog, no confirmation, no attention item, no blocked launch.
 
@@ -554,7 +561,9 @@ Sources context from the task's repositories and returns text, facts and a summa
 - It reads only regular files inside the worktree, with size caps, and records every skip
   without stopping the launch. Containment and size are verified on the file it opened, not
   on a path checked beforehand, so a file swapped while shaping runs cannot get past them.
-  Phase 6 states the rules. The facts file format a setup skill writes is owned by FR-03 and
+  The one race these portable checks leave, a process running as the operator rearranging
+  the worktree's directories during the read, is outside the threat model, because that
+  process can read the file itself. Phase 6 states the rules. The facts file format a setup skill writes is owned by FR-03 and
   is not published, so flat JSON is what it reads for now.
 
 ### Guidance selector

@@ -116,6 +116,29 @@ test("fake daemon: while down, a request over the loopback socket fails, and it 
   }
 });
 
+test("fake daemon: a JSON POST over the loopback socket is parsed, and a malformed body is 400", async () => {
+  const daemon = createFakeDaemon({ token: null });
+  const { url } = await daemon.listen();
+  const post = (body: string) =>
+    fetch(url + "/dispatch/drafts/draft-1/confirm", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    });
+  try {
+    const ok = await post(JSON.stringify({ sessionId: FAKE_SESSION_ID, choice: "start" }));
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { choice: "start", taskId: "mc-91c2", started: true });
+    assert.deepEqual(daemon.requests.at(-1)!.body, { sessionId: FAKE_SESSION_ID, choice: "start" });
+    assert.equal(daemon.requests.at(-1)!.params.id, "draft-1");
+
+    const bad = await post("{not json");
+    assert.equal(bad.status, 400);
+    const invalid = await post(JSON.stringify({ sessionId: FAKE_SESSION_ID, choice: "nope" }));
+    assert.equal(invalid.status, 400);
+  } finally {
+    await daemon.close();
+  }
+});
+
 const claudes: ReturnType<typeof createFakeClaude>[] = [];
 after(() => { for (const c of claudes) c.cleanup(); });
 const claudeAt = (c: ReturnType<typeof createFakeClaude>, ...args: string[]) =>

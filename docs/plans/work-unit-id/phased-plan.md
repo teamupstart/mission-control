@@ -39,10 +39,12 @@ file stands on its own for an agent that arrives with only its path.
   per-task value must never be written there, which supports D2.
 - **Residents.** A pinned resident does not load the operator's MCP config.
   `parseClaudeServer` and `parseCodexServer` (`src/server/residents/mcp-catalog.ts`)
-  snapshot it. The first expands `${WORK_UNIT_ID:-}` to an empty header value, and the
-  second refuses a server that uses `env_http_headers`. So the config lines this plan
-  recommends would mislabel or break pinned residents unless the catalog learns the
-  reference. Phase 2 owns that.
+  snapshot it. The first expands `${WORK_UNIT_ID:-}` to an empty header value, which the
+  run's private copy then keeps. The second finds a server that uses `env_http_headers`
+  unusable, and `resolveResidentMcpSet` (`src/server/residents/mcp-launch.ts`) refuses a
+  launch whose set includes one. So the config lines this plan recommends would mislabel or
+  block pinned residents unless the catalog learns the reference, and a run launched
+  earlier needs the empty header left out when it starts. Phase 2 owns both.
 - **Telemetry.** `Collector.span` hashes every ref, and a fact is exported with a `mission.`
   prefix. Neither yields the plain attribute `work_unit_id`, so Phase 3 adds a named list of
   unscoped refs. `TELEMETRY_LIMITS.maxRefs` is 64 and the workflow events declare 19 refs,
@@ -66,6 +68,8 @@ file stands on its own for an agent that arrives with only its path.
 6. Plan validation, round 2: a real embedded Codex turn was run, and its `tools/call`
    carried the header. Phase 2's statements about the flag being off now name the one change
    that does not depend on the flag. D6 is recorded as Jordan's choice.
+7. Plan validation, round 3: Phase 2 covers a resident run launched before it, and Phase 4
+   names the carrier of each transport.
 
 ## Sizing
 
@@ -158,10 +162,12 @@ After all four phases, with the flag on:
   terminal runtime.
 - An exported span for each session carries `work_unit_id` with that value in every lane,
   and no `mission.ref.work_unit_id`.
-- A fixture `get_guidance` shaper receives the header and `_meta` value.
+- A fixture `get_guidance` shaper on an `mcp` server over streamable HTTP receives the
+  header and the `_meta` value. An `http` shaper receives the header only.
 - A resident run's task has no `workUnitId`, its launch has no variable and its spans have
-  no attribute. For a pinned resident the reference neither gets a server refused nor sends
-  an empty header.
+  no attribute. For a pinned resident the reference neither gets a launch refused nor sends
+  an empty header, and a run launched before Phase 2 stops sending the empty header at its
+  next start.
 - With the flag off, emission stops: no launch has the variable, no span has the attribute,
   no shaper call carries the id and the dashboard shows no row. Task ids do not depend on
   the flag: tasks still get them, and a plan task and its phase tasks still share one. The
@@ -188,3 +194,6 @@ After all four phases, with the flag on:
   exception to "every task has a work unit". Phase 2's outcome, compatibility notes and
   exit criteria now agree about the flag being off. The embedded Codex `tools/call` was
   observed. Phases 3 and 4 are unchanged.
+- Plan validation repair, round 3: Phase 2 states what happens to a resident run launched
+  before it and tests that path. Phase 4's outcome, steps, compatibility notes and exit
+  criteria name the same carrier for each transport. Phases 1 and 3 are unchanged.

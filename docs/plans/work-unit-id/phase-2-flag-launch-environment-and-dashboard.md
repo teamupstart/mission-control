@@ -8,9 +8,10 @@ task that has a work unit has `WORK_UNIT_ID` in its environment, so MCP config t
 preview off, no launch carries the variable and the dashboard shows no row.
 
 One change in this phase does not depend on the flag: the resident catalog accepts the work
-unit reference and drops it. With the flag on or off, a pinned resident no longer refuses a
-Codex server for that reference, and no longer sends an empty work unit header to a Claude
-Code one.
+unit reference and drops it. With the flag on or off, a pinned resident's
+launch is no longer refused for a Codex server that carries the reference, and no pinned
+resident sends an empty work unit header to a Claude Code server. That includes a run
+launched before this phase, from its next start.
 
 ## Entry criteria and dependencies
 
@@ -57,8 +58,16 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
   the line `"x-work-unit-id": "${WORK_UNIT_ID:-}"` becomes an empty header that the
   launcher bridge sends on every call. If the daemon's environment has the variable, the
   server is refused as `inherited`. `parseCodexServer` allows only the fields in
-  `CODEX_HTTP_FIELDS`, so a server with `env_http_headers` is refused: "it uses
-  env_http_headers, which residents cannot carry".
+  `CODEX_HTTP_FIELDS`, so a server with `env_http_headers` is unusable: "it uses
+  env_http_headers, which residents cannot carry". `resolveResidentMcpSet`
+  (`src/server/residents/mcp-launch.ts`) refuses a launch whose inherited or selected set
+  includes an unusable server.
+- A launch resolves the run's set once and keeps a private copy (`docs/residents.md`, "What
+  a run starts"). Every later start or resume reads only that copy:
+  `redeemResidentMcpTicket` builds a launcher server's headers from the stored names and
+  secret values. So a Claude Code run launched before this phase can hold `x-work-unit-id`
+  with an empty value, and would keep sending it. No Codex run can hold a refused server,
+  because that launch never started.
 - The embedded Codex runtime was checked against a local fixture during planning. Real
   `codex app-server`, started with `-c` overrides and the variable in its process
   environment, sent the header on every request it made at thread start and on the
@@ -103,7 +112,14 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
    - Nothing else about the server changes. For the decision whether the harness may sign
      in to the server itself, a removed reference still counts as a header, as it does
      today.
-   - A custom server defined in Settings is not changed.
+   - Runs that already exist. `redeemResidentMcpTicket` leaves out a header named
+     `x-work-unit-id`, compared without case, whose value is empty, whenever it hands a
+     server's headers to a start. The stored copy is not rewritten. So a Claude Code run
+     launched before this phase stops sending the empty header at its next start or resume.
+     A launcher process that is already running keeps what it redeemed until it restarts.
+   - A Codex profile whose launch was refused for the reference needs nothing migrated: no
+     run was created. Launching it again resolves the set with the new rule.
+   - A custom server's stored definition is not changed.
 10. **Docs.** In `docs/work-units.md` add "The launch environment" and "MCP servers the
     worker calls": the four config lines from the plan's section 5, the rule that Claude
     Code needs `${WORK_UNIT_ID:-}` and that a server treats an empty value as absent, and
@@ -122,9 +138,12 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
   one difference from today that applies with the flag on or off.
 - Turning the flag off affects new launches only. A running agent keeps its environment.
 - A resident launch has no variable, because its task has no id. The catalog change only
-  removes two effects of the reference: a Codex server is no longer refused for it, and a
-  Claude Code server stops sending the empty header. A snapshot taken before this phase
-  keeps what it stored.
+  removes two effects of the reference: a launch is no longer refused for a Codex server
+  that carries it, and a new Claude Code snapshot holds no header for it.
+- Upgrade. A snapshot taken before this phase is not rewritten: a pinned run keeps its
+  private copy. The empty header such a copy may hold is left out at redemption (step 9),
+  so the upgrade takes effect at the run's next start, with no relaunch. There is no
+  migration and no schema change.
 
 ## Tests and verification
 
@@ -136,8 +155,14 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
 - Resident catalog: the Claude Code reference is dropped with the variable set and with it
   unset in the daemon's environment, and the snapshot holds no header for it; a Codex
   server whose `env_http_headers` holds only the reference is available and has no header;
-  one with another entry is still refused, with today's reason; a resident launch has no
+  one with another entry is still unusable, with today's reason; a resident launch has no
   variable.
+- Upgrade path, with a snapshot written in the shape a launch before this phase stored (a
+  secret header `x-work-unit-id` whose value is empty, beside another secret header):
+  redemption returns the other header and no `x-work-unit-id`; the stored copy is unchanged
+  afterwards; a non-empty `x-work-unit-id` value in a snapshot is still returned. And
+  `resolveResidentMcpSet` resolves a Codex profile whose inherited server carries only the
+  reference, where the same server with any other `env_http_headers` entry is refused.
 - `e2e/specs/work-unit-id.spec.ts`, with the fake agents:
   - flag on, an embedded Claude task, an embedded Codex task and a terminal task: each
     recorded invocation has that task's id, and the ids differ. The embedded Codex case is
@@ -161,8 +186,9 @@ Not here: telemetry (Phase 3), shaping (Phase 4), any header injection into MCP 
 - The row shows and copies the id, covered by the browser spec.
 - The guide tells a config owner exactly what to write for each agent.
 - A resident launch has no `WORK_UNIT_ID`. For a pinned resident the reference no longer
-  gets a Codex server refused, and no work unit header, empty or otherwise, is sent.
-  This holds with the flag on and with it off.
+  gets a launch refused, and no work unit header, empty or otherwise, is sent. This holds
+  with the flag on and with it off, for a snapshot taken after this phase and, from its next
+  start, for a run launched before it. The upgrade-path test above covers the second case.
 
 ## Handoff
 
@@ -183,3 +209,5 @@ not add a second gate or read the flag another way.
 - Plan validation repair, round 2: the outcome, the compatibility notes and the exit
   criteria now say the same thing about the flag being off, and the embedded Codex finding
   records the observed `tools/call`.
+- Plan validation repair, round 3: step 9 and the compatibility notes say what happens to a
+  resident run launched before this phase, and the tests cover that upgrade path.

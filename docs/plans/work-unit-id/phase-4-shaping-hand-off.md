@@ -3,9 +3,18 @@
 ## Outcome
 
 When Mission Control shapes a task at dispatch, every shaper call carries the task's work
-unit: the `x-work-unit-id` header and `params._meta.work_unit_id` to an MCP or HTTP
-shaper, and `WORK_UNIT_ID` to a shaper that runs as a local process. A `get_guidance`
-call made by Mission Control is then found by the same query as the worker's own calls.
+unit, in the carrier its transport has:
+
+| Transport | Carrier |
+|---|---|
+| `http` | The `x-work-unit-id` header. No `_meta`: it is not an MCP call. |
+| `mcp` over streamable HTTP | The `x-work-unit-id` header on every request, and `params._meta.work_unit_id` on each `tools/call`. |
+| `mcp` over a local process | `WORK_UNIT_ID` in the server's environment, and `params._meta.work_unit_id` on each `tools/call`. |
+| `command` | `WORK_UNIT_ID` in the process's environment. |
+| `builtin` | None. It runs in the daemon. |
+
+A `get_guidance` call that Mission Control makes is then found by the same query as the
+worker's own calls.
 
 ## Entry criteria and dependencies
 
@@ -51,7 +60,9 @@ the transports' own design.
    `activeWorkUnitId(task)`.
 4. **Transports.** Confirm each one, and add what is missing:
    - `http` and `mcp` over streamable HTTP: header `x-work-unit-id` on every request;
-   - every `mcp` `tools/call`: `params._meta.work_unit_id`;
+   - every `mcp` `tools/call`, on both kinds of server: `params._meta.work_unit_id`;
+   - `http` carries the header only. It has no `_meta`, and its request body does not
+     change;
    - the header and the `_meta` key always carry the same value, the run's one work unit;
    - `command`, and `mcp` over a local process: `WORK_UNIT_ID` in the environment;
    - a configured header or variable of the same name, compared without case, is removed
@@ -65,7 +76,10 @@ the transports' own design.
 
 ## Data, API and compatibility
 
-- No schema change, and no change to the shaper request or result.
+- No schema change, and no change to the shaper request body or result (protocol 1).
+  `params._meta` is part of the MCP `tools/call` envelope, not of the tool's arguments. So
+  a `get_guidance` call keeps its arguments, and an `http` shaper, which has no envelope,
+  gets the header only.
 - A shaper that ignores the header, `_meta` key or variable is unaffected.
 - Flag off, or a task with no id: nothing is added to any call.
 
@@ -76,7 +90,7 @@ the transports' own design.
 - Dispatch seam: flag on, the fixture shaper receives the task's id; flag off, it receives
   none; a dry run sends none.
 - Transports, one present case and one absent case each, unless the remote transports
-  phase already has them: `http` header; streamable-HTTP `mcp` header on every request of
+  phase already has them: `http` header, with no work unit anywhere in its request body; streamable-HTTP `mcp` header on every request of
   a call and `_meta` on `tools/call`, with equal values; stdio `mcp` environment and
   `_meta`; `command` environment. A configured `x-work-unit-id` header is not sent when
   the run has no work unit. A reply that echoes the id comes back unredacted and unmarked.
@@ -85,8 +99,10 @@ the transports' own design.
 
 ## Merge and exit criteria
 
-- Flag on: a fixture `get_guidance` shaper called at dispatch receives the task's id in
-  the header and in `_meta`, and a command shaper receives it in its environment.
+- Flag on, at dispatch, each transport carries the task's id as the table under "Outcome"
+  says: a fixture `get_guidance` shaper on an `mcp` server over streamable HTTP receives it
+  in the header and in `_meta`; an `http` shaper in the header only; a local `mcp` server in
+  its environment and in `_meta`; a `command` shaper in its environment.
 - Flag off, a dry run, or no id: no call carries one.
 - Only the launch's own value is ever sent, never a configured one.
 
@@ -104,3 +120,6 @@ carries the work unit with no further change.
 - Task shaping: this phase adds an input and one call site. It reshapes neither the engine
   nor a transport.
 - Source plan: owns section 7, and the header and `_meta` half of R4.
+- Plan validation repair, round 3: the outcome, the steps, the compatibility notes and the
+  exit criteria name the same carrier for each transport. An `http` shaper gets the header
+  only.

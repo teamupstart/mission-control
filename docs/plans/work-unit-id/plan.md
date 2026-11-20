@@ -1,8 +1,9 @@
 # Work unit id: mint, inherit and carry across sessions and MCP calls
 
 Status: decisions adopted in the plan review on 2026-11-20, phased the same day, and repaired
-after plan validation rounds 1 and 2 (decision D6 on residents, the `codex app-server`
-checks, the flag-off wording). Owner: Jordan. Planning task: "Work unit id - mint, carry and trace across Mission Control sessions
+after plan validation rounds 1 to 3 (decision D6 on residents, the `codex app-server`
+checks, the flag-off wording, resident runs that already exist, shaper carriers by
+transport). Owner: Jordan. Planning task: "Work unit id - mint, carry and trace across Mission Control sessions
 and MCP calls".
 
 ## Goal
@@ -221,9 +222,18 @@ Limits: cloud connectors and Pi, as above.
 Residents (D6). A resident run has no work unit, so nothing is sent for it. The resident
 catalog still has to learn the reference, because of what a pinned resident does today with
 the two remote-server lines above. It snapshots the Claude Code line as an empty header and
-sends that on every call. It refuses a Codex server outright: "it uses env_http_headers,
-which residents cannot carry". The catalog will accept exactly this reference and drop it,
-so a server is not refused for it and no work unit header, empty or otherwise, is sent.
+sends that on every call. It finds a Codex server with that line unusable ("it uses
+env_http_headers, which residents cannot carry"), and a launch whose set includes an
+unusable server is refused. The catalog will accept exactly this reference and drop it, so
+a launch is not refused for it and no work unit header, empty or otherwise, is sent.
+
+Runs that already exist. A pinned run keeps the private copy it took at launch, and that
+does not change. A Claude Code run launched earlier may hold `x-work-unit-id` with an empty
+value in its copy. So Mission Control will leave out an empty `x-work-unit-id` each time
+it hands a server's headers to a start, and the run stops sending it at its next start or
+resume, with no new snapshot. No Codex run can hold the refused state, because that launch
+never started: launching the profile again succeeds.
+
 One existing rule stays: on Claude Code a server with any header, this one included, is
 reached through Mission Control's launcher, which presents no harness login. A resident
 that loads all native sources reads the operator's config with the variable unset, like
@@ -256,9 +266,12 @@ any session outside a work unit.
 ### 7. Shaping
 
 - The queued task "Task shaping - Phase 5: Remote transports" already carries an addendum.
-  Its transports send `x-work-unit-id`, `params._meta.work_unit_id` and `WORK_UNIT_ID` when
-  the shaping run has a work unit, remove a configured header or variable of that name
-  first, and never redact the value.
+  Its transports send the work unit when the shaping run has one, each in the carrier it
+  has: `http` in the `x-work-unit-id` header; `mcp` over streamable HTTP in that header and
+  in `params._meta.work_unit_id` on each `tools/call`; `mcp` over a local process in
+  `WORK_UNIT_ID` and in `_meta` on each `tools/call`; `command` in `WORK_UNIT_ID`. An `http`
+  shaper gets no `_meta`: it is not an MCP call. The transports remove a configured header
+  or variable of that name first, and never redact the value.
 - This plan supplies the value. The shaping run's input gains `workUnitId`, beside the
   `trace` field the shaping core already defines, and the dispatch seam fills it from the
   task. The header and `_meta` always carry that one value.
@@ -296,8 +309,8 @@ A preview flag, `work-unit-id`, as the repository requires for a new user-facing
   - The resident catalog's handling of the reference (section 5). An MCP config is usually
     shared by many people, and it must not break a pinned resident on a machine where the
     preview is off. This is the one launch-visible change that does not depend on the
-    flag: for a pinned resident, a Codex server is no longer refused for the reference,
-    and a Claude Code server stops sending an empty work unit header.
+    flag: a pinned resident's launch is no longer refused for a Codex server that
+    carries the reference, and no pinned resident sends an empty work unit header.
 
 ## The flow
 
@@ -306,7 +319,7 @@ flowchart LR
   T[Task record: work_unit_id minted or inherited] --> L[Launch: WORK_UNIT_ID in the agent environment]
   L --> W[Worker: Claude Code, Codex, Pi]
   W -->|x-work-unit-id, from the config owner's reference| M[MCP servers the worker calls]
-  T -->|header, _meta and env| S[Shapers, including get_guidance]
+  T -->|header, _meta or env| S[Shapers, including get_guidance]
   T -->|span attribute work_unit_id, unhashed| O[Telemetry export]
   T -.->|work_unit_id on POST /v1/tasks, later| A[Agent Platform]
   M --> D[One query on work_unit_id]
@@ -340,7 +353,8 @@ flowchart LR
   record different ones; with the flag off a launch has none; the dashboard row shows and
   copies the id.
 - Residents: a resident run's task has no id and its launch has no variable; for a pinned
-  resident the reference neither gets a server refused nor sends an empty header.
+  resident the reference neither gets a launch refused nor sends an empty header, and a run
+  launched before the change stops sending the empty header at its next start.
 - The local telemetry stack test asserts the attribute on an exported span.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and
   `npm run test:e2e`.

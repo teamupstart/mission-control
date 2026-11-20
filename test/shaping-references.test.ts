@@ -174,6 +174,23 @@ test("the status leaves out a variable named only in a header the transport repl
   assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [owned] }, [], env, ctx.daemonToken), { ACME_TOKEN: "set" });
 });
 
+test("an environment reference reads only the environment's own non-blank string", () => {
+  assert.deepEqual(resolveReferences("{env:constructor}", ctx), { ok: false, missing: ["{env:constructor}"] }, "never an inherited property");
+  assert.deepEqual(resolveReferences("Bearer {env:BLANK}", { ...ctx, env: { BLANK: " \t " } }), { ok: false, missing: ["{env:BLANK}"] },
+    "a value of only spaces and tabs would leave a bare scheme, so it is unresolved");
+  const inherited = ShaperSchema.parse({
+    id: "inherited", label: "Inherited", stage: "select",
+    transport: { type: "http", url: "https://guidance.example.test/v1", headers: { "x-a": "{env:constructor}", "x-b": "{env:toString}", "x-c": "{env:BLANK}" } },
+  });
+  const passing = ShaperSchema.parse({
+    id: "passing", label: "Passing", stage: "gather", transport: { type: "command", command: "/bin/echo", env: ["SPACES_ONLY", "hasOwnProperty"] },
+  });
+  // With a daemon token configured, an inherited function value would have thrown on `includes`.
+  assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [inherited, passing] }, [], { BLANK: "  ", SPACES_ONLY: "  " }, "daemon-token"), {
+    BLANK: "unset", SPACES_ONLY: "set", constructor: "unset", hasOwnProperty: "unset", toString: "unset",
+  }, "a pass-through value of spaces still reaches a command, as that transport passes it");
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

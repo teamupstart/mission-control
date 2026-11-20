@@ -7,7 +7,7 @@ import { readToken } from "@shared/harness-runtime.mjs";
 import { canonicalJson, SHAPING_LIMIT_RANGES, type ShapingContext, type ShapingRequest } from "@shared/shaping.ts";
 import { executableLocator } from "../../executables/locator.ts";
 import { cappedFetch, fetchOnOrigin, ResponseCapError } from "../../origin-fetch.ts";
-import type { ResolvedValue } from "../references.ts";
+import { holdsResolvedValue, redactResolved, type ResolvedValue } from "../references.ts";
 import { carriedEnvName, carriedHeaders, carriedMeta, withoutCarriedHeaders } from "./carriers.ts";
 import {
   credentialBearingValues, folderCommand, receivedValues, redactReceived, removeScratch, shaperCommandEnv, withTimeout,
@@ -198,11 +198,14 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
     // A stream that carried an event id is resumable: the server may close it before replying
     // and the client resumes it from that id (MCP 2025-11-25), so its end is left to the client
     // and the call's own budget. Only a stream with no id fails its call when it ends early.
-    // The SDK resumes from the last non-empty event id it saw; an `id` field with no value
-    // does not give it one. Lines are read whole across chunks to find the field.
+    // The SDK resumes from the id of an event its parser dispatched: one ended by a blank line,
+    // with a data line, whose own `id` is not empty. An id on an event the stream never finished
+    // gives it nothing. Lines are read whole across chunks, and each event's fields are tracked.
     const decoder = new TextDecoder();
     let partial = "";
     let resumable = false;
+    let eventId: string | undefined;
+    let eventHasData = false;
     const ended = () => setTimeout(() => {
       if (answered(id) || resumable) return;
       if (method === "initialize") handshakeInterrupted();
@@ -217,8 +220,17 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
           const lines = (partial + decoder.decode(read.value, { stream: true })).split(/\r\n|\r|\n/);
           partial = lines.pop() ?? "";
           for (const line of lines) {
-            const value = line.startsWith("id:") ? line.slice(line.startsWith("id: ") ? 4 : 3) : null;
-            if (value && !value.includes("\u0000")) resumable = true;
+            if (line === "") {
+              if (eventHasData && eventId) resumable = true;
+              eventId = undefined;
+              eventHasData = false;
+              continue;
+            }
+            const colon = line.indexOf(":");
+            const field = colon === -1 ? line : line.slice(0, colon);
+            const value = colon === -1 ? "" : line.slice(line[colon + 1] === " " ? colon + 2 : colon + 1);
+            if (field === "data") eventHasData = true;
+            else if (field === "id") eventId = value.includes("\u0000") ? undefined : value;
           }
         }
         controller.enqueue(read.value);
@@ -331,23 +343,35 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     if (joined.length > keep) stderrCut = true;
     stderr = joined.slice(-keep);
   });
+  // What the child wrote, scrubbed of everything it received, then of each named value in any
+  // spelling (JSON escapes and spacing variants included), and only then collapsed and cut.
+  const scrubDiagnostic = (text: string, dropBefore = 0): string => {
+    const scrubbed = redactReceived(text, received, dropBefore);
+    const named2 = redactResolved(scrubbed, named);
+    return redactResolved(redactReceived(named2.replace(/\s+/g, " "), received), named).trim();
+  };
   const tail = (): string => {
-    const scrubbed = redactReceived(stderr, received, stderrCut ? longest : 0);
-    // Collapsed and scrubbed again: collapsing can make a spacing variant of a value the value.
-    const text = redactReceived(scrubbed.replace(/\s+/g, " "), received).trim().slice(-500);
+    const text = scrubDiagnostic(stderr, stderrCut ? longest : 0).slice(-500);
     return text ? `: ${text}` : ".";
   };
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });
   transport.onerror = (error) => {
-    if (!stdioOverflow(error)) return;
-    state.fail(capReason());
-    // Stopped now, not when the run ends: a server that overflowed stays useless.
-    void client.close().catch(() => {});
+    if (stdioOverflow(error)) {
+      state.fail(capReason());
+      // Stopped now, not when the run ends: a server that overflowed stays useless.
+      void client.close().catch(() => {});
+      return;
+    }
+    // A line on stdout that is not an MCP message: the stream is no longer one the client can
+    // trust, and a call waiting on it would only time out. The SDK's message can quote the line.
+    if (error instanceof SyntaxError || (error instanceof Error && error.name === "ZodError")) {
+      const said = error.message.slice(0, 2_000);
+      const marked = holdsResolvedValue(said, named);
+      state.fail(`The MCP server wrote a line on stdout that is not an MCP message: ${scrubDiagnostic(said).slice(0, 300)}`, marked);
+      void client.close().catch(() => {});
+    }
   };
-  const stderrNamed = () => {
-    const flat = stderr.replace(/\s+/g, " ");
-    return named.some(({ value }) => stderr.includes(value) || flat.includes(value));
-  };
+  const stderrNamed = () => holdsResolvedValue(stderr, named) || holdsResolvedValue(stderr.replace(/\s+/g, " "), named);
   transport.onclose = () => state.fail(`The MCP server exited${tail()}`, stderrNamed());
   ctx.scope.defer(async () => {
     try { await client.close(); } finally { await removeScratch(scratch, (text) => redactReceived(text, received)); }
@@ -360,8 +384,8 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     // The SDK's message can carry what the server wrote, which can repeat anything in its
     // environment, so the whole sentence is scrubbed of every value the child received.
     const said = `The MCP server did not complete its handshake: ${requestFailure(error)}`;
-    const marked = named.some(({ value }) => said.includes(value) || stderr.includes(value));
-    throw new ConnectError(`${redactReceived(said, received)}${tail()}`, marked);
+    const marked = holdsResolvedValue(said, named) || stderrNamed();
+    throw new ConnectError(`${scrubDiagnostic(said)}${tail()}`, marked);
   }
   return { client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved: named };
 }

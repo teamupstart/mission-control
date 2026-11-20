@@ -65,7 +65,8 @@ export function shaperCommandEnv(
   }
   dropPaneIdentityEnv(env);
   for (const name of names) {
-    const value = base[name];
+    // The environment's own string only: `constructor` must not read an inherited property.
+    const value = Object.hasOwn(base, name) && typeof base[name] === "string" ? base[name] : undefined;
     if (NEVER_PASSED.has(name) || carriedEnvName(name) || value === undefined || value === "" || carriesToken(value)) continue;
     env[name] = value;
   }

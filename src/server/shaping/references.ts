@@ -79,8 +79,12 @@ function resolveOne(reference: string, ctx: ReferenceContext, token: string): st
   if (!reference.startsWith("env:")) return null;
   const name = reference.slice(4);
   if (NEVER_PASSED_ENV_NAMES.has(name)) return null;
-  const value = (ctx.env ?? process.env)[name];
-  if (!value) return null;
+  // The environment's own string only: a name such as `constructor` would otherwise read an
+  // inherited property. A value of only spaces and tabs is blank once it is sent as a header, so
+  // it is unresolved too, and the call is not made with an empty header or a bare scheme.
+  const env = ctx.env ?? process.env;
+  const value = Object.hasOwn(env, name) ? env[name] : undefined;
+  if (typeof value !== "string" || value.trim() === "") return null;
   if (token.length > 0 && value.includes(token)) return null;
   return value;
 }
@@ -151,6 +155,22 @@ export function shaperEnvReferences(shaper: Shaper): string[] {
   return names;
 }
 
+/** Every name a `command` shaper or a locally started MCP server passes through in its `env`. */
+function passedThroughNames(shapers: readonly Shaper[]): Set<string> {
+  return new Set(shapers.flatMap((shaper) => {
+    const transport = shaper.transport;
+    return transport.type === "command" ? transport.env
+      : transport.type === "mcp" && transport.server.type === "stdio" ? transport.server.env : [];
+  }));
+}
+
+/** Whether a pass-through variable reaches the child, by the `command` transport's own rule. */
+function passesThrough(name: string, env: NodeJS.ProcessEnv, token: string): boolean {
+  if (NEVER_PASSED_ENV_NAMES.has(name)) return false;
+  const value = Object.hasOwn(env, name) ? env[name] : undefined;
+  return typeof value === "string" && value !== "" && !(token.length > 0 && value.includes(token));
+}
+
 /**
  * Every environment name a shaper uses, in the order it names them: the `{env:NAME}` its headers
  * reference, and the variables a `command` shaper or a locally started MCP server passes through
@@ -185,9 +205,15 @@ export function referenceStatus(
     ...discovered.flatMap((entry) => entry.state === "ok" && entry.shaper ? [entry.shaper] : []),
   ];
   const token = daemonToken.trim();
+  const referenced = new Set(shapers.flatMap(shaperEnvReferences));
   const status: ShapingReferenceStatus = {};
   for (const name of [...new Set(shapers.flatMap(shaperEnvironmentNames))].sort()) {
-    status[name] = resolveOne(`env:${name}`, { caller: { user: null, agent: null, conversation: null }, env }, token) === null ? "unset" : "set";
+    // A header reference is set only when a call can resolve it; a pass-through name only when a
+    // `command` shaper or a local server would receive it. A name used both ways needs both.
+    const asReference = !referenced.has(name)
+      || resolveOne(`env:${name}`, { caller: { user: null, agent: null, conversation: null }, env }, token) !== null;
+    const passed = passedThroughNames(shapers).has(name) ? passesThrough(name, env, token) : true;
+    status[name] = asReference && passed ? "set" : "unset";
   }
   return status;
 }

@@ -347,6 +347,13 @@ test("a title that spaces a resolved value out cannot recreate it in the section
   assert.equal(result.summary!.shapers[0]!.redacted, true);
 });
 
+test("a reference that resolves to only spaces or tabs is unresolved, and no request is sent", async () => {
+  const count = seen.length;
+  const reply = await withKey(" \t ", () => callHttp(request(), shaper("/ok", { authorization: `Bearer {env:${KEY_ENV}}` }), ctx()));
+  assert.deepEqual(reply, { kind: "unavailable", reason: `The reference {env:${KEY_ENV}} did not resolve to a value, so the shaper was not called.` });
+  assert.equal(seen.length, count);
+});
+
 test("a header named twice in different letter case is refused before any request", async () => {
   const count = seen.length;
   const reply = await withKey(KEY, () => callHttp(request(), shaper("/ok", { Authorization: `Bearer {env:${KEY_ENV}}`, authorization: "Bearer {env:OTHER_KEY}" }), ctx()));

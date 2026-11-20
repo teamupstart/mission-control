@@ -632,6 +632,39 @@ test("a handshake error that echoes a header value in JSON escapes is scrubbed a
   }
 });
 
+test("an id on an event the stream never finished is not resumable, so its early end fails the call at once", async () => {
+  // The id and data lines arrive, the blank line that would end the event never does.
+  const raw = await startRawMcpServer((res) => res.writeHead(200, { "content-type": "text/event-stream" }).end("id: e1\ndata: partial"));
+  try {
+    const started = Date.now();
+    const reply = await callMcp(request(false), shaper({ type: "http", url: raw.url }), ctx());
+    assert.deepEqual(reply, { kind: "failed", reason: "The MCP server's response stream ended before the reply arrived." });
+    assert.ok(Date.now() - started < 5_000, "at once, not at the call's 30 s budget");
+  } finally { await raw.close(); }
+});
+
+test("a stdio diagnostic that spells a passed value in JSON escapes is scrubbed and marked", async () => {
+  const value = "json-stderr-secret-29fd";
+  const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "json-stderr-exit" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "json-stderr-exit", KEY_ENV], env: [KEY_ENV] } },
+  }), ctx()));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  assert.equal(reply.redacted, true, JSON.stringify(reply));
+  const reason = (reply as { reason: string }).reason;
+  assert.ok(reason.includes(`auth failed for [${KEY_ENV} redacted]`), reason);
+  assert.equal(reason.includes("\\u006a"), false, "no escaped spelling is left");
+});
+
+test("a stdio server that writes a line that is not an MCP message fails the call at once", async () => {
+  const started = Date.now();
+  const reply = await callMcp(request(), shaper({ type: "stdio", mode: "garbage-reply" }, "folded", {
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "garbage-reply"] } },
+  }), ctx());
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  assert.match((reply as { reason: string }).reason, /^The MCP server wrote a line on stdout that is not an MCP message: /);
+  assert.ok(Date.now() - started < 10_000, "at once, not at the call's 30 s budget");
+});
+
 test("a stream whose only event id is empty is not resumable, so its early end fails the call at once", async () => {
   const raw = await startRawMcpServer((res) => res.writeHead(200, { "content-type": "text/event-stream" }).end("id:\ndata: \n\n"));
   try {

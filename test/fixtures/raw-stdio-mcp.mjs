@@ -8,6 +8,10 @@
 //                                    variable `NAME`, then stays running until stdin ends.
 //   stderr-exit <NAME> <lines>       Writes the variable `NAME` and then that many newlines to stderr,
 //                                    and exits before answering anything.
+//   json-stderr-exit <NAME>          Writes a JSON diagnostic that holds `NAME`'s value, every
+//                                    character a \u escape, to stderr, and exits.
+//   garbage-reply                    Answers `initialize`, then answers the next request with a line
+//                                    that is not JSON, and stays running.
 import { renameSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -21,6 +25,11 @@ if (mode === "overflow-init" && args[1]) {
   setInterval(() => {}, 1_000);
 }
 
+if (mode === "json-stderr-exit") {
+  const escaped = [...(process.env[args[0] ?? ""] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+  process.stderr.write(`{"level":"error","msg":"auth failed for ${escaped}"}\n`, () => process.exit(1));
+}
+
 if (mode === "stderr-exit") {
   process.stderr.write(`${process.env[args[0] ?? ""] ?? ""}${"\n".repeat(Number(args[1] ?? 0))}`, () => process.exit(1));
 }
@@ -28,7 +37,15 @@ if (mode === "stderr-exit") {
 for await (const line of createInterface({ input: process.stdin })) {
   if (!line.trim()) continue;
   const message = JSON.parse(line);
-  if (message.method !== "initialize") continue;
+  if (message.method !== "initialize" && mode !== "garbage-reply") continue;
+  if (mode === "garbage-reply") {
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "garbage", version: "1.0.0" } } });
+    } else if (message.id !== undefined) {
+      process.stdout.write(`this is not json for request ${message.id}\n`);
+    }
+    continue;
+  }
   if (mode === "overflow-init") {
     send({ jsonrpc: "2.0", id: message.id, result: {
       protocolVersion: message.params.protocolVersion, capabilities: {},

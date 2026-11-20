@@ -193,6 +193,29 @@ test("Hibernate parks a task in the Backlog across a restart, and Retry reopens 
   await lineBacklog.click();
   await expect(drawer).toBeHidden();
 
+  // The Console has no Backlog column, and with no session left it draws no fleet at all. The
+  // Line and the Backlog drawer it opens sit outside that gate, so Resume stays one click away
+  // - from the strip, and with the Line switched off from its stages loose on the page.
+  for (const lineHidden of [false, true]) {
+    await putUi(daemon, { layout: "console", lineHidden });
+    await page.reload();
+    await expect(page.getByText("No agent sessions detected"), "the Console has no session to draw").toBeVisible();
+    const stages = lineHidden
+      ? page.getByRole("group", { name: "Line drawers" })
+      : page.getByRole("navigation", { name: "The Line" });
+    const backlogStage = stages.getByRole("button", { name: /^Backlog,/ });
+    await backlogStage.click();
+    const consoleDrawer = page.getByRole("region", { name: "Backlog drawer" });
+    await expect(consoleDrawer.getByRole("listitem", { name: `Hibernated task: ${session.name}` })
+      .getByRole("button", { name: "Resume" })).toBeVisible();
+    await shoot(page, page, lineHidden ? "console-line-off-backlog-drawer" : "console-backlog-drawer");
+    await backlogStage.click();
+    await expect(consoleDrawer).toBeHidden();
+  }
+  await putUi(daemon, { layout: "board", lineHidden: false });
+  await page.reload();
+  await expect(page.locator("main.board")).toBeVisible();
+
   // A Resume that cannot reopen the conversation says why and keeps the work.
   const worktree = task.worktreePath!;
   const aside = `${worktree}-aside`;

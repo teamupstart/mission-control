@@ -1007,6 +1007,38 @@ test("an Agent SDK Resume rechecks the checkout after its driver confirms the co
   assert.match(task.hibernation?.failure?.reason ?? "", /is not the one it was hibernated in/);
 });
 
+test("an Agent SDK Resume rereads the task after its driver confirms, and never revives or overwrites it", async (t) => {
+  for (const change of ["deleted", "cancelled"] as const) {
+    const f = fleet();
+    t.after(() => f.tasks.stopMissionSessionClosures());
+    const id = `sdk-task-${change}-while-confirming`;
+    await hibernated(f, t, id, checkout(id));
+    const woken = boundTo(fakeHandle(), `conv-${id}`);
+    const fake = withFakeDriver(async () => woken);
+    // The driver does reopen the saved conversation, but the task changes while the manager
+    // is still waiting for that report.
+    const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
+    f.supervisor.reportedConversation = async (sessionId, timeoutMs) => {
+      if (change === "deleted") f.registry.removeTask(id);
+      else f.registry.upsertTask({ ...f.registry.getTask(id)!, status: "cancelled", hibernation: null });
+      return confirm(sessionId, timeoutMs);
+    };
+    const refused = await f.hibernation.resume(id);
+    fake.restore();
+    assert.equal(refused.ok, false, change);
+    assert.equal(refused.ok ? 0 : refused.status, 409);
+    assert.match(refused.ok ? "" : refused.error, /The task changed while it was resuming/);
+    assert.equal(woken.stopped, true, `the woken driver of a ${change} task is stopped`);
+    if (change === "deleted") {
+      assert.equal(f.registry.getTask(id), undefined, "a deleted task is not recreated");
+      assert.equal(db.getTask(id), undefined, "nor written back");
+    } else {
+      assert.equal(f.registry.getTask(id)?.status, "cancelled", "a cancelled task is not overwritten as running");
+      assert.equal(f.registry.getTask(id)?.sessionId, null);
+    }
+  }
+});
+
 test("a launch Resume could not close stays recorded through later failures until it is gone", async (t) => {
   const cwd = checkout("terminal-unclosed-then-moved");
   const f = terminalFleet(cwd, { appears: false, closeFailures: 2 });

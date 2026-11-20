@@ -323,13 +323,9 @@ export class HibernationManager {
     } catch (error) {
       return this.resumeFailed(taskId, error instanceof Error ? error.message : String(error));
     }
-    const current = this.registry.getTask(taskId);
-    if (current?.status !== "hibernated") {
-      // Cancelled, completed or removed while the driver was starting: the conversation it
-      // reopened belongs to nobody, so it is stopped again rather than left running unowned.
-      await this.supervisor.stop(session.id).catch(() => {});
-      return { ok: false, status: 409, error: "The task changed while it was resuming." };
-    }
+    // Cancelled, completed or removed while the driver was starting: the conversation it
+    // reopened belongs to nobody, so it is stopped again rather than left running unowned.
+    if (!this.stillHibernated(taskId, record)) return this.taskChangedWhileResuming(session);
     // Read again now the driver is up: the checkout may have been replaced while it started.
     const replaced = checkoutMismatch(record.checkout);
     if (replaced) return this.putBackToSleep(taskId, session, replaced);
@@ -352,7 +348,30 @@ export class HibernationManager {
     if (replacedWhileWaiting) return this.putBackToSleep(taskId, session, replacedWhileWaiting);
     const rival = this.rivalFor(session, record);
     if (rival) return this.putBackToSleep(taskId, session, `its conversation was opened in "${rival.name}" while it was resuming`);
+    // And the task itself, read after that wait rather than before it: binding a copy taken
+    // earlier would recreate a task deleted meanwhile, or overwrite whatever it became.
+    const current = this.stillHibernated(taskId, record);
+    if (!current) return this.taskChangedWhileResuming(session);
     return this.bindResumed(current, session, record, {});
+  }
+
+  /**
+   * The task as it stands now, when it is still the hibernation this Resume set out to reopen:
+   * hibernated, on the same session and the same conversation. Anything else - deleted,
+   * cancelled, completed, or holding another record - is not this Resume's to bind.
+   */
+  private stillHibernated(taskId: string, record: TaskHibernation): Task | null {
+    const current = this.registry.getTask(taskId);
+    const now = current?.status === "hibernated" ? current.hibernation : null;
+    return current && now && now.sessionId === record.sessionId && now.agentSessionId === record.agentSessionId
+      ? current
+      : null;
+  }
+
+  /** A woken driver whose task changed under it belongs to nobody: stop it, never bind it. */
+  private async taskChangedWhileResuming(session: Session): Promise<HibernationResult> {
+    await this.supervisor!.stop(session.id).catch(() => {});
+    return { ok: false, status: 409, error: "The task changed while it was resuming." };
   }
 
   /**
@@ -458,8 +477,8 @@ export class HibernationManager {
         prepared,
       );
     }
-    const current = this.registry.getTask(task.id);
-    if (current?.status !== "hibernated") {
+    const current = this.stillHibernated(task.id, record);
+    if (!current) {
       await this.terminal.stop(session).catch(() => {});
       return { ok: false, status: 409, error: "The task changed while it was resuming." };
     }

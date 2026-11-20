@@ -2573,7 +2573,8 @@ for (const ending of ["cancelled", "completed", "failed", "reset"] as const) {
         seeded.registry.clearWorkflowState(noteKey);
         assert.equal(seeded.store.getRun(seeded.ids.run), null);
       } else {
-        seeded.store.setRunState(seeded.ids.run, ending, ending === "completed" ? "complete" : "failed", null);
+        seeded.store.setRunState(seeded.ids.run, ending,
+          ending === "completed" ? "complete" : "missing_workflow_version", null);
         manager.publishRun(seeded.ids.run);
       }
       assert.equal(manager.inspectorFeedbackRefreshes.has(seeded.ids.run), false);

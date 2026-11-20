@@ -159,7 +159,9 @@ test("a session outside a repository registers with no repoRoot and is still off
   assert.equal(outside.offerLauncher, true, "7.4 has no repository condition");
 });
 
-test("registrations of one session id that arrive together create one row and offer the launcher once", async () => {
+// Same-process repeats only. Isolation between processes is SQLite's (`BEGIN IMMEDIATE`), and the
+// daemon is the one writer, so this test does not try to prove it.
+test("repeat registrations of one session id in one process create one row and offer the launcher once", async () => {
   const body = registration({ sessionId: "racing" });
   const answers = await Promise.all(
     Array.from({ length: 6 }, async () => {
@@ -172,6 +174,23 @@ test("registrations of one session id that arrive together create one row and of
   assert.equal(answers.filter((a) => a.offerLauncher).length, 1);
   const rows = openDb().prepare(`SELECT COUNT(*) AS n FROM home_dispatch_sessions WHERE session_id = ?`).get("racing") as { n: number };
   assert.equal(rows.n, 1);
+});
+
+test("a registration reads, decides and writes inside one BEGIN IMMEDIATE transaction", async () => {
+  const db = openDb();
+  const originalExec = db.exec.bind(db);
+  const statements: string[] = [];
+  db.exec = ((sql: string) => { statements.push(sql.trim().toUpperCase()); return originalExec(sql); }) as typeof db.exec;
+  try {
+    const res = await register(registration({ sessionId: "in-transaction" }));
+    assert.equal(res.status, 200);
+  } finally {
+    db.exec = originalExec;
+  }
+  const begin = statements.indexOf("BEGIN IMMEDIATE");
+  const commit = statements.indexOf("COMMIT");
+  assert.ok(begin >= 0 && commit > begin, "expected BEGIN IMMEDIATE then COMMIT, saw " + JSON.stringify(statements));
+  assert.ok(sessions.getHomeSession("in-transaction"), "and the row was written");
 });
 
 test("a malformed registration is a 400 and writes nothing", async () => {

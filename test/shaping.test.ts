@@ -161,9 +161,16 @@ test("plan.md's credential rule: header names that contain a credential word, an
   assert.equal(JSON.stringify(refused.error!.issues).includes("literal-value"), false, "and the refusal never names the value");
   assert.equal(http({ "X-Monkey": "{env:MONKEY}" }).success, true);
   // A transport URL carries no query string at all, whatever its parameters are called.
+  // A bare trailing "?" is a query separator too: refused up front, so registration and the
+  // stored config apply one rule and an accepted URL is never rewritten and marked on storage.
   for (const url of ["https://context.example/shape?page=2", "https://context.example/shape?x=1&y=2", "https://context.example/shape?"]) {
-    const result = http({}, url);
-    assert.equal(result.success, url.endsWith("?"), url);
+    assert.equal(http({}, url).success, false, url);
+  }
+  for (const url of ["https://context.example/shape", "https://context.example/shape#a?b", "https://Context.Example:443/a/../shape"]) {
+    const accepted = ShaperSchema.safeParse({ id: "h", label: "H", stage: "select", transport: { type: "http", url, headers: {} } });
+    assert.equal(accepted.success, true, url);
+    const stored = ShapingConfigSchema.parse({ shapers: [accepted.data] }).shapers[0]!;
+    assert.equal(credentialsWereRemoved(stored), false, `${url} is stored as registered, not marked`);
   }
   const mcp = ShaperSchema.safeParse({ id: "m", label: "M", stage: "select",
     transport: { type: "mcp", tool: "t", server: { type: "http", url: "https://context.example/mcp?page=2", headers: {} } } });

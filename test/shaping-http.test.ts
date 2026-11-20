@@ -379,7 +379,10 @@ test("a curl credential grouped after a switch, or dash-led after a long option,
   const saved = await service.ensureDailySnapshot();
   assert.equal(saved.status, "ready");
   const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
-  assert.equal(snapshot.includes("grouped-stored") || snapshot.includes("sk-live-grouped"), false, "no snapshot carries the grouped credential");
+  // The exact values the stored entry carried, each checked on its own.
+  for (const secret of ["sk-live-grouped-stored", "pw-grouped-stored", "pw-grouped-stored-long"]) {
+    assert.equal(snapshot.includes(secret), false, `no snapshot carries ${secret}`);
+  }
   assert.equal(snapshot.includes('"stored-grouped"'), true, "the entry itself is kept, marked as stripped");
   setAppConfig(APP_CONFIG_ENTRIES.shaping, SHAPING_CONFIG_DEFAULTS);
   shaping.reloadShaping();

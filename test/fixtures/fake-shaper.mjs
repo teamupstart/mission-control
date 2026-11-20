@@ -1,7 +1,7 @@
 // A `command` shaper for tests. Run as `node fake-shaper.mjs <mode> [args...]`: it reads the
 // shaping request from stdin and answers on stdout the way its mode says. No network, no tokens.
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [mode = "ok", ...rest] = process.argv.slice(2);
@@ -11,6 +11,12 @@ const text = Buffer.concat(chunks).toString("utf8");
 const request = text ? JSON.parse(text) : null;
 const reply = (value) => process.stdout.write(JSON.stringify(value));
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+// A PID file appears whole or not at all: a test that waits for it to exist must never read it
+// between its creation and its write, which an ordinary write allows.
+const writePid = (path, pid) => {
+  writeFileSync(`${path}.partial`, String(pid));
+  renameSync(`${path}.partial`, path);
+};
 
 switch (mode) {
   case "echo": {
@@ -101,7 +107,7 @@ switch (mode) {
     const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
-    writeFileSync(rest[0], String(helper.pid));
+    writePid(rest[0], helper.pid);
     helper.unref();
     await sleep(60_000);
     break;
@@ -112,7 +118,7 @@ switch (mode) {
     const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       detached: true, stdio: ["ignore", "inherit", "inherit"],
     });
-    writeFileSync(rest[0], String(helper.pid));
+    writePid(rest[0], helper.pid);
     helper.unref();
     await sleep(Math.max(0, Number(rest[1]) - Date.now()));
     reply({ guidance: [{ id: "on-time", body: "answered just before the deadline" }] });
@@ -122,7 +128,7 @@ switch (mode) {
     // A helper in this shaper's process group that inherits its stdout and stderr and keeps
     // them open, while the shaper itself answers and exits successfully.
     const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });
-    writeFileSync(rest[0], String(helper.pid));
+    writePid(rest[0], helper.pid);
     helper.unref();
     reply({ guidance: [{ id: "answered", body: "answered while a helper held the pipes" }] });
     break;
@@ -131,7 +137,7 @@ switch (mode) {
     // A helper in this shaper's own process group, with stdio of its own, left running after a
     // perfectly good reply. Nothing holds the pipes, so the call closes normally.
     const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-    writeFileSync(rest[0], String(helper.pid));
+    writePid(rest[0], helper.pid);
     helper.unref();
     reply({ guidance: [{ id: "answered", body: "answered, and left a helper behind" }] });
     break;
@@ -150,7 +156,7 @@ switch (mode) {
   case "grandchild": {
     // A descendant in the same process group, which a timeout must take down too.
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-    writeFileSync(rest[0], String(child.pid));
+    writePid(rest[0], child.pid);
     await sleep(60_000);
     break;
   }

@@ -553,6 +553,15 @@ function jsonMembersCarryCredential(text: string): boolean {
   return false;
 }
 
+/**
+ * Whether a transport URL carries a query string, an empty one included. `URL.search` is empty
+ * for a bare trailing `?`, but the separator is still part of what was written, so registration
+ * and the stored config judge the raw text before any fragment the same way.
+ */
+function hasQueryString(raw: string): boolean {
+  return raw.split("#", 1)[0]!.includes("?");
+}
+
 /** Whether `value` is a URL, of any scheme, that carries userinfo or a credential query parameter. */
 function urlCarriesCredential(value: string): boolean {
   // Any scheme: a proxy URL such as socks5://user:pass@host carries credentials as well as http.
@@ -717,7 +726,7 @@ function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   if (url.username || url.password) {
     ctx.addIssue({ code: "custom", path: [...at, "url"], message: "A URL cannot carry a user name or password. Send a credential in a header as {env:NAME}." });
   }
-  if (url.search !== "") {
+  if (hasQueryString(holder.url)) {
     ctx.addIssue({
       code: "custom", path: [...at, "url"],
       message: "A URL cannot carry a query string, which may hold a credential that would be stored and backed up. Send a credential in a header as {env:NAME}.",

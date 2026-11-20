@@ -8,6 +8,89 @@
 | Not done here | No code, no edit to the spec, no post to Commonroom. Phase tasks go to the backlog and are not started. |
 | Revision | 16. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. Revision 7 closes the fourth round: P15 also owns the producer of each task's subagent lines, and P14 owns the edit that makes `mctl claude` use the shared `claude` detection. Revision 8 sweeps all files for the same class of gap and names the owner, field and later phase for every stub, slot and optional field. Revision 9 names the one read path for subagent lines, gives P14 one merge rule for the soft spikes, and makes P13's launcher outcome conditional on the S10/S11 gate. Revision 10 replaces the invented subagent field with the spec's own `subagents` fields and `subagentLines` function, names every route by its spec path, states the hard and soft gate rules once and repeats them, and states both branches of every spike-dependent outcome. Revision 11 gives S4 a mergeable fallback, uses one confirmation threshold for P14's checks, orders P5 after P3 and P8 after P5, and adds a producer to consumer audit. Revision 12 replaces that audit with script-derived tables in 6.8 (producer to consumer, and spikes), splits the grouped spike rows, makes P8 name S14, S18 and S19, and defines the interim for P7's steps before P14's commands exist. Revision 13 states the chat poll interval once (1.5 s, or 3 s under the S23 fallback), moves the runtime and Focus test to P5, where the first task is started, and adds constants and fixture-source tables to 6.8. Revision 14 makes an unanswered S23 use the conservative 3 s and 30-row behavior everywhere, defines the throwaway kits the spikes run on before any phase exists, and arranges the merge order in six waves with the required order stated inside each. Revision 15 drops the unowned S19 daemon claim (P8's inert path is the fallback), adds the deviations table to section 9, and applies the fixes found by two fresh-context reviewers, which cover the Focus import guard and P9's send, the hard-gate wording, S28b's dependency on P5, the fakes every phase needs, and stub owners. Revision 16 adds the known gaps list at the end of section 9 and changes nothing else. |
 
+## 0. Minimal Claude-session E2E plan (revision 17, current)
+
+This section replaces the scheduling in sections 5 to 8 below. Sections 1 to 9 are the full plan of revision 16, kept as history; where they disagree with this section, this section wins. The spec in Commonroom is now version 20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`), which adds the optional `shaping` field (D60). The repository wins over the spec where they differ. Phase detail is in `phased-plan.md` and the phase files.
+
+### 0.1 Goal and scope
+
+One real end-to-end test, the Claude-session loop: in Claude Code with the mod installed, the person dispatches a task from the conversation (dialogs, or the launcher where S10 or S11 allow it), gets a glance-layer signal (toast, status entry, band) when something needs them, answers or approves from a dialog, and the task runs to a result. No dashboard is open. The mod is the display. Speed over completeness; iterate afterwards.
+
+Assumed built: P1 to P4 are merged (P4 is #1580). P5 (#1582) is in review and treated as done. P6 (#1565) is in flight on its own and is not in the dependency chain.
+
+### 0.2 Kept phases
+
+| Phase | What | Starts after | Merges after |
+|---|---|---|---|
+| P8 | Mod core and glance layer | P5 merged | P5 |
+| P11a | `/mission-dispatch` flows and `start_dispatch` tool | P8 merged | P8 |
+| P11b (new) | Needs-you, answer, approve and result dialogs (replaces the pane for the loop) | P8 merged | P8 |
+| P14 | Setup, doctor, mod install, and the loop proof | P8 merged | P11a and P11b |
+
+P10 (mctl client) and P13 (mctl run and claude) were checked and dropped: nothing in the loop calls `mctl`, and P14 only needs `/api/health` plus its own `claude` detection. P7 (Codex readiness) is dropped: the loop does not need Codex, so the confirm dialog has no Codex line. One pull request per phase, to `main`, behind the `headless-mode` flag, up to five in parallel (this chain peaks at three), no stacked branches: each phase branches from `main`, and a later phase waits for its parent to merge, then runs `git rebase --onto origin/main <old base>`. The only hard gate left is S10 or S11, for P11a's launcher part; without it the launcher is off and the rest merges.
+
+Deferred, each with a one-line reason (full table in `phased-plan.md` section 6): P6 in flight on its own; P7 Codex not in the loop; P9 chat and residents not in the loop; P10 and P13 mctl is a second surface; P12 pane replaced by dialogs for now; P15 subagents are a nicety; P16 app packaging comes after the loop works; P17 docs follow the shape settling; P18 replaced by P14's loop proof. The S28 scouts are not needed.
+
+### 0.3 Acceptance: the Claude-session loop
+
+What the person can do after each merged phase:
+
+- After P5: nothing visible; the daemon can build dialog pages, drafts and a banner.
+- After P8: the mod loaded by hand follows the flag, polls the inbox, and shows toasts, the band, the status entry and the banner. Nothing to click yet.
+- After P11a: `/mission-dispatch` and the `start_dispatch` tool start a task; the glance layer signals when it needs them.
+- After P11b: they answer a question or approve a plan from a dialog and read the result. The loop works for a hand-loaded mod.
+- After P14: `mctl setup` installs the mod on a clean machine, `mctl doctor` names what is wrong, and the automated loop test runs.
+
+Manual walkthrough (owned by P14, run once by a person, flag on, dashboard closed, daemon running):
+
+1. Run `mctl setup`; it installs the mod. Run `mctl doctor`; all kept checks pass.
+2. Open Claude Code in a repository. The banner appears.
+3. Type `/mission-dispatch`, describe a task, confirm. A task starts.
+4. Keep working in Claude. When the task asks a question or proposes a plan, a toast appears, the band shows `1` and the status entry names it.
+5. Press `1` or run `/mission-dispatch inbox`. Answer the question, or approve the plan, in the dialog; a receipt shows.
+6. When the task finishes, a toast says so and `/mission-dispatch check` shows its result.
+
+Smallest automated check, owned by P14: `test/headless-claude-session-loop.test.ts`, with the fake daemon and fake `claude` of `test/helpers/home-dispatch-fakes.ts` and the fake mod host, no model tokens. It registers a home session, runs the dispatch flow and asserts a task exists; scripts the fake daemon to raise a question and asserts one toast, the band and the status entry; runs the answer dialog and asserts the answer was posted with its receipt and the item left the inbox; repeats the same for a plan approval with a stale revision refused; scripts the task to finish and asserts the result dialog. It runs in `npm test`. It also asserts flag off shows nothing and a dismissed dialog sends nothing.
+
+### 0.4 Shaping verification (P4, PR #1580)
+
+Checked against `main` at `f1dde76fb`. Result: present and correct, as the planned stub.
+
+- `HomeDispatchInboxItemSchema` in `src/shared/home-dispatch.ts` has `shaping: z.object({ state: z.string(), summary: z.string() }).optional()`, additive.
+- `src/server/home-dispatch/shaping.ts` exports `InboxShaping` and `shapingFor(task)`, a stub that returns undefined until task-shaping Phase 2 lands (`src/shared/shaping.ts` does not exist yet). Its comment states the replacement body, built from `currentShaping(task)`.
+- `src/server/home-dispatch/inbox.ts` takes an injectable `shapingOf` defaulting to `shapingFor` and spreads the field only when defined.
+- `test/home-dispatch-inbox.test.ts` covers both cases: no field under the stub, and the field when a source provides one.
+
+No P4 follow-up item is needed for the field. Two points to record:
+
+- (a) DECIDED by Ife: the home-session brief sends only the person's words as the shaper `task`, with Claude's added context in a separate `context` field. Follow-up for P11a and for the task-shaping hand-off: P5's draft route already stores `words` and `context` separately, but it builds the task intent with `briefText({ words, context })`, which joins both with a `## Context Claude added` heading. When task-shaping lands, the shaper input must take `words` as the task and `context` as its own field. The plan does not change P5 for this; P11a keeps the two fields separate and the integration waits for task-shaping.
+- (b) OPEN, not decided: whether `shaping.state` should become the enum `"shaping" | "ok" | "degraded"`, built from a `shapingView(task)` exported by task-shaping Phase 2, instead of the free `string` P4 shipped. Question for Ife. The v1 field is a string, so changing it later is a narrowing contract change.
+
+### 0.5 Backlog and running tasks (labels headless-mode and fr-05)
+
+Nothing is cancelled, deleted or edited by this plan. Listing taken from Mission Control at the time of writing:
+
+- Merged or finished, no action: P1 (re-tracked), P2 (shown cancelled, its PR merged), P3, P4 (shown cancelled but #1580 merged; leave as is).
+- Keep, running: P5 (#1582 in review), P6 (#1565, in flight on its own).
+- Keep, backlog, re-scope when the plan merges: P8 (add dependency on P5 only; drop the P3 and P4 links, already merged), P11 (rename to 11a; drop the P7 dependency, keep P8 and P5), P14 (replace dependencies P10 and P13 with P11a and P11b, keep P8).
+- Create: one new task, "Phase 11b: Mod answer and approve dialogs", depending on P8, using `phase-11b-mod-answer-and-approve-dialogs.md`.
+- Close once this plan merges: backlog P9, P10, P12, P13, P15, P16, P17, P18; running P7 (no pull request yet; close unless Ife wants it finished first); running scout S28a and backlog scout S28b.
+
+### 0.6 Spec changes to propose
+
+For the Resident to turn into a Commonroom spec proposal after Ife approves. This plan does not edit the spec.
+
+1. Section 1.3 (in scope for v1): reduce v1 to the Claude-session loop. Dialog-based answers and approvals, the glance layer, `/mission-dispatch` and the tool, `mctl setup` and `doctor` for the mod, stay in scope.
+2. Section 1.4 (later): add the pane (F19), residents and chat (F8, 7.23, 7.24), Codex readiness and fail-fast (F20, 7.25), subagents (F9, 7.17), `mctl` reads and run (F6, 7.13), app packaging (7.10a), repository task skills only if P6 does not land first, docs F11 and the full-loop test F12.
+3. Section 4 (acceptance): F3, F4 and F5 keep their v1 form but F5 answers in dialogs rather than the pane; F6, F8, F9, F11, F12, F19 and F20 move to "later"; F12 is restated as the Claude-session loop of 0.3.
+4. Section 7.22 and decision D48: the pane is where answers happen in the full design; for v1 they happen in dialogs. Add a decision (next free number) recording this and that the pane is the second iteration.
+5. Section 7.23: chat and follow are later; v1 uses only the `answer`, `approve_plan` and `request_changes` actions.
+6. Section 8.3 (work packages): mark WP6a, WP6b, WP8, WP11, WP15, WP16, WP17, WP18 and WP9 as later; WP7 reduced to find, install and check; WP12 reduced to the loop proof owned by WP7's pull request; WP13 and WP14 kept; add a WP for the answer and approve dialogs (P11b).
+7. Section 8.2 (merge order) and 8.1 rule 1: record that phases branch from `main` and rebase with `git rebase --onto origin/main <old base>` instead of stacking.
+8. Section 11.2 (spikes): S16, S27 and S28 stop being gates; S10 or S11 stays a gate for the launcher only; other spikes stay soft.
+9. D60 and 7.7: leave the `shaping` field as built, and add question (b) of 0.4 to section 11.1 as an open question.
+10. Decision on the shaper brief: add (a) of 0.4 (words as task, Claude's context separate) to 7.20 and to the decisions list.
+
 ## 1. Read this first: the brief and the spec disagree on the version
 
 The request names spec "current version 8" and work packages WP0 to WP17. The spec is at **version 18**. Version 8 was the first publication of this design. Versions 9 to 18 repaired it and added the Codex review gate: F20, section 7.25, **WP18**, D54 to D57, L40 to L43, Q24 to Q26 and spikes S24 to S27. Every item the request names (section 7.10 and 7.10a, 7.22 to 7.24, WP0 to WP17 with WP10 withdrawn, 8.4, D44, D48 to D53, S17 to S23) is unchanged in meaning at version 18, so this plan covers version 18 and adds WP18 and its spikes. Planning against version 8 would leave out a work package that the merge order of WP14 and WP9 already depends on.

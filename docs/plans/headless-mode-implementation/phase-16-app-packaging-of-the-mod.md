@@ -1,5 +1,7 @@
 # Phase 16: App packaging of the mod (WP15)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: The loop installs with mctl setup from a built tree; app packaging comes later. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.10a.
 
 **1. Outcome.** The built mod ships inside the desktop app outside `asar`, and the app stages it at start through the same `mod-stage.ts` that `mctl setup` uses.

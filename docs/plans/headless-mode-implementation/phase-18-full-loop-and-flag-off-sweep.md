@@ -1,5 +1,7 @@
 # Phase 18: Full loop, flag-off sweep and walkthrough (WP12)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: Replaced by P14's loop proof; the full sweep follows the later iterations. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, section 6.
 
 **1. Outcome.** One test and a person's walkthrough prove the whole loop works on `main`: dispatch, an answer from the pane, a chat message, a resident question, with no tmux or herdr, no context cost beyond F18's list, and no change with the flag off.

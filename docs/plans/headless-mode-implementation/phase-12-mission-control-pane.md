@@ -1,5 +1,7 @@
 # Phase 12: The Mission Control pane (WP17)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: Dialogs (P11b) replace the pane for the loop; the pane is the richer second iteration. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.9, 7.22 to 7.25.
 
 **1. Outcome.** One pane in Claude Code with four tabs (Needs you, Tasks, Workflows, Residents) where every decision is answered and workers and residents are chatted with, with no tmux or herdr involved. Branches: chat uses the direct send or the `chat_first` path as S16 recorded; if S21 shows the Esc-reopen pattern keeps the keyboard, Esc returns to the list, otherwise Esc hands the keyboard back and only Back returns; if S22 shows the pane draws in the desktop app and VS Code it opens there, otherwise the pane view P12 supplies behind P8's `paneOpen` draws a line saying the pane is terminal only; for S23, chat polls every 1.5 s and the Tasks tab shows every row only when S23 has recorded the default as within budget; when S23 recorded it as too costly, or has no recorded answer, chat polls every 3 s and the Tasks tab is capped at 30 rows. If S16 and the `chat_first` fallback both fail, this phase waits for the owner (8.1 rule 8).

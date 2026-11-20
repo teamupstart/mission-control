@@ -1,8 +1,102 @@
-# FR-05 headless mode: phased implementation plan
+# FR-05 headless mode: minimal Claude-session E2E plan (phased)
+
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 17, section 0 is the minimal plan). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 20, sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`. The repository wins over the spec where they differ.
+
+Goal: one real end-to-end test. A person drives Mission Control from a Claude Code session with the mod installed and no dashboard open: dispatches a task from the conversation, is signalled when something needs them (toast, status entry, band), answers or approves from a dialog, and the task runs to a result. The mod is the display. Everything else is deferred (section 6).
+
+## 1. State of main
+
+| Phase | State | Note |
+|---|---|---|
+| P1, P2, P3 | merged | flag, contracts, CLI and mod skeleton, fakes, home sessions |
+| P4 | merged (#1580) | read-only inbox, receipted answers, plan approval. Includes the optional `shaping` field (verified in plan.md 0.4). Its original backlog task shows cancelled; the PR is what counts. |
+| P5 | in review (#1582) | dispatch options, drafts, banner builder. Treated as built. |
+| P6 | in flight (#1565) | repository task skills. Not in this chain; merges on its own. |
+
+## 2. Kept phases
+
+Everything lands behind the `headless-mode` preview flag, one pull request per phase, to `main`. No stacked branches: each phase branches from `main`. A later phase waits for its parent to merge, then runs `git rebase --onto origin/main <old base>`. Up to five phases run in parallel; this chain peaks at three.
+
+| Phase | File | Minimum scope | Starts after | Merges after | Gate |
+|---|---|---|---|---|---|
+| P8 | `phase-8-mod-core-and-glance-layer.md` | mod adapter, host, daemon client, flag following, inbox poll, toasts, band, status entry, `mod-calls` smoke check | P5 merged | P5 | none |
+| P11a | `phase-11-mod-dispatch-flows-and-tool.md` | `/mission-dispatch` (fast path, description, confirm), `start_dispatch` tool, launcher part gated | P8 merged | P8 | S10 or S11 for the launcher part only |
+| P11b | `phase-11b-mod-answer-and-approve-dialogs.md` | the `needs you` dialog: read an item, answer, approve or request changes on a plan, see the result | P8 merged | P8 | none |
+| P14 | `phase-14-setup-doctor-and-mod-install.md` | `mctl setup` and `mctl doctor` reduced to: find `claude`, stage and install the mod, version probe, daemon and flag check; plus the Claude-session loop proof | P8 merged | P11a, P11b | none (S17, S18 soft) |
+
+Dependency graph:
+
+```mermaid
+flowchart TD
+  P5[P5 in review] --> P8
+  P8 --> P11a
+  P8 --> P11b
+  P8 --> P14
+  P11a --> P14
+  P11b --> P14
+```
+
+P14 starts with P11a and P11b (it only needs P8 for staging and install) and merges last. Its install work needs nothing from them; the loop proof commit waits until both have merged, then P14 rebases with `git rebase --onto origin/main <old base>` and adds the proof. P14 is the last kept phase and owns the acceptance test (plan.md 0.3).
+
+## 3. What the person can do after each merged phase
+
+- After P5 (built, not visible to a person): the daemon can build dispatch dialog pages, keep drafts and a banner. No mod UI.
+- After P8: with the mod loaded by hand (`claude --plugin-dir dist/mod/mission-control`, or the fake host), the mod follows the flag, registers the session, polls the inbox, shows toasts, the band with its `1` button and a quiet status entry, and the banner. Nothing to click yet.
+- After P11a: the person types `/mission-dispatch`, picks or describes work, confirms, and a task starts. The model can also call `start_dispatch` mid-conversation. The glance layer from P8 signals when that task needs them.
+- After P11b: the person answers a worker's question or approves a plan from a dialog, and reads the finished result. The loop is complete for a hand-loaded mod.
+- After P14: `mctl setup` installs the mod on a clean machine, `mctl doctor` says what is wrong, and the automated loop test runs. This is the real end-to-end state.
+
+## 4. Rules for every phase
+
+1. Re-read the spec version and sha256 above. If the spec moved past 20, stop and report.
+2. Behind the `headless-mode` preview flag; flag-off tests prove no behavior change.
+3. Do not touch `src/server/terminal/`, `src/server/actions.ts`, `src/mcp/server.ts`, `src/server/mission-mcp.ts`, `hooks/harness-hook.mjs` or `hooks/harness-statusline.mjs`. Nothing under `src/mod/`, `src/cli/` or `src/server/home-dispatch/` imports `src/server/terminal/`.
+4. Tests use `node:test` and the fakes in `test/helpers/home-dispatch-fakes.ts`; no model tokens. The mod is drawn inside Claude Code, so its proof is fake-host tests plus `claude plugin test` run locally with output attached to the pull request.
+5. One owner per file. A contract change only adds, in its own `contract:` commit.
+6. No em dash in prose. No generated-file edits. No evidence artifacts committed.
+7. Open a reviewable pull request through the pull-request skill and follow it to green CI.
+8. A hard gate is satisfied only by the owner's answer posted to Commonroom. The only hard gate left is S10 or S11 for P11a's launcher part: without it the launcher stays off and the rest of P11a merges. Soft spikes never block a merge; the pull request says which answers it used or that none was recorded.
+
+## 5. Sizing
+
+| Phase | Estimate (gross non-test lines) |
+|---|---|
+| P8 | 700 to 1,100 |
+| P11a | 500 to 800 |
+| P11b | 500 to 800 |
+| P14 | 600 to 1,000 |
+
+About 2,300 to 3,700 lines in four pull requests, down from about 6,700 to 10,900 lines in eight in the full plan.
+
+## 6. Later iterations (deferred, not deleted)
+
+| Phase | Reason deferred |
+|---|---|
+| P6 repository task skills | In flight on its own (#1565); the loop works without repository skills. |
+| P7 Codex readiness and fail-fast | The loop does not depend on Codex reviews; P11a's confirm omits the Codex line. Needs hard spike S27. |
+| P9 residents and chat routes | Answers use P4's receipted routes; chatting with workers and residents is not in the loop. Needs hard spike S16. |
+| P10 mctl client and read commands | The mod is the display; `mctl` reads are a second surface. P14 talks to `/api/health` directly. |
+| P12 Mission Control pane | Dialogs replace the pane for the loop (P11b). The pane is the richer second iteration. |
+| P13 mctl run, claude and daemon | Terminal entry points, not the Claude-session loop. P14 owns its own `claude` detection in `src/cli/claude-cli.ts`. |
+| P15 subagents and agents step | A nicety on top of the pane and flows. |
+| P16 app packaging of the mod | The person installs with `mctl setup` from a built tree; shipping inside the app comes later. |
+| P17 docs | Written once the shape settles; each kept phase updates its own section of `docs/`. |
+| P18 full loop and flag-off sweep | Replaced by P14's loop proof; the full sweep follows the later iterations. |
+
+The old phase files stay in this folder with a DEFERRED banner. Their numbers are not reused.
+
+
+---
+
+# Archive: previous full phase plan (revision 16, superseded)
+
+Kept for history. Nothing below schedules work. Where it disagrees with the sections above, the sections above win.
+
+## FR-05 headless mode: phased implementation plan
 
 Source: `docs/plans/headless-mode-implementation/plan.md` (revision 16). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
-## 1. Incorporated decisions
+### 1. Incorporated decisions
 
 - Jordan's constraint: dropping WP10 leaves the existing Focus feature untouched; guards 2 and 3 live in P1, guard 1 in P5, and all three in P18; the owner clarifies D50 in the spec.
 - WP1 is two pull requests, P1 and P2.
@@ -22,7 +116,7 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 16). Spec: C
 - Review repairs (revision 15): two fresh-context reviews were run before saving and every finding was fixed in the same revision; the deviations table of `plan.md` section 9 records each frozen criterion the plan no longer matches literally.
 - Review repairs (revision 8): a sweep of every file for stub, slot, optional-field and interim wording; P1 and P2 now name the owner of every route stub, CLI command, setup step, mod flow and pane; P12 names the fields its header and rows read; P15 names the source of the subagent events.
 
-## 2. Findings from the repository
+### 2. Findings from the repository
 
 - `main` (`c2b873f6f`) has no `src/mod/`, `src/cli/` or `src/server/home-dispatch/`. Schema is 35, so schema 36 is free. There is no preview flag yet, so P1 owes the first-flag Settings-row browser assertion.
 - Dashboard Focus exists and is unrelated to the withdrawn WP10: `POST /api/sessions/:id/focus`, `actions.focus`, `src/server/terminal/`.
@@ -30,7 +124,7 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 16). Spec: C
 - No outcome ledger exists on `main`; S28 only investigates.
 - Discrepancy with the brief: the spec is at version 18 (brief said 8), which adds WP18.
 
-## 3. Rules for every phase
+### 3. Rules for every phase
 
 1. First re-read the spec version and sha256 above. If the spec moved past 18, stop and report.
 2. Everything lands behind the `headless-mode` preview flag. Flag-off tests prove no behavior change.
@@ -42,7 +136,7 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 16). Spec: C
 8. A merge gate is satisfied only by the owner's answer posted to Commonroom: read it, quote it in the pull request, and stop without merging the gated part if none exists (the whole phase, except that for P11 it is the launcher part only, and the rest of P11 then merges with the launcher switched off). The merge gates are S10 or S11 (the launcher part of P11), S16 (P9 and P12) and S27 (P7). Negative answers: if S10 and S11 both failed, the rest of P11 merges with the launcher off and the owner decides; if S16 and its `chat_first` fallback both fail, P9 and P12 wait for the owner; if S27 is false, record `CODEX_AUTH_MTIME_RELIABLE = false` and P7 merges with that behavior. An unrecorded hard gate also holds every phase that has the gated phase as a prerequisite.
 9. Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded. The soft spikes are S4, S5, S8, S12, S14, S15, S17 to S26 (S18 and S19 included).
 
-## 4. Sizing and phase count
+### 4. Sizing and phase count
 
 Estimate, gross non-test production lines (documentation lines for P17):
 
@@ -77,7 +171,7 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 
 The run's frozen acceptance criteria that the plan no longer matches literally are recorded in the deviations table of `plan.md` section 9.
 
-## 5. Phase table
+### 5. Phase table
 
 | Phase | Spec WP | Direct merge prerequisites | Gate |
 |---|---|---|---|
@@ -102,7 +196,7 @@ The run's frozen acceptance criteria that the plan no longer matches literally a
 
 P18 lists P6, P13, P16 and P17 directly because every other phase is already a transitive prerequisite of one of them.
 
-## 6. Dependency graph, concurrency and merge order
+### 6. Dependency graph, concurrency and merge order
 
 ```mermaid
 flowchart TD
@@ -147,7 +241,7 @@ flowchart TD
 
 The merge order is in six waves, with the required order inside each wave, in plan 6.2. Concurrency: after P2, P3 and P6 run together; P4, P5 and P7 follow P3. P8 follows P3, P4 and P5, P9 follows P3 and P4, and P10 follows P4, so they run together once those have merged. P11 to P13 run together once their prerequisites land, and P14 follows P13. P15 and P16 run together. P17 then P18 close the work. Every task also depends on the planning session, which releases them when its pull request merges the plan files.
 
-## 7. Cross-phase contracts
+### 7. Cross-phase contracts
 
 - P1 owns every shared schema, route stub and schema 36. Later phases fill stubs and never change a stub's shape. Stub owners are listed in P1 section 9 (routes) and P2 section 9 (CLI commands, setup steps, mod flows and pane).
 - P2 owns the fake daemon and the fake `claude`; each later phase adds its own fixture file and one registration line, and never edits P2's file otherwise.
@@ -161,6 +255,6 @@ The merge order is in six waves, with the required order inside each wave, in pl
 - P14 owns the installed-version probe and stale-build reinstall; P16 relies on it.
 - Home-dispatched tasks are created through the dashboard path with no runtime override (Focus guard 1).
 
-## 8. Final verification
+### 8. Final verification
 
 `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke` and `npm run test:e2e` pass on `main` after P18; the flag-off sweep shows no behavior change; the Focus guards pass; the live walkthrough in P18 is done by a person.

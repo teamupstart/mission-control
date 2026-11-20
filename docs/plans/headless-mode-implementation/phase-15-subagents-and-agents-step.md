@@ -1,5 +1,7 @@
 # Phase 15: Subagents and the agents setup step (WP11)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: A nicety on top of the pane and flows. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.14, 7.17.
 
 **1. Outcome.** The read-only briefer and kind subagents are linked for Claude, the pane shows each task's subagent lines (the Tasks row text and the follow view's header lines) through the two slots P12 reserved, and setup installs and doctor checks the agents. If S4 shows agents are not usable as `subagent_type`, P15 still merges: it links the agents as files, the doctor agents check reports `agents not usable as subagent_type` as warn, and no flow names them (P11's flows do not), so nothing in v1 depends on them; the owner then decides whether to retire them in a follow-up. Branches (S4): if agents work as `subagent_type`, they are linked and the doctor check passes; if not, they are linked, the doctor check warns, and the phase still merges.

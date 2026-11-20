@@ -1,23 +1,17 @@
-# Phase 8: Mod core and glance layer (WP13)
+# Phase 8: Mod core and glance layer (WP13, minimal)
 
-Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.10, 7.12, 7.21.
+Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`). Branch from `main`; start only after the phase named under Entry has merged, then `git rebase --onto origin/main <old base>`.
 
-**1. Outcome.** The mod loads, follows the flag, registers the session, polls the inbox, and shows toasts, the band with its `1` button, a quiet status entry, and the banner. It stays inert on a `modApi` mismatch. Branches (S19): if S19 shows an out-of-range mod stays fully inert (one notice, no dialog, tool, status entry, band or toast), the inert path is as built; if not, P8 registers nothing before its `modApi` check passes. Either way P8's pull request records the S19 result.
+**1. Outcome.** With the flag on, the mod loads in Claude Code, registers the session with the daemon, polls the inbox, and tells the person when something needs them: a toast for each new item, the band with its `1` button, a quiet status entry, and the start-up banner. With the flag off, or on a `modApi` mismatch, it shows nothing.
 
-**2. Entry and dependencies.** Direct prerequisites: P3 (registration), P4 (inbox) and P5 (the banner builder in `src/shared/home-dispatch-banner.ts`, which the mod banner draws from). Soft spikes S14, S18, S19, which P8 only records in its pull request (the install-path fallbacks of S14 and S18 belong to P14, and S19's fallback is P8's own inert path). Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded.
+**2. Entry.** P5 merged (the banner builder in `src/shared/home-dispatch-banner.ts`). P3 and P4 are already on `main`. No hard gate. S14, S18 and S19 are soft: record the answer used in the pull request, or say none was recorded.
 
-**3. Scope.** `src/mod/register.ts`, `host.ts`, `client.ts`, `attention.ts`, `banner.ts`, `src/mod/types/index.d.ts`: the adapter (including the `Pane` render and `ui.close` seams), `ModHost`, the daemon client and token, flag following, the worker rule, the poll, toasts, the band, the status entry rules, the banner (drawn from P5's builder, never a list of its own), the real `paneOpen` and `paneClose` host calls (open id `mission`, focus, size, close) drawing a placeholder view that reads `The Mission Control pane is not available in this build yet.`, and the `mod-calls` smoke check of plan 6.5. Non-goals: dialogs and the tool (P11), real pane content (P12), install (P14). The `mod-calls` smoke check is P8's edit to `scripts/smoke-bundles.mjs`; P14 and P16 do not touch it. The list of allowed mod calls lives once, in `src/mod/allowed-calls.json`, which the smoke check reads.
+**3. Scope.** `src/mod/register.ts`, `host.ts`, `client.ts`, `attention.ts`, `banner.ts`, `src/mod/types/index.d.ts`, `src/mod/allowed-calls.json`, and the `mod-calls` check in `scripts/smoke-bundles.mjs`. The inbox poll is every 5 seconds. The mod calls only `/api/health` and `/dispatch/*`. Non-goals: dialogs and the tool (P11a, P11b), setup and install (P14), the pane (deferred). There is no `paneOpen` seam in this phase; the `1` button opens P11b's needs-you dialog through a one-line registration that P11b adds.
 
-**4. Findings.** `$.http.fetch` returns whole bodies, so the mod polls every 5 seconds rather than following events. The mod calls only `/api/health` and `/dispatch/*`, reads only the token file, and never writes to the model's context beyond F18's list. `$.ui.status` is plain text and only set while something needs the person (L37). Alt hotkeys never reach `prompt.edit` (L32), so none is used.
+**4. Steps.** Read spec 7.10, 7.12, 7.21. Build the adapter as a thin layer over pure functions: flag follow, `modApi` check before anything registers, daemon-down message, poll, toast for new items only, band and status only while something needs the person. Add the allowlist check to `npm run smoke`.
 
-**5. Steps.** Read spec 7.10, 7.12, 7.21 and L31 to L37. Implement the adapter as a thin layer over pure functions, the flag and `modApi` inert paths, then each glance surface. Add the `claude plugin validate` allowlist check to `npm run smoke`.
+**5. Tests.** `node:test` with the fake host and fake daemon: flag off shows nothing, daemon down message, toasts for new items only, band and status only while something needs you, banner text, inert on mismatch. Run `claude plugin test` locally and attach the output to the pull request.
 
-**6. Data and API.** Uses the P1 and P3 registration and the P4 inbox. No new routes.
+**6. Exit.** The mod builds and loads under the fake host; the smoke allowlist passes; nothing is shown with the flag off.
 
-**7. Tests.** `node:test` with the fake host: flag off shows nothing, daemon down message, toasts for new items only, band and status only while something needs you, banner text, inert on mismatch. Run `claude plugin test` locally and attach its output to the pull request (Q17).
-
-**8. Merge and exit.** The mod builds and loads under the fake host; smoke allowlist passes; nothing is shown with the flag off; under the fake host `paneOpen` opens the placeholder and `paneClose` closes it. Tests cover an out-of-range `modApi` both ways: fully inert, and nothing registered before the check.
-
-**9. Handoff.** P11 and P12 add flows and panes with one registration line each; P8 keeps `register.ts` and `host.ts`. P12 replaces the placeholder view and changes no `paneOpen` signature.
-
-**10. Cross-phase audit.** Registration and inbox shapes match P3 and P4. The pane seam matches P2's skeleton.
+**7. Handoff.** P11a and P11b add flows and dialogs with one registration line each in `register.ts`; P8 keeps `register.ts` and `host.ts`. Whichever merges second rebases; the merge is mechanical.

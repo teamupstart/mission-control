@@ -1,5 +1,7 @@
 # Phase 17: Documentation (WP9)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: Each kept phase documents its own part; full docs wait for the shape to settle. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 5 and 7.19.
 
 **1. Outcome.** The docs describe headless mode as an alpha: what it is, how to set it up, the pane and its keys, residents, Codex readiness, and troubleshooting, and they match what actually merged.

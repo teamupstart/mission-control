@@ -1,5 +1,7 @@
 # Phase 9: Residents and chat routes (WP16)
 
+> **DEFERRED (minimal Claude-session plan, revision 17).** Not scheduled. Reason: Answers use P4 routes; chat and residents are not in the loop; needs hard spike S16. The text below is the previous plan, kept as history; its dependencies on P8, P11 and P14 no longer apply. Re-scope it before reviving it.
+
 Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.23, 7.24.
 
 **1. Outcome.** The daemon lists residents, runs, pauses and resumes them, and serves a task's transcript and a send route for chat, all under the home-session rules, so the pane can chat without touching `/api/*`. Branches (S16): if a message through the send route reaches a worker waiting on `request_input`, chat uses the direct path; otherwise `chat_first` answers first and the message follows; if both fail the phase waits for the owner (8.1 rule 8).

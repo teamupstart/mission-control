@@ -1,23 +1,17 @@
-# Phase 11: Mod dispatch flows and the tool (WP14)
+# Phase 11a: Mod dispatch flows and the tool (WP14, minimal)
 
-Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. Spec v18, 7.4, 7.11, 7.20.
+Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`). Branch from `main`; start only after P8 has merged, then `git rebase --onto origin/main <old base>`.
 
-**1. Outcome.** From Claude Code a person can dispatch a task through the launcher, the fast path, the description and the confirm, or from mid-conversation through the `start_dispatch` tool, with the confirm showing a Codex warning when reviews depend on Codex. Branches (S10, S11): if S10 passed, the launcher opens from `classic.SessionStart`; if only S11 passed, it holds the first prompt; if both failed, the launcher is switched off, every other flow still works, and the owner decides.
+**1. Outcome.** From Claude Code the person can dispatch a task: `/mission-dispatch` (fast path, or a described task, then a confirm), or mid-conversation through the `start_dispatch` tool. A dismissed dialog counts as Cancel. The launcher on session start is offered only if S10 or S11 passed and was recorded.
 
-**2. Entry and dependencies.** Direct prerequisites: P8 (mod core and `paneOpen`), P5 (options and drafts), P7 (readiness route). Gate: S10 or S11 recorded in Commonroom before the launcher merges; if both fail, merge everything else with the launcher switched off and wait for the owner; P13's `mctl claude` is unaffected, since it only starts a plain Claude session whether or not the launcher is on. S8, S12 and S15 are soft. S10 or S11 is a merge gate for the launcher part only. A merge gate is satisfied only by the owner's answer posted to Commonroom: read it, quote it in the pull request, and stop without merging the gated part if none exists (the whole phase, except that for P11 it is the launcher part only, and the rest of P11 then merges with the launcher switched off). Soft spikes never block a merge: when no answer is recorded the phase uses the fallback in plan 5.1 and its pull request says which answers it used or that none was recorded. The Codex gate on P7 reaches P11 through P7: until it is recorded P7 cannot merge, so neither can P11.
+**2. Entry.** P8 merged. P5 is already on `main`. Gate: S10 or S11, for the launcher part only; without a recorded answer the launcher stays off and the rest merges. S8, S12 and S15 are soft. P7 is deferred, so the confirm summary has no Codex line.
 
-**3. Scope.** `src/mod/flows/*`: `/mission-dispatch` (launcher, fast path, description, confirm, and the `inbox`, `check`, `pane` and task-id arguments, which call the host's `paneOpen` from P8 with the tab or task id and nothing else), the `start_dispatch` tool, the intent nudge, the `create_task` description sentence (registered from the mod, touching no daemon file), and the confirm summary's Codex line from the readiness route (six rows, Start now always stays). Non-goals: pane contents (P12), anything that answers or approves.
+**3. Scope.** `src/mod/flows/command.ts`, `dispatch.ts`, `tool.ts`, `index.ts`: the launcher, fast path, description and confirm dialogs over P5's options and drafts routes, the `start_dispatch` tool, the intent nudge, one registration line each. Non-goals: answering and approving, and the `inbox` and `check` arguments (P11b); the `pane` argument (deferred: it reports that the pane is not available); the Codex line (P7).
 
-**4. Findings.** A dismissed dialog counts as Cancel, or Work in this session for the launcher. The mod never reorders or rewords daemon options. Reserved words are commands only as the whole argument (L20). No `mission-dispatch` skill exists for Claude (D42). Home-dispatched tasks must pass no runtime override (Focus guard 1). The confirm never claims `reviews ready` from a mod read when `CODEX_AUTH_MTIME_RELIABLE` is false.
+**4. Findings.** The mod never reorders or rewords daemon options. Home-dispatched tasks pass no runtime override (Focus guard 1). The brief sent to the daemon keeps the person's own words as the task and puts Claude's added context in the separate `context` field (decided by Ife; P5's draft route already carries both fields, but see plan.md 0.4 for the follow-up on how the shaper input is built).
 
-**5. Steps.** Read spec 7.4, 7.11, 7.20, 7.25 (confirm). Implement each flow as pure functions over `ModHost` and register with one line each. Wire the Codex line. Phrase the tool description and nudge for S8.
+**5. Tests.** Fake-host tests for each flow, each dismissal path, the quick path, the tool, launcher on and off; `claude plugin test` locally.
 
-**6. Data and API.** Uses P5 drafts and P7 readiness. No new routes.
+**6. Exit.** Dispatch works against the fakes: a task exists on the fake daemon after the confirm; the launcher follows the recorded answer.
 
-**7. Tests.** Fake-host tests for each flow and dismissal path, the six confirm rows, the quick path; `claude plugin test` locally.
-
-**8. Merge and exit.** Dispatch works end to end against the fakes; launcher gated by the recorded S10 or S11 answer. Interim pane behavior: with the fake host each of `inbox`, `check`, `pane` and a task id records one `paneOpen` with the right target, and none errors while P8's placeholder view is the pane. Tests cover the launcher on (as recorded) and the launcher off, and in the off state the other flows are unaffected.
-
-**9. Handoff.** P15 owns the subagent line formatter and the two slot fills in P12's pane (the data fields are filled by P4 and P9); P12 replaces P8's placeholder view behind the same `paneOpen` calls.
-
-**10. Cross-phase audit.** Registration lines do not collide with P12's. The Codex line matches P7's `CodexReadiness`.
+**7. Handoff.** P14's loop proof starts a task through these flows.

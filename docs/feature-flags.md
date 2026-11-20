@@ -26,8 +26,13 @@ off keeps individually enabled flags on. **Advanced** starts collapsed and conta
 that are on by default, with a count of those switched off. A filter matching only Advanced
 opens it. Settings search can toggle individual flags; the master result opens its panel.
 
-Alpha builds do not enable preview features. Choose individual flags or Enable all on any
-update channel.
+Switching on **Alpha updates** in **Settings > Setup > Application updates** also switches on
+Enable all, so an alpha operator gets every current and future preview feature by default. It is
+the same write as the master switch without "Turn them on too": flags you switched off stay off.
+Switching alpha off changes no flag, and you can still switch Enable all or any flag off while
+on alpha. Alpha is saved first and stays on if that write fails, because the alpha
+switch must keep working while the daemon is down; the Application updates section then says
+Enable all could not be switched on and offers **Retry**.
 
 ## Definition and resolution
 
@@ -54,9 +59,10 @@ choice, even if it matches its default. On then off with the master off therefor
 explicit off, which a later master-on keeps. `explicitlyDisabledFeatureFlags` lists known
 flags with that stored false for the confirmation dialog.
 
-The update channel never changes a flag; on every channel a preview feature is on only because
-the operator switched that flag on or switched on Enable all; only Enable all makes new preview
-features come on by themselves.
+Resolution never reads the update channel. Opting in to alpha changes flags only through the
+dashboard, which follows a successful alpha opt-in with the `{ kind: "master", enabled: true }`
+intent below; the daemon still has no reader for the desktop's update preferences. Only Enable
+all makes new preview features come on by themselves.
 
 Unknown ids never enable a feature, but their stored choices survive writes, so downgrading
 and upgrading does not erase preferences. Retired ids are dropped on the next write and must

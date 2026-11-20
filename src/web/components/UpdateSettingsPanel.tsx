@@ -3,6 +3,7 @@ import type { UpdateSnapshot } from "@shared/update.ts";
 import { pendingBuildNotice } from "@shared/update-copy.ts";
 import { subscribeToDesktopUpdates } from "../useDesktopUpdates.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { api } from "../lib/api.ts";
 import { BINARY_RECOVERY_URL, BINARY_UPDATE_UNAVAILABLE, type BinaryEnrollment } from "@shared/binary-enrollment.ts";
 
 /** The desktop updater owns this setting, even when the daemon cannot start. */
@@ -11,6 +12,8 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
   const [snapshot, setSnapshot] = useState<UpdateSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The alpha opt-in's Enable all write failed: alpha stays on, and the operator can retry. */
+  const [enableAllError, setEnableAllError] = useState<string | null>(null);
   const installation = typeof window === "undefined" ? undefined : window.missionDesktop?.binaryInstallation;
   const [enrollment, setEnrollment] = useState<BinaryEnrollment | null>(null);
   const [enrollmentResult, setEnrollmentResult] = useState<string | null>(null);
@@ -26,16 +29,31 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
   if (!updates?.setAlpha) return null;
   const binary = !!enrollment || (snapshot?.phase === "disabled" && snapshot.reason === BINARY_UPDATE_UNAVAILABLE);
   const busy = saving || !snapshot || ["checking", "preparing", "ready", "applying"].includes(snapshot.phase);
+  // Opting in to alpha also opts in to every preview feature, current and future. It is the
+  // same write as switching on Enable all, so individual offs are kept, and leaving alpha
+  // changes no flag. Alpha is saved first and kept when this write fails, because the desktop
+  // owns alpha and it must work while the daemon is down; the failure offers a retry instead.
+  const enableAllFlags = async () => {
+    setEnableAllError(null);
+    const result = await api.setFeatureFlags({ kind: "master", enabled: true });
+    if (!result.ok) setEnableAllError(result.error ?? "unknown error");
+  };
   const change = async (alpha: boolean) => {
     setSaving(true);
     setError(null);
+    setEnableAllError(null);
     try {
       await updates.setAlpha!(alpha);
+      if (alpha) await enableAllFlags();
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
     } finally {
       setSaving(false);
     }
+  };
+  const retryEnableAll = async () => {
+    setSaving(true);
+    try { await enableAllFlags(); } finally { setSaving(false); }
   };
   const check = async () => {
     setError(null);
@@ -58,7 +76,7 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
           </span>
         </label>
       </Tooltip>
-      <p className="settings-hint">Alpha builds do not turn on preview features. Choose them in <Tooltip label="Choose which preview features to enable"><a href="#/settings/feature-flags">Feature flags</a></Tooltip>.</p>
+      <p className="settings-hint">Switching alpha on also switches on Enable all, so every preview feature comes on, keeping any you switched off. Adjust them in <Tooltip label="Choose which preview features to enable"><a href="#/settings/feature-flags">Feature flags</a></Tooltip>.</p>
       <p className="settings-hint">Signed binaries download while you work. You choose when to restart and install. No host Node or local compilation is needed for updates.</p>
       <Tooltip label={snapshot?.alpha ? "Check for new main commits now." : "Check for a newer stable release now."}>
         <button type="button" className="btn btn-ghost" disabled={busy || snapshot?.phase === "disabled"}
@@ -91,6 +109,12 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
         <a className="btn btn-ghost" href={BINARY_RECOVERY_URL} target="_blank" rel="noreferrer">Signed installer and recovery instructions</a>
       </Tooltip></p>}
       {enrollmentResult && <p role="status">{enrollmentResult}</p>}
+      {enableAllError && <div role="alert">
+        <p>Alpha updates are on, but Enable all feature flags could not be switched on: {enableAllError}</p>
+        <Tooltip label="Try switching on Enable all feature flags again.">
+          <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => { void retryEnableAll(); }}>Retry</button>
+        </Tooltip>
+      </div>}
       {error && <p role="alert">{error}</p>}
     </section>
   );

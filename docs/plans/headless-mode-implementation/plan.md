@@ -6,7 +6,7 @@
 | Spec | Commonroom, workspace Meta Harness, spec `d2cdf331-4f03-4c77-957d-246cfde0017c`, **version 18**, 236,444 characters, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`. The spec, not this plan, is the contract: where they differ, the current spec version wins. |
 | Base | `main` at `c2b873f6f`. It has no `src/mod/`, `src/cli/` or `src/server/home-dispatch/`, no preview flag in `src/shared/feature-flag-registry.ts`, and database schema 35 (`CURRENT_DATABASE_SCHEMA_VERSION`). |
 | Not done here | No code, no edit to the spec, no post to Commonroom. Phase tasks go to the backlog and are not started. |
-| Revision | 5. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. |
+| Revision | 6. Revision 2 (approved) applied the owner's first-review choices: the "mods can load" checks are folded into WP7 and spike S17 (6.5), and spike answers are recorded in task reports and Commonroom, not in a repository file. Revision 3 added the phased implementation files. Revision 4 repairs the Plan Validation review (section 9): widget placement is out of v1, spike reports have one recording path, P4 now merges after P3, the pane-open handoff between P11 and P12 is safe, and the mod upgrade path has a version probe and a reinstall step. Revision 5 closes the second review round (section 9): the pane-open ownership wording, P7 after P3, interim behavior for P10's `logs` and P13's launcher handoff, P17 after P13, and an honest recovery path when a mod reinstall fails. Revision 6 closes the third round: P15 owns the one pane edit for subagent lines (a slot P12 reserves), S28's timing is stated for its two stages, and P17 merges after P6 and P16. |
 
 ## 1. Read this first: the brief and the spec disagree on the version
 
@@ -126,7 +126,7 @@ Run order: S17, S14, S20 first (they decide whether the install path stands), S1
 
 ### 5.3 S28: outcome ledger and retro trigger for home-dispatched workers (FR-06)
 
-This is the second explicit item in the request. The spec's section 12.2 says Mission Control keeps an FR-06 outcome ledger of every task end, and that FR-05 v2 will read it and let any harness report a finish, with shapes "not designed yet". FR-05 v1 builds none of that (D32). The spike's job is to find out, before the v1 contracts freeze in WP1, whether a worker started from a home session can feed the ledger and be offered a retro, so that the contract needs no breaking change later.
+This is the second explicit item in the request. The spec's section 12.2 says Mission Control keeps an FR-06 outcome ledger of every task end, and that FR-05 v2 will read it and let any harness report a finish, with shapes "not designed yet". FR-05 v1 builds none of that (D32). The spike's job is to find out whether a worker started from a home session can feed the ledger and be offered a retro, so that the contract needs no breaking change later. It runs in two stages (below). S28a runs on `main` and does not gate P1; it can answer questions 1, 4 and 5 and give a first reading of 6 from the planned schemas, so any additive field it recommends can go into P1 or P2 before they merge or, afterwards, into a `contract:` commit. S28b needs the inbox and chat routes, so it answers 2, 3 and the rest of 6 after P1 has merged; anything it finds is handled only by additive changes under the spec's rule that later contract changes only add (8.1 rule 3), never by reopening a v1 shape.
 
 **What `main` shows (read, not assumed).**
 
@@ -172,12 +172,12 @@ One pull request each, to `main`, behind `headless-mode`; P0 opens none. Work pa
 | P9 | WP16 | Residents and chat routes, including the transcript stream | P2 | P3, P4 | **S16** |
 | P10 | WP6a | `mctl` client and read commands. Until P9 lands, `mctl logs` reports that the transcript routes are not available yet (6.3). | P2 | P4 | none |
 | P11 | WP14 | Dispatch flows, `start_dispatch`, the intent nudge, the confirm summary's Codex line. The `inbox`, `check`, `pane` and task-id arguments call P8's `paneOpen`, which shows a placeholder until P12 lands (6.3). | P2 | P8, P5, P7 | **S10 or S11**; S8, S12, S15 |
-| P12 | WP17 | The pane: four tabs, item views, two-press approval, chat and follow, Residents, reviewer rows. Placements are dock and inline; the widget placement is v1.1 and falls back to the inline view (6.6). It replaces P8's placeholder. | P2 | P8, P9 | **S16**; S21, S22, S23 |
+| P12 | WP17 | The pane: four tabs, item views, two-press approval, chat and follow, Residents, reviewer rows, and a reserved `subagentLines` header slot that P15 fills. Placements are dock and inline; the widget placement is v1.1 and falls back to the inline view (6.6). It replaces P8's placeholder. | P2 | P8, P9 | **S16**; S21, S22, S23 |
 | P13 | WP6b | `mctl run`, `mctl claude` (starts Claude with no workspace and no added prompt; the launcher is P11's and appears once P11 and P14 are in, 6.3), `mctl daemon` | P2 | P10, P5 | none |
 | P14 | WP7 | `mctl setup` and `doctor` (every step except agents and Codex), `claude` detection, the "Mods can load" step and its checks (6.5), mod staging, install and the stale-version reinstall, the Foreman LaunchAgent | P2 | P8, P10 | S5, S14, S17, S18, S20 |
-| P15 | WP11 | Subagent lines for the pane, the agents setup step and doctor check | P2 | P11, P12, P14 | S4 |
+| P15 | WP11 | The subagent line formatter and its one pane edit (filling P12's reserved header slot, with a rendered-pane test), the agents setup step and doctor check | P2 | P11, P12, P14 | S4 |
 | P16 | WP15 | Packaging: the built mod ships outside `asar`, and the app stages it at start | P2 | P14 | none |
-| P17 | WP9 | Docs | P2 (drafting) | P14, P15, P12, P7, P13 | none |
+| P17 | WP9 | Docs | P2 (drafting) | P14, P15, P12, P7, P13, P6, P16 | none |
 | P18 | WP12 | The full-loop test, the flag-off sweep, the no-multiplexer check, the context check, the live walkthrough | P2 | all | none |
 
 Plus two scout tasks that open no pull request: **S28a** (starts with the plan) and **S28b** (after P4 and P9 merge). Each ends with a written final report (6.7).
@@ -218,6 +218,8 @@ flowchart TD
   P12 --> P17
   P7 --> P17
   P13 --> P17
+  P6 --> P17
+  P16 --> P17
   P17 --> P18[P18 WP12 full loop]
   P16 --> P18
 ```
@@ -251,6 +253,7 @@ Merge waves, in which phases inside a wave merge in any order:
 - **P14 and P16, upgrading an installed mod.** Staging a new build does not by itself change what `claude plugin list` shows, and the install step skips anything already listed. P14 therefore compares the installed version with the staged `plugin.json` version after staging, and if they differ it reinstalls (`claude plugin uninstall`, then marketplace add if needed, then install), never `claude plugin update` (D47). There is no rollback: uninstalling removes the old install and the staged folder already holds the new build. If the install after the uninstall fails, setup retries once. If it still fails, the mod may be left uninstalled, so setup prints the cause and the two recovery commands (`claude plugin marketplace add {stateDir}/mod`, `claude plugin install mission-control@mission-control --scope user`), finishes the other steps and exits 1, and doctor reports `mod-enabled` failed. The daemon keeps working and a session without the mod shows nothing. P14 tests the upgrade, and the double-failure path, against a fake `claude` runner with a stale installed version. P16 adds a test that an app-staged newer build makes doctor report the mod stale and `mctl setup` bring it current. S18 supplies the real-world evidence.
 - **P12, placements.** Dock and inline only. The widget placement (the desktop app's small form) is v1.1 (6.6): when Claude Code reports `widget`, the pane draws the inline form, and no widget-specific layout, task or test exists in this plan.
 - **P12.** The pane is drawn inside Claude Code, so Playwright cannot drive it. Its proof is the fake-host `node:test` files named in 7.22 and `claude plugin test` run locally, with output attached to the pull request (Q17). A Playwright spec is required only for a dashboard UI change, which is P1's Settings row.
+- **P15 and P12, subagent lines.** P12 reserves one `subagentLines` slot in `src/mod/pane/header.tsx` and renders nothing in it. P15 creates `src/shared/subagent-lines.ts`, fills that slot and edits nothing else in the pane. P15's test renders the pane header with the fake host at 40, 71 and 120 columns, with and without lines, and P12's tests must still pass.
 - **P17.** Docs list the pane, its keys, the `1` first-key note and residents, and say the pane's cost leaves out review calls (Q26). They also carry the mods troubleshooting section of 6.5.
 - **P18.** The no-multiplexer check asserts nothing in headless mode requires tmux or herdr, and the Focus checks of 4.2 run again against the whole stack.
 
@@ -312,7 +315,7 @@ The person-run spikes of P0 are not tasks: they need a managed Mac, several term
 | R6 | Parallel pull requests collide on hot files (`db.ts`, `routes.ts`, the route oracle, `register.ts`, `engine.ts`) | High with six agents at once. | Spec 8.1 hot-file owners; P1 stubs every route so later phases change values, not rows; each pull request rebases before merging. |
 | R7 | The Codex fail-fast gate changes dashboard behavior | Medium. It sits in the shared workflow engine. | Flag-gated; a flag-off test proves today's retries; Q25 keeps dashboard tasks out of FR-05. |
 | R8 | Existing Focus breaks indirectly (constraint 1) | Low, and the cost is high. | The three guards in 4.2, repeated in P18. |
-| R9 | Headless-only users never reach a retro because pane answers are not "corrections" | Medium. FR-06's learning loop starves for home-dispatched work. | S28a and S28b before the contract freezes; findings go to the FR-06 owner. |
+| R9 | Headless-only users never reach a retro because pane answers are not "corrections" | Medium. FR-06's learning loop starves for home-dispatched work. | S28a on `main` now and S28b once the routes exist; later findings are additive contract changes; findings go to the FR-06 owner. |
 | R10 | Poll cost with many items or several sessions (S23) | Low to medium. | The 3 s and 30-row fallbacks. |
 | R11 | A worker's text reaches the model or forges an inbox line | Low if the renderer is shared. | One renderer with fences (7.18, L15); P12 and P18 test the context check (F18). |
 | R12 | The mod cannot be tested in CI (Q17) | Certain. Adapter tests run locally only. | Flows are tested under `node:test` with the fake host in CI; local adapter output is attached to the pull request. |
@@ -334,7 +337,7 @@ Asked as selectable decisions on revision 1, and recorded here. Choices that dif
 5. **Where spike answers live.** Adopted, **differing from the recommendation**: task reports and Commonroom only, with no results file in the repository (5 and 6.4).
 6. **Phased follow-up.** Adopted: create the phased implementation plan, once this revision is approved.
 
-## 9. Repairs after the Plan Validation review (revisions 4 and 5)
+## 9. Repairs after the Plan Validation review (revisions 4 to 6)
 
 Revision 4:
 
@@ -356,5 +359,13 @@ Revision 5, after the second review round:
 | P13 promised a launcher that P11 builds | `mctl claude` starts plain Claude with no added prompt; the launcher is P11's and appears once P11 and P14 are in; exit check added | 6.1, 6.3, phase 13 |
 | P17 documents P13's commands but could merge first | P17 merges after P13; graph and task updated | 6.1, 6.2, phase 17 |
 | Reinstall recovery claimed the old install was kept, with no rollback step | No rollback is claimed: retry once, then print two recovery commands, exit 1, doctor reports `mod-enabled` failed; the double-failure path is tested | 6.3, 7 (R18), phase 14 |
+
+Revision 6, after the third review round:
+
+| Finding | Repair | Where |
+|---|---|---|
+| P15 promised subagent lines in the pane with no pane edit, and P12 merges first | P12 reserves a header slot; P15 owns the formatter and the one slot fill, with a rendered-pane test | 6.1, 6.3, phases 12 and 15 |
+| S28 said it ran before WP1 froze contracts, but S28b runs after P4 and P9 | S28a does not gate P1 and answers questions 1, 4, 5 and a first reading of 6; S28b answers 2, 3 and the rest of 6 later; later findings are additive under 8.1 rule 3 | 5.3, R9 |
+| P17 documents P3 to P16 but could merge before P6 and P16 | P6 and P16 are now prerequisites of P17; graph, table, phase 17 and the task updated | 6.1, 6.2, phase 17 |
 
 No recorded human decision changed. Decision 5 (spike answers in task reports and Commonroom) is kept: reports are task reports where an agent ran the spike, and Commonroom posts everywhere.

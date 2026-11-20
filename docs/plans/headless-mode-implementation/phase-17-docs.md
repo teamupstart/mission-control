@@ -4,7 +4,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **1. Outcome.** The docs describe headless mode as an alpha: what it is, how to set it up, the pane and its keys, residents, Codex readiness, and troubleshooting, and they match what actually merged.
 
-**2. Entry and dependencies.** Direct prerequisites: P14, P15, P12, P7, P13 (every user-facing package on `main`). Drafting can start after P2 but the final text is written against merged behavior.
+**2. Entry and dependencies.** Direct prerequisites: P14, P15, P12, P7, P13, P6, P16 (every user-facing package on `main`, including repository task skills and the packaged app). Drafting can start after P2 but the final text is written against merged behavior.
 
 **3. Scope.** `docs/` only: a headless-mode guide linked from `docs/README.md`; the pane and its keys including the `1` first-key note; residents and chat; Codex readiness and `mctl doctor --live`; the mods troubleshooting section of plan 6.5 (each switch, how doctor reports it, its fix, that disabling the mod in `/plugin` lasts only until the next `mctl setup`, and the two manual recovery commands for a failed mod reinstall); a statement that the pane's cost leaves out review calls (Q26); the unsupported runs (`claude -p`, `--bare`, `--safe-mode`, Codex non-interactive); and updates to `docs/feature-flags.md` and `docs/glossary.md` where they apply. Non-goals: code, and any new image committed as evidence.
 

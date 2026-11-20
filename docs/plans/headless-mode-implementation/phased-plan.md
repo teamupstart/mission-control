@@ -1,6 +1,6 @@
 # FR-05 headless mode: phased implementation plan
 
-Source: `docs/plans/headless-mode-implementation/plan.md` (revision 5). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
+Source: `docs/plans/headless-mode-implementation/plan.md` (revision 6). Spec: Commonroom `d2cdf331-4f03-4c77-957d-246cfde0017c`, version 18, sha256 `feece3821c5ef3ca868907c056b7fd6b87878c138c3ca881c90fd718d679e514`.
 
 ## 1. Incorporated decisions
 
@@ -11,6 +11,7 @@ Source: `docs/plans/headless-mode-implementation/plan.md` (revision 5). Spec: Co
 - Spike answers live in task reports and Commonroom, with no results file in the repository.
 - Review repairs (revision 4): widget placement is out of v1; P4 merges after P3; P8 owns `paneOpen` with a placeholder view that P12 replaces; P14 probes the installed mod version and reinstalls a stale build.
 - Review repairs (revision 5): P7 merges after P3; P10's `logs` has defined interim behavior until P9 lands; P13's launcher handoff is defined (`mctl claude` starts plain Claude until P11 and P14); P17 merges after P13; a failed mod reinstall has an honest recovery path, with no rollback claimed.
+- Review repairs (revision 6): P15 owns the one pane edit for subagent lines (the slot P12 reserves); S28a answers its questions on `main` and S28b's later findings land additively; P17 merges after P6 and P16.
 
 ## 2. Findings from the repository
 
@@ -84,7 +85,7 @@ Deviations from the "fewest phases" rubric, stated so they can be challenged:
 | P14 `phase-14-setup-doctor-and-mod-install` | WP7 | P8, P10 | S5, S14, S17, S18, S20 |
 | P15 `phase-15-subagents-and-agents-step` | WP11 | P11, P12, P14 | S4 |
 | P16 `phase-16-app-packaging-of-the-mod` | WP15 | P14 | none |
-| P17 `phase-17-docs` | WP9 | P14, P15, P12, P7, P13 | none |
+| P17 `phase-17-docs` | WP9 | P14, P15, P12, P7, P13, P6, P16 | none |
 | P18 `phase-18-full-loop-and-flag-off-sweep` | WP12 | P6, P13, P16, P17 | none |
 
 P18 lists P6, P13, P16 and P17 directly because every other phase is already a transitive prerequisite of one of them.
@@ -122,6 +123,8 @@ flowchart TD
   P12 --> P17
   P7 --> P17
   P13 --> P17
+  P6 --> P17
+  P16 --> P17
   P6 --> P18
   P13 --> P18
   P16 --> P18
@@ -138,6 +141,7 @@ Concurrency: after P2, P3, P5 and P6 run together; P4 and P7 follow P3. After P4
 - P4 owns `src/shared/home-dispatch-inbox.ts` (`workflowStages`, `residentLoopLabel`); P12 asks P4's owner for changes.
 - P8 owns `src/mod/register.ts`, `host.ts`; P11 and P12 add flows and panes with one registration line each.
 - P14 owns `scripts/install-service.mjs` and the setup-step files except `agents.ts` (P15) and `codex.ts` (P7).
+- P12 reserves the `subagentLines` slot in `src/mod/pane/header.tsx`; P15 owns the formatter and fills that slot, and edits nothing else in the pane.
 - P8 owns `paneOpen` and `paneClose` with a placeholder view; P12 replaces the view and changes no signature.
 - P14 owns the installed-version probe and stale-build reinstall; P16 relies on it.
 - Home-dispatched tasks are created through the dashboard path with no runtime override (Focus guard 1).

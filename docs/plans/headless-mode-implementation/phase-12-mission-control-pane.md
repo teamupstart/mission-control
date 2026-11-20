@@ -6,7 +6,7 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **2. Entry and dependencies.** Direct prerequisites: P8 (mod core, `Pane` and `ui.close` seams) and P9 (residents and chat routes). Gate: S16 and its fallback recorded in Commonroom; quote it and stop if absent. Soft spikes S21, S22, S23 with their documented fallbacks.
 
-**3. Scope.** `src/mod/pane/*`, `src/mod/pane.test.tsx`, `test/home-dispatch-mod-pane.test.ts`, `test/home-dispatch-mod-chat.test.ts`: opening and placement (dock and inline; the widget placement is v1.1, so a reported `widget` draws the inline view), the four tabs, item views, two-press `Approve rev {hash}`, Write an answer, Esc and Back, the chat and follow view with its 1.5 s poll, the Residents tab and actions, reviewer rows and the harness mark. Non-goals: dialogs (P11), new routes.
+**3. Scope.** `src/mod/pane/*`, `src/mod/pane.test.tsx`, `test/home-dispatch-mod-pane.test.ts`, `test/home-dispatch-mod-chat.test.ts`: opening and placement (dock and inline; the widget placement is v1.1, so a reported `widget` draws the inline view), the four tabs, item views, two-press `Approve rev {hash}`, Write an answer, Esc and Back, the chat and follow view with its 1.5 s poll, the Residents tab and actions, reviewer rows and the harness mark, and one reserved `subagentLines` slot in the task header (`src/mod/pane/header.tsx`) that renders nothing until P15 supplies lines. Non-goals: dialogs (P11), new routes.
 
 **4. Findings.** The pane opens only when asked (D52); no Alt hotkey (L32). `holdToasts` is never set (D53). Docked placement needs room; inline is the fallback (L33). Esc is refused with `ui.close`, then the pane is reopened with `focus` after 150 ms (L36, unguaranteed; S21). Buttons fire only while the pane holds the keyboard and no input has focus (L35). Chat polls one view at a time. Every row is cut to `bodyColumns`.
 
@@ -18,6 +18,6 @@ Source: `plan.md`, `phased-plan.md`. Common rules: `phased-plan.md` section 3. S
 
 **8. Merge and exit.** All tabs and chat work against the fakes; S16 answer quoted.
 
-**9. Handoff.** P15 adds subagent lines to the pane; P17 documents keys. This phase replaces P8's placeholder view behind the existing `paneOpen` calls.
+**9. Handoff.** P15 fills the reserved `subagentLines` header slot (the only pane edit it makes, and P12's header test keeps passing with the slot empty); P17 documents keys. This phase replaces P8's placeholder view behind the existing `paneOpen` calls.
 
 **10. Cross-phase audit.** P4 owns `workflowStages` and `residentLoopLabel`; this phase only reads them. P11 calls P8's `paneOpen`; this phase replaces P8's placeholder view behind that same call and adds no new entry point.

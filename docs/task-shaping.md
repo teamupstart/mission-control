@@ -8,7 +8,9 @@ at stage `select` chooses guidance for the task. How Mission Control reaches a s
 **What this build does.** You register a `command` shaper through the API and dry-run it
 against a repository. Every dispatch then calls the enabled shapers after its worktrees are
 provisioned and before the worker starts, and adds what they return to the worker's first
-prompt as a "Task context" section. The pending tile reads "Shaping context" while that runs,
+prompt as a "Task context" section. A backlog task handed over to an agent that is already
+running (`TaskManager.assign`, which Foreman's autopilot uses) is shaped the same way, after the
+handover resets the agent and before its first turn is typed. The pending tile reads "Shaping context" while that runs,
 and the session shows what it received and whether anything was degraded. A failing or slow
 shaper never stops the launch.
 
@@ -321,6 +323,10 @@ is recorded as truncated, never as degraded.
 ### While it runs
 
 The pending tile reads "Shaping context" between "Provisioning its worktree" and "Launching".
+The mark rides `task_upsert` as `shapingContext` and is never stored. `shapingView(task)` in
+`src/shared/shaping.ts` is the reader for a surface that shows the wait as well as the
+outcome: it returns `{ state: "shaping" }` while a dispatch or a handover runs the step, and
+`currentShaping(task)` otherwise, so its `state` is always `shaping`, `ok` or `degraded`.
 A task cancelled during the step stops there. The step's own deadline bounds it; a step that
 somehow does not finish within the deadline and two more seconds is recorded as `timed_out`
 and the worker launches without a section.
@@ -337,8 +343,9 @@ launch also shows a marker on its board card and its rail row.
 ### The record
 
 The task keeps one record: the latest launch that reached a worker. It is written once turn
-one has been handed over (after the embedded driver started, or after the pane paste was
-acknowledged, or for Pi with its launch), in one transaction with the delivered text. A launch
+one has been handed over (after the embedded driver started, after the pane paste was
+acknowledged, for Pi with its launch, or for a handover once its inject succeeded), in one
+transaction with the delivered text. A launch
 that fails before that point changes nothing. A launch that no shaper applied to, or that ran
 with the flag off, clears an earlier record. A launch whose only shaper failed keeps its
 degraded summary and has no text.

@@ -67,6 +67,26 @@ test("an upgraded database gains the column and the table, and an old row reads 
   assert.equal(db.getTaskShapingText("legacy"), null);
 });
 
+test("a schema 37 database upgrades to 38 with the column and the table, and a second open changes nothing", () => {
+  assert.equal(db.CURRENT_DATABASE_SCHEMA_VERSION, 38);
+  db.upsertTask(mkTask({ id: "before-38", status: "backlog" }));
+  db.closeDb();
+  const old = new DatabaseSync(dbPath);
+  old.exec("ALTER TABLE tasks DROP COLUMN shaping");
+  old.exec("DROP TABLE task_shaping_text");
+  old.exec("PRAGMA user_version = 37");
+  old.close();
+  const upgraded = db.openDb();
+  assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 38);
+  const columns = (upgraded.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>).map((column) => column.name);
+  assert.ok(columns.includes("shaping"));
+  assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_shaping_text'`).get());
+  assert.equal(db.getTask("before-38")?.shaping, undefined, "a task from before the column has no record");
+  db.closeDb();
+  db.openDb();
+  assert.equal(db.getTask("before-38")?.status, "backlog");
+});
+
 test("the one commit settles the summary and the text together, in each of the four combinations", () => {
   db.upsertTask(mkTask({ id: "combo", status: "running", sessionId: "s1" }));
   // A summary and text: a launch that delivered context.

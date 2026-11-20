@@ -1483,6 +1483,27 @@ export function withCurrentShaping<T extends { shaping?: TaskShaping | null; ses
   return (current ? { ...rest, shaping: current } : rest) as T;
 }
 
+/** A launch that is shaping context right now: the step has started and nothing is committed yet. */
+export interface ShapingInProgress {
+  state: "shaping";
+  startedAt: number;
+}
+
+/**
+ * The second stable reader, for a surface that has to show the wait as well as the outcome:
+ * `{ state: "shaping" }` while a dispatch or handover is running the step - the derived,
+ * unpersisted `shapingContext` mark that rides `task_upsert` - and `currentShaping(task)`
+ * otherwise. `state` is always `shaping`, `ok` or `degraded`; null when there is nothing to show.
+ */
+export function shapingView(task: {
+  shaping?: TaskShaping | null;
+  shapingContext?: { startedAt: number } | null;
+  sessionId: string | null;
+}): ShapingInProgress | TaskShaping | null {
+  if (task.shapingContext) return { state: "shaping", startedAt: task.shapingContext.startedAt };
+  return currentShaping(task);
+}
+
 /** What a task read carries: the state, the session it describes, and one line. */
 export interface TaskShapingRead {
   state: TaskShaping["state"];

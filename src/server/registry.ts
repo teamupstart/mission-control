@@ -7612,7 +7612,9 @@ export class Registry extends EventEmitter {
    */
   private withShaping(task: Task, previous: Task | undefined): Task {
     const shaping = previous ? previous.shaping ?? null : dbTaskShapingRecord(task.id);
-    const startedAt = task.status === "dispatching" ? this.shapingStartedAt.get(task.id) ?? null : null;
+    // Set by a dispatch or a handover for exactly as long as its step runs, and cleared in that
+    // step's `finally`, so it needs no status of its own: a handed-over task is still `backlog`.
+    const startedAt = this.shapingStartedAt.get(task.id) ?? null;
     if (!shaping && startedAt === null && task.shaping === undefined && task.shapingContext === undefined) return task;
     const { shaping: _record, shapingContext: _mark, ...rest } = task;
     return {
@@ -7623,8 +7625,8 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Mark a dispatching task as shaping context, or clear the mark. Never persisted: a restart
-   * drops it with the dispatch, whose own recovery reports the outcome.
+   * Mark a task as shaping context, for a dispatch or a handover, or clear the mark. Never
+   * persisted: a restart drops it with the step, whose own recovery reports the outcome.
    */
   setTaskShapingContext(taskId: string, active: boolean): void {
     if (active) this.shapingStartedAt.set(taskId, Date.now());

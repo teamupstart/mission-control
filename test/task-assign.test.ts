@@ -1545,3 +1545,103 @@ test("an assigned plan is typed the invocations THAT SESSION could actually run"
   assert.match(typed!, /request_plan_decisions/);
   assert.doesNotMatch(typed!, /submit_scout_artifacts/, "a plan is not handed a scout's contract");
 });
+
+// ---- task shaping on the handover ----
+
+const shapingFlags = await import("../src/server/feature-flags/index.ts");
+const { currentShaping, SHAPING_SECTION_PREAMBLE } = await import("../src/shared/shaping.ts");
+const { getTaskShapingText } = await import("../src/server/db.ts");
+type ShapeTask = typeof import("../src/server/shaping/engine.ts").shapeTask;
+
+const HANDOVER_SECTION = `${SHAPING_SECTION_PREAMBLE}\n\n### Acme guidance: Idempotent charges\nCharge once per key.`;
+
+function setShaping(enabled: boolean): void {
+  assert.equal(shapingFlags.applyFeatureFlagIntent({ kind: "flag", id: "task-shaping", enabled }).ok, true);
+}
+
+/** A shaper run answering with `section`, recording each input and whether the mark was up. */
+function handoverStandIn(section: string, r: InstanceType<typeof Registry>) {
+  const calls: Array<{ input: Parameters<ShapeTask>[0]; marked: boolean }> = [];
+  const shapeTask: ShapeTask = async (input) => {
+    calls.push({ input, marked: Boolean(r.getTask(input.context.taskId!)?.shapingContext) });
+    return {
+      section,
+      entries: [],
+      summary: {
+        state: "ok", at: Date.now(), durationMs: 2, entries: 1, bytes: Buffer.byteLength(section), truncated: false,
+        shapers: [{
+          id: "acme", label: "Acme guidance", stage: "select", origin: "registered", sha256: null, outcome: "ok",
+          reason: null, durationMs: 2, entries: 1, bytes: Buffer.byteLength(section), truncated: false, redacted: false, version: null,
+        }],
+      },
+    };
+  };
+  return { shapeTask, calls };
+}
+
+test("a handover is shaped like a launch: the section follows the contract and the record names the session", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-");
+    r.upsertTask(mkTask({ repoRoot: clone, intent: "THE-HANDED-OVER-TASK" }));
+    const probe = handoverStandIn(HANDOVER_SECTION, r);
+    let typed: string | null = null;
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+      inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+    });
+    assert.equal(res.ok, true);
+    assert.ok(typed!.endsWith(`\n\n${HANDOVER_SECTION}`), "the section ends the turn");
+    assert.ok(typed!.indexOf("THE-HANDED-OVER-TASK") < typed!.indexOf("## Task context"));
+    const call = probe.calls[0]!;
+    assert.equal(call.marked, true, "Shaping context shows while the step runs");
+    assert.equal(call.input.task, "THE-HANDED-OVER-TASK");
+    assert.equal(call.input.context.runtime, "terminal");
+    assert.equal(call.input.context.repositories.length, 1);
+    assert.equal(call.input.context.repositories[0]!.path, clone, "the session's own checkout");
+    assert.equal(call.input.trace, null, "a pane session was launched with no trace context");
+    const task = r.getTask("t1")!;
+    assert.equal(task.shapingContext, undefined, "and the mark is gone after");
+    assert.equal(currentShaping(task)?.sessionId, sessionId);
+    assert.equal(getTaskShapingText("t1")?.text, HANDOVER_SECTION);
+  } finally {
+    setShaping(false);
+  }
+});
+
+test("with the flag off a handover calls nothing and types no task context", async () => {
+  setShaping(false);
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-off-");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+  const probe = handoverStandIn(HANDOVER_SECTION, r);
+  let typed: string | null = null;
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+    inject: async (_session, text) => { typed = text; return { ok: true, pasted: true, submitVerified: true }; },
+  });
+  assert.equal(res.ok, true);
+  assert.equal(probe.calls.length, 0);
+  assert.doesNotMatch(typed!, /## Task context/);
+  assert.equal(r.getTask("t1")?.shaping, undefined);
+  assert.equal(getTaskShapingText("t1"), null);
+});
+
+test("a handover whose inject fails commits no shaping record", async () => {
+  setShaping(true);
+  try {
+    const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-shaping-refused-");
+    r.upsertTask(mkTask({ repoRoot: clone }));
+    const probe = handoverStandIn(HANDOVER_SECTION, r);
+    const res = await tasks.assign("t1", sessionId, {
+      paneReady, reset: cleanReset, shapeTask: probe.shapeTask,
+      inject: async () => ({ ok: false, pasted: false, submitVerified: false, error: "pane busy" }),
+    });
+    assert.equal(res.ok, false);
+    assert.equal(probe.calls.length, 1, "the handover was shaped");
+    assert.equal(r.getTask("t1")?.status, "backlog");
+    assert.equal(r.getTask("t1")?.shaping, undefined, "and nothing was recorded for a turn nobody received");
+    assert.equal(getTaskShapingText("t1"), null);
+  } finally {
+    setShaping(false);
+  }
+});

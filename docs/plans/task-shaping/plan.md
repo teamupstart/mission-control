@@ -25,7 +25,7 @@ interface" and were not reopened.
 | C2 | Shaping runs after Mission Control has collected all task input (prompt, kind, repositories, harness, after-work step) and before dispatch. The order is: gather context, select guidance, (later) route skills, `composeTurnOne`, dispatch. Shapers receive the complete collected input, not only the prompt. |
 | C3 | A visible "Shaping context" step of a few seconds at dispatch is fine. When a shaper is degraded, fails or times out, Mission Control dispatches anyway and shows `degraded`. It never blocks and never asks first. |
 | C4 | Everything sits behind one flag in the feature-flag registry and follows its three-pull-request lifecycle. |
-| C5 | Dashboard, `mctl` and headless dispatch are served by the same path, because they share `composeTurnOne`. |
+| C5 | Every launch is shaped, through `Dispatcher.dispatch` or `TaskManager.assign`: dashboard, `mctl` and headless dispatch share `composeTurnOne`, and autopilot's handover of a backlog task to a running agent shapes its first turn the same way (operator decision, 2026-11-20). |
 
 ## Decisions adopted
 
@@ -692,8 +692,6 @@ after phase 5.
 
 ## Non-goals
 
-- Shaping a task that is assigned into a live session. A session keeps the context it
-  launched with, as it does for standing instructions and FR-05 repository task skills.
 - Shaping pipeline tasks, whose prompts the pipeline engine composes.
 - Guidance for work done directly in a home session, which never goes through dispatch.
   FR-02 section 3.9 covers it with a tool the model calls.

@@ -2735,8 +2735,9 @@ export interface Task {
    */
   shaping?: TaskShaping | null;
   /**
-   * Set while this task's dispatch is shaping context, never persisted: the pending tile reads
-   * "Shaping context". A projection like `provisioning`, derived on every publish.
+   * Set while this task's dispatch or handover is shaping context, never persisted: the pending
+   * tile reads "Shaping context", and `shapingView` reports `shaping`. A projection like
+   * `provisioning`, derived on every publish and carried on `task_upsert`.
    */
   shapingContext?: { startedAt: number } | null;
   createdAt: number;

@@ -157,6 +157,9 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import { shapeLaunch, withTaskContext } from "./shaping/launch.ts";
+import type { shapeTask } from "./shaping/engine.ts";
+import { PASTE_TURN_ONE, DRIVER_TURN_ONE } from "./turn-one-budget.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { getSkillsConfig } from "./skills/config.ts";
@@ -224,7 +227,7 @@ import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
-import { noteTaskDeparture } from "./telemetry/index.ts";
+import { noteTaskDeparture, sessionTraceContext } from "./telemetry/index.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { getWorkflowPolicy, resolveTaskWorkflowId } from "./workflows/config.ts";
 import { canonicalWorktreePath } from "./worktrees/path.ts";
@@ -849,6 +852,11 @@ export interface AssignOptions {
   confirmReset?: boolean;
   /** Deliver the task's intent to the agent. The one call that types. */
   inject?: typeof injectPrompt;
+  /**
+   * Task shaping's engine, for a test that stands in a run. Production takes `shapeTask`, and
+   * calls it only while the `task-shaping` flag is on.
+   */
+  shapeTask?: typeof shapeTask;
   /** Ask whether the pane could take a prompt, before anything is done to the agent. */
   paneReady?: (session: Session) => Promise<ActionResult>;
   /** Hand the agent's checkout back in the shape a fresh one starts in. */
@@ -5255,6 +5263,27 @@ export class TaskManager {
     // this path. It matters more on an assignment than on a dispatch - the session already
     // holds a conversation, so the offset recorded now is the only thing that later
     // separates this scout's follow-ups from whatever the agent was doing beforehand.
+    // Task shaping on the handover, the second call site beside `Dispatcher.dispatch`: the same
+    // input builder, budget path and section helper, awaited before the turn is composed. The
+    // repository is the session's own checkout, which is the one slot `assign` allows, on the
+    // branch the reset above left it on. Its trace context is the one the session's agent was
+    // launched with - an embedded session's own, none for a pane. A message to a live session
+    // has no byte ceiling, so the configured total applies. It never throws and never refuses.
+    const live = this.registry.getSession(s.id) ?? s;
+    const shaping = await shapeLaunch({
+      task: { ...ready, worktreePath: live.cwd, branch: live.gitBranch ?? null, baseSha: null },
+      runtime: live.runtime,
+      workflowName: ready.workflowId ? this.workflowNameFor(ready.workflowId) : null,
+      trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
+      delivery: live.runtime === "sdk" ? DRIVER_TURN_ONE : PASTE_TURN_ONE,
+      turnOnes: [],
+      launch: null,
+      stillDispatching: () => this.registry.getTask(t.id)?.status === "backlog",
+      onShaping: (active) => this.registry.setTaskShapingContext(t.id, active),
+    }, { shapeTask: opts.shapeTask });
+    if (this.registry.getTask(t.id)?.status !== "backlog") {
+      return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
+    }
     const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
     // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
     // a refusal does - the task stays in the backlog, so a surviving row would claim an
@@ -5279,13 +5308,13 @@ export class TaskManager {
       const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
       r = await inject(
         this.registry.getSession(s.id) ?? s,
-        withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
+        withTaskContext(withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
           fallbackRoot: s.cwd,
           planDiscovery,
           planSkills: planSkills?.ok ? planSkills.commands : null,
           grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
           workflowEvidence,
-        }),
+        }), shaping.section),
         undefined,
         () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id),
       );
@@ -5317,6 +5346,10 @@ export class TaskManager {
     // for a retriage to land, and priority/labels stay editable in every status - so a
     // stale spread here writes yesterday's priority back over one just set on the card,
     // silently, on a gesture that was only meant to hand the task to an agent.
+    // The turn reached the session: only now does this handover's shaping record replace the
+    // task's last one, stamped with the session it was delivered to. Settled whether or not
+    // shaping ran, so a handover nothing shaped clears an earlier record, as a launch does.
+    this.registry.commitTaskShaping(t.id, shaping.summary ? { ...shaping.summary, sessionId: s.id } : null, shaping.section);
     const cur = this.registry.getTask(t.id) ?? t;
     const now = Date.now();
     this.registry.upsertTask({

@@ -2,6 +2,7 @@ import { taskHasRepository } from "@shared/task.ts";
 import { dispatchPhase, type DispatchPhase } from "@shared/session.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import type { Task, TaskProvisioning } from "@shared/types.ts";
+import { shapingView } from "@shared/shaping.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { repoLeaf } from "../lib/format.ts";
 import { ClaimStopButton, formatElapsed, useNow } from "./ClaimProgress.tsx";
@@ -57,7 +58,7 @@ const PHASE_COPY: Record<DispatchPhase, (task: Task) => string> = {
 function phaseCopy(task: Task, phase: DispatchPhase, shaping: boolean): string {
   if (task.provisioning) return "Installing dependencies";
   // Between "Provisioning its worktree" and "Launching", while task shaping asks its shapers.
-  if (shaping && task.shapingContext) return "Shaping context";
+  if (shaping && shapingView(task)?.state === "shaping") return "Shaping context";
   return PHASE_COPY[phase](task);
 }
 

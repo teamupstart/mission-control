@@ -3,7 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
-import { currentShaping, taskShapingRead, withCurrentShaping, type TaskShaping } from "../src/shared/shaping.ts";
+import { currentShaping, shapingView, taskShapingRead, withCurrentShaping, type TaskShaping } from "../src/shared/shaping.ts";
 import type { Session, TaskSummary } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 import { ShapingChip, ShapingRailMark, ShapingTileFlag, shapingEntries } from "../src/web/components/ShapingChip.tsx";
@@ -40,6 +40,18 @@ test("currentShaping shows a record only while it names the task's current sessi
   assert.equal(currentShaping({ shaping: record("s1", "ok"), sessionId: null }), null, "no current session");
   assert.equal(currentShaping({ shaping: { ...record("s1", "ok"), sessionId: undefined }, sessionId: "s1" }), null, "an unstamped record");
   assert.equal(currentShaping({ shaping: null, sessionId: "s1" }), null);
+});
+
+test("shapingView reports shaping while the mark is set, and the current record otherwise", () => {
+  assert.deepEqual(shapingView({ sessionId: null, shapingContext: { startedAt: 7 } }), { state: "shaping", startedAt: 7 });
+  // The wait wins over an earlier launch's record, which is what the launch in progress replaces.
+  assert.equal(shapingView({ sessionId: "s1", shaping: record("s1", "ok"), shapingContext: { startedAt: 7 } })?.state, "shaping");
+  assert.deepEqual(shapingView({ sessionId: "s1", shaping: record("s1", "degraded") }), record("s1", "degraded"));
+  assert.equal(shapingView({ sessionId: "s1", shaping: record("s0", "degraded") }), null, "never another session's record");
+  assert.equal(shapingView({ sessionId: "s1", shapingContext: null }), null);
+  for (const view of [shapingView({ sessionId: null, shapingContext: { startedAt: 1 } }), record("s1", "ok"), record("s1", "degraded")]) {
+    assert.ok(["shaping", "ok", "degraded"].includes(view!.state));
+  }
 });
 
 test("task reads drop a record that names another session and keep the current one", () => {

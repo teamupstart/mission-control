@@ -264,7 +264,10 @@ let db: DatabaseSync | undefined;
 //     and nothing writes any of it while the `headless-mode` flag is off.
 // 37: a hibernated task's record (`tasks.hibernation`, @shared/hibernation.ts), nullable with no
 //     backfill: no task was hibernated before it existed.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 37;
+// 38: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
+//     @shared/shaping.ts) and the section it delivered (`task_shaping_text`). Nullable and a new
+//     table, with no backfill: no launch was shaped before they existed.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 38;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

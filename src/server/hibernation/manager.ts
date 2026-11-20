@@ -34,6 +34,9 @@ export type HibernationResult =
 /** How long an Agent SDK Resume waits for the woken driver to report the conversation it opened. */
 export const CONVERSATION_CONFIRM_MS = 30_000;
 
+/** What a Resume answers when its task was deleted, cancelled or completed while it ran. */
+const TASK_CHANGED = "The task changed while it was resuming";
+
 /** How long Hibernate waits for a stopped terminal agent's process to be gone. */
 export const STOP_CONFIRM_MS = 10_000;
 
@@ -388,10 +391,23 @@ export class HibernationManager {
       : null;
   }
 
-  /** A woken driver whose task changed under it belongs to nobody: stop it, never bind it. */
+  /**
+   * A woken driver whose task changed under it belongs to nobody: stop it, never bind it. Its
+   * row stays `hibernated` (`SdkSupervisor.wakeBound`). A stop that fails is said, not dropped:
+   * there is no task left to record it on.
+   */
   private async taskChangedWhileResuming(session: Session): Promise<HibernationResult> {
-    await this.supervisor!.stop(session.id).catch(() => {});
-    return { ok: false, status: 409, error: "The task changed while it was resuming." };
+    try {
+      await this.supervisor!.stop(session.id);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 409,
+        error: `${TASK_CHANGED}, and its agent in "${session.name}" could not be stopped ` +
+          `(${error instanceof Error ? error.message : String(error)}). Stop that session.`,
+      };
+    }
+    return { ok: false, status: 409, error: `${TASK_CHANGED}.` };
   }
 
   /**
@@ -501,8 +517,15 @@ export class HibernationManager {
     }
     const current = this.stillHibernated(task.id, record);
     if (!current) {
-      await this.terminal.stop(session).catch(() => {});
-      return { ok: false, status: 409, error: "The task changed while it was resuming." };
+      // Deleted, cancelled or completed while the agent started. The launch is undone exactly as
+      // a refused one is; there is no hibernated task left to record it on, so what could not be
+      // undone is said here instead.
+      const undone = await this.undoLaunch(home, prepared);
+      return {
+        ok: false,
+        status: 409,
+        error: undone.ok ? `${TASK_CHANGED}.` : `${TASK_CHANGED}, and ${undone.detail}.`,
+      };
     }
     // The checkout may have been replaced while the agent started: verify its identity again.
     const replaced = checkoutMismatch(record.checkout);
@@ -523,13 +546,25 @@ export class HibernationManager {
   }
 
   /**
-   * Undo a launch that will not be bound. Revoking an unclaimed lease means its guard can never
-   * start the agent. Closing the home of one that already started only signals it, so the
-   * launch counts as undone once its lease is released too - the guard's own word that the
-   * agent and everything it started have exited. Otherwise the launch is recorded on the
-   * failure, and the next Resume will not launch beside it.
+   * Undo a launch that will not be bound, and record it on the failure when that could not be
+   * confirmed, so the next Resume will not launch beside it.
    */
   private async abandonLaunch(taskId: string, reason: string, home: SpawnedHome, prepared: PreparedResume): Promise<HibernationResult> {
+    const undone = await this.undoLaunch(home, prepared);
+    if (undone.ok) return this.resumeFailed(taskId, reason);
+    return this.resumeFailed(taskId, `${reason}, and ${undone.detail}, then Retry`, undone.launch);
+  }
+
+  /**
+   * Undo a launch. Revoking an unclaimed lease means its guard can never start the agent.
+   * Closing the home of one that already started only signals it, so the launch counts as undone
+   * once its lease is released too - the guard's own word that the agent and everything it
+   * started have exited. Otherwise it answers the launch, and what the operator has to do.
+   */
+  private async undoLaunch(
+    home: SpawnedHome,
+    prepared: PreparedResume,
+  ): Promise<{ ok: true } | { ok: false; launch: TaskHibernationLaunch; detail: string }> {
     let revoked = false;
     try {
       revoked = prepared.dispose();
@@ -544,16 +579,16 @@ export class HibernationManager {
       leaseId: prepared.lease.id,
     };
     const closed = await this.terminal.closeHome(home);
-    if (revoked || (closed.ok && await this.launchEnded(launch))) return this.resumeFailed(taskId, reason);
-    return this.resumeFailed(
-      taskId,
-      closed.ok
-        ? `${reason}, and the agent it started was still running ${Math.round(this.terminal.launchEndMs / 1000)} seconds ` +
-          `after ${home.homeName} closed. Stop that agent, then Retry`
-        : `${reason}, and ${home.homeName} could not be closed (${closed.error ?? "no reason given"}). ` +
-          "Its agent may still be running: close that terminal, then Retry",
+    if (revoked || (closed.ok && await this.launchEnded(launch))) return { ok: true };
+    return {
+      ok: false,
       launch,
-    );
+      detail: closed.ok
+        ? `the agent it started was still running ${Math.round(this.terminal.launchEndMs / 1000)} seconds ` +
+          `after ${home.homeName} closed. Stop that agent`
+        : `${home.homeName} could not be closed (${closed.error ?? "no reason given"}). ` +
+          "Its agent may still be running: close that terminal",
+    };
   }
 
   /** Whether a launch has ended, given `launchEndMs` for its lease to be released. */

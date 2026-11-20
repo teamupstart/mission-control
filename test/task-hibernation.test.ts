@@ -577,8 +577,11 @@ function terminalFleet(
      * to the hibernated one while the launch is coming up.
      */
     switcher?: boolean;
-    /** What the launched agent does while its launch proof is being read. */
-    afterProof?: "switch" | "exit";
+    /**
+     * What happens while the launched agent's proof is being read: it switches conversation or
+     * exits, or the operator deletes or cancels the task.
+     */
+    afterProof?: "switch" | "exit" | "delete" | "cancel";
     /** The checkout is removed and recreated at its path while the launch comes up. */
     replaceDuringLaunch?: boolean;
   } = {},
@@ -647,7 +650,10 @@ function terminalFleet(
           // While the proof is being read - after the hooks that brought it up have landed.
           await new Promise((resolve) => setImmediate(resolve));
           if (options.afterProof === "switch") started(registry, cwd, "%2", "conv-elsewhere");
-          else registry.applyDiscovery([...resident]);
+          else if (options.afterProof === "delete") registry.removeTask("term");
+          else if (options.afterProof === "cancel") {
+            registry.upsertTask({ ...registry.getTask("term")!, status: "cancelled", hibernation: null });
+          } else registry.applyDiscovery([...resident]);
         }
         return ours;
       },
@@ -794,6 +800,36 @@ test("a failed terminal Resume whose terminal cannot be closed refuses to launch
   assert.equal(f.spawned.length, 2);
   assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
   assert.equal(f.registry.getTask("term")?.hibernation ?? null, null);
+});
+
+test("a terminal Resume whose task is deleted or cancelled meanwhile undoes its launch and never binds it", async (t) => {
+  // Deleted: the launch is undone through the same cleanup as any refused launch.
+  const deleted = terminalFleet(checkout("terminal-task-deleted"), { afterProof: "delete" });
+  t.after(() => deleted.tasks.stopMissionSessionClosures());
+  assert.equal((await deleted.hibernation.hibernate(deleted.old)).ok, true);
+  deleted.controls.live = true;
+  const gone = await deleted.hibernation.resume("term");
+  assert.equal(gone.ok ? 0 : gone.status, 409);
+  assert.equal(gone.ok ? "" : gone.error, "The task changed while it was resuming.");
+  assert.deepEqual(deleted.closed, ["Terminal task"], "its new home is closed");
+  assert.equal(deleted.controls.live, false, "and its launch confirmed ended");
+  assert.equal(deleted.registry.getTask("term"), undefined, "the task is not recreated");
+  assert.equal(deleted.registry.getSession(deleted.fresh)?.task ?? null, null);
+
+  // Cancelled, and the home cannot be closed: there is no task to record the launch on, so the
+  // answer says what may still be running.
+  const cancelled = terminalFleet(checkout("terminal-task-cancelled"), { afterProof: "cancel", closeFailures: 1 });
+  t.after(() => cancelled.tasks.stopMissionSessionClosures());
+  assert.equal((await cancelled.hibernation.hibernate(cancelled.old)).ok, true);
+  cancelled.controls.live = true;
+  const stuck = await cancelled.hibernation.resume("term");
+  assert.equal(stuck.ok ? 0 : stuck.status, 409);
+  assert.match(stuck.ok ? "" : stuck.error,
+    /^The task changed while it was resuming, and Terminal task could not be closed \(tmux: no server running\)\. Its agent may still be running: close that terminal\.$/);
+  assert.deepEqual(cancelled.closed, ["Terminal task"]);
+  const task = cancelled.registry.getTask("term")!;
+  assert.equal(task.status, "cancelled", "a cancelled task is not overwritten");
+  assert.equal(task.sessionId, null);
 });
 
 test("a failed terminal Resume whose agent outlives its closed terminal keeps the launch recorded", async (t) => {

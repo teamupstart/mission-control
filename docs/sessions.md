@@ -976,7 +976,9 @@ if it is still live, in the saved checkout and on the saved conversation at that
 Agent SDK session only if its driver is still running. A woken Agent SDK session whose driver
 ends before the task is bound, for any reason, keeps the status `hibernated`, so Retry can still
 reopen it. If the task itself was deleted, cancelled or completed while the agent was starting,
-nothing is bound and the agent is stopped. If an
+nothing is bound: an Agent SDK driver is stopped, and a terminal launch is undone the same way as
+a failed one. Since there is no hibernated task left to record it on, an agent that could not be
+stopped is named in the reply instead. If an
 Agent SDK driver cannot be stopped again, the row says so, and the next Resume stops that driver
 before it launches anything.
 

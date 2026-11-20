@@ -214,10 +214,14 @@ All three routes are behind the flag and answer 404 while it is off.
 
   A refused intent answers 400 with `{ error, reason }`.
 - **`POST /api/shaping/test`** takes `{ id, repository, prompt?, kind? }`, where `repository` is
-  an absolute path to a local checkout, and runs that one shaper through the shaping engine,
-  whatever its stored choice. It answers `{ summary, section, entries }`: each shaper's outcome, reason,
-  duration and version, the section that would be injected, and each entry in it. A shaper that
-  fails, times out or answers garbage is an outcome in a 200, never an error reply.
+  an absolute path inside a local Git checkout, and runs that one shaper through the shaping
+  engine, whatever its stored choice. A path that is not inside a checkout, such as a mistyped
+  one that names an ordinary folder, answers 400 `unknown_repository` and runs nothing. A
+  gatherer runs at the path given. The repository is named after the checkout, or after the
+  repository that owns it when the path is a linked worktree. It answers
+  `{ summary, section, entries }`: each shaper's outcome, reason, duration and version, the
+  section that would be injected, and each entry in it. A shaper that fails, times out or
+  answers garbage is an outcome in a 200, never an error reply.
 
 ### Which shapers run
 

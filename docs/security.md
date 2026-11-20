@@ -400,7 +400,10 @@ child was spawned with, inherited or named, is replaced with `[redacted]`. That 
 failure's stderr and the reasons drawn from a reply on stdout: an `error` it states, its
 degraded `notes`, and a validation failure. A value is replaced anywhere it appears when it is
 four characters or longer, and as a whole token when it is shorter, so `LANG=C` does not blank
-every "C" in the message. Entry bodies are the shaper's content and are not rewritten.
+every "C" in the message. Overlapping or adjacent matches, including two values that overlap,
+are replaced as one span, so no part of either survives. Marking the matches is linear in the
+text for each value, so a reply at the 256 KiB cap cannot stall the daemon. Entry bodies are
+the shaper's content and are not rewritten.
 
 When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
 started outside its process group cannot keep them open after the group is killed.

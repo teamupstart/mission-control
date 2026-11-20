@@ -100,10 +100,7 @@ function seconds(ms: number): string {
 /** Below this length a value is redacted only where it stands as a whole token. */
 const SHORT_VALUE_CHARS = 4;
 
-/**
- * Every value in the environment the child was actually spawned with, inherited and named
- * alike, longest first so a value that contains another is replaced whole.
- */
+/** Every distinct, non-empty value in the environment the child was actually spawned with. */
 export function receivedValues(env: NodeJS.ProcessEnv): string[] {
   const values = Object.values(env).filter((value): value is string => typeof value === "string" && value.length > 0);
   return [...new Set(values)].sort((a, b) => b.length - a.length);
@@ -114,36 +111,62 @@ function escapeRegExp(value: string): string {
 }
 
 /**
+ * Every start offset of `value` in `text`, overlapping occurrences included: a search that
+ * resumed after each match would step over a second copy that begins inside the first.
+ */
+function occurrences(text: string, value: string, wholeToken: boolean): number[] {
+  const starts: number[] = [];
+  if (!wholeToken) {
+    for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) starts.push(at);
+    return starts;
+  }
+  const pattern = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(value)}(?![A-Za-z0-9])`, "g");
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    starts.push(match.index);
+    pattern.lastIndex = match.index + 1;
+  }
+  return starts;
+}
+
+/**
  * Remove every value the child received from text it printed, before it is recorded. A value of
  * four characters or more is replaced wherever it appears. A shorter one is replaced only as a
  * whole token, between non-alphanumerics: `LANG=C` or `SHLVL=1` matched as substrings would blank
  * every "C" or "1" in the message and leave nothing to diagnose.
+ *
+ * Every occurrence of every value is marked on the original text, and overlapping or touching
+ * marks merge into one span, so two values that overlap are redacted over their combined extent
+ * and no part of either survives. The marks go into a difference array, so the work is linear in
+ * the text for each value, however many matches it has: up to 256 KiB of shaper output never
+ * costs the event loop more than that.
  */
 export function redactReceived(text: string, values: readonly string[], dropBefore = 0): string {
-  // Every occurrence, as an interval of the original text. Longest values claim first, and a
-  // later match that overlaps a claimed one is skipped, so the replacement text is never searched.
-  const claimed: Array<[number, number]> = [];
-  const free = (start: number, end: number) => claimed.every(([a, b]) => end <= a || start >= b);
+  const depth = new Int32Array(text.length + 1);
+  let marked = false;
   for (const value of values) {
-    const pattern = value.length >= SHORT_VALUE_CHARS
-      ? new RegExp(escapeRegExp(value), "g")
-      : new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(value)}(?![A-Za-z0-9])`, "g");
-    for (const match of text.matchAll(pattern)) {
-      const start = match.index;
-      const end = start + value.length;
-      if (free(start, end)) claimed.push([start, end]);
+    for (const start of occurrences(text, value, value.length < SHORT_VALUE_CHARS)) {
+      depth[start]! += 1;
+      depth[start + value.length]! -= 1;
+      marked = true;
     }
   }
-  claimed.sort((a, b) => a[0] - b[0]);
-  // `dropBefore` discards unmatched text in front of that offset: a value whose start was cut
+  if (!marked && dropBefore <= 0) return text;
+  // `dropBefore` discards unmarked text in front of that offset: a value whose start was cut
   // off by a bounded buffer lives there, as a piece no pattern can recognise.
   let out = "";
-  let at = 0;
-  for (const [start, end] of claimed) {
-    out += text.slice(Math.max(at, dropBefore), Math.max(start, dropBefore)) + "[redacted]";
-    at = end;
+  let covered = 0;
+  let runStart = 0;
+  for (let at = 0; at <= text.length; at++) {
+    const wasCovered = covered > 0;
+    covered += depth[at]!;
+    const isCovered = at < text.length && covered > 0;
+    if (isCovered === wasCovered) continue;
+    if (wasCovered) out += "[redacted]";
+    else out += text.slice(Math.max(runStart, dropBefore), Math.max(at, dropBefore));
+    runStart = at;
   }
-  return out + text.slice(Math.max(at, dropBefore));
+  if (covered <= 0 && runStart < text.length) out += text.slice(Math.max(runStart, dropBefore));
+  return out;
 }
 
 /** Give the owner back every permission on `dir` and each directory beneath it. Symlinks are never followed. */

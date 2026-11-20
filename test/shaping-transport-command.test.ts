@@ -181,6 +181,24 @@ test("redaction replaces long values anywhere and short ones only as whole token
   assert.equal(redactReceived("secret then text", values, 3), "[redacted] then text", "a match across the margin is still a redaction");
 });
 
+test("overlapping values are redacted over their combined span, a value overlapping itself too", () => {
+  assert.equal(redactReceived("xx abcdefghi yy", ["abcdef", "defghi"]), "xx [redacted] yy", "no tail of the second value survives");
+  assert.equal(redactReceived("xx defghi-abcdef yy", ["abcdef", "defghi"]), "xx [redacted]-[redacted] yy", "separate values stay separate");
+  assert.equal(redactReceived("<ababab>", ["abab"]), "<[redacted]>", "a second copy that starts inside the first is covered");
+  assert.equal(redactReceived("a1b 1 1-1", ["1"]), "a1b [redacted] [redacted]-[redacted]", "short tokens next to each other");
+});
+
+test("redacting 256 KiB of shaper output with thousands of matches stays linear", () => {
+  const values = ["aaaa", "aaab", ...Array.from({ length: 100 }, (_, i) => `value-${i}-unused`)];
+  const text = "a".repeat(256 * 1024);
+  const started = Date.now();
+  assert.equal(redactReceived(text, values), "[redacted]");
+  const error = `rejected ${"tok1 ".repeat(50_000)}`;
+  assert.equal(redactReceived(error, ["tok1"]), `rejected ${"[redacted] ".repeat(50_000)}`);
+  // Generous for a busy machine: the quadratic version took minutes on this input.
+  assert.ok(Date.now() - started < 5_000, `took ${Date.now() - started} ms`);
+});
+
 test("a value cut at the front of a long stderr tail never survives as a fragment", async () => {
   const saved = process.env.SHAPER_FIXTURE_LONG;
   process.env.SHAPER_FIXTURE_LONG = `long-${"v".repeat(400)}-value`;

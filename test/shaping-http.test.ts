@@ -3,6 +3,7 @@
 // a reload after a settings restore.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,10 @@ const { createSettingsBackupEnvelope } = await import("../src/server/settings-ba
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
 const repository = join(home, "repos", "billing-api");
 mkdirSync(repository, { recursive: true });
+// A real checkout: a dry run refuses a directory that is not inside one.
+execFileSync("git", ["init", "-q", repository]);
+const plainFolder = join(home, "not-a-checkout");
+mkdirSync(plainFolder, { recursive: true });
 const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 
@@ -198,6 +203,10 @@ test("a dry run refuses an unknown shaper, a missing repository and a malformed 
   assert.equal((await dryRun({ id: "ghost", repository })).status, 404);
   await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });
   assert.equal((await dryRun({ id: "known", repository: join(home, "missing") })).status, 400);
+  // An ordinary folder is not run against: a mistyped path must not report a successful run.
+  const plain = await dryRun({ id: "known", repository: plainFolder });
+  assert.equal(plain.status, 400);
+  assert.deepEqual(await plain.json(), { error: "unknown_repository", reason: "The path is not inside a Git checkout." });
   assert.equal((await dryRun({ id: "known", repository: "relative/path" })).status, 400);
   assert.equal((await dryRun({})).status, 400);
 });

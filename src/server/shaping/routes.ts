@@ -1,10 +1,11 @@
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Hono } from "hono";
 import { ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
 import { DEFAULT_TASK_KIND } from "@shared/types.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
+import { resolveRepoRoot } from "../repos.ts";
 import { discoverShapers } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
@@ -46,12 +47,20 @@ export function registerShapingRoutes(app: Hono): void {
     let directory = false;
     try { directory = statSync(repository).isDirectory(); } catch { directory = false; }
     if (!directory) return c.json({ error: "unknown_repository", reason: "The repository is not a directory on this machine." }, 400);
+    // A Git checkout, through the same resolver dispatch uses, so a mistyped path that names an
+    // ordinary folder is refused instead of running a gatherer there and reporting success. The
+    // gatherer still runs where it was pointed: the resolver walks a linked worktree back to its
+    // owner, which names the repository but is not the tree under test.
+    const repoRoot = await resolveRepoRoot(repository);
+    if (!repoRoot) return c.json({ error: "unknown_repository", reason: "The path is not inside a Git checkout." }, 400);
+    let checkout = repository;
+    try { checkout = realpathSync(repository); } catch { /* Keep the path as given. */ }
     const result = await dryRunShaper(id, {
       task: prompt ?? "",
       context: {
         taskId: null, title: "", kind: kind ?? DEFAULT_TASK_KIND, harness: null, runtime: null,
         afterWork: null, labels: [], priority: null,
-        repositories: [{ name: basename(repository), role: "primary", branch: null, baseSha: null, path: repository }],
+        repositories: [{ name: basename(repoRoot), role: "primary", branch: null, baseSha: null, path: checkout }],
       },
     });
     if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unknown_shaper" ? 404 : 400);

@@ -10,13 +10,18 @@ import { RESIDENT_EDITOR_SECTIONS, residentWeekSpans } from "../src/web/resident
 
 const on: FeatureFlagsConfig = { enableAll: false, overrides: { "resident-active-hours": true } };
 const off: FeatureFlagsConfig = { enableAll: false, overrides: {} };
-const settings = ResidentProfileRevisionSchema.parse({
-  identity: { name: "Night Watch" }, persona: { personaId: "p" },
-  // Every day 00:00-00:01 UTC: whatever the clock, a wake due a minute after the window closes sleeps.
-  schedule: { enabled: true, days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "00:01", timeZone: "UTC" },
-});
+const HOUR = 3_600_000;
+const hhmm = (at: number) => new Date(at).toISOString().slice(11, 16);
+/** Every day, a UTC window from `from` to `to` hours away from now (an overnight window wraps). */
+function windowFromNow(from: number, to: number) {
+  const now = Date.now();
+  return ResidentProfileRevisionSchema.parse({
+    identity: { name: "Night Watch" }, persona: { personaId: "p" },
+    schedule: { enabled: true, days: [0, 1, 2, 3, 4, 5, 6], start: hhmm(now + from * HOUR), end: hhmm(now + to * HOUR), timeZone: "UTC" },
+  });
+}
 
-function statusLine(flags: FeatureFlagsConfig, nextWakeAt: number) {
+function statusLine(flags: FeatureFlagsConfig, nextWakeAt: number, settings = windowFromNow(3, 4)) {
   const loop: ResidentLoopStatus & { settings: typeof settings } = {
     loopState: "waiting", iteration: 3, lastSeq: 3, nextWakeAt, consumedGeneration: 2, pauseReason: null, wakeReason: null, runRequestedAt: null, settings,
   };
@@ -24,12 +29,21 @@ function statusLine(flags: FeatureFlagsConfig, nextWakeAt: number) {
 }
 
 test("a waiting resident outside its active hours reads as asleep with the time its wake goes out", () => {
-  // Tomorrow's 12:00 UTC: always in the future, and always outside the one-minute window.
-  const due = new Date(); due.setUTCDate(due.getUTCDate() + 1); due.setUTCHours(12, 0, 0, 0);
-  const html = statusLine(on, due.getTime());
+  // The window opens three hours from now, so now and a wake due in an hour are both outside it.
+  const due = Date.now() + HOUR;
+  const html = statusLine(on, due);
   assert.match(html, /asleep · iteration 3 · wakes /);
   assert.doesNotMatch(html, /next in/);
-  assert.match(statusLine(off, due.getTime()), /waiting · iteration 3 · next in/, "the preview off: the ordinary countdown");
+  assert.match(statusLine(off, due), /waiting · iteration 3 · next in/, "the preview off: the ordinary countdown");
+});
+
+test("inside its window a resident whose next wake is held reads as waiting, with the held wake's time", () => {
+  // Awake now (the window closes in an hour), but the wake due in two hours falls after it closes.
+  const html = statusLine(on, Date.now() + 2 * HOUR, windowFromNow(-1, 1));
+  assert.match(html, /waiting · iteration 3 · wakes /, "still awake: not asleep before the window closes");
+  assert.doesNotMatch(html, /asleep|next in/);
+  // A wake due inside the open window is the ordinary countdown.
+  assert.match(statusLine(on, Date.now() + 30 * 60_000, windowFromNow(-1, 1)), /waiting · iteration 3 · next in 30m/);
 });
 
 test("the Active hours section is a preview section with day toggles, times and a week strip", () => {

@@ -2,7 +2,7 @@ import { useContext, useEffect, useState } from "react";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
 import { residentRestartRequestId, type ResidentLoopStatus, type ResidentRunSummary } from "@shared/residents.ts";
-import { residentSleepingUntil, residentWakeOpeningLabel } from "@shared/resident-schedule.ts";
+import { residentAwakeAt, residentSleepingUntil, residentWakeOpeningLabel } from "@shared/resident-schedule.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { authorizeResidentLaunch } from "../lib/session-control-authorization.ts";
@@ -40,18 +40,22 @@ export function ResidentLoopStatusLine({ loop, session, tags = false }: {
   const activeHours = useFeatureFlag("resident-active-hours");
   const held = loop.loopState !== "paused" && session && reportBucket(session) === "needs-you";
   // Outside its active hours a waiting resident sleeps; its due wake goes out when the window opens.
-  const asleepUntil = !held && loop.loopState === "waiting"
+  // When the next wake goes out if active hours hold it, and, separately, whether the resident
+  // is asleep right now: at 16:58 in a 09:00-17:00 window a wake due at 17:03 is already held
+  // until Monday, but the resident is still awake until 17:00.
+  const heldUntil = !held && loop.loopState === "waiting"
     ? residentSleepingUntil(loop.settings?.schedule, loop.nextWakeAt, now, activeHours) : null;
-  const label = held ? "waiting on you" : asleepUntil !== null ? "asleep" : loop.loopState;
+  const asleep = heldUntil !== null && !residentAwakeAt(loop.settings?.schedule, now, activeHours);
+  const label = held ? "waiting on you" : asleep ? "asleep" : loop.loopState;
   const remaining = loop.nextWakeAt === null ? null : Math.max(0, Math.ceil((loop.nextWakeAt - now) / 1000));
   const next = held || remaining === null ? null
-    : asleepUntil !== null ? `wakes ${residentWakeOpeningLabel(asleepUntil, now)}`
+    : heldUntil !== null ? `wakes ${residentWakeOpeningLabel(heldUntil, now)}`
       : `next in ${remaining < 60 ? `${remaining}s` : `${Math.ceil(remaining / 60)}m`}`;
   if (tags) {
     const reasons = [loop.pauseReason, loop.wakeReason].filter((reason): reason is string => !!reason);
     return <span className="resident-loop-status resident-loop-tags" aria-label="Resident loop status">
       <span className="resident-loop-tag-row">
-        <span className={`resident-loop-tag is-${asleepUntil !== null ? "asleep" : loop.loopState}`}>{label}</span>
+        <span className={`resident-loop-tag is-${asleep ? "asleep" : loop.loopState}`}>{label}</span>
         <span className="resident-loop-tag">iteration {loop.iteration}</span>
         {next && <span className="resident-loop-tag">{next}</span>}
         {loop.runRequestedAt !== null && <span className="resident-loop-tag is-queued">run queued</span>}

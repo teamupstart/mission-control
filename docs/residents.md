@@ -508,7 +508,8 @@ Outside its window a resident keeps running: its session, task and conversation 
 its loop stays **waiting**. It only sleeps. A wake that falls due, at the cadence or one it asked
 for with `schedule_next_iteration`, is held and sent once when the next window opens; no loop
 prompt goes out and no compaction runs before it, so it spends no tokens. Every live-run surface
-shows the state as **asleep** with the time the held wake goes out. Asleep is not paused: nothing
+shows the state as **asleep** with the time the held wake goes out. While the window is still
+open, a resident whose next wake falls after it closes reads as **waiting**, with that same time. Asleep is not paused: nothing
 durable changes, it needs no Resume, and the iteration and spend windows are untouched. Your own
 messages, **Run now** and the launch's opening turn are never held. A resident launched with
 active hours while the preview is on is told them in its standing instructions, so it knows a

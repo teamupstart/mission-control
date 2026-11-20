@@ -163,3 +163,34 @@ test("a running resident whose next wake falls outside its active hours reads as
   await expect(tags.nth(0)).toHaveText("waiting");
   await expect(tags.nth(2)).toHaveText(/^next in \d+(s|m)$/);
 });
+
+test("inside its window a resident whose next wake falls after the window closes reads as waiting, not asleep", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setActiveHours(daemon, true);
+  // A window that opened an hour ago and closes about four minutes from now: the resident is
+  // awake for the whole test, but its first wake, five minutes after the opening turn, is held.
+  const hhmm = (at: number) => new Date(at).toISOString().slice(11, 16);
+  const profile = await api<{ id: string }>(daemon, "/api/residents/profiles", {
+    settings: {
+      identity: { name: "Late Shift" },
+      persona: { personaId: PERSONA_ID },
+      workspace: { defaultRepoRoot: daemon.repo },
+      execution: { model: "claude-fable-5" },
+      schedule: { enabled: true, days: [0, 1, 2, 3, 4, 5, 6], start: hhmm(Date.now() - 3_600_000), end: hhmm(Date.now() + 4 * 60_000), timeZone: "UTC" },
+    },
+  });
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "active-hours-awake-held" });
+  await expect.poll(() => withDaemonDb(daemon, (db) => (db.prepare(
+    "SELECT loop_state, next_wake_at FROM resident_runs WHERE ended_at IS NULL AND launch_state = 'launched'",
+  ).get() as { loop_state: string; next_wake_at: number | null } | undefined)?.next_wake_at ?? null), { timeout: 60_000 }).not.toBeNull();
+
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
+  const dock = dashboard.getByRole("dialog", { name: "Residents", exact: true });
+  const tags = dock.locator("li.residents-pop-card").getByLabel("Resident loop status").locator(".resident-loop-tag");
+  await expect(tags.nth(0), "still inside its window: awake, not asleep").toHaveText("waiting");
+  await expect(tags.nth(2), "its held wake goes out when the next window opens").toHaveText(/^wakes (\w{3} )?\d{2}:\d{2}$/);
+  await capture(dock, "03-dock-awake-held");
+});

@@ -1,4 +1,6 @@
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
+export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
+export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";

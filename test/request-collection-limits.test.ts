@@ -34,6 +34,7 @@ import {
 import { MAX_INDEXED_DIRECTORIES, RepoIndexConfigPatchSchema } from "../src/shared/repo-index.ts";
 import { STANDING_INSTRUCTIONS_MAX_REPOSITORIES } from "../src/shared/standing-instructions.ts";
 import { GithubIssuesConfigSchema } from "../src/shared/task-source.ts";
+import { SHAPING_LIMITS, ShapingIntentSchema, ShapingResultSchema } from "../src/shared/shaping.ts";
 import { TELEMETRY_INGRESS_LIMITS, TelemetryIngressRequestSchema } from "../src/shared/telemetry-ingress.ts";
 
 /**
@@ -236,6 +237,28 @@ const LIMITS: Limit[] = [
     max: 100,
     path: "priorityFrom",
     build: (n, valid) => ({ priorityFrom: keyed(n, () => (valid ? "high" : "urgent")) }),
+  },
+  {
+    name: "shaping order",
+    schema: ShapingIntentSchema,
+    max: SHAPING_LIMITS.choices,
+    path: "order",
+    build: (n, valid) => ({ kind: "reorder", order: times(n, (i) => (valid ? `shaper-${i}` : "")) }),
+  },
+  {
+    name: "shaper command arguments",
+    schema: ShapingIntentSchema,
+    max: 64,
+    path: "shaper.transport.args",
+    build: (n, valid) => ({ kind: "upsert", shaper: { id: "args", label: "Args", stage: "gather",
+      transport: { type: "command", command: "/bin/echo", args: times(n, () => (valid ? "x" : 5)) } } }),
+  },
+  {
+    name: "entries in one shaper reply",
+    schema: ShapingResultSchema,
+    max: SHAPING_LIMITS.replyEntries,
+    path: "guidance",
+    build: (n, valid) => ({ guidance: times(n, (i) => (valid ? { id: `e${i}`, body: "text" } : { garbage: i })) }),
   },
 ];
 

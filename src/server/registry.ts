@@ -1,5 +1,7 @@
 import { sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import { getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { canonicalJson, shapingConfigView, type ShapingConfigView } from "@shared/shaping.ts";
+import { getShapingConfig } from "./shaping/index.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { inspectorSummaryOf } from "@shared/inspector.ts";
@@ -626,7 +628,8 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  * `settings_restored` is deliberately absent: it invalidates browser configuration and
  * catalogs, none of which is a Line fold input.
  */
-// feature_flags is not a Line input: the empty flag registry supplies no stage data.
+// feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
+// shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",
@@ -1188,6 +1191,12 @@ export class Registry extends EventEmitter {
   private lastFleetCost: FleetCost | null = null;
   private lastFleetCostAt = 0;
   private lastFeatureFlags: FeatureFlagsConfig | null = null;
+  /**
+   * The last `shaping_config` frame, as canonical JSON, or null for a cleared one. Undefined
+   * until the first: a window may hold a snapshot's config that no frame has restated, so the
+   * first clear is never mistaken for a repeat.
+   */
+  private lastShaping: string | null | undefined = undefined;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
@@ -1325,6 +1334,7 @@ export class Registry extends EventEmitter {
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
     featureFlags: FeatureFlagsConfig;
+    shaping?: ShapingConfigView;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1367,6 +1377,9 @@ export class Registry extends EventEmitter {
       // fleet must read "nothing waiting · no sessions open" rather than six blanks.
       lineSummary: this.lineSummaryNow(),
       featureFlags: getFeatureFlagsConfig(),
+      // Behind its flag, like the routes: with it off nothing reads the stored shapers, and no
+      // window is handed them. The view, never raw envelopes.
+      ...(featureEnabled("task-shaping") ? { shaping: shapingConfigView(getShapingConfig()) } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1467,6 +1480,18 @@ export class Registry extends EventEmitter {
     if (this.lastFeatureFlags && sameFeatureFlagsConfig(this.lastFeatureFlags, config)) return;
     this.lastFeatureFlags = { ...config, overrides: { ...config.overrides } };
     this.emitEvent({ type: "feature_flags", config });
+  }
+
+  /**
+   * Publish task shaping's config view, or null to clear it, suppressing a frame that restates
+   * the last one. Only the caller knows whether the flag is on, so it decides which to send;
+   * `wireShapingConfigEvents` is that caller.
+   */
+  emitShapingConfig(config: ShapingConfigView | null): void {
+    const key = config === null ? null : canonicalJson(config);
+    if (this.lastShaping !== undefined && this.lastShaping === key) return;
+    this.lastShaping = key;
+    this.emitEvent({ type: "shaping_config", config });
   }
 
   /**

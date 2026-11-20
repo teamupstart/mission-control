@@ -1,6 +1,7 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
+import { registerShapingRoutes } from "./shaping/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
@@ -8907,6 +8908,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
     }
   });
+
+  // Task shaping, behind its preview flag. See docs/task-shaping.md.
+  registerShapingRoutes(app);
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

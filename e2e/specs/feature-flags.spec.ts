@@ -37,6 +37,8 @@ test("shipped preview, live master and individual changes, reload, search, and a
   // Resident active hours ships as a preview too, off until the operator chooses it.
   const activeHours = page.getByRole("button", { name: /^Resident active hours:/ });
   await expect(activeHours).toHaveAttribute("aria-pressed", "false");
+  // So does Task shaping. `task-shaping-flag.spec.ts` drives its row and the API gate itself.
+  await expect(page.getByRole("button", { name: "Task shaping: off" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
   const peer = await context.newPage();
   await peer.goto(page.url());
@@ -52,6 +54,7 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await expect(peer.getByRole("button", nativeOn)).toBeVisible();
   await expect(peer.getByRole("button", { name: "Automatic PR branch updates: on" })).toBeVisible();
   await expect(peerActiveHours).toHaveAttribute("aria-pressed", "true");
+  await expect(peer.getByRole("button", { name: "Task shaping: on" })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(master).toBeChecked();

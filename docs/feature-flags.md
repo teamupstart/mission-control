@@ -3,7 +3,7 @@
 The flag core stores one set of operator choices for this machine. The registry includes
 **Codex resident native MCP** (below), [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
-**Headless mode** (`headless-mode`) and **Hibernate tasks** (below) as previews.
+**Headless mode** (`headless-mode`), **Hibernate tasks** (below) and [Task shaping](task-shaping.md) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
 ## Operator controls
@@ -140,3 +140,24 @@ restoring one without it leaves current choices alone. Its surface is `settings`
 Do not skip the default-on release: it gives operators a way to disable a problem before the
 feature becomes permanent. Removing a flag makes the feature unconditional by deleting its
 gates, not by resolving an unknown id as on.
+
+## Shipped flags
+
+| Id | Stage | Gates | Guide |
+| --- | --- | --- | --- |
+| `codex-resident-native-mcp` | preview | Codex residents' native MCP sources | [Residents](residents.md#all-native-sources) |
+| `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
+| `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
+| `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
+| `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
+
+`test/feature-flags.test.ts` checks every shipped definition against the id rules.
+`e2e/specs/feature-flags.spec.ts` covers the shipped rows, and
+`e2e/specs/task-shaping-flag.spec.ts` is Task shaping's own browser assertion: its row appears,
+a toggle reaches a second window without a reload, and the `/api/shaping` gate follows it.
+`e2e/specs/task-shaping-settings.spec.ts` covers its Settings category, which follows the flag
+in every open window.
+
+A Settings category behind a flag declares it as `flag` in `SETTINGS_CATEGORIES`, and
+`settingsCategoryAvailable(id, flags)` is its one gate for the rail, the page, settings search
+and the palette.

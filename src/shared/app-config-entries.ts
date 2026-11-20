@@ -1,4 +1,5 @@
 import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
+import { ShapingConfigSchema } from "./shaping.ts";
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
@@ -355,6 +356,12 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  */
 export const APP_CONFIG_ENTRIES = {
   featureFlags: { ...wholeEntry("featureFlags", FeatureFlagsConfigSchema, "setting", "feature-flags"), optionalInSnapshot: true },
+  // Task shaping: registered shapers, stored choices, order, caller identity and budgets.
+  // Backed up whole because it holds no secret text. A credential-bearing header holds only a
+  // reference such as `{env:NAME}`, a URL carries no userinfo or credential query parameter, and
+  // an argument never hands over a credential: `credentialsAreReferences` in `shaping.ts`
+  // refuses each on write, so the value stays in the daemon's environment and out of snapshots.
+  shaping: { ...wholeEntry("shaping", ShapingConfigSchema, "setting", "shaping"), optionalInSnapshot: true },
   residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
   // Custom MCP server DEFINITIONS only. A field marked secret stores its name here and its
   // value in the write-only `resident_mcp_secrets` table, so a snapshot never carries one.

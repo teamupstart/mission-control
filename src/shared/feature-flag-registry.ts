@@ -40,6 +40,13 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     keywords: ["hibernate", "resume", "memory", "pause", "sleep", "backlog"],
   },
+  {
+    id: "task-shaping",
+    label: "Task shaping",
+    description: "Register shapers in Settings > Task shaping and dry-run them to see the context they would add to a worker's first prompt. Dispatch does not call them yet.",
+    stage: "preview",
+    keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
+  },
 ] as const satisfies readonly FeatureFlagDefinition[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */

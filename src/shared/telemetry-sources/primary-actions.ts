@@ -196,6 +196,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/session-transfers/:id/recheck", "session.transfer_recheck", "sessions"],
   ["POST", "/api/session-transfers/:id/resolve", "session.transfer_resolve", "sessions"],
   ["PUT", "/api/feature-flags", "settings.feature_flags", "settings"],
+  ["PUT", "/api/shaping", "settings.shaping", "settings"],
+  ["POST", "/api/shaping/test", "settings.shaping_test", "settings"],
 ] as const;
 export type PrimaryAction = typeof PRIMARY_ACTION_ROUTES[number][2] | typeof ensembleActions[number] | typeof pipelineActions[number];
 export type PrimaryFeature = typeof PRIMARY_ACTION_ROUTES[number][3];

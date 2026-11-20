@@ -10,6 +10,7 @@ import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import {
   canonicalJson,
   compareShapingOrder,
+  SHAPING_LIMITS,
   ShaperManifestSchema,
   ShaperSchema,
   shaperIsLocal,
@@ -87,13 +88,30 @@ export function shapingList(view: ShapingConfigView): ShapingListGroup[] {
   return groups;
 }
 
+/** What moving a shaper comes to: the order to store, or why it cannot be stored. */
+export type ShaperMove = { ok: true; order: string[] } | { ok: false; reason: string };
+
 /**
- * The stored order after moving one shaper a step within its stage, or null when it cannot
- * move that way. Every listed shaper is written in its displayed order, and ids the list does
- * not draw - a discovered shaper's, or one removed in another window - keep their place after
- * them, so a reorder here never drops another surface's choice.
+ * The stored order after moving one shaper a step within its stage, or null when it cannot move
+ * that way (already first or last, or not a row the list draws).
+ *
+ * Only the moved shaper's stage is rewritten: its rows, in their new order, follow every other id
+ * already stored. The ordering rule compares stage first, so this changes nothing in any other
+ * stage, and every id the list does not draw - a discovered shaper's, or one removed in another
+ * window - keeps its place.
+ *
+ * The stored order holds at most `SHAPING_LIMITS.choices` ids. When the move would pass that,
+ * stored ids that name no shaper this window knows of are left out, the oldest kept first: they
+ * place nothing, so dropping them changes no run order. `live` names the shapers the list does
+ * not draw but that exist, such as the folder's, so their place is never dropped. If the order
+ * still cannot fit, the move is refused with the reason, and nothing is sent.
  */
-export function moveShaper(view: ShapingConfigView, id: string, offset: -1 | 1): string[] | null {
+export function moveShaper(
+  view: ShapingConfigView,
+  id: string,
+  offset: -1 | 1,
+  live: readonly string[] = [],
+): ShaperMove | null {
   const groups = shapingList(view).filter((group) => group.stage !== null);
   const group = groups.find((candidate) => candidate.rows.some((row) => row.id === id));
   if (!group) return null;
@@ -102,9 +120,22 @@ export function moveShaper(view: ShapingConfigView, id: string, offset: -1 | 1):
   if (to < 0 || to >= group.rows.length) return null;
   const rows = [...group.rows];
   [rows[at], rows[to]] = [rows[to]!, rows[at]!];
-  const listed = groups.flatMap((candidate) => (candidate === group ? rows : candidate.rows).map((row) => row.id));
-  const drawn = new Set(listed);
-  return [...listed, ...view.order.filter((other) => !drawn.has(other))];
+  const moved = rows.map((row) => row.id);
+  const stage = new Set(moved);
+  const rest = [...new Set(view.order)].filter((other) => !stage.has(other));
+  const limit = SHAPING_LIMITS.choices;
+  if (rest.length + moved.length <= limit) return { ok: true, order: [...rest, ...moved] };
+  const known = new Set([...view.shapers.map((entry) => entry.id), ...live]);
+  const kept = rest.filter((other) => known.has(other));
+  let room = limit - moved.length - kept.length;
+  if (room < 0) {
+    return {
+      ok: false,
+      reason: `The stored run order is full: it holds at most ${limit} shaper ids, and this move needs ${kept.length + moved.length}.`,
+    };
+  }
+  const order = rest.filter((other) => known.has(other) || room-- > 0);
+  return { ok: true, order: [...order, ...moved] };
 }
 
 /**

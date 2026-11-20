@@ -9,7 +9,9 @@ import { ShaperReview } from "../src/web/components/TaskShapingDialogs.tsx";
 import { SHAPING_STAGES } from "../src/shared/shaping-registry.ts";
 import {
   SHAPING_CONFIG_DEFAULTS,
+  SHAPING_LIMITS,
   ShapingConfigSchema,
+  ShapingIntentSchema,
   shapingConfigView,
   type ShapingConfigView,
   type ShapingIntent,
@@ -130,12 +132,53 @@ test("the list groups unsupported entries last and shapes rows for both origins"
   });
 });
 
-test("moving a shaper writes every listed id in its new order and keeps ids the list does not draw", () => {
-  const config = view({ shapers: [gatherer("a"), gatherer("b"), remote], order: ["found-on-disk"] });
-  assert.deepEqual(moveShaper(config, "b", -1), ["b", "a", "acme-guidance", "found-on-disk"]);
+test("moving a shaper rewrites only its stage and keeps every other stored id in place", () => {
+  const config = view({ shapers: [gatherer("a"), gatherer("b"), remote], order: ["found-on-disk", "acme-guidance"] });
+  assert.deepEqual(moveShaper(config, "b", -1), { ok: true, order: ["found-on-disk", "acme-guidance", "b", "a"] });
   assert.equal(moveShaper(config, "a", -1), null, "already first in its stage");
   assert.equal(moveShaper(config, "acme-guidance", 1), null, "alone in its stage");
   assert.equal(moveShaper(config, "nobody", 1), null);
+  // The new order sorts exactly as the move drew it.
+  const moved = moveShaper(config, "b", -1);
+  assert.ok(moved?.ok);
+  const after = shapingList({ ...config, order: moved.order });
+  assert.deepEqual(after[0]!.rows.map((row) => row.id), ["b", "a"]);
+  assert.deepEqual(after[1]!.rows.map((row) => row.id), ["acme-guidance"]);
+});
+
+test("a move within the order's bound drops only stored ids that place nothing, and says so when it cannot fit", () => {
+  const unseen = Array.from({ length: SHAPING_LIMITS.choices }, (_, n) => `gone-${n}`);
+  const config = view({ shapers: [gatherer("a"), gatherer("b")], order: unseen });
+  // 128 stored ids that name no shaper, plus the two moved: oldest kept first, the order stays at 128.
+  const moved = moveShaper(config, "b", -1);
+  assert.ok(moved?.ok);
+  assert.equal(moved.order.length, SHAPING_LIMITS.choices);
+  assert.deepEqual(moved.order.slice(-2), ["b", "a"]);
+  assert.deepEqual(moved.order.slice(0, -2), unseen.slice(0, SHAPING_LIMITS.choices - 2));
+  assert.ok(ShapingIntentSchema.safeParse({ kind: "reorder", order: moved.order }).success, "the route accepts it");
+  // A folder shaper the list does not draw keeps its place, wherever it sits.
+  const withFolder = moveShaper(config, "b", -1, ["gone-127"]);
+  assert.ok(withFolder?.ok);
+  assert.equal(withFolder.order.length, SHAPING_LIMITS.choices);
+  assert.ok(withFolder.order.includes("gone-127"));
+  assert.ok(!withFolder.order.includes("gone-125"), "the newest id that places nothing makes the room");
+  // Every stored id names a live shaper, so nothing can be dropped: the move is refused with why.
+  const full = moveShaper(config, "b", -1, unseen);
+  assert.deepEqual(full, {
+    ok: false,
+    reason: `The stored run order is full: it holds at most ${SHAPING_LIMITS.choices} shaper ids, and this move needs ${SHAPING_LIMITS.choices + 2}.`,
+  });
+});
+
+test("an untouched budget keeps its exact stored bytes when another setting is saved", () => {
+  const precise = view({ limits: { totalBytes: 1025 } });
+  const html = renderToStaticMarkup(createElement(TaskShapingView, {
+    config: precise, onSet: async () => true,
+    onTest: async () => ({ ok: false as const, aborted: false, reason: "" }), repositories: async () => [],
+  }));
+  // Shown to three decimals, never as a rounded whole that a save would read back as 1,024 bytes.
+  assert.match(html, /id="shaping-total"[^>]*value="1.001"/);
+  assert.match(html, /id="shaping-deadline"[^>]*step="1"/, "every whole millisecond is a valid deadline");
 });
 
 test("a preview draws each intent the way the daemon applies it, and recognises it once reflected", () => {

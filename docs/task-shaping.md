@@ -322,8 +322,11 @@ shows the daemon's reason beside the control that sent it.
   before, so it runs only once you switch it on. A manifest that breaks the credential rule, or
   names a `./` command a registered shaper cannot resolve, is refused with its reason and
   nothing is saved.
-- **Order.** The arrows move a shaper earlier or later within its stage. The stored order is
-  rewritten in the order shown.
+- **Order.** The arrows move a shaper earlier or later within its stage. Only that stage's
+  entries are rewritten, after every other stored id, so other stages and shapers the list
+  does not draw keep their place. The stored order holds at most 128 ids. When a move would pass
+  that, stored ids that name no shaper are left out first, because they place nothing. If the
+  order still cannot hold the move, the row says so and nothing is sent.
 - **Dry run.** Pick a repository Mission Control knows, or type a checkout's path, add a prompt
   if the shaper needs one, and run it. It runs whether or not it is switched on, saves nothing,
   and shows the outcome, the duration, the version and each entry it would add. Closing the

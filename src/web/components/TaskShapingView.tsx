@@ -35,6 +35,7 @@ export function TaskShapingView({
   onSet,
   onTest,
   repositories,
+  live = [],
 }: {
   /** Null while the config has not arrived. */
   config: ShapingConfigView | null;
@@ -46,10 +47,24 @@ export function TaskShapingView({
   onTest: ShapingTestRunner;
   /** The repositories a dry run may pick from. */
   repositories: () => Promise<string[]>;
+  /** Ids of shapers that exist but the list does not draw, such as the folder's, so a move keeps their place. */
+  live?: readonly string[];
 }): React.JSX.Element {
   const [importing, setImporting] = useState(false);
   const [testing, setTesting] = useState<{ id: string; label: string } | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  // A move the stored order cannot hold, refused here before anything is sent.
+  const [moveProblem, setMoveProblem] = useState<{ id: string; reason: string } | null>(null);
+  const move = (id: string, offset: -1 | 1): void => {
+    const result = config && moveShaper(config, id, offset, live);
+    if (!result) return;
+    if (!result.ok) {
+      setMoveProblem({ id, reason: result.reason });
+      return;
+    }
+    setMoveProblem(null);
+    void onSet({ kind: "reorder", order: result.order }, `row:${id}`);
+  };
   const busy = !ready || pending !== null || config === null;
   const groups = config ? shapingList(config) : [];
   const count = config?.shapers.length ?? 0;
@@ -84,6 +99,7 @@ export function TaskShapingView({
           )}
           {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
           {errors[key] && <p role="alert">{errors[key]}</p>}
+          {moveProblem?.id === entry.id && <p role="alert">{moveProblem.reason}</p>}
         </div>
         <div className="shaping-row-actions">
           {group.stage !== null && (
@@ -91,12 +107,12 @@ export function TaskShapingView({
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
                   disabled={busy || at === 0}
-                  onClick={() => { const order = config && moveShaper(config, entry.id, -1); if (order) void onSet({ kind: "reorder", order }, key); }}>↑</button>
+                  onClick={() => move(entry.id, -1)}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
                   disabled={busy || at === group.rows.length - 1}
-                  onClick={() => { const order = config && moveShaper(config, entry.id, 1); if (order) void onSet({ kind: "reorder", order }, key); }}>↓</button>
+                  onClick={() => move(entry.id, 1)}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
                 <button type="button" className="btn btn-ghost" aria-label={`Dry-run ${entry.label}`} disabled={!ready}
@@ -193,9 +209,14 @@ export function TaskShapingView({
 
 type SettingsIntent = Extract<ShapingIntent, { kind: "settings" }>;
 
+/**
+ * The budget as the field shows it: whole KiB as written, otherwise to three decimals. The text is
+ * for reading, not for storing: a budget saved through the API need not be a whole number of KiB,
+ * so the form keeps the stored byte count until the operator edits this field.
+ */
 function kib(bytes: number): string {
   const value = bytes / 1024;
-  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
 }
 
 /**
@@ -213,7 +234,11 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
   const deadline = SHAPING_LIMIT_RANGES.deadlineMs;
   const total = SHAPING_LIMIT_RANGES.totalBytes;
   const deadlineMs = Number(shown.deadlineMs);
-  const totalBytes = Math.round(Number(shown.totalKiB) * 1024);
+  // An untouched field keeps the exact stored bytes: its text is a rounded rendering of them, and
+  // reading that text back would silently rewrite, say, 1,025 bytes as 1,024 on an unrelated save.
+  const totalBytes = shown.totalKiB === kib(config.limits.totalBytes)
+    ? config.limits.totalBytes
+    : Math.round(Number(shown.totalKiB) * 1024);
   const deadlineProblem = shown.deadlineMs.trim() === "" || !Number.isInteger(deadlineMs) || deadlineMs < deadline.min || deadlineMs > deadline.max
     ? `A whole number of milliseconds from ${deadline.min} to ${deadline.max.toLocaleString()}.` : null;
   const totalProblem = shown.totalKiB.trim() === "" || !Number.isFinite(totalBytes) || totalBytes < total.min || totalBytes > total.max
@@ -250,7 +275,7 @@ function ShapingSettingsForm({ config, busy, error, onSet }: {
       <div className="shaping-field-row" data-anchor="task-shaping/limits">
         <div className="shaping-field">
           <label htmlFor="shaping-deadline">Step deadline (ms)</label>
-          <input id="shaping-deadline" className="field-input" type="number" inputMode="numeric" min={deadline.min} max={deadline.max} step={100}
+          <input id="shaping-deadline" className="field-input" type="number" inputMode="numeric" min={deadline.min} max={deadline.max} step={1}
             value={shown.deadlineMs} disabled={busy} onChange={(event) => edit({ deadlineMs: event.target.value })}
             aria-describedby="shaping-deadline-hint" />
           <p className="settings-hint" id="shaping-deadline-hint">

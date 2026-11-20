@@ -146,6 +146,9 @@ test("Settings > Task shaping follows its flag live and drives every shaping int
   await page.getByRole("button", { name: "Dry-run Repository notes" }).click();
   const dryRun = page.getByRole("dialog", { name: "Dry-run Repository notes" });
   await expect(dryRun).toBeVisible();
+  // The dialog offers the first known repository once the list arrives; wait for it, so typing a
+  // path never races that default into the same field.
+  await expect(dryRun.getByLabel("Repository")).not.toHaveValue("");
   await dryRun.getByLabel("Repository").fill(daemon.repo);
   await dryRun.getByLabel("Prompt (optional)").click();
   await dryRun.getByRole("button", { name: "Run", exact: true }).click();
@@ -285,11 +288,13 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   await expect(deadline).toHaveValue("10000");
   await expect(budget).toHaveValue("32");
   await expect(save).toBeDisabled();
-  // Each bound saves, stores the exact byte count, and reaches the other window. The last pair
-  // puts back the defaults the checks below start from.
+  // Each bound saves, stores the exact byte count, and reaches the other window, as does a deadline
+  // that is not a multiple of 100 and a fractional budget. The last pair puts back the defaults
+  // the checks below start from.
   const peerDeadline = panel(peer).getByRole("spinbutton", { name: "Step deadline (ms)" });
   const peerBudget = panel(peer).getByRole("spinbutton", { name: "Context budget (KiB)" });
-  for (const [deadlineMs, kib, totalBytes] of [["100", "1", 1024], ["60000", "64", 65_536], ["10000", "32", 32_768]] as const) {
+  const savedPairs = [["100", "1", 1024], ["60000", "64", 65_536], ["101", "1.5", 1536], ["10000", "32", 32_768]] as const;
+  for (const [deadlineMs, kib, totalBytes] of savedPairs) {
     await deadline.fill(deadlineMs);
     await budget.fill(kib);
     await expect(deadlineProblem).toHaveCount(0);
@@ -338,6 +343,17 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   await expect(panel(peer).getByRole("textbox", { name: "Caller identity" })).toHaveValue("a".repeat(256));
   await expect(save).toBeDisabled();
 
+  // A budget stored through the API that is not a whole number of KiB survives a save of another
+  // setting: the field shows it rounded, and the stored bytes are kept, not read back from that text.
+  await putShaping(daemon, { kind: "settings", limits: { totalBytes: 1025 } });
+  await expect(budget).toHaveValue("1.001");
+  await identity.fill("precise");
+  await save.click();
+  await expect.poll(async () => (await shapingConfig(daemon)).caller.user).toBe("precise");
+  expect((await shapingConfig(daemon)).limits.totalBytes).toBe(1025);
+  await putShaping(daemon, { kind: "settings", limits: { totalBytes: 32_768 } });
+  await expect(budget).toHaveValue("32");
+
   // A refused settings save shows the daemon's reason and the fields go back to the stored values.
   await page.route("**/api/shaping", async (route) => {
     if (route.request().method() !== "PUT") return route.fallback();
@@ -357,6 +373,7 @@ test("the panel's other paths: switching off, keeping a shaper, a file import, t
   const openDryRun = async (label: string) => {
     await page.getByRole("button", { name: `Dry-run ${label}` }).click();
     const dialog = page.getByRole("dialog", { name: `Dry-run ${label}` });
+    await expect(dialog.getByLabel("Repository")).not.toHaveValue("");
     await dialog.getByLabel("Repository").fill(daemon.repo);
     await dialog.getByLabel("Prompt (optional)").click();
     return dialog;

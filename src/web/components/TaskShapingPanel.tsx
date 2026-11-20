@@ -15,14 +15,18 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
   const config = state?.config ?? null;
   const ready = state?.ready ?? false;
   const [references, setReferences] = useState<ShapingReferenceStatus>({});
+  // The folder's shapers, which the list does not draw yet, so a move keeps their place in the order.
+  const [discovered, setDiscovered] = useState<string[]>([]);
   const configKey = config ? canonicalJson(config) : null;
   useEffect(() => {
     if (!ready || configKey === null) return;
-    let live = true;
+    let current = true;
     void api.getShaping().then((reply) => {
-      if (live && reply.ok && reply.references) setReferences(reply.references);
+      if (!current || !reply.ok) return;
+      if (reply.references) setReferences(reply.references);
+      if (reply.discovered) setDiscovered(reply.discovered.map((entry) => entry.id));
     });
-    return () => { live = false; };
+    return () => { current = false; };
   }, [ready, configKey]);
   const onTest = useCallback<ShapingTestRunner>((request, signal) => api.testShaper(request, signal), []);
   const repositories = useCallback(() => fetchRepos(), []);
@@ -36,6 +40,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
       onSet={(intent, key) => state ? state.set(intent, key) : Promise.resolve(false)}
       onTest={onTest}
       repositories={repositories}
+      live={discovered}
     />
   );
 }

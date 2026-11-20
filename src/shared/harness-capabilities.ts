@@ -13,6 +13,7 @@ import type {
 // Phase 0 collapsed.
 import { AGENT_IDENTITY } from "./agent.ts";
 import type { StandingInstructionsMechanism } from "./standing-instructions.ts";
+import type { FeatureFlagId } from "./feature-flags.ts";
 
 // The Harness axis' PURE half: what an agent can do, spelled as data, with no `node:`
 // imports and no filesystem.
@@ -137,13 +138,14 @@ export interface McpSelectionSpec {
  *   every start, as a terminal session does, beside Mission's server and the snapshot of the
  *   profile's custom servers in `mcpServers`. A profile may opt out of cloud connectors with
  *   a launch-scoped environment setting while retaining these native sources.
- *   That is otherwise the MCP launch every other Agent SDK
- *   session already makes, so there is no isolation to probe.
+ * - `codex-native-home`: the app-server uses the normal Codex home and adds the
+ *   profile's custom servers through launch overrides.
  */
 export interface AllNativeMcpSourcesSpec {
-  mechanism: "lift-strict-mcp-config";
+  mechanism: "lift-strict-mcp-config" | "codex-native-home";
   /** What the harness then loads on its own, as the editor and its confirmation name it. */
   sources: string;
+  previewFlag?: FeatureFlagId;
 }
 
 /**
@@ -895,9 +897,15 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     skillSelection: null, // 0.160.0: native sources admit additions beyond a path-disable list.
     // 0.160.0: an overlay alone still loads a trusted project's servers and merges its fields,
     // so every start also verifies the layers and disables foreign servers before they load.
-    // No `allNativeSources`: Codex has no account connectors, and skipping the overlay would
-    // load a trusted project's servers unverified, which nothing has measured yet.
-    mcpSelection: { mechanism: "codex-home-overlay", secrets: "scoped-launcher", allNativeSources: null },
+    mcpSelection: {
+      mechanism: "codex-home-overlay",
+      secrets: "scoped-launcher",
+      allNativeSources: {
+        mechanism: "codex-native-home",
+        sources: "user, trusted workspace, system, managed and enabled plugin MCP servers",
+        previewFlag: "codex-resident-native-mcp",
+      },
+    },
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,

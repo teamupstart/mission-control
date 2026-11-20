@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent, Session } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
 // The Foreman-invite foundation (docs/plans/foreman-invite/phase-1-invite-foundation.md):
 // every session carries a truthful, durable `foremanInvite`, resolved by the registry from
@@ -230,6 +230,154 @@ test("resolution: sdk implicitly, rows explicitly, tombstone beats everything", 
   assert.equal(registry.setForemanInvite("no-such", "dispatch"), undefined);
   assert.equal(registry.inviteForeman("no-such"), undefined);
   assert.equal(registry.withdrawForemanInvite("no-such"), undefined);
+});
+
+/**
+ * An SDK session launched for a running task of `kind`, the way the supervisor launches a
+ * resident: the task row exists (unbound) and the registration names it, then the task's
+ * `sessionId` is pointed at the session. `"task-first"` binds the task before the session
+ * registers instead. The session's cwd never matches the task's, so the card's task chip
+ * can only come from the binding - the registration's `taskId` is the only thing the first
+ * frame has to go on. Returns the final card and every frame emitted for it.
+ */
+function mkTaskSdk(
+  registry: InstanceType<typeof Registry>,
+  kind: "resident" | "chat",
+  order: "task-first" | "session-first",
+): { session: Session; frames: Session[] } {
+  const n = ++seq;
+  const id = `sdk:${kind}-${n}`;
+  const frames = upserts(registry, id);
+  const task = mkTask({
+    id: `${kind}-task-${n}`,
+    kind,
+    status: "running",
+    repoRoot: `/residents/runs/r${n}/workspace`,
+    worktreePath: null,
+    provider: null,
+    homeName: null,
+    sessionId: order === "task-first" ? id : null,
+    ...(kind === "resident" ? { workspaceKind: "resident-workspace" as const } : {}),
+  });
+  registry.upsertTask(task);
+  registry.registerSdkSession({ id, agent: "claude", name: kind, cwd: `/elsewhere/${n}`, taskId: task.id });
+  if (order === "session-first") registry.upsertTask({ ...task, sessionId: id });
+  const session = registry.getSession(id);
+  assert.ok(session);
+  return { session, frames };
+}
+
+test("a directory-matched task never outranks a resident's launch task before the binding", () => {
+  const registry = new Registry();
+  const n = ++seq;
+  const cwd = `/shared/checkout-${n}`;
+  const id = `sdk:resident-shared-${n}`;
+  const frames = upserts(registry, id);
+  // Another kind's task, unbound, whose directory is exactly the resident's cwd: before the
+  // resident binds, the card's task chip falls back to it by working directory.
+  registry.upsertTask(mkTask({
+    id: `chat-shared-${n}`, kind: "chat", status: "running", repoRoot: "/repo", worktreePath: cwd,
+    provider: null, homeName: null, sessionId: null,
+  }));
+  const resident = mkTask({
+    id: `resident-shared-${n}`, kind: "resident", workspaceKind: "resident-workspace", status: "running",
+    repoRoot: `/residents/runs/r${n}/workspace`, worktreePath: null, provider: null, homeName: null, sessionId: null,
+  });
+  registry.upsertTask(resident);
+  registry.registerSdkSession({ id, agent: "claude", name: "resident", cwd, taskId: resident.id });
+  assert.equal(registry.getSession(id)?.task?.kind, "chat", "the pre-binding chip came from the shared directory");
+  assert.equal(registry.getSession(id)?.foremanInvite, null, "the launch task, not the directory match, decides");
+  registry.upsertTask({ ...resident, sessionId: id });
+  assert.equal(registry.getSession(id)?.task?.kind, "resident");
+  assert.equal(registry.getSession(id)?.foremanInvite, null);
+  assert.deepEqual(frames.map((f) => f.foremanInvite).filter((v) => v !== null), [], "no frame ever carried an invite");
+});
+
+test("a resident task matched only by directory never strips an unrelated SDK session's grant", () => {
+  const registry = new Registry();
+  const n = ++seq;
+  const cwd = `/shared/unrelated-${n}`;
+  // An unbound resident task whose worktree is the cwd of an SDK session launched for no task.
+  registry.upsertTask(mkTask({
+    id: `resident-dir-${n}`, kind: "resident", workspaceKind: "resident-workspace", status: "running",
+    repoRoot: cwd, worktreePath: null, provider: null, homeName: null, sessionId: null,
+  }));
+  const id = `sdk:unrelated-${n}`;
+  const frames = upserts(registry, id);
+  registry.registerSdkSession({ id, agent: "claude", name: "embedded", cwd });
+  assert.equal(registry.getSession(id)?.task?.kind, "resident", "the chip came from the shared directory");
+  assert.equal(registry.getSession(id)?.foremanInvite, "sdk", "only a binding or the launch task overrides the SDK default");
+  assert.deepEqual([...new Set(frames.map((f) => f.foremanInvite))], ["sdk"], "and no frame dropped it");
+});
+
+test("a resident stays uninvited after its launch task is pruned from the task cache", () => {
+  const registry = new Registry();
+  const n = ++seq;
+  const cwd = `/shared/pruned-${n}`;
+  const id = `sdk:resident-pruned-${n}`;
+  // A launch task that never binds to its session and ends cancelled, the oldest of more
+  // than RECENT_TERMINAL_TASKS (50) evictable terminal tasks, so `pruneTerminalTasks` drops it.
+  const launch = mkTask({
+    id: `resident-pruned-${n}`, kind: "resident", workspaceKind: "resident-workspace", status: "cancelled",
+    repoRoot: `/residents/runs/r${n}/workspace`, worktreePath: null, provider: null, homeName: null,
+    sessionId: null, updatedAt: 1,
+  });
+  registry.upsertTask(launch);
+  registry.registerSdkSession({ id, agent: "claude", name: "resident", cwd, taskId: launch.id });
+  for (let i = 0; i < 55; i++) {
+    registry.upsertTask(mkTask({
+      id: `filler-${n}-${i}`, kind: "ship", status: "done", worktreePath: null, homeName: null,
+      provider: null, sessionId: null, updatedAt: Date.now() + i,
+    }));
+  }
+  assert.equal(registry.getTask(launch.id), undefined, "the launch task left the cache");
+  // A chip-moving resync: an unbound task in the same directory now fills the chip.
+  registry.upsertTask(mkTask({
+    id: `chat-pruned-${n}`, kind: "chat", status: "running", repoRoot: "/repo", worktreePath: cwd,
+    provider: null, homeName: null, sessionId: null,
+  }));
+  assert.equal(registry.getSession(id)?.task?.kind, "chat", "the resync ran and moved the chip");
+  assert.equal(registry.getSession(id)?.foremanInvite, null, "the captured launch kind still decides");
+});
+
+test("a resident's SDK session launches uninvited, whichever of task or session lands first", () => {
+  const registry = new Registry();
+  for (const order of ["task-first", "session-first"] as const) {
+    const { session: resident, frames } = mkTaskSdk(registry, "resident", order);
+    assert.equal(resident.task?.kind, "resident", `${order}: the card carries its resident task`);
+    assert.equal(resident.foremanInvite, null, `${order}: Foreman is not in a resident session`);
+    assert.equal(getForemanInvite(resident.id), undefined, `${order}: nothing stored - the default is the kind's`);
+    // Not even briefly: the first frame, before the task points at the session, is already
+    // uninvited, because the registration named the task it was launched for.
+    assert.ok(frames.length > 0, `${order}: the session was published`);
+    assert.deepEqual(frames.map((f) => f.foremanInvite).filter((v) => v !== null), [], `${order}: no frame ever carried an invite`);
+  }
+  // Every other kind keeps the implicit grant an embedded session has always had, from its
+  // first frame on.
+  for (const order of ["task-first", "session-first"] as const) {
+    const { session: chat, frames } = mkTaskSdk(registry, "chat", order);
+    assert.equal(chat.foremanInvite, "sdk", `${order}: chat keeps the implicit grant`);
+    assert.deepEqual([...new Set(frames.map((f) => f.foremanInvite))], ["sdk"], `${order}: and never loses it`);
+  }
+});
+
+test("the operator can still invite Foreman into a resident session, and withdraw it again", () => {
+  const registry = new Registry();
+  const { session: resident } = mkTaskSdk(registry, "resident", "task-first");
+  const seen = upserts(registry, resident.id);
+  assert.equal(registry.inviteForeman(resident.id), "operator");
+  assert.equal(registry.getSession(resident.id)?.foremanInvite, "operator");
+  assert.equal(getForemanInvite(resident.id)?.source, "operator");
+  assert.equal(seen.at(-1)?.foremanInvite, "operator", "the invite reaches the dashboard");
+  assert.equal(registry.withdrawForemanInvite(resident.id), null);
+  assert.equal(registry.getSession(resident.id)?.foremanInvite, null);
+  // One click back in after the withdrawal. Clearing the tombstone restores no implicit grant
+  // for a resident, so the operator's door must persist an explicit 'operator' row instead
+  // of leaving the session silently uninvited.
+  assert.equal(registry.inviteForeman(resident.id), "operator");
+  assert.equal(registry.getSession(resident.id)?.foremanInvite, "operator");
+  assert.equal(getForemanInvite(resident.id)?.source, "operator");
+  assert.equal(seen.at(-1)?.foremanInvite, "operator", "the re-invite reaches the dashboard");
 });
 
 test("restore-then-elevate: re-inviting a withdrawn SDK session restores the implicit grant", () => {

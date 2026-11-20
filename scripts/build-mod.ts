@@ -53,7 +53,8 @@ function resolveOutRoot(): string {
   if (!(underDist || (underTmp && !touchesCheckout))) {
     throw new Error(`MISSION_MOD_OUT_DIR ${override} resolves to ${target}, which is not inside dist/ or a temp directory outside the checkout; refusing to replace it`);
   }
-  return resolve(override);
+  // The checked path is the one acted on: a symlinked override would otherwise be unlinked, not replaced.
+  return target;
 }
 const outRoot = resolveOutRoot();
 const pluginDir = join(outRoot, MOD_NAME);

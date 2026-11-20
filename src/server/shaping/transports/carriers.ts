@@ -76,3 +76,19 @@ export function carriedMeta(trace: ShapingTraceContext | null, workUnitId: strin
   };
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
+
+/**
+ * `headers` without the ones a transport owns, compared without case: `content-type` and
+ * `accept` for both, and for MCP the protocol's own session headers. A configured `Content-Type`
+ * kept beside the transport's `content-type` would be combined with it by the Headers API into
+ * a body type the endpoint refuses.
+ */
+export function withoutOwnedHeaders(headers: Readonly<Record<string, string>>, owned: readonly string[]): Record<string, string> {
+  const names = new Set(owned.map((name) => name.toLowerCase()));
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !names.has(name.toLowerCase())));
+}
+
+/** What the `http` transport sets itself. */
+export const HTTP_OWNED_HEADERS = ["content-type", "accept"] as const;
+/** What the MCP streamable-HTTP client sets itself. */
+export const MCP_OWNED_HEADERS = ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"] as const;

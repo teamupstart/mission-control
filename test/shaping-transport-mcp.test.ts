@@ -550,21 +550,96 @@ test("a stdio server receives exactly the filtered environment, never an SDK def
 });
 
 test("a value cut at the front of the retained stderr leaves no fragment in the reason", async () => {
-  // The value, then enough blank lines to push its start out of the retained 4,000 characters.
-  // Collapsed, those lines would bring the surviving end of it into the recorded tail.
-  const value = "stderr-secret-5e0c71";
+  // The value is the longest the server receives, so the transport keeps 4,000 characters plus
+  // its length. 7,000 newlines after it put the cut 3,000 characters into it: the retained text
+  // starts with the value's last 3,000 characters, which no search for the whole value finds.
+  // Collapsed, those newlines would bring that surviving end into the recorded tail.
+  const { randomBytes } = await import("node:crypto");
+  const value = randomBytes(3_000).toString("hex");
   const reply = await withEnv({ [KEY_ENV]: value }, () => callMcp(request(), shaper({ type: "stdio", mode: "stderr-exit" }, "folded", {
-    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "stderr-exit", KEY_ENV, "3995"], env: [KEY_ENV] } },
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "stdio", command: process.execPath, args: [RAW_STDIO, "stderr-exit", KEY_ENV, "7000"], env: [KEY_ENV] } },
   }), ctx()));
-  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
   const reason = (reply as { reason: string }).reason;
-  for (const piece of ["5e0c71", "e0c71", "c71"]) assert.equal(reason.includes(piece), false, reason);
+  assert.equal(reason.includes(value.slice(-24)), false, "the value's surviving end is not in the reason");
+  assert.equal(reason.includes(value.slice(-6)), false);
 });
 
-test("the handshake budget comes from the call's own timeout, not the wall-clock deadline", async () => {
+test("the handshake budget reads no wall clock: a deadline in the past does not cut it short", async () => {
   // A deadline already in the past, as a wall-clock jump during the run would leave it.
   const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok" }), ctx({ deadline: Date.now() - 60_000 }));
   assert.equal(reply.kind, "data", JSON.stringify(reply));
+});
+
+test("a call that joins a slow shared handshake is bounded by its own budget, not the opener's", async () => {
+  let initializes = 0;
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    if (message.method === "initialize") {
+      initializes += 1;
+      // Slower than the opening call's budget, well within the joining call's.
+      setTimeout(() => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "slow", version: "1.0.0" } },
+      })), 800);
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: OK_RESULT }));
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+    const run = ctx();
+    const short = { ...run, timeoutMs: 300 };
+    const long = { ...run, timeoutMs: 10_000 };
+    const [opener, joiner] = await Promise.all([
+      callMcp(request(false), shaper({ type: "http", url }), short),
+      new Promise((done) => setTimeout(done, 50)).then(() => callMcp(request(false), shaper({ type: "http", url }), long)),
+    ]);
+    assert.equal(opener.kind, "timed_out", JSON.stringify(opener));
+    assert.deepEqual(data(joiner), { guidance: [{ id: "raw", body: "raw reply" }] });
+    assert.equal(initializes, 1, "one shared handshake served both");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+test("a handshake error that echoes a header value in JSON escapes is scrubbed and marked", async () => {
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    for await (const _chunk of req) { /* drained */ }
+    const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    res.writeHead(500, { "content-type": "application/json" }).end(`{"error":"no session for ${echoed}"}`);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+    const reply = await withEnv({ [KEY_ENV]: KEY }, () => callMcp(request(false), shaper({ type: "http", url, headers: { "x-api-key": `{env:${KEY_ENV}}` } }), ctx()));
+    assert.equal(reply.kind, "failed");
+    assert.equal(reply.redacted, true, JSON.stringify(reply));
+    const reason = (reply as { reason: string }).reason;
+    assert.match(reason, /^The MCP server did not complete its handshake: /);
+    assert.ok(reason.includes(`[${KEY_ENV} redacted]`), reason);
+    assert.equal(reason.includes("\\u0066"), false, "no escaped spelling of the value is left");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+test("a stream whose only event id is empty is not resumable, so its early end fails the call at once", async () => {
+  const raw = await startRawMcpServer((res) => res.writeHead(200, { "content-type": "text/event-stream" }).end("id:\ndata: \n\n"));
+  try {
+    const started = Date.now();
+    const reply = await callMcp(request(false), shaper({ type: "http", url: raw.url }), ctx());
+    assert.deepEqual(reply, { kind: "failed", reason: "The MCP server's response stream ended before the reply arrived." });
+    assert.ok(Date.now() - started < 5_000, "at once, not at the call's 30 s budget");
+  } finally { await raw.close(); }
 });
 
 

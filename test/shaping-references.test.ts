@@ -158,6 +158,22 @@ test("a value written with other whitespace where it has some is found as the va
   assert.deepEqual(scrubReason("denied for Jane  Doe", spaced), { reason: "denied for [caller.user redacted]", redacted: true });
 });
 
+test("a value spelled with any JSON escape inside reply text is redacted, and only that span changes", () => {
+  const scrubbed = scrubResolved({ guidance: [{ id: "a", body: '{"key":"\\u0074ok-9f8e7d","other":"kept \\u0041"}' }] }, values);
+  assert.equal(scrubbed.redacted, true);
+  assert.deepEqual(scrubbed.data, { guidance: [{ id: "a", body: '{"key":"[ACME_TOKEN redacted]","other":"kept \\u0041"}' }] },
+    "the escaped spelling of the value goes; an unrelated escape stays as written");
+  assert.deepEqual(scrubReason("denied: tok\\u002d9f8e7d", values), { reason: "denied: [ACME_TOKEN redacted]", redacted: true });
+});
+
+test("the status leaves out a variable named only in a header the transport replaces", () => {
+  const owned = ShaperSchema.parse({
+    id: "owned", label: "Owned", stage: "select",
+    transport: { type: "http", url: "https://guidance.example.test/v1", headers: { Accept: "{env:ONLY_IN_ACCEPT}", traceparent: "{env:ONLY_IN_TRACE}", "x-key": "{env:ACME_TOKEN}" } },
+  });
+  assert.deepEqual(referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [owned] }, [], env, ctx.daemonToken), { ACME_TOKEN: "set" });
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

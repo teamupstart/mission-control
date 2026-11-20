@@ -19,7 +19,7 @@ import {
 } from "@shared/shaping.ts";
 import { STATE_HOME_ENV_NAMES } from "../agent-subprocess-env.ts";
 import { redactSpans } from "./redaction.ts";
-import { carriedEnvName } from "./transports/carriers.ts";
+import { carriedEnvName, HTTP_OWNED_HEADERS, MCP_OWNED_HEADERS, withoutCarriedHeaders, withoutOwnedHeaders } from "./transports/carriers.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Resolution
@@ -136,9 +136,12 @@ export function missingReferenceReason(missing: readonly string[]): string {
 /** Every `{env:NAME}` a shaper's definition references, in the order they appear. */
 export function shaperEnvReferences(shaper: Shaper): string[] {
   const transport = shaper.transport;
-  const headers = transport.type === "http"
-    ? transport.headers
-    : transport.type === "mcp" && transport.server.type === "http" ? transport.server.headers : {};
+  // Only headers a call sends: the ones a carrier or the transport owns are dropped before any
+  // reference resolves, so a variable named only there is never needed and is not listed.
+  const configured = transport.type === "http"
+    ? withoutOwnedHeaders(transport.headers, HTTP_OWNED_HEADERS)
+    : transport.type === "mcp" && transport.server.type === "http" ? withoutOwnedHeaders(transport.server.headers, MCP_OWNED_HEADERS) : {};
+  const headers = withoutCarriedHeaders(configured);
   const names: string[] = [];
   for (const value of Object.values(headers)) {
     for (const reference of shapingReferences(value) ?? []) {
@@ -244,16 +247,71 @@ function spacingVariants(text: string, resolved: readonly ResolvedValue[]): Reso
   return out;
 }
 
+const JSON_STRING_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+
+/**
+ * `text` with one level of JSON string escapes decoded, and for each decoded character the span
+ * of `text` it came from. A reply string can hold JSON text of its own, such as a dump of the
+ * request headers, where a value may be spelled with any escape (`\u0061` for `a`, `\/` for `/`).
+ */
+function decodeEscapes(text: string): { decoded: string; starts: number[]; ends: number[] } | null {
+  if (!text.includes("\\")) return null;
+  let decoded = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const escape = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/y;
+  for (let at = 0; at < text.length;) {
+    escape.lastIndex = at;
+    const match = text[at] === "\\" ? escape.exec(text) : null;
+    if (match) {
+      decoded += match[1] ? String.fromCharCode(Number.parseInt(match[1], 16)) : JSON_STRING_ESCAPES[match[2]!]!;
+      starts.push(at);
+      ends.push(at + match[0].length);
+      at += match[0].length;
+    } else {
+      decoded += text[at];
+      starts.push(at);
+      ends.push(at + 1);
+      at += 1;
+    }
+  }
+  return decoded === text ? null : { decoded, starts, ends };
+}
+
+/**
+ * Every escaped spelling in `text` of a resolved value, or of a spacing variant of one, as a
+ * literal value under its name: the raw span whose decoding is the value. Only that span is
+ * replaced, so text around it is left exactly as written.
+ */
+function escapedVariants(text: string, resolved: readonly ResolvedValue[]): ResolvedValue[] {
+  const map = decodeEscapes(text);
+  if (!map) return [];
+  const out: ResolvedValue[] = [];
+  for (const entry of [...resolved, ...spacingVariants(map.decoded, resolved)]) {
+    if (entry.value.length === 0) continue;
+    for (let at = map.decoded.indexOf(entry.value); at !== -1; at = map.decoded.indexOf(entry.value, at + 1)) {
+      const raw = text.slice(map.starts[at], map.ends[at + entry.value.length - 1]);
+      if (raw !== entry.value) out.push({ name: entry.name, value: raw });
+    }
+  }
+  return out;
+}
+
 function holdsOne(text: string, resolved: ResolvedValue): boolean {
   if (resolved.value.length === 0) return false;
   if (text.includes(resolved.value)) return true;
   const pattern = spacingPattern(resolved.value);
-  return pattern !== null && pattern.test(text);
+  if (pattern !== null && pattern.test(text)) return true;
+  return escapedVariants(text, [resolved]).length > 0;
 }
 
-/** What to remove from `text`: every value, and every spacing variant of one that `text` holds. */
+/**
+ * What to remove from `text`: every value, every spacing variant of one, and every escaped
+ * spelling of either that `text` holds.
+ */
 function targets(resolved: readonly ResolvedValue[], text: string) {
-  return [...resolved, ...spacingVariants(text, resolved)].map(({ name, value }) => ({ value, wholeToken: false, label: name }));
+  return [...resolved, ...spacingVariants(text, resolved), ...escapedVariants(text, resolved)]
+    .map(({ name, value }) => ({ value, wholeToken: false, label: name }));
 }
 
 /** What `scrubResolved` returns: the reply with every resolved value gone, and what it removed. */

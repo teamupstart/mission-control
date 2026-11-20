@@ -54,6 +54,11 @@ before(async () => {
         const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
         return res.writeHead(500, { "content-type": "application/json" }).end(`{"error":"denied for ${echoed}"}`);
       }
+      case "/escaped-echo": {
+        // The header dumped into a body as JSON text, every character as a \u escape.
+        const echoed = [...String(req.headers["x-api-key"] ?? "")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+        return json(200, { guidance: [{ id: "dump", body: `{"x-api-key":"${echoed}","accept":"*/*"}` }] });
+      }
       case "/spaced-title": {
         const value = String(req.headers["x-caller"] ?? "");
         return json(200, { guidance: [{ id: "entry", title: `notes for ${value.replace(" ", "\t\t")}`, body: "the body" }] });
@@ -290,6 +295,12 @@ test("a value written with JSON escapes inside a successful reply's text is reda
   const body = data(reply).guidance[0].body as string;
   assert.equal(body.includes("key-91be"), false, body.slice(0, 200));
   assert.equal(JSON.parse(body).headers["x-api-key"], `[${KEY_ENV} redacted]`);
+});
+
+test("a successful reply whose text spells a value in any JSON escape is redacted there, and nothing else changes", async () => {
+  const reply = await withKey("plain-key-77aa", () => callHttp(request(), shaper("/escaped-echo", { "x-api-key": `{env:${KEY_ENV}}` }), ctx()));
+  assert.equal(reply.redacted, true);
+  assert.equal(data(reply).guidance[0].body, `{"x-api-key":"[${KEY_ENV} redacted]","accept":"*/*"}`);
 });
 
 test("a failure body that spells a value in any JSON escape is redacted from the reason", async () => {

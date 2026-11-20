@@ -15,14 +15,23 @@ function answering(chunks: string[], init: { status?: number; type?: string } = 
   }), { status: init.status ?? 200, headers: { "content-type": init.type ?? "text/event-stream" } });
 }
 
-/** Whether reading the capped body overflowed, and what reached the reader. */
-async function read(chunks: string[], init?: { status?: number; type?: string }): Promise<{ overflow: boolean; text: string }> {
-  let overflow = false;
-  const response = await cappedFetch(answering(chunks, init), CAP, (error) => { overflow = error instanceof ResponseCapError; })("http://127.0.0.1/");
+/**
+ * Read the capped body. An accepted stream must arrive whole, exactly as sent; a refused one must
+ * fail to read with `ResponseCapError` and report it to `onOverflow`. Anything else fails the test.
+ */
+async function read(chunks: string[], init?: { status?: number; type?: string }): Promise<{ overflow: boolean }> {
+  let reported = false;
+  const response = await cappedFetch(answering(chunks, init), CAP, (error) => { reported = error instanceof ResponseCapError; })("http://127.0.0.1/");
   try {
-    return { overflow, text: await response.text() };
-  } catch {
-    return { overflow, text: "" };
+    const text = await response.text();
+    assert.equal(reported, false, "an accepted stream reported no overflow");
+    assert.equal(text, chunks.join(""), "an accepted stream arrives whole");
+    return { overflow: false };
+  } catch (error) {
+    if (error instanceof assert.AssertionError) throw error;
+    assert.ok(error instanceof ResponseCapError, `a refused stream fails with the cap error, not ${String(error)}`);
+    assert.equal(reported, true, "and reports it");
+    return { overflow: true };
   }
 }
 
@@ -43,6 +52,15 @@ test("a CRLF split across two chunks is counted the same way", async () => {
   assert.equal((await read([over.slice(0, -1), over.slice(-1)])).overflow, true);
   const first = event(20);
   assert.equal((await read([first.slice(0, -1), first.slice(-1) + event(CAP)])).overflow, false);
+});
+
+test("a blank line between events belongs to no event, so it is not charged to the next one", async () => {
+  const lfEvent = (bytes: number) => `data: ${"x".repeat(bytes - 8)}\n\n`;
+  assert.equal(lfEvent(CAP).length, CAP);
+  assert.equal((await read([lfEvent(20), "\n", lfEvent(CAP)])).overflow, false, "an extra LF before an event at the cap");
+  assert.equal((await read([event(20), "\r\n\r\n", event(CAP)])).overflow, false, "extra CRLF lines before an event at the cap");
+  assert.equal((await read(["\n\n", lfEvent(CAP)])).overflow, false, "blank lines at the start of the stream");
+  assert.equal((await read([lfEvent(20), "\n", lfEvent(CAP + 1)])).overflow, true, "and the event itself is still capped");
 });
 
 test("a response that is not a success is capped as a whole body, even as an event stream", async () => {

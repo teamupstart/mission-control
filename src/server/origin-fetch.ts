@@ -132,6 +132,9 @@ export function cappedFetch(
     // The blank line ended on a CR: the LF that may follow, in this chunk or the next, is the
     // same delimiter and still belongs to the event it ends, so the count resets after it.
     let resetAfterLf = false;
+    // Between events: a blank line here is an empty line no event owns, so it is not charged
+    // to the event that follows.
+    let atEventStart = true;
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
         let read: ReadableStreamReadResult<Uint8Array>;
@@ -154,6 +157,9 @@ export function cappedFetch(
               }
               counted = 0;
             }
+            const isLineEnd = byte === 0x0a || byte === 0x0d;
+            if (atEventStart && isLineEnd) { lastWasCr = byte === 0x0d; continue; }
+            atEventStart = false;
             // Every byte on the wire counts, both bytes of a CRLF included: an event of many short
             // CRLF lines must not pass the cap while being counted as fewer bytes than it is.
             counted += 1;
@@ -165,6 +171,7 @@ export function cappedFetch(
             // A line end right after another is the blank line that ends the event.
             if (lineEnd && lastWasLineEnd) {
               lastWasLineEnd = false;
+              atEventStart = true;
               if (byte === 0x0d) resetAfterLf = true;
               else counted = 0;
               continue;

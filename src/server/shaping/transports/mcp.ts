@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { readToken } from "@shared/harness-runtime.mjs";
-import { canonicalJson, type ShapingContext, type ShapingRequest } from "@shared/shaping.ts";
+import { canonicalJson, SHAPING_LIMIT_RANGES, type ShapingContext, type ShapingRequest } from "@shared/shaping.ts";
 import { executableLocator } from "../../executables/locator.ts";
 import { cappedFetch, fetchOnOrigin, ResponseCapError } from "../../origin-fetch.ts";
 import type { ResolvedValue } from "../references.ts";
@@ -172,6 +172,9 @@ function requestOf(body: unknown): { id: string | number; method: string } | nul
  */
 const pendingCall = new AsyncLocalStorage<{ interrupted(): void }>();
 
+/** Why a streamable-HTTP connection is gone when nothing more specific is known. */
+const CLOSED_REASON = "The MCP server closed the connection.";
+
 /** What a call answers when its own response stream ended before its reply. */
 const INTERRUPTED_REASON = "The MCP server's response stream ended before the reply arrived.";
 
@@ -195,8 +198,10 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
     // A stream that carried an event id is resumable: the server may close it before replying
     // and the client resumes it from that id (MCP 2025-11-25), so its end is left to the client
     // and the call's own budget. Only a stream with no id fails its call when it ends early.
+    // The SDK resumes from the last non-empty event id it saw; an `id` field with no value
+    // does not give it one. Lines are read whole across chunks to find the field.
     const decoder = new TextDecoder();
-    let carry = "\n";
+    let partial = "";
     let resumable = false;
     const ended = () => setTimeout(() => {
       if (answered(id) || resumable) return;
@@ -209,9 +214,12 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
         try { read = await source.read(); } catch (error) { ended(); controller.error(error); return; }
         if (read.done) { ended(); controller.close(); return; }
         if (!resumable) {
-          const text = carry + decoder.decode(read.value, { stream: true });
-          if (/[\r\n]id(?::|[\r\n])/.test(text)) resumable = true;
-          carry = text.slice(-3);
+          const lines = (partial + decoder.decode(read.value, { stream: true })).split(/\r\n|\r|\n/);
+          partial = lines.pop() ?? "";
+          for (const line of lines) {
+            const value = line.startsWith("id:") ? line.slice(line.startsWith("id: ") ? 4 : 3) : null;
+            if (value && !value.includes("\u0000")) resumable = true;
+          }
         }
         controller.enqueue(read.value);
       },
@@ -244,11 +252,13 @@ function mergeResolved(...lists: ReadonlyArray<readonly ResolvedValue[]>): Resol
 }
 
 /**
- * How long the handshake may take: the opening call's own budget, which the engine derives from
- * the step's monotonic deadline. Not the epoch `deadline`, which a wall-clock change can move.
+ * How long a shared handshake may take: the longest step there is, not any one call's budget.
+ * Every call waits on it only for its own budget (`untilAborted`), so a call that opened the
+ * connection with a short budget cannot fail a call with a longer one that joined it, and the
+ * run's end closes the client, which stops a handshake still going. No wall clock is read.
  */
-function handshakeMs(ctx: TransportContext): number {
-  return Math.max(1, ctx.timeoutMs);
+function handshakeMs(): number {
+  return SHAPING_LIMIT_RANGES.deadlineMs.max;
 }
 
 async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promise<Connection> {
@@ -344,7 +354,7 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
   });
   try {
     // Raced against the latch: an overflow or an exit during the handshake answers at once.
-    await Promise.race([client.connect(transport, { timeout: handshakeMs(ctx) }), state.lost]);
+    await Promise.race([client.connect(transport, { timeout: handshakeMs() }), state.lost]);
   } catch (error) {
     if (state.failure) throw new ConnectError(state.failure, state.redacted);
     // The SDK's message can carry what the server wrote, which can repeat anything in its
@@ -398,7 +408,7 @@ async function openHttp(
     // that is not resumable is never retried, and its call answers at once.
     reconnectionOptions: { maxRetries: 2, initialReconnectionDelay: 250, maxReconnectionDelay: 1_000, reconnectionDelayGrowFactor: 2 },
   });
-  transport.onclose = () => state.fail("The MCP server closed the connection.");
+  transport.onclose = () => state.fail(CLOSED_REASON);
   observeReplies(transport, answered);
   const client = new McpClient(CLIENT_INFO, { capabilities: {} });
   ctx.scope.defer(async () => {
@@ -407,11 +417,19 @@ async function openHttp(
     }
     await client.close();
   });
+  const connecting = client.connect(transport, { timeout: handshakeMs() });
   try {
-    await Promise.race([client.connect(transport, { timeout: handshakeMs(ctx) }), state.lost]);
+    await Promise.race([connecting, state.lost]);
   } catch (error) {
-    if (state.failure) throw new Error(state.failure);
-    throw new Error(`The MCP server did not complete its handshake: ${requestFailure(error)}`);
+    // A failed `initialize` makes the client close its transport before `connect` rejects, so the
+    // latch can hold the generic close first. The handshake's own error says why; a specific
+    // failure on the latch, an oversized message or a broken stream, says it better.
+    if (state.failure && state.failure !== CLOSED_REASON) throw new ConnectError(state.failure, state.redacted);
+    const cause = await connecting.then(() => error, (reason: unknown) => reason);
+    // The SDK's message can carry the server's own reply body, which can echo a header value
+    // in any spelling: scrubbed the way a tool error is, escapes and spacing included.
+    const detail = quoted(requestFailure(cause), resolved);
+    throw new ConnectError(`The MCP server did not complete its handshake: ${detail.text}`, detail.redacted);
   }
   return { client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved };
 }

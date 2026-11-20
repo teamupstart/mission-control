@@ -603,3 +603,13 @@ test("a slower earlier create cannot overwrite a newer draft", async () => {
   const kept = await post("/dispatch/drafts/" + fast.body.draftId, { sessionId: "s1", words: "still here" });
   assert.equal(kept.status, 200, "the newer draft survived");
 });
+
+test("an earlier create stays rejected after the newer draft was confirmed", async () => {
+  await register("s1", repo);
+  const slow = createDraft({ kind: "ship", words: "older", repo: other, workflowId: "none" });
+  const fast = await createDraft({ kind: "ship", words: "newer", workflowId: "none" });
+  assert.equal((await confirm(fast.body.draftId, "cancel")).status, 200, "the newer draft is spent");
+  const older = await slow;
+  assert.equal(older.res.status, 409);
+  assert.equal((await post("/dispatch/drafts/" + older.body.draftId, { sessionId: "s1", words: "x" })).status, 404, "no draft came back");
+});

@@ -52,8 +52,6 @@ interface Draft {
   changedAt: number;
   /** Set while a confirm is filing this draft, so a second confirm or an edit cannot race it. */
   confirming: boolean;
-  /** Which create made it; a later create's draft is never replaced by an earlier one. */
-  ticket: number;
 }
 
 /** In memory, one per session, replaced by the next one that session creates. */
@@ -62,9 +60,16 @@ const drafts = new Map<string, Draft>();
 /** Orders creates by when they started, so a slower earlier create cannot overwrite a newer draft. */
 let ticketCounter = 0;
 
+/**
+ * The newest create each session has committed. It outlives the draft (a confirm removes the
+ * draft, not this), and is swept with the drafts once it is older than the draft lifetime.
+ */
+const committedCreate = new Map<string, { ticket: number; at: number }>();
+
 /** Forget every draft. For tests, and nothing else. */
 export function clearHomeDispatchDrafts(): void {
   drafts.clear();
+  committedCreate.clear();
 }
 
 function liveDraft(sessionId: string, id: string | undefined): Draft | null {
@@ -80,6 +85,7 @@ function liveDraft(sessionId: string, id: string | undefined): Draft | null {
 function sweepExpired(): void {
   const now = Date.now();
   for (const [sessionId, draft] of drafts) if (now - draft.changedAt > DRAFT_TTL_MS) drafts.delete(sessionId);
+  for (const [sessionId, last] of committedCreate) if (now - last.at > DRAFT_TTL_MS) committedCreate.delete(sessionId);
 }
 
 type Failure = { ok: false; status: 400 | 403 | 404 | 409 | 503; body: Record<string, unknown> };
@@ -188,7 +194,7 @@ export const createDraftHandler: HomeDispatchHandler = (deps): Handler => async 
     if (!resolved.ok) return c.json(resolved.body, resolved.status);
     repoRoot = resolved.repoRoot;
   }
-  if ((drafts.get(body.sessionId)?.ticket ?? 0) > ticket) {
+  if ((committedCreate.get(body.sessionId)?.ticket ?? 0) > ticket) {
     return c.json({ error: "a newer draft was started for this session" }, 409);
   }
   sweepExpired();
@@ -202,9 +208,9 @@ export const createDraftHandler: HomeDispatchHandler = (deps): Handler => async 
     context: body.context?.trim() || null,
     changedAt: Date.now(),
     confirming: false,
-    ticket,
   };
   drafts.set(body.sessionId, draft);
+  committedCreate.set(body.sessionId, { ticket, at: draft.changedAt });
   return c.json(summarize(deps, draft));
 };
 

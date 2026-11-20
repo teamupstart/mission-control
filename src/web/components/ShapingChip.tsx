@@ -15,7 +15,10 @@ import { Tooltip } from "./Tooltip.tsx";
  * committed shows nothing rather than the previous launch's context or `degraded`.
  */
 
-/** The record this session received, or null when it received none or the flag is off. */
+/**
+ * The record this session received, or null when it received none or the record names another
+ * session. It does not read the `task-shaping` flag; every caller here applies that gate itself.
+ */
 export function sessionShaping(session: Pick<Session, "id" | "task">): TaskShaping | null {
   const record = session.task?.shaping;
   if (!record) return null;

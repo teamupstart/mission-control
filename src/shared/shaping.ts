@@ -1660,11 +1660,9 @@ export function currentShaping(task: { shaping?: TaskShaping | null; sessionId: 
  * otherwise, so no read carries a record that describes another session.
  */
 export function withCurrentShaping<T extends { shaping?: TaskShaping | null; sessionId: string | null }>(task: T): T {
-  if (task.shaping === undefined) return task;
-  const current = currentShaping(task);
-  if (current && current === task.shaping) return task;
+  if (task.shaping === undefined || currentShaping(task)) return task;
   const { shaping: _stale, ...rest } = task;
-  return (current ? { ...rest, shaping: current } : rest) as T;
+  return rest as T;
 }
 
 /** A launch that is shaping context right now: the step has started and nothing is committed yet. */

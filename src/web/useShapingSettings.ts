@@ -157,6 +157,11 @@ export function useShapingSettings(
     /** Older refusals under each control, newest first, that arrived after a newer write went out. */
     earlier: Object.fromEntries(Object.entries(refusals).filter(([, list]) => list.length > 1)
       .map(([key, list]) => [key, list.slice(1).map((refusal) => refusal.message)])),
+    /**
+     * The request number of each control's newest refusal, so a view can tell an outcome that
+     * arrived after a given moment from one it already showed, whatever their text.
+     */
+    outcomeNumbers: Object.fromEntries(Object.entries(refusals).map(([key, list]) => [key, list[0]!.number])),
     ready: live,
     set,
   };

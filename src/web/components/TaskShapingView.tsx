@@ -32,6 +32,7 @@ export function TaskShapingView({
   pending = null,
   errors = {},
   earlier = {},
+  outcomeNumbers = {},
   ready = true,
   onSet,
   onTest,
@@ -45,6 +46,8 @@ export function TaskShapingView({
   errors?: Record<string, string>;
   /** Older refusals under each control, newest first, kept apart from its current one. */
   earlier?: Record<string, string[]>;
+  /** The request number of each control's newest refusal. */
+  outcomeNumbers?: Record<string, number>;
   ready?: boolean;
   onSet: (intent: ShapingIntent, key: string) => Promise<boolean>;
   onTest: ShapingTestRunner;
@@ -62,8 +65,12 @@ export function TaskShapingView({
   // freed the dialog, and by then the operator may have closed it and opened a new one: the
   // answer closes only the dialog that sent it.
   const importSession = useRef(0);
+  // The newest import outcome when the dialog opened: one that arrives after it, from a save sent
+  // by a dialog closed meanwhile, is shown in the open dialog, which covers the list.
+  const importOpenedAt = useRef(0);
   const openImport = (): void => {
     importSession.current += 1;
+    importOpenedAt.current = outcomeNumbers.import ?? 0;
     setImporting(true);
   };
   // Each of these is bound to the revision of the entry the operator was shown: when another
@@ -250,6 +257,7 @@ export function TaskShapingView({
       </div>
       {importing && config && (
         <ShapingImportDialog config={config} busy={busy} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import}
+          fresh={(outcomeNumbers.import ?? 0) > importOpenedAt.current}
           onClose={() => setImporting(false)}
           onSave={async (shaper) => {
             const session = importSession.current;

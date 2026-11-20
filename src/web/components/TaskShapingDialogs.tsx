@@ -82,7 +82,7 @@ export function EarlierRefusals({ messages }: { messages: readonly string[] | un
  * manifest says and whatever was stored for its id before. A manifest the schema refuses -
  * a literal credential included - shows its reason, and there is nothing to save.
  */
-export function ShapingImportDialog({ config, busy, saving, error, earlier, onClose, onSave }: {
+export function ShapingImportDialog({ config, busy, saving, error, earlier, fresh = false, onClose, onSave }: {
   config: ShapingConfigView;
   /** Whether Save is unavailable: a write in flight, or no connection to the daemon. */
   busy: boolean;
@@ -92,6 +92,11 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, onCl
   error: string | null;
   /** Refusals of earlier saves that arrived after a newer one went out. */
   earlier?: readonly string[];
+  /**
+   * Whether the outcome arrived after this dialog opened, as a save from a dialog closed
+   * meanwhile can: shown here although this dialog has saved nothing yet.
+   */
+  fresh?: boolean;
   onClose: () => void;
   /**
    * Store the reviewed shaper. Resolves true when it was saved and this dialog is still the one
@@ -109,6 +114,8 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, onCl
   // Bumped by every edit and every chosen file, so a file read that finishes late never replaces
   // what the operator typed or chose after it.
   const generation = useRef(0);
+  /** Numbers each Save in this dialog. */
+  const submissions = useRef(0);
   const reading = text.trim() === "" ? null : readShaperManifest(text);
   const existing = reading?.ok ? config.shapers.find((entry) => entry.id === reading.shaper.id) : undefined;
   const tooLarge = `A manifest is at most ${(MANIFEST_INPUT_MAX_CHARS / 1024).toLocaleString()} KiB of text here; a definition the daemon stores is at most ${SHAPING_LIMITS.entryJsonBytes / 1024} KiB.`;
@@ -185,8 +192,8 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, onCl
             )}
           </>
         )}
-        {saved && error && <p role="alert" className="shaping-refusal">{error}</p>}
-        {saved && <EarlierRefusals messages={earlier} />}
+        {(saved || fresh) && error && <p role="alert" className="shaping-refusal">{error}</p>}
+        <EarlierRefusals messages={saved || fresh ? earlier : undefined} />
       </div>
       <footer className="modal-foot">
         <Tooltip label="Close without saving anything">
@@ -200,8 +207,13 @@ export function ShapingImportDialog({ config, busy, saving, error, earlier, onCl
               // The stream can free this dialog before the answer lands, and the operator may
               // paste another manifest or choose another file meanwhile: a late success closes the
               // dialog only while it still shows what was saved.
+              // Each submission is numbered, so only the latest one's success may close it: the
+              // same manifest saved twice shares a draft generation.
               const submitted = generation.current;
-              void onSave(reading.shaper).then((close) => { if (close && generation.current === submitted) onClose(); });
+              const submission = ++submissions.current;
+              void onSave(reading.shaper).then((close) => {
+                if (close && generation.current === submitted && submissions.current === submission) onClose();
+              });
             }}>Save switched off</button>
         </Tooltip>
       </footer>

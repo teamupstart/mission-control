@@ -42,7 +42,7 @@ const SHAPING: ShapingSettings = {
   confirmed: daemonShapingView(SHAPING_CONFIG_DEFAULTS),
   pending: null,
   pendingKey: null,
-  errors: {}, earlier: {},
+  errors: {}, earlier: {}, outcomeNumbers: {},
   ready: true,
   set: async () => true,
 };

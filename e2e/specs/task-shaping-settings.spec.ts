@@ -1296,3 +1296,81 @@ test("a newer write keeps an earlier import's stream receipt for when that impor
   );
   await page.unroute("**/api/shaping");
 });
+
+test("a reopened import dialog shows a refusal that arrives while it is open, and keeps its draft", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  const reached = gate();
+  const answer = gate();
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    reached.open();
+    await answer.opened;
+    await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_shaper", reason: "Refused while reopened." }) });
+  });
+  const shaper = commandShaper("reopen-notes", "Reopen notes");
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  await manifest.fill(JSON.stringify(shaper));
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await reached.opened;
+  // Another window imports the same definition, so the frame frees the dialog; it is closed and opened again.
+  await putShaping(daemon, { kind: "upsert", shaper });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const draft = JSON.stringify(commandShaper("draft-notes", "Draft notes"));
+  await manifest.fill(draft);
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  answer.open();
+  // The open dialog covers the list, so the refusal is shown in it, beside the draft it keeps.
+  await expect(dialog.getByRole("alert")).toHaveText("Refused while reopened.");
+  await expect(manifest).toHaveValue(draft);
+  await page.unroute("**/api/shaping");
+});
+
+test("saving the same manifest twice closes the dialog only on the latest save's answer", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await countReadWrites(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  // The first save reaches the daemon and its answer is held; the second is held and then refused.
+  const firstAnswers = gate();
+  const secondAnswers = gate();
+  const secondSent = gate();
+  let puts = 0;
+  await page.route("**/api/shaping", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    if (++puts === 1) {
+      const response = await route.fetch();
+      await firstAnswers.opened;
+      return route.fulfill({ response });
+    }
+    secondSent.open();
+    await secondAnswers.opened;
+    await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "invalid_shaper", reason: "The second save was refused." }) });
+  });
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const manifest = dialog.getByRole("textbox", { name: "Manifest" });
+  const save = dialog.getByRole("button", { name: "Save switched off" });
+  const text = JSON.stringify(commandShaper("twice-notes", "Twice notes"));
+  await manifest.fill(text);
+  await save.click();
+  // The frame frees Save; the same manifest is saved again without an edit.
+  await expect(pill(page, "Twice notes")).toHaveAccessibleName("Twice notes: off");
+  await expect(save).toBeEnabled();
+  await save.click();
+  await secondSent.opened;
+  // The first save's success lands while the second is pending: the dialog stays.
+  firstAnswers.open();
+  await writesHandled(page, 1);
+  await expect(dialog).toBeVisible();
+  await expect(manifest).toHaveValue(text);
+  // The second save's refusal is then shown in the dialog that still holds the draft.
+  secondAnswers.open();
+  await expect(dialog.getByRole("alert")).toHaveText("The second save was refused.");
+  await expect(manifest).toHaveValue(text);
+  await page.unroute("**/api/shaping");
+});

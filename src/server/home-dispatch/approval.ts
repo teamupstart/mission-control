@@ -172,7 +172,13 @@ export function taskOwningSession(
 ): { task: Task } | { ambiguous: true } | { unestablished: true } | undefined {
   const active = deps.registry.listTasks().filter((t) => t.sessionId === sessionId && isActiveTask(t.status));
   if (active.length > 1) return { ambiguous: true };
-  const task = active[0] ?? deps.registry.taskForSession(sessionId, null);
+  // The registry's card rule skips a cancelled task, but a cancelled task can still hold a pending
+  // question, so the newest task ever bound to the session is the last resort.
+  const task = active[0]
+    ?? deps.registry.taskForSession(sessionId, null)
+    ?? deps.registry.listTasks()
+      .filter((t) => t.sessionId === sessionId && t.status !== "backlog")
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
   if (!task) return undefined;
   // A review records only its session, not its task. When another task took the session over after
   // the review was created, the review was asked by the task that held the session then, which is

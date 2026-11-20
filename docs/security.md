@@ -436,7 +436,8 @@ a password or a credential-shaped query parameter. An argument may not hand over
 as literal text: a credential-named flag (`--token=…`, `--api-key …`), a header flag naming a
 credential header (`-H "Authorization: …"`, `--header`), a credential flag such as curl's
 `--user`, `--proxy-user` or `--oauth2-bearer`, `-u` or `-U` with `user:password`, a data or form
-field named as a credential (`-d token=…`, `--form password=…`), a cookie (`-b`, `--cookie`), or
+field named as a credential (`-d token=…`, `--form password=…`), a cookie (`-b`, `--cookie`,
+and for curl `-bname=value` attached), or
 a URL with userinfo or a credential query parameter, alone or as a flag's value. Arguments are never resolved, so name the variable in
 `env` instead.
 Arguments that only say where a credential lives, such as `--token-file`, are allowed. A

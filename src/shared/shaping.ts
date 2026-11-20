@@ -377,14 +377,23 @@ const USERINFO_FLAGS = new Set(["u", "U"]);
 const FIELD_FLAGS = new Set(["d", "data", "data-raw", "data-binary", "data-urlencode", "data-ascii", "F", "form", "form-string"]);
 /** Flags whose value is a cookie, which is a session credential (curl's `-b`, `--cookie`). */
 const COOKIE_FLAGS = new Set(["b", "cookie"]);
-/**
- * Short flags that may carry their value attached, as in `-HAuthorization: x` or `-dtoken=x`.
- * Not `-b`: `-backup=x` would read as a cookie, so a cookie counts as `-b value` or `--cookie`.
- */
+/** Short flags that may carry their value attached, as in `-HAuthorization: x` or `-dtoken=x`. */
 const ATTACHED_FLAGS = new Set(["H", "u", "U", "d", "F"]);
+/**
+ * For curl, `-b` attaches its cookie as well: `-bsession=x`. Only for curl, because for any other
+ * program `-backup=x` is a flag of its own and reading it as a cookie would refuse it wrongly.
+ */
+const CURL_ATTACHED_FLAGS = new Set([...ATTACHED_FLAGS, "b"]);
+
+/** Whether a command names curl, by its file name, wherever it is installed. */
+function isCurl(command: unknown): boolean {
+  return typeof command === "string" && /(?:^|\/)curl$/.test(command);
+}
 
 /** One argument read as a flag: its name, and the value it carries and where, if any. */
-function argumentParts(args: readonly string[], index: number): { name: string; value?: string; at: number } | null {
+function argumentParts(
+  args: readonly string[], index: number, attached: ReadonlySet<string> = ATTACHED_FLAGS,
+): { name: string; value?: string; at: number } | null {
   const arg = args[index]!;
   const next = args[index + 1];
   const following = next !== undefined && !next.startsWith("-") ? next : undefined;
@@ -400,7 +409,7 @@ function argumentParts(args: readonly string[], index: number): { name: string; 
     const body = arg.slice(1);
     // An attached short value comes first: `-HAuthorization: x`, `-uuser:pass`, `-dtoken=x`.
     // The letter is followed by text with a colon, an equals sign or a space.
-    if (body.length > 1 && ATTACHED_FLAGS.has(body[0]!) && /[:=\s]/.test(body.slice(1))) {
+    if (body.length > 1 && attached.has(body[0]!) && /[:=\s]/.test(body.slice(1))) {
       return { name: body[0]!, value: body.slice(1), at: index };
     }
     const equals = body.indexOf("=");
@@ -431,14 +440,15 @@ function urlCarriesCredential(value: string): boolean {
  *   whatever the value, since an argument's `{env:NAME}` would never be resolved;
  * - a credential flag such as `--user name:pass` or `--oauth2-bearer x`, and `-u name:pass`;
  * - a data or form field named as a credential, `-d token=x`, `--form password=x`;
- * - a cookie, `-b session=x`;
+ * - a cookie, `-b session=x`, and attached as `-bsession=x` when the command is curl;
  * - a URL with a user name, a password or a credential query parameter, alone or as a value.
  */
-function literalCredentialArguments(args: readonly string[]): number[] {
+function literalCredentialArguments(args: readonly string[], command?: unknown): number[] {
   const found = new Set<number>();
+  const attached = isCurl(command) ? CURL_ATTACHED_FLAGS : ATTACHED_FLAGS;
   args.forEach((arg, index) => {
     if (urlCarriesCredential(arg)) found.add(index);
-    const parts = argumentParts(args, index);
+    const parts = argumentParts(args, index, attached);
     if (!parts || parts.value === undefined || parts.value === "") return;
     const name = parts.name;
     if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name)) return;
@@ -507,7 +517,7 @@ export function withoutLiteralCredentials(stored: StoredShaper): StoredShaper {
   }
   if (Array.isArray(holder.args)) {
     const args = holder.args.map((arg) => (typeof arg === "string" ? arg : ""));
-    const literal = new Set(literalCredentialArguments(args));
+    const literal = new Set(literalCredentialArguments(args, holder.command));
     if (literal.size > 0) {
       holder.args = holder.args.map((arg, index) => (literal.has(index) ? "" : arg));
       changed = true;
@@ -528,7 +538,7 @@ function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
   const at = server ? ["transport", "server"] : ["transport"];
   const holder = server ?? transport;
   const args = Array.isArray(holder.args) ? holder.args.filter((arg): arg is string => typeof arg === "string") : [];
-  for (const index of literalCredentialArguments(args)) {
+  for (const index of literalCredentialArguments(args, holder.command)) {
     ctx.addIssue({
       code: "custom", path: [...at, "args", index],
       message: "This argument hands over a credential as literal text, which would be stored and backed up. Name the variable in env instead, so the secret is passed from the daemon's environment.",

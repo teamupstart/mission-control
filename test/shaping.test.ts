@@ -253,6 +253,24 @@ function shaperEntry() {
     transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer {env:ACME_TOKEN}" } } });
 }
 
+test("curl's attached cookie is refused and stripped, and -b stays an ordinary flag for other programs", () => {
+  const run = (command: string, args: string[]) => ShaperSchema.safeParse({ id: "c", label: "C", stage: "gather",
+    transport: { type: "command", command, args } });
+  for (const command of ["curl", "/usr/bin/curl", "/opt/homebrew/bin/curl"]) {
+    assert.equal(run(command, ["-bsession=abc", "https://context.example/x"]).success, false, command);
+    assert.equal(run(command, ["-bsid=1; theme=dark"]).success, false, `${command}, two cookies`);
+    assert.equal(run(command, ["-bcookies.txt"]).success, true, `${command}, a cookie file holds no secret inline`);
+  }
+  assert.equal(run("/usr/local/bin/backup-tool", ["-backup=x"]).success, true, "another program's -backup=x is its own flag");
+  assert.equal(run("curly", ["-bsession=abc"]).success, true, "only curl itself");
+  const stored = ShapingConfigSchema.parse({ shapers: [{ id: "c", label: "C", stage: "gather",
+    transport: { type: "command", command: "/usr/bin/curl", args: ["-s", "-bsession=sk-live-cookie", "https://context.example/x"] } }] });
+  const entry = stored.shapers[0] as unknown as StoredShaper & { transport: { args: string[] } };
+  assert.deepEqual(entry.transport.args, ["-s", "", "https://context.example/x"], "stripped when read from a stored definition");
+  assert.equal(JSON.stringify(stored).includes("sk-live-cookie"), false);
+  assert.equal(credentialsWereRemoved(entry), true);
+});
+
 test("an argument never hands over a credential as literal text; it is named in env instead", () => {
   const command = (args: string[]) => ShaperSchema.safeParse({ id: "c", label: "C", stage: "gather",
     transport: { type: "command", command: "/usr/local/bin/shaper", args, env: ["ACME_TOKEN"] } });

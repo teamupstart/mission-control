@@ -745,6 +745,10 @@ async function probeCodex(): Promise<void> {
           await until(() => oauthMcpMethods.has("initialize") && oauthMcpMethods.has("tools/list"), 5_000, "authenticated MCP initialization and tool listing using the saved Codex OAuth credential");
           say({ harness: "codex", phase, check: "the OAuth fixture accepted the saved Codex bearer on MCP initialize and tools/list", pass: true });
           serverEnvChecks(`codex ${phase}`);
+          const shellRan = shellRanIn(bodies, phase);
+          say({ harness: "codex", phase, check: "the agent ran a shell command whose output was captured", pass: shellTool !== null && shellRan, tool: shellTool });
+          assert.notEqual(shellTool, null, "Codex did not advertise a shell tool");
+          assert.ok(shellRan, "the shell command output was not captured");
           leaks(`codex ${phase}`, {
             "process arguments": descendantArgs(`codex ${phase}`).join("\n"),
             "the agent environment": JSON.stringify(agentEnvs),

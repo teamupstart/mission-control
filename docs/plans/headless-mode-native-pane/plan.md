@@ -177,7 +177,7 @@ These were asked as selectable decisions in the dashboard on revision 1. You pic
 - The design's code claims were checked against `main`:
   - transcript at `src/server/routes.ts:4657` and send at `:6117`;
   - resident run actions in `src/server/residents/routes.ts`;
-  - `ResidentLoopState` in `src/shared/residents.ts`;
+  - `ResidentLoopState` and `ResidentRunSummary` (`:603`) in `src/shared/residents.ts`;
   - `WORKFLOW_RUN_STATUSES` in `src/shared/workflow.ts:2426`.
 - The mod API names (`closeOnEscape`, `holdToasts`, `placement`, `bodyColumns`, `ui.close` refusal by answering without `next`, `Button` `hotkey`, `Input`) were checked against the Claude Code 2.1.329 types.
 - Stale terms were searched for: check-in, waiting row, `mctl pick`, `M-h` and multiplexer. Each remaining use is a withdrawal note or a historical decision.

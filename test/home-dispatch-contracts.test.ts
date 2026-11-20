@@ -4,7 +4,9 @@ import {
   CodexReadinessSchema, HomeDispatchConfigSchema, HomeDispatchDraftConfirmSchema, HomeDispatchDraftCreateSchema,
   HomeDispatchDraftSummarySchema, HomeDispatchDraftUpdateSchema, HomeDispatchOptionsRequestSchema,
   HomeDispatchOptionsResponseSchema, HomeDispatchReceiptSchema, HomeDispatchResidentSchema,
-  HomeDispatchResidentsSchema, HomeSessionRegistrationAnswerSchema, HOME_DISPATCH_SEND_MAX_CHARS, HomeDispatchAnswerRequestSchema,
+  HomeDispatchResidentsSchema, HomeSessionRegistrationAnswerSchema, HomeDispatchTranscriptQuerySchema,
+  HomeDispatchStreamQuerySchema, HomeDispatchReadinessQuerySchema, HomeDispatchConfirmResultSchema,
+  HomeDispatchSendResultSchema, HOME_DISPATCH_SEND_MAX_CHARS, HomeDispatchAnswerRequestSchema,
   HomeDispatchInboxSchema, HomeDispatchSendRequestSchema, HomeDispatchTranscriptSchema,
   HomeSessionRegistrationSchema, INBOX_STATES, type CodexReadiness,
 } from "../src/shared/home-dispatch.ts";
@@ -137,4 +139,36 @@ test("config answers the launcher setting", () => {
   assert.ok(ok(HomeDispatchConfigSchema, { launcher: { prompt: true } }));
   assert.ok(!ok(HomeDispatchConfigSchema, { launcher: { prompt: "yes" } }));
   assert.ok(!ok(HomeDispatchConfigSchema, {}));
+});
+
+test("transcript and stream offsets are non-negative integers, read from the query string", () => {
+  for (const [schema, key] of [[HomeDispatchTranscriptQuerySchema, "since"], [HomeDispatchStreamQuerySchema, "from"]] as const) {
+    assert.ok(ok(schema, {}), `${key} is optional`);
+    assert.ok(ok(schema, { [key]: "0" }), `${key}=0 is valid`);
+    assert.ok(ok(schema, { [key]: "42" }));
+    assert.ok(!ok(schema, { [key]: "-1" }), `${key} refuses a negative offset`);
+    assert.ok(!ok(schema, { [key]: "1.5" }), `${key} refuses a fraction`);
+    assert.ok(!ok(schema, { [key]: "abc" }), `${key} refuses a non-number`);
+  }
+  assert.equal(HomeDispatchTranscriptQuerySchema.parse({ since: "7" }).since, 7);
+  assert.ok(ok(HomeDispatchTranscriptQuerySchema, { session: "s1", repo: "/repo" }));
+});
+
+test("readiness takes only live=1", () => {
+  assert.ok(ok(HomeDispatchReadinessQuerySchema, {}));
+  assert.ok(ok(HomeDispatchReadinessQuerySchema, { session: "s1", live: "1" }));
+  for (const live of ["0", "true", "", "2"]) assert.ok(!ok(HomeDispatchReadinessQuerySchema, { live }), `live=${live}`);
+});
+
+test("confirm and send results need every field", () => {
+  const confirmed = { choice: "start", taskId: "t1", started: true };
+  assert.ok(ok(HomeDispatchConfirmResultSchema, confirmed));
+  assert.ok(ok(HomeDispatchConfirmResultSchema, { choice: "cancel", taskId: null, started: false }), "cancel creates no task");
+  assert.ok(!ok(HomeDispatchConfirmResultSchema, { choice: "start", started: true }), "taskId is required, null or a string");
+  assert.ok(!ok(HomeDispatchConfirmResultSchema, { choice: "start", taskId: "t1" }));
+  assert.ok(!ok(HomeDispatchConfirmResultSchema, { ...confirmed, choice: "maybe" }));
+  assert.ok(ok(HomeDispatchSendResultSchema, { ok: true, at: 5 }));
+  assert.ok(!ok(HomeDispatchSendResultSchema, { ok: true }));
+  assert.ok(!ok(HomeDispatchSendResultSchema, { ok: false, at: 5 }));
+  assert.ok(!ok(HomeDispatchSendResultSchema, { at: 5 }));
 });

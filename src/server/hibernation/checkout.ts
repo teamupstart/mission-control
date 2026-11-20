@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import type { TaskHibernationCheckout } from "@shared/hibernation.ts";
 
 /**
@@ -11,13 +11,16 @@ import type { TaskHibernationCheckout } from "@shared/hibernation.ts";
  * next one. APFS, on the macOS Mission Control supports, does not reuse file ids that way.
  * Linux's ext4 can, so there a directory removed and recreated at once may read as the same.
  *
- * Null when the path is not a directory that can be read now.
+ * Null when the path is not a directory this process can read and enter now. A directory whose
+ * identity can be read but whose contents cannot is not one an agent could be reopened in, so
+ * Hibernate refuses it before stopping anything rather than strand the conversation.
  */
 export function checkoutIdentity(path: string | null | undefined): TaskHibernationCheckout | null {
   if (!path) return null;
   try {
     const stat = statSync(path, { bigint: true });
     if (!stat.isDirectory()) return null;
+    accessSync(path, constants.R_OK | constants.X_OK);
     return { path, dev: String(stat.dev), ino: String(stat.ino) };
   } catch {
     return null;
@@ -32,7 +35,11 @@ export function checkoutIdentity(path: string | null | undefined): TaskHibernati
 export function checkoutMismatch(saved: TaskHibernationCheckout | null): string | null {
   if (!saved) return "Mission Control did not record which checkout it ran in, so it cannot verify where to reopen it";
   const now = checkoutIdentity(saved.path);
-  if (!now) return `its checkout ${saved.path} no longer exists`;
+  if (!now) {
+    return existsSync(saved.path)
+      ? `its checkout ${saved.path} cannot be read by Mission Control`
+      : `its checkout ${saved.path} no longer exists`;
+  }
   if (now.dev !== saved.dev || now.ino !== saved.ino) {
     return `the checkout at ${saved.path} is not the one it was hibernated in: that worktree was removed and another directory now stands at its path`;
   }

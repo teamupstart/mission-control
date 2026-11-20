@@ -604,6 +604,8 @@ interface TerminalFleet {
     live: boolean;
     /** Whether closing a launch's home ends its agent, releasing the lease. */
     closeEnds: boolean;
+    /** Whether a launch's lease is still unclaimed, so `dispose` revokes it: no agent can start. */
+    revocable: boolean;
   };
 }
 
@@ -647,6 +649,7 @@ function terminalFleet(
     closeFailures: options.closeFailures ?? 0,
     live: false,
     closeEnds: true,
+    revocable: false,
   };
   let launches = 0;
   // Sessions that stay in every discovery sweep, whatever the test does to the others.
@@ -665,7 +668,7 @@ function terminalFleet(
         // `dispose` answers false: the guard claimed the lease, so the agent did start and only
         // closing its terminal can end it.
         const id = `lease-${prepared.length}`;
-        return { lease: { id, root: "/fixture/leases" }, dispose: () => (disposed.push(id), false) } as never;
+        return { lease: { id, root: "/fixture/leases" }, dispose: () => (disposed.push(id), controls.revocable) } as never;
       },
       spawn: async (input) => {
         spawned.push({ name: input.name, terminalBackend: input.terminalBackend });
@@ -946,6 +949,43 @@ test("a failed terminal Resume whose agent outlives its closed terminal keeps th
   assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
   assert.equal(f.spawned.length, 2);
   assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
+});
+
+test("a launch whose lease was revoked but whose terminal would not close stays recorded, and never blocks Retry", async (t) => {
+  const f = terminalFleet(checkout("terminal-revoked-unclosed"), { appears: false, closeFailures: 2 });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  // The lease is still unclaimed, so revoking it means no agent can ever start there; but the
+  // terminal it opened will not close.
+  f.controls.revocable = true;
+  const first = await f.hibernation.resume("term");
+  assert.match(first.ok ? "" : first.error,
+    /did not reopen the conversation.*, and Terminal task could not be closed \(tmux: no server running\), though no agent started in it\. Close that terminal, then Retry/);
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch?.homeName, "Terminal task", "the open terminal is recorded");
+  assert.equal(db.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1", "durably");
+
+  // Retry closes it again. It still will not close, but it holds no agent, so the conversation
+  // is reopened anyway, and the leftover terminal stays on the record until then.
+  f.controls.appear = true;
+  const retried = await f.hibernation.resume("term");
+  assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
+  assert.deepEqual(f.closed, ["Terminal task", "Terminal task"], "Retry tried to close it first");
+  assert.equal(f.spawned.length, 2);
+  assert.equal(f.registry.getTask("term")?.sessionId, f.fresh);
+});
+
+test("a recorded launch that ended but left its terminal open is closed on Retry and then let go of", async (t) => {
+  const f = terminalFleet(checkout("terminal-revoked-closes-later"), { appears: false, closeFailures: 1 });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  f.controls.revocable = true;
+  assert.equal((await f.hibernation.resume("term")).ok, false);
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch?.leaseId, "lease-1");
+  // Retry closes it this time; a later failure no longer carries it.
+  const again = await f.hibernation.resume("term");
+  assert.match(again.ok ? "" : again.error, /did not reopen the conversation/);
+  assert.deepEqual(f.closed, ["Terminal task", "Terminal task", "Terminal task"]);
+  assert.equal(f.registry.getTask("term")?.hibernation?.failure?.launch ?? null, null);
 });
 
 test("a session opened on the conversation by something other than the resume is never given the task", async (t) => {
@@ -1590,6 +1630,32 @@ test("Hibernate is refused before anything stops when the session's checkout can
   assert.deepEqual(f.stopped, [], "the agent was not stopped");
   assert.equal(f.registry.getTask("term")?.status, "running");
   assert.equal(f.registry.getTask("term")?.sessionId, f.old);
+});
+
+test("a checkout Mission Control cannot read is refused for Hibernate, and named on Resume", { skip: process.getuid?.() === 0 ? "root reads every directory" : false }, async (t) => {
+  const { chmodSync } = await import("node:fs");
+  const cwd = checkout("terminal-unreadable");
+  t.after(() => chmodSync(cwd, 0o755));
+  const f = terminalFleet(cwd);
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  // The directory is there, so its identity could be read, but its contents cannot.
+  chmodSync(cwd, 0o000);
+  const refused = await f.hibernation.hibernate(f.old);
+  assert.match(refused.ok ? "" : refused.error, /could not read its checkout .*terminal-unreadable, so it could not reopen the conversation there/);
+  assert.deepEqual(f.stopped, [], "nothing was stopped");
+  assert.equal(f.registry.getTask("term")?.status, "running");
+
+  // Hibernated while readable, then made unreadable: Resume says so, launches nothing, and works
+  // again once it can read the checkout.
+  chmodSync(cwd, 0o755);
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+  chmodSync(cwd, 0o000);
+  const unreadable = await f.hibernation.resume("term");
+  assert.match(unreadable.ok ? "" : unreadable.error, /its checkout .*terminal-unreadable cannot be read by Mission Control/);
+  assert.equal(f.spawned.length, 0);
+  chmodSync(cwd, 0o755);
+  const resumed = await f.hibernation.resume("term");
+  assert.equal(resumed.ok, true, resumed.ok ? "" : resumed.error);
 });
 
 test("Resume refuses a different checkout standing at the saved path, for both runtimes, before launching anything", async (t) => {

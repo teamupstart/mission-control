@@ -293,6 +293,36 @@ test("a directory-matched task never outranks a resident's launch task before th
   assert.deepEqual(frames.map((f) => f.foremanInvite).filter((v) => v !== null), [], "no frame ever carried an invite");
 });
 
+test("a resident stays uninvited after its launch task is pruned from the task cache", () => {
+  const registry = new Registry();
+  const n = ++seq;
+  const cwd = `/shared/pruned-${n}`;
+  const id = `sdk:resident-pruned-${n}`;
+  // A launch task that never binds to its session and ends cancelled, the oldest of more
+  // than RECENT_TERMINAL_TASKS (50) evictable terminal tasks, so `pruneTerminalTasks` drops it.
+  const launch = mkTask({
+    id: `resident-pruned-${n}`, kind: "resident", workspaceKind: "resident-workspace", status: "cancelled",
+    repoRoot: `/residents/runs/r${n}/workspace`, worktreePath: null, provider: null, homeName: null,
+    sessionId: null, updatedAt: 1,
+  });
+  registry.upsertTask(launch);
+  registry.registerSdkSession({ id, agent: "claude", name: "resident", cwd, taskId: launch.id });
+  for (let i = 0; i < 55; i++) {
+    registry.upsertTask(mkTask({
+      id: `filler-${n}-${i}`, kind: "ship", status: "done", worktreePath: null, homeName: null,
+      provider: null, sessionId: null, updatedAt: Date.now() + i,
+    }));
+  }
+  assert.equal(registry.getTask(launch.id), undefined, "the launch task left the cache");
+  // A chip-moving resync: an unbound task in the same directory now fills the chip.
+  registry.upsertTask(mkTask({
+    id: `chat-pruned-${n}`, kind: "chat", status: "running", repoRoot: "/repo", worktreePath: cwd,
+    provider: null, homeName: null, sessionId: null,
+  }));
+  assert.equal(registry.getSession(id)?.task?.kind, "chat", "the resync ran and moved the chip");
+  assert.equal(registry.getSession(id)?.foremanInvite, null, "the captured launch kind still decides");
+});
+
 test("a resident's SDK session launches uninvited, whichever of task or session lands first", () => {
   const registry = new Registry();
   for (const order of ["task-first", "session-first"] as const) {

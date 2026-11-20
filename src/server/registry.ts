@@ -1017,10 +1017,12 @@ export class Registry extends EventEmitter {
   private invites = new Map<string, ForemanInviteRow>();
   /**
    * The task each SDK runtime was launched for, keyed by session id, from
-   * `SdkSessionRegistration.taskId`. Read only by `foremanInviteFor` while the card has no
-   * task chip yet; forgotten when the session row goes.
+   * `SdkSessionRegistration.taskId`, with that task's kind captured at registration. Read
+   * only by `foremanInviteFor`; forgotten when the session row goes. The kind is held here
+   * rather than looked up later because `this.tasks` is a prunable cache
+   * (`pruneTerminalTasks`): a resident whose launch task was evicted must stay uninvited.
    */
-  private sdkLaunchTasks = new Map<string, string>();
+  private sdkLaunchTasks = new Map<string, { taskId: string; kind: Task["kind"] | null }>();
   /**
    * The cwd of every session the last completed sweep refused (`discoveryAdmission`). A
    * hidden session has no card, but it still runs hooks, so `findSessionByEnv`'s unique-cwd
@@ -3075,8 +3077,10 @@ export class Registry extends EventEmitter {
     if (refusal) throw new Error(refusal);
     const now = input.now ?? Date.now();
     this.driverDialogs.delete(input.id);
-    if (input.taskId) this.sdkLaunchTasks.set(input.id, input.taskId);
-    else this.sdkLaunchTasks.delete(input.id);
+    if (input.taskId) {
+      const launched = this.tasks.get(input.taskId) ?? getDurableTask(input.taskId);
+      this.sdkLaunchTasks.set(input.id, { taskId: input.taskId, kind: launched?.kind ?? null });
+    } else this.sdkLaunchTasks.delete(input.id);
     const s: Session = {
       id: input.id,
       agent: input.agent,
@@ -9651,9 +9655,11 @@ export class Registry extends EventEmitter {
   private inviteTaskKindFor(s: Session): Task["kind"] | undefined {
     const chip = s.task ? this.tasks.get(s.task.id) : undefined;
     if (chip?.sessionId === s.id) return chip.kind;
-    const launchTaskId = this.sdkLaunchTasks.get(s.id);
-    const launched = launchTaskId ? this.tasks.get(launchTaskId) : undefined;
-    return launched?.kind ?? s.task?.kind;
+    const launch = this.sdkLaunchTasks.get(s.id);
+    // Captured at registration; refreshed from the cache when the row was not loadable then.
+    const launchKind = launch ? (launch.kind ?? this.tasks.get(launch.taskId)?.kind ?? null) : null;
+    if (launch && launch.kind === null && launchKind !== null) launch.kind = launchKind;
+    return launchKind ?? s.task?.kind;
   }
 
   /**

@@ -41,9 +41,11 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
 - Direct `pendingReviews` readers: `src/server/ensembles/manager.ts:99-101`,
   `src/server/ensembles/finalize-deps.ts:95`, `src/server/tasks.ts:4950`, `5165`.
 - Daemon completion gates: `Registry.consumePromptedGeneration`
-  (`src/server/registry.ts:10308-10320`); workflow holds, `src/server/workflows/manager.ts:8027`
-  and `:5282`. `Registry.outstandingReviews` returns pending and snoozed (`:7276`). A snoozed
-  question holds none of these today, in either wait mode.
+  (`src/server/registry.ts:10308-10320`); workflow resumption,
+  `src/server/workflows/manager.ts:8027`; automatic evidence preparation, `:5282`. Each already
+  refuses a session that is not idle (`registry.ts:10316`, `manager.ts:8022`, `:5281`).
+  `Registry.outstandingReviews` returns pending and snoozed (`:7276`). A snoozed question holds
+  none of these today, in either wait mode.
 - Merge completion and session close: `settleIfEpisodeFinished` and `closeMergedSession`,
   `src/server/tasks.ts:1706-1754`, `2467-2500`. Orphaning happens only at eviction:
   `src/server/reviews.ts:680-701`.
@@ -92,10 +94,15 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
    pending or snoozed, in either wait mode, read from `Registry.outstandingReviews`. Both apply
    to a message-mode question always and to a call-mode question while the flag is on, so with
    the flag off and no message-mode question open, completion is exactly today's.
-   - **Hold.** `consumePromptedGeneration` and the two workflow-manager holds refuse while one
-     is outstanding. A pending call-mode question already holds through `pendingReviews`; the
-     new cases are snoozed questions in either mode. A resident session is not held. No
-     worker-side check: the Foreman worker reads no SQLite.
+   - **Hold.** `consumePromptedGeneration` (prompted completion) and the two workflow-manager
+     holds (workflow resumption and automatic evidence preparation) refuse while one is
+     outstanding, whatever the session's state. The check is not conditional on the session
+     being idle or working: those gates already refuse a working session, so the new refusal
+     is what decides the outcome once the session has stopped. A pending call-mode question
+     already holds through `pendingReviews`; the new cases are snoozed questions in either
+     mode. Queue sends and backlog assignment are not part of this hold; they stay on the
+     `needs-you` bucket from step 8. A resident session is not held. No worker-side check: the
+     Foreman worker reads no SQLite.
    - **Merge closure.** When merge-driven completion closes a session, settle every one of them
      as `orphaned` with `closed_reason = 'merged'` before the session is stopped, so they leave
      the inbox at once. `settleIfEpisodeFinished` gains no review check; say so in a comment
@@ -130,12 +137,13 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
   `reportBucket` and `unpausedStateDisplay` agree for working, idle, unconfirmed and resident
   sessions; each direct reader; Foreman answer queued; alert trigger; resident wake not held by
   an open question and still held by a call-mode review; the attention-pill invariant holds.
-- Unit, completion rules, as a table over wait mode (call, message) and status (pending,
-  snoozed) with the flag on: each of the four refuses prompted completion and workflow
-  resumption; a merge closure settles each as `orphaned` with `closed_reason = 'merged'` and
-  removes it from the outstanding set; a resident is not held. With the flag off: a snoozed
-  call-mode question holds nothing and a merge records no reason, as today; an already open
-  message-mode question keeps both rules.
+- Unit, completion rules, as a table over wait mode (call, message), status (pending, snoozed)
+  and session state (working, stopped) with the flag on: each of the eight refuses prompted
+  completion, workflow resumption and automatic evidence preparation; a merge closure settles
+  each outstanding question as `orphaned` with `closed_reason = 'merged'` and removes it from
+  the outstanding set; a resident is not held. With the flag off: a snoozed call-mode question
+  holds nothing and a merge records no reason, as today; an already open message-mode question
+  keeps both rules.
 - HTTP: mode negotiation for flag off, old child, unmessageable session.
 - MCP bundle: receipt without a long poll; long poll when told `call`.
 - Playwright: flag Settings row and second-window toggle; with the flag on, a fake-agent session
@@ -150,8 +158,9 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
 Flag off: every existing test passes unchanged. Flag on: the Playwright flows above pass; no
 consumer listed in source plan section 4 acts on a stopped session with a question open; no
 outstanding `request_input` question in either wait mode, snoozed or not, can be completed past
-by automation; a merge leaves none outstanding and records `merged` on each. Nothing that makes
-the flag unsafe to turn on is left for a later phase.
+by automation, whether its session is working or has stopped; a merge leaves none outstanding
+and records `merged` on each. Nothing that makes the flag unsafe to turn on is left for a later
+phase.
 
 ## 9. Downstream handoff
 
@@ -176,5 +185,10 @@ resident with open questions is not yet listed in the drawer's needs-you group.
   was widened from message-mode questions to every outstanding `request_input` question in
   either wait mode, matching source plan section 4 and the operator's merge decision. Phase 2
   and Phase 3 were edited to match.
+- Plan validation round 2: the hold in step 9 is stated for every session state, matching the
+  source plan's consumer table, which no longer says prompted completion is unaffected while
+  the agent works. Step 9 names the three gates and says queue sends and backlog assignment
+  are outside the hold. The test table gained the session-state dimension. Phases 2 and 3 do
+  not restate the hold and needed no change.
 - Final audit: every source-plan section 1, 2, 4, 6, 8 and 9 requirement is owned here, except
   the drawer line of section 6 (Phase 3).

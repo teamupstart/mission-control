@@ -25,6 +25,9 @@ request completes the task and closes its open questions as moot.
   status is declared in Phase 1.
 - The Foreman worker never reads SQLite, so the completion hold belongs at the daemon gates
   (`Registry.consumePromptedGeneration`, the workflow manager), not in the worker.
+- Those three gates already refuse a session that is not idle
+  (`src/server/registry.ts:10316`, `src/server/workflows/manager.ts:8022`, `:5281`), so the
+  completion hold can be stated without a session-state condition.
 - The shipped flag registry is empty (`src/shared/feature-flag-registry.ts`); a spec turns the
   real flag on with `PUT /api/feature-flags`.
 - The database schema version is 35 (`src/server/db.ts:257`); review columns are added with
@@ -41,6 +44,18 @@ Two findings were accepted and applied across the bundle:
 - **No activation gap.** Both rules moved from Phase 2 to Phase 1, so the flag is safe to turn
   on as soon as Phase 1 merges. What Phase 1 leaves for later is quality, not safety: answer
   wording and authorship, coalescing, the bound, the agent's two tools and the dashboard detail.
+
+## Plan validation round 2
+
+One finding was accepted and applied:
+
+- **One rule for prompted completion in every session state.** The source plan's consumer table
+  said prompted completion was "not affected" while the agent works, while the completion rule
+  and Phase 1 step 9 refused it whenever a question is outstanding. The rule chosen is the
+  refusal: prompted completion, workflow resumption and automatic evidence preparation refuse
+  while a `request_input` question is outstanding, whatever the session is doing. The table,
+  the rule, Phase 1 step 9 and the verification now say that, and the table separates those
+  three gates from queue sends and backlog assignment, which the completion hold does not cover.
 
 ## Sizing and phase count
 
@@ -81,7 +96,8 @@ different sections; the later one rebases.
   writes it; Phase 3 renders it.
 - `Session.openQuestions: number`: pending message-mode questions. `pendingReviews` excludes them.
 - A resident session (`task.kind === "resident"`) is never `needs-you` for open questions alone.
-- The completion rules cover every outstanding `request_input` question in either wait mode.
+- The completion rules cover every outstanding `request_input` question in either wait mode,
+  and the completion hold applies in every session state.
 - `src/shared/async-input.ts`: the receipt text and the wait-mode decision. Phase 2 adds the
   answer text and the bound there. Phase 3 reads it only.
 - Outbox turn ids keep the `review-continuation:` prefix, which resident pacing reads.

@@ -1,8 +1,8 @@
 # Asynchronous input inbox
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation round 1. This task delivers the plan and its phases only. No
-product code changes here.
+revised after plan validation rounds 1 and 2. This task delivers the plan and its phases only.
+No product code changes here.
 
 ## Goal
 
@@ -140,8 +140,9 @@ Delivery timing is the outbox's existing policy for an operator message, unchang
 ### 4. What an open question holds
 
 `Session` gains `openQuestions`: the count of pending message-mode questions. `pendingReviews`
-keeps its present meaning, a review an agent is stopped inside a call on, so every existing
-consumer of `pendingReviews > 0` stays correct without edits.
+keeps its present meaning, a review an agent is stopped inside a call on, so each existing
+reader of `pendingReviews > 0` keeps the meaning it has today. The readers that must also see a
+message-mode question are named in the table below and are the only ones edited.
 
 `reportBucket` gains one clause just before its final `idle`: a session that is not confirmed
 working and has `openQuestions > 0` is `needs-you`. A resident session is exempt (section 6).
@@ -151,7 +152,8 @@ So:
 | --- | --- | --- |
 | Board tone and the **need you** count | Not amber. A quiet "1 question open" chip. | Amber, "waiting on your answer". |
 | Inbox and the **to answer** count | Counted. | Counted. |
-| Foreman prompted completion, queue sends, workflow resumption, evidence preparation, backlog assignment | Not affected: the session is working. | Held, through the existing `needs-you` checks. |
+| Foreman prompted completion, workflow resumption, automatic evidence preparation | Refused. These gates already refuse a working session, and the completion hold below refuses as well, so the rule is the same in every session state. | Refused by the completion hold below, for a pending or a snoozed question. |
+| Foreman queue sends, backlog assignment | No change from any other working session: these act only on a session that has stopped. | Held through the existing `needs-you` checks while a question is pending. A snoozed question does not hold them, as today. |
 | Operator messages, workflow repair rounds | Delivered as today. | Delivered as today. |
 | Ensemble "awaits operator" and rebind safety, manual assign and reset | Count `openQuestions` too, so a session with a question open is never rebound or reassigned underneath it. | Same. |
 | `report_blocker` | Allowed. The refusal applies only to a call-mode question. | Allowed. |
@@ -164,12 +166,16 @@ feature: they apply to a message-mode question always, since one exists only bec
 was on when it was asked, and to a call-mode question while the flag is on. Both land in the
 first phase, so the flag is safe to turn on as soon as that phase merges.
 
-- **An outstanding question holds automatic completion, snoozed or not.** Prompted completion
-  and workflow resumption read the registry's outstanding questions for the session, not only
-  the amber bucket. A pending call-mode question already holds through `pendingReviews`; the new
-  cases are snoozed questions in either wait mode, which hold nothing today. A parked question
-  still does not turn the session amber, but it can no longer be destroyed by automation
-  completing the task around it. A resident has no completion to hold and is not held.
+- **An outstanding question holds automatic completion, snoozed or not, whatever the session
+  is doing.** Prompted completion, workflow resumption and automatic evidence preparation
+  refuse while the session has an outstanding question. The check sits at those gates and does
+  not depend on session state: a working session is already refused there for being busy, so in
+  practice the hold decides the outcome for a session that has stopped. It reads the registry's
+  outstanding questions for the session, not only the amber bucket. A pending call-mode
+  question already holds through `pendingReviews`; the new cases are snoozed questions in
+  either wait mode, which hold nothing today. A parked question still does not turn the session
+  amber, but it can no longer be destroyed by automation completing the task around it. A
+  resident has no completion to hold and is not held.
 - **A merged pull request completes the task.** Merge-driven completion
   (`settleIfEpisodeFinished`) is deliberately not held by any outstanding question: merging is
   the operator's own conclusion, and automation cannot reach a merge past an outstanding
@@ -331,8 +337,9 @@ feature the bar is:
   without turning amber, stops and turns amber, and is woken by an answer given from the inbox;
   a resident keeps iterating with a question open.
 - Flag on: an outstanding `request_input` question, pending or snoozed and in either wait mode,
-  refuses prompted completion and workflow resumption; a merge closes every one of them with
-  the close reason `merged`.
+  refuses prompted completion, workflow resumption and automatic evidence preparation whether
+  the session is working or has stopped; a merge closes every one of them with the close reason
+  `merged`.
 - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and `npm run test:e2e`
   pass.
 

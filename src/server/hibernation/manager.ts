@@ -76,8 +76,8 @@ export interface TerminalHibernationDeps {
   provesLaunch: (session: Session, home: SpawnedHome, prepared: PreparedResume) => Promise<boolean>;
   /** Close a home a failed resume opened. Says when it could not, never swallows it. */
   closeHome: (home: { homeName: string; homeBackend: string; terminalResourceId: string | null }) => Promise<{ ok: boolean; error?: string }>;
-  /** Whether a recorded launch's lease is still live: its agent may be running, or about to. */
-  launchLive: (launch: TaskHibernationLaunch) => boolean;
+  /** Whether a launch's lease is still live: its agent may be running, or about to. */
+  launchLive: (launch: Pick<TaskHibernationLaunch, "leaseRoot" | "leaseId">) => boolean;
   /**
    * How long a launch whose home was closed is given to end. Closing a home only signals its
    * agent, and the guard releases the lease once the agent and its descendants are gone.
@@ -374,6 +374,15 @@ export class HibernationManager {
     if (!live || live.state === "exited" || !this.supervisor.handleFor(session.id)) {
       return this.resumeFailed(taskId, "its agent exited after reopening the conversation, before the task could be bound to it");
     }
+    // Its report says which conversation it opened, not which it holds now: one that moved on
+    // since is not reopening this task's.
+    if (live.agentSessionId !== record.agentSessionId) {
+      return this.putBackToSleep(
+        taskId,
+        live,
+        `its driver moved to conversation ${live.agentSessionId ?? "(none)"} before the task could be bound to it`,
+      );
+    }
     this.supervisor.wakeBound(session.id);
     return this.bindResumed(current, live, record, {});
   }
@@ -491,7 +500,22 @@ export class HibernationManager {
       });
     } catch (error) {
       watch.cancel();
-      return this.resumeFailed(task.id, error instanceof Error ? error.message : String(error));
+      const reason = error instanceof Error ? error.message : String(error);
+      // No home came back to close, but the preparation is this attempt's to release: revoking
+      // its lease means no guard can start the agent late. A lease a guard already claimed cannot
+      // be revoked; lease admission then refuses the next launch until that agent has ended.
+      let revoked = false;
+      try {
+        revoked = prepared.dispose();
+      } catch {
+        revoked = false;
+      }
+      return this.resumeFailed(
+        task.id,
+        revoked || !this.terminal.launchLive({ leaseRoot: prepared.lease.root, leaseId: prepared.lease.id })
+          ? reason
+          : `${reason}. Its launch may have started anyway, and Retry is refused until that agent has ended`,
+      );
     }
     const outcome = await watch.settle((s) => this.terminal.provesLaunch(s, home, prepared), this.terminal.appearMs);
     if (outcome.kind !== "launched" || outcome.others.length > 0) {

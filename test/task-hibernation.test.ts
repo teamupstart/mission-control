@@ -546,6 +546,8 @@ interface TerminalFleet {
   spawned: Array<{ name: string; terminalBackend: string | null }>;
   closed: string[];
   prepared: Array<{ agentSessionId: string | null; permissionMode: string | null; cwd: string | null }>;
+  /** The leases of preparations released through `dispose`, in order. */
+  disposed: string[];
   /** Switches a test flips between attempts. */
   controls: {
     /** Whether the launched agent comes up on the conversation. */
@@ -594,6 +596,7 @@ function terminalFleet(
   const spawned: TerminalFleet["spawned"] = [];
   const closed: string[] = [];
   const prepared: TerminalFleet["prepared"] = [];
+  const disposed: string[] = [];
   const controls: TerminalFleet["controls"] = {
     appear: options.appears !== false,
     competitor: options.competitor ?? false,
@@ -617,7 +620,8 @@ function terminalFleet(
         prepared.push({ agentSessionId: source.agentSessionId, permissionMode: source.permissionMode ?? null, cwd: source.cwd });
         // `dispose` answers false: the guard claimed the lease, so the agent did start and only
         // closing its terminal can end it.
-        return { lease: { id: `lease-${prepared.length}`, root: "/fixture/leases" }, dispose: () => false } as never;
+        const id = `lease-${prepared.length}`;
+        return { lease: { id, root: "/fixture/leases" }, dispose: () => (disposed.push(id), false) } as never;
       },
       spawn: async (input) => {
         spawned.push({ name: input.name, terminalBackend: input.terminalBackend });
@@ -678,7 +682,7 @@ function terminalFleet(
   started(registry, cwd, "%1", "conv-t");
   if (options.switcher) started(registry, cwd, "%5", "conv-other");
   registry.upsertTask(mkTask({ id: "term", title: "Terminal task", status: "running", sessionId: old, worktreePath: cwd, repoRoot: cwd }));
-  return { old, fresh, registry, hibernation, tasks, stopped, spawned, closed, prepared, controls };
+  return { old, fresh, registry, hibernation, tasks, stopped, spawned, closed, prepared, disposed, controls };
 }
 
 test("a terminal session hibernates like Kill stops it, and Resume reopens its conversation in a new home", async (t) => {
@@ -768,6 +772,30 @@ test("a terminal launch the backend refuses leaves the task hibernated with the 
   assert.equal(task.status, "running");
   assert.equal(task.sessionId, f.fresh);
   assert.equal(task.hibernation ?? null, null, "a success clears the failure");
+});
+
+test("a terminal launch that fails to spawn releases its preparation, and says when it may have started anyway", async (t) => {
+  const f = terminalFleet(checkout("terminal-spawn-dispose"), { spawnRefusals: 2 });
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  assert.equal((await f.hibernation.hibernate(f.old)).ok, true);
+
+  // The launch failed and its lease was never claimed: released, and the reason is the launch's.
+  const refused = await f.hibernation.resume("term");
+  assert.equal(refused.ok ? "" : refused.error,
+    "Could not resume: tmux refused to create the session. The task stays hibernated with its worktree and conversation kept.");
+  assert.deepEqual(f.disposed, ["lease-1"], "the preparation is released though no home came back");
+
+  // The launcher failed, but a guard had claimed the lease: it cannot be revoked, and says so.
+  f.controls.live = true;
+  const unknown = await f.hibernation.resume("term");
+  assert.match(unknown.ok ? "" : unknown.error,
+    /tmux refused to create the session\. Its launch may have started anyway, and Retry is refused until that agent has ended/);
+  assert.deepEqual(f.disposed, ["lease-1", "lease-2"]);
+  assert.equal(f.registry.getTask("term")?.status, "hibernated");
+
+  f.controls.live = false;
+  const retried = await f.hibernation.resume("term");
+  assert.equal(retried.ok, true, retried.ok ? "" : retried.error);
 });
 
 test("a failed terminal Resume whose terminal cannot be closed refuses to launch again until it is gone", async (t) => {
@@ -1108,6 +1136,33 @@ test("an Agent SDK Resume rereads the task after its driver confirms, and never 
       assert.equal(f.registry.getTask(id)?.sessionId, null);
     }
   }
+});
+
+test("an Agent SDK driver that moves to another conversation after reporting the saved one is never bound", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const id = "sdk-moves-after-confirming";
+  const sessionId = await hibernated(f, t, id, checkout(id));
+  const woken = boundTo(fakeHandle(), `conv-${id}`);
+  const fake = withFakeDriver(async () => woken);
+  t.after(fake.restore);
+  // It reports reopening the saved conversation, then binds another before the task is bound.
+  const confirm = f.supervisor.reportedConversation.bind(f.supervisor);
+  f.supervisor.reportedConversation = async (session, timeoutMs) => {
+    const reported = await confirm(session, timeoutMs);
+    woken.push({ kind: "bound", agentSessionId: "conv-moved", transcriptPath: null, modelId: null, pid: null });
+    await drain();
+    return reported;
+  };
+  const refused = await f.hibernation.resume(id);
+  assert.match(refused.ok ? "" : refused.error, /its driver moved to conversation conv-moved before the task could be bound to it/);
+  assert.equal(woken.stopped, true, "the driver is put back to sleep");
+  await drain();
+  assert.equal(getSdkSession(sessionId)?.status, "hibernated");
+  const task = f.registry.getTask(id)!;
+  assert.equal(task.status, "hibernated", "the task is not bound to another conversation");
+  assert.equal(task.sessionId, null);
+  assert.equal(task.hibernation?.agentSessionId, `conv-${id}`);
 });
 
 test("an Agent SDK driver that exits after reopening the conversation is never bound, and Retry reopens it", async (t) => {

@@ -973,7 +973,7 @@ session immediately before the task is bound. If another session took the conver
 the agent was starting, a terminal launch is undone and an Agent SDK session is hibernated
 again, and the task stays hibernated with the reason. A launched terminal agent is bound only
 if it is still live, in the saved checkout and on the saved conversation at that moment, and an
-Agent SDK session only if its driver is still running. A woken Agent SDK session whose driver
+Agent SDK session only if its driver is still running and still on the saved conversation. A woken Agent SDK session whose driver
 ends before the task is bound, for any reason, keeps the status `hibernated`, so Retry can still
 reopen it. If the task itself was deleted, cancelled or completed while the agent was starting,
 nothing is bound: an Agent SDK driver is stopped, and a terminal launch is undone the same way as

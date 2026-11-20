@@ -141,11 +141,11 @@ test("a shaped dispatch shows Shaping context, then the context its session rece
   const viewer = dashboard.getByRole("dialog", { name: "Context this session received" });
   await expect(viewer).toBeVisible();
   await expect(viewer.getByRole("listitem", { name: "Acme guidance: Answered" })).toContainText("version e2e-1");
-  const entries = viewer.getByRole("list", { name: "Entries delivered in turn one" }).getByRole("listitem");
-  await expect(entries).toHaveCount(2);
-  await expect(entries.nth(0)).toContainText("Acme guidance: Idempotent charges");
-  await expect(entries.nth(0)).toContainText("Charge each key once in");
-  await expect(entries.nth(1)).toContainText("Acme guidance: Retry budget");
+  // The section exactly as turn one carried it, shown whole rather than split back into entries.
+  const delivered = viewer.getByRole("region", { name: "Delivered in turn one" });
+  await expect(delivered).toContainText("## Task context");
+  const deliveredText = await delivered.locator("pre").innerText();
+  expect(deliveredText).toMatch(/### Acme guidance: Idempotent charges\nCharge each key once in [^\n]+\n\n### Acme guidance: Retry budget\nBack off exponentially/);
   await expectContentClearsBorder(viewer);
   await shoot(dashboard, "context-viewer", viewer);
   await viewer.getByRole("button", { name: "Close" }).click();

@@ -312,6 +312,7 @@ import {
   upsertTask as dbUpsertTask,
   commitTaskShaping as dbCommitTaskShaping,
   rekeyTaskShaping as dbRekeyTaskShaping,
+  openDb,
   taskShapingRecord as dbTaskShapingRecord,
   inTransaction,
   upsertUsageCell,
@@ -7623,6 +7624,13 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "task_upsert", task: next });
   }
 
+  /**
+   * Tasks whose shaping record a transaction re-keyed to a successor session. Memory catches up
+   * from the database at the task's next publish, which callers make only after their commit; a
+   * rollback leaves the database, and therefore that publish, on the original session.
+   */
+  private readonly carriedShaping = new Set<string>();
+
   /** Dispatches shaping context right now, by task id, with when each started. */
   private readonly shapingStartedAt = new Map<string, number>();
 
@@ -7636,7 +7644,11 @@ export class Registry extends EventEmitter {
    * absent when there is nothing to show, so an unshaped task's payload is unchanged.
    */
   private withShaping(task: Task, previous: Task | undefined): Task {
-    const shaping = previous ? previous.shaping ?? null : dbTaskShapingRecord(task.id);
+    // A record re-keyed inside a caller's transaction is read back from the database here, at
+    // the first publish after that commit: memory is never told about a write that could still
+    // roll back (see `carryShapingToSuccessor`).
+    const carried = this.carriedShaping.delete(task.id);
+    const shaping = previous && !carried ? previous.shaping ?? null : dbTaskShapingRecord(task.id);
     // Set by a dispatch or a handover for exactly as long as its step runs, and cleared in that
     // step's `finally`, so it needs no status of its own: a handed-over task is still `backlog`.
     const startedAt = this.shapingStartedAt.get(task.id) ?? null;
@@ -7695,8 +7707,9 @@ export class Registry extends EventEmitter {
    * the same conversation continuing - re-key the shaping record that named that session, in
    * the database and in memory, and return it. Null when nothing moves.
    *
-   * Memory is updated here rather than at publish because publishing carries the record
-   * forward from memory, never from the row a caller hands it (see `withShaping`).
+   * Only the database is written here. The caller's transaction may still roll back, so memory
+   * is left alone and the task is marked: its next publish, after the commit, reads the record
+   * back from the database (see `withShaping`).
    */
   private carryShapingToSuccessor(taskId: string, toSessionId: string, episodeId: string): TaskShaping | null {
     const prior = taskWorkEpisodeForTask(taskId);
@@ -7705,9 +7718,8 @@ export class Registry extends EventEmitter {
     const record = live ? live.shaping ?? null : dbTaskShapingRecord(taskId);
     if (!record || record.sessionId !== prior.sessionId) return null;
     if (!dbRekeyTaskShaping(taskId, prior.sessionId, toSessionId)) return null;
-    const shaping = { ...record, sessionId: toSessionId };
-    if (live) this.tasks.set(taskId, { ...live, shaping });
-    return shaping;
+    this.carriedShaping.add(taskId);
+    return { ...record, sessionId: toSessionId };
   }
 
   /** Test seam for a commit that fails. Production always takes the database function. */
@@ -7726,6 +7738,12 @@ export class Registry extends EventEmitter {
       if (!dbRekeyTaskShaping(taskId, fromSessionId, toSessionId)) return;
     } catch (error) {
       console.warn(`[shaping] could not carry task ${taskId}'s shaping record to its resumed session:`, error);
+      return;
+    }
+    // Inside a caller's transaction the write is not settled yet: defer memory to the next
+    // publish, as `carryShapingToSuccessor` does, rather than broadcast a record that may roll back.
+    if (openDb().isTransaction) {
+      this.carriedShaping.add(taskId);
       return;
     }
     if (!current) return;

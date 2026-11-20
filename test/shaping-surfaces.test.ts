@@ -6,7 +6,7 @@ import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
 import { currentShaping, shapingView, taskShapingRead, withCurrentShaping, type TaskShaping } from "../src/shared/shaping.ts";
 import type { Session, TaskSummary } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
-import { ShapingChip, ShapingRailMark, ShapingTileFlag, shapingEntries } from "../src/web/components/ShapingChip.tsx";
+import { ShapingChip, ShapingRailMark, ShapingTileFlag } from "../src/web/components/ShapingChip.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 // The reader rule and the session surfaces that apply it: the chip's two states, the board and
@@ -101,15 +101,4 @@ test("with the flag off nothing renders, whatever the record says", () => {
   for (const component of [ShapingChip, ShapingTileFlag, ShapingRailMark]) {
     assert.equal(render(off, createElement(component, { session: degraded })), "");
   }
-});
-
-test("the viewer splits the delivered section into the entries it holds", () => {
-  const text = "## Task context\n\nMission Control added this context.\n\n"
-    + "### Acme guidance: Idempotent charges\nCharge once.\n\n### Not a heading of ours\nstill the first body\n\n"
-    + "### Acme guidance: Retries (billing-api)\nBack off.";
-  assert.deepEqual(shapingEntries(text, ["Acme guidance"]), [
-    { heading: "Acme guidance: Idempotent charges", body: "Charge once.\n\n### Not a heading of ours\nstill the first body" },
-    { heading: "Acme guidance: Retries (billing-api)", body: "Back off." },
-  ]);
-  assert.deepEqual(shapingEntries("", ["Acme guidance"]), []);
 });

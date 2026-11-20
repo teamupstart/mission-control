@@ -81,28 +81,10 @@ export function ShapingChip({ session }: { session: Pick<Session, "id" | "task">
 }
 
 /**
- * Split the delivered section back into its entries for display. Each entry starts on a
- * heading the engine wrote for a shaper this record names, so a body that happens to contain
- * a heading-like line of some other label stays inside its entry.
+ * "Context this session received": every shaper's outcome, the section exactly as turn one
+ * carried it, and the notes. The section is shown as delivered, never split back into entries:
+ * the engine owns its format, and a shaper's body may contain any heading it likes.
  */
-export function shapingEntries(text: string, labels: readonly string[]): Array<{ heading: string; body: string }> {
-  const normalized = labels.map((label) => label.replace(/\s+/g, " ").trim().slice(0, 200)).filter(Boolean);
-  const starts: number[] = [];
-  for (let at = text.indexOf("\n\n### "); at !== -1; at = text.indexOf("\n\n### ", at + 1)) {
-    const line = text.slice(at + 2, text.indexOf("\n", at + 2) === -1 ? undefined : text.indexOf("\n", at + 2));
-    if (normalized.some((label) => line.startsWith(`### ${label}: `))) starts.push(at + 2);
-  }
-  return starts.map((start, index) => {
-    const end = index + 1 < starts.length ? starts[index + 1]! - 2 : text.length;
-    const block = text.slice(start, end);
-    const newline = block.indexOf("\n");
-    return newline === -1
-      ? { heading: block.slice(4), body: "" }
-      : { heading: block.slice(4, newline), body: block.slice(newline + 1) };
-  });
-}
-
-/** "Context this session received": every shaper's outcome, every entry, and the notes. */
 export function ShapingViewer({
   taskId,
   record,
@@ -127,7 +109,6 @@ export function ShapingViewer({
   const text = delivered && delivered.summary.sessionId === record.sessionId && delivered.summary.at === record.at
     ? delivered.text
     : null;
-  const entries = text ? shapingEntries(text, record.shapers.map((shaper) => shaper.label)) : [];
   return (
     <Overlay
       id={OVERLAY_IDS.shapingContext}
@@ -174,15 +155,11 @@ export function ShapingViewer({
           </ul>
           {view === "loading" ? (
             <p className="task-context-empty">Loading what was delivered…</p>
-          ) : entries.length > 0 ? (
-            <ol className="task-context-entries" aria-label="Entries delivered in turn one">
-              {entries.map((entry, index) => (
-                <li key={`${index}:${entry.heading}`} className="task-context-entry">
-                  <span className="task-context-entry-head">{entry.heading}</span>
-                  <pre className="task-context-entry-body" tabIndex={0}>{entry.body}</pre>
-                </li>
-              ))}
-            </ol>
+          ) : text ? (
+            <section className="task-context-delivered" aria-label="Delivered in turn one">
+              <span className="task-context-delivered-head">Delivered in turn one</span>
+              <pre className="task-context-delivered-text" tabIndex={0}>{text}</pre>
+            </section>
           ) : (
             <p className="task-context-empty">No context was added to turn one.</p>
           )}

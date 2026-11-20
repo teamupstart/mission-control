@@ -41940,8 +41940,7 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--muted);
   font-size: 12px;
 }
-.task-context-shapers,
-.task-context-entries {
+.task-context-shapers {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -41950,7 +41949,7 @@ body.foreman-sidecar-open .modal-backdrop {
   list-style: none;
 }
 .task-context-shaper,
-.task-context-entry {
+.task-context-delivered {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -41980,13 +41979,13 @@ body.foreman-sidecar-open .modal-backdrop {
 .task-context-reason {
   color: var(--fg);
 }
-.task-context-entry-head {
+.task-context-delivered-head {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.task-context-entry-body {
+.task-context-delivered-text {
   margin: 0;
-  max-height: 220px;
+  max-height: 360px;
   overflow: auto;
   font-size: 12px;
   white-space: pre-wrap;

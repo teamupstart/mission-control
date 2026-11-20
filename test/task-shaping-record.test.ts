@@ -201,6 +201,30 @@ test("a hibernated task resumed into a new session of the same episode carries i
   assert.ok(currentShaping(registry.getTask("hibernate")!));
 });
 
+test("a resume whose transaction rolls back leaves the record on the original session, in memory and on disk", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "rollback-resume", status: "running", sessionId: "kept" }));
+  const episode = (sessionId: string) => ({
+    episodeId: "e-rb", sessionId, agentSessionId: "agent-rb", branch: null, prUrl: null, prHeadSha: null, mergedAt: null,
+    promptedAt: null, awaitingAgentRebind: false, rebindFromTranscriptPath: null, startedAt: 1, updatedAt: 1,
+  });
+  assert.equal(registry.bindTaskToWorkEpisode("rollback-resume", "kept", episode("kept")), true);
+  registry.commitTaskShaping("rollback-resume", record("kept"), "text");
+  db.replaceSessionWorkEpisode(episode("lost"));
+  const resumed = { ...registry.getTask("rollback-resume")!, sessionId: "lost" };
+  // The carry runs inside the transaction; a later write in it fails and everything rolls back.
+  assert.throws(() => db.inTransaction(() => {
+    registry.persistResumedTask(resumed, "lost");
+    throw new Error("a later write in the resume failed");
+  }), /a later write in the resume failed/);
+  assert.equal(db.getTask("rollback-resume")?.shaping?.sessionId, "kept", "the database rolled back");
+  assert.equal(registry.getTask("rollback-resume")?.shaping?.sessionId, "kept", "and memory was never told otherwise");
+  assert.ok(currentShaping(registry.getTask("rollback-resume")!), "so the original session still shows its context");
+  // A later publish of the task reads what was committed, which is still the original session.
+  registry.upsertTask({ ...registry.getTask("rollback-resume")!, priority: "high" });
+  assert.equal(registry.getTask("rollback-resume")?.shaping?.sessionId, "kept");
+});
+
 test("a restart reads the record back with the task", () => {
   db.upsertTask(mkTask({ id: "restart", status: "running", sessionId: "live" }));
   db.commitTaskShaping("restart", record("live"), "text", 1);

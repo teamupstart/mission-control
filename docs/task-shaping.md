@@ -354,7 +354,7 @@ and the worker launches without a section.
 A chip in the session header reads "Context: N entries", or an amber "Context degraded" when a
 shaper failed, timed out, returned an invalid reply, was unavailable or reported itself
 degraded. It opens "Context this session received": each shaper's stage, origin, outcome,
-reason, duration and version, every entry that was delivered, a note when the section was
+reason, duration and version, the section exactly as turn one carried it, a note when the section was
 truncated, and a note for a shaper whose reply had a credential value removed. A degraded
 launch also shows a marker on its board card and its rail row.
 

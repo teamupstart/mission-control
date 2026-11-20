@@ -5,12 +5,13 @@ Part of `docs/plans/async-input-inbox/phased-plan.md`. Source plan: `plan.md` be
 ## 1. Outcome
 
 With the `async-input` preview flag on, `request_input` returns at once with a receipt and the
-agent keeps working. A session that then stops with a question open shows as waiting. No
+agent keeps working. A session that then stops with a pending question shows as waiting. No
 outstanding `request_input` question, pending or snoozed and in either wait mode, can be
-completed past by automation, and a merge that completes the task closes every one of them with
-a recorded reason. A resident keeps iterating. An answer from the inbox wakes the agent through
-the existing outbox. The flag is safe to turn on once this phase merges. With the flag off
-nothing changes.
+completed past by prompted completion, workflow resumption or automatic evidence preparation. A
+merge, which is the operator's own conclusion, still completes the task and closes every one of
+them with a recorded reason. A resident keeps iterating. An answer from the inbox wakes the
+agent through the existing outbox. The flag is safe to turn on once this phase merges. With the
+flag off nothing changes.
 
 ## 2. Entry criteria
 
@@ -81,14 +82,16 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
 6. **MCP child.** `request_input` takes `meanwhile`, sends `asyncCapable: true`, returns the
    receipt when told `wait: "message"` and long-polls otherwise. Reword the tool description to
    be true in both modes.
-7. **Counts.** `countPending` excludes message-mode rows; a sibling count feeds
-   `Session.openQuestions`; one `session_upsert` carries both. The `report_blocker` refusal
-   applies to call-mode questions only.
+7. **Counts.** `countPending` excludes message-mode rows; a sibling count of pending
+   message-mode rows feeds `Session.openQuestions`; one `session_upsert` carries both. A
+   snoozed question is in neither count, as today. The `report_blocker` refusal applies to
+   call-mode questions only.
 8. **Holds.** Add the idle clause to `reportBucket` and `needsYouReason` ("waiting on your
    answer") and mirror it in `unpausedStateDisplay`. The clause does not apply to a resident
    session (`task.kind === "resident"`): it wakes on its own cadence, so open questions alone
    never make it `needs-you`. Make the direct `pendingReviews` readers in section 4 count
-   `openQuestions` too.
+   `openQuestions` too. Operator messages, workflow repair rounds and `report_blocker` gain no
+   hold.
 9. **Completion rules.** Both have the scope the source plan's section 4 fixes: every
    outstanding `request_input` question of the session, that is a snoozable `input` review,
    pending or snoozed, in either wait mode, read from `Registry.outstandingReviews`. Both apply
@@ -144,6 +147,11 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
   the outstanding set; a resident is not held. With the flag off: a snoozed call-mode question
   holds nothing and a merge records no reason, as today; an already open message-mode question
   keeps both rules.
+- Unit, the rows the source plan's table leaves unheld, for a stopped session with a pending
+  message-mode question: an operator message is delivered; a workflow repair round is
+  delivered; `report_blocker` is accepted; a resident's wake fires. And the snoozed-question
+  exceptions: with only a snoozed question, the session is not `needs-you`, queue sends and
+  backlog assignment are not held, and rebinding and reassignment are not refused, as today.
 - HTTP: mode negotiation for flag off, old child, unmessageable session.
 - MCP bundle: receipt without a long poll; long poll when told `call`.
 - Playwright: flag Settings row and second-window toggle; with the flag on, a fake-agent session
@@ -155,12 +163,24 @@ copy and Residents drawer (Phase 3). None of those is needed for the flag to be 
 
 ## 8. Exit criteria
 
-Flag off: every existing test passes unchanged. Flag on: the Playwright flows above pass; no
-consumer listed in source plan section 4 acts on a stopped session with a question open; no
-outstanding `request_input` question in either wait mode, snoozed or not, can be completed past
-by automation, whether its session is working or has stopped; a merge leaves none outstanding
-and records `merged` on each. Nothing that makes the flag unsafe to turn on is left for a later
-phase.
+Flag off: every existing test passes unchanged.
+
+Flag on: the Playwright flows above pass, and every row of the consumer table in source plan
+section 4 behaves as that table says, its exceptions included:
+
+- **Held.** Prompted completion, workflow resumption and automatic evidence preparation refuse
+  for every outstanding `request_input` question, pending or snoozed, in either wait mode,
+  whether the session is working or has stopped. Queue sends and backlog assignment are held
+  for a stopped session while a question is pending. Ensemble rebinding and manual assign and
+  reset are refused while a question is pending.
+- **Not held, by design.** Operator messages and workflow repair rounds are delivered.
+  `report_blocker` is accepted, except against a call-mode question. Resident wakes fire. A
+  snoozed question does not turn the session amber and does not hold queue sends, backlog
+  assignment, rebinding or reassignment, as today.
+- **Merge.** Merge-driven completion is not held. It leaves no question outstanding and records
+  `merged` on each.
+
+Nothing that makes the flag unsafe to turn on is left for a later phase.
 
 ## 9. Downstream handoff
 
@@ -190,5 +210,11 @@ resident with open questions is not yet listed in the drawer's needs-you group.
   the agent works. Step 9 names the three gates and says queue sends and backlog assignment
   are outside the hold. The test table gained the session-state dimension. Phases 2 and 3 do
   not restate the hold and needed no change.
+- Plan validation round 3: the exit criterion no longer says that no consumer acts on a stopped
+  session with a question open. It follows the source plan's table row by row: what is held,
+  what is not held by design, the snoozed-question exceptions, and the merge. The outcome in
+  section 1 names the three gates instead of "automation", since a merge does complete the
+  task. Steps 7 and 8 and a new test bullet cover the unheld rows. Phases 2 and 3 make no claim
+  about these rows and needed no change.
 - Final audit: every source-plan section 1, 2, 4, 6, 8 and 9 requirement is owned here, except
   the drawer line of section 6 (Phase 3).

@@ -57,6 +57,19 @@ One finding was accepted and applied:
   the rule, Phase 1 step 9 and the verification now say that, and the table separates those
   three gates from queue sends and backlog assignment, which the completion hold does not cover.
 
+## Plan validation round 3
+
+One finding was accepted and applied:
+
+- **Phase 1's exit criterion follows the consumer table row by row.** It said no consumer in
+  the source plan's section 4 acts on a stopped session with a question open, which contradicted
+  the rows the table leaves unheld. It now lists what is held, what is deliberately not held
+  (operator messages, workflow repair rounds, `report_blocker`, resident wakes) and the
+  snoozed-question exceptions, and names the merge as the one completion path that is not held.
+- The same reading was applied to every other summary of the table, so none claims more than
+  the table does: the table's own cells now say "not held" and "while a question is pending"
+  where that is the rule, and "completed past by automation" became the three named gates.
+
 ## Sizing and phase count
 
 Estimated 1,250 to 1,500 non-test implementation lines across shared contracts, the daemon, the
@@ -65,7 +78,8 @@ server half is useful before its dashboard half. Three phases:
 
 - Phase 1 is everything needed for the flag to be safe to turn on, including residents and both
   completion rules, so it delivers the stated goal alone. Splitting it would leave a flag that
-  completes tasks under an open question, or a second source of truth for what a question holds.
+  lets prompted completion finish a task under an open question, or a second source of truth
+  for what a question holds.
 - Phases 2 and 3 are split because they share only contracts Phase 1 fixes and touch disjoint
   code (daemon and MCP against dashboard). A fourth phase for residents or for the two
   housekeeping tools would be under 200 lines and is folded in instead.
@@ -94,10 +108,13 @@ different sections; the later one rebases.
   Phase 1 writes `closedReason`; Phase 3 renders it.
 - `ReviewStatus` gains `withdrawn` (appended, terminal, never a human resolution). Phase 2
   writes it; Phase 3 renders it.
-- `Session.openQuestions: number`: pending message-mode questions. `pendingReviews` excludes them.
+- `Session.openQuestions: number`: pending message-mode questions, snoozed ones excluded.
+  `pendingReviews` excludes message-mode questions.
 - A resident session (`task.kind === "resident"`) is never `needs-you` for open questions alone.
 - The completion rules cover every outstanding `request_input` question in either wait mode,
   and the completion hold applies in every session state.
+- The consumer table in the source plan's section 4 is the complete statement of what a
+  question holds and what it deliberately does not.
 - `src/shared/async-input.ts`: the receipt text and the wait-mode decision. Phase 2 adds the
   answer text and the bound there. Phase 3 reads it only.
 - Outbox turn ids keep the `review-continuation:` prefix, which resident pacing reads.

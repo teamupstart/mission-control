@@ -1,7 +1,7 @@
 # Asynchronous input inbox
 
 Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
-revised after plan validation rounds 1 and 2. This task delivers the plan and its phases only.
+revised after plan validation rounds 1 to 3. This task delivers the plan and its phases only.
 No product code changes here.
 
 ## Goal
@@ -139,24 +139,27 @@ Delivery timing is the outbox's existing policy for an operator message, unchang
 
 ### 4. What an open question holds
 
-`Session` gains `openQuestions`: the count of pending message-mode questions. `pendingReviews`
-keeps its present meaning, a review an agent is stopped inside a call on, so each existing
-reader of `pendingReviews > 0` keeps the meaning it has today. The readers that must also see a
-message-mode question are named in the table below and are the only ones edited.
+`Session` gains `openQuestions`: the count of pending message-mode questions. A snoozed
+question is not counted, exactly as a snoozed question is not in `pendingReviews` today.
+`pendingReviews` keeps its present meaning, a review an agent is stopped inside a call on, so
+each existing reader of `pendingReviews > 0` keeps the meaning it has today. The readers that
+must also see a message-mode question are edited to read `openQuestions` as well: they are the
+ones named in the table below, and alerts (section 5).
 
 `reportBucket` gains one clause just before its final `idle`: a session that is not confirmed
 working and has `openQuestions > 0` is `needs-you`. A resident session is exempt (section 6).
-So:
+The table is the complete statement of what a question does and does not hold, exceptions
+included:
 
 | Consumer | Agent still working | Agent's turn has ended |
 | --- | --- | --- |
-| Board tone and the **need you** count | Not amber. A quiet "1 question open" chip. | Amber, "waiting on your answer". |
-| Inbox and the **to answer** count | Counted. | Counted. |
+| Board tone and the **need you** count | Not amber. A quiet "1 question open" chip. | Amber, "waiting on your answer", while a question is pending. A snoozed question does not turn it amber, as today. |
+| Inbox and the **to answer** count | Counted while pending. A snoozed question is listed under Snoozed, as today. | Same. |
 | Foreman prompted completion, workflow resumption, automatic evidence preparation | Refused. These gates already refuse a working session, and the completion hold below refuses as well, so the rule is the same in every session state. | Refused by the completion hold below, for a pending or a snoozed question. |
 | Foreman queue sends, backlog assignment | No change from any other working session: these act only on a session that has stopped. | Held through the existing `needs-you` checks while a question is pending. A snoozed question does not hold them, as today. |
-| Operator messages, workflow repair rounds | Delivered as today. | Delivered as today. |
-| Ensemble "awaits operator" and rebind safety, manual assign and reset | Count `openQuestions` too, so a session with a question open is never rebound or reassigned underneath it. | Same. |
-| `report_blocker` | Allowed. The refusal applies only to a call-mode question. | Allowed. |
+| Operator messages, workflow repair rounds | Not held. Delivered as today. | Not held. Delivered as today. |
+| Ensemble "awaits operator" and rebind safety, manual assign and reset | Count `openQuestions` too, so a session with a pending question is not rebound or reassigned underneath it. A snoozed question does not count, as today. | Same. |
+| `report_blocker` | Not held. Allowed; the refusal applies only to a call-mode question. | Not held. Allowed. |
 | Resident wakes | Not held (section 6). | Not held (section 6). |
 
 Two completion rules are stated outright rather than inherited. Both have one scope: **every
@@ -166,24 +169,24 @@ feature: they apply to a message-mode question always, since one exists only bec
 was on when it was asked, and to a call-mode question while the flag is on. Both land in the
 first phase, so the flag is safe to turn on as soon as that phase merges.
 
-- **An outstanding question holds automatic completion, snoozed or not, whatever the session
-  is doing.** Prompted completion, workflow resumption and automatic evidence preparation
-  refuse while the session has an outstanding question. The check sits at those gates and does
-  not depend on session state: a working session is already refused there for being busy, so in
+- **An outstanding question holds prompted completion, snoozed or not, whatever the session is
+  doing.** Prompted completion, workflow resumption and automatic evidence preparation refuse
+  while the session has an outstanding question. The check sits at those gates and does not
+  depend on session state: a working session is already refused there for being busy, so in
   practice the hold decides the outcome for a session that has stopped. It reads the registry's
   outstanding questions for the session, not only the amber bucket. A pending call-mode
   question already holds through `pendingReviews`; the new cases are snoozed questions in
   either wait mode, which hold nothing today. A parked question still does not turn the session
-  amber, but it can no longer be destroyed by automation completing the task around it. A
-  resident has no completion to hold and is not held.
+  amber, but those three gates can no longer finish the task around it. A resident has no
+  completion to hold and is not held.
 - **A merged pull request completes the task.** Merge-driven completion
-  (`settleIfEpisodeFinished`) is deliberately not held by any outstanding question: merging is
-  the operator's own conclusion, and automation cannot reach a merge past an outstanding
-  question because the workflow is held. When that completion closes the session, every
-  outstanding `request_input` question is settled `orphaned` at that moment rather than at a
-  later eviction, with the close reason `merged` recorded on the review. It leaves the inbox,
-  and the conversation reads "Closed unanswered: pull request merged" where the question was
-  asked or snoozed.
+  (`settleIfEpisodeFinished`) is the one completion path that is deliberately not held by an
+  outstanding question: merging is the operator's own conclusion, and the gates above cannot
+  carry a task to a merge past an outstanding question because workflow resumption is refused.
+  When that completion closes the session, every outstanding `request_input` question is
+  settled `orphaned` at that moment rather than at a later eviction, with the close reason
+  `merged` recorded on the review. It leaves the inbox, and the conversation reads "Closed
+  unanswered: pull request merged" where the question was asked or snoozed.
 
 ### 5. The inbox and the other dashboard surfaces
 
@@ -310,8 +313,8 @@ sequenceDiagram
 - A second inbox view, or opening the inbox or a modal automatically.
 - Expiring or auto-answering unanswered questions. Foreman's existing triage of routine `input`
   questions is unchanged apart from its answers now being delivered.
-- Sending queue items to a session that has stopped on a question. The queue stays held, as
-  today.
+- Sending queue items to a session that has stopped on a pending question. The queue stays
+  held, as today.
 - Changing the outbox's steer and interrupt timings.
 - Claude's built-in `AskUserQuestion` in sessions a person starts by hand.
 
@@ -320,7 +323,7 @@ sequenceDiagram
 | Risk or assumption | Handling |
 | --- | --- |
 | An agent told to keep working guesses at something irreversible. | The receipt forbids irreversible and outward-facing action on an assumption. The same wording is in production for Remind me later. Verified against the fake agents and one real dispatch per harness before the flag goes default-on. |
-| An agent ends its turn while a question is open and automation concludes it is done. | Section 4: the idle clause in `reportBucket`, plus the completion hold on every outstanding question, both in the first phase. A unit test per consumer listed there. |
+| An agent ends its turn while a question is open and prompted completion concludes it is done. | Section 4: the idle clause in `reportBucket`, plus the completion hold on every outstanding question, both in the first phase. A unit test per row of the section 4 table. |
 | An answer interrupts a long-running command after 180 s. | Accepted with the adopted mid-turn decision: it is what an operator message does today. The answer text tells the agent to resume what was interrupted. |
 | A question is closed unanswered by a merge. | Accepted with the adopted merge decision. The closure is recorded in the conversation, never silent. |
 | Sessions launched before the flag flips carry the old "BLOCKS until they answer" prompt. | The receipt is self-describing and overrides that expectation. New wording is mode-neutral. |
@@ -340,6 +343,9 @@ feature the bar is:
   refuses prompted completion, workflow resumption and automatic evidence preparation whether
   the session is working or has stopped; a merge closes every one of them with the close reason
   `merged`.
+- Flag on: every row of the section 4 table behaves as written, including the rows that are
+  not held (operator messages, workflow repair rounds, `report_blocker`, resident wakes) and
+  the snoozed-question exceptions.
 - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and `npm run test:e2e`
   pass.
 

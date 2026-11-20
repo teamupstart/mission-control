@@ -79,6 +79,8 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true, s
   const compactions = new Set<(event: SessionCompacted) => void>();
   const focuses: string[] = [];
   const calls: string[] = [];
+  /** Every summary the loop published, as the registry received it. */
+  const published: Array<NonNullable<ReturnType<typeof residentRunSummary>>> = [];
   let send: "accept" | "null" | "gate_throw" | "driver_throw" = "accept";
   // A measured compaction, announced the way both drivers do: the boundary's `compacted` event
   // reaches the registry's listeners before the result that completes the operation.
@@ -99,7 +101,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true, s
     onCompacted: (fn: (event: SessionCompacted) => void) => { compactions.add(fn); return () => { compactions.delete(fn); }; },
     getTask: () => task,
     getSession: () => session,
-    upsertResidentRun: (run: NonNullable<ReturnType<typeof import("../src/shared/residents.ts").residentRunSummary>>) => { for (const fn of listeners) fn({ type: "resident_run_upsert", run }); },
+    upsertResidentRun: (run: NonNullable<ReturnType<typeof import("../src/shared/residents.ts").residentRunSummary>>) => { published.push(run); for (const fn of listeners) fn({ type: "resident_run_upsert", run }); },
   };
   const deps = { registry, refreshSession: () => {
     onRefresh?.();
@@ -124,7 +126,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true, s
   } };
   function loop() { const value = new ResidentLoop(deps); loops.push(value); value.start(); return value; }
   const emit = () => { for (const fn of listeners) fn({ type: "session_upsert", session }); };
-  return { loop, calls, focuses, settings, get session() { return session; }, get now() { return now; }, advance: (ms: number) => { now += ms; },
+  return { loop, calls, focuses, published, settings, get session() { return session; }, get now() { return now; }, advance: (ms: number) => { now += ms; },
     run: () => store.getResidentRun("run")!.run, rows: () => openDb().prepare("SELECT * FROM resident_iterations ORDER BY seq").all() as unknown as state.ResidentIteration[],
     setSend: (value: typeof send) => { send = value; }, setCompact: (fn: typeof compact) => { compact = fn; },
     refreshContext: (value: number) => { refreshedContext = value; },
@@ -1029,6 +1031,7 @@ test("a window that closes while a compaction runs sends no wake after it; the w
     t.mock.timers.tick(300_000); f.advance(300_000); await settle();
     assert.deepEqual(f.calls, ["compact"], "compacted while awake, but no loop prompt after the window closed");
     assert.equal(f.run().loopState, "waiting", "the resident sleeps; it is not paused");
+    assert.equal(f.published.at(-1)?.loopState, "waiting", "the live surfaces are told it is waiting, not left showing compacting");
     const monday = FRIDAY_0800_UTC + 3 * 24 * HOUR + HOUR;
     await elapse(monday - f.now - 1);
     assert.equal(f.calls.filter((call) => call.includes("mission-resident:")).length, 0, "nothing over the weekend");

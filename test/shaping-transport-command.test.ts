@@ -204,6 +204,31 @@ test("a timeout answers timed_out long before a slow shaper would have answered"
   assert.ok(Date.now() - started < 15_000, `settled after ${Date.now() - started} ms`);
 });
 
+test("a helper outside the process group that holds the pipes cannot keep them open after the call", async () => {
+  const pipes = () => process.getActiveResourcesInfo().filter((name) => name === "PipeWrap").length;
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const pidFile = join(scratch, "escaped-helper.pid");
+  rmSync(pidFile, { force: true });
+  const before = pipes();
+  try {
+    // Stopped once the helper exists, so a slow Node start cannot decide what this proves.
+    const controller = new AbortController();
+    const pending = callCommand(request(), shaper([FIXTURE, "escape", pidFile]), ctx(120_000, { signal: controller.signal }));
+    for (let waited = 0; !existsSync(pidFile) && waited < 60_000; waited += 50) await sleep(50);
+    assert.ok(existsSync(pidFile), "the helper really was holding the pipes");
+    controller.abort();
+    const reply = await pending;
+    assert.equal(reply.kind, "timed_out", "the call settles after its drain, not when the helper exits");
+    let open = pipes();
+    for (let waited = 0; open > before && waited < 3_000; waited += 50) { await sleep(50); open = pipes(); }
+    assert.equal(open, before, "the daemon's ends of the shaper's pipes were closed");
+  } finally {
+    if (existsSync(pidFile)) {
+      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already gone. */ }
+    }
+  }
+});
+
 test("stopping a call kills its whole process group, descendants included", async () => {
   // Stopped only once the descendant exists, so how long Node takes to start on a busy machine
   // cannot decide what this test proves.

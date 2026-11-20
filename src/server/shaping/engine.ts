@@ -251,17 +251,20 @@ async function runShaping(
     }
     if (reply.kind !== "data") return empty(reply.kind, reply.reason);
 
+    // Every reason below is built from text the shaper wrote, so it is scrubbed of what the
+    // transport handed the shaper before it is recorded, and before it is cut to length.
+    const scrub = reply.redact ?? ((text: string) => text);
     let value = reply.data;
     if (typeof value === "string") {
       try { value = JSON.parse(value); }
       catch { return empty("invalid", "The reply is not JSON."); }
     }
     const error = replyError(value);
-    if (error !== null) return empty("failed", error);
+    if (error !== null) return empty("failed", scrub(error));
     const parsed = ShapingResultSchema.safeParse(value);
-    if (!parsed.success) return empty("invalid", describeInvalidResult(parsed.error));
+    if (!parsed.success) return empty("invalid", scrub(describeInvalidResult(parsed.error)));
     const result = parsed.data;
-    const notes = result.notes?.filter((note) => note.trim()).join(" ") ?? "";
+    const notes = scrub(result.notes?.filter((note) => note.trim()).join(" ") ?? "");
     return {
       record: result.degraded
         ? record("degraded", notes || "The shaper reported that it is degraded.", result.version ?? null)

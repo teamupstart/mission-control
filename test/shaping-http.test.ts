@@ -169,6 +169,31 @@ test("a slow, failing or malformed shaper is an outcome in a 200, never an error
   }
 });
 
+test("a structured error or a degraded note that repeats a passed value is redacted in the dry run", async () => {
+  const saved = process.env.SHAPER_FIXTURE_SECRET;
+  process.env.SHAPER_FIXTURE_SECRET = "s3cret-passed-value";
+  try {
+    await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+    const named = { transport: { type: "command", command: process.execPath, env: ["SHAPER_FIXTURE_SECRET"] } };
+    for (const [id, mode, outcome, reason] of [
+      ["error-leak", "reply-error-leak", "failed", "denied: rejected credential [redacted]"],
+      ["notes-leak", "reply-notes-leak", "degraded", "fell back after [redacted] was refused"],
+    ] as const) {
+      const shaper = fixture(id, "select", mode);
+      await put({ kind: "upsert", shaper: { ...shaper, transport: { ...named.transport, args: [FIXTURE, mode, "SHAPER_FIXTURE_SECRET"] } } });
+      const response = await dryRun({ id, repository });
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.equal(text.includes("s3cret-passed-value"), false, `${id}: the value appears nowhere in the reply`);
+      const run = JSON.parse(text) as { summary: { shapers: Array<{ outcome: string; reason: string }> } };
+      assert.deepEqual([run.summary.shapers[0]!.outcome, run.summary.shapers[0]!.reason], [outcome, reason]);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
+    else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
 test("a dry run refuses an unknown shaper, a missing repository and a malformed request", async () => {
   assert.equal((await dryRun({ id: "ghost", repository })).status, 404);
   await put({ kind: "upsert", shaper: fixture("known", "gather", "ok") });

@@ -179,8 +179,9 @@ A `command` shaper is any program. Mission Control runs it once per call:
   To pass one of those to your program, such as an API token, name it in `env`. Mission
   Control's own token and state directory are never passed, even by name.
   [Security](security.md#task-shaping) states the exact rule.
-- **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure, with
-  every value from the child's environment replaced by `[redacted]` first.
+- **Output.** At most 256 KiB on stdout. stderr is kept only as the reason for a failure. Every
+  value from the child's environment is replaced by `[redacted]` in that reason, and in any
+  reason drawn from your reply, such as an `error` or degraded `notes`.
 - **Timeout.** The program runs in its own process group, and the whole group is killed at the
   timeout.
 

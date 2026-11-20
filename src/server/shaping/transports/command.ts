@@ -79,6 +79,20 @@ function killGroup(child: ChildProcess): void {
   }
 }
 
+/**
+ * Close the daemon's ends of the child's pipes. Killing the process group does not close a pipe
+ * that a helper outside the group inherited, so without this a call that settled at the drain
+ * timeout would leave its pipes and their listeners open for as long as that helper lives.
+ * Harmless after a normal close, when the streams are already ended.
+ */
+function releaseStdio(child: ChildProcess | undefined): void {
+  for (const stream of [child?.stdin, child?.stdout, child?.stderr]) {
+    if (!stream) continue;
+    stream.removeAllListeners("data");
+    stream.destroy();
+  }
+}
+
 function seconds(ms: number): string {
   return `${Math.round(ms / 100) / 10} s`;
 }
@@ -259,6 +273,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       settled = true;
       for (const timer of timers) clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
+      releaseStdio(child as ChildProcess | undefined);
       cleanup();
       settle(reply);
     };
@@ -311,7 +326,14 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     child.once("close", (code, signal) => {
       if (ending === "timed_out") return finish({ kind: "timed_out", reason: `Timed out after ${seconds(ctx.timeoutMs)}.` });
       if (ending === "overflow") return finish({ kind: "failed", reason: `The command printed more than ${COMMAND_OUTPUT_BYTES / 1024} KiB.` });
-      if (code === 0) return finish({ kind: "data", data: Buffer.concat(out).toString("utf8") });
+      if (code === 0) {
+        return finish({
+          kind: "data",
+          data: Buffer.concat(out).toString("utf8"),
+          // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
+          redact: (text) => redactReceived(text, received),
+        });
+      }
       // Only the child's own text is redacted, never the sentence Mission Control wraps it in.
       const tail = stderrTail();
       const detail = tail ? `: ${tail}` : "";

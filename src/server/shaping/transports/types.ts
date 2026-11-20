@@ -6,7 +6,17 @@ import type { Shaper, ShapingRequest, ShapingTransportId } from "@shared/shaping
  * de-duplication, the outcome and the record. A transport never throws.
  */
 export type TransportReply =
-  | { kind: "data"; data: unknown }
+  | {
+    kind: "data";
+    data: unknown;
+    /**
+     * Removes values the shaper was handed from text derived from this reply. The engine runs
+     * every reason it builds from `data` through it (an `error` the reply states, its `notes`,
+     * a validation failure) before recording one, because the shaper wrote that text too.
+     * Absent means the transport handed the shaper nothing secret.
+     */
+    redact?: (text: string) => string;
+  }
   | { kind: "failed" | "timed_out" | "unavailable"; reason: string };
 
 /** State that lives for one shaping run, so a transport can reuse one connection across calls. */

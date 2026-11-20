@@ -395,10 +395,15 @@ The child's environment is built in two steps (`shaperCommandEnv`):
    Three kinds are never added, even by name: Mission Control's own token, credential and
    state-directory variables, an empty value, and a value that carries the daemon's token.
 
-Before a failure's stderr is recorded, every value in the
-environment the child was spawned with, inherited or named, is replaced with `[redacted]`:
-anywhere it appears when it is four characters or longer, and as a whole token when it is
-shorter, so `LANG=C` does not blank every "C" in the message.
+Before any reason is recorded from what the shaper wrote, every value in the environment the
+child was spawned with, inherited or named, is replaced with `[redacted]`. That covers a
+failure's stderr and the reasons drawn from a reply on stdout: an `error` it states, its
+degraded `notes`, and a validation failure. A value is replaced anywhere it appears when it is
+four characters or longer, and as a whole token when it is shorter, so `LANG=C` does not blank
+every "C" in the message. Entry bodies are the shaper's content and are not rewritten.
+
+When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
+started outside its process group cannot keep them open after the group is killed.
 
 **What a shaper is sent.** The operator's prompt, the task's title, kind, labels, priority,
 harness, runtime and after-work workflow, the attached repositories' names, roles, branches and

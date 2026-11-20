@@ -66,6 +66,24 @@ switch (mode) {
     process.exit(5);
     break;
   }
+  case "reply-error-leak":
+    // A structured error on stdout, exit 0, that repeats the value it was handed.
+    reply({ error: { code: "denied", message: `rejected credential ${process.env[rest[0]] ?? "<unset>"}` } });
+    break;
+  case "reply-notes-leak":
+    reply({ degraded: true, notes: [`fell back after ${process.env[rest[0]] ?? "<unset>"} was refused`], guidance: [] });
+    break;
+  case "escape": {
+    // A helper in a process group of its own that inherits this shaper's stdout and stderr, so
+    // killing the shaper's group leaves both pipes held open.
+    const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true, stdio: ["ignore", "inherit", "inherit"],
+    });
+    writeFileSync(rest[0], String(helper.pid));
+    helper.unref();
+    await sleep(60_000);
+    break;
+  }
   case "lock-cwd": {
     // Leaves a nested directory with no permissions in its working directory, so a plain
     // recursive removal of that directory fails, then answers normally.

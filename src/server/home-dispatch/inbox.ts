@@ -64,7 +64,9 @@ export function visibleResidents(
     const task = deps.registry.getTask(run.taskId);
     if (!task) continue;
     const roots = [task.repoRoot, ...task.extraRepos.map((r) => r.repoRoot)].filter((r): r is string => Boolean(r));
-    const noRepository = task.workspaceKind === "resident-workspace" && task.extraRepos.length === 0;
+    // A resident has no repository only when it names none at all, primary or attached. A resident
+    // with a primary repository belongs to that repository, whatever kind of workspace it runs in.
+    const noRepository = roots.length === 0;
     if (!noRepository && !roots.some((root) => sameRepo(sessionRepoRoot, root))) continue;
     const profile: ResidentProfile | undefined = deps.registry.getResidentProfile(run.profileId);
     out.set(run.taskId, {
@@ -216,15 +218,16 @@ export function buildInbox(
 }
 
 /**
- * The `{ running, waiting }` a registration answer carries for the banner (7.2, 7.21): the
- * repository's running tasks, and what needs the person. Zero outside a repository.
+ * The `{ running, waiting }` a registration answer carries for the banner (7.2, 7.21): the running
+ * tasks and what needs the person, counted exactly as that session's own inbox lists them, with
+ * the same visibility (its repository, its own tasks, and the residents it can see).
  */
 export function registrationCounts(
   deps: Pick<HomeDispatchDeps, "registry" | "workflows">,
   repoRoot: string | null,
+  sessionId: string,
 ): { running: number; waiting: number } {
-  if (repoRoot === null) return { running: 0, waiting: 0 };
-  const inbox = buildInbox(deps, { caller: { surface: "cli", repoRoot }, sessionId: null, allRepos: false });
+  const inbox = buildInbox(deps, { caller: { surface: "home-session", sessionId, repoRoot }, sessionId, allRepos: false });
   return { running: inbox.counts.running, waiting: inbox.needsYou.length };
 }
 

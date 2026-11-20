@@ -34,7 +34,7 @@ import type { HomeDispatchDeps, HomeDispatchHandler } from "./stub.ts";
 // read from the request. A receipt is kept per review, so a retry returns what was sent.
 
 interface Refusal {
-  status: 400 | 403 | 404 | 409;
+  status: 400 | 403 | 404 | 409 | 500;
   error: string;
 }
 
@@ -224,30 +224,30 @@ function answer(
   const settlement = settlementFor(review, shape, body);
   if (isRefusal(settlement)) return { refusal: settlement };
 
+  // The receipt is written in the SAME transaction as the settle (`persistWith`), so the two commit
+  // together or not at all: a failed receipt write leaves the review pending and the caller can
+  // simply answer again, and a settled review always has the receipt a retry needs.
+  const at = Date.now();
   let updated: ReviewItem | null;
   try {
     updated = deps.reviews.resolve(
       review.id, settlement.action, settlement.response, actorFor(resolved, settlement.approving), settlement.selections,
+      () => {
+        openDb()
+          .prepare(
+            `INSERT INTO home_dispatch_receipts (review_id, task_id, session_id, surface, sent, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(review.id, task.id, resolved.sessionId, surface, settlement.sent, at);
+      },
     );
   } catch (error) {
     if (error instanceof ReviewResolutionError) return refuse(400, error.message);
-    throw error;
+    console.warn(`[home-dispatch] could not settle review ${review.id}: ${error instanceof Error ? error.message : String(error)}`);
+    return refuse(500, "the answer could not be recorded, so nothing was sent; answer again");
   }
   if (!updated) return refuse(404, "no such review");
   if (updated.status === "pending" || updated.status === "snoozed") return refuse(409, "the review could not be settled");
-
-  const at = Date.now();
-  try {
-    openDb()
-      .prepare(
-        `INSERT OR IGNORE INTO home_dispatch_receipts (review_id, task_id, session_id, surface, sent, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(review.id, task.id, resolved.sessionId, surface, settlement.sent, at);
-  } catch (error) {
-    // The answer was delivered, so the route still answers 200 (7.8); only the retry loses its receipt.
-    console.warn(`[home-dispatch] answered review ${review.id} but could not write its receipt: ${error instanceof Error ? error.message : String(error)}`);
-  }
   return { receipt: { reviewId: review.id, taskId: task.id, sent: settlement.sent, at } };
 }
 

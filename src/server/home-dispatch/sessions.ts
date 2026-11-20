@@ -252,8 +252,9 @@ export function canMessageTask(
 export function sessionCounts(
   deps: Pick<HomeDispatchDeps, "registry" | "workflows">,
   repoRoot: string | null,
+  sessionId: string,
 ): HomeSessionRegistrationAnswer["counts"] {
-  return registrationCounts(deps, repoRoot);
+  return registrationCounts(deps, repoRoot, sessionId);
 }
 
 /**
@@ -320,7 +321,7 @@ export const registerSessionHandler: HomeDispatchHandler = (deps): Handler => as
     repoRoot,
     created,
     offerLauncher: offered,
-    counts: sessionCounts(deps, repoRoot),
+    counts: sessionCounts(deps, repoRoot, body.sessionId),
     daemonVersion: SERVICE_VERSION,
     minModApi: HOME_DISPATCH_MIN_MOD_API,
     dashboardUrl: `http://${HOST}:${PORT}/`,

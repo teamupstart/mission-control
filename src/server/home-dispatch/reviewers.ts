@@ -36,13 +36,24 @@ function currentSubmissionId(runId: string): string | null {
   return row?.id ?? null;
 }
 
+/**
+ * The submission's node attempts, one per node: its latest attempt, in the order the nodes first
+ * appeared. A node that failed and was retried is one row showing its retry, never two.
+ */
 function attemptsOf(submissionId: string): RoundAttemptRow[] {
-  return openDb()
+  const rows = openDb()
     .prepare(
       `SELECT id, node_id, state, persona_snapshot_json, session_action_snapshot_json, runner_id, model_id
-         FROM workflow_node_attempts WHERE submission_id = ? ORDER BY rowid ASC`,
+         FROM workflow_node_attempts WHERE submission_id = ? ORDER BY node_id ASC, attempt ASC`,
     )
     .all(submissionId) as unknown as RoundAttemptRow[];
+  const latest = new Map<string, RoundAttemptRow>();
+  for (const row of rows) latest.set(row.node_id, row);
+  // Back to creation order, which is the workflow's reviewer order.
+  const order = openDb()
+    .prepare(`SELECT node_id, MIN(rowid) AS first FROM workflow_node_attempts WHERE submission_id = ? GROUP BY node_id ORDER BY first ASC`)
+    .all(submissionId) as unknown as { node_id: string }[];
+  return order.map((o) => latest.get(o.node_id)!);
 }
 
 function personaName(json: string | null, fallback: string): string {

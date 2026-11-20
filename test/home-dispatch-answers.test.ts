@@ -154,6 +154,31 @@ test("a retry from the same session returns its receipt; another session gets 40
   assert.equal((openDb().prepare(`SELECT count(*) AS n FROM home_dispatch_receipts WHERE review_id = ?`).get(review.id) as { n: number }).n, 1);
 });
 
+test("a receipt that cannot be written settles nothing, so the retry still works and then has its receipt", async () => {
+  const h = await homeIn("receipt-fail");
+  const worker = addTask("t-receipt-fail", h.repo, "home-session");
+  const review = reviews.create(worker, "input", "Q", "Keep?", [QUESTION]);
+  const body = { action: "answer", taskId: "t-receipt-fail", reviewId: review.id, option: "Keep" };
+  const db = openDb();
+  db.exec(`CREATE TRIGGER fail_receipt BEFORE INSERT ON home_dispatch_receipts BEGIN SELECT RAISE(ABORT, 'receipt store is down'); END`);
+  try {
+    const failed = await answer(h, body);
+    assert.equal(failed.status, 500, "the caller is told nothing was sent");
+    assert.match(await errorOf(failed), /nothing was sent; answer again/);
+    assert.equal(row(review.id).status, "pending", "the settle rolled back with the receipt");
+    assert.equal((db.prepare(`SELECT status FROM reviews WHERE id = ?`).get(review.id) as { status: string }).status, "pending");
+  } finally {
+    db.exec(`DROP TRIGGER fail_receipt`);
+  }
+  const retry = await answer(h, body);
+  assert.equal(retry.status, 200);
+  const receipt = await receiptOf(retry);
+  assert.equal(row(review.id).status, "answered");
+  const again = await answer(h, body);
+  assert.equal(again.status, 200, "a lost response is recoverable: the settled review has its receipt");
+  assert.deepEqual(await receiptOf(again), receipt);
+});
+
 test("a dashboard answer to the review means a home session's retry is 409, not a receipt", async () => {
   const h = await homeIn("dash-first");
   const worker = addTask("t-dash", h.repo, "home-session");

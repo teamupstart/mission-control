@@ -311,6 +311,8 @@ test("a resident's pending request is an item with origin resident, visible by r
   mk("res-mine", h.repo);
   mk("res-none", h.repo, { workspaceKind: "resident-workspace", repoRoot: "", extraRepos: [] });
   mk("res-other", other.repo);
+  // A resident workspace that names a primary repository belongs to that repository, not to everyone.
+  mk("res-ws-other", other.repo, { workspaceKind: "resident-workspace", extraRepos: [] });
   addTask({ id: "res-idle", status: "running", kind: "resident", repoRoot: h.repo, sessionId: liveSession("w-idle") }, null);
   registry.upsertResidentRun({ id: "run-idle", profileId: "p", taskId: "res-idle", loopState: "working", iteration: 1 } as never);
 
@@ -324,6 +326,16 @@ test("a resident's pending request is an item with origin resident, visible by r
   assert.equal(item.state, "waiting");
   const cli = HomeDispatchInboxSchema.parse(await (await get(`/dispatch/inbox?repo=${encodeURIComponent(h.repo)}`, cliHeaders)).json());
   assert.deepEqual(cli.items.map((i) => i.taskId), [], "the cli never sees a resident");
+  const theirs = (await inboxFor(other)).items.map((i) => i.taskId).sort();
+  assert.deepEqual(theirs, ["res-none", "res-other", "res-ws-other"], "the other repository sees its own residents, and the repository-less one");
+
+  // The registration answer counts what the session's own inbox lists, residents' requests included.
+  const res = await register({
+    sessionId: "home-resident-again", harness: "claude", cwd: h.dir, clientVersion: "1.0.0", source: "resume", entrypoint: "cli",
+    interactive: true, beforeFirstPrompt: false, launcherDisabled: false,
+  });
+  assert.equal(((await res.json()) as { counts: { waiting: number } }).counts.waiting, inbox.needsYou.length);
+  assert.equal(inbox.needsYou.length, 2);
 });
 
 test("a managed plan, a diff, a plain plan and an unsupported form each carry the right pending block", async () => {
@@ -398,7 +410,11 @@ test("the registration answer's counts come from the inbox", async () => {
     sessionId: "home-counts-2", harness: "claude", cwd: h.dir, clientVersion: "1.0.0", source: "resume", entrypoint: "cli",
     interactive: true, beforeFirstPrompt: false, launcherDisabled: false,
   });
-  assert.deepEqual(((await res.json()) as { counts: unknown }).counts, { running: 1, waiting: 1 });
+  // Counted as the session's own inbox lists it: a repository-less resident's request from another
+  // test is visible in every home session, so the expectation is read from the inbox, not hard coded.
+  const own = await inboxFor(h);
+  assert.deepEqual(((await res.json()) as { counts: unknown }).counts, { running: 1, waiting: own.needsYou.length });
+  assert.ok(own.needsYou.includes("c-ask"), "the repository's own waiting task is counted");
 });
 
 test("config view shows the launcher setting, and switching it off stops the launcher offer", async () => {
@@ -468,6 +484,30 @@ test("reviewer rows follow the workflow's reviewer order with the latest attempt
   assert.equal(rows[2]!.failure, null);
   assert.equal(rows[4]!.startedAt, null);
   assert.deepEqual(reviewerRowsFor("no-such-run"), []);
+});
+
+test("a retried node is one row showing its latest attempt, for reviewers and for checks", () => {
+  const { attempts, submission } = seedRun("run-retry", ["First", "Second"]);
+  const db = openDb();
+  seedCall("run-retry", submission, attempts[0]!, { state: "failed", finished: 120, error: "timeout" });
+  // The first reviewer's node was retried as a second node attempt that is now running.
+  db.prepare(
+    `INSERT INTO workflow_node_attempts (id, submission_id, node_id, attempt, state, persona_snapshot_json, input_fingerprint, created_at, updated_at)
+     VALUES ('att-run-retry-0b', ?, 'node-0', 2, 'running', ?, 'fp', 2, 2)`,
+  ).run(submission, JSON.stringify({ name: "First" }));
+  seedCall("run-retry", submission, "att-run-retry-0b", { state: "running", started: 300 });
+  seedCall("run-retry", submission, attempts[1]!, { state: "succeeded", finished: 150 });
+  const rows = reviewerRowsFor("run-retry");
+  assert.deepEqual(rows.map((r) => [r.name, r.state]), [["First", "running"], ["Second", "passed"]], "one row per reviewer, in order, with the retry's state");
+  assert.equal(rows[0]!.startedAt, 300);
+
+  for (const [att, state] of [["1", "error"], ["2", "completed"]] as const) {
+    db.prepare(
+      `INSERT INTO workflow_node_attempts (id, submission_id, node_id, attempt, state, input_fingerprint, created_at, updated_at)
+       VALUES (?, ?, 'lint', ?, ?, 'fp', 3, 3)`,
+    ).run(`chk-retry-${att}`, submission, Number(att), state);
+  }
+  assert.deepEqual(runChecksFor("run-retry"), [{ name: "lint", state: "passed" }], "a check that failed and was retried shows the retry");
 });
 
 test("reviewer failure classes, and check rows from the run's non-reviewer nodes", () => {

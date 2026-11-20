@@ -6,8 +6,8 @@ Part of `docs/plans/async-input-inbox/phased-plan.md`. Source plan: `plan.md` be
 
 The operator can see, wherever a question appears, whether its agent is still working or has
 stopped on it, and what the agent is doing meanwhile. A working session shows its open questions
-without turning amber, the conversation records the question where it was asked, and Remind me
-later reads correctly for an agent that is already carrying on.
+without turning amber, the conversation records the question where it was asked and how it
+ended, and Remind me later reads correctly for an agent that is already carrying on.
 
 ## 2. Entry criteria
 
@@ -17,14 +17,15 @@ Phase 1 is merged. May run concurrently with Phase 2.
 
 In scope: the question card, inbox ordering and copy, the state badge, the conversation entry,
 Remind me later under async (its small daemon rule included), the Residents drawer, CSS, specs
-and docs. Not in scope: a new view, auto-opening anything, alert rules (Phase 1), how closures
-and withdrawals are written (Phase 2).
+and docs. Not in scope: a new view, auto-opening anything, alert rules and how merge closures
+are written (Phase 1), how withdrawals are written (Phase 2).
 
 ## 4. Repository findings and inherited contracts
 
-- Inherited from Phase 1: `waitMode`, `meanwhile`, `closedReason`, `withdrawn`,
-  `Session.openQuestions`, the idle clause and amber label in `unpausedStateDisplay`, and the
-  rule that a resident is never amber for open questions alone.
+- Inherited from Phase 1: `waitMode`, `meanwhile`, `closedReason` (already written by Phase 1
+  for every outstanding `request_input` question a merge closes, in either wait mode),
+  `withdrawn`, `Session.openQuestions`, the idle clause and amber label in
+  `unpausedStateDisplay`, and the rule that a resident is never amber for open questions alone.
 - `ReviewCard` is shared by the review modal, the inbox and ensemble lanes:
   `src/web/components/ReviewModal.tsx:130-419`.
 - Inbox rows, row Dismiss tooltip and ordering: `src/web/components/AttentionInbox.tsx:246-262`,
@@ -62,8 +63,11 @@ and withdrawals are written (Phase 2).
    questions, with an Answer button that opens the card while it is open. Closed states read
    "Closed unanswered: pull request merged" for `closedReason: "merged"`, "Closed unanswered"
    for any other orphaning, and "Withdrawn by the agent" with its reason for `withdrawn`. The
-   gold answer entry still lands at the resolution time. Extend the history route so closed and
-   withdrawn message-mode questions survive a reload.
+   merge closure line is shown for every `request_input` question that carries the reason,
+   whichever way it waited: on the Asked entry of a message-mode question, and in place of the
+   Snoozed entry of a call-mode question that was snoozed when the merge closed it. The gold
+   answer entry still lands at the resolution time. Extend the history route so merge-closed
+   and withdrawn questions survive a reload.
 5. **Remind me later.** For a message-mode question the sheet's first Meanwhile choice reads
    "Keep doing what it said" and stays the default; the mode id remains `judgment`. In
    `snoozeReviewRow`, a message-mode row snoozed in `judgment` mode owes no instruction;
@@ -77,23 +81,26 @@ and withdrawals are written (Phase 2).
 
 ## 6. Compatibility
 
-- A review without `waitMode` renders exactly as today on every surface.
-- `withdrawn` and `closedReason` may be absent until Phase 2 merges; every surface must render
-  without them.
+- A review without `waitMode` renders exactly as today on every surface, apart from the merge
+  closure line on a call-mode question that carries `closedReason`.
+- `closedReason` is written from Phase 1 on. `withdrawn` may be absent until Phase 2 merges;
+  every surface must render without it.
 - No `data-testid`; select by role, label or text.
 
 ## 7. Tests and verification
 
 - Unit: the status line for working, stopped, unconfirmed and resident sessions; ordering; badge
-  label and tone; conversation placement for open, answered, merged, orphaned and withdrawn
-  questions; snooze labels; no instruction owed for `judgment` on a message-mode row, owed for
-  `option` and `hold`; drawer grouping; the attention-pill invariant.
+  label and tone; conversation placement for open, answered, orphaned and withdrawn questions,
+  and for a merge closure in both wait modes; snooze labels; no instruction owed for `judgment`
+  on a message-mode row, owed for `option` and `hold`; drawer grouping; the attention-pill
+  invariant.
 - Playwright, flag on, fake agents, no model tokens: the inbox card shows "Still working" with
   its meanwhile line, then "Stopped, waiting on this answer"; stopped sessions sort first; the
   badge of a working session opens its questions; the conversation shows the Asked entry and
-  then the answer; the Remind me later sheet shows the new default and the snoozed row; the
-  Residents drawer lists a working resident's question. Each spec that opens a modal calls
-  `expectContentClearsBorder`. Attach screenshots to the pull request; do not commit them.
+  then the answer, and the merge closure line after a merge; the Remind me later sheet shows the
+  new default and the snoozed row; the Residents drawer lists a working resident's question.
+  Each spec that opens a modal calls `expectContentClearsBorder`. Attach screenshots to the pull
+  request; do not commit them.
 - Electron geometry test if the status line can overflow a narrow card.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
   `npm run test:e2e`.
@@ -101,7 +108,8 @@ and withdrawals are written (Phase 2).
 ## 8. Exit criteria
 
 Flag off: no visible change. Flag on: every surface in section 5 distinguishes working from
-stopped, and no question is visible in one place and missing from another.
+stopped, no question is visible in one place and missing from another, and a question closed by
+a merge is recorded in the conversation in either wait mode.
 
 ## 9. Downstream handoff
 
@@ -110,9 +118,12 @@ used as a second source of state: all of it renders `ReviewItem` and `Session`.
 
 ## 10. Cross-phase audit
 
-- Against Phase 1: the amber label, the idle clause and the resident exemption are Phase 1's;
-  this phase adds the working-tone branch beside them and must keep `reportBucket` and
-  `unpausedStateDisplay` in agreement. Alert wording is Phase 1's.
-- Against Phase 2: this phase reads `closedReason`, `withdrawn` and `response` and writes none
-  of them. The only daemon edit is `snoozeReviewRow`, which Phase 2 does not touch.
+- Against Phase 1: the amber label, the idle clause, the resident exemption and both completion
+  rules are Phase 1's; this phase adds the working-tone branch beside them and must keep
+  `reportBucket` and `unpausedStateDisplay` in agreement. Alert wording is Phase 1's.
+- Against Phase 2: this phase reads `withdrawn` and `response` and writes neither. The only
+  daemon edits are `snoozeReviewRow` and the history route, which Phase 2 does not touch.
+- Plan validation round 1: `closedReason` is now written by Phase 1, not Phase 2, and for
+  call-mode questions too. The conversation therefore renders the merge closure line in both
+  wait modes, so the closure the operator chose is never silent.
 - Final audit: owns source-plan section 5 except alerts, and the drawer line of section 6.

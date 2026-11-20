@@ -1,7 +1,8 @@
 # Asynchronous input inbox
 
-Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`.
-This task delivers the plan and its phases only. No product code changes here.
+Status: decisions adopted from the operator's review of revision 1; phased in `phased-plan.md`;
+revised after plan validation round 1. This task delivers the plan and its phases only. No
+product code changes here.
 
 ## Goal
 
@@ -156,19 +157,27 @@ So:
 | `report_blocker` | Allowed. The refusal applies only to a call-mode question. | Allowed. |
 | Resident wakes | Not held (section 6). | Not held (section 6). |
 
-Two completion rules are stated outright rather than inherited:
+Two completion rules are stated outright rather than inherited. Both have one scope: **every
+outstanding `request_input` question of the session**, meaning a snoozable `input` review that
+is pending or snoozed, whether it waits in a call or by message. Both are part of the flagged
+feature: they apply to a message-mode question always, since one exists only because the flag
+was on when it was asked, and to a call-mode question while the flag is on. Both land in the
+first phase, so the flag is safe to turn on as soon as that phase merges.
 
-- **A snoozed question holds automatic completion too.** Prompted completion and workflow
-  resumption read the registry's outstanding questions (pending and snoozed) for the session,
-  not only the amber bucket. A parked question does not turn the session amber, as today, but it
-  can no longer be destroyed by automation completing the task around it.
+- **An outstanding question holds automatic completion, snoozed or not.** Prompted completion
+  and workflow resumption read the registry's outstanding questions for the session, not only
+  the amber bucket. A pending call-mode question already holds through `pendingReviews`; the new
+  cases are snoozed questions in either wait mode, which hold nothing today. A parked question
+  still does not turn the session amber, but it can no longer be destroyed by automation
+  completing the task around it. A resident has no completion to hold and is not held.
 - **A merged pull request completes the task.** Merge-driven completion
-  (`settleIfEpisodeFinished`) is deliberately not held by an open or snoozed question: merging
-  is the operator's own conclusion, and automation cannot reach a merge past an open question
-  because the workflow is held. When that completion closes the session, its open questions are
-  settled `orphaned` at that moment rather than at a later eviction, with the close reason
-  `merged` recorded on the review. They leave the inbox, and the conversation's Asked entry
-  reads "Closed unanswered: pull request merged".
+  (`settleIfEpisodeFinished`) is deliberately not held by any outstanding question: merging is
+  the operator's own conclusion, and automation cannot reach a merge past an outstanding
+  question because the workflow is held. When that completion closes the session, every
+  outstanding `request_input` question is settled `orphaned` at that moment rather than at a
+  later eviction, with the close reason `merged` recorded on the review. It leaves the inbox,
+  and the conversation reads "Closed unanswered: pull request merged" where the question was
+  asked or snoozed.
 
 ### 5. The inbox and the other dashboard surfaces
 
@@ -250,11 +259,14 @@ The feature lands behind a preview flag, `async-input`, following `docs/feature-
 shipped registry is empty, so this is the first real flag and owes the browser assertion that
 its Settings row appears and that toggling it changes a second window without a reload.
 
-- **Off**: every ask is `wait: "call"`. Behavior is exactly today's.
-- **On**: new `request_input` asks from capable sessions are `wait: "message"`.
-- **Turned off with questions open**: open message-mode questions stay answerable and their
-  answers are still delivered. Only new asks go back to blocking.
-- The gate is read per ask with `featureEnabled`, so it takes effect without a restart.
+- **Off**: every ask is `wait: "call"`. Behavior is exactly today's, including completion.
+- **On**: new `request_input` asks from capable sessions are `wait: "message"`, and both
+  completion rules in section 4 are active for every outstanding `request_input` question.
+- **Turned off with questions open**: open message-mode questions stay answerable, their
+  answers are still delivered, and they keep both completion rules until they are settled. Only
+  new asks go back to blocking, and call-mode questions go back to today's completion behavior.
+- The gate is read per ask and per completion check with `featureEnabled`, so it takes effect
+  without a restart.
 - Later pull requests move it to `default-on` and then retire it, at which point
   `request_input`'s long-poll path is deleted. The gates keep `waitForResolution`.
 
@@ -302,11 +314,11 @@ sequenceDiagram
 | Risk or assumption | Handling |
 | --- | --- |
 | An agent told to keep working guesses at something irreversible. | The receipt forbids irreversible and outward-facing action on an assumption. The same wording is in production for Remind me later. Verified against the fake agents and one real dispatch per harness before the flag goes default-on. |
-| An agent ends its turn while a question is open and automation concludes it is done. | Section 4: the idle clause in `reportBucket`, plus completion checks on outstanding questions. A unit test per consumer listed there. |
+| An agent ends its turn while a question is open and automation concludes it is done. | Section 4: the idle clause in `reportBucket`, plus the completion hold on every outstanding question, both in the first phase. A unit test per consumer listed there. |
 | An answer interrupts a long-running command after 180 s. | Accepted with the adopted mid-turn decision: it is what an operator message does today. The answer text tells the agent to resume what was interrupted. |
 | A question is closed unanswered by a merge. | Accepted with the adopted merge decision. The closure is recorded in the conversation, never silent. |
 | Sessions launched before the flag flips carry the old "BLOCKS until they answer" prompt. | The receipt is self-describing and overrides that expectation. New wording is mode-neutral. |
-| An MCP child from an older build cannot return a receipt. | It never sends `asyncCapable`, so the daemon answers `wait: "call"`. |
+| An MCP child from an older build cannot return a receipt. | It never sends `asyncCapable`, so the daemon answers `wait: "call"`. Its questions are call-mode and are still covered by both completion rules while the flag is on. |
 | Agents ask more freely once asking is cheap, and every question alerts. | The open-question bound and exact-duplicate re-attach. Alert volume is reviewed before the flag goes default-on. |
 
 ## Verification
@@ -318,12 +330,17 @@ feature the bar is:
 - Flag on, with the fake agents and no model tokens: a dispatched session asks, keeps working
   without turning amber, stops and turns amber, and is woken by an answer given from the inbox;
   a resident keeps iterating with a question open.
+- Flag on: an outstanding `request_input` question, pending or snoozed and in either wait mode,
+  refuses prompted completion and workflow resumption; a merge closes every one of them with
+  the close reason `merged`.
 - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and `npm run test:e2e`
   pass.
 
 ## Implementation phases
 
 `phased-plan.md` splits the work into three phases: first **file and continue** (flag,
-contracts, the ask path, what a question holds, residents, agent instructions), then two that
-can run concurrently, **answer delivery and question lifecycle** and **dashboard surfaces**.
-Moving the flag to `default-on` and retiring it are later pull requests and are not scheduled.
+contracts, the ask path, what a question holds including both completion rules, residents,
+agent instructions), then two that can run concurrently, **answer delivery and question
+lifecycle** and **dashboard surfaces**. The flag is safe to turn on once the first phase has
+merged. Moving the flag to `default-on` and retiring it are later pull requests and are not
+scheduled.

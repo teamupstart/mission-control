@@ -5,9 +5,12 @@ Part of `docs/plans/async-input-inbox/phased-plan.md`. Source plan: `plan.md` be
 ## 1. Outcome
 
 With the `async-input` preview flag on, `request_input` returns at once with a receipt and the
-agent keeps working. A session that then stops with a question open shows as waiting and is not
-completed by automation. A resident keeps iterating. An answer from the inbox wakes the agent
-through the existing outbox. With the flag off nothing changes.
+agent keeps working. A session that then stops with a question open shows as waiting. No
+outstanding `request_input` question, pending or snoozed and in either wait mode, can be
+completed past by automation, and a merge that completes the task closes every one of them with
+a recorded reason. A resident keeps iterating. An answer from the inbox wakes the agent through
+the existing outbox. The flag is safe to turn on once this phase merges. With the flag off
+nothing changes.
 
 ## 2. Entry criteria
 
@@ -15,12 +18,13 @@ The planning pull request is merged. No phase dependencies.
 
 ## 3. Scope and non-goals
 
-In scope: the flag, the cross-phase contracts, the ask path, what an open question holds,
-alerts, the resident loop, agent instructions, docs for all of it.
+In scope: the flag, the cross-phase contracts, the ask path, what an open question holds, both
+completion rules (the hold and the merge closure), alerts, the resident loop, agent
+instructions, docs for all of it.
 
-Not in this phase: answer wording, authorship and coalescing, merge closure, the snoozed-question
-hold, the open-question bound and the two new tools (Phase 2); the card status line, badge chip,
-conversation entry, Remind me later copy and Residents drawer (Phase 3).
+Not in this phase: answer wording, authorship and coalescing, the open-question bound and the
+two new tools (Phase 2); the card status line, badge chip, conversation entry, Remind me later
+copy and Residents drawer (Phase 3). None of those is needed for the flag to be safe.
 
 ## 4. Repository findings
 
@@ -36,6 +40,13 @@ conversation entry, Remind me later copy and Residents drawer (Phase 3).
   `src/shared/types.ts:2759-2767`.
 - Direct `pendingReviews` readers: `src/server/ensembles/manager.ts:99-101`,
   `src/server/ensembles/finalize-deps.ts:95`, `src/server/tasks.ts:4950`, `5165`.
+- Daemon completion gates: `Registry.consumePromptedGeneration`
+  (`src/server/registry.ts:10308-10320`); workflow holds, `src/server/workflows/manager.ts:8027`
+  and `:5282`. `Registry.outstandingReviews` returns pending and snoozed (`:7276`). A snoozed
+  question holds none of these today, in either wait mode.
+- Merge completion and session close: `settleIfEpisodeFinished` and `closeMergedSession`,
+  `src/server/tasks.ts:1706-1754`, `2467-2500`. Orphaning happens only at eviction:
+  `src/server/reviews.ts:680-701`.
 - Alerts: `src/shared/alerts.ts:253-267`.
 - Resident wake hold reads the bucket: `src/server/residents/loop.ts:142`, `179`, `209`, `247`.
   Loop prompt: `src/shared/residents.ts:347`. Agent Shepherd source:
@@ -76,25 +87,40 @@ conversation entry, Remind me later copy and Residents drawer (Phase 3).
    session (`task.kind === "resident"`): it wakes on its own cadence, so open questions alone
    never make it `needs-you`. Make the direct `pendingReviews` readers in section 4 count
    `openQuestions` too.
-9. **Any-actor delivery.** For message-mode rows, admit `foreman` and `standing-approval` in
-   both eligibility predicates and in the continuation gate in `publishSettled`.
-10. **Alerts.** Raise the review alert when `openQuestions` grows, titled by whether the session
+9. **Completion rules.** Both have the scope the source plan's section 4 fixes: every
+   outstanding `request_input` question of the session, that is a snoozable `input` review,
+   pending or snoozed, in either wait mode, read from `Registry.outstandingReviews`. Both apply
+   to a message-mode question always and to a call-mode question while the flag is on, so with
+   the flag off and no message-mode question open, completion is exactly today's.
+   - **Hold.** `consumePromptedGeneration` and the two workflow-manager holds refuse while one
+     is outstanding. A pending call-mode question already holds through `pendingReviews`; the
+     new cases are snoozed questions in either mode. A resident session is not held. No
+     worker-side check: the Foreman worker reads no SQLite.
+   - **Merge closure.** When merge-driven completion closes a session, settle every one of them
+     as `orphaned` with `closed_reason = 'merged'` before the session is stopped, so they leave
+     the inbox at once. `settleIfEpisodeFinished` gains no review check; say so in a comment
+     and pin it with a test.
+10. **Any-actor delivery.** For message-mode rows, admit `foreman` and `standing-approval` in
+    both eligibility predicates and in the continuation gate in `publishSettled`.
+11. **Alerts.** Raise the review alert when `openQuestions` grows, titled by whether the session
     is working ("has a question, still working") or stopped ("needs your answer").
-11. **Residents.** With the exemption in step 8 the loop's existing `needs-you` hold and its
+12. **Residents.** With the exemption in step 8 the loop's existing `needs-you` hold and its
     `resume()` refusal no longer cover open message-mode questions, while call-mode reviews,
     gates and pane dialogs still hold. Pin both with tests rather than adding a second
     predicate. Add the one-sentence reminder to `RESIDENT_LOOP_PROMPT`. Update
     `residents/agent-shepherd.md` and regenerate the built-in profiles.
-12. **Instructions and docs.** Reword the ask-channel redirect, the Codex developer instruction,
+13. **Instructions and docs.** Reword the ask-channel redirect, the Codex developer instruction,
     the `mockups` skill line and the comments that say the call always blocks. Update
     `docs/sessions.md`, `docs/residents.md`, `docs/attention-and-alerts.md`, `docs/overview.md`
-    and document the flag.
+    and document the flag, including both completion rules and their scope.
 
 ## 6. Compatibility
 
 - New columns are nullable with no default: an existing row is a call-mode question.
-- An older MCP child sends no `asyncCapable` and is answered `wait: "call"`.
-- Turning the flag off leaves open message-mode questions answerable and delivered.
+- An older MCP child sends no `asyncCapable` and is answered `wait: "call"`. Its questions are
+  call-mode and are covered by both completion rules while the flag is on.
+- Turning the flag off leaves open message-mode questions answerable, delivered and still under
+  both completion rules; call-mode questions return to today's completion behavior.
 - Persisted status ids are append-only: `withdrawn` is appended, nothing is renamed.
 
 ## 7. Tests and verification
@@ -104,35 +130,51 @@ conversation entry, Remind me later copy and Residents drawer (Phase 3).
   `reportBucket` and `unpausedStateDisplay` agree for working, idle, unconfirmed and resident
   sessions; each direct reader; Foreman answer queued; alert trigger; resident wake not held by
   an open question and still held by a call-mode review; the attention-pill invariant holds.
+- Unit, completion rules, as a table over wait mode (call, message) and status (pending,
+  snoozed) with the flag on: each of the four refuses prompted completion and workflow
+  resumption; a merge closure settles each as `orphaned` with `closed_reason = 'merged'` and
+  removes it from the outstanding set; a resident is not held. With the flag off: a snoozed
+  call-mode question holds nothing and a merge records no reason, as today; an already open
+  message-mode question keeps both rules.
 - HTTP: mode negotiation for flag off, old child, unmessageable session.
 - MCP bundle: receipt without a long poll; long poll when told `call`.
 - Playwright: flag Settings row and second-window toggle; with the flag on, a fake-agent session
   asks, is not amber while working, turns amber when it stops, and resumes after an answer from
-  the inbox; a resident wakes on cadence with a question open. No model tokens.
+  the inbox; a resident wakes on cadence with a question open; a merge with a question open
+  removes it from the inbox. No model tokens.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
   `npm run test:e2e`.
 
 ## 8. Exit criteria
 
-Flag off: every existing test passes unchanged. Flag on: the Playwright flows above pass and no
-consumer listed in source plan section 4 acts on a stopped session with a question open.
+Flag off: every existing test passes unchanged. Flag on: the Playwright flows above pass; no
+consumer listed in source plan section 4 acts on a stopped session with a question open; no
+outstanding `request_input` question in either wait mode, snoozed or not, can be completed past
+by automation; a merge leaves none outstanding and records `merged` on each. Nothing that makes
+the flag unsafe to turn on is left for a later phase.
 
 ## 9. Downstream handoff
 
-Phases 2 and 3 rely on every contract in `phased-plan.md` and must not rename them. Known and
-left for Phase 2: an answer is still operator-authored text and may be captured as a Goal; a
-merge closes questions only at eviction and records no reason. Left for Phase 3: no working-tone
-chip, no conversation entry for an open question, and a resident with open questions is not yet
-listed in the drawer's needs-you group.
+Phases 2 and 3 rely on every contract in `phased-plan.md` and must not rename them. This phase
+writes `closedReason`; Phase 3 only renders it. Left for Phase 2, as quality rather than safety:
+an answer is still operator-authored text and may be captured as a Goal, several answers arrive
+as several turns, and there is no bound and no tool to list or withdraw questions. Left for
+Phase 3: no working-tone chip, no conversation entry for an open or merge-closed question, and a
+resident with open questions is not yet listed in the drawer's needs-you group.
 
 ## 10. Cross-phase audit
 
 - Written first. Owns every shared name used by Phases 2 and 3.
 - After Phase 2: any-actor delivery moved here from Phase 2 so the flag is safe alone;
-  `closed_reason` and `withdrawn` declared here though produced in Phase 2.
+  `closed_reason` and `withdrawn` declared here.
 - After Phase 3: the amber label and idle clause stay here; Phase 3 adds only the working-tone
   chip to the same function. The snooze instruction rule moved to Phase 3 with its sheet copy.
   The resident exemption was added here once the drawer's grouping was read: it groups by
   attention tone, so Phase 3 owns listing a resident's questions.
+- Plan validation round 1: both completion rules moved here from Phase 2, closing the gap
+  between "usable with the flag on" and protections that arrived a phase later. Their scope
+  was widened from message-mode questions to every outstanding `request_input` question in
+  either wait mode, matching source plan section 4 and the operator's merge decision. Phase 2
+  and Phase 3 were edited to match.
 - Final audit: every source-plan section 1, 2, 4, 6, 8 and 9 requirement is owned here, except
-  the drawer line of section 6 (Phase 3) and the two completion rules of section 4 (Phase 2).
+  the drawer line of section 6 (Phase 3).

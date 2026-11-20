@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,36 +65,58 @@ test("a selector runs in an empty directory of its own, removed afterwards", asy
   const seen = echoed(await callCommand(request("select"), shaper([FIXTURE, "echo"], { stage: "select" }), ctx()));
   assert.notEqual(realpathSync(worktree), seen.cwd);
   assert.match(seen.cwd, /mission-shaper-/);
-  assert.equal(existsSync(seen.cwd), false, "the scratch directory is gone once the call settles");
+  // Removed in the background once the call has settled, never before it answers.
+  assert.equal(await until(() => !existsSync(seen.cwd)), true, "the scratch directory is removed after the call settles");
 });
+
+const until = async (done: () => boolean, ms = 10_000): Promise<boolean> => {
+  for (let waited = 0; !done() && waited < ms; waited += 25) await new Promise((wake) => setTimeout(wake, 25));
+  return done();
+};
 
 test("a selector that locks a directory inside its working directory still answers, and the directory is removed", async () => {
   const reply = await callCommand(request("select"), shaper([FIXTURE, "lock-cwd"], { stage: "select" }), ctx());
   assert.equal(reply.kind, "data", JSON.stringify(reply));
   const cwd = JSON.parse((reply as { data: string }).data).guidance[0].body as string;
   assert.match(cwd, /mission-shaper-/);
-  assert.equal(existsSync(cwd), false, "the locked tree was unlocked and removed");
+  // Removal runs after the call settles, so it is awaited here rather than assumed.
+  assert.equal(await until(() => !existsSync(cwd)), true, "the locked tree was unlocked and removed");
+});
+
+test("the call settles without waiting for a removal that never finishes", async (t) => {
+  // A removal stuck on a huge tree, modelled as one that never completes.
+  const removal = t.mock.method(fs.promises, "rm", () => new Promise<void>(() => {}));
+  let cwd = "";
+  try {
+    const started = Date.now();
+    const reply = await callCommand(request("select"), shaper([FIXTURE, "echo"], { stage: "select" }), ctx());
+    assert.equal(reply.kind, "data", "the shaper's answer is not held back by cleanup");
+    cwd = echoed(reply).cwd;
+    assert.ok(Date.now() - started < 15_000);
+    assert.ok(await until(() => removal.mock.callCount() >= 1), "removal was started, in the background");
+  } finally {
+    removal.mock.restore();
+    if (cwd) rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("a working directory that cannot be removed is logged and left, and the call still settles", async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
-  const removal = t.mock.method(fs, "rmSync", () => { throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" }); });
-  syncBuiltinESMExports();
+  const removal = t.mock.method(fs.promises, "rm", async () => { throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" }); });
   let cwd = "";
   try {
     const reply = await callCommand(request("select"), shaper([FIXTURE, "echo"], { stage: "select" }), ctx());
     assert.equal(reply.kind, "data", "the shaper's answer is not lost to the cleanup");
     cwd = echoed(reply).cwd;
+    assert.equal(await until(() => warnings.length === 1), true, "the failure is logged once");
     assert.ok(removal.mock.callCount() >= 2, "removal is retried once after unlocking");
-    assert.equal(warnings.length, 1);
     assert.match(String(warnings[0]![0]), /could not remove a selector's working directory/);
   } finally {
     removal.mock.restore();
-    syncBuiltinESMExports();
     if (cwd) rmSync(cwd, { recursive: true, force: true });
   }
-  assert.doesNotThrow(() => removeScratch(join(scratch, "never-created")), "removing nothing is not an error");
+  await assert.doesNotReject(removeScratch(join(scratch, "never-created")), "removing nothing is not an error");
 });
 
 test("credentials and Mission Control state are scrubbed, ordinary variables kept, and named ones passed through", async () => {
@@ -149,6 +170,20 @@ test("a value the shaper was passed is redacted from its failure reason", async 
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;
+  }
+});
+
+test("a non-ASCII value split across two stderr chunks is still redacted whole", async () => {
+  const saved = process.env.SHAPER_FIXTURE_UNICODE;
+  process.env.SHAPER_FIXTURE_UNICODE = "sécret-ŵert-値値値";
+  try {
+    const reply = await callCommand(request(), shaper([FIXTURE, "leak-split", "SHAPER_FIXTURE_UNICODE"], { env: ["SHAPER_FIXTURE_UNICODE"] }), ctx());
+    assert.deepEqual(reply, { kind: "failed", reason: "The command exited with code 4: could not authenticate with [redacted]" });
+    const reason = (reply as { reason: string }).reason;
+    assert.equal(reason.includes("値") || reason.includes("�"), false, "no piece of the value, and no broken character, survives");
+  } finally {
+    if (saved === undefined) delete process.env.SHAPER_FIXTURE_UNICODE;
+    else process.env.SHAPER_FIXTURE_UNICODE = saved;
   }
 });
 

@@ -405,8 +405,22 @@ are replaced as one span, so no part of either survives. Marking the matches is 
 text for each value, so a reply at the 256 KiB cap cannot stall the daemon. Entry bodies are
 the shaper's content and are not rewritten.
 
+stderr is decoded as a stream, so a multi-byte character split across two pipe chunks stays
+whole and a non-ASCII value still matches exactly when it is redacted.
+
 When a call settles, the daemon closes its ends of the child's pipes, so a helper the shaper
-started outside its process group cannot keep them open after the group is killed.
+started outside its process group cannot keep them open after the group is killed. A
+selector's scratch directory is removed in the background after the call has answered, never
+before it. A large tree left behind costs disk work, not the dry run's latency or the event
+loop's.
+
+**No secret is stored.** A header whose name says it carries a credential, such as
+`authorization`, `x-api-key`, a `cookie` or anything with a `token`, `secret` or `key`
+segment, must hold its secret as a reference such as `{env:NAME}`. Besides references it may
+carry only an auth scheme, as in `Bearer {env:ACME_TOKEN}`. A URL may not carry a user name,
+a password or a credential-shaped query parameter. A definition that breaks these rules is
+refused when it is registered, so `app_config.shaping`, and the `shaping` domain of every
+settings snapshot, hold the reference and never the value.
 
 **What a shaper is sent.** The operator's prompt, the task's title, kind, labels, priority,
 harness, runtime and after-work workflow, the attached repositories' names, roles, branches and

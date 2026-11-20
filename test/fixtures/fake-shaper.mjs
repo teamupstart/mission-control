@@ -58,6 +58,19 @@ switch (mode) {
     process.stderr.write(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`);
     process.exit(4);
     break;
+  case "leak-split": {
+    // Repeats a non-ASCII value on stderr in two writes, split inside one of its multi-byte
+    // characters, so the pipe delivers it as two chunks with the character cut between them.
+    const bytes = Buffer.from(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`, "utf8");
+    let cut = bytes.length - 2;
+    while (cut > 0 && (bytes[cut] & 0xc0) !== 0x80) cut--;
+    process.stderr.write(bytes.subarray(0, cut));
+    await sleep(100);
+    process.stderr.write(bytes.subarray(cut));
+    await sleep(50);
+    process.exit(4);
+    break;
+  }
   case "leak-long": {
     // The value repeated many times, then padding, so the recorded tail's front edge cuts
     // through one copy of it. The front of the 2,000-character tail lands mid-value.

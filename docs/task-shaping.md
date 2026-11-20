@@ -265,8 +265,12 @@ Arrives with discovery of `shapers/` under the state home.
 Arrives with the `mcp` and `http` transports. Their config shapes are already accepted: an `mcp`
 shaper names its `server`, its `tool` and a `contextDelivery` of `folded` or `argument`, and an
 `http` shaper names its `url` and `headers`. Header values may reference `{caller.user}`,
-`{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. Until that phase lands, such a
-shaper's outcome is `unavailable`.
+`{caller.agent}`, `{caller.conversation}` and `{env:NAME}`. A credential is always a
+reference: a header such as `authorization` or `x-api-key` holds its secret as `{env:NAME}`,
+with at most an auth scheme beside it (`Bearer {env:ACME_TOKEN}`). A URL carries no user name,
+password or credential-shaped query parameter. A definition with literal secret text is
+refused, so it is never stored or backed up. Until that phase lands, such a shaper's outcome
+is `unavailable`.
 
 ## The built-in gatherer
 

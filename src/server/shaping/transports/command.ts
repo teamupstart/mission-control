@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, promises as fsp, realpathSync, statSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import {
@@ -170,29 +171,30 @@ export function redactReceived(text: string, values: readonly string[], dropBefo
 }
 
 /** Give the owner back every permission on `dir` and each directory beneath it. Symlinks are never followed. */
-function unlockTree(dir: string): void {
-  chmodSync(dir, 0o700);
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) unlockTree(join(dir, entry.name));
+async function unlockTree(dir: string): Promise<void> {
+  await fsp.chmod(dir, 0o700);
+  for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) await unlockTree(join(dir, entry.name));
   }
 }
 
 /**
- * Remove a selector's scratch directory. Never throws: it runs from the child's `close` handler,
- * before the call settles, where an exception would be uncaught and take the daemon down. A
- * shaper that left a directory it locked is unlocked and removed; one that cannot be removed
- * at all is left behind and logged, and the call still answers.
+ * Remove a selector's scratch directory, off the event loop. The call settles first and never
+ * waits for this: a selector that left a large tree behind costs disk work in the background,
+ * not latency for the dry run or for any other request. It never rejects. A directory the
+ * shaper locked is unlocked and removed; one that cannot be removed at all is left behind and
+ * logged.
  */
-export function removeScratch(dir: string): void {
+export async function removeScratch(dir: string): Promise<void> {
   try {
-    rmSync(dir, { recursive: true, force: true });
+    await fsp.rm(dir, { recursive: true, force: true });
     return;
   } catch {
     // Most often a directory the shaper took its own permissions off. Unlock and retry once.
   }
   try {
-    unlockTree(dir);
-    rmSync(dir, { recursive: true, force: true });
+    await unlockTree(dir);
+    await fsp.rm(dir, { recursive: true, force: true });
   } catch (error) {
     console.warn("[shaping] could not remove a selector's working directory:", dir,
       error instanceof Error ? error.message : String(error));
@@ -255,7 +257,8 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     }
     cwd = scratch;
   }
-  const cleanup = () => { if (scratch) removeScratch(scratch); };
+  // Fire and forget: removal runs in the background and the call never waits for it.
+  const cleanup = () => { if (scratch) void removeScratch(scratch); };
 
   let command = transport.command;
   if (command.startsWith("./")) {
@@ -287,6 +290,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     // is dropped with that margin instead of surviving as an unredacted fragment.
     let stderr = "";
     let stderrDropped = false;
+    const stderrDecoder = new StringDecoder("utf8");
     let ending: "timed_out" | "overflow" | null = null;
     let settled = false;
     const timers: Array<ReturnType<typeof setTimeout>> = [];
@@ -297,8 +301,8 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       for (const timer of timers) clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
       releaseStdio(child as ChildProcess | undefined);
-      cleanup();
       settle(reply);
+      cleanup();
     };
     const stderrTail = (): string => {
       // Once the front was cut, the first `longestValue` characters may hold the tail end of a
@@ -334,7 +338,9 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       else out.push(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      const joined = stderr + chunk.toString("utf8");
+      // Decoded as a stream: a character split across two chunks is kept whole, so a non-ASCII
+      // value the child received still matches exactly when it is redacted.
+      const joined = stderr + stderrDecoder.write(chunk);
       const keep = STDERR_TAIL_CHARS + longestValue;
       if (joined.length > keep) stderrDropped = true;
       stderr = joined.slice(-keep);
@@ -358,6 +364,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
         });
       }
       // Only the child's own text is redacted, never the sentence Mission Control wraps it in.
+      stderr += stderrDecoder.end();
       const tail = stderrTail();
       const detail = tail ? `: ${tail}` : "";
       finish({ kind: "failed", reason: signal ? `The command was killed by ${signal}${detail}` : `The command exited with code ${code}${detail}` });

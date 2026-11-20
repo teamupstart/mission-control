@@ -19,6 +19,7 @@ import {
   SHAPING_DEFINITIONS,
   SHAPING_LIMITS,
   SHAPING_SECTION_PREAMBLE,
+  credentialBearingName,
   ShaperIdSchema,
   shaperIsLocal,
   ShaperManifestSchema,
@@ -132,6 +133,45 @@ test("the strict definition covers all four transports and fills defaults", () =
   assert.equal(ShaperSchema.safeParse({ ...command("x"), protocol: 2 }).success, false);
   assert.equal(ShaperSchema.safeParse({ ...command("x"), timeoutMs: 30_001 }).success, false);
   assert.equal(ShaperSchema.safeParse({ ...command("x"), maxBytes: 64 * 1024 + 1 }).success, false);
+});
+
+test("a credential is held only as a reference, so no secret text is ever stored or backed up", () => {
+  for (const name of ["authorization", "Proxy-Authorization", "x-api-key", "X-Auth-Token", "cookie", "x-session-id", "apitoken", "clientSecret"]) {
+    assert.equal(credentialBearingName(name), true, name);
+  }
+  for (const name of ["x-acme-user-id", "accept", "content-type", "x-request-id", "monkey", "keyboard-layout"]) {
+    assert.equal(credentialBearingName(name), false, name);
+  }
+  const http = (headers: Record<string, string>, url = "https://context.example/shape") => ShaperSchema.safeParse({
+    id: "h", label: "H", stage: "select", transport: { type: "http", url, headers },
+  });
+  const mcp = (headers: Record<string, string>) => ShaperSchema.safeParse({
+    id: "m", label: "M", stage: "select",
+    transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://context.example/mcp", headers } },
+  });
+  for (const value of ["Bearer {env:ACME_TOKEN}", "{env:ACME_TOKEN}", "token {env:ACME_TOKEN}", "Bearer   {env:A}"]) {
+    assert.equal(http({ authorization: value }).success, true, value);
+    assert.equal(mcp({ authorization: value }).success, true, value);
+  }
+  for (const value of ["Bearer abc123", "abc123", "Bearer {env:A}abc", "sk-live-{env:A}", "{env:A}:{env:B} literal"]) {
+    const refused = http({ authorization: value });
+    assert.equal(refused.success, false, value);
+    assert.match(refused.error!.issues[0]!.message, /must be a reference such as \{env:NAME\}/);
+    assert.deepEqual(refused.error!.issues[0]!.path, ["transport", "headers", "authorization"]);
+    assert.equal(mcp({ authorization: value }).success, false, value);
+  }
+  assert.equal(http({ "x-api-key": "plain-secret" }).success, false);
+  assert.equal(http({ "x-acme-user-id": "operator@example.test", accept: "application/json" }).success, true,
+    "a header that carries no credential may hold literal text");
+  assert.equal(http({}, "https://user:pass@context.example/shape").success, false, "no userinfo in a URL");
+  assert.equal(http({}, "https://context.example/shape?api_key=abc").success, false, "no credential in a query");
+  assert.equal(http({}, "https://context.example/shape?page=2").success, true);
+  assert.equal(ShaperManifestSchema.safeParse({ id: "h", label: "H", stage: "select",
+    transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer abc" } } }).success, false,
+    "a manifest follows the same rule");
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "upsert", shaper: { id: "h", label: "H", stage: "select",
+    transport: { type: "http", url: "https://context.example/shape", headers: { authorization: "Bearer abc" } } } }).success, false,
+    "so it can never be written into app_config.shaping, the backup domain's payload");
 });
 
 test("header and environment references are checked for syntax, never resolved", () => {

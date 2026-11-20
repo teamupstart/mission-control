@@ -211,6 +211,25 @@ test("a dry run refuses an unknown shaper, a missing repository and a malformed 
   assert.equal((await dryRun({})).status, 400);
 });
 
+test("a literal credential is refused, so a settings snapshot holds only the reference", async () => {
+  const remote = (authorization: string) => ({ kind: "upsert", shaper: { id: "remote", label: "Remote", stage: "select",
+    transport: { type: "http", url: "https://context.example/shape", headers: { authorization } } } });
+  const refused = await put(remote("Bearer sk-live-literal-secret"));
+  assert.equal(refused.status, 400);
+  assert.match(await refused.text(), /must be a reference such as \{env:NAME\}/);
+  assert.equal((await put(remote("Bearer {env:ACME_CONTEXT_TOKEN}"))).status, 200);
+  const backupStore = new SettingsBackupStore(join(home, "snapshots-credentials"));
+  const service = new SettingsBackupService(new WorkflowStore(openDb()), backupStore,
+    () => new Date("2026-11-21T12:00:00Z"), "test", {
+      preflightSkills: () => [], preflightCost: () => {}, reconcileSkills: () => {}, reconcileCost: () => {},
+    });
+  const saved = await service.ensureDailySnapshot();
+  assert.equal(saved.status, "ready");
+  const snapshot = JSON.stringify(saved.status === "ready" ? saved.snapshot : null);
+  assert.equal(snapshot.includes("sk-live-literal-secret"), false, "the refused secret reached no snapshot");
+  assert.equal(snapshot.includes("{env:ACME_CONTEXT_TOKEN}"), true, "the shaping domain carries the reference");
+});
+
 test("a settings restore reloads the shaping config; a backup without the domain leaves it alone", async () => {
   await put({ kind: "upsert", shaper: fixture("kept", "gather", "ok") });
   const backupStore = new SettingsBackupStore(join(home, "snapshots"));

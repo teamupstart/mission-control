@@ -294,21 +294,89 @@ function shaperFields<const Stages extends readonly [string, ...string[]]>(stage
   };
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Credentials are references, never stored text
+
+const CREDENTIAL_NAME_SEGMENTS = new Set([
+  "authorization", "auth", "token", "tokens", "secret", "secrets", "password", "passwd",
+  "passphrase", "credential", "credentials", "key", "keys", "apikey", "cookie", "session",
+  "signature", "sig",
+]);
+
+/**
+ * Whether a header or query parameter name says it carries a credential: a segment such as
+ * `authorization`, `token` or `key`, split on punctuation and camelCase, or a run-together
+ * suffix such as `apitoken`.
+ */
+export function credentialBearingName(name: string): boolean {
+  const segments = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return segments.some((segment) => CREDENTIAL_NAME_SEGMENTS.has(segment))
+    || /(token|secret|password|passwd|apikey|credentials?)$/.test(name.toLowerCase());
+}
+
+/**
+ * A credential-bearing value may hold its secret only as a reference, resolved at call time.
+ * Besides references, it may carry at most an auth scheme such as `Bearer `. The config holds
+ * no secret text, so no settings snapshot can carry one.
+ */
+function credentialValueIsReferenced(value: string): boolean {
+  const literal = value.replace(/\{[^{}]*\}/g, "");
+  return /^\s*(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+)?$/.test(literal);
+}
+
+/** The credential rule over a whole definition's headers and URLs. */
+function credentialsAreReferences(value: unknown, ctx: z.RefinementCtx): void {
+  const transport = (value as { transport?: Record<string, unknown> }).transport;
+  if (!transport) return;
+  const server = transport.type === "mcp" ? transport.server as Record<string, unknown> | undefined : undefined;
+  const at = server ? ["transport", "server"] : ["transport"];
+  const holder = server ?? transport;
+  const headers = (holder.headers ?? {}) as Record<string, string>;
+  for (const [name, header] of Object.entries(headers)) {
+    if (credentialBearingName(name) && !credentialValueIsReferenced(header)) {
+      ctx.addIssue({
+        code: "custom", path: [...at, "headers", name],
+        message: `The "${name}" header carries a credential, so its secret must be a reference such as {env:NAME}, never literal text. It is resolved at call time and never stored or backed up.`,
+      });
+    }
+  }
+  if (typeof holder.url !== "string") return;
+  let url: URL;
+  try { url = new URL(holder.url); } catch { return; }
+  if (url.username || url.password) {
+    ctx.addIssue({ code: "custom", path: [...at, "url"], message: "A URL cannot carry a user name or password. Send a credential in a header as {env:NAME}." });
+  }
+  for (const name of url.searchParams.keys()) {
+    if (credentialBearingName(name)) {
+      ctx.addIssue({
+        code: "custom", path: [...at, "url"],
+        message: `The URL's "${name}" parameter looks like a credential. Send it in a header as {env:NAME}, so no secret is stored or backed up.`,
+      });
+    }
+  }
+}
+
 const ShaperObjectSchema = z.strictObject(shaperFields(SHAPING_STAGES));
 
 /** The strict definition this build understands. Stored entries are checked against it. */
-export const ShaperSchema = ShaperObjectSchema.superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes));
+export const ShaperSchema = ShaperObjectSchema
+  .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
+  .superRefine(credentialsAreReferences);
 export type Shaper = z.output<typeof ShaperSchema>;
 
 /** A manifest in the shapers folder: the strict definition plus whether it starts switched on. */
 export const ShaperManifestSchema = ShaperObjectSchema
   .extend({ enabled: z.boolean().optional() })
-  .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes));
+  .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
+  .superRefine(credentialsAreReferences);
 export type ShaperManifest = z.output<typeof ShaperManifestSchema>;
 
 /** The strict definition over a different stage tuple, so a test can model another build. */
 export function shaperSchemaForStages(stages: readonly [string, ...string[]]): z.ZodType<Shaper> {
-  return z.strictObject(shaperFields(stages)).superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes)) as unknown as z.ZodType<Shaper>;
+  return z.strictObject(shaperFields(stages))
+    .superRefine(jsonBytesWithin(SHAPING_LIMITS.entryJsonBytes))
+    .superRefine(credentialsAreReferences) as unknown as z.ZodType<Shaper>;
 }
 
 /** What a pure function reads from the registry. Tests pass their own. */

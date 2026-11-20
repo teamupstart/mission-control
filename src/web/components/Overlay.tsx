@@ -95,6 +95,9 @@ export const OVERLAY_IDS = {
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
   featureFlagsConfirm: "feature-flags-confirm",
+  // Settings > Task shaping's manifest import, and its dry run of one shaper.
+  shapingImport: "shaping-import",
+  shapingTest: "shaping-test",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

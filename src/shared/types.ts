@@ -1,4 +1,5 @@
 import type { FeatureFlagsConfig } from "./feature-flags.ts";
+import type { ShapingConfigView } from "./shaping.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -2975,8 +2976,20 @@ export interface ReviewSnooze {
  * `standing-approval` is the daemon settling a managed plan's final-bundle approval on the
  * operator's behalf, because they ticked "approve all future bundles for this task" on an
  * earlier one. It is logged in the conversation as what it is, never as the human's answer.
+ *
+ * The headless-mode actors (spec 7.8, 7.9) are set by the daemon, never read from a request
+ * body: `home:{sessionId}` is an answer given from a registered home session,
+ * `home-approval:{sessionId}` is an accepted plan or review approval from one (the only home
+ * actor that counts as human approval for plan publication), and `mctl` is the command line.
  */
-export type ReviewActor = "human" | "foreman" | "standing-approval" | `session:${string}`;
+export type ReviewActor =
+  | "human"
+  | "foreman"
+  | "standing-approval"
+  | `session:${string}`
+  | `home:${string}`
+  | `home-approval:${string}`
+  | "mctl";
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -3832,6 +3845,12 @@ export type ServerEvent =
       /** Bounded to 512 overrides with ids of at most 64 characters. */
       featureFlags: FeatureFlagsConfig;
       /**
+       * Task shaping's config view at connect time. Present only while the `task-shaping` flag
+       * is on, so a window never holds the shaping config while the feature is off. Bounded by
+       * `SHAPING_LIMITS`: at most 32 shapers of 16 KiB each, and 128 choices.
+       */
+      shaping?: ShapingConfigView;
+      /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
        * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
@@ -3986,6 +4005,15 @@ export type ServerEvent =
   | { type: "settings_status"; status: SettingsStatus }
   /** Content travels with the event so all windows resolve gates without a second fetch. */
   | { type: "feature_flags"; config: FeatureFlagsConfig }
+  /**
+   * Task shaping's config view (`shapingConfigView`), sent only while the `task-shaping` flag is
+   * on: after every committed write or settings restore, and when the flag turns on. Turning the
+   * flag off sends `config: null`, which clears it in every window. An entry this build cannot
+   * run travels only as its id, label and reason, never as its raw stored envelope. Content
+   * travels with the event for `feature_flags`' reason: every window shows the change with no
+   * second fetch.
+   */
+  | { type: "shaping_config"; config: ShapingConfigView | null }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.

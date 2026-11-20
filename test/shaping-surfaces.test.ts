@@ -75,7 +75,7 @@ test("the chip reads Context: N entries, or an amber Context degraded", () => {
   assert.match(one, />Context: 1 entry</);
   const degraded = render(on, createElement(ShapingChip, { session: session(record("s1", "degraded")) }));
   assert.match(degraded, />Context degraded</);
-  assert.match(degraded, /shaping-chip is-degraded/);
+  assert.match(degraded, /task-context-chip is-degraded/);
   assert.match(degraded, /Timed out after 5 s\./, "the reason is in its tooltip");
 });
 

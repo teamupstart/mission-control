@@ -8913,7 +8913,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // Task shaping, behind its preview flag. See docs/task-shaping.md.
-  registerShapingRoutes(app, (id) => tasks.get(id) ?? tasks.getDurable(id));
+  registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

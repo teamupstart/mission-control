@@ -65,7 +65,7 @@ export function ShapingChip({ session }: { session: Pick<Session, "id" | "task">
       <Tooltip label={tip}>
         <button
           type="button"
-          className={`shaping-chip${degraded ? " is-degraded" : ""}`}
+          className={`task-context-chip${degraded ? " is-degraded" : ""}`}
           aria-label={label}
           onClick={(event) => {
             event.stopPropagation();
@@ -132,7 +132,7 @@ export function ShapingViewer({
     <Overlay
       id={OVERLAY_IDS.shapingContext}
       onClose={onClose}
-      className="modal shaping-modal"
+      className="modal task-context-modal"
       role="dialog"
       ariaLabel="Context this session received"
     >
@@ -142,49 +142,49 @@ export function ShapingViewer({
           Recorded when turn one reached this session. Task shaping added it after the task&apos;s
           own instructions, and it cannot relax them.
         </p>
-        <div className="modal-bleed shaping-body">
-          <p className={`shaping-state${record.state === "degraded" ? " is-degraded" : ""}`}>
+        <div className="modal-bleed task-context-body">
+          <p className={`task-context-state${record.state === "degraded" ? " is-degraded" : ""}`}>
             {record.state === "degraded" ? "Degraded" : "OK"}: {entriesLabel(record.entries)}, {record.bytes} bytes, in{" "}
             {seconds(record.durationMs)}.
           </p>
           {record.truncated && (
-            <p className="shaping-note" role="note">
+            <p className="task-context-note" role="note">
               Truncated: some context did not fit and was cut or left out
               {record.limit ? ` (${record.limit.reason}, so the section had ${record.limit.bytes} bytes).` : "."}
             </p>
           )}
-          <ul className="shaping-shapers" aria-label="Shapers">
+          <ul className="task-context-shapers" aria-label="Shapers">
             {record.shapers.map((shaper) => (
-              <li key={shaper.id} className={`shaping-shaper is-${shaper.outcome}`} aria-label={`${shaper.label}: ${OUTCOME_WORDS[shaper.outcome]}`}>
-                <span className="shaping-shaper-head">
+              <li key={shaper.id} className={`task-context-shaper is-${shaper.outcome}`} aria-label={`${shaper.label}: ${OUTCOME_WORDS[shaper.outcome]}`}>
+                <span className="task-context-shaper-head">
                   <strong>{shaper.label}</strong>
-                  <span className="shaping-outcome">{OUTCOME_WORDS[shaper.outcome]}</span>
+                  <span className="task-context-outcome">{OUTCOME_WORDS[shaper.outcome]}</span>
                 </span>
-                <span className="shaping-shaper-facts">
+                <span className="task-context-shaper-facts">
                   {shaper.stage} · {shaper.origin} · {seconds(shaper.durationMs)} · {entriesLabel(shaper.entries)}
                   {shaper.version ? ` · version ${shaper.version}` : ""}
                   {shaper.truncated ? " · truncated" : ""}
                 </span>
-                {shaper.reason && <span className="shaping-reason">{shaper.reason}</span>}
+                {shaper.reason && <span className="task-context-reason">{shaper.reason}</span>}
                 {shaper.redacted && (
-                  <span className="shaping-note" role="note">A credential value was removed from this shaper&apos;s reply.</span>
+                  <span className="task-context-note" role="note">A credential value was removed from this shaper&apos;s reply.</span>
                 )}
               </li>
             ))}
           </ul>
           {view === "loading" ? (
-            <p className="shaping-empty">Loading what was delivered…</p>
+            <p className="task-context-empty">Loading what was delivered…</p>
           ) : entries.length > 0 ? (
-            <ol className="shaping-entries" aria-label="Entries delivered in turn one">
+            <ol className="task-context-entries" aria-label="Entries delivered in turn one">
               {entries.map((entry, index) => (
-                <li key={`${index}:${entry.heading}`} className="shaping-entry">
-                  <span className="shaping-entry-head">{entry.heading}</span>
-                  <pre className="shaping-entry-body" tabIndex={0}>{entry.body}</pre>
+                <li key={`${index}:${entry.heading}`} className="task-context-entry">
+                  <span className="task-context-entry-head">{entry.heading}</span>
+                  <pre className="task-context-entry-body" tabIndex={0}>{entry.body}</pre>
                 </li>
               ))}
             </ol>
           ) : (
-            <p className="shaping-empty">No context was added to turn one.</p>
+            <p className="task-context-empty">No context was added to turn one.</p>
           )}
         </div>
         <footer className="modal-foot">

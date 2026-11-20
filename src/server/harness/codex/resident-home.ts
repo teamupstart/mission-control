@@ -381,6 +381,40 @@ function layerLabel(name: unknown): string {
   return where ? `the ${String(name.type)} configuration ${where}` : `the ${String(name.type)} configuration`;
 }
 
+/**
+ * The first field of a user-layer `mcp_servers.<mission>` table the launch flags cannot make
+ * harmless, as its TOML key path, or null when the whole table is safe beside them.
+ *
+ * Codex merges a server's tables field by field, and the flags supply `command`, `args`, every
+ * `env` key the descriptor carries, and `required`. Anything else in the user table survives the
+ * merge, so only what Mission Control's own setup writes is tolerated, at the value it writes:
+ *
+ * - `env.ELECTRON_RUN_AS_NODE = "1"`, which Install Claude integrations writes for the packaged
+ *   app's runtime. A packaged daemon's descriptor carries it already; a daemon under real
+ *   `node` does not, and node ignores it.
+ * - `default_tools_approval_mode = "approve"`, which the Setup trust action writes. It is the
+ *   operator's own trust in these tools, not a transport or a launch option.
+ *
+ * Any other field - a `url`, `enabled`, `cwd`, per-tool overrides, an env key the flags do not
+ * replace, or another approval value - would change what starts or how it behaves.
+ */
+function missionUserFieldConflict(server: unknown, mission: MissionMcpDescriptor): string | null {
+  const prefix = `mcp_servers.${mission.serverName}`;
+  if (!plain(server)) return prefix;
+  for (const [key, value] of Object.entries(server)) {
+    if (key === "command" || key === "args") continue;
+    if (key === "default_tools_approval_mode" && value === "approve") continue;
+    if (key !== "env") return `${prefix}.${key}`;
+    if (!plain(value)) return `${prefix}.env`;
+    for (const [name, setting] of Object.entries(value)) {
+      if (Object.hasOwn(mission.env, name)) continue;
+      if (name === "ELECTRON_RUN_AS_NODE" && setting === "1") continue;
+      return `${prefix}.env.${name}`;
+    }
+  }
+  return null;
+}
+
 /** Validate our registrations and record the active layer versions around native startup. */
 export function checkCodexNativeResidentMcp(
   result: unknown,
@@ -410,13 +444,13 @@ export function checkCodexNativeResidentMcp(
         return { ok: false, reason: `${layerLabel(layer.name)} already defines the custom MCP server ${name}; rename one of them` };
       }
       if (name !== mission?.serverName) continue;
-      // Setup's user registration can coexist. The launch flags supply its command and
-      // args. Codex merges maps, so a native env key not provided by the flags would leak
-      // through, as would any additional transport or options field.
-      if (layer.name.type !== "user" || !plain(server)
-        || Object.keys(server).some((key) => key !== "command" && key !== "args" && key !== "env")
-        || (server.env !== undefined && (!plain(server.env) || Object.keys(server.env).some((key) => !Object.hasOwn(mission.env, key))))) {
-        return { ok: false, reason: `${layerLabel(layer.name)} conflicts with Mission Control's own MCP server ${name}` };
+      // Setup's user registration can coexist with the launch flags; no other layer's can.
+      if (layer.name.type !== "user") {
+        return { ok: false, reason: `${layerLabel(layer.name)} also defines Mission Control's own MCP server ${name}; remove it there to launch this resident` };
+      }
+      const field = missionUserFieldConflict(server, mission);
+      if (field) {
+        return { ok: false, reason: `${layerLabel(layer.name)} sets ${field}, which a resident launch cannot override for Mission Control's own MCP server; remove it there to launch this resident` };
       }
     }
   }

@@ -4,7 +4,7 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
 import { DEFAULT_TASK_KIND, type Task } from "@shared/types.ts";
-import { currentShaping, SHAPING_LIMITS } from "@shared/shaping.ts";
+import { currentShaping, registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
 import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
 import { getTaskShapingText } from "../db.ts";
 import { requireFeature } from "../feature-flags/index.ts";
@@ -78,11 +78,14 @@ export async function checkoutFor(
   return { ok: true, repoRoot };
 }
 
-export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task | undefined = () => undefined): void {
+export function registerShapingRoutes(
+  app: Hono,
+  options: { checkoutProbes?: CheckoutProbes; taskById?: (id: string) => Task | undefined } = {},
+): void {
   const gate = requireFeature("task-shaping");
 
   app.get("/api/tasks/:id/shaping", gate, (c) => {
-    const task = taskById(c.req.param("id"));
+    const task = options.taskById?.(c.req.param("id"));
     if (!task) return c.json({ error: "no such task" }, 404);
     const summary = currentShaping(task);
     if (!summary) return c.json({ error: "no_shaping", reason: "This task's current session received no task context." }, 404);
@@ -100,7 +103,11 @@ export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task 
     if (!parsed.ok) return parsed.res;
     try {
       const result = applyShapingIntent(parsed.data, await discoverShapers());
-      if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unreadable_config" ? 409 : 400);
+      if (!result.ok) {
+        // 409 when the request is sound but the stored config has moved on under it.
+        const conflict = result.error === "unreadable_config" || result.error === "shaper_changed";
+        return c.json({ error: result.error, reason: result.reason }, conflict ? 409 : 400);
+      }
       return c.json({ config: shapingConfigView(result.config) });
     } catch (error) {
       return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
@@ -110,7 +117,19 @@ export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task 
   app.post("/api/shaping/test", gate, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
-    const { id, repository, prompt, kind } = parsed.data;
+    const { id, repository, prompt, kind, expect } = parsed.data;
+    // One snapshot of the config, taken now, is both what the revision is checked against and what
+    // the engine runs. The checkout probes below await Git, and a replacement written during them
+    // must not be what runs, so the engine never reads the store again for this request.
+    const config = getShapingConfig();
+    // Bound to the definition the sender showed: a replacement written meanwhile is never run
+    // under the name of the shaper the operator chose.
+    if (expect !== undefined && registeredShaperRevision(config, id) !== expect) {
+      return c.json({
+        error: "shaper_changed",
+        reason: `"${id}" changed in another window since it was shown here, so it was not run. Review it again first.`,
+      }, 409);
+    }
     // Resolved once, before any probe: the path Git checks is the path the gatherer runs in, so a
     // symlink that changes after the probes cannot send the gatherer somewhere unchecked.
     let checkout: string;
@@ -124,7 +143,7 @@ export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task 
     // ordinary folder is refused instead of running a gatherer there and reporting success. The
     // gatherer still runs where it was pointed: the resolver walks a linked worktree back to its
     // owner, which names the repository but is not the tree under test.
-    const checked = await checkoutFor(checkout);
+    const checked = await checkoutFor(checkout, options.checkoutProbes);
     if (!checked.ok) return c.json({ error: checked.error, reason: checked.reason }, checked.status);
     const repoRoot = checked.repoRoot;
     const result = await dryRunShaper(id, {
@@ -137,7 +156,7 @@ export function registerShapingRoutes(app: Hono, taskById: (id: string) => Task 
       // Aborted when the client's connection closes before the reply, so a dry run nobody is
       // waiting for stops its shapers' process groups instead of running to their timeout.
       signal: c.req.raw.signal,
-    });
+    }, { config });
     if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unknown_shaper" ? 404 : 400);
     return c.json(result.run);
   });

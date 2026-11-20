@@ -174,6 +174,12 @@ export const HomeDispatchInboxItemSchema = z.object({
     decisions: Count.optional(),
   }).optional(),
   resident: z.object({ runId: Text, name: z.string() }).optional(),
+  /**
+   * Task shaping's state for the task (spec v20, D60): the "Shaping context" wait and the "Context
+   * degraded" marker the dashboard shows. Optional and additive, so an item with nothing to say
+   * carries no field. Built from `currentShaping(task)` in `src/shared/shaping.ts`.
+   */
+  shaping: z.object({ state: z.string(), summary: z.string() }).optional(),
 });
 export type HomeDispatchInboxItem = z.infer<typeof HomeDispatchInboxItemSchema>;
 

@@ -188,6 +188,10 @@ including the `origin` and `sha256` that Phase 4 fills. They must not add a seco
   surface.
 - Phase 4 depends on this phase, because its browser spec dispatches a task and reads
   the viewer this phase adds.
+- Phase 7 adds routed skills to the summary this phase commits and keeps prompt rows in its
+  own table, so `tasks.shaping` still has one writer. `currentShaping` stays exported and
+  stable, because FR-05's dispatch inbox reads it. This phase takes the next free schema
+  step: `main` is at 35, and FR-05's first phase claims 36 on its own stack.
 - Review history: plan validation and the review of pull request #1546 changed this phase
   in several rounds. The rules they produced are stated in the steps above and in
   `phased-plan.md` decisions 9 to 15, and the pull request's review threads record each

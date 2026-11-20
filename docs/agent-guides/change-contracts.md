@@ -1255,11 +1255,15 @@ Extend existing registries instead of adding parallel lists:
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
   falls back to Display. Visibility may be gated by a build-time switch or a registered feature flag, never by a
   runtime probe for installed software. A feature flag must feed one shared availability gate
-  for all readers, updated live rather than frozen at module load. The existing build-time gate is:
-  `settingsCategoryAvailable` in `src/web/lib/settings-registry.ts` withholds Conductor while
-  `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off, and every
-  reader (rail, walk, router, palette, settings search, `SettingsPage`) goes through it or
-  `VISIBLE_SETTINGS_CATEGORIES`, so none of them can disagree. Setup applies the same switch to
+  for all readers, updated live rather than frozen at module load. That gate is
+  `settingsCategoryAvailable(id, flags)` in `src/web/lib/settings-registry.ts`: it withholds
+  Conductor while `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off,
+  and a category that declares `flag` (Task shaping's `task-shaping`) while that flag resolves off
+  against the event stream's config. The rail, walk, palette, settings search and `SettingsPage`
+  read it through `visibleSettingsCategories(flags)` or `settingsControls(flags)`, so none of them
+  can disagree and none is frozen at module load. The router reads only `settingsCategoryInBuild`:
+  it parses a hash before the first snapshot says which flags are on, and a flag check there would
+  canonicalize every reload of a flag-gated link to Display. Setup applies the same switch to
   its catalog through `availableSetupDependencyIds` and `visibleSetupFamilyIds`; the hidden ids
   stay in the append-only tuples
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new

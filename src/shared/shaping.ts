@@ -993,6 +993,77 @@ export function shapingConfigView(
   };
 }
 
+/**
+ * A short, stable revision of one entry exactly as the config view shows it: FNV-1a (64-bit)
+ * over its canonical JSON. A window sends it with an intent that acts on a shaper it showed, and
+ * the daemon refuses the intent when the stored entry no longer has that revision, so a click
+ * can never act on a replacement another window wrote in the meantime. Browser-safe and
+ * synchronous; it identifies a definition, it does not protect one, so it is not a security hash.
+ */
+export function shapingEntryRevision(entry: Shaper | UnsupportedShaperView): string {
+  const text = canonicalJson(entry);
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let at = 0; at < text.length; at++) {
+    hash ^= BigInt(text.charCodeAt(at));
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+/** The revision of the registered entry with this id, as the view shows it, or null when none is stored. */
+export function registeredShaperRevision(
+  config: ShapingConfig,
+  id: string,
+  definitions: ShapingDefinitions = SHAPING_DEFINITIONS,
+): string | null {
+  const entry = shapingConfigView(config, definitions).shapers.find((candidate) => candidate.id === id);
+  return entry ? shapingEntryRevision(entry) : null;
+}
+
+/** What moving one shaper within its stage comes to: the order to store, or why it cannot be. */
+export type ShapingMoveResult = { ok: true; order: string[] } | { ok: false; reason: string };
+
+/**
+ * The stored order after placing `id` right after `after` (or first, for null) among `rows`, its
+ * stage's rows in their current run order. Idempotent: placing a shaper where it already is
+ * changes nothing, so a repeated or late intent never moves it twice.
+ *
+ * The rows already listed in `order` keep their slots, filled with the rows in their new
+ * sequence, and the rest follow after every stored id. Every other id - another stage's, or a
+ * shaper the rows do not include - keeps its slot, so nothing outside the move changes place.
+ *
+ * The stored order holds at most `SHAPING_LIMITS.choices` ids. When the move would pass that,
+ * stored ids `keep` says place nothing are left out, the oldest kept first. Without `keep`, or
+ * when the order still cannot fit, the move is refused with the reason.
+ */
+export function moveInShapingOrder(input: {
+  rows: readonly string[];
+  order: readonly string[];
+  id: string;
+  after: string | null;
+  keep?: (id: string) => boolean;
+}): ShapingMoveResult {
+  const { rows, id, after, keep } = input;
+  const others = rows.filter((row) => row !== id);
+  const at = after === null ? 0 : others.indexOf(after) + 1;
+  const sequence = [...others.slice(0, at), id, ...others.slice(at)];
+  const members = new Set(sequence);
+  const order = [...new Set(input.order)];
+  let next = 0;
+  const filled = order.map((stored) => (members.has(stored) ? sequence[next++]! : stored));
+  const result = [...filled, ...sequence.slice(next)];
+  const limit = SHAPING_LIMITS.choices;
+  if (result.length <= limit) return { ok: true, order: result };
+  const full = `The stored run order is full: it holds at most ${limit} shaper ids.`;
+  if (!keep) return { ok: false, reason: full };
+  const needed = result.filter((stored) => members.has(stored) || keep(stored)).length;
+  let room = limit - needed;
+  if (room < 0) return { ok: false, reason: `${full} This move needs ${needed}.` };
+  return { ok: true, order: result.filter((stored) => members.has(stored) || keep(stored) || room-- > 0) };
+}
+
 /** Whether a shaper may be sent local paths: it runs on this machine, as the operator. */
 export function shaperIsLocal(shaper: Shaper): boolean {
   switch (shaper.transport.type) {
@@ -1063,15 +1134,35 @@ export type DiscoveredShaper = z.output<typeof DiscoveredShaperSchema>;
 /** Set or not set, per `{env:NAME}` any shaper references. Never a value. */
 export type ShapingReferenceStatus = Record<string, "set" | "unset">;
 
+/** What `GET /api/shaping` answers. */
+export interface ShapingReply {
+  config: ShapingConfigView;
+  discovered: DiscoveredShaper[];
+  references: ShapingReferenceStatus;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Intents
+
+/** A `shapingEntryRevision`: 16 lowercase hex digits. */
+const ShapingRevisionSchema = z.string().regex(/^[0-9a-f]{16}$/, { message: "A revision is 16 hexadecimal digits." });
 
 export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /** Create or replace a registered shaper. Only a definition this build understands. */
   z.object({ kind: z.literal("upsert"), shaper: ShaperSchema }),
-  z.object({ kind: z.literal("remove"), id: z.string().min(1).max(64) }),
-  z.object({ kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean() }),
+  /**
+   * `expect`, when sent, is the `shapingEntryRevision` of the registered entry the sender showed.
+   * The intent is refused if the stored entry has changed since, so it never removes or switches
+   * a replacement written meanwhile.
+   */
+  z.object({ kind: z.literal("remove"), id: z.string().min(1).max(64), expect: ShapingRevisionSchema.optional() }),
+  z.object({ kind: z.literal("enable"), id: z.string().min(1).max(64), enabled: z.boolean(), expect: ShapingRevisionSchema.optional() }),
   z.object({ kind: z.literal("reorder"), order: z.array(z.string().min(1).max(64)).max(SHAPING_LIMITS.choices) }),
+  /**
+   * Place a registered shaper right after another of its stage, or first for null, applied to
+   * the order as it is stored when the intent arrives, so moves from two windows compose.
+   */
+  z.object({ kind: z.literal("move"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable() }),
   z.object({
     kind: z.literal("settings"),
     caller: partialPatch(ShapingCallerObjectSchema).optional(),
@@ -1084,7 +1175,11 @@ export type ShapingIntentError =
   | "unknown_shaper"
   | "unsupported_shaper"
   | "invalid_shaper"
-  | "too_many_shapers";
+  | "too_many_shapers"
+  /** The entry an intent named by its revision has changed since the sender showed it. */
+  | "shaper_changed"
+  /** A move cannot fit the stored order's bound. */
+  | "order_full";
 
 export type ShapingIntentResult =
   | { ok: true; config: ShapingConfig }
@@ -1106,6 +1201,11 @@ export function applyShapingIntent(
   const overrides = { ...config.overrides };
   let order = [...config.order];
   const index = (id: string) => shapers.findIndex((entry) => entry.id === id);
+  /** Whether the registered entry differs from the revision the sender showed. */
+  const stale = (id: string, expect: string | undefined): boolean =>
+    expect !== undefined && registeredShaperRevision(config, id, definitions) !== expect;
+  const changed = (id: string): ShapingIntentResult => refuse("shaper_changed",
+    `"${id}" changed in another window since it was shown here, so nothing was done. Review it again first.`);
   /** Choices for ids that no longer exist make room before a live one is stored. */
   const makeRoomForChoice = (id: string): void => {
     if (Object.hasOwn(overrides, id) || Object.keys(overrides).length < SHAPING_LIMITS.choices) return;
@@ -1141,15 +1241,44 @@ export function applyShapingIntent(
     }
     case "remove": {
       if (index(intent.id) === -1) return refuse("unknown_shaper", `No registered shaper has the id "${intent.id}".`);
+      if (stale(intent.id, intent.expect)) return changed(intent.id);
       for (let at = index(intent.id); at !== -1; at = index(intent.id)) shapers.splice(at, 1);
-      delete overrides[intent.id];
-      order = order.filter((id) => id !== intent.id);
+      if (discovered.some((entry) => entry.id === intent.id)) {
+        // A shaper in the folder has this id, and the registration was shadowing it. Removing the
+        // registration must not switch it on: it is stored off, in its place in the order, and
+        // runs only once the operator switches it on.
+        makeRoomForChoice(intent.id);
+        overrides[intent.id] = false;
+      } else {
+        delete overrides[intent.id];
+        order = order.filter((id) => id !== intent.id);
+      }
+      break;
+    }
+    case "move": {
+      const known = classifyShapers(config, definitions).flatMap((entry, position) => entry.kind === "known"
+        ? [{ id: entry.shaper.id, stage: entry.shaper.stage, position }] : []);
+      const moved = known.find((entry) => entry.id === intent.id);
+      if (!moved) {
+        return refuse(index(intent.id) === -1 ? "unknown_shaper" : "unsupported_shaper",
+          `No registered shaper this build can run has the id "${intent.id}".`);
+      }
+      const rows = known.filter((entry) => entry.stage === moved.stage).sort(compareShapingOrder(config.order, definitions.stages))
+        .map((entry) => entry.id);
+      if (intent.after !== null && (intent.after === intent.id || !rows.includes(intent.after))) {
+        return refuse("unknown_shaper", `"${intent.after}" is not another registered shaper at the same stage.`);
+      }
+      const live = new Set([...shapers.map((entry) => entry.id), ...discovered.map((entry) => entry.id)]);
+      const placed = moveInShapingOrder({ rows, order, id: intent.id, after: intent.after, keep: (id) => live.has(id) });
+      if (!placed.ok) return refuse("order_full", placed.reason);
+      order = placed.order;
       break;
     }
     case "enable": {
       const at = index(intent.id);
       const found = discovered.find((entry) => entry.id === intent.id);
       if (at === -1 && !found) return refuse("unknown_shaper", `No shaper has the id "${intent.id}".`);
+      if (stale(intent.id, intent.expect)) return changed(intent.id);
       if (intent.enabled) {
         if (at !== -1) {
           const classified = classifyShaper(shapers[at]!, definitions);
@@ -1230,7 +1359,7 @@ function candidates(
     if (entry.kind !== "known") return;
     out.push({
       shaper: entry.shaper, origin: "registered", stored: entry.stored, sha256: null, root: null, position,
-      enabled: Object.hasOwn(config.overrides, entry.shaper.id) ? config.overrides[entry.shaper.id]! : false,
+      enabled: shaperSwitchedOn(config, entry.shaper.id, "registered"),
     });
   });
   for (const entry of discovered) {
@@ -1243,7 +1372,7 @@ function candidates(
     out.push({
       shaper: parsed.data, origin: "discovered", stored: null, sha256: entry.sha256, root: entry.path,
       position: Number.MAX_SAFE_INTEGER,
-      enabled: Object.hasOwn(config.overrides, entry.id) ? config.overrides[entry.id]! : entry.shaper.enabled !== false,
+      enabled: shaperSwitchedOn(config, entry.id, "discovered", entry.shaper.enabled),
     });
   }
   return out;
@@ -1255,20 +1384,53 @@ function stripManifestFields(manifest: ShaperManifest): unknown {
 }
 
 /**
- * The ordering rule: stage order, then the stored `order`, then unlisted registered shapers in
- * stored order, then unlisted discovered shapers by id.
+ * Whether a shaper is switched on, before its filters: the enablement rule's one statement. A
+ * stored choice in `overrides`, on or off, always wins. With none, a registered shaper is off
+ * and a discovered one is on unless its manifest says `"enabled": false`. Settings reads the
+ * same answer for its pills, so the list and a launch never disagree about a shaper.
  */
-function compareCandidates(order: readonly string[], stages: readonly string[]) {
+export function shaperSwitchedOn(
+  config: Pick<ShapingConfig, "overrides">,
+  id: string,
+  origin: ShapingOrigin,
+  manifestEnabled?: boolean,
+): boolean {
+  if (Object.hasOwn(config.overrides, id)) return config.overrides[id]!;
+  return origin === "discovered" && manifestEnabled !== false;
+}
+
+/** What the ordering rule reads about one shaper: its id, its stage, and where it is stored. */
+export interface ShapingOrderKey {
+  id: string;
+  stage: string;
+  /** Its index in the stored list. A discovered shaper has none and sorts after every stored one. */
+  position: number;
+}
+
+/**
+ * The ordering rule: stage order, then the stored `order`, then unlisted registered shapers in
+ * stored order, then unlisted discovered shapers by id. The resolver and the Settings list both
+ * sort with it, so the list shows exactly the order a launch runs in.
+ */
+export function compareShapingOrder(order: readonly string[], stages: readonly string[] = SHAPING_STAGES) {
   const rank = new Map(order.map((id, at) => [id, at]));
-  return (a: Candidate, b: Candidate): number => {
-    const stage = stages.indexOf(a.shaper.stage) - stages.indexOf(b.shaper.stage);
+  return (a: ShapingOrderKey, b: ShapingOrderKey): number => {
+    const stage = stages.indexOf(a.stage) - stages.indexOf(b.stage);
     if (stage !== 0) return stage;
-    const ra = rank.get(a.shaper.id) ?? Number.MAX_SAFE_INTEGER;
-    const rb = rank.get(b.shaper.id) ?? Number.MAX_SAFE_INTEGER;
+    const ra = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const rb = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
     if (ra !== rb) return ra - rb;
     if (a.position !== b.position) return a.position - b.position;
-    return a.shaper.id < b.shaper.id ? -1 : a.shaper.id > b.shaper.id ? 1 : 0;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   };
+}
+
+function compareCandidates(order: readonly string[], stages: readonly string[]) {
+  const compare = compareShapingOrder(order, stages);
+  return (a: Candidate, b: Candidate): number => compare(
+    { id: a.shaper.id, stage: a.shaper.stage, position: a.position },
+    { id: b.shaper.id, stage: b.shaper.stage, position: b.position },
+  );
 }
 
 function applicableRepositories(shaper: Shaper, input: ShapingResolveInput): string[] {
@@ -1540,6 +1702,29 @@ export function taskShapingRead(task: { shaping?: TaskShaping | null; sessionId:
   return { state: record.state, sessionId: record.sessionId, summary: shapingSummaryLine(record) };
 }
 
+/** One entry as it would be injected, for the record, the viewer and the dry run. */
+export interface ShapingInjectedEntry {
+  shaperId: string;
+  label: string;
+  stage: string;
+  repo: string;
+  id: string;
+  title: string | null;
+  path: string | null;
+  body: string;
+  truncated: boolean;
+  omittedBytes: number;
+}
+
+/** What one run comes to, and what `POST /api/shaping/test` answers. */
+export interface ShapingRun {
+  /** Null when no shaper applied. */
+  summary: TaskShaping | null;
+  /** The section for turn one. Empty when nothing was kept. */
+  section: string;
+  entries: ShapingInjectedEntry[];
+}
+
 /** One call: one shaper, one repository. What `summariseShaping` folds per shaper. */
 export interface ShapingCallRecord {
   shaper: { id: string; label: string; stage: string };
@@ -1763,6 +1948,8 @@ export function composeShapingSection(
 /** `POST /api/shaping/test`: run one shaper against a repository, as dispatch would. */
 export const ShapingTestRequestSchema = z.object({
   id: z.string().min(1).max(64),
+  /** The `shapingEntryRevision` the sender showed; the dry run is refused if the entry has changed. */
+  expect: ShapingRevisionSchema.optional(),
   /** An absolute path to a local repository checkout. */
   repository: z.string().min(1).max(4096).refine((value) => value.startsWith("/"), { message: "The repository is an absolute path." }),
   prompt: z.string().max(SHAPING_LIMITS.taskChars).optional(),

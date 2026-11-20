@@ -21,6 +21,7 @@
 // Pure data and pure functions - no React - for the same reason `settings-search.ts` is: the
 // providers, the component and the tests all read the SAME rows.
 
+import type { FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { ensembleStageWord, type EnsembleStrategyId, type EnsembleSummary } from "@shared/ensemble.ts";
 import { creatableStrategies } from "@shared/ensemble-strategies.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
@@ -38,8 +39,8 @@ import { runTriageRound, runTriageSentence } from "../workflows/run-model.ts";
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES, tourEntry } from "../tour/entries.ts";
-import { VISIBLE_SETTINGS_CATEGORIES, settingsCategory } from "./settings-registry.ts";
-import { SETTINGS_CONTROLS, type SettingsBindings } from "./settings-search.ts";
+import { visibleSettingsCategories, settingsCategory } from "./settings-registry.ts";
+import { settingsControls, type SettingsBindings } from "./settings-search.ts";
 
 /**
  * The three groups the palette renders, in order.
@@ -205,6 +206,11 @@ export interface PaletteStores {
    */
   residents: readonly PaletteResident[];
   settingsBindings: SettingsBindings;
+  /**
+   * The live feature-flag config, so a settings category behind a flag, and its controls, are
+   * offered exactly while the flag is on - through the same gate the rail reads.
+   */
+  featureFlags: FeatureFlagsConfig;
 }
 
 /** One live resident, as the palette names and finds it. */
@@ -636,7 +642,7 @@ const commandProvider: PaletteProvider = {
 };
 
 /**
- * Settings, wrapping `SETTINGS_CONTROLS` - the one control-level index, unchanged.
+ * Settings, wrapping `settingsControls` - the one control-level index, unchanged.
  *
  * A control renders as an inline switch only when a binding for it is in hand, and jumps to
  * its panel otherwise. That is `settings-search.ts`'s own rule ("a null source gets NO
@@ -658,8 +664,8 @@ const commandProvider: PaletteProvider = {
  */
 const settingsPanelProvider: PaletteProvider = {
   id: "settings-panels",
-  rows: () =>
-    VISIBLE_SETTINGS_CATEGORIES.map((category) => ({
+  rows: ({ featureFlags }) =>
+    visibleSettingsCategories(featureFlags).map((category) => ({
       id: `panel:${category.id}`,
       kind: "panel" as const,
       title: `${category.label} settings`,
@@ -672,8 +678,8 @@ const settingsPanelProvider: PaletteProvider = {
 
 const settingsProvider: PaletteProvider = {
   id: "settings",
-  rows: ({ settingsBindings }) =>
-    SETTINGS_CONTROLS.map((control) => {
+  rows: ({ settingsBindings, featureFlags }) =>
+    settingsControls(featureFlags).map((control) => {
       const binding = control.kind === "toggle" && !control.risky
         ? settingsBindings.get(control.id)
         : undefined;

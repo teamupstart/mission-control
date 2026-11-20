@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { Handler } from "hono";
 import { HOST, PORT } from "../config.ts";
-import { openDb } from "../db.ts";
+import { inTransaction, openDb } from "../db.ts";
 import { parseBody } from "../http-body.ts";
 import { resolveRepoRoot } from "../repos.ts";
 import { SERVICE_VERSION } from "../version.ts";
@@ -232,39 +232,47 @@ export function sessionCounts(
   return { running: 0, waiting: 0 };
 }
 
+/**
+ * Records a registration. The read, the launcher decision and the write run in one
+ * `BEGIN IMMEDIATE` transaction, so two registrations of one session id that arrive together
+ * serialize: exactly one creates the row and can be offered the launcher, and the other
+ * updates it and is not.
+ */
 function upsertHomeSession(
   body: HomeSessionRegistration,
   repoRoot: string | null,
   now: number,
 ): { created: boolean; offered: boolean } {
-  const db = openDb();
-  const existing = getHomeSession(body.sessionId);
-  const offered = shouldOfferLauncher({
-    registration: body,
-    alreadyOffered: existing?.launcherOfferedAt != null,
-    promptSetting: launcherPromptSetting(),
-    registeredHomeSession: true,
+  return inTransaction(() => {
+    const db = openDb();
+    const existing = getHomeSession(body.sessionId);
+    const offered = shouldOfferLauncher({
+      registration: body,
+      alreadyOffered: existing?.launcherOfferedAt != null,
+      promptSetting: launcherPromptSetting(),
+      registeredHomeSession: true,
+    });
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO home_dispatch_sessions
+           (session_id, harness, cwd, repo_root, client_version, start_source, entrypoint,
+            launcher_offered_at, launcher_disabled, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        body.sessionId, body.harness, body.cwd, repoRoot, body.clientVersion, body.source,
+        body.entrypoint, offered ? now : null, body.launcherDisabled ? 1 : 0, now,
+      );
+    } else {
+      // A re-registration (a retry, a poll after a daemon restart) keeps the first offer and start.
+      db.prepare(
+        `UPDATE home_dispatch_sessions
+            SET cwd = ?, repo_root = ?, client_version = ?, launcher_disabled = ?,
+                launcher_offered_at = COALESCE(launcher_offered_at, ?)
+          WHERE session_id = ?`,
+      ).run(body.cwd, repoRoot, body.clientVersion, body.launcherDisabled ? 1 : 0, offered ? now : null, body.sessionId);
+    }
+    return { created: !existing, offered };
   });
-  if (!existing) {
-    db.prepare(
-      `INSERT INTO home_dispatch_sessions
-         (session_id, harness, cwd, repo_root, client_version, start_source, entrypoint,
-          launcher_offered_at, launcher_disabled, started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      body.sessionId, body.harness, body.cwd, repoRoot, body.clientVersion, body.source,
-      body.entrypoint, offered ? now : null, body.launcherDisabled ? 1 : 0, now,
-    );
-  } else {
-    // A re-registration (a retry, a poll after a daemon restart) keeps the first offer and start.
-    db.prepare(
-      `UPDATE home_dispatch_sessions
-          SET cwd = ?, repo_root = ?, client_version = ?, launcher_disabled = ?,
-              launcher_offered_at = COALESCE(launcher_offered_at, ?)
-        WHERE session_id = ?`,
-    ).run(body.cwd, repoRoot, body.clientVersion, body.launcherDisabled ? 1 : 0, offered ? now : null, body.sessionId);
-  }
-  return { created: !existing, offered };
 }
 
 /** `POST /dispatch/sessions` (7.2). Sets no runtime on any session or task. */

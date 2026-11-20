@@ -148,6 +148,21 @@ test("a session outside a repository registers with no repoRoot and is still off
   assert.equal(outside.offerLauncher, true, "7.4 has no repository condition");
 });
 
+test("registrations of one session id that arrive together create one row and offer the launcher once", async () => {
+  const body = registration({ sessionId: "racing" });
+  const answers = await Promise.all(
+    Array.from({ length: 6 }, async () => {
+      const res = await register(body);
+      assert.equal(res.status, 200);
+      return shared.HomeSessionRegistrationAnswerSchema.parse(await res.json());
+    }),
+  );
+  assert.equal(answers.filter((a) => a.created).length, 1);
+  assert.equal(answers.filter((a) => a.offerLauncher).length, 1);
+  const rows = openDb().prepare(`SELECT COUNT(*) AS n FROM home_dispatch_sessions WHERE session_id = ?`).get("racing") as { n: number };
+  assert.equal(rows.n, 1);
+});
+
 test("a malformed registration is a 400 and writes nothing", async () => {
   assert.equal((await register({ sessionId: "x" })).status, 400);
   assert.equal((await register(registration({ source: "weird" }))).status, 400);

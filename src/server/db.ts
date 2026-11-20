@@ -139,7 +139,13 @@ import {
   type WritebackNotice,
   type WritebackSignal,
 } from "@shared/task-source.ts";
-import { HUMAN_REVIEW_STATUSES, isConversationResolvedReview, isHomeDispatchResolvedReview } from "@shared/review-item.ts";
+import {
+  HOME_DISPATCH_ACTOR_NAMES,
+  HOME_DISPATCH_ACTOR_PREFIXES,
+  HUMAN_REVIEW_STATUSES,
+  isConversationResolvedReview,
+  isHomeDispatchResolvedReview,
+} from "@shared/review-item.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
@@ -5460,6 +5466,19 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
   return row ? rowToReview(row) : null;
 }
 
+/**
+ * SQL for "settled by a home session or mctl", built from the same list `isHomeDispatchActor` reads
+ * (`@shared/review-item.ts`), so the TypeScript predicate and every query below cannot drift. The
+ * values are fixed literals from that list, never request data.
+ */
+const HOME_DISPATCH_ACTOR_SQL = [
+  ...HOME_DISPATCH_ACTOR_NAMES.map((name) => `resolved_by = '${name}'`),
+  ...HOME_DISPATCH_ACTOR_PREFIXES.map((prefix) => `resolved_by LIKE '${prefix}%'`),
+].join(" OR ");
+
+/** Answers whose result can still be carried to a detached session: the human, a delegated session, or a home actor. */
+const CONTINUATION_ACTOR_SQL = `(resolved_by = 'human' OR resolved_by LIKE 'session:%' OR ${HOME_DISPATCH_ACTOR_SQL})`;
+
 /** Human answers that have lost their MCP result channel and still need a session turn. */
 export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
   const suffix = id === undefined ? "" : " AND id = ?";
@@ -5468,7 +5487,7 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
       `SELECT * FROM reviews
         WHERE mcp_wait_detached_at IS NOT NULL
           AND continuation_queued_at IS NULL
-          AND (resolved_by = 'human' OR resolved_by LIKE 'session:%' OR resolved_by LIKE 'home:%' OR resolved_by LIKE 'home-approval:%' OR resolved_by = 'mctl')
+          AND ${CONTINUATION_ACTOR_SQL}
           AND status IN ('approved', 'rejected', 'answered', 'dismissed')${suffix}
         ORDER BY resolved_at ASC, created_at ASC`,
     )
@@ -5493,7 +5512,7 @@ export function createReviewContinuationPendingTurn(input: {
     turnId: `review-continuation:${input.reviewId}`,
     eligible: `mcp_wait_detached_at IS NOT NULL
             AND continuation_queued_at IS NULL
-            AND (resolved_by = 'human' OR resolved_by LIKE 'session:%' OR resolved_by LIKE 'home:%' OR resolved_by LIKE 'home-approval:%' OR resolved_by = 'mctl')
+            AND ${CONTINUATION_ACTOR_SQL}
             AND status IN ('approved', 'rejected', 'answered', 'dismissed')`,
     stamp: "continuation_queued_at",
   });
@@ -5649,7 +5668,7 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : " OR resolved_by LIKE 'home-approval:%' OR resolved_by LIKE 'home:%' OR resolved_by = 'mctl'"})
+            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?

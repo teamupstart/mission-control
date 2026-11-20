@@ -72,9 +72,21 @@ export function isConversationResolvedReview(review: ReviewItem): boolean {
  * "needs revision" from any of them beats an earlier approval (7.9).
  */
 export function isHomeDispatchResolvedReview(review: ReviewItem): boolean {
-  const by = review.resolvedBy;
-  return (by === "mctl" || by?.startsWith("home:") === true || by?.startsWith("home-approval:") === true)
-    && HUMAN_REVIEW_STATUSES.has(review.status);
+  return isHomeDispatchActor(review.resolvedBy) && HUMAN_REVIEW_STATUSES.has(review.status);
+}
+
+/**
+ * The one list of who counts as a home-session or command-line actor: an exact name (`mctl`) or a
+ * prefix (`home:{sessionId}`, `home-approval:{sessionId}`). The predicate below and the SQL in
+ * `db.ts` both read it, so a new actor is added here and nowhere else.
+ */
+export const HOME_DISPATCH_ACTOR_NAMES = ["mctl"] as const;
+export const HOME_DISPATCH_ACTOR_PREFIXES = ["home:", "home-approval:"] as const;
+
+export function isHomeDispatchActor(by: ReviewItem["resolvedBy"] | undefined): boolean {
+  if (!by) return false;
+  return (HOME_DISPATCH_ACTOR_NAMES as readonly string[]).includes(by)
+    || HOME_DISPATCH_ACTOR_PREFIXES.some((prefix) => by.startsWith(prefix));
 }
 
 /**

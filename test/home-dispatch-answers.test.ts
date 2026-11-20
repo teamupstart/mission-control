@@ -24,7 +24,7 @@ const {
 const { ensureToken } = await import("../src/server/auth.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 const { HomeDispatchReceiptSchema } = await import("../src/shared/home-dispatch.ts");
-const { isApprovingActor } = await import("../src/shared/review-item.ts");
+const { isApprovingActor, isHomeDispatchActor } = await import("../src/shared/review-item.ts");
 const { receiptLine, HOME_DISPATCH_CHAT_FIRST_TEXT } = await import("../src/shared/home-dispatch-inbox.ts");
 const { mkTask, mkMuxHandle } = await import("./helpers/session-fixture.ts");
 const { revisionHashFor, taskOwningSession } = await import("../src/server/home-dispatch/approval.ts");
@@ -526,6 +526,23 @@ test("a late answer from each home actor is queued as a continuation turn, once"
     const stored = openDb().prepare(`SELECT state FROM pending_turns WHERE id = ?`).get(turn.id) as { state: string } | undefined;
     assert.equal(stored?.state, "queued", `${label}: it is in the durable outbox`);
     assert.equal(createReviewContinuationPendingTurn({ reviewId, noteKey: `note-${task}`, text: "again", now: 2_000 }), null, `${label}: queued once`);
+  }
+});
+
+test("the continuation SQL and the actor predicate come from one list and agree for every actor", () => {
+  const worker = liveSession("w-actor-list");
+  const actors: Array<[string, boolean, boolean]> = [
+    // [resolved_by, can wake a detached session, is a home-dispatch actor]
+    ["human", true, false], ["session:s1", true, false], ["home:s1", true, true], ["home-approval:s1", true, true],
+    ["mctl", true, true], ["foreman", false, false], ["standing-approval", false, false], ["homework:s1", false, false],
+  ];
+  for (const [actor, wakes, isHome] of actors) {
+    const review = reviews.create(worker, "input", `Q ${actor}`, `Which ${actor}?`, [QUESTION]);
+    openDb()
+      .prepare(`UPDATE reviews SET status = 'answered', resolved_by = ?, resolved_at = ?, mcp_wait_detached_at = ? WHERE id = ?`)
+      .run(actor, Date.now(), Date.now(), review.id);
+    assert.equal(loadReviewContinuationCandidates(review.id).length === 1, wakes, `${actor} wakes a detached session`);
+    assert.equal(isHomeDispatchActor(actor as never), isHome, `${actor} is a home-dispatch actor`);
   }
 });
 

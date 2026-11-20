@@ -59,10 +59,13 @@ test("a shell line is never split into a subcommand, and a leading assignment is
     import cp from "node:child_process";
     cp.execSync('git -c "http.extraHeader=Authorization: secret-token" --version');
     cp.execSync("SECRET_VALUE=secret-token true");
+    // \`shell: true\` makes Node join the command and arguments into the same kind of line.
+    cp.spawnSync("SECRET_VALUE=secret-token true", { shell: true });
+    cp.execFileSync("SECRET_VALUE=secret-token", ["true"], { shell: true });
   `);
   const text = JSON.stringify(spawns);
   assert.ok(!text.includes("secret-token") && !text.includes("SECRET_VALUE"), text);
-  assert.deepEqual(spawns.map((spawn) => [spawn.cmd, spawn.sub]), [["git", null], ["(shell)", null]]);
+  assert.deepEqual(spawns.map((spawn) => [spawn.cmd, spawn.sub]), [["git", null], ["(shell)", null], ["(shell)", null], ["(shell)", null]]);
 });
 
 test("a compound shell line around git counts its shell; a lone command does not", () => {

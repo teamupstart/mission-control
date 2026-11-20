@@ -158,6 +158,21 @@ test("worktree config defaults on, is bounded, and merges repository patches", (
   assert.deepEqual(cleared.repositories["/one/.git"], { enabled: false, maxSlots: 4 });
 });
 
+/**
+ * A one-commit repository beside `beside`, on the files ref backend whatever this machine's
+ * git defaults to. `-c init.defaultRefFormat` rather than `--ref-format`, which a git older than
+ * 2.45 rejects. Cases that read a HEAD file, or count inspection's git calls, need the files
+ * backend: reftable keeps only a stub there and inspection correctly asks git instead.
+ */
+function filesBackendRepo(beside: string, name: string): string {
+  const repo = join(beside, "..", name);
+  execFileSync("git", ["-c", "init.defaultRefFormat=files", "init", "-q", "-b", "main", repo], { stdio: "pipe" });
+  writeFileSync(join(repo, "keep.txt"), "base\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "-c", "user.email=t@test", "-c", "user.name=t", "commit", "-qm", "base");
+  return repo;
+}
+
 /** A linked worktree of `clone` at its HEAD, detached, beside the clone. */
 function mkLinkedDetached(clone: string, name: string): string {
   const path = join(clone, "..", name);
@@ -166,16 +181,10 @@ function mkLinkedDetached(clone: string, name: string): string {
 }
 
 test("inspection reads HEAD, detachment and dirtiness from real git in one status read", async () => {
-  // On the files ref backend, pinned: a machine whose git defaults to reftable correctly makes a
-  // second call there (covered by the reftable test below), which is not what this one counts.
-  // `-c init.defaultRefFormat` rather than `--ref-format`, which a git older than 2.45 rejects.
+  // Files backend: on a machine whose git defaults to reftable, inspection correctly makes a
+  // second call (covered by the reftable test below), which is not what this one counts.
   const { clone } = repository("mission-native-inspect-");
-  const repo = join(clone, "..", "files-backend");
-  execFileSync("git", ["-c", "init.defaultRefFormat=files", "init", "-q", "-b", "main", repo], { stdio: "pipe" });
-  writeFileSync(join(repo, "keep.txt"), "base\n");
-  gitIn(repo, "add", "-A");
-  gitIn(repo, "-c", "user.email=t@test", "-c", "user.name=t", "commit", "-qm", "base");
-  const detached = mkLinkedDetached(repo, "detached");
+  const detached = mkLinkedDetached(filesBackendRepo(clone, "files-backend"), "detached");
   const calls: string[][] = [];
   const git = new NativeWorktreeGit(async (bin, args, options) => {
     calls.push(args);
@@ -281,12 +290,15 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   const unborn = await new NativeWorktreeGit(async () => known(header("(initial)", "main")), noPause).inspect(clone);
   assert.equal(unborn.ok, false, "an unborn HEAD names no commit to lease");
   if (!unborn.ok) assert.equal(unborn.outcomeUnknown, false);
-  // A real detached linked worktree, because a `(detached)` header is confirmed against HEAD.
-  const detachedTree = mkLinkedDetached(clone, "mission-native-git-unknown-detached");
+  // A real detached linked worktree, because a `(detached)` header is confirmed against HEAD - on
+  // the files backend, since these cases read the HEAD file itself.
+  const detachedRepo = filesBackendRepo(clone, "files-backend-detached");
+  const detachedSha = gitIn(detachedRepo, "rev-parse", "HEAD");
+  const detachedTree = mkLinkedDetached(detachedRepo, "mission-native-git-unknown-detached");
   const answered = await new NativeWorktreeGit(async () =>
-    known(`${header(sha, "(detached)")}? .pipeline/DONE\0`), noPause).inspect(detachedTree);
+    known(`${header(detachedSha, "(detached)")}? .pipeline/DONE\0`), noPause).inspect(detachedTree);
   assert.ok(answered.ok);
-  assert.equal(answered.value.head, sha);
+  assert.equal(answered.value.head, detachedSha);
   assert.equal(answered.value.detached, true);
   // HEAD moving between status and the file read: status saw one commit, the file holds another.
   // Neither read is trustworthy alone, so the inspection is unknown rather than detached at a
@@ -302,7 +314,7 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   renameSync(privateHead, `${privateHead}.moved`);
   try {
     assertUnknown(
-      await new NativeWorktreeGit(async () => known(header(sha, "(detached)")), noPause).inspect(detachedTree),
+      await new NativeWorktreeGit(async () => known(header(detachedSha, "(detached)")), noPause).inspect(detachedTree),
       /whether HEAD is detached/,
     );
   } finally {
@@ -312,11 +324,11 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   // through the link yields a commit - a detached HEAD's shape. Git is asked instead.
   renameSync(privateHead, `${privateHead}.moved`);
   const linkTarget = `${privateHead}.target`;
-  writeFileSync(linkTarget, `${sha}\n`);
+  writeFileSync(linkTarget, `${detachedSha}\n`);
   symlinkSync(linkTarget, privateHead);
   try {
     const symlinked = await new NativeWorktreeGit(async (_bin, args) =>
-      args.includes("symbolic-ref") ? known("refs/heads/(detached)\n") : known(header(sha, "(detached)")), noPause,
+      args.includes("symbolic-ref") ? known("refs/heads/(detached)\n") : known(header(detachedSha, "(detached)")), noPause,
     ).inspect(detachedTree);
     assert.ok(symlinked.ok, symlinked.ok ? "" : symlinked.reason);
     assert.equal(symlinked.value.detached, false, "a symbolic-link HEAD that git calls a branch is a branch");
@@ -330,7 +342,7 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   renameSync(privateHead, `${privateHead}.moved`);
   writeFileSync(privateHead, "ref:\trefs/heads/(detached)\n");
   try {
-    const tabbed = await new NativeWorktreeGit(async () => known(header(sha, "(detached)")), noPause).inspect(detachedTree);
+    const tabbed = await new NativeWorktreeGit(async () => known(header(detachedSha, "(detached)")), noPause).inspect(detachedTree);
     assert.ok(tabbed.ok, tabbed.ok ? "" : tabbed.reason);
     assert.equal(tabbed.value.detached, false, "`ref:<tab>` is a symbolic ref, so the slot holds a branch");
   } finally {

@@ -121,10 +121,11 @@ if (dir) {
     const argv = api === "fork" ? [] : Array.isArray(args) ? args.filter((a) => typeof a === "string") : [];
     let cmd;
     let sub = null;
-    if (shellString) {
+    if (shell) {
       // A shell line is not split into words here - quoting makes any split wrong, and a wrong
       // split is how a quoted value would leak. Only a plain leading program name is kept; an
-      // assignment (`TOKEN=... git`) or anything quoted is recorded as the shell.
+      // assignment (`TOKEN=... git`) or anything quoted is recorded as the shell. With
+      // `shell: true`, Node joins `command` and its arguments into exactly such a line.
       const first = String(command).trim().split(/\s+/)[0] ?? "";
       cmd = /^[\w./+-]+$/.test(first) ? basename(first) : "(shell)";
     } else {

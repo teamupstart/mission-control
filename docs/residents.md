@@ -7,7 +7,7 @@ launch it from **Dispatch > Resident**. It runs as an ordinary session in the Ag
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
 This page describes profiles, launch, [residents across several repositories](#attaching-more-than-one-repository),
-the persistent wake loop, repository-free residents,
+the persistent wake loop and its [active hours](#active-hours), repository-free residents,
 [instruction changes a resident proposes](#changing-instructions-from-the-conversation) and its
 retro, skill sources, session control, MCP servers and their dashboard controls. Skill selection remains a later phase of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
@@ -26,6 +26,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills, and any repositories **+ Add another repo** attaches beside it | none |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
+| Active hours (preview) | The days and hours the loop may wake the resident; see [Active hours](#active-hours) | off: always awake |
 | MCP servers | A pinned set or [all native sources](#all-native-sources), plus any selected [custom servers](#custom-mcp-servers) | pinned, inherit on, none selected |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
@@ -488,6 +489,49 @@ bound to the replacement request and the new profile revision. It grants control
 revision has **Control other sessions** on. A browser restart or a desktop app attached to a
 daemon it did not start still launches without control; the session control menu can grant it
 for that conversation.
+
+### Active hours
+
+**Active hours** is a preview: turn on **Resident active hours** in
+[Settings > Feature flags](feature-flags.md) to see its card, which sits under **Loop and
+guardrails**. Check **Sleep outside active hours**, pick the days (Monday to Friday to start
+with, **Weekdays** and **Every day** as shortcuts), the time it **Wakes at** and **Sleeps at**,
+and a time zone. Turning active hours on picks this browser's zone, shown and changeable, so the
+clock that governs the windows is always named. A profile saved without a zone, through the API,
+follows the Mission Control daemon's zone: the editor names it only as that, and every live-run
+surface evaluates it on the daemon's clock even when the dashboard is open in another zone. A week strip draws the awake spans, and a line
+under it says whether the resident would be awake now and when its next window opens.
+
+A window opens at its start time on each chosen day. When **Sleeps at** is at or before
+**Wakes at**, the window runs past midnight into the next day, so 22:00 to 06:00 is a night
+shift and 00:00 to 00:00 is the whole day. Wall-clock times follow the zone through
+daylight-saving changes.
+
+Outside its window a resident keeps running: its session, task and conversation stay open and
+its loop stays **waiting**. It only sleeps. A wake that falls due, at the cadence or one it asked
+for with `schedule_next_iteration`, is held and sent once when the next window opens; no loop
+prompt goes out and no compaction runs before it, so it spends no tokens. A window that closes
+while a compaction is running sends no wake after it; that wake waits for the next window. Whenever a waiting
+resident is outside its window, every live-run surface shows **asleep** with the time its next
+wake goes out: the next opening when that wake was held, or the wake's own time when it is
+already due inside the next window. While the window is still open, a resident whose next wake
+falls after it closes reads as **waiting**, with the time the held wake goes out. Asleep is not paused: nothing
+durable changes, it needs no Resume, and the iteration and spend windows are untouched. Your own
+messages, **Run now** and the launch's opening turn are never held. A resident launched with
+active hours while the preview is on is told them in its standing instructions, so it knows a
+wake it requests outside them waits; launched with the preview off, it is told nothing about
+them, because its loop does not enforce them.
+
+On a daylight-saving night that skips the chosen start time, the window opens when the clock
+jumps past it, never before: a 02:30 start on a spring-forward night opens at 03:00. A start
+time the clocks repeat in autumn opens at its first occurrence.
+
+Like every profile setting, a running resident keeps the hours its launch pinned; **Restart on
+new profile** adopts edited ones. Turning the preview off sends any held wake that is already
+due at once and makes every resident ignore its hours; the saved schedules are kept and apply
+again when the preview is turned back on. A draft whose active hours cannot be saved, such as
+one with no day chosen, keeps the card on screen even after the preview is turned off, so the
+problem stays reachable and the draft can still be fixed and saved.
 
 ### Compaction and guardrails
 

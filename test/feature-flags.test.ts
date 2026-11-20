@@ -69,6 +69,8 @@ test("schemas bound keys and entries while accepting future ids", () => {
 });
 test("shipped registry is data-only and disjoint from append-only tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "RETIRED_FEATURE_FLAG_IDS"]);
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "resident-active-hours")?.stage, "preview",
+    "resident active hours ships as a preview");
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);
   assert.equal(new Set(ids).size, ids.length);

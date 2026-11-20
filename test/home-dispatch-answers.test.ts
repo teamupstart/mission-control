@@ -48,12 +48,13 @@ beforeEach(() => {
 // ---- fixtures ---------------------------------------------------------------------------
 
 const discovered: DiscoveredSession[] = [];
-function liveSession(id: string): string {
+function liveSession(id: string, repoRoot?: string): string {
   if (!discovered.some((d) => d.syntheticId === id)) {
     discovered.push({
       syntheticId: id, agent: "claude", name: id, nameSource: "process", cwd: join(home, "worker", id), gitBranch: "feature",
       pid: 1, tty: "ttys1", terminals: [mkMuxHandle({ session: id, windowName: "w", windowIndex: 0, paneId: `%${discovered.length + 1}` })],
       startedAt: 0,
+      ...(repoRoot ? { repoRoot, gitRoot: repoRoot } : {}),
     } as DiscoveredSession);
     registry.applyDiscovery(discovered);
   }
@@ -78,7 +79,7 @@ async function homeIn(name: string, sessionId = `home-${name}`): Promise<Home> {
 }
 
 function addTask(id: string, repo: string, surface: "home-session" | "mctl" | null, over: Parameters<typeof mkTask>[0] = {}): string {
-  const worker = liveSession(`w-${id}`);
+  const worker = liveSession(`w-${id}`, repo);
   registry.upsertTask(mkTask({ id, title: id, status: "running", sessionId: worker, createdAt: 1_000, updatedAt: 1_000, ...over }));
   openDb()
     .prepare(`UPDATE tasks SET origin_surface = ?, origin_repo = ?, origin_session_id = ? WHERE id = ?`)
@@ -222,6 +223,50 @@ test("a finished task that still has a pending request is waiting, and is answer
   assert.equal((await answer(h, { action: "answer", taskId: "t-done-pending", reviewId: review.id, option: "Keep" })).status, 200);
 });
 
+test("every pending request on a task is listed and answerable, not only the oldest", async () => {
+  const h = await homeIn("many-pending");
+  const worker = addTask("t-many", h.repo, "home-session");
+  const first = reviews.create(worker, "input", "First", "One?", [QUESTION], { now: Date.now() - 2_000 });
+  const second = reviews.create(worker, "input", "Second", "Two?", [{ ...QUESTION, id: "q2" }], { now: Date.now() - 1_000 });
+  const inbox = await (await app.request(`/dispatch/inbox?session=${h.sessionId}`, { headers })).json() as
+    { items: Array<{ taskId: string; state: string; title: string; pending?: { reviewId: string; dashboardOnly: boolean } }>; needsYou: string[] };
+  const main = inbox.items.find((i) => i.taskId === "t-many")!;
+  const extra = inbox.items.find((i) => i.taskId === `review:${second.id}`)!;
+  assert.equal(main.pending?.reviewId, first.id, "the oldest request is the task's own pending");
+  assert.equal(extra.pending?.reviewId, second.id, "the next one is listed too");
+  assert.equal(extra.state, "waiting");
+  assert.equal(extra.title, main.title, "it names the same task");
+  assert.equal(extra.pending?.dashboardOnly, false, "and it is answerable");
+  assert.deepEqual(inbox.needsYou.filter((id) => id === "t-many" || id === `review:${second.id}`), ["t-many", `review:${second.id}`]);
+
+  // The extra item's id answers the review it stands for, receipted against the owning task.
+  const res = await answer(h, { action: "answer", taskId: `review:${second.id}`, reviewId: second.id, option: "Keep" });
+  assert.equal(res.status, 200);
+  assert.equal((await receiptOf(res)).taskId, "t-many");
+  assert.equal(row(second.id).status, "answered");
+  assert.equal((await answer(h, { action: "answer", taskId: `review:${first.id}`, reviewId: second.id, option: "Keep" })).status, 409, "an id for another review does not stand in");
+});
+
+test("a takeover question is shown only in the repository of the session that asked it", async () => {
+  const a = await homeIn("takeover-a");
+  const b = await homeIn("takeover-b");
+  const session = liveSession("w-takeover", a.repo);
+  registry.upsertTask(mkTask({ id: "t-takeover-a", title: "asked in A", status: "running", sessionId: session, createdAt: 1_000, updatedAt: 1_000 }));
+  openDb().prepare(`UPDATE tasks SET origin_surface = 'home-session', origin_repo = ?, origin_session_id = NULL WHERE id = ?`).run(a.repo, "t-takeover-a");
+  const review = reviews.create(session, "input", "Secret from A", "A's private question?", [QUESTION]);
+  registry.upsertTask(mkTask({ id: "t-takeover-b", title: "now in B", status: "running", sessionId: session, createdAt: 1_000, updatedAt: 1_000, dispatchedAt: Date.now() + 10_000 }));
+  openDb().prepare(`UPDATE tasks SET origin_surface = 'home-session', origin_repo = ?, origin_session_id = NULL WHERE id = ?`).run(b.repo, "t-takeover-b");
+
+  const read = async (h: { sessionId: string }) => (await (await app.request(`/dispatch/inbox?session=${h.sessionId}`, { headers })).json()) as
+    { items: Array<{ taskId: string; title: string }>; needsYou: string[] };
+  const inB = await read(b);
+  assert.equal(JSON.stringify(inB).includes("Secret from A"), false, "repository B never sees A's question");
+  assert.equal(inB.needsYou.includes(`review:${review.id}`), false);
+  const inA = await read(a);
+  assert.ok(inA.items.some((i) => i.taskId === `review:${review.id}` && i.title === "Secret from A"), "repository A still sees what it asked");
+  assert.ok(inA.needsYou.includes(`review:${review.id}`));
+});
+
 test("taskOwningSession refuses to guess when two active tasks claim one session", () => {
   const t = (id: string, status: string) => ({ id, status, sessionId: "s-shared", updatedAt: 1 });
   const deps = (tasks: unknown[]) => ({ registry: { listTasks: () => tasks, taskForSession: () => undefined } }) as never;
@@ -230,7 +275,7 @@ test("taskOwningSession refuses to guess when two active tasks claim one session
   assert.equal(taskOwningSession(deps([]), "s-shared"), undefined);
   const started = (id: string, dispatchedAt: number) => ({ id, status: "running", sessionId: "s-shared", dispatchedAt, createdAt: 1, updatedAt: 1 });
   assert.deepEqual(taskOwningSession(deps([started("a", 100)]), "s-shared", 200), { task: started("a", 100) }, "asked after it started");
-  assert.deepEqual(taskOwningSession(deps([started("a", 300)]), "s-shared", 200), { unestablished: true }, "asked before it started");
+  assert.deepEqual(taskOwningSession(deps([started("a", 300)]), "s-shared", 200), { unestablished: true, task: started("a", 300) }, "asked before it started");
 });
 
 test("a receipt that cannot be written settles nothing, so the retry still works and then has its receipt", async () => {

@@ -169,7 +169,7 @@ export function taskOwningSession(
   sessionId: string,
   /** When the review was created. A task that started after it cannot be the one that asked. */
   reviewCreatedAt?: number,
-): { task: Task } | { ambiguous: true } | { unestablished: true } | undefined {
+): { task: Task } | { ambiguous: true } | { unestablished: true; task: Task } | undefined {
   const active = deps.registry.listTasks().filter((t) => t.sessionId === sessionId && isActiveTask(t.status));
   if (active.length > 1) return { ambiguous: true };
   // The registry's card rule skips a cancelled task, but a cancelled task can still hold a pending
@@ -183,7 +183,7 @@ export function taskOwningSession(
   // A review records only its session, not its task. When another task took the session over after
   // the review was created, the review was asked by the task that held the session then, which is
   // no longer knowable, so it is refused rather than attributed to the new holder.
-  if (reviewCreatedAt !== undefined && !reviewBelongsTo(task, reviewCreatedAt)) return { unestablished: true };
+  if (reviewCreatedAt !== undefined && !reviewBelongsTo(task, reviewCreatedAt)) return { unestablished: true, task };
   return { task };
 }
 

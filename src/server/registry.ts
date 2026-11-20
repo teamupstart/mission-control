@@ -9700,7 +9700,10 @@ export class Registry extends EventEmitter {
    *    grants resume - a withdrawn SDK session gets `"sdk"` back (backlog eligibility
    *    included, once phase 2 reads the field) rather than a permanent, invisible
    *    `"operator"` downgrade.
-   * 3. Still `null` after that: write `'operator'`. One documented residue: a
+   * 3. Still `null` after that: write `'operator'`. This is also how a withdrawn
+   *    resident comes back in one click - its kind has no implicit grant to restore
+   *    (`TASK_KIND_BEHAVIOR.resident.foremanInvite`), so step 2 leaves it null and the
+   *    explicit row is what persists the invite. One documented residue: a
    *    withdrawn, previously dispatched terminal re-invites as `"operator"` (its
    *    `'dispatch'` row was replaced by the tombstone) until a fresh dispatch restores
    *    `"dispatch"`.

@@ -88,4 +88,16 @@ test("a resident session launches without Foreman, and the operator can invite i
   await capture(tabs, "rail-invited");
   const after = (await send<SessionRow[]>(daemon, "GET", "/api/sessions")).find((s) => s.id === resident!.id);
   expect(after?.foremanInvite).toBe("operator");
+
+  // Withdraw, then one click back in. A resident has no implicit grant for the cleared
+  // tombstone to restore, so the re-invite must land as an explicit operator grant.
+  await intent.click();
+  await dashboard.getByRole("button", { name: "Withdraw invite" }).click();
+  await expect(invite).toBeVisible();
+  await expect(intent).toHaveCount(0);
+  await invite.click();
+  await expect(intent).toBeVisible();
+  await expect(invite).toHaveCount(0);
+  const reinvited = (await send<SessionRow[]>(daemon, "GET", "/api/sessions")).find((s) => s.id === resident!.id);
+  expect(reinvited?.foremanInvite).toBe("operator");
 });

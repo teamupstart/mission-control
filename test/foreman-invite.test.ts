@@ -298,6 +298,13 @@ test("the operator can still invite Foreman into a resident session, and withdra
   assert.equal(seen.at(-1)?.foremanInvite, "operator", "the invite reaches the dashboard");
   assert.equal(registry.withdrawForemanInvite(resident.id), null);
   assert.equal(registry.getSession(resident.id)?.foremanInvite, null);
+  // One click back in after the withdrawal. Clearing the tombstone restores no implicit grant
+  // for a resident, so the operator's door must persist an explicit 'operator' row instead
+  // of leaving the session silently uninvited.
+  assert.equal(registry.inviteForeman(resident.id), "operator");
+  assert.equal(registry.getSession(resident.id)?.foremanInvite, "operator");
+  assert.equal(getForemanInvite(resident.id)?.source, "operator");
+  assert.equal(seen.at(-1)?.foremanInvite, "operator", "the re-invite reaches the dashboard");
 });
 
 test("restore-then-elevate: re-inviting a withdrawn SDK session restores the implicit grant", () => {

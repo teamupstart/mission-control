@@ -317,12 +317,13 @@ export const registerSessionHandler: HomeDispatchHandler = (deps): Handler => as
   const written = upsertHomeSession(deps, body, repoRoot, Date.now());
   if ("refusal" in written) return c.json({ error: written.refusal.reason }, written.refusal.status);
   const { created, offered } = written;
+  const counts = sessionCounts(deps, repoRoot, body.sessionId);
   const answer: HomeSessionRegistrationAnswer = {
     sessionId: body.sessionId,
     repoRoot,
     created,
     offerLauncher: offered,
-    counts: sessionCounts(deps, repoRoot, body.sessionId),
+    counts,
     daemonVersion: SERVICE_VERSION,
     minModApi: HOME_DISPATCH_MIN_MOD_API,
     dashboardUrl: `http://${HOST}:${PORT}/`,
@@ -331,7 +332,7 @@ export const registerSessionHandler: HomeDispatchHandler = (deps): Handler => as
       ? {
           banner: dispatchBannerPlain({
             harness: body.harness,
-            counts: sessionCounts(deps, repoRoot),
+            counts,
             menuOffered: offered,
             versionMismatch: body.clientVersion !== SERVICE_VERSION,
           }),

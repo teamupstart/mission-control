@@ -22,6 +22,7 @@ const { closeDb, openDb } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 const shared = await import("../src/shared/home-dispatch.ts");
+const { dispatchBannerPlain } = await import("../src/shared/home-dispatch-banner.ts");
 const drafts = await import("../src/server/home-dispatch/drafts.ts");
 const { resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
 const { configuredTerminalDeps } = await import("../src/server/terminals-config.ts");
@@ -464,10 +465,14 @@ test("a startup registration with matching versions returns the daemon's counts 
   const first = shared.HomeSessionRegistrationAnswerSchema.parse(await (await reg()).json());
   assert.equal(first.offerLauncher, true);
   assert.equal(first.banner![0]!.includes("Claude Code"), true);
-  assert.equal(first.banner![2], "nothing running | I will ask how you want to start", "counts are the daemon's, hint follows the launcher decision");
+  const expected = (counts: typeof first.counts, menuOffered: boolean) =>
+    dispatchBannerPlain({ harness: "claude", counts, menuOffered, versionMismatch: false })[2];
+  assert.equal(first.banner![2], expected(first.counts, true), "the banner shows the daemon's own counts and the launcher decision");
+  assert.match(first.banner![2]!, /I will ask how you want to start$/);
   const again = shared.HomeSessionRegistrationAnswerSchema.parse(await (await reg()).json());
   assert.equal(again.offerLauncher, false);
-  assert.equal(again.banner![2], "nothing running | /mission-dispatch opens the menu");
+  assert.equal(again.banner![2], expected(again.counts, false));
+  assert.match(again.banner![2]!, /\/mission-dispatch opens the menu$/);
 });
 
 test("a repository name matches case-insensitively, and several matches are refused by name", async () => {

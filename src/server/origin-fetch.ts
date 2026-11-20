@@ -126,13 +126,17 @@ export function cappedFetch(
           counted += chunk.byteLength;
         } else {
           for (const byte of chunk) {
+            // Every byte on the wire counts, both bytes of a CRLF included: an event of many short
+            // CRLF lines must not pass the cap while being counted as fewer bytes than it is.
+            counted += 1;
+            if (counted > capBytes) break;
+            // The LF of a CRLF ends the same line its CR already ended.
             if (byte === 0x0a && lastWasCr) { lastWasCr = false; continue; }
             const lineEnd = byte === 0x0a || byte === 0x0d;
             lastWasCr = byte === 0x0d;
+            // A line end right after another is the blank line that ends the event.
             if (lineEnd && lastWasLineEnd) { counted = 0; lastWasLineEnd = false; continue; }
             lastWasLineEnd = lineEnd;
-            counted += 1;
-            if (counted > capBytes) break;
           }
         }
         if (counted > capBytes) {

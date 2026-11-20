@@ -5,6 +5,8 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -316,6 +318,62 @@ test("the cap applies to each message, not the stream: two events together over 
     assert.equal(reply.kind, "failed");
     assert.match((reply as { reason: string }).reason, /larger than 256 KiB/);
   } finally { await over.close(); }
+});
+
+/**
+ * A bare streamable-HTTP MCP endpoint on loopback that answers the handshake as JSON and the
+ * `tools/call` as one event-stream event: a JSON-RPC result split over `lines` data lines, each
+ * ended by CRLF. An empty data line adds only a newline to the event's data, which JSON reads as
+ * whitespace, so the event is a valid message however many lines it has.
+ */
+async function startCrlfEventServer(lines: number): Promise<{ url: string; wireBytes: () => number; close(): Promise<void> }> {
+  let wireBytes = 0;
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    if (message.method === "initialize") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "crlf-fixture", version: "1.0.0" } },
+      }));
+      return;
+    }
+    const result = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { structuredContent: { guidance: [{ id: "crlf", body: "one event" }] }, content: [] } });
+    const event = `event: message\r\ndata: ${result}\r\n${"data: \r\n".repeat(lines)}\r\n`;
+    wireBytes = Buffer.byteLength(event);
+    res.writeHead(200, { "content-type": "text/event-stream" }).end(event);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    wireBytes: () => wireBytes,
+    close: () => new Promise((done) => { server.closeAllConnections(); server.close(() => done()); }),
+  };
+}
+
+test("one event of many short CRLF lines is capped by its bytes on the wire, both bytes of each CRLF counted", async () => {
+  // 34,000 lines of "data: \r\n", 8 bytes each: about 272 KB on the wire, over the 256 KiB cap,
+  // but only about 238 KB if the LF of each CRLF went uncounted.
+  const over = await startCrlfEventServer(34_000);
+  try {
+    const started = Date.now();
+    const reply = await callMcp(request(false), shaper({ type: "http", url: over.url }), ctx());
+    assert.ok(over.wireBytes() > 256 * 1024, `the event is ${over.wireBytes()} bytes on the wire`);
+    assert.ok(over.wireBytes() - 34_000 < 256 * 1024, "and under the cap if the LFs were not counted");
+    assert.equal(reply.kind, "failed", JSON.stringify(reply).slice(0, 300));
+    assert.match((reply as { reason: string }).reason, /larger than 256 KiB/);
+    assert.ok(Date.now() - started < 10_000, "failed at once, not at its deadline");
+  } finally { await over.close(); }
+  // The same shape under the cap is one valid event and an ordinary reply.
+  const under = await startCrlfEventServer(20_000);
+  try {
+    const reply = await callMcp(request(false), shaper({ type: "http", url: under.url }), ctx());
+    assert.ok(under.wireBytes() < 256 * 1024);
+    assert.deepEqual(data(reply), { guidance: [{ id: "crlf", body: "one event" }] });
+  } finally { await under.close(); }
 });
 
 test("a run over two repositories starts one server process and closes it when the run ends", async () => {

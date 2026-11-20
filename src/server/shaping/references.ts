@@ -109,9 +109,10 @@ export function resolveReferenceMap(values: Readonly<Record<string, string>>, ct
   const token = (ctx.daemonToken ?? readToken()).trim();
   const missing: string[] = [];
   const resolved = new Map<string, string>();
-  const out: Record<string, string> = {};
+  // Built as entries, so a header named `__proto__` is an own entry rather than a prototype write.
+  const entries: Array<[string, string]> = [];
   for (const [key, text] of Object.entries(values)) {
-    out[key] = text.replace(/\{([^{}]*)\}/g, (_whole, inner: string) => {
+    entries.push([key, text.replace(/\{([^{}]*)\}/g, (_whole, inner: string) => {
       const value = resolveOne(inner, ctx, token);
       if (value === null) {
         if (!missing.includes(spelled(inner))) missing.push(spelled(inner));
@@ -120,8 +121,9 @@ export function resolveReferenceMap(values: Readonly<Record<string, string>>, ct
       // An environment value is reported under its variable's name, a caller value under its own.
       resolved.set(inner.startsWith("env:") ? inner.slice(4) : inner, value);
       return value;
-    });
+    })]);
   }
+  const out: Record<string, string> = Object.fromEntries(entries);
   if (missing.length > 0) return { ok: false, missing };
   // Every value is scrubbed wherever it appears, however short, a caller value as much as a
   // credential: a short one such as the harness `pi` inside a longer word is redacted too, for a
@@ -206,16 +208,17 @@ export function referenceStatus(
   ];
   const token = daemonToken.trim();
   const referenced = new Set(shapers.flatMap(shaperEnvReferences));
-  const status: ShapingReferenceStatus = {};
+  // Built as entries, so a variable named `__proto__` is listed rather than lost to the setter.
+  const status: Array<[string, "set" | "unset"]> = [];
   for (const name of [...new Set(shapers.flatMap(shaperEnvironmentNames))].sort()) {
     // A header reference is set only when a call can resolve it; a pass-through name only when a
     // `command` shaper or a local server would receive it. A name used both ways needs both.
     const asReference = !referenced.has(name)
       || resolveOne(`env:${name}`, { caller: { user: null, agent: null, conversation: null }, env }, token) !== null;
     const passed = passedThroughNames(shapers).has(name) ? passesThrough(name, env, token) : true;
-    status[name] = asReference && passed ? "set" : "unset";
+    status.push([name, asReference && passed ? "set" : "unset"]);
   }
-  return status;
+  return Object.fromEntries(status);
 }
 
 /**

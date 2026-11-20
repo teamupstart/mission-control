@@ -203,6 +203,8 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
     // gives it nothing. Lines are read whole across chunks, and each event's fields are tracked.
     const decoder = new TextDecoder();
     let partial = "";
+    // The previous chunk ended on a CR: an LF that opens this one completes that CRLF.
+    let skipLf = false;
     let resumable = false;
     let eventId: string | undefined;
     let eventHasData = false;
@@ -217,7 +219,10 @@ function watchReplyStreams(base: FetchLike, answered: (id: string | number) => b
         try { read = await source.read(); } catch (error) { ended(); controller.error(error); return; }
         if (read.done) { ended(); controller.close(); return; }
         if (!resumable) {
-          const lines = (partial + decoder.decode(read.value, { stream: true })).split(/\r\n|\r|\n/);
+          let text = partial + decoder.decode(read.value, { stream: true });
+          if (skipLf && text.startsWith("\n")) text = text.slice(1);
+          skipLf = text.endsWith("\r");
+          const lines = text.split(/\r\n|\r|\n/);
           partial = lines.pop() ?? "";
           for (const line of lines) {
             if (line === "") {
@@ -306,8 +311,10 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
   const credentials = credentialBearingValues(executable.env);
   const named: ResolvedValue[] = [
     ...server.env.filter((name) => !carriedEnvName(name)).flatMap((name) => {
-      const value = executable.env[name];
-      return value ? [{ name, value }] : [];
+      // The child environment's own string only: an unset `constructor` must not read the
+      // inherited function, which scrubbing would then call string methods on.
+      const value = Object.hasOwn(executable.env, name) ? executable.env[name] : undefined;
+      return typeof value === "string" && value !== "" ? [{ name, value }] : [];
     }),
     ...credentials,
   ];
@@ -336,7 +343,9 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
   // margin is dropped in the original text's positions before anything is recorded.
   let stderr = "";
   let stderrCut = false;
-  const longest = received.values[0]?.length ?? 0;
+  // Six times the longest value: a JSON `\u` escape spells one character in six, and a value cut
+  // at the front in that spelling must fall wholly inside the margin that is dropped.
+  const longest = (received.values[0]?.length ?? 0) * 6;
   transport.stderr?.on("data", (chunk: Buffer) => {
     const joined = stderr + chunk.toString("utf8");
     const keep = STDERR_KEEP_CHARS + longest;
@@ -365,7 +374,8 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     // A line on stdout that is not an MCP message: the stream is no longer one the client can
     // trust, and a call waiting on it would only time out. The SDK's message can quote the line.
     if (error instanceof SyntaxError || (error instanceof Error && error.name === "ZodError")) {
-      const said = error.message.slice(0, 2_000);
+      // Scrubbed whole, then cut: cutting first could split a value into a piece no search finds.
+      const said = error.message;
       const marked = holdsResolvedValue(said, named);
       state.fail(`The MCP server wrote a line on stdout that is not an MCP message: ${scrubDiagnostic(said).slice(0, 300)}`, marked);
       void client.close().catch(() => {});

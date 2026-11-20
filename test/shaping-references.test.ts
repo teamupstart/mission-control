@@ -191,6 +191,20 @@ test("an environment reference reads only the environment's own non-blank string
   }, "a pass-through value of spaces still reaches a command, as that transport passes it");
 });
 
+test("a variable or header named __proto__ is an ordinary name, never lost to the prototype", () => {
+  const proto = ShaperSchema.parse({
+    id: "proto", label: "Proto", stage: "select",
+    transport: { type: "http", url: "https://guidance.example.test/v1", headers: JSON.parse('{"x-key": "{env:__proto__}"}') },
+  });
+  const status = referenceStatus({ ...SHAPING_CONFIG_DEFAULTS, shapers: [proto] }, [], JSON.parse('{"__proto__": "proto-value"}'), "");
+  assert.ok(Object.hasOwn(status, "__proto__"), JSON.stringify(status));
+  assert.equal(status.__proto__, "set");
+  const map = resolveReferenceMap(JSON.parse('{"__proto__": "{caller.user}"}'), ctx);
+  assert.equal(map.ok, true);
+  assert.ok(map.ok && Object.hasOwn(map.value, "__proto__"), "the header is an own entry and is sent");
+  assert.equal(map.ok && map.value.__proto__, "declared-user");
+});
+
 test("a reply with no value comes back unchanged and unmarked", () => {
   const reply = { guidance: [{ id: "a", body: "nothing secret" }] };
   const before = structuredClone(reply);

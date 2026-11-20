@@ -655,6 +655,52 @@ test("a stdio diagnostic that spells a passed value in JSON escapes is scrubbed 
   assert.equal(reason.includes("\\u006a"), false, "no escaped spelling is left");
 });
 
+test("an unset pass-through variable named after an inherited property cannot break reply scrubbing", async () => {
+  const reply = await callMcp(request(), shaper({ type: "stdio", mode: "ok", env: ["constructor", "toString"] }), ctx());
+  assert.deepEqual(data(reply), { version: "v1.4.0", guidance: [{ id: "guide/billing-api", title: "Guide", body: "guidance for billing-api" }] });
+});
+
+test("a resumable stream whose priming event's CRLF is split across chunks is still resumed", async () => {
+  let resumedFrom: string | undefined;
+  let pendingId: number | undefined;
+  const server = createServer(async (req, res) => {
+    if (req.method === "GET") {
+      const last = req.headers["last-event-id"];
+      if (!last || pendingId === undefined) { res.writeHead(405).end(); return; }
+      resumedFrom = String(last);
+      res.writeHead(200, { "content-type": "text/event-stream" })
+        .end(`id: e2\r\nevent: message\r\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: pendingId, result: OK_RESULT })}\r\n\r\n`);
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { id?: number; method: string; params?: { protocolVersion?: string } };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    if (message.method === "initialize") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", id: message.id,
+        result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "split", version: "1.0.0" } },
+      }));
+      return;
+    }
+    pendingId = message.id;
+    // The priming event's id line ends with a CR in one chunk and its LF opens the next.
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("id: e1\r");
+    setTimeout(() => res.end("\ndata: \r\n\r\n"), 100);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+    const reply = await callMcp(request(false), shaper({ type: "http", url }), ctx({}, 10_000));
+    assert.deepEqual(data(reply), { guidance: [{ id: "raw", body: "raw reply" }] });
+    assert.equal(resumedFrom, "e1");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
 test("a stdio server that writes a line that is not an MCP message fails the call at once", async () => {
   const started = Date.now();
   const reply = await callMcp(request(), shaper({ type: "stdio", mode: "garbage-reply" }, "folded", {

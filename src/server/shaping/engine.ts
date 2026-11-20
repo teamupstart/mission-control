@@ -158,8 +158,10 @@ interface CallResult {
 }
 
 /**
- * Remove every NUL from the strings of a decoded reply, in place. Keys are left as they are:
- * none of them reaches the section. Walked with a stack, so no nesting overflows it.
+ * Remove every NUL from the strings of a decoded reply, in place. A key holding one is dropped
+ * with its value rather than renamed, so two keys can never merge into one: no key the result
+ * schema defines holds NUL, and a fact named with one would reach the selectors. Walked with a
+ * stack, so no nesting overflows it.
  */
 function stripNul(value: unknown): void {
   const pending: unknown[] = [value];
@@ -168,6 +170,7 @@ function stripNul(value: unknown): void {
     if (!node || typeof node !== "object") continue;
     const record = node as Record<string, unknown>;
     for (const key of Object.keys(record)) {
+      if (!Array.isArray(record) && key.includes("\u0000")) { delete record[key]; continue; }
       const item = record[key];
       if (typeof item === "string") {
         if (item.includes("\u0000")) record[key] = item.replaceAll("\u0000", "");
@@ -374,6 +377,9 @@ async function runShaping(
     if (!parsed.success) return empty("invalid", scrub(describeInvalidResult(parsed.error)), redacted);
     const result = parsed.data;
     const notes = scrub(result.notes?.filter((note) => note.trim()).join(" ") ?? "");
+    // What the transport dropped while redacting, recorded whatever the outcome: a successful
+    // reply that lost an entry still says so, and still answers `ok`.
+    const dropped = (reply.redactionNotes ?? []).join(" ");
     // The version is the shaper's text too, recorded and returned, so it is scrubbed as an
     // identifier (a named credential and any long value go, `v1.4.0` keeps an inherited "0"),
     // then held to its bound: a replacement can be longer than what it replaced.
@@ -381,8 +387,8 @@ async function runShaping(
       : (reply.redact ? reply.redact(result.version, { identifier: true }) : result.version).slice(0, SHAPING_LIMITS.versionChars);
     return {
       record: result.degraded
-        ? record("degraded", notes || "The shaper reported that it is degraded.", version, redacted)
-        : record("ok", null, version, redacted),
+        ? record("degraded", [notes || "The shaper reported that it is degraded.", dropped].filter(Boolean).join(" "), version, redacted)
+        : record("ok", dropped || null, version, redacted),
       entries: result.guidance.map((guidance) => ({
         id: guidance.id, title: guidance.title ?? null, path: guidance.path ?? null,
         body: guidance.body, truncated: guidance.truncated === true,

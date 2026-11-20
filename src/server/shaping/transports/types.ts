@@ -31,6 +31,8 @@ export type TransportReply =
     kind: "data";
     data: unknown;
     redacted?: boolean;
+    /** Why the transport dropped an entry or a fact while redacting. The engine records them. */
+    redactionNotes?: readonly string[];
     /**
      * Removes values the shaper was handed from text derived from this reply. The engine runs
      * every reason it builds from `data` through it (an `error` the reply states, its `notes`,

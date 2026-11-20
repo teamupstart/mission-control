@@ -252,16 +252,38 @@ test("no NUL from a shaper reply reaches an entry, the section or a selector's r
   assert.deepEqual([select.repo.summary, select.repo.facts], ["summary", { lang: "typescript" }]);
 });
 
-test("redaction never turns a valid reply invalid: drop notes stop at the result's notes bound", async () => {
+test("redaction never turns a valid reply invalid: drop notes travel beside the reply, not in its notes", async () => {
   const notes = Array.from({ length: 16 }, (_, i) => `note ${i}`);
   const reply = { guidance: [{ id: "drop-sk-secret", body: "x" }, { id: "clean", body: "a clean entry" }], notes, degraded: true };
   const scrubbed = scrubResolved(structuredClone(reply), [{ name: "ACME_TOKEN", value: "sk-secret" }]);
   assert.equal(scrubbed.redacted, true);
-  assert.equal((scrubbed.data as { notes: string[] }).notes.length, 16, "the reply's own notes already fill the bound");
+  assert.equal((scrubbed.data as { notes: string[] }).notes.length, 16, "the reply's own notes, already at their bound, are untouched");
+  assert.equal(scrubbed.notes.length, 1, "the drop is reported beside the reply");
   assert.equal(ShapingResultSchema.safeParse(scrubbed.data).success, true, "so the scrubbed reply still validates");
-  const result = await run(configWith([shaper("s", "select")]), () => ({ kind: "data", data: scrubbed.data, redacted: true }), input(1));
+  const result = await run(configWith([shaper("s", "select")]),
+    () => ({ kind: "data", data: scrubbed.data, redacted: true, redactionNotes: scrubbed.notes }), input(1));
   assert.deepEqual(result.entries.map((entry) => entry.id), ["clean"], "its clean entry still counts");
   assert.equal(result.summary!.shapers[0]!.redacted, true);
+});
+
+test("a fact named with a NUL is dropped before the merge, never renamed into another", async () => {
+  const seen: ShapingRequest[] = [];
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
+  await run(config, (request, entry) => {
+    seen.push(request);
+    return data(entry.id === "g" ? { repo: { facts: { "lang\u0000": "go", lang: "typescript", "own\u0000er": "x" } } } : { guidance: [] });
+  }, input(1));
+  const select = seen.find((request) => request.stage === "select")!;
+  assert.deepEqual(select.repo.facts, { lang: "typescript" }, "the NUL-bearing names are gone, and lang kept its own value");
+});
+
+test("a successful reply that lost an entry to redaction stays ok and says what was dropped", async () => {
+  const result = await run(configWith([shaper("s", "select")]), () => ({ kind: "data",
+    data: JSON.stringify({ guidance: [{ id: "kept", body: "fine" }] }), redacted: true,
+    redactionNotes: ["An entry was dropped because its id contained the value of ACME_TOKEN."] }), input(1));
+  const row = result.summary!.shapers[0]!;
+  assert.deepEqual([row.outcome, row.redacted], ["ok", true]);
+  assert.equal(row.reason, "An entry was dropped because its id contained the value of ACME_TOKEN.");
 });
 
 test("a request outside the protocol's bounds is never sent: the call fails with the reason", async () => {

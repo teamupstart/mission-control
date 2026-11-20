@@ -316,10 +316,13 @@ test("a dry run never returns a named credential the shaper echoed in its guidan
     assert.equal(response.status, 200);
     const text = await response.text();
     assert.equal(text.includes("s3cret-passed-value"), false, "neither entries nor section nor summary carry it");
-    const run = JSON.parse(text) as { section: string; entries: Array<{ id: string; body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean }> } };
+    const run = JSON.parse(text) as { section: string; entries: Array<{ id: string; body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean; reason: string | null }> } };
     assert.deepEqual(run.entries.map((entry) => [entry.id, entry.body]), [["kept", "use [SHAPER_FIXTURE_SECRET redacted] to sign in"]]);
     assert.match(run.section, /use \[SHAPER_FIXTURE_SECRET redacted\] to sign in/);
     assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]], "redaction is not degradation");
+    assert.match(run.summary.shapers[0]!.reason ?? "",
+      /An entry was dropped because its id contained the value of SHAPER_FIXTURE_SECRET\..*A fact was dropped/,
+      "and the dry run says what was dropped");
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;

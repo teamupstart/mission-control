@@ -11,6 +11,7 @@ import { ShaperManifestSchema, ShaperSchema } from "../src/shared/shaping.ts";
 import {
   callCommand, COMMAND_OUTPUT_BYTES, receivedValues, redactReceived, removeScratch, shaperCommandEnv,
 } from "../src/server/shaping/transports/command.ts";
+import { scrubResolved } from "../src/server/shaping/references.ts";
 import type { ShaperOf, TransportContext } from "../src/server/shaping/transports/types.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
@@ -324,15 +325,17 @@ test("a named credential the shaper echoes in its reply's content is scrubbed be
     assert.equal(reply.kind, "data");
     assert.equal((reply as { redacted?: boolean }).redacted, true);
     assert.equal(JSON.stringify(decoded(reply)).includes("s3cret-passed-value"), false, "no copy survives anywhere in the reply");
-    const parsed = decoded(reply) as { guidance: Array<{ id: string; title: string; body: string; path: string }>; repo: { facts: Record<string, string>; summary: string }; notes: string[] };
+    const parsed = decoded(reply) as { guidance: Array<{ id: string; title: string; body: string; path: string }>; repo: { facts: Record<string, string>; summary: string }; notes?: string[] };
     assert.deepEqual(parsed.guidance.map((entry) => entry.id), ["kept"], "an entry whose id held the value is dropped, never renamed");
     assert.deepEqual(parsed.guidance[0], { id: "kept", title: "token [SHAPER_FIXTURE_SECRET redacted]",
       body: "use [SHAPER_FIXTURE_SECRET redacted] to sign in", path: "docs/[SHAPER_FIXTURE_SECRET redacted].md" });
     assert.deepEqual(parsed.repo.facts, { language: "typescript", owner: "team [SHAPER_FIXTURE_SECRET redacted]" },
       "a fact named after the value is dropped; one holding it is scrubbed");
     assert.equal(parsed.repo.summary, "summary with [SHAPER_FIXTURE_SECRET redacted]");
-    assert.equal(parsed.notes.length, 2, "each drop leaves a note");
-    assert.match(parsed.notes.join(" "), /dropped because its id contained the value of SHAPER_FIXTURE_SECRET/);
+    assert.equal(parsed.notes, undefined, "the reply's own notes are left as written");
+    const dropped = (reply as { redactionNotes?: string[] }).redactionNotes ?? [];
+    assert.equal(dropped.length, 2, "each drop is reported beside the reply");
+    assert.match(dropped.join(" "), /dropped because its id contained the value of SHAPER_FIXTURE_SECRET/);
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;
@@ -351,6 +354,18 @@ test("a redacted reply with a deeply nested unknown field settles, and its clean
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SECRET;
     else process.env.SHAPER_FIXTURE_SECRET = saved;
   }
+});
+
+test("overlapping named values are removed over their combined span, so no fragment of either survives", () => {
+  const resolved = [{ name: "FIRST", value: "abcdef" }, { name: "SECOND", value: "defghi" }];
+  const reply = { guidance: [{ id: "e", body: "xx abcdefghi yy", title: "defghi-abcdef" }] };
+  const scrubbed = scrubResolved(reply, resolved);
+  const entry = (scrubbed.data as { guidance: Array<{ body: string; title: string }> }).guidance[0]!;
+  assert.equal(entry.body, "xx [FIRST, SECOND redacted] yy", "replacing one first would have left \"ghi\" behind");
+  assert.equal(entry.title, "[SECOND redacted]-[FIRST redacted]", "separate values stay separate");
+  // A value overlapping itself.
+  const self = scrubResolved({ guidance: [{ id: "e", body: "<ababab>" }] }, [{ name: "AB", value: "abab" }]);
+  assert.equal((self.data as { guidance: Array<{ body: string }> }).guidance[0]!.body, "<[AB redacted]>");
 });
 
 test("a reply holding no named value is returned byte for byte", async () => {

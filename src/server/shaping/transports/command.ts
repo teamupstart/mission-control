@@ -15,6 +15,7 @@ import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subproces
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
+import { redactSpans } from "../redaction.ts";
 import { scrubResolved, type ResolvedValue } from "../references.ts";
 import type { ShapingTraceContext, ShapingTransport, TransportReply } from "./types.ts";
 
@@ -138,43 +139,6 @@ export function receivedValues(env: NodeJS.ProcessEnv, namedVariables: readonly 
   return { values: [...new Set(values)].sort((a, b) => b.length - a.length), named: new Set(named) };
 }
 
-/** Whether `char` is an ASCII letter or digit: the edge a short value's whole-token match needs. */
-function alphanumeric(char: string | undefined): boolean {
-  return char !== undefined && /[A-Za-z0-9]/.test(char);
-}
-
-/**
- * Every start offset of `value` in `text`, overlapping occurrences included: a search that
- * resumed after each match would step over a second copy that begins inside the first.
- *
- * Knuth-Morris-Pratt, so the scan is linear in the text and the value whatever they hold. A
- * search that restarted at each match, such as `indexOf` from the next offset, compares a long
- * value against the same characters again for every overlapping copy: a 100 KiB value of one
- * repeated character over a 256 KiB diagnostic is billions of comparisons on the event loop.
- * A whole-token match is the same scan with the characters on either side checked afterwards.
- */
-function occurrences(text: string, value: string, wholeToken: boolean): number[] {
-  const starts: number[] = [];
-  if (value.length === 0 || value.length > text.length) return starts;
-  // fallback[i]: the length of the longest proper prefix of value[0..i] that is also its suffix.
-  const fallback = new Int32Array(value.length);
-  for (let i = 1, k = 0; i < value.length; i++) {
-    while (k > 0 && value[i] !== value[k]) k = fallback[k - 1]!;
-    if (value[i] === value[k]) k++;
-    fallback[i] = k;
-  }
-  for (let i = 0, k = 0; i < text.length; i++) {
-    while (k > 0 && text[i] !== value[k]) k = fallback[k - 1]!;
-    if (text[i] === value[k]) k++;
-    if (k === value.length) {
-      const start = i - value.length + 1;
-      if (!wholeToken || (!alphanumeric(text[start - 1]) && !alphanumeric(text[i + 1]))) starts.push(start);
-      k = fallback[k - 1]!;
-    }
-  }
-  return starts;
-}
-
 /**
  * Remove every value the child received from text it printed, before it is recorded. A value of
  * four characters or more is replaced wherever it appears. A shorter inherited one is replaced
@@ -183,40 +147,15 @@ function occurrences(text: string, value: string, wholeToken: boolean): number[]
  * named is a credential it chose to pass, so it is replaced wherever it appears whatever its
  * length: `tokenab1` must not keep a three-character `ab1` just because letters surround it.
  *
- * Every occurrence of every value is marked on the original text, and overlapping or touching
- * marks merge into one span, so two values that overlap are redacted over their combined extent
- * and no part of either survives. The marks go into a difference array, so the work is linear in
- * the text for each value, however many matches it has: up to 256 KiB of shaper output never
- * costs the event loop more than that.
+ * Every occurrence of every value is found on the original text and overlapping or touching
+ * matches merge into one span (`redactSpans`), so two values that overlap are redacted over their
+ * combined extent and no part of either survives. Each value is found in linear time, however
+ * many matches it has: up to 256 KiB of shaper output never stalls the event loop.
  */
 export function redactReceived(text: string, received: ReceivedValues, dropBefore = 0): string {
-  const depth = new Int32Array(text.length + 1);
-  let marked = false;
-  for (const value of received.values) {
-    const wholeToken = value.length < SHORT_VALUE_CHARS && !received.named.has(value);
-    for (const start of occurrences(text, value, wholeToken)) {
-      depth[start]! += 1;
-      depth[start + value.length]! -= 1;
-      marked = true;
-    }
-  }
-  if (!marked && dropBefore <= 0) return text;
-  // `dropBefore` discards unmarked text in front of that offset: a value whose start was cut
-  // off by a bounded buffer lives there, as a piece no pattern can recognise.
-  let out = "";
-  let covered = 0;
-  let runStart = 0;
-  for (let at = 0; at <= text.length; at++) {
-    const wasCovered = covered > 0;
-    covered += depth[at]!;
-    const isCovered = at < text.length && covered > 0;
-    if (isCovered === wasCovered) continue;
-    if (wasCovered) out += "[redacted]";
-    else out += text.slice(Math.max(runStart, dropBefore), Math.max(at, dropBefore));
-    runStart = at;
-  }
-  if (covered <= 0 && runStart < text.length) out += text.slice(Math.max(runStart, dropBefore));
-  return out;
+  return redactSpans(text, received.values.map((value) => ({
+    value, wholeToken: value.length < SHORT_VALUE_CHARS && !received.named.has(value), label: "",
+  })), () => "[redacted]", dropBefore);
 }
 
 /**
@@ -448,6 +387,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
           // the engine validates a decoded value just as it does text.
           data: scrubbed.redacted ? scrubbed.data : text,
           ...(scrubbed.redacted ? { redacted: true } : {}),
+          ...(scrubbed.notes.length > 0 ? { redactionNotes: scrubbed.notes } : {}),
           // The reply is the shaper's own text too: reasons built from it are scrubbed the same way.
           redact: (text, options) => redactReceived(text, options?.identifier ? identifierValues : received),
         });

@@ -206,8 +206,10 @@ A `command` shaper is any program. Mission Control runs it once per call:
   value from the child's environment is replaced by `[redacted]` in that reason, and in any
   reason drawn from your reply, such as an `error` or degraded `notes`.
   A variable you named in `env` is also removed from your reply's content: each occurrence in an
-  entry, the summary, a fact, the notes or the version becomes `[NAME redacted]`, and an entry
-  or fact keyed by it is dropped with a note. The record says `redacted`.
+  entry, the summary, a fact, the notes or the version becomes `[NAME redacted]`, where two
+  overlapping values become one span naming both. An entry or fact keyed by it is dropped. The
+  record says `redacted`, and its reason says what was dropped, even when the outcome is `ok`.
+  A NUL anywhere in your reply is removed, and a fact whose name holds one is dropped.
 - **Timeout.** The program runs in its own process group, and the whole group is killed at the
   timeout. Whatever is left of the group is also killed when the call ends, so a helper your
   program starts does not outlive it.

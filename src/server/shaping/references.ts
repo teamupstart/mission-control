@@ -1,4 +1,5 @@
-import { SHAPING_LIMITS, type ShapingConfig, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import type { ShapingConfig, ShapingReferenceStatus } from "@shared/shaping.ts";
+import { redactSpans } from "./redaction.ts";
 
 /**
  * Whether each `{env:NAME}` a shaper references is set in the daemon's environment, never its
@@ -15,18 +16,24 @@ export interface ResolvedValue {
   value: string;
 }
 
-/** What `scrubResolved` returns: the reply with every resolved value gone, and whether it found any. */
+/** What `scrubResolved` returns: the reply with every resolved value gone, and what it removed. */
 export interface ScrubbedReply {
   data: unknown;
   redacted: boolean;
+  /**
+   * Why an entry or a fact was dropped. Kept apart from the reply's own notes, which a reply may
+   * already fill to their bound, so the engine can record them whatever the outcome.
+   */
+  notes: string[];
 }
 
+/**
+ * Every occurrence of every resolved value, found on the original text and merged where values
+ * overlap, so replacing one can never hide part of another from a later pass.
+ */
 function replaceResolved(text: string, resolved: readonly ResolvedValue[]): string {
-  let out = text;
-  for (const { name, value } of resolved) {
-    if (out.includes(value)) out = out.split(value).join(`[${name} redacted]`);
-  }
-  return out;
+  return redactSpans(text, resolved.map(({ name, value }) => ({ value, wholeToken: false, label: name })),
+    (labels) => `[${labels.join(", ")} redacted]`);
 }
 
 function holdsResolved(text: string, resolved: readonly ResolvedValue[]): ResolvedValue | undefined {
@@ -38,7 +45,8 @@ function holdsResolved(text: string, resolved: readonly ResolvedValue[]): Resolv
  * replaced with `[NAME redacted]` in every string of a decoded reply: entry paths, titles and
  * bodies, the summary, fact values, notes, the version and an error. Keys the result schema
  * defines are never changed. An entry whose id, or a fact whose name, contains such a value is
- * dropped with a note instead of renamed, so redaction can never merge two entries or two facts.
+ * dropped instead of renamed, so redaction can never merge two entries or two facts, and the
+ * drop is returned as a note beside the reply.
  *
  * The walk is iterative, so no nesting the reply could carry overflows the stack, and it
  * rewrites the freshly decoded value in place. A reply that is not a JSON object is left alone:
@@ -46,7 +54,7 @@ function holdsResolved(text: string, resolved: readonly ResolvedValue[]): Resolv
  */
 export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[]): ScrubbedReply {
   const values = resolved.filter(({ value }) => value.length > 0).sort((a, b) => b.value.length - a.value.length);
-  if (values.length === 0 || data === null || typeof data !== "object") return { data, redacted: false };
+  if (values.length === 0 || data === null || typeof data !== "object") return { data, redacted: false, notes: [] };
   let redacted = false;
   const notes: string[] = [];
   const root = data as Record<string, unknown>;
@@ -93,13 +101,7 @@ export function scrubResolved(data: unknown, resolved: readonly ResolvedValue[])
       }
     }
   }
-  // A drop's note joins the reply's own notes only while they stay within the result schema's
-  // bound: a reply that was valid must not become invalid because something was removed from
-  // it. The record's `redacted` mark says so either way.
-  if (notes.length > 0) {
-    const own = Array.isArray(root.notes) ? root.notes : [];
-    const room = Math.max(0, SHAPING_LIMITS.replyNotes - own.length);
-    if (room > 0) root.notes = [...own, ...notes.slice(0, room)];
-  }
-  return { data: root, redacted };
+  // The reply's own notes are left as written: a reply that was valid stays valid. The drops are
+  // returned beside it for the engine to record.
+  return { data: root, redacted, notes };
 }

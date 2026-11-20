@@ -15,6 +15,9 @@
 //   error              A tool error.
 //   slow <ms>          Waits, then answers as `ok`.
 //   overflow <bytes>   A text reply this many bytes long, so one message passes the 256 KiB cap.
+//   two-messages <bytes> A logging notification this many bytes long, then a valid `ok` reply padded
+//                      to the same size: two messages on one response stream, each under the cap
+//                      when `bytes` is, together over it.
 //   echo-header <name> An entry whose body repeats the request header `name`.
 //   error-header <name> A tool error whose text repeats the request header `name`.
 //   echo-env <NAME>    An entry whose body repeats the server's environment variable `NAME`.
@@ -35,7 +38,7 @@ function okReply(args) {
 
 /** A low-level server, so the tool sees its arguments exactly as sent, with nothing stripped. */
 export function createGuidanceServer(mode = "ok", args = []) {
-  const server = new Server({ name: "fake-guidance", version: "1.0.0" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "fake-guidance", version: "1.0.0" }, { capabilities: { tools: {}, logging: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [{
       name: "get_guidance",
@@ -72,6 +75,14 @@ export function createGuidanceServer(mode = "ok", args = []) {
       case "slow":
         await sleep(Number(args[0] ?? 5_000));
         return structured(okReply(callArgs));
+      case "two-messages": {
+        const bytes = Number(args[0] ?? 200 * 1024);
+        // Related to this request, so over streamable HTTP it rides the call's own event stream
+        // as an event of its own, ahead of the reply's event.
+        await extra.sendNotification({ method: "notifications/message", params: { level: "info", data: "n".repeat(bytes) } });
+        const reply = okReply(callArgs);
+        return structured({ ...reply, notes: ["p".repeat(Math.min(bytes, 900))], guidance: [{ ...reply.guidance[0], body: "g".repeat(bytes) }] });
+      }
       case "overflow":
         return { content: [{ type: "text", text: "x".repeat(Number(args[0] ?? 300 * 1024)) }] };
       case "echo-header":

@@ -291,6 +291,33 @@ test("a message over 256 KiB is failed at once, naming the cap, on each server t
   });
 });
 
+test("the cap applies to each message, not the stream: two events together over 256 KiB are read whole", async () => {
+  // A notification and then the reply, each about 120 KiB and so under the cap, together over it.
+  // On an event stream they are two events of one response, so a reader that capped the whole
+  // stream instead of each event would fail this call. Over stdio they are two lines.
+  const bytes = 120 * 1024;
+  const check = async (server: Server, label: string) => {
+    const reply = await callMcp(request(server.type === "stdio"), shaper(server), ctx());
+    const value = data(reply);
+    assert.equal(value.guidance[0].body.length, bytes, `${label}: the reply arrived whole`);
+    assert.equal(value.guidance[0].id, "guide/billing-api");
+  };
+  const stream = await startGuidanceHttp({ mode: "two-messages", args: [String(bytes)], json: false });
+  try {
+    await check({ type: "http", url: stream.url }, "streamable HTTP event stream");
+    const call = stream.requests.find(({ method, headers }) => method === "POST" && String(headers.accept).includes("text/event-stream"));
+    assert.ok(call, "the call accepted an event stream");
+  } finally { await stream.close(); }
+  await check({ type: "stdio", mode: "two-messages", args: [String(bytes)] }, "stdio");
+  // The same two messages, one of them over the cap, still fail: the count is per message.
+  const over = await startGuidanceHttp({ mode: "two-messages", args: [String(300 * 1024)], json: false });
+  try {
+    const reply = await callMcp(request(false), shaper({ type: "http", url: over.url }), ctx());
+    assert.equal(reply.kind, "failed");
+    assert.match((reply as { reason: string }).reason, /larger than 256 KiB/);
+  } finally { await over.close(); }
+});
+
 test("a run over two repositories starts one server process and closes it when the run ends", async () => {
   const config = {
     ...SHAPING_CONFIG_DEFAULTS,

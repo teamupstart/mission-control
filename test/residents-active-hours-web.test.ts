@@ -97,3 +97,17 @@ test("turning active hours on names the browser's zone, and a stored null zone n
   assert.match(html, /Times follow the Mission Control daemon&#x27;s time zone\. Choose a zone to preview the next window\./);
   assert.match(html, /aria-label="Weekly active hours: Mon–Fri, 09:00–17:00 \(the Mission Control daemon&#x27;s time zone\)"/);
 });
+
+test("a hidden preview section stays drawn while it holds the error that blocks saving", async () => {
+  const { residentDraftProblem, residentDraftProblemSections, residentEditorSectionVisible } = await import("../src/web/residents/ResidentProfileEditor.tsx");
+  const section = RESIDENT_EDITOR_SECTIONS.find((entry) => entry.id === "schedule")!;
+  const valid = ResidentProfileRevisionSchema.parse({ identity: { name: "Day" }, persona: { personaId: "p" } });
+  const noDays = { ...valid, schedule: { ...valid.schedule, enabled: true, days: [] } };
+  assert.match(residentDraftProblem(noDays)!, /choose at least one day/);
+  assert.equal(residentEditorSectionVisible(section, off, residentDraftProblemSections(valid)), false, "flag off and nothing wrong: hidden");
+  assert.equal(residentEditorSectionVisible(section, off, residentDraftProblemSections(noDays)), true,
+    "flag off but the schedule blocks saving: still drawn, so the author can repair it");
+  assert.equal(residentEditorSectionVisible(section, on, residentDraftProblemSections(valid)), true);
+  const identity = RESIDENT_EDITOR_SECTIONS.find((entry) => entry.id === "identity")!;
+  assert.equal(residentEditorSectionVisible(identity, off, new Set()), true, "a section with no flag is always drawn");
+});

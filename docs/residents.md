@@ -529,7 +529,9 @@ time the clocks repeat in autumn opens at its first occurrence.
 Like every profile setting, a running resident keeps the hours its launch pinned; **Restart on
 new profile** adopts edited ones. Turning the preview off sends any held wake that is already
 due at once and makes every resident ignore its hours; the saved schedules are kept and apply
-again when the preview is turned back on.
+again when the preview is turned back on. A draft whose active hours cannot be saved, such as
+one with no day chosen, keeps the card on screen even after the preview is turned off, so the
+problem stays reachable and the draft can still be fixed and saved.
 
 ### Compaction and guardrails
 

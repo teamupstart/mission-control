@@ -235,3 +235,39 @@ test("outside its window a resident whose next wake is already due inside the ne
   await expect(tags.nth(2), "the wake goes out at its own time, inside the next window").toHaveText(new RegExp(`^wakes (\\w{3} )?${dueTime}$`));
   await capture(dock, "04-dock-asleep-due-inside");
 });
+
+test("turning the preview off while the schedule blocks saving keeps the card, so the draft can still be repaired and saved", async ({
+  dashboard: page,
+  context,
+  daemon,
+}) => {
+  await setActiveHours(daemon, true);
+  await page.setViewportSize({ width: 1500, height: 1100 });
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const editor = page.getByRole("region", { name: "New resident profile" });
+  await editor.getByLabel("Name").fill("Repairable");
+  await editor.getByRole("combobox", { name: "Persona" }).selectOption(PERSONA_ID);
+  const card = editor.getByRole("region", { name: "Active hours", exact: true });
+  await card.getByRole("checkbox", { name: "Sleep outside active hours" }).check();
+  const days = card.getByRole("group", { name: "Active days" });
+  for (const day of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) await days.getByRole("button", { name: day }).click();
+  const problem = editor.getByText("choose at least one day for active hours, or turn active hours off");
+  await expect(problem).toBeVisible();
+
+  const settings = await context.newPage();
+  await settings.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const flag = settings.getByRole("button", { name: /^Resident active hours:/ });
+  await expect(flag).toHaveAttribute("aria-pressed", "true");
+  await flag.click();
+  await expect(flag).toHaveAttribute("aria-pressed", "false");
+
+  // The preview is off, but the card holds the error that blocks saving, so it stays to fix it.
+  await expect(card).toBeVisible();
+  await expect(problem).toBeVisible();
+  await days.getByRole("button", { name: "Monday" }).click();
+  await expect(problem).toHaveCount(0);
+  await expect(card, "repaired, the hidden preview section goes away").toHaveCount(0);
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Resident profile Repairable" })).toContainText("Revision 1");
+});

@@ -423,6 +423,8 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
       server = createServer((req, res) => {
         if (down) { req.socket.destroy(); return; }
         const chunks: Buffer[] = [];
+        // A client that drops mid-request must fail that request, not crash the test worker.
+        req.on("error", () => req.socket.destroy());
         req.on("data", (chunk: Buffer) => chunks.push(chunk));
         req.on("end", () => {
           const text = Buffer.concat(chunks).toString("utf8");
